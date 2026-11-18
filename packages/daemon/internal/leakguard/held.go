@@ -11,22 +11,21 @@ import (
 // commits are the commits an update that is no deletion would add to the destination, oldest
 // first: the commits the local side has, less the ones the destination holds already. It holds
 // every commit one of held reaches, held being the commits the destination's branches and tags
-// are at (Guard.advertised) and excluded their lines of rev-list's input (notLines): a commit
-// there is the destination's, so the push does not publish it. Where the destination has a
-// commit at the ref and the repository has it too, it also holds that commit and everything
-// before it. A commit of held is one the repository has, so the repository is asked only of
-// another (Guard.holds), and the push of a ref the destination advertises asks nothing more.
-// held counts for a ref the destination has as much as for a new one: without it, a forward
-// merge (the default branch merged onto an older tip of the branch) would read every commit of
-// the default branch since that tip, not only the merge and the branch's own commits. One
-// rev-list answers, fed on its standard input the local side, then ^<sha> for the remote side
+// are at (Guard.advertised): a commit there is the destination's, so the push does not publish it.
+// Where the destination has a commit at the ref and the repository has it too, it also holds that
+// commit and everything before it. A commit of held is one the repository has, so the repository
+// is asked only of another (Guard.holds), and the push of a ref the destination advertises asks
+// nothing more. held counts for a ref the destination has as much as for a new one: without it, a
+// forward merge (the default branch merged onto an older tip of the branch) would read every
+// commit of the default branch since that tip, not only the merge and the branch's own commits.
+// One rev-list answers, fed on its standard input the local side, then ^<sha> for the remote side
 // where the repository has it and for each of held:
 //
 //	git rev-list --reverse --stdin
 //
 // which is `git rev-list --reverse <local> --not [<remote>] <held...>` with the shas off the
 // command line, since a repository can advertise thousands of refs. A git that fails is an error.
-func (g *Guard) commits(ctx context.Context, dir string, held []string, excluded string, update Update) ([]string, error) {
+func (g *Guard) commits(ctx context.Context, dir string, held []string, update Update) ([]string, error) {
 	has := slices.Contains(held, update.RemoteSHA)
 	if !has {
 		var err error
@@ -37,29 +36,22 @@ func (g *Guard) commits(ctx context.Context, dir string, held []string, excluded
 	var fed strings.Builder
 	fed.WriteString(update.LocalSHA)
 	fed.WriteString("\n")
-	if has {
+	not := func(sha string) {
 		fed.WriteString("^")
-		fed.WriteString(update.RemoteSHA)
+		fed.WriteString(sha)
 		fed.WriteString("\n")
 	}
-	fed.WriteString(excluded)
+	if has {
+		not(update.RemoteSHA)
+	}
+	for _, sha := range held {
+		not(sha)
+	}
 	out, err := g.gitFed(ctx, dir, fed.String(), "rev-list", "--reverse", "--stdin")
 	if err != nil {
 		return nil, err
 	}
 	return strings.Fields(out), nil
-}
-
-// notLines are the lines ^<sha> of each of shas, which rev-list reads on its standard input as
-// `--not <shas...>` (Guard.commits).
-func notLines(shas []string) string {
-	var lines strings.Builder
-	for _, sha := range shas {
-		lines.WriteString("^")
-		lines.WriteString(sha)
-		lines.WriteString("\n")
-	}
-	return lines.String()
 }
 
 // holds is whether the repository has the commit sha names: false for a ref the push creates

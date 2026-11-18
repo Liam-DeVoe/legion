@@ -2,8 +2,10 @@ package leakguard
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -48,10 +50,11 @@ func TestARootCommitsAddedLinesAreRead(t *testing.T) {
 // A file is binary by its own content alone, whatever an attribute says: a file .gitattributes
 // marks -diff or binary is read as text, the .gitattributes the pushed commit adds itself
 // included, where git's own diff would write "Binary files ... differ" for it and no line of it
-// would reach the rules. A merge reads its files as blobs, which no attribute touches, so a merge's
-// resolution is read alike. A file that holds a zero byte in its first 8000 bytes adds no line,
-// in a commit of one parent and in a merge's resolution alike (mergeFiles), and a commit that adds
-// a line to such a file adds none, although the zero byte is in no line it adds.
+// would reach the rules. Every commit's files are read as blobs, which no attribute touches, a
+// commit of one parent's and a merge's resolution alike (Guard.addedLines). A file that holds a
+// zero byte in its first 8000 bytes adds no line, in a commit of one parent and in a merge's
+// resolution alike, and a commit that adds a line to such a file adds none, although the zero byte
+// is in no line it adds.
 func TestAFileIsBinaryByItsOwnContentAlone(t *testing.T) {
 	const named = "the runner answers at " + theHost + "\n"
 	refused := []string{"notes.lock: " + theClass}
@@ -91,9 +94,9 @@ func TestAFileIsBinaryByItsOwnContentAlone(t *testing.T) {
 			held:  map[string]string{"notes.lock": "\x00\n"},
 			added: map[string]string{"notes.lock": "\x00\n" + named},
 		},
-		// A file the destination holds, which .gitattributes marks -diff or binary, is diffed when
-		// the commit changes it, and git's own diff of it writes "Binary files ... differ" and no
-		// line where the diff is not read as text: the line the commit adds is read all the same.
+		// A file the destination holds, which .gitattributes marks -diff or binary, is compared
+		// with the parent's when the commit changes it, where git's own diff of it would write
+		// "Binary files ... differ" and no line: the line the commit adds is read all the same.
 		{
 			name:  "a line added to a file the destination holds, which .gitattributes marks -diff",
 			held:  map[string]string{".gitattributes": "notes.lock -diff\n", "notes.lock": "a line of ordinary prose\n"},
@@ -136,47 +139,50 @@ func TestAFileIsBinaryByItsOwnContentAlone(t *testing.T) {
 	}
 }
 
-// diffRecord is the PATH entry of a stand-in git that runs the real git for every call, and keeps
-// in the file record what each diff of a commit's lines answers, its patch: what of a commit's
-// files the guard's diffs read. No diff, no file.
-func diffRecord(t *testing.T) (path, record string) {
+// blobRecord is the PATH entry of a stand-in git that runs the real git for every call, and keeps
+// in the file record the blobs each cat-file --batch is asked for, one a line: what of a commit's
+// files the guard reads. No batch, no file.
+func blobRecord(t *testing.T) (path, record string) {
 	t.Helper()
 	bin := t.TempDir()
-	record = filepath.Join(t.TempDir(), "patches")
+	record = filepath.Join(t.TempDir(), "blobs")
 	writeProgram(t, bin, "git", `git=`+shQuote(fixturegit.CompiledGit(t))+` record=`+shQuote(record)+`
 case " $* " in
-*" --unified=0 "*)
-  "$git" "$@" >"$record.out" || exit
-  cat "$record.out" >>"$record"
-  exec cat "$record.out" ;;
+*" cat-file --batch "*)
+  tee -a "$record" | "$git" "$@"
+  exit ;;
 esac
 exec "$git" "$@"
 `)
 	return pathWith(bin), record
 }
 
-// A commit of one parent reads its files bounded, as a merge does: each file a line could come
-// from is classed by its own first 8000 bytes before any is diffed. A binary file adds no line
-// and is in no diff, whatever its size, whether the commit's file is binary or the parent's file
-// it replaces is: a binary file above the bound that the commit changes is left out of the diff
-// of the text file the commit changes beside it. A text file above blobBound refuses the push as
-// a setup failure that names the file and its size, whether it is the commit's own or the
-// parent's file the commit's is diffed against: a file passed over, or read in part, would pass
-// its lines unread. A rename or a mode change that leaves such a file as the parent has it adds
-// no line, and nothing of the file is read. A text file at the bound is read, a text file that
-// replaces a binary one adds every line it has, and of a commit that changes a binary file and a
-// text file, the text file alone is diffed. The bound here is 64 bytes, and what the guard's
-// diffs answer is kept (diffRecord), to say what they read.
+// asked are the blobs record holds (blobRecord), in the order they were asked for, and none where
+// no batch was asked for any.
+func asked(t *testing.T, record string) []string {
+	t.Helper()
+	blobs, err := os.ReadFile(record)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		t.Fatal(err)
+	}
+	return strings.Fields(string(blobs))
+}
+
+// A commit of one parent reads its files bounded, as a merge does. A binary file adds no line,
+// whatever its size, whether the commit's file is binary or the parent's file it replaces is. A
+// text file above the bound refuses the push as a setup failure that names the file and its size,
+// whether it is the commit's own or the parent's file the commit's is compared with: a file passed
+// over, or read in part, would pass its lines unread. A rename or a mode change that leaves such a
+// file as the parent has it adds no line, and nothing of the file is read: cat-file is asked for
+// no blob. A text file at the bound is read, a text file that replaces a binary one adds every
+// line it has, and of a commit that changes a binary file and a text file, the text file alone
+// adds a line. The bound here is 64 bytes, and the blobs the guard asks for are kept
+// (blobRecord).
 func TestACommitsFileAboveTheBoundRefusesThePush(t *testing.T) {
-	kept := blobBound
-	blobBound = 64
-	t.Cleanup(func() { blobBound = kept })
 	big := strings.Repeat("a line of ordinary prose\n", 4)
 	named := "the runner answers at " + theHost + "\n"
 	line := "at " + theHost
 	atBound := line + strings.Repeat(" ", 63-len(line)) + "\n"
-	// unseen is a binary file's text, which no diff of the guard's may hold.
-	const unseen = "the bytes of a binary file"
 	const failed = "LEAK CHECK SETUP ERROR: the push to origin: the push's commits could not be read: "
 	for _, tc := range []struct {
 		name        string
@@ -187,11 +193,13 @@ func TestACommitsFileAboveTheBoundRefusesThePush(t *testing.T) {
 		failure func(commit string) string
 		// want is the report, and nil where the push passes or fails.
 		want []string
+		// readsNothing is whether the guard asks cat-file for no blob of the commit's.
+		readsNothing bool
 	}{
 		{
 			name:  "a binary file above the bound, which the commit changes beside a text file",
 			held:  map[string]string{"big.bin": "\x00" + big, "notes.md": "one\n"},
-			added: map[string]string{"big.bin": "\x00" + unseen + "\n" + big + named, "notes.md": "one\ntwo\n"},
+			added: map[string]string{"big.bin": "\x00" + big + named, "notes.md": "one\ntwo\n"},
 		},
 		{
 			name: "a text file above the bound, renamed whole",
@@ -201,6 +209,7 @@ func TestACommitsFileAboveTheBoundRefusesThePush(t *testing.T) {
 					t.Fatal(err)
 				}
 			},
+			readsNothing: true,
 		},
 		{
 			name: "a text file above the bound whose mode the commit changes",
@@ -210,6 +219,7 @@ func TestACommitsFileAboveTheBoundRefusesThePush(t *testing.T) {
 					t.Fatal(err)
 				}
 			},
+			readsNothing: true,
 		},
 		{
 			name:  "a text file above the bound",
@@ -219,7 +229,7 @@ func TestACommitsFileAboveTheBoundRefusesThePush(t *testing.T) {
 			},
 		},
 		{
-			name:  "the parent's text file above the bound, which the commit's is diffed against",
+			name:  "the parent's text file above the bound, which the commit's is compared with",
 			held:  map[string]string{"big.md": big},
 			added: map[string]string{"big.md": "a line of the commit\n"},
 			failure: func(commit string) string {
@@ -227,7 +237,7 @@ func TestACommitsFileAboveTheBoundRefusesThePush(t *testing.T) {
 			},
 		},
 		{
-			name:  "the commit's text file above the bound, which the parent's file it is diffed against is not",
+			name:  "the commit's text file above the bound, which the parent's file it is compared with is not",
 			held:  map[string]string{"big.md": "a line of the parent\n"},
 			added: map[string]string{"big.md": big},
 			failure: func(commit string) string {
@@ -242,28 +252,24 @@ func TestACommitsFileAboveTheBoundRefusesThePush(t *testing.T) {
 		{
 			name:  "a binary file and a text file the commit changes",
 			held:  map[string]string{"image.bin": "\x00one\n", "notes.md": "one\n"},
-			added: map[string]string{"image.bin": "\x00" + unseen + "\n" + named, "notes.md": "one\n" + named},
+			added: map[string]string{"image.bin": "\x00two\n" + named, "notes.md": "one\n" + named},
 			want:  []string{"notes.md: " + theClass},
 		},
 		{
 			name:  "a text file in place of a binary one",
-			held:  map[string]string{"notes.lock": "\x00" + unseen + "\n"},
+			held:  map[string]string{"notes.lock": "\x00one\n"},
 			added: map[string]string{"notes.lock": named},
 			want:  []string{"notes.lock: " + theClass},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			repo, base, head := pushOf(t, tc.held, nil, tc.added, tc.edit)
-			path, record := diffRecord(t)
+			path, record := blobRecord(t)
 			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, path)
+			guard.blobBound = 64
 			err := guard.Push(bound(t), mainPush(repo, base, head, "origin", theURL))
-			// Read first, so that a binary file a diff read is said whatever the push's answer.
-			patches, read := os.ReadFile(record)
-			if read != nil && !errors.Is(read, fs.ErrNotExist) {
-				t.Fatal(read)
-			}
-			if strings.Contains(string(patches), unseen) {
-				t.Errorf("a diff of the guard's read a binary file:\n%s", patches)
+			if read := asked(t, record); tc.readsNothing && len(read) > 0 {
+				t.Errorf("the guard asked cat-file for %q, want no blob", read)
 			}
 			switch {
 			case tc.failure != nil:
@@ -282,13 +288,13 @@ func TestACommitsFileAboveTheBoundRefusesThePush(t *testing.T) {
 	}
 }
 
-// A record of a file names the file and, for an added line, the line's number in the pushed
-// commit's version of it: from the hunk's header in a commit of one parent, and from the merge's
-// own file in a merge. The records of paths come before the records of lines, each in path order
-// and a file's lines in line order, and a blank line is no record. Of a commit of one parent that
-// changes a binary file beside a rename, the rename alone adds lines, and a submodule adds the one
-// line git's diff writes of it.
-func TestAFilesRecordsCarryItsPathAndLineNumber(t *testing.T) {
+// A record of a file names the file, and the lines of a file are read from its blob alike in a
+// commit of one parent and in a merge. The identities and the message come first, then the
+// records of paths, then the records of lines, each in path order and a file's lines in the
+// file's order, and a blank line is no record. Of a commit of one parent that changes a binary
+// file beside a rename, the rename alone adds lines, and a submodule adds its path alone: it has
+// no blob of this repository's to read a line from.
+func TestAFilesRecordsCarryItsPath(t *testing.T) {
 	home, root := t.TempDir(), t.TempDir()
 	repo := filepath.Join(root, "repo")
 	fixture := fixturegit.Isolated(t, home)
@@ -349,37 +355,34 @@ func TestAFilesRecordsCarryItsPathAndLineNumber(t *testing.T) {
 			name:   "a commit of one parent",
 			commit: edit,
 			want: []Record{
-				{Label: "new.md", Text: "new.md", File: "new.md"},
-				{Label: "README.md", Text: "the second", File: "README.md", Line: 2},
-				{Label: "README.md", Text: "five", File: "README.md", Line: 5},
-				{Label: "new.md", Text: "first", File: "new.md", Line: 1},
-				{Label: "new.md", Text: "third", File: "new.md", Line: 3},
+				{Label: "new.md", Text: "new.md"},
+				{Label: "README.md", Text: "the second"},
+				{Label: "README.md", Text: "five"},
+				{Label: "new.md", Text: "first"},
+				{Label: "new.md", Text: "third"},
 			},
 		},
 		{
 			name:   "a merge",
 			commit: merge,
 			want: []Record{
-				{Label: "merged.md", Text: "merged.md", File: "merged.md"},
-				{Label: "README.md", Text: "the resolution's", File: "README.md", Line: 6},
-				{Label: "merged.md", Text: "only the merge", File: "merged.md", Line: 1},
+				{Label: "merged.md", Text: "merged.md"},
+				{Label: "README.md", Text: "the resolution's"},
+				{Label: "merged.md", Text: "only the merge"},
 			},
 		},
 		{
 			name:   "a commit of one parent that changes a binary file beside a rename",
 			commit: mixed,
 			want: []Record{
-				{Label: "NOTES.md", Text: "NOTES.md", File: "NOTES.md"},
-				{Label: "NOTES.md", Text: "five", File: "NOTES.md", Line: 5},
+				{Label: "NOTES.md", Text: "NOTES.md"},
+				{Label: "NOTES.md", Text: "five"},
 			},
 		},
 		{
 			name:   "a commit of one parent that adds a submodule",
 			commit: submodule,
-			want: []Record{
-				{Label: "vendor/lib", Text: "vendor/lib", File: "vendor/lib"},
-				{Label: "vendor/lib", Text: "Subproject commit " + base, File: "vendor/lib", Line: 1},
-			},
+			want:   []Record{{Label: "vendor/lib", Text: "vendor/lib"}},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -387,11 +390,161 @@ func TestAFilesRecordsCarryItsPathAndLineNumber(t *testing.T) {
 			if err != nil {
 				t.Fatalf("read the commit: %v", err)
 			}
-			// The identities and the message are records of no file.
-			files := slices.DeleteFunc(records, func(record Record) bool { return record.File == "" })
-			if !slices.Equal(files, tc.want) {
+			commit := "commit " + short(tc.commit)
+			identities := []string{commit + " author", commit + " committer", commit + " message"}
+			if len(records) < len(identities) || !slices.Equal(labels(records[:len(identities)]), identities) {
+				t.Fatalf("the records are %+v, want the identities and the message first", records)
+			}
+			if files := records[len(identities):]; !slices.Equal(files, tc.want) {
 				t.Errorf("the records of files are %+v, want %+v", files, tc.want)
 			}
 		})
+	}
+}
+
+// labels are the labels of records, in their order.
+func labels(records []Record) []string {
+	var of []string
+	for _, record := range records {
+		of = append(of, record.Label)
+	}
+	return of
+}
+
+// A commit's added lines are the lines of each file it changes that the file it is compared with
+// does not hold: the parent's file at the same path for a file it modifies, and the file it is
+// renamed from for one it renames. A line the commit adds that the parent's file already holds
+// elsewhere is no line the destination lacks, and adds no record, whatever line of the file it
+// lands at; the same line added to a file whose parent's file does not hold it is read. A rename
+// that leaves its file as it is reads nothing, and leaves no other rename unread: a pure rename of
+// c to a, beside a rename of a/x to q, where a/x is a file in the directory c's new path names,
+// still reads the line q adds.
+func TestACommitsLinesAreReadFromItsBlobs(t *testing.T) {
+	named := "the runner answers at " + theHost + "\n"
+	const prose = "one\ntwo\nthree\nfour\nfive\n"
+	for _, tc := range []struct {
+		name        string
+		held, added map[string]string
+		// edit is the change the commit makes to the working tree beyond added, nil for none.
+		edit func(t *testing.T, repo string)
+		// want is the report, and nil where the push passes.
+		want []string
+	}{
+		{
+			name:  "a line the parent's file holds elsewhere",
+			held:  map[string]string{"notes.md": named + "a line of ordinary prose\n"},
+			added: map[string]string{"notes.md": named + "a line of ordinary prose\n" + named},
+		},
+		{
+			name:  "the same line added to a file whose parent's file does not hold it",
+			held:  map[string]string{"notes.md": named, "other.md": "a line of ordinary prose\n"},
+			added: map[string]string{"other.md": "a line of ordinary prose\n" + named},
+			want:  []string{"other.md: " + theClass},
+		},
+		{
+			name: "a pure rename c -> a beside a changed rename a/x -> q",
+			held: map[string]string{"c": "a file renamed whole\n", "a/x": prose},
+			edit: func(t *testing.T, repo string) {
+				at := func(name string) string { return filepath.Join(repo, name) }
+				if err := os.Rename(at("a/x"), at("q")); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Remove(at("a")); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Rename(at("c"), at("a")); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(at("q"), []byte(prose+named), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: []string{"q: " + theClass},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo, base, head := pushOf(t, tc.held, nil, tc.added, tc.edit)
+			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
+			err := guard.Push(bound(t), mainPush(repo, base, head, "origin", theURL))
+			if tc.want == nil {
+				if err != nil {
+					t.Fatalf("a commit whose one named line its parent's file holds: %v", err)
+				}
+				return
+			}
+			if refused := refusal(t, err); !slices.Equal(refused.Lines, tc.want) {
+				t.Errorf("the report is %q, want %q", refused.Lines, tc.want)
+			}
+		})
+	}
+}
+
+// movedFiles is how many files the commit TestACommitThatMovesThousandsOfFilesIsReadForItsLine
+// moves: past the some 11,000 from which the read that wrote one pathspec per moved path could
+// not start git, and above the 11,647 files of cybermonklabs/oh-my-pi.
+const movedFiles = 12500
+
+// A commit that moves thousands of files whole is read for the line it adds, and nothing of the
+// files it moves is read. A commit's lines are read from its blobs, so what the read costs grows
+// with the files it changes, and no git's command line grows with the files it moves: a read that
+// wrote each moved path on the command line of its diff could not start git for such a commit
+// (fork/exec: file name too long), and refused its push as a setup failure that named neither the
+// commit nor the cause. The commit here moves movedFiles files from one directory to another and
+// adds a line naming a host to a text file beside them: it is refused for that line, and cat-file
+// is asked for that file's two blobs alone, the commit's and its parent's. The trees are written
+// with plumbing, one blob for every moved file.
+func TestACommitThatMovesThousandsOfFilesIsReadForItsLine(t *testing.T) {
+	home, root := t.TempDir(), t.TempDir()
+	repo := filepath.Join(root, "repo")
+	fixture := fixturegit.Isolated(t, home)
+	fixture.Run(root, fixturegit.InitWorkTree(repo, "main")...)
+	blob := func(name, content string) string {
+		t.Helper()
+		file := filepath.Join(root, name)
+		if err := os.WriteFile(file, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return fixture.Run(repo, "git", "hash-object", "-w", file)
+	}
+	moved := blob("moved", "a line of ordinary prose\n")
+	notes := blob("notes", "one\n")
+	named := blob("named", "one\nthe runner answers at "+theHost+"\n")
+	// tree is the tree of movedFiles files under dir, each the one moved blob, and of notes.md as
+	// the blob notesAt, written from an index of its own.
+	tree := func(dir, notesAt string) string {
+		t.Helper()
+		var entries strings.Builder
+		for i := range movedFiles {
+			fmt.Fprintf(&entries, "100644 %s\t%s/an-invented-component-%05d.ts\n", moved, dir, i)
+		}
+		fmt.Fprintf(&entries, "100644 %s\tnotes.md\n", notesAt)
+		index := fixture.With("GIT_INDEX_FILE=" + filepath.Join(t.TempDir(), "index"))
+		fed(t, index, repo, entries.String(), "git", "update-index", "--index-info")
+		return index.Run(repo, "git", "write-tree")
+	}
+	base := fixture.Run(repo, "git", "commit-tree", tree("packages/an-invented-package/src", notes), "-m", "the commit the destination holds")
+	head := fixture.Run(repo, "git", "commit-tree", tree("packages/an-invented-package/lib", named), "-p", base, "-m", "a move of every file")
+	destinationAt(t, fixture, repo, theURL, base+":refs/heads/main")
+	path, record := blobRecord(t)
+	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, path)
+	err := guard.Push(bound(t), mainPush(repo, base, head, "origin", theURL))
+	want := []string{"notes.md: " + theClass}
+	if refused := refusal(t, err); !slices.Equal(refused.Lines, want) {
+		t.Errorf("the report is %q, want %q", refused.Lines, want)
+	}
+	if read := asked(t, record); !slices.Equal(read, []string{named, notes}) {
+		t.Errorf("the guard asked cat-file for %d blobs, %.80q, want notes.md's two, %q", len(read), read, []string{named, notes})
+	}
+}
+
+// fed runs argv in dir under runner's environment with input on its standard input, and fails the
+// test where the command fails, naming what ran and what it printed: a fixturegit.Runner hands a
+// command no standard input.
+func fed(t *testing.T, runner fixturegit.Runner, dir, input string, argv ...string) {
+	t.Helper()
+	command := exec.Command(argv[0], argv[1:]...)
+	command.Dir, command.Env, command.Stdin = dir, runner.Env, strings.NewReader(input)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("%s in %s: %v\n%s", strings.Join(argv, " "), dir, err, output)
 	}
 }

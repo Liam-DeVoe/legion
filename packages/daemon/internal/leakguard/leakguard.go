@@ -83,13 +83,24 @@ type Guard struct {
 	// noAnswer is the askpass program the children are pointed at, resolved once from the base
 	// environment's PATH.
 	noAnswer string
+	// blobBound is the largest text file the read of a pushed commit's files takes, a merge's or a
+	// commit of one parent's (Guard.addedLines): 32 MiB, which New sets and a test lowers. The read
+	// holds at most two such files at once, the commit's and one parent's, and a set of the
+	// commit's distinct lines, which is under 100 MiB at the bound for lines of ordinary length and
+	// some hundreds of MiB for a file of nothing but short distinct lines: a small part of the 19
+	// GiB an issue pod's roles share at the default issue reservation (docs/kubernetes.md). It is
+	// over eight times the largest text file this repository tracks, a test fixture of 3.7 MiB
+	// (packages/envoy/internal/dispatch/pmdoc/testdata/fixtures.json, measured 2026-11-17), so
+	// that a lock file or a fixture a commit changes is far below it, and under the 50 MiB above
+	// which GitHub warns of a file a push adds.
+	blobBound int64
 }
 
 // New is a guard with opts' seams. It resolves no check: the shared check publishes often, and a
 // guard that resolved one at start would keep running a copy the current rules have moved past, so
 // every call resolves it again.
 func New(opts Options) *Guard {
-	g := &Guard{opts: opts}
+	g := &Guard{opts: opts, blobBound: 32 << 20}
 	g.noAnswer = noAnswer(g.base())
 	return g
 }
@@ -139,12 +150,6 @@ func (g *Guard) env(base []string, c child) []string {
 type Record struct {
 	Label string
 	Text  string
-	// File is the path of the file in a pushed commit the record is about, and "" for a record
-	// of anything else: a ref name, an identity, a message.
-	File string
-	// Line is the 1-based number of the line a record of an added line is, in the pushed
-	// commit's version of File, and 0 for a record of a path.
-	Line int
 }
 
 // RefRecord is the record of a ref name, the whole of what the daemon's branch create has to

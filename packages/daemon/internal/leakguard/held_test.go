@@ -174,6 +174,101 @@ exec `+shQuote(fixturegit.CompiledGit(t))+` "$@"
 	}
 }
 
+// A failed read of a pushed commit quotes git's own account of it without the user and password
+// a URL in it carries. In a partial clone, as an issue pod's fork clones are (--filter=blob:none),
+// git fetches a blob the clone lacks from the promisor remote the moment a read asks for it, and a
+// fetch that fails names the remote's URL, which can carry a token: the list of a commit's changes
+// (Guard.git), whose renames are found by the content of its blobs, and the read of its files
+// (blobBatch) each quote it. The stand-in git here fails the one call each case names as such a
+// fetch fails, and runs the real git for every other call.
+func TestAFailedReadOfACommitQuotesGitWithoutACredential(t *testing.T) {
+	// The userinfo is built apart from the scheme, so no line of this file is a URL that carries
+	// one, which the shared check would refuse at the push.
+	const user, token = "invented-user", "invented-token"
+	userinfo := user + ":" + token + "@"
+	credentialed := strings.Replace(theURL, "https://", "https://"+userinfo, 1)
+	const failed = "LEAK CHECK SETUP ERROR: the push to origin: the push's commits could not be read: "
+	unreachable := " exited 128: fatal: unable to access '" + theURL + "/': Could not resolve host: github.com"
+	for _, tc := range []struct {
+		name string
+		// call is the git subcommand that fails, as its arguments begin.
+		call string
+		want string
+	}{
+		{name: "the list of a commit's changes", call: "diff-tree", want: failed + "git diff-tree" + unreachable},
+		{name: "the read of a commit's files", call: "cat-file --batch", want: failed + "git cat-file" + unreachable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bin := t.TempDir()
+			writeProgram(t, bin, "git", `case " $* " in
+*`+shQuote(" "+tc.call+" ")+`*) echo `+shQuote("fatal: unable to access '"+credentialed+"/': Could not resolve host: github.com")+` >&2; exit 128 ;;
+esac
+exec `+shQuote(fixturegit.CompiledGit(t))+` "$@"
+`)
+			repo, base, head := pushOf(t, map[string]string{"notes.md": "one\n"}, nil, map[string]string{"notes.md": "one\ntwo\n"}, nil)
+			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, pathWith(bin))
+			err := guard.Push(bound(t), mainPush(repo, base, head, "origin", theURL))
+			setupFailure(t, err)
+			if err.Error() != tc.want {
+				t.Errorf("the failure is\n  %s\nwant\n  %s", err, tc.want)
+			}
+			if strings.Contains(err.Error(), user) || strings.Contains(err.Error(), token) {
+				t.Errorf("the failure carries the URL's credential: %v", err)
+			}
+		})
+	}
+}
+
+// The commit an update's remote side names holds the commits it reaches, where the clone has it,
+// even where the destination advertises nothing else: the update reads only the commits after it
+// (Guard.commits). A remote side the clone does not have holds nothing, since rev-list cannot walk
+// from it (Guard.holds), and the push is read whole. The commit the remote side names here adds a
+// line the rules refuse, the pushed commit on it adds none, and the destination advertises no ref
+// at all. The commit the clone does not have is one of another repository's.
+func TestAnUpdatesRemoteSideHoldsWhatTheCloneHas(t *testing.T) {
+	home, root := t.TempDir(), t.TempDir()
+	repo, other := filepath.Join(root, "repo"), filepath.Join(root, "other")
+	fixture := fixturegit.Isolated(t, home)
+	fixture.Run(root, fixturegit.InitWorkTree(repo, "main")...)
+	fixture.Run(root, fixturegit.InitWorkTree(other, "main")...)
+	commit := func(dir, name, content, message string) string {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		fixture.Run(dir, "git", "add", "-A")
+		fixture.Run(dir, "git", "commit", "--quiet", "-m", message)
+		return fixture.Run(dir, "git", "rev-parse", "HEAD")
+	}
+	base := commit(repo, "held.md", "the runner answers at "+theHost+"\n", "the commit the destination's main is at")
+	head := commit(repo, "notes.md", "a line of ordinary prose\n", "a message of no interest")
+	unknown := commit(other, "README.md", "one\n", "a commit the clone has never had")
+	destinationAt(t, fixture, repo, theURL)
+	for _, tc := range []struct {
+		name      string
+		remoteSHA string
+		// want is the report, and nil where the push passes.
+		want []string
+	}{
+		{name: "a remote side the clone has", remoteSHA: base},
+		{name: "a remote side the clone does not have", remoteSHA: unknown, want: []string{"held.md: " + theClass}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
+			err := guard.Push(bound(t), mainPush(repo, tc.remoteSHA, head, "origin", theURL))
+			if tc.want == nil {
+				if err != nil {
+					t.Fatalf("the push of the commit after the remote side: %v", err)
+				}
+				return
+			}
+			if refused := refusal(t, err); !slices.Equal(refused.Lines, tc.want) {
+				t.Errorf("the report is %q, want %q", refused.Lines, tc.want)
+			}
+		})
+	}
+}
+
 // A forward merge, the default branch merged onto an older tip of a branch the destination
 // holds, reads no commit the destination's branches reach. The default branch's commit here adds
 // a line the rules refuse, and the destination's main holds it, so the push of the merge does not

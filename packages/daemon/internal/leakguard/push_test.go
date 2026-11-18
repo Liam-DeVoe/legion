@@ -192,7 +192,11 @@ func pushOf(t *testing.T, held, side, added map[string]string, edit func(t *test
 	write := func(files map[string]string) {
 		t.Helper()
 		for name, content := range files {
-			if err := os.WriteFile(filepath.Join(repo, name), []byte(content), 0o600); err != nil {
+			path := filepath.Join(repo, name)
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -241,22 +245,22 @@ func mainPush(repo, base, head, remote, url string) PushRequest {
 
 // What git answers is read from its standard output alone, and a warning git writes to its
 // standard error is no part of it. git writes a warning at once and its output in blocks, so a
-// warning can land in the middle of a line of the patch a commit's lines are read from, and read
-// together with the output, it would cut that line in two: the half after it would be no added
-// line. The stand-in git here writes the warning diff-tree writes of a commit with too many files
-// to find its renames among, in the middle of the line the commit adds, and runs the real git for
-// everything else.
+// warning can land in the middle of a path in the list of a commit's changes, and read together
+// with the output, it would cut that path in two: the line the commit adds to the file would be
+// read as a line of a file of another name. The stand-in git here writes the warning diff-tree
+// writes of a commit with too many files to find its renames among, in the middle of the path of
+// the file the commit adds a line to, and runs the real git for everything else.
 func TestAWarningGitWritesIsNoPartOfWhatItAnswers(t *testing.T) {
 	bin := t.TempDir()
-	writeProgram(t, bin, "git", `git=`+shQuote(fixturegit.CompiledGit(t))+`
+	listed := filepath.Join(t.TempDir(), "listed")
+	writeProgram(t, bin, "git", `git=`+shQuote(fixturegit.CompiledGit(t))+` listed=`+shQuote(listed)+`
 case " $* " in
-*" --unified=0 "*)
-  patch=$("$git" "$@" && echo .) || exit
-  patch=${patch%.}
-  before=${patch%%"answers at"*}
-  printf '%s' "$before"
+*" diff-tree "*)
+  "$git" "$@" >"$listed" || exit
+  at=$(grep -boa notes "$listed" | head -n 1 | cut -d: -f1)
+  head -c "$((at + 5))" "$listed"
   echo 'warning: exhaustive rename detection was skipped due to too many files.' >&2
-  printf '%s' "${patch#"$before"}"
+  tail -c "+$((at + 6))" "$listed"
   exit 0 ;;
 esac
 exec "$git" "$@"

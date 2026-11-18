@@ -21,29 +21,6 @@ func binary(head []byte) bool {
 	return bytes.IndexByte(head[:min(len(head), binaryHead)], 0) >= 0
 }
 
-// fileBytes is the largest text file the read of a commit's files takes, a merge's (mergeFiles)
-// or a commit of one parent's (commitFiles): 32 MiB. A merge's read holds at most two such files
-// at once, the merge's and one parent's, and a set of the merge's distinct lines, which is under
-// 100 MiB at the bound for lines of ordinary length and some hundreds of MiB for a file of nothing
-// but short distinct lines: a small part of the 19 GiB an issue pod's roles share at the default
-// issue reservation (docs/kubernetes.md). It is over eight times the largest text file this
-// repository tracks, a test fixture of 3.7 MiB
-// (packages/envoy/internal/dispatch/pmdoc/testdata/fixtures.json, measured 2026-11-17), so that a
-// lock file or a fixture a commit changes is far below it, and under the 50 MiB above which
-// GitHub warns of a file a push adds.
-const fileBytes = 32 << 20
-
-// blobBound is fileBytes, held in a variable so that a test can lower it.
-var blobBound int64 = fileBytes
-
-// aboveBound is the failure of a text file above blobBound: the file at path, of size bytes, that
-// whose names the owner of ("merge 1a2b3c4's"), in the read of a commit of the kind named
-// ("merge", "commit"). It names the file and its size, and the file is not read (mergeFiles says
-// why).
-func aboveBound(whose, path string, size int64, kind string) error {
-	return fmt.Errorf("%s file %s is %d bytes, more than the %d bytes a %s's file is read up to", whose, maskPath(path), size, blobBound, kind)
-}
-
 // blobBatch is one git cat-file --batch over the blobs ids names, read a blob at a time as git
 // writes them, so that what is held is the blob being read and never the batch: one git answers a
 // commit's hundreds of blobs, where a git apiece would be hundreds of processes. The blobs are
@@ -85,7 +62,10 @@ func (g *Guard) readBlobs(ctx context.Context, dir string, ids []string) *blobBa
 			stderr: &stderr,
 		})
 		if err == nil && status != 0 {
-			err = fmt.Errorf("git cat-file exited %d: %s", status, strings.TrimSpace(stderr.String()))
+			// git's own account of a failure is quoted as it wrote it, less the user and password
+			// of a URL in it: a lazy fetch of a partial clone that fails names its promisor
+			// remote, whose URL can carry a token (withoutUserinfo).
+			err = fmt.Errorf("git cat-file exited %d: %s", status, withoutUserinfo(strings.TrimSpace(stderr.String())))
 		}
 		// A read past the last thing git wrote meets git's own failure, where it failed.
 		into.CloseWithError(err)
@@ -123,33 +103,33 @@ func (b *blobBatch) head() (rest int64, head []byte, err error) {
 	return size - int64(len(head)), head, nil
 }
 
-// passOver passes over the next blob, and answers whether it is binary (binary) and its size.
-func (b *blobBatch) passOver() (bool, int64, error) {
-	rest, head, err := b.head()
+// passOver passes over the next blob unread.
+func (b *blobBatch) passOver() error {
+	rest, _, err := b.head()
 	if err != nil {
-		return false, 0, err
+		return err
 	}
-	isBinary, size := binary(head), int64(len(head))+rest
-	return isBinary, size, b.skip(rest)
+	return b.skip(rest)
 }
 
-// text reads the next blob, which is the file at path that whose names the owner of ("merge
-// 1a2b3c4's") in the read of a commit of the kind named ("merge"), and answers its content and
-// true where it is text; a binary one it passes over, answering false. A text file above
-// blobBound is an error that names it, its owner and its size, and is not read (aboveBound).
-func (b *blobBatch) text(path, whose, kind string) (string, bool, error) {
+// text reads the next blob as a text file of at most bound bytes and answers its content. A
+// binary blob (binary) it passes over, answering no content, as of a file that holds no line. A
+// text blob above bound it leaves unread and answers its size, over, which the caller refuses the
+// read with, naming the file in its own words; over is 0 for every other blob. The batch reads
+// nothing after a blob left unread, and the caller ends it there (close).
+func (b *blobBatch) text(bound int64) (file string, over int64, err error) {
 	rest, head, err := b.head()
 	if err != nil {
-		return "", false, err
+		return "", 0, err
 	}
 	if binary(head) {
-		return "", false, b.skip(rest)
+		return "", 0, b.skip(rest)
 	}
-	if size := int64(len(head)) + rest; size > blobBound {
-		return "", false, aboveBound(whose, path, size, kind)
+	if size := int64(len(head)) + rest; size > bound {
+		return "", size, nil
 	}
-	file, err := b.whole(head, rest)
-	return file, err == nil, err
+	file, err = b.whole(head, rest)
+	return file, 0, err
 }
 
 // whole reads the rest of the blob head read, rest bytes of it, and answers the blob whole.

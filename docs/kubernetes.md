@@ -81,17 +81,22 @@ It carries:
   `legion leak-check` is the shell door to `packages/daemon/internal/leakguard`, and the engine the rules run through, gitleaks, is linked into the `legion` binary as a library with this repository's rule file (`private-names.toml`) embedded beside it, so no pod can meet an absent engine or an absent rule file.
   The rule file's pass reads a push this way:
 
-  - every file as text, whatever `.gitattributes` says of it, the pushed commit's own included, and no line of a file whose blob holds a zero byte in its first 8000 bytes, which is how git's own diff tells a binary file (`commitFiles`, `internal/leakguard/commitfiles.go`).
-    A commit of one parent has its files classed by their blobs before any is diffed, so the guard holds no more of a binary file, the commit's or its parent's, than those bytes, passing over the rest that git writes, and the file is in no diff.
-    The commit's one diff reads its modifications and renames of text files alone (`addedLines`);
+  - every file from its blob as text, whatever `.gitattributes` says of it, the pushed commit's own included, and no line of a file whose blob holds a zero byte in its first 8000 bytes, which is how git's own diff tells a binary file (`Guard.addedLines`, `internal/leakguard/commitfiles.go`).
+    The guard holds no more of a binary file than those bytes, passing over the rest that git writes;
 
-  - a merge from its files, not from git's combined diff, which is wrong from 33 parents and drops a line only the merge adds from 64:
-    a merge's own lines are the lines of a file that differs from every parent's that no parent's file holds, and its own paths are those no parent has (`mergeFiles`, `internal/leakguard/mergefiles.go`).
+  - a commit's lines from its files, with no diff:
+    the lines a commit adds are the lines of each text file it changes that the file it is compared with does not hold.
+    A commit of one parent compares a file it modifies with its parent's file at that path, and a file it renames with the file it is renamed from, and compares a file it adds with none (`commitChanges`).
+    So a rename or a mode change that leaves a file as it is reads nothing, and no git command line grows with the number of files a commit moves.
+    A line a commit adds that its parent's file already holds elsewhere is not read: the destination holds that line already, or the guard reads it where the parent is pushed.
+    A merge is read the same way from its files, not from git's combined diff, which is wrong from 33 parents and drops a line only the merge adds from 64:
+    a file that differs from every parent's is compared with each parent's file at that path, and a merge's own paths are those no parent has (`mergeChanges`, `internal/leakguard/mergefiles.go`).
+    A read of a commit that fails quotes git's own message without the user and token a URL in it carries, such as the URL of the promisor remote a partial clone's failed lazy fetch names (`withoutUserinfo`).
     The pod's roles share one memory limit, so the read holds one path's files at a time;
 
-  - a text file it reads above 32 MiB as a setup error that refuses the push and names the file and its size, whichever the shape (`fileBytes`):
-    a commit's own file, or its parent's that the commit's is diffed against, and a merge's own file, or a parent's at a path the merge changes.
-    A merge reads no parent's file at a path where its own file is binary or where earlier parents' files already hold every line of it, and a commit reads nothing of a file it renames or changes the mode of and leaves as it is;
+  - a text file it reads above 32 MiB as a setup error that refuses the push and names the file and its size, whichever the shape (`Guard.blobBound`):
+    a commit's own file, or a file it is compared with.
+    The guard reads none of the files a commit's file is compared with where the commit's file is binary, and passes over the rest once the files read before them hold every line of it;
 
   - and no commit that a branch or a tag of the destination already reaches, as one `git ls-remote --heads --tags` of the URL git hands the hook reads them (`Guard.advertised`, `internal/leakguard/held.go`).
     Each push with an update that is not a deletion, to a destination the guard scans, costs that one read, and a read that fails refuses the push as a setup error that names the remote and the URL.

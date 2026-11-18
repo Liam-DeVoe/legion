@@ -58,15 +58,12 @@ func TestAMergesOwnResolutionIsRead(t *testing.T) {
 	}
 }
 
-// A merge's text file above blobBound refuses the push as a setup failure that names the file and
+// A merge's text file above the bound refuses the push as a setup failure that names the file and
 // its size, whether it is the merge's own or a parent's at a path the merge changes: a file passed
 // over, or read in part, would pass its lines unread. Of a binary file above the bound the guard
 // holds no more than its first 8000 bytes, and it adds no line; a text file at the bound is read. The
 // bound here is 64 bytes.
 func TestAMergesFileAboveTheBoundRefusesThePush(t *testing.T) {
-	kept := blobBound
-	blobBound = 64
-	t.Cleanup(func() { blobBound = kept })
 	big := strings.Repeat("a line of ordinary prose\n", 4)
 	line := "at " + theHost
 	atBound := line + strings.Repeat(" ", 63-len(line)) + "\n"
@@ -111,6 +108,7 @@ func TestAMergesFileAboveTheBoundRefusesThePush(t *testing.T) {
 			}
 			repo, base, head := pushOf(t, nil, side, tc.added, nil)
 			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
+			guard.blobBound = 64
 			err := guard.Push(bound(t), mainPush(repo, base, head, "origin", theURL))
 			switch {
 			case tc.failure != nil:
@@ -130,7 +128,7 @@ func TestAMergesFileAboveTheBoundRefusesThePush(t *testing.T) {
 }
 
 // An octopus merge is read from its files, as every merge is: git's combined diff misreads a
-// merge of 33 parents or more (mergeFiles' doc). The merges here are octopusRepo's, and each
+// merge of 33 parents or more (mergeChanges' doc). The merges here are octopusRepo's, and each
 // one's shared file holds every parent's line. One parent's line names a host: the destination
 // holds every parent, so that line is text it already has, and the merge is the whole of what
 // each push adds.

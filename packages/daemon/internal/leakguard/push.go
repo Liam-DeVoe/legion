@@ -177,13 +177,11 @@ func (g *Guard) Push(ctx context.Context, req PushRequest) error {
 // the message, one for each added or renamed path and one for each added line. The commits an
 // update adds are those its local side reaches and neither its remote side nor any of held does
 // (Guard.commits), held being the commits the destination holds at its branches and tags
-// (Guard.advertised), which are written as rev-list reads them once for every update of the push
-// (notLines). A commit reached by two of the push's refs is read once, and a deletion adds no
-// commit.
+// (Guard.advertised). A commit reached by two of the push's refs is read once, and a deletion adds
+// no commit.
 func (g *Guard) pushRecords(ctx context.Context, req PushRequest, held []string) ([]Record, error) {
 	var records []Record
 	read := map[string]bool{}
-	excluded := notLines(held)
 	for _, update := range req.Updates {
 		if ref := update.ref(); ref != "" {
 			records = append(records, RefRecord(ref))
@@ -191,7 +189,7 @@ func (g *Guard) pushRecords(ctx context.Context, req PushRequest, held []string)
 		if update.deletion() {
 			continue
 		}
-		commits, err := g.commits(ctx, req.Dir, held, excluded, update)
+		commits, err := g.commits(ctx, req.Dir, held, update)
 		if err != nil {
 			return nil, err
 		}
@@ -217,24 +215,26 @@ func short(commit string) string {
 
 // git is gitFed with nothing on its standard input. Each of its callers reads what git answers
 // as data: git show's identities and message split on zero bytes, and diff-tree's list of a
-// commit's changes and its patch.
+// commit's changes.
 func (g *Guard) git(ctx context.Context, dir string, args ...string) (string, error) {
 	return g.gitFed(ctx, dir, "", args...)
 }
 
-// gitFed runs one git command in dir with input on its standard input, and answers its standard
-// output alone, failing where git itself does: a record this package could not read is a setup
-// failure, never a push read as clean. What it answers is read as data — a list of commits, a
-// list of changes split on zero bytes, a patch — so a warning git writes to its standard error
-// must not land in it: a warning written in the middle of a patch's line would cut the line in
-// two, and the half after it would be read as no added line at all. That error is what a failure
-// carries. Its pathspecs are read as they are written (pathspecsAsWritten).
+// gitFed is gitFedWith with nothing of its own in git's environment.
 func (g *Guard) gitFed(ctx context.Context, dir, input string, args ...string) (string, error) {
-	return g.gitFedWith(ctx, dir, pathspecsAsWritten, input, args...)
+	return g.gitFedWith(ctx, dir, nil, input, args...)
 }
 
-// gitFedWith is gitFed under env in place of pathspecsAsWritten: the read of which advertised
-// shas are commits dir has runs so, fetching nothing (Guard.advertised).
+// gitFedWith runs one git command in dir under env, with input on its standard input, and answers
+// its standard output alone, failing where git itself does: a record this package could not read
+// is a setup failure, never a push read as clean. What it answers is read as data — a list of
+// commits, a list of changes split on zero bytes — so a warning git writes to its standard error
+// must not land in it: a warning written in the middle of a path diff-tree lists would cut the
+// path in two, and the lines added to that file would be read as lines of a file of another name.
+// That error is what a failure carries, quoted as git wrote it less the user and password of a URL
+// in it: a lazy fetch of a partial clone that fails names its promisor remote, whose URL can carry
+// a token (withoutUserinfo). The read of which advertised shas are commits dir has runs under an
+// env that fetches nothing (Guard.advertised).
 func (g *Guard) gitFedWith(ctx context.Context, dir string, env []string, input string, args ...string) (string, error) {
 	var stderr strings.Builder
 	status, out, err := g.run(ctx, child{
@@ -248,14 +248,7 @@ func (g *Guard) gitFedWith(ctx context.Context, dir string, env []string, input 
 		return "", err
 	}
 	if status != 0 {
-		return "", fmt.Errorf("git %s exited %d: %s", args[0], status, strings.TrimSpace(stderr.String()))
+		return "", fmt.Errorf("git %s exited %d: %s", args[0], status, withoutUserinfo(strings.TrimSpace(stderr.String())))
 	}
 	return out, nil
 }
-
-// pathspecsAsWritten is the environment under which git reads a pathspec this package writes as
-// it is written, whatever the caller's environment says of pathspecs. GIT_LITERAL_PATHSPECS=1
-// would read the magic of :(top,exclude,literal)<path> as part of a path no file is at, so that a
-// diff meant to leave one file out would name none and write nothing (addedLines), and
-// GIT_ICASE_PATHSPECS=1 would leave out a file whose path differs from one left out in case alone.
-var pathspecsAsWritten = []string{"GIT_LITERAL_PATHSPECS=0", "GIT_ICASE_PATHSPECS=0"}
