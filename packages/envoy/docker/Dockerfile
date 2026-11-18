@@ -120,6 +120,9 @@ COPY packages/envoy/roleholder ./roleholder
 # natsversion: the nats-server versions envoy-listener refuses to start against, which its session
 # consumers read (internal/bus) and the Legion daemon reads too.
 COPY packages/envoy/natsversion ./natsversion
+# pgsetting: how envoy-dispatch, the broker and the migration lock read a Postgres connection
+# string before they open it (internal/dispatch/store, internal/broker/store, internal/pgmigrate).
+COPY packages/envoy/pgsetting ./pgsetting
 # brokeraddr: the secrets broker's configured address, in a type no output prints whole, which
 # agent-secrets holds AGENT_SECRETS_URL as (cmd/agent-secrets/identity.go).
 COPY packages/envoy/brokeraddr ./brokeraddr
