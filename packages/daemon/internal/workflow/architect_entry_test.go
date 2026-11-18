@@ -70,9 +70,8 @@ func architectStartOf(t *testing.T, pool *pgxpool.Pool) record.SuperviseRequest 
 // handed work before counts from where it stood, which is what tells the work of one entry from
 // the work of the next.
 //
-// Each raise writes whether the sweep sends its task again as written
-// (record.PhaseRow.EntryVerbatim), so the mark a resume's entry carried goes with that entry: a
-// raise that does not say it clears it.
+// Each raise writes the wait a resume's entry answers (record.PhaseRow.EntryAwaiting), so the wait
+// a resume's entry kept goes with that entry: a raise that names none clears it.
 //
 // The row is the architect's own: the entry of a phase worker of the same issue stands where it
 // was, because the record counts the entries each role has been handed.
@@ -85,35 +84,36 @@ func TestTheRootArchitectEntryIsRaisedWithItsTaskAndTheMomentItWasRaised(t *test
 	engine := testEngine(config.DesignGateRootIssues, nil)
 
 	const first = "A person answered your ask ask-1 on LEGION-208."
-	if entry := enterArchitect(t, pool, engine, root, first, true); entry != seededEntry+1 {
+	waiting := record.Awaiting{Ask: "ask-1", Since: record.EventMark{Seq: 5}, AnsweredBy: record.AnsweredByAsk, AnsweredDetail: "ask-1"}
+	if entry := enterArchitect(t, pool, engine, root, first, &waiting); entry != seededEntry+1 {
 		t.Fatalf("the architect's entry after the first raise = %d, want %d: the number is raised, never written", entry, seededEntry+1)
 	}
 	row := entryRow(t, pool, claim.RoleArchitect)
-	if row.Entry != seededEntry+1 || row.EntryTask != first || !row.EntryVerbatim || !row.EntryRaisedAt.Equal(engine.now()) {
-		t.Fatalf("the architect's row = entry %d, task %q, sent as written %t, raised at %s; want entry %d carrying %q to send as written, raised at the %s the engine read from its own clock",
-			row.Entry, row.EntryTask, row.EntryVerbatim, row.EntryRaisedAt, seededEntry+1, first, engine.now())
+	if row.Entry != seededEntry+1 || row.EntryTask != first || !sameWait(row.EntryAwaiting, waiting) || !row.EntryRaisedAt.Equal(engine.now()) {
+		t.Fatalf("the architect's row = entry %d, task %q, wait %+v, raised at %s; want entry %d carrying %q and the wait %+v, raised at the %s the engine read from its own clock",
+			row.Entry, row.EntryTask, row.EntryAwaiting, row.EntryRaisedAt, seededEntry+1, first, waiting, engine.now())
 	}
 
 	second := ArchitectStartTask(ArchitectStart{Root: root})
-	if entry := enterArchitect(t, pool, engine, root, second, false); entry != seededEntry+2 {
+	if entry := enterArchitect(t, pool, engine, root, second, nil); entry != seededEntry+2 {
 		t.Fatalf("the architect's entry after the second raise = %d, want %d: each entry counts from the one before it", entry, seededEntry+2)
 	}
-	if row := entryRow(t, pool, claim.RoleArchitect); row.Entry != seededEntry+2 || row.EntryTask != second || row.EntryVerbatim {
-		t.Fatalf("the architect's row after the second raise = entry %d carrying %q, sent as written %t; want entry %d carrying the work of that entry, "+
-			"derived again: the first entry's mark went with it", row.Entry, row.EntryTask, row.EntryVerbatim, seededEntry+2)
+	if row := entryRow(t, pool, claim.RoleArchitect); row.Entry != seededEntry+2 || row.EntryTask != second || row.EntryAwaiting != nil {
+		t.Fatalf("the architect's row after the second raise = entry %d carrying %q, wait %+v; want entry %d carrying the work of that entry, "+
+			"derived again: the first entry's wait went with it", row.Entry, row.EntryTask, row.EntryAwaiting, seededEntry+2)
 	}
 	assertEntryUntouched(t, pool, claim.RoleImplementer, "the architect's two entries")
 }
 
-// enterArchitect raises the architect's entry for task, sent again as written where verbatim
-// says so, through the one exported door onto it, in a transaction of its own as a transition's
-// own transaction does.
-func enterArchitect(t *testing.T, pool *pgxpool.Pool, engine *Engine, root record.Issue, task string, verbatim bool) int64 {
+// enterArchitect raises the architect's entry for task, keeping the wait awaiting where a resume's
+// raise carries one, through the one exported door onto it, in a transaction of its own as a
+// transition's own transaction does.
+func enterArchitect(t *testing.T, pool *pgxpool.Pool, engine *Engine, root record.Issue, task string, awaiting *record.Awaiting) int64 {
 	t.Helper()
 	var entry int64
 	seedRecord(t, pool, func(tx pgx.Tx) error {
 		var err error
-		entry, err = engine.EnterArchitect(t.Context(), tx, root, task, verbatim)
+		entry, err = engine.EnterArchitect(t.Context(), tx, root, task, awaiting)
 		return err
 	})
 	return entry
@@ -199,12 +199,12 @@ func seedArchitectClaimGiven(t *testing.T, pool *pgxpool.Pool, root record.Issue
 // raises the architect's entry, writes the resume task as the work of that entry and carries the
 // number on the start it writes (ResumeAwaitedRoot). The start carries the wait it answers and no
 // text, because its task is rendered at its send from the record as it stands then; the row keeps
-// the text rendered at the resume, because the sweep's send of a lost start cannot render it again
-// once the root's own wait is gone (SendArchitectStart). Both of its callers get it: the promotion
-// of an answered root, which calls it as this case does (internal/admit's record.LineAnswered
-// branch), and the reconcile that finds a person already acted after the hand-back, which tells
-// the live architect where it stands (tellInPlace). A row lost at tellInPlace would lose a
-// person's answer, which is what the record is for.
+// that same wait beside the text rendered at the resume, because the sweep's send of a lost start
+// builds the resume's start again from it once the root's own wait is gone (SendArchitectStart).
+// Both of its callers get it: the promotion of an answered root, which calls it as this case does
+// (internal/admit's record.LineAnswered branch), and the reconcile that finds a person already
+// acted after the hand-back, which tells the live architect where it stands (tellInPlace). A row
+// lost at tellInPlace would lose a person's answer, which is what the record is for.
 func TestResumeAwaitedRootRaisesTheArchitectEntryForBothOfItsCallers(t *testing.T) {
 	answeredAt := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
 	t.Run("the promotion of an answered root", func(t *testing.T) {
@@ -258,11 +258,11 @@ func TestResumeAwaitedRootRaisesTheArchitectEntryForBothOfItsCallers(t *testing.
 }
 
 // assertArchitectEntryRaised holds the resume's two writes to each other: the architect's row
-// names entry, carries the work of it, marked to be sent again as written, and the moment the
-// engine raised it, and the one start the resume wrote carries that same entry, claims no kept
-// decision, and carries waiting, the wait it answers, with no text of its own. The daemon renders
-// that start's task at its send (its rootTask, through ResumeTask), so it is rendered here the
-// same way, from the record as it stands, and it must be the very task the row keeps.
+// names entry, carries the work of it, keeps waiting, the wait it answers, and the moment the
+// engine raised it, and the one start the resume wrote carries that same entry and that same wait,
+// claims no kept decision, and carries no text of its own. The daemon renders that start's task at
+// its send (its rootTask, through ResumeTask), so it is rendered here the same way, from the
+// record as it stands, and it must be the very task the row keeps.
 func assertArchitectEntryRaised(t *testing.T, pool *pgxpool.Pool, engine *Engine, entry int64, waiting record.Awaiting) {
 	t.Helper()
 	row := entryRow(t, pool, claim.RoleArchitect)
@@ -270,9 +270,9 @@ func assertArchitectEntryRaised(t *testing.T, pool *pgxpool.Pool, engine *Engine
 		t.Fatalf("the architect's row after the resume = entry %d, task %q, raised at %s; want entry %d carrying the resume's own task, raised at %s",
 			row.Entry, row.EntryTask, row.EntryRaisedAt, entry, engine.now())
 	}
-	if !row.EntryVerbatim {
-		t.Fatal("the architect's row after the resume is not marked to be sent as written, want it marked: its task names the answer, " +
-			"which the derivation cannot give, so a lost start is sent this text again (SendArchitectStart)")
+	if !sameWait(row.EntryAwaiting, waiting) {
+		t.Fatalf("the architect's row after the resume keeps the wait %+v, want %+v: a lost start is built again from it and rendered at its send "+
+			"(SendArchitectStart)", row.EntryAwaiting, waiting)
 	}
 	start := architectStartOf(t, pool)
 	if start.Entry != entry || start.Task != "" || start.Kept != nil || !sameWait(start.Awaiting, waiting) {

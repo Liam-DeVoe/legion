@@ -264,7 +264,7 @@ func ArchitectStartOf(ctx context.Context, tx pgx.Tx, store record.Store, steps 
 // daemon. A tree that ran at an earlier generation has its members that stood mid-phase started
 // again by its re-admission, whose notices reach the architect. The text is for the architect
 // alone, and no reader of a task reads it back: what wrote an entry's task is a fact of the record
-// (record.PhaseRow.EntryVerbatim, which SendArchitectStart reads), and whether a held task carries
+// (record.PhaseRow.EntryAwaiting, which SendArchitectStart reads), and whether a held task carries
 // the first-task instruction is the entry it is of (NarrowRootTask).
 //
 // Decided leads every shape rather than replacing it, since a person's decision is read first and

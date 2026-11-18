@@ -144,13 +144,12 @@ func TestClearGenerationClearsTheEntryTaskAndLeavesTheEntry(t *testing.T) {
 	}
 }
 
-// A root architect's row marked to send its entry's task as written (record.PhaseRow.EntryVerbatim,
-// which only the resume of an answered root sets) loses the mark with the task when a
-// re-admission clears the generation, since the promotion that follows raises a new entry with
-// work of its own. Both clears a re-admission makes are read: of one issue (ClearGeneration) and
-// of a whole tree (ClearTreeGeneration). The entry and the moment it was raised stay, as they do
-// for every role.
-func TestClearGenerationClearsTheArchitectsMarkToSendAsWritten(t *testing.T) {
+// A root architect's row that keeps the wait a resume answered (record.PhaseRow.EntryAwaiting,
+// which only the resume of an answered root writes) loses it with the task when a re-admission
+// clears the generation, since the promotion that follows raises a new entry with work of its own.
+// Both clears a re-admission makes are read: of one issue (ClearGeneration) and of a whole tree
+// (ClearTreeGeneration). The entry and the moment it was raised stay, as they do for every role.
+func TestClearGenerationClearsTheWaitTheArchitectsEntryKept(t *testing.T) {
 	raised := time.Date(2026, 11, 2, 9, 0, 0, 0, time.UTC)
 	const resumed = "A person answered your ask ask-1; read it. Continue."
 	for _, tc := range []struct {
@@ -170,12 +169,12 @@ func TestClearGenerationClearsTheArchitectsMarkToSendAsWritten(t *testing.T) {
 			issue := clearedIssue(tc.key)
 			seedIssue(t, pool, issue)
 			seedPhase(t, pool, record.PhaseRow{Issue: issue.Key, Role: claim.RoleArchitect, Claim: "architect", Entry: 3,
-				EntryTask: resumed, EntryVerbatim: true, EntryRaisedAt: raised})
+				EntryTask: resumed, EntryAwaiting: &record.Awaiting{Ask: "ask-1", AnsweredBy: record.AnsweredByAsk}, EntryRaisedAt: raised})
 			seedRecord(t, pool, func(tx pgx.Tx) error { return tc.clear(tx, issue) })
 			got := record.PhaseRowOf(issuePhases(t, pool, issue.Key), claim.RoleArchitect)
-			if got.EntryTask != "" || got.EntryVerbatim {
-				t.Fatalf("the architect's row after %s = task %q, sent as written %t; want no task and no mark: both were the generation's that ended",
-					tc.name, got.EntryTask, got.EntryVerbatim)
+			if got.EntryTask != "" || got.EntryAwaiting != nil {
+				t.Fatalf("the architect's row after %s = task %q, wait %+v; want no task and no wait: both were the generation's that ended",
+					tc.name, got.EntryTask, got.EntryAwaiting)
 			}
 			if got.Entry != 3 || !got.EntryRaisedAt.Equal(raised) {
 				t.Fatalf("the architect's row after %s = entry %d raised at %s, want the entry 3 raised at %s it stood on",

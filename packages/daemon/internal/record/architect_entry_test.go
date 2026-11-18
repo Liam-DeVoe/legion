@@ -117,12 +117,13 @@ func TestARootArchitectEntryIsHeldOnItsPhasesRowAsAPhaseWorkersIs(t *testing.T) 
 	}
 }
 
-// A root architect's row says whether the sweep's send of its entry again sends the entry's task
-// as written (PhaseRow.EntryVerbatim), which only the resume of an answered root sets. The record
-// holds that fact as it holds the task: written with the row and read back with it, both ways.
-// A re-admission clears it with the task; that clear is the workflow engine's
-// (workflow.Engine.ClearGeneration and ClearTreeGeneration), and its own test reads it.
-func TestTheArchitectEntryMarkToSendAsWrittenRoundTrips(t *testing.T) {
+// A root architect's row keeps the wait a person answered where the resume of that answer raised
+// its entry (PhaseRow.EntryAwaiting), which the sweep's send of the entry again renders at its
+// send. The record holds it as it holds the task: written with the row and read back with it,
+// each moment as the same instant, and taken away by a put that carries none. A re-admission
+// clears it with the task; that clear is the workflow engine's (workflow.Engine.ClearGeneration
+// and ClearTreeGeneration), and its own test reads it.
+func TestTheArchitectEntryWaitRoundTrips(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
 	records := NewStore()
@@ -138,20 +139,29 @@ func TestTheArchitectEntryMarkToSendAsWrittenRoundTrips(t *testing.T) {
 		})
 		return row
 	}
+	answered := raised.Add(-time.Minute)
+	wait := Awaiting{Ask: "ask-1", AnsweredAt: &answered, AnsweredBy: AnsweredByAsk, AnsweredDetail: "ask-1",
+		Since: EventMark{Seq: 7, At: raised.Add(-time.Hour)}}
 	issue := issueFixture("LEGION-291")
 	row := PhaseRow{Issue: issue.Key, Role: claim.RoleArchitect, Claim: "architect", Entry: 3,
-		EntryTask: resumed, EntryVerbatim: true, EntryRaisedAt: raised}
+		EntryTask: resumed, EntryAwaiting: &wait, EntryRaisedAt: raised}
 	inTx(t, st, func(tx pgx.Tx) {
 		must(t, records.PutIssue(ctx, tx, issue))
 		must(t, records.PutPhase(ctx, tx, row))
 	})
-	if got := architectRow(issue.Key); got.EntryTask != resumed || !got.EntryVerbatim {
-		t.Fatalf("the architect's row = task %q, sent as written %t; want %q marked to be sent as written, as it was put",
-			got.EntryTask, got.EntryVerbatim, resumed)
+	got := architectRow(issue.Key)
+	if got.EntryTask != resumed || got.EntryAwaiting == nil || got.EntryAwaiting.AnsweredAt == nil ||
+		!got.EntryAwaiting.AnsweredAt.Equal(answered) || !got.EntryAwaiting.Since.At.Equal(wait.Since.At) {
+		t.Fatalf("the architect's row = task %q, wait %+v; want %q holding %+v, as it was put", got.EntryTask, got.EntryAwaiting, resumed, wait)
 	}
-	row.EntryVerbatim = false
+	held, put := *got.EntryAwaiting, wait
+	held.AnsweredAt, held.Since.At, put.AnsweredAt, put.Since.At = nil, time.Time{}, nil, time.Time{}
+	if held != put {
+		t.Fatalf("the architect's row holds the wait %+v, want %+v, as it was put", *got.EntryAwaiting, wait)
+	}
+	row.EntryAwaiting = nil
 	inTx(t, st, func(tx pgx.Tx) { must(t, records.PutPhase(ctx, tx, row)) })
-	if got := architectRow(issue.Key); got.EntryVerbatim {
-		t.Fatal("the architect's row is still marked to be sent as written after a put that clears it, want the mark the put wrote")
+	if got := architectRow(issue.Key); got.EntryAwaiting != nil {
+		t.Fatalf("the architect's row still holds the wait %+v after a put that carries none, want none", got.EntryAwaiting)
 	}
 }

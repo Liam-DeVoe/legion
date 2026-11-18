@@ -593,7 +593,7 @@ func scanIssue(row scanner) (*Issue, error) {
 }
 
 func (s *Postgres) Phases(ctx context.Context, tx pgx.Tx, issue string) ([]PhaseRow, error) {
-	rows, err := tx.Query(ctx, `select issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, verdict, summary, last_handoff, decision, completed_at, entry, entry_task, entry_verbatim, entry_raised_at, entry_moved_back from phases
+	rows, err := tx.Query(ctx, `select issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, verdict, summary, last_handoff, decision, completed_at, entry, entry_task, entry_awaiting, entry_raised_at, entry_moved_back from phases
 		where issue = $1 order by role`, issue)
 	if err != nil {
 		return nil, fmt.Errorf("list phases for %s: %w", issue, err)
@@ -614,16 +614,16 @@ func (s *Postgres) Phases(ctx context.Context, tx pgx.Tx, issue string) ([]Phase
 }
 
 // PhaseEntries reads the entry of every phases row of issues, the moment it was raised and whether
-// its task is one to send as written, in one statement, keyed by issue and role. The rows of an
-// issue the record holds none of are simply absent, which every reader takes as the zero entry.
-// entry_raised_at is the row's one nullable column (PutPhase), null on a row no entry has been
-// raised on, and reads back as the zero moment.
+// a resume raised it (entry_awaiting holds a wait), in one statement, keyed by issue and role. The
+// rows of an issue the record holds none of are simply absent, which every reader takes as the
+// zero entry. entry_raised_at is null on a row no entry has been raised on (PutPhase), and reads
+// back as the zero moment.
 func (s *Postgres) PhaseEntries(ctx context.Context, tx pgx.Tx, issues []string) (map[PhaseRole]PhaseEntry, error) {
 	entries := make(map[PhaseRole]PhaseEntry, len(issues))
 	if len(issues) == 0 {
 		return entries, nil
 	}
-	rows, err := tx.Query(ctx, `select issue, role, entry, entry_raised_at, entry_verbatim from phases where issue = any($1)`, issues)
+	rows, err := tx.Query(ctx, `select issue, role, entry, entry_raised_at, entry_awaiting is not null from phases where issue = any($1)`, issues)
 	if err != nil {
 		return nil, fmt.Errorf("list the phase entries of %d issues: %w", len(issues), err)
 	}
@@ -633,7 +633,7 @@ func (s *Postgres) PhaseEntries(ctx context.Context, tx pgx.Tx, issues []string)
 		var role string
 		var entry PhaseEntry
 		var raisedAt *time.Time
-		if err := rows.Scan(&key.Issue, &role, &entry.Entry, &raisedAt, &entry.Verbatim); err != nil {
+		if err := rows.Scan(&key.Issue, &role, &entry.Entry, &raisedAt, &entry.Resumed); err != nil {
 			return nil, fmt.Errorf("read a phase entry: %w", err)
 		}
 		if raisedAt != nil {
@@ -666,14 +666,22 @@ func (s *Postgres) PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) erro
 			return fmt.Errorf("put %s phase on %s: encode the backward move counts: %w", phase.Role, phase.Issue, err)
 		}
 	}
-	// entry_raised_at is the one nullable column of the row: a row no entry has been raised on
-	// has no moment to record, and the zero time would read as one.
+	// entry_raised_at is null on a row no entry has been raised on, which has no moment to
+	// record, and the zero time would read as one. entry_awaiting is null on every entry no resume
+	// raised.
 	var raisedAt any
 	if !phase.EntryRaisedAt.IsZero() {
 		raisedAt = phase.EntryRaisedAt
 	}
+	var awaiting []byte
+	if phase.EntryAwaiting != nil {
+		var err error
+		if awaiting, err = json.Marshal(phase.EntryAwaiting); err != nil {
+			return fmt.Errorf("put %s phase on %s: encode the wait the entry's resume answers: %w", phase.Role, phase.Issue, err)
+		}
+	}
 	_, err := tx.Exec(ctx, `insert into phases (issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, verdict, summary, last_handoff,
-		decision, completed_at, entry, entry_task, entry_verbatim, entry_raised_at, entry_moved_back)
+		decision, completed_at, entry, entry_task, entry_awaiting, entry_raised_at, entry_moved_back)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
 		on conflict (issue, role) do update set claim = excluded.claim,
 		handoff_commit = excluded.handoff_commit, pass = excluded.pass,
@@ -682,11 +690,11 @@ func (s *Postgres) PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) erro
 		cap_told = excluded.cap_told, verdict = excluded.verdict,
 		summary = excluded.summary, last_handoff = excluded.last_handoff, decision = excluded.decision,
 		completed_at = excluded.completed_at,
-		entry = excluded.entry, entry_task = excluded.entry_task, entry_verbatim = excluded.entry_verbatim,
+		entry = excluded.entry, entry_task = excluded.entry_task, entry_awaiting = excluded.entry_awaiting,
 		entry_raised_at = excluded.entry_raised_at, entry_moved_back = excluded.entry_moved_back`,
 		phase.Issue, string(phase.Role), string(phase.Claim), phase.HandoffCommit, phase.Pass, phase.HandoffRecord, phase.HandoffVersion, phase.Rounds, phase.ConflictRounds,
 		backwardMoves, phase.CapTold, phase.Verdict, phase.Summary, phase.LastHandoff, decision, phase.CompletedAt,
-		phase.Entry, phase.EntryTask, phase.EntryVerbatim, raisedAt, phase.EntryMovedBack,
+		phase.Entry, phase.EntryTask, awaiting, raisedAt, phase.EntryMovedBack,
 	)
 	if err != nil {
 		return fmt.Errorf("put %s phase on %s: %w", phase.Role, phase.Issue, err)
@@ -697,11 +705,11 @@ func (s *Postgres) PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) erro
 func scanPhase(row scanner) (PhaseRow, error) {
 	var phase PhaseRow
 	var role, token string
-	var decision, backwardMoves []byte
+	var decision, backwardMoves, awaiting []byte
 	var raisedAt *time.Time
 	if err := row.Scan(&phase.Issue, &role, &token, &phase.HandoffCommit, &phase.Pass, &phase.HandoffRecord, &phase.HandoffVersion, &phase.Rounds, &phase.ConflictRounds,
 		&backwardMoves, &phase.CapTold, &phase.Verdict, &phase.Summary, &phase.LastHandoff, &decision, &phase.CompletedAt,
-		&phase.Entry, &phase.EntryTask, &phase.EntryVerbatim, &raisedAt, &phase.EntryMovedBack); err != nil {
+		&phase.Entry, &phase.EntryTask, &awaiting, &raisedAt, &phase.EntryMovedBack); err != nil {
 		return PhaseRow{}, err
 	}
 	if raisedAt != nil {
@@ -712,6 +720,12 @@ func scanPhase(row scanner) (PhaseRow, error) {
 		phase.Decision = &ReviewDecision{}
 		if err := json.Unmarshal(decision, phase.Decision); err != nil {
 			return PhaseRow{}, fmt.Errorf("decode the review decision: %w", err)
+		}
+	}
+	if awaiting != nil {
+		phase.EntryAwaiting = &Awaiting{}
+		if err := json.Unmarshal(awaiting, phase.EntryAwaiting); err != nil {
+			return PhaseRow{}, fmt.Errorf("decode the wait the entry's resume answers: %w", err)
 		}
 	}
 	// A row that counted no backward move reads as a nil map and never as an empty one: the

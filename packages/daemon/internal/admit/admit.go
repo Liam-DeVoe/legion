@@ -3139,11 +3139,12 @@ func (a *Admission) architectServed(ctx context.Context, tx pgx.Tx, root record.
 // differs from a phase worker's in the two ways a root architect's start differs: the row waits
 // for no admission slot, because a root architect's start takes no slot, whether the root holds
 // its row, holds none past its review (record.KeepsSlot) or gave it back for a wait
-// (releaseSlotsForWaits), and a task the derivation wrote is derived again from the
-// record rather than taken off the row, while a task the resume of a person's answer wrote is
-// sent as written (workflow's SendArchitectStart, over record.PhaseRow.EntryVerbatim). Where the
-// root's architect claim does not exist, that start is what creates it, exactly as admission's
-// queued-root branch does.
+// (releaseSlotsForWaits), and a task the derivation wrote is derived again from the record
+// rather than taken off the row, while an entry the resume of a person's answer raised is sent
+// the start that resume wrote, built from the wait the row keeps, which the send renders from the
+// record as it stands then (workflow's SendArchitectStart, over record.PhaseRow.EntryAwaiting).
+// Where the root's architect claim does not exist, that start is what creates it, exactly as
+// admission's queued-root branch does.
 //
 // An architect whose phases row names no entry at all is handed one here, rather than resumed:
 // the entry is raised with the task the derivation gives over the record as it stands, and the

@@ -70,8 +70,10 @@ import (
 // columns, which main's own 20261104073148 and 20261104153554 added, and it touches no
 // outbox_kind_check.
 // The kind list with the role-holders publication (20261116165926) stands above all of these and
-// is applied last: it is now the last word of outbox_kind_check, and it names every kind the
-// merge-queue list names and its own.
+// is applied last but one: it is now the last word of outbox_kind_check, and it names every kind
+// the merge-queue list names and its own. dispatch://INFRA-3136's wait on a resume's entry
+// (20261118073048) is applied after it: it replaces the column 20261114061900 adds, so it runs
+// after that one, and it touches no outbox_kind_check.
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
@@ -100,6 +102,9 @@ var thisBranchsMigrations = []int{
 	20261113181500, 20261113182000, 20261114020537, 20261114061900,
 	// The kind list with the role-holders publication.
 	20261116165926,
+	// dispatch://INFRA-3136: the wait a resume's entry answers, in place of the mark INFRA-2614's
+	// 20261114061900 added, which it drops.
+	20261118073048,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -111,10 +116,10 @@ var thisBranchsMigrations = []int{
 // dispatch://INFRA-3027's 20261112070503, dispatch://INFRA-3219's 20261112180548,
 // dispatch://INFRA-2981's 20261113082214 and 20261113110610, dispatch://INFRA-3276's
 // 20261113082415, dispatch://INFRA-3146's 20261113090512, dispatch://INFRA-3274's 20261114031356,
-// dispatch://INFRA-2614's 20261113181500, 20261113182000, 20261114020537 and 20261114061900, and
-// the role-holders publication's 20261116165926, which is why the loop below holds the list rather
-// than counting it, so that a version added above any of them is named here rather than read as
-// main's.
+// dispatch://INFRA-2614's 20261113181500, 20261113182000, 20261114020537 and 20261114061900, the
+// role-holders publication's 20261116165926, and dispatch://INFRA-3136's 20261118073048, which is
+// why the loop below holds the list rather than counting it, so that a version added above any of
+// them is named here rather than read as main's.
 const mainsNewestMigration = 20261111212544
 
 // mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main

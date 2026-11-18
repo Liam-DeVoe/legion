@@ -420,7 +420,7 @@ func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, role 
 	if role == claim.RoleArchitect {
 		return nil
 	}
-	entry, err := e.enter(ctx, tx, issue, role, task, movedBack, false)
+	entry, err := e.enter(ctx, tx, issue, role, task, movedBack, nil)
 	if err != nil {
 		return err
 	}
@@ -584,7 +584,7 @@ func (e *Engine) sendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issu
 // hands the role the phase it already stands in, and moves the issue nowhere.
 func (e *Engine) StartPromotedWorker(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role) error {
 	task := ResumePhaseTask(issue)
-	entry, err := e.enter(ctx, tx, issue, role, task, false, false)
+	entry, err := e.enter(ctx, tx, issue, role, task, false, nil)
 	if err != nil {
 		return err
 	}
@@ -878,16 +878,18 @@ func startOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 // work to be done again (record.PhaseRow.EntryMovedBack, api/handoff.go). It is written here
 // rather than counted anywhere (record.PhaseRow.EntryMovedBack says why no count answers it).
 //
-// verbatim is whether the sweep's send of a root architect's entry again sends that task as
-// written (record.PhaseRow.EntryVerbatim), which only the resume of an answered root says. Every
-// raise writes it, so a raise that does not say it clears the mark an earlier entry's resume left.
-func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task string, movedBack, verbatim bool) (int64, error) {
+// awaiting is the wait a person answered, where the resume of that answer raises a root
+// architect's entry, and nil for every other raise (record.PhaseRow.EntryAwaiting): it is what
+// the sweep's send of such an entry again renders the resume from at its send. Every raise writes
+// it, so a raise that names no wait clears the one an earlier entry's resume left.
+func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task string, movedBack bool,
+	awaiting *record.Awaiting) (int64, error) {
 	row, err := e.phaseRow(ctx, tx, issue.Key, role)
 	if err != nil {
 		return 0, err
 	}
 	row.Entry++
-	row.EntryTask, row.EntryVerbatim, row.EntryRaisedAt, row.EntryMovedBack = task, verbatim, e.now(), movedBack
+	row.EntryTask, row.EntryAwaiting, row.EntryRaisedAt, row.EntryMovedBack = task, awaiting, e.now(), movedBack
 	if err := e.store.PutPhase(ctx, tx, row); err != nil {
 		return 0, err
 	}
@@ -895,8 +897,8 @@ func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, role 
 }
 
 // EnterArchitect raises the phase entry a root's architect is handed on root, writes task as the
-// work of that entry, whether the sweep sends it again as written (verbatim, enter) and the
-// moment it was raised, and answers the number for the start that hands it
+// work of that entry, the wait a person answered where a resume raises it (awaiting, enter) and
+// the moment it was raised, and answers the number for the start that hands it
 // (record.SuperviseRequest.Entry). A root's architect holds a row of the phases record exactly as
 // every phase worker does, so what it was handed, what that work is and how long it has stood are
 // read from the record rather than from the outbox row that carried it.
@@ -904,16 +906,17 @@ func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, role 
 // It is the one way a root architect's entry is raised, and two starts that hand the architect
 // work it was not on make it. StartArchitect does, for admission's promotion of a queued root
 // (admit's LineQueuedRoot branch) and for the sweep's raise for an architect whose row names no
-// entry, with the derivation's task, which the sweep derives again. ResumeAwaitedRoot does, for
-// the resume of a root a person answered, with the task that names the answer, which the sweep
-// sends as written. Each composes the architect's task itself and enqueues its start itself,
-// because an architect's start waits for no admission slot, so neither writes through start or
-// started, both of which are a phase worker's. The rule it is held to is enter's own, which is
-// why it is one call and not a second implementation: it is made in the transaction that writes
-// that start. The entry is raised by no move back (record.PhaseRow.EntryMovedBack): that mark's
-// one reader is the completion route's entry fence, and the architect completes nothing there.
-func (e *Engine) EnterArchitect(ctx context.Context, tx pgx.Tx, root record.Issue, task string, verbatim bool) (int64, error) {
-	return e.enter(ctx, tx, root, claim.RoleArchitect, task, false, verbatim)
+// entry, with the derivation's task and no wait, and the sweep derives that task again.
+// ResumeAwaitedRoot does, for the resume of a root a person answered, with the task that names
+// the answer and the wait it answers, from which the sweep renders that task again at its send.
+// Each composes the architect's task itself and enqueues its start itself, because an
+// architect's start waits for no admission slot, so neither writes through start or started, both
+// of which are a phase worker's. The rule it is held to is enter's own, which is why it is one
+// call and not a second implementation: it is made in the transaction that writes that start. The
+// entry is raised by no move back (record.PhaseRow.EntryMovedBack): that mark's one reader is the
+// completion route's entry fence, and the architect completes nothing there.
+func (e *Engine) EnterArchitect(ctx context.Context, tx pgx.Tx, root record.Issue, task string, awaiting *record.Awaiting) (int64, error) {
+	return e.enter(ctx, tx, root, claim.RoleArchitect, task, false, awaiting)
 }
 
 // task is what a started worker is told. It names the phase the worker starts, which the issue

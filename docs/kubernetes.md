@@ -2456,6 +2456,7 @@ The state of such a root carries its two numbers and neither time, since the upg
 Store migration 20261114061900_phase_entry_verbatim adds `phases.entry_verbatim`, the mark that the sweep sends a root architect's entry again as written, which the resume of a root a person answered sets and every other raise of an entry clears;
 every row it finds takes the default, false, which the sweep derives again.
 The same mark keeps a root that the answer's own admission pass promoted past `admitted` in the sweep's reach until its architect's claim is given that entry, so a start of the resume that reaches no claim is written again.
+A release at contract 162 replaces that mark with `phases.entry_awaiting`, the wait the resume answered, from which the sweep renders the entry's task again when it sends it, and drops `phases.entry_verbatim` (store migration 20261118073048_phase_entry_awaiting, under contract 162 below).
 
 To roll a release at contract 146 back to contract 87, stop the daemon and run two blocks in this order: the block below, then the phase entry's block after it.
 A rollback below contract 144 also takes the steps of the releases it crosses, which "Each issue's experiment assignments in the state (daemon API contract 141)" below and "Rolling back below the release that guards an issue pod's memory", "Rolling back the release that frees the slot past review", "Rolling back the release whose update round ends at its bound" and "Rolling back the release that tells the merger of a merge-queue removal" above give.
@@ -2658,6 +2659,7 @@ A plugin below 162 calls no such route, and nothing else of the claim wire chang
 The third is the resume task of a root a person answered, which the daemon now writes at each send rather than when it queues the task, because the design gate can move in between.
 The outbox start that queues such a task carries the wait it answers as `awaiting` (`record.SuperviseRequest.Awaiting`) and no task text.
 The claim's held delivery carries that wait in `pending_task_deliveries.resume`, and its task text stays empty until the daemon sends it.
+The sweep's send of such a resume again, for a claim its start never reached, writes that same start from the wait the architect's `phases` row keeps, so that task is written when it is sent too, and a changes request the person's approval has answered since is not told as standing.
 
 Store migration 20261112012123_issue_repository_correction adds the four `issues` columns the repository keys are read from — `repo_before`, `repo_corrected_at`, `repo_change_pending` and `repo_change_reason` — and `workspace_bundles.repo`, the repository a saved workspace bundle's work is of.
 Every row already there takes each column's default, and nothing is backfilled.
@@ -2669,14 +2671,44 @@ It gives each wait a changes request answered before it its version, read once f
 The same migration creates `workspace_bundle_refusals`, one row per issue whose last release's save found the work over 40 MiB: the moment that release was marked, and the head of the issue's pull request then.
 The idle rule marks no release of such an issue again until a role of its pod does something after that moment or the head moves ([Idle release](#idle-release)), and the refusal tells the issue's worker in a `role_message` row, whose payload carries only the `role` and `body` an earlier release's `record.RoleMessage` already names.
 A save that failed for another reason writes no row, and its release is marked again on the next idle tick, as before.
+Store migration 20261118073048_phase_entry_awaiting adds `phases.entry_awaiting`, the wait a resume answered, kept on the architect entry that resume raises, and drops `phases.entry_verbatim`, the mark it replaces ("A root's architect in the phase entry (daemon API contract 146)" above).
+Every row that mark was set on takes the empty wait, `{}`, since the release before kept the resume's text and no wait: a send of such an entry again names a person's act on the root, then how the gate and the asks stand.
+Every other row takes null.
 
-To roll this release back, re-pin the earlier image (contract 152 at the base this release was written on).
-There is no `legion.yaml` key to put back and no column to drop:
-the earlier release names every column it reads and writes, so it boots with the nine and the new table in place, reads none of them and writes none of them.
+To roll this release back, stop its daemon, run the block below, and then re-pin the earlier image (contract 152 at the base this release was written on).
+There is no `legion.yaml` key to put back.
+The earlier release names every column it reads and writes, so after the block it boots with the nine and the new table in place, reads none of them and writes none of them.
 Its write of a later answer to a root's wait leaves `awaiting_answered_version` and `awaiting_answered_version_at` as they stood, and when this release is pinned again it reads that answer as one with no version, since the moment beside the version is no longer the answer's: the resume then asks whether the person's approval followed that changes request at the version the gate holds approved, as it asks of a kept decision.
 It never reads `workspace_bundles_refused` either, so a bundle this release refused for its repository stays in that table through the roll back, and no row of `workspace_bundles` is a refused one that its idle rule could hold a pod for.
 It never reads `workspace_bundle_refusals` either, so its idle rule marks the release of an issue whose save was refused again on each pass, as it did before this release: each pass asks the pod's shim for a bundle and records one more hold, for as long as the work stays over 40 MiB.
 A row this release wrote to that table holds no pod once this release is pinned again and a role of the pod has done something since.
+
+```sh
+psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+begin;
+alter table phases add column if not exists entry_verbatim boolean not null default false;
+alter table phases add column if not exists entry_awaiting jsonb;
+update phases set entry_verbatim = true where entry_awaiting is not null;
+alter table phases drop column entry_awaiting;
+delete from schema_version where version = 20261118073048;
+commit;
+SQL
+```
+
+It prints `BEGIN`, `ALTER TABLE`, a `NOTICE` that `entry_awaiting` already exists beside the second `ALTER TABLE`, `UPDATE <n>` for the entries a resume raised, `ALTER TABLE`, `DELETE 1` and `COMMIT`;
+a rerun prints a `NOTICE` that `entry_verbatim` already exists beside the first `ALTER TABLE`, the second `ALTER TABLE`, `UPDATE 0`, `ALTER TABLE`, `DELETE 0` and `COMMIT`, and changes nothing.
+Without it the earlier release does not run: its phases read and write name `phases.entry_verbatim`, which 20261118073048_phase_entry_awaiting drops, so each fails on the missing column, and every admission pass fails with them.
+The first `alter table` puts that column back at the default it was added with, and the `update` marks each entry a resume raised, so that release sends the task the row keeps as written, as it did before this release.
+The `drop` and the `delete` are owed to the roll-forward: with the column dropped and the row deleted, `Migrate` runs 20261118073048 again, whose first statement would fail on a column that stands.
+The second `alter table` is what lets the block run twice: on a store it already ran on, it adds the column back empty, the `update` marks nothing and the `drop` takes the column away again.
+What the block costs is the wait on each entry a resume raised before it: the roll-forward gives each such entry the empty wait, as it gives an entry of the earlier release.
+A rollback below contract 146 runs this block first and that contract's block after it, which drops `phases.entry_verbatim` again.
+The header of `20261118073048_phase_entry_awaiting.up.sql` carries this same block, and `internal/store`'s `TestThePhaseEntryAwaitingMigrationKeepsAResumesEntryAndItsWayBackPutsTheMarkBack` runs the header's copy twice.
+The SQL was run on 2026-11-18 at 08:00Z against PostgreSQL 18.6, on a scratch database at 20261118073048 holding three `phases` rows: an architect entry the earlier release had marked, which the migration gave the empty wait, an architect entry carrying a changes request's wait, and a planner's entry with none.
+The first run printed `BEGIN`, `ALTER TABLE`, `NOTICE:  column "entry_awaiting" of relation "phases" already exists, skipping`, `ALTER TABLE`, `UPDATE 2`, `ALTER TABLE`, `DELETE 1` and `COMMIT`, and the second printed `BEGIN`, `NOTICE:  column "entry_verbatim" of relation "phases" already exists, skipping`, `ALTER TABLE`, `ALTER TABLE`, `UPDATE 0`, `ALTER TABLE`, `DELETE 0` and `COMMIT`; both exited 0.
+After them both architect rows were marked and the planner's was not, no `entry_awaiting` column stood, and the store reported 20261116165926.
+Applying the migration again then gave both architect rows the empty wait and left the planner's null.
+
 Going back costs three things, and the first loses work unless you act before the earlier image is pinned.
 
 - A resume task, a design decision's notice, or an architect's catch-up that this release queued and has not sent reaches its architect with no text, or not at all.

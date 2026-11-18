@@ -630,23 +630,30 @@ type PhaseRow struct {
 	// EntryTask is the work of that entry, the task text the role is told, written beside the
 	// number in the same transaction. It is what makes the work a durable fact of the record
 	// rather than of the one outbox row that carried it: a claim behind the entry is sent this
-	// task again, however that row ended. Empty on a row no entry has been raised on, and on one
-	// a new generation reset (workflow's ClearGeneration), whose re-admitted tree's promotion
-	// writes the task again.
+	// task again, however that row ended, except where a resume raised the entry, whose work is
+	// rendered again at its send from the wait it answered (EntryAwaiting). Empty on a row no
+	// entry has been raised on, and on one a new generation reset (workflow's ClearGeneration),
+	// whose re-admitted tree's promotion writes the task again.
 	EntryTask string
-	// EntryVerbatim says the sweep's send of a root architect's entry again sends EntryTask as
-	// written (workflow's SendArchitectStart). Only the resume of a root a person answered sets
-	// it (workflow's ResumeAwaitedRoot): its task names the answer and no kept decision, and the
-	// answer is the work the entry owes. Every other raise clears it (workflow's enter), and
-	// workflow's ClearGeneration resets it with the task. False, the default, is a task the
-	// derivation of a root architect's first task wrote, or no task at all, which that send derives
-	// again from the record as it stands: a kept decision is claimed by the outbox row that names
-	// it, so a text composed once and sent again could name one another telling has claimed since.
-	// It is a fact of the record rather than a reading of the task's text, so what wrote an entry
-	// never turns on the wording of one release. A phase worker's row carries false and nothing
-	// reads it there, since the send of a phase worker's entry sends its task as written in every
-	// case (workflow's SendOwedEntry).
-	EntryVerbatim bool
+	// EntryAwaiting is the wait a person answered, as the resume of a root raised this entry on it
+	// (workflow's ResumeAwaitedRoot), and nil on every entry anything else raised. It is what the
+	// resume's start was built from, and the record keeps it rather than the text that start was
+	// rendered into: the text names the person's review as the gate stood at the raise, and a
+	// person can approve or review again before the work is sent. So the sweep's send of the entry
+	// again (workflow's SendArchitectStart) builds the resume's own start from it, which the send
+	// renders from the record as it stands then (workflow.ResumeTask, through the daemon's
+	// rootTask), and it never sends EntryTask for such an entry.
+	//
+	// Every other raise clears it (workflow's enter), and workflow's ClearGeneration resets it with
+	// the task. Nil is a task the derivation of a root architect's first task wrote, or no task at
+	// all, which that send derives again from the record as it stands: a kept decision is claimed
+	// by the outbox row that names it, so a text composed once and sent again could name one
+	// another telling has claimed since. A phase worker's row carries nil and nothing reads it
+	// there, since the send of a phase worker's entry sends its task as written in every case
+	// (workflow's SendOwedEntry). An entry a release before this one raised by a resume holds the
+	// empty wait (store migration 20261118073048_phase_entry_awaiting), since that release kept
+	// only the text, and the resume renders it as a person's act on the root with no detail.
+	EntryAwaiting *Awaiting
 	// EntryRaisedAt is when the entry was raised, read from the transition's own clock. It is
 	// what tells how long a role has been owed the work its entry names, for a reader weighing a
 	// difference that has stood. Zero on a row no entry has been raised on.
@@ -691,18 +698,19 @@ type PhaseRole struct {
 
 // PhaseEntry is what a batched read of many issues' phases rows answers for one of them
 // (Store.PhaseEntries): the entry the row names, the moment the transition raised it and whether
-// its task is one to send as written, which are the three fields of PhaseRow a pass over every
-// slot holder reads. RaisedAt is zero on a row no entry has been raised on, where Entry is zero
-// too.
+// the resume of a root a person answered raised it, which are the three facts of PhaseRow a pass
+// over every slot holder reads. RaisedAt is zero on a row no entry has been raised on, where
+// Entry is zero too.
 type PhaseEntry struct {
 	Entry    int64
 	RaisedAt time.Time
-	// Verbatim is the row's PhaseRow.EntryVerbatim: the entry was raised by the resume of a root a
-	// person answered, whose task names the answer. The sweep's reach over a root's architect
-	// reads it (workflow.ArchitectAtWork): such an entry, while its claim has not been given it,
-	// keeps a root the answer's own pass promoted past admitted in the reach, in every phase that
-	// carries a run but awaiting_person, where the answer to the new wait raises an entry of its own.
-	Verbatim bool
+	// Resumed is whether the row carries PhaseRow.EntryAwaiting: the entry was raised by the
+	// resume of a root a person answered, and its work is that answer. The sweep's reach over a
+	// root's architect reads it (workflow.ArchitectAtWork): such an entry, while its claim has not
+	// been given it, keeps a root the answer's own pass promoted past admitted in the reach, in
+	// every phase that carries a run but awaiting_person, where the answer to the new wait raises
+	// an entry of its own.
+	Resumed bool
 }
 
 // ReviewDecision is what one review decided: its state (changes_requested or approved), its body,
@@ -1611,15 +1619,15 @@ type Store interface {
 	DispatchClaim(ctx context.Context, tx pgx.Tx, key string) (string, error)
 	Phases(ctx context.Context, tx pgx.Tx, issue string) ([]PhaseRow, error)
 	// PhaseEntries is the entry each phases row of issues names, the moment that entry was raised
-	// and whether its task is one to send as written (PhaseRow.Entry, PhaseRow.EntryRaisedAt,
-	// PhaseRow.EntryVerbatim), by issue and role, read in one statement. Admission's sweep weighs
-	// every role it holds against that number (admit's owedEntryRoles), reads the mark to tell
-	// which roots past admitted its architect reach keeps (workflow.ArchitectAtWork), and reads the
-	// moment beside them to tell how long a role has been owed the work the number names (admit's
-	// architectStalls), and a read an issue would cost one round trip a slot on every fact of the
-	// project, which a project running hundreds of trees pays hundreds of times over. A row the
-	// record does not hold is absent from the answer, which reads as the zero entry: a role no
-	// transition has ever handed work on.
+	// and whether a resume raised it (PhaseRow.Entry, PhaseRow.EntryRaisedAt, whether
+	// PhaseRow.EntryAwaiting is set), by issue and role, read in one statement. Admission's sweep
+	// weighs every role it holds against that number (admit's owedEntryRoles), reads whether a
+	// resume raised it to tell which roots past admitted its architect reach keeps
+	// (workflow.ArchitectAtWork), and reads the moment beside them to tell how long a role has
+	// been owed the work the number names (admit's architectStalls), and a read an issue would
+	// cost one round trip a slot on every fact of the project, which a project running hundreds
+	// of trees pays hundreds of times over. A row the record does not hold is absent from the
+	// answer, which reads as the zero entry: a role no transition has ever handed work on.
 	PhaseEntries(ctx context.Context, tx pgx.Tx, issues []string) (map[PhaseRole]PhaseEntry, error)
 	PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) error
 	PullRequest(ctx context.Context, tx pgx.Tx, issue string) (*PullRequest, error)

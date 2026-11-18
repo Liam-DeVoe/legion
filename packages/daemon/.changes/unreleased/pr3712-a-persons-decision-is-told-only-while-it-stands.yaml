@@ -5,4 +5,5 @@ body: |-
   asks it: the kept-decision relay, a catch-up at the moment it is delivered, and the resume task,
   which is now written when it is sent. A kept decision carries Dispatch's own mark of the review, so
   it is ordered against the approval by Dispatch and not by two clocks, and the only way to clear a
-  generation forgets a superseded decision first.
+  generation forgets a superseded decision first. The sweep's re-send of a lost resume start is also
+  rendered when it is sent.

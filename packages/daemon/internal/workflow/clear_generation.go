@@ -100,8 +100,8 @@ func clearGeneration(ctx context.Context, tx pgx.Tx, store record.Store, where, 
 		// The entry's task goes with the run, and the entry itself stays where it stands: the
 		// number is never reset, so a worker still holding the old entry's task is behind the row
 		// rather than level with it, and the re-admitted tree's promotion raises the entry again
-		// and writes the task of that entry beside it (admit's startMidPhaseMembers). The mark that
-		// the task is sent as written goes with the task it was about. The time the entry was
+		// and writes the task of that entry beside it (admit's startMidPhaseMembers). The wait a
+		// resume kept on the entry goes with the task it was about. The time the entry was
 		// raised stays with the number it belongs to, and so does the move that raised it
 		// (entry_moved_back), which that same promotion writes again. The counts go with the
 		// rounds: the new generation counts its moves back from nothing, and the cap mark goes
@@ -109,7 +109,7 @@ func clearGeneration(ctx context.Context, tx pgx.Tx, store record.Store, where, 
 		// the cap.
 		"update phases set handoff_commit = '', handoff_record = '', handoff_version = 0, rounds = 0, conflict_rounds = 0, " +
 			"backward_moves = '{}'::jsonb, cap_told = 0, verdict = '', summary = '', decision = null, " +
-			"entry_task = '', entry_verbatim = false where " + where,
+			"entry_task = '', entry_awaiting = null where " + where,
 	} {
 		if _, err := tx.Exec(ctx, statement, key); err != nil {
 			return fmt.Errorf("%s: %w", describe, err)

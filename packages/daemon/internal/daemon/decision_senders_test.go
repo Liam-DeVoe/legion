@@ -28,16 +28,30 @@ const senderModule = "github.com/sjawhar/legion/daemon/internal/"
 
 // decisionPredicate is the one predicate that decides whether a person's recorded review of a
 // design document is still their word (workflow.DecisionStands), and decisionRule the rule it asks
-// (classify.ReviewSuperseded), each as go/types names it (types.Func.FullName).
+// (classify.ReviewSuperseded), each as go/types names it (types.Func.FullName). resumeSend is the
+// daemon's render of a start that carries a person's answered wait (record.SuperviseRequest's
+// Awaiting) at each send of its task, and resumeSendCaller the send of a held task that asks it
+// for such a delivery.
 const (
 	decisionPredicate = senderModule + "workflow.DecisionStands"
 	decisionRule      = senderModule + "classify.ReviewSuperseded"
+	resumeSend        = "(*" + senderModule + "daemon.workflowRuntime).resumeTaskNow"
+	resumeSendCaller  = "(*" + senderModule + "daemon.workflowRuntime).rootTask"
 )
 
 // ruleAskers is every function of the three packages that may ask the rule itself, with why.
 var ruleAskers = map[string]string{
 	decisionPredicate:                       "the one predicate, which holds every guard that chooses whether to ask it",
 	senderModule + "workflow.requestStands": "an approval request on the ask mirror, which is the architect's ask and no person's decision",
+}
+
+// storedTaskSenders is every function of the three packages that may send the task a phase
+// entry stored when it was raised (record.PhaseRow.EntryTask), with why that task names no
+// person's review of a design document.
+var storedTaskSenders = map[string]string{
+	"(*" + senderModule + "workflow.Engine).sendOwedEntry": "a phase worker's entry, whose task its transition composed from the " +
+		"phase (workflow's task and ResumePhaseTask) and which names no person's review; a root architect's entry is sent by " +
+		"workflow.Engine.SendArchitectStart, which sends none of it",
 }
 
 // senderPackages are the three packages that hold senders of a person's design decision: the
@@ -82,9 +96,14 @@ var decisionReviewSentences = []struct{ phrase, renderer string }{
 //   - asks record.SpecDecision of a notice's kind, to send the decision it names on (the outbox's
 //     parkDecision relays it to the controller);
 //   - holds a review sentence (decisionReviewSentences) in a string constant, which is rendering
-//     the task that says it; or
+//     the task that says it;
 //   - calls such a renderer that does not reach the predicate itself: the renderer is then a
-//     template, its callers are its senders, and a template nothing calls is a sender itself.
+//     template, its callers are its senders, and a template nothing calls is a sender itself; or
+//   - writes a record.SuperviseRequest that carries a person's answered wait (its Awaiting): the
+//     start of a resume, whose task the daemon renders at each send from that wait (resumeSend),
+//     so such a function reaches what that render reaches. The resume itself writes one
+//     (workflow.Engine.ResumeAwaitedRoot), and so does the sweep's send of a resume's entry whose
+//     start was lost (workflow.Engine.SendArchitectStart).
 //
 // A sender passes when it reaches the predicate: it calls it, or calls a function of the three
 // packages that reaches it, however many calls down. The walk type-checks the three packages
@@ -100,15 +119,25 @@ var decisionReviewSentences = []struct{ phrase, renderer string }{
 // rest of the list unasked is what this test fails on: a task named a changes request that the
 // person's approval had superseded that way.
 //
+// A task a phase entry stored when it was raised is held to more as well: a function that reads
+// record.PhaseRow.EntryTask sends a text rendered at the raise, and no call it makes at the send
+// can ask the predicate about what that text already says. The resume renders a person's review
+// into its architect's entry (workflow.Engine.ResumeAwaitedRoot), so a send of that stored text
+// again names the review whether or not the person's word has moved since, which is how the
+// sweep's send of a lost resume's start named a changes request the person's approval had
+// superseded. Such a function passes only where storedTaskSenders names it, with why the task it
+// sends names no person's review.
+//
 // And the rule itself (classify.ReviewSuperseded) is asked by the predicate alone, and by the one
 // reading of an approval request (ruleAskers), so the guards that choose whether to ask it live in
 // one place.
 //
 // This test reads its sites from the source because no chokepoint can make a sender ask: the
 // predicate is the one place the answer is decided, but a notice is a plain struct literal any
-// function can write, the review sentences are built in several functions, and a list of kept
-// decisions is a plain slice any function can range over and write into text, and no type can
-// make any of them ask the predicate first. So this test stands until one can; delete it then.
+// function can write, the review sentences are built in several functions, a list of kept
+// decisions is a plain slice any function can range over and write into text, and a stored task is
+// a plain field any function can read, and no type can make any of them ask the predicate first.
+// So this test stands until one can; delete it then.
 func TestDecisionSendersAskWhetherTheReviewIsStillThePersonsWord(t *testing.T) {
 	walk := readDecisionWalk(t)
 	kinds := walk.specDecisionKinds(t)
@@ -156,6 +185,23 @@ func TestDecisionSendersAskWhetherTheReviewIsStillThePersonsWord(t *testing.T) {
 					"can drift", f.short(), f.at, short(decisionRule), short(decisionPredicate))
 			}
 		}
+		if len(f.storedTasks) > 0 {
+			why, named := storedTaskSenders[f.name]
+			t.Logf("sender of a stored task %s (%s), at %s: %s", f.short(), f.at, strings.Join(f.storedTasks, ", "), why)
+			if !named {
+				t.Errorf("%s (%s) sends the task a phase entry stored when it was raised (record.PhaseRow.EntryTask, at %s): that text was "+
+					"rendered at the raise, and the resume of a root a person answered renders the person's review into its architect's "+
+					"entry (workflow.Engine.ResumeAwaitedRoot), so sent again it names that review whether or not the person's word has "+
+					"moved since. Send what the task was built from, which the send renders (record.PhaseRow.EntryAwaiting), or name the "+
+					"function in storedTaskSenders with why the task it sends names no person's review", f.short(), f.at, strings.Join(f.storedTasks, ", "))
+			}
+		}
+	}
+	for name := range storedTaskSenders {
+		if f := walk.byName[name]; f == nil || len(f.storedTasks) == 0 {
+			t.Errorf("storedTaskSenders names %s, which reads no stored entry task: take it out, so the list names every send of a stored "+
+				"task and no other", short(name))
+		}
 	}
 	// The one wording of kept decisions (workflow.KeptDecisionsTask) renders them in a loop: the
 	// walk has to see it, or it proves nothing of any renderer.
@@ -166,6 +212,19 @@ func TestDecisionSendersAskWhetherTheReviewIsStillThePersonsWord(t *testing.T) {
 	// (workflow.ResumeTask, the daemon's rootTask), so it is a sender too: the walk has to see it.
 	if !slices.ContainsFunc(senders, func(s decisionSender) bool { return s.fn.short() == "workflow.resumeTask" }) {
 		t.Error("the walk found no resume sender (workflow.resumeTask) in internal/workflow")
+	}
+	// The resume's start, and the sweep's send of a resume's entry whose start was lost, each
+	// carry the answered wait and are rendered at the send (resumeSend, which rootTask asks), so
+	// each is a sender: the walk has to see both of them, and the send that renders them.
+	if f := walk.byName[resumeSendCaller]; f == nil || !slices.Contains(f.calls, resumeSend) {
+		t.Errorf("the walk found %s asking no %s: a start that carries a person's answered wait is no longer rendered at its send",
+			short(resumeSendCaller), short(resumeSend))
+	}
+	for _, name := range []string{"(*workflow.Engine).ResumeAwaitedRoot", "(*workflow.Engine).SendArchitectStart"} {
+		if !slices.ContainsFunc(senders, func(s decisionSender) bool { return s.fn.short() == name && s.fn.queuesResume }) {
+			t.Errorf("the walk found no start carrying a person's answered wait in %s: a resume's start it writes no longer carries "+
+				"the wait the send renders it from", name)
+		}
 	}
 	if !slices.ContainsFunc(senders, func(s decisionSender) bool { return s.fn.pkg == "daemon" }) {
 		t.Error("the walk found no sender in internal/daemon")
@@ -185,6 +244,12 @@ type decisionFunc struct {
 	phrases   []string
 	calls     []string // the FullName of every function the body calls or names
 	keptLoops []keptLoop
+	// storedTasks are the positions where the body reads record.PhaseRow.EntryTask, a task an
+	// entry stored when it was raised.
+	storedTasks []string
+	// queuesResume is whether the body writes a record.SuperviseRequest that carries a person's
+	// answered wait, whose task the daemon renders at each send (resumeSend).
+	queuesResume bool
 }
 
 func (f *decisionFunc) short() string { return short(f.name) }
@@ -262,6 +327,10 @@ func (w *decisionWalk) decisionSenders() []decisionSender {
 		}
 		if f.picks {
 			add(f, "asks record.SpecDecision of a notice's kind and sends the decision it names on")
+		}
+		if f.queuesResume {
+			add(f, fmt.Sprintf("writes a start that carries a person's answered wait, whose task the daemon renders at each send (%s)",
+				short(resumeSend)))
 		}
 		if len(f.phrases) == 0 {
 			continue
@@ -387,7 +456,8 @@ func readDecisionWalk(t *testing.T) *decisionWalk {
 }
 
 // readDecisionFunc reads what fn calls, the record.Notice literals it writes, the review
-// sentences its string constants hold and its loops over kept decisions that write them as text.
+// sentences its string constants hold, its loops over kept decisions that write them as text, the
+// stored entry tasks it reads and the starts it writes that carry a person's answered wait.
 func readDecisionFunc(pkg *checkedPackage, fn *ast.FuncDecl) *decisionFunc {
 	info := pkg.info
 	f := &decisionFunc{pkg: pkg.name, name: info.Defs[fn.Name].(*types.Func).FullName(), at: pkg.pos(fn)}
@@ -414,6 +484,18 @@ func readDecisionFunc(pkg *checkedPackage, fn *ast.FuncDecl) *decisionFunc {
 	f.asks = slices.Contains(f.calls, decisionRule)
 	f.picks = slices.Contains(f.calls, senderModule+"record.SpecDecision")
 	assigned := localAssignments(info, fn.Body)
+	// written is every field selector an assignment writes, which reads nothing of the field.
+	written := map[*ast.SelectorExpr]bool{}
+	ast.Inspect(fn.Body, func(n ast.Node) bool {
+		if assign, ok := n.(*ast.AssignStmt); ok {
+			for _, lhs := range assign.Lhs {
+				if sel, ok := ast.Unparen(lhs).(*ast.SelectorExpr); ok {
+					written[sel] = true
+				}
+			}
+		}
+		return true
+	})
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
 		switch node := n.(type) {
 		case ast.Expr:
@@ -428,6 +510,17 @@ func readDecisionFunc(pkg *checkedPackage, fn *ast.FuncDecl) *decisionFunc {
 			}
 			if lit, ok := node.(*ast.CompositeLit); ok && isRecordType(info.Types[lit].Type, "Notice") {
 				readNoticeKind(pkg, f, lit, assigned)
+			}
+			// The send renders such a start from the wait it carries, so the function reaches
+			// whatever that render reaches.
+			if lit, ok := node.(*ast.CompositeLit); ok && isRecordType(info.Types[lit].Type, "SuperviseRequest") && setsField(lit, "Awaiting") {
+				f.queuesResume = true
+				if !slices.Contains(f.calls, resumeSend) {
+					f.calls = append(f.calls, resumeSend)
+				}
+			}
+			if sel, ok := node.(*ast.SelectorExpr); ok && !written[sel] && sel.Sel.Name == "EntryTask" && isRecordType(info.TypeOf(sel.X), "PhaseRow") {
+				f.storedTasks = append(f.storedTasks, pkg.pos(sel))
 			}
 		case *ast.RangeStmt:
 			if loop, ok := readKeptLoop(pkg, node, callsIn); ok {
@@ -598,6 +691,18 @@ func isRecordType(typ types.Type, name string) bool {
 // isKeptDecision is whether typ is one of the record types that hold one kept decision.
 func isKeptDecision(typ types.Type) bool {
 	return slices.ContainsFunc(keptDecisionTypes, func(name string) bool { return isRecordType(typ, name) })
+}
+
+// setsField is whether the struct literal lit names field among its keys.
+func setsField(lit *ast.CompositeLit, field string) bool {
+	return slices.ContainsFunc(lit.Elts, func(elt ast.Expr) bool {
+		keyed, ok := elt.(*ast.KeyValueExpr)
+		if !ok {
+			return false
+		}
+		key, ok := keyed.Key.(*ast.Ident)
+		return ok && key.Name == field
+	})
 }
 
 // compiledDependencies is where the compiler left the types of everything this package imports,

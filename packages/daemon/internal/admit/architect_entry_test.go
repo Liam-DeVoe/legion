@@ -44,9 +44,9 @@ func putArchitectRow(t *testing.T, pool *pgxpool.Pool, root string, entry int64,
 }
 
 // seededArchitectTask is the work a seeded architect entry carries: a task the derivation wrote,
-// as admission's promotion writes one, on a row that does not mark it to be sent as written, so
-// the sweep's send derives it again (workflow.Engine.SendArchitectStart). It is the derivation for
-// a generation no fixture's root stands at, so a send that derives again is told apart from one
+// as admission's promotion writes one, on a row that keeps no wait a resume answered, so the
+// sweep's send derives it again (workflow.Engine.SendArchitectStart). It is the derivation for a
+// generation no fixture's root stands at, so a send that derives again is told apart from one
 // that sends the row's text.
 func seededArchitectTask(root string) string {
 	return workflow.ArchitectStartTask(workflow.ArchitectStart{
@@ -101,9 +101,10 @@ func raisedArchitectRow(t *testing.T, pool *pgxpool.Pool, root string, entry int
 // entry it raised: the one architect start of root carries entry, waiting, the wait it answers
 // (record.SuperviseRequest.Awaiting), and no text of its own, and rendered as its send renders it
 // (startText, under the single step spec that newAdmission's engine gates) it is task, the text
-// the resume kept on the architect's row. The send renders it from the record as it stands then;
-// the row keeps the text of the resume, which the sweep sends as written when that start is lost
-// (workflow.Engine.SendArchitectStart), since the root's own wait is gone once it resumes.
+// the resume kept on the architect's row. The send renders it from the record as it stands then,
+// and so does the sweep's send when that start is lost (workflow.Engine.SendArchitectStart), which
+// builds the same start from the wait the row keeps, since the root's own wait is gone once it
+// resumes.
 func assertResumeStart(t *testing.T, pool *pgxpool.Pool, root string, entry int64, waiting record.Awaiting, task string) {
 	t.Helper()
 	starts := architectStartsOf(t, pool, root)
@@ -189,8 +190,8 @@ func TestAReadmittedQueuedRootRaisesItsArchitectEntryAgain(t *testing.T) {
 // what says the root was carried is what the record holds at that promotion, and the one reader
 // of it, the hand-over row of the root's generation (workflow.ArchitectStartOf), reads the row
 // that re-admission wrote in that pass, while the promotion's own write clears the mark on the
-// issue. The derived task is not marked to be sent as written, so a send of that entry again
-// derives it once more.
+// issue. The derived task keeps no wait a resume answered, so a send of that entry again derives
+// it once more.
 func TestAHandOverRaisesTheCarriedRootsArchitectEntryAtThePhaseItCarries(t *testing.T) {
 	pool := migratedPool(t)
 	admission := quiet(t, 4)
@@ -226,8 +227,8 @@ func TestAHandOverRaisesTheCarriedRootsArchitectEntryAtThePhaseItCarries(t *test
 	if !strings.Contains(start.Task, workflow.ArchitectCarriedPhaseLabel) {
 		t.Fatalf("the carried root's architect task = %q, want the take-the-phase-up instruction the derivation writes for it", start.Task)
 	}
-	if row := architectRow(t, pool, root); row.EntryVerbatim {
-		t.Fatalf("the carried root's architect row marks %q to be sent again as written, want it derived again", row.EntryTask)
+	if row := architectRow(t, pool, root); row.EntryAwaiting != nil {
+		t.Fatalf("the carried root's architect row keeps the wait %+v beside %q, want none: its task is derived again", row.EntryAwaiting, row.EntryTask)
 	}
 }
 
@@ -235,8 +236,8 @@ func TestAHandOverRaisesTheCarriedRootsArchitectEntryAtThePhaseItCarries(t *test
 // that resume raises the architect's entry and writes the resume task as the work of it, and the
 // start the promotion writes carries that number. The answer is then a fact of the record: a
 // start row that reaches no claim loses nothing a person said. The start carries the wait it
-// answers and no text, since its task is rendered at its send; the row keeps the text the resume
-// rendered, marked to be sent as written, which is what the sweep sends when that start is lost.
+// answers and no text, since its task is rendered at its send; the row keeps that wait beside the
+// text the resume rendered, and the sweep builds the same start from it when that start is lost.
 func TestAnAnsweredRootsResumeAwaitedRootRaisesItsArchitectEntry(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmission(t, 1, nil)
@@ -268,13 +269,14 @@ func TestAnAnsweredRootsResumeAwaitedRootRaisesItsArchitectEntry(t *testing.T) {
 		t.Fatalf("the answered root = %#v, want its wait ended by the promotion that resumed it", resumed)
 	}
 	row := raisedArchitectRow(t, pool, root.Key, 3)
-	if !row.EntryVerbatim {
-		t.Fatalf("%s's architect row after the resume is not marked to be sent as written, want it marked: its task names the answer, "+
-			"which the root's record no longer holds", root.Key)
-	}
 	answeredAt := fixedNow
-	assertResumeStart(t, pool, root.Key, 3, record.Awaiting{GateVersion: 3, Artifact: "artifact-root", AnsweredAt: &answeredAt,
-		AnsweredBy: record.AnsweredByApproval, AnsweredDetail: "version 3"}, row.EntryTask)
+	answered := record.Awaiting{GateVersion: 3, Artifact: "artifact-root", AnsweredAt: &answeredAt,
+		AnsweredBy: record.AnsweredByApproval, AnsweredDetail: "version 3"}
+	if !sameWait(row.EntryAwaiting, answered) {
+		t.Fatalf("%s's architect row after the resume keeps the wait %+v, want %+v: its task names the answer, which the root's record no "+
+			"longer holds, so a lost start is built again from it", root.Key, row.EntryAwaiting, answered)
+	}
+	assertResumeStart(t, pool, root.Key, 3, answered, row.EntryTask)
 }
 
 // A root the derivation serves no task is handed nothing by its promotion, so it raises no entry

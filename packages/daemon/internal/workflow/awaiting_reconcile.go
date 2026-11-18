@@ -572,17 +572,18 @@ func (e *Engine) tellInPlace(ctx context.Context, tx pgx.Tx, root record.Issue, 
 // The resume hands the architect work it was not on, so it raises the architect's phase entry and
 // writes the task as the work of that entry (EnterArchitect), rendered now by the same rule
 // (ResumeTask), and the start carries the number (record.SuperviseRequest.Entry) as a phase
-// worker's start does. That is what makes a resume survivable: the entry and its task live on the
+// worker's start does. That is what makes a resume survivable: the entry and its work live on the
 // record, so a start row that reaches no claim leaves the architect's claim below that entry, and
-// the entry sweep sends it that entry's work. The raise marks the task as one to send as written
-// (record.PhaseRow.EntryVerbatim), so that work is this text (SendArchitectStart): it names the
-// answer and no kept decision, so nothing it says can have been told by another start. The text
-// the entry holds is the record as it stands at this raise: the wait the send-time render reads
-// is the start row's and its delivery's alone, since the root's own record holds it no longer
-// once the root resumes (the promotion clears it, and tellInPlace never writes one), so the
-// sweep's send of the entry again cannot render it anew. Both callers get it — the promotion of
-// an answered root (admit's record.LineAnswered branch) and tellInPlace, which gives a live
-// architect this task where it stands.
+// the entry sweep sends it that entry's work. The raise keeps on the entry the wait it answers
+// (record.PhaseRow.EntryAwaiting), which is what this start is built from, and the sweep's send
+// builds the same start from it (SendArchitectStart), so that send renders the task at its send
+// as this start's does. The text the entry holds is the record as it stands at this raise, and is
+// never sent again: a person who approves the reviewed version after this raise has answered the
+// changes request it names. The root's own record cannot stand in for the kept wait, since it
+// holds the wait no longer once the root resumes (the promotion clears it, and tellInPlace never
+// writes one). Both callers get it — the promotion of an answered root (admit's
+// record.LineAnswered branch) and tellInPlace, which gives a live architect this task where it
+// stands.
 //
 // The resume starts the root's architect, which is a movement of the issue
 // (record.Store.MarkIssueMoved, the rule in dispatchIssue). It is marked here rather than at
@@ -607,7 +608,7 @@ func (e *Engine) ResumeAwaitedRoot(ctx context.Context, tx pgx.Tx, root record.I
 	if err != nil {
 		return err
 	}
-	entry, err := e.EnterArchitect(ctx, tx, root, task, true)
+	entry, err := e.EnterArchitect(ctx, tx, root, task, &waiting)
 	if err != nil {
 		return err
 	}
