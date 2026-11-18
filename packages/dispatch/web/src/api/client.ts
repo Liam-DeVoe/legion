@@ -747,7 +747,9 @@ export interface IssueTreeNode {
   /** The node's place among its siblings, compared byte by byte; null for a sibling that has
    *  none (an ask, a comment, a message, a lens, a risk), which comes after the ranked ones. */
   rank: string | null;
-  author: Actor | null;
+  /** Every author of the node's first version, whoever made it first ahead of the rest; an empty
+   *  list where none is recorded. A row that draws one name draws the first. */
+  author: Actor[];
   state: "live" | "proposed" | "overtaken" | "settled";
   visibility: "project" | "author";
   /** When the node was made (RFC 3339), kept through a move. */

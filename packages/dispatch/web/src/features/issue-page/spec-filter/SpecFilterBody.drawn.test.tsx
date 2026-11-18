@@ -1059,7 +1059,7 @@ test("w on a statement goes to the cell beside it, whichever decision the tree's
     extra: Partial<TreeAnswerNode> = {}
   ): TreeAnswerNode => ({
     attributes: {},
-    author: null,
+    author: [],
     id,
     made_at: "2026-11-05T00:00:00Z",
     parent: KEY,

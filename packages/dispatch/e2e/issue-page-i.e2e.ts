@@ -55,16 +55,20 @@ import {
   UNBROKEN_PATH,
   type WholeIssueSeed,
 } from "./issue-layout-seed";
-import { asPlanner, PROJECT } from "./issue-layout-seed-support";
+import { askBlockOf, asPlanner, PROJECT } from "./issue-layout-seed-support";
 import {
+  ANSWERED_ASK_BLOCK_ID,
+  answeredAskShaped,
   OPEN_QUESTION_BLOCK_ID,
   planTaskBlockId,
   requirementBlockId,
   requirementText,
   SPINE_ANSWERED_QUESTION,
+  SPINE_ASK_BLOCK_ID,
   SPINE_CHECK_BLOCK_ID,
   SPINE_REQUIREMENTS,
   SPINE_SPEC,
+  specBlockRef,
 } from "./issue-layout-seed-text";
 import { filterRow, gotoIssue, issuePage, phase, presetToggle } from "./issue-page";
 import {
@@ -591,7 +595,7 @@ function rowsOfTheWholeIssue(seeded: WholeIssueSeed): Record<string, number> {
     check: checks,
     child_issue: seeded.children.keys.length,
     comment: seeded.comments.threads.length + seeded.comments.replies.length + 1,
-    decision: seeded.decisions.length,
+    decision: seeded.decisions.length - 1, // the reading draws no row yet
     message: Object.keys(seeded.messages).length,
     plan_task: seeded.planTasks.length,
     requirement: seeded.requirements.length + 1,
@@ -1027,25 +1031,22 @@ test("each node sits under the parent the model stores", async ({ browser }) => 
     await unfoldEveryBranch(page);
     const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
     const verificationSlug = (await getArtifact(seeded.verificationArtifactId)).slug;
-    const decisionsSlug = (await getArtifact(seeded.decisionsArtifactId)).slug;
-    const decision = blockNodeId(decisionsSlug, seeded.decisionBlockId);
+    const asked = blockNodeId(specSlug, SPINE_ASK_BLOCK_ID);
     const check = blockNodeId(verificationSlug, SPINE_CHECK_BLOCK_ID);
 
-    // The decision sits under the ask it answers: the question its block names.
-    const stored = ((await getIssueDecisions(seeded.key)).decisions ?? []).find(
-      (one) => one.block_id === seeded.decisionBlockId
-    );
-    expect(stored?.asks, "the server holds no ask the decision answers").toEqual([
-      seeded.answeredAskId,
+    // The answered ask's block ties the requirement it shaped, and the reading of its answer
+    // stands inside it; a reading draws no row yet.
+    const stored = await askBlockOf(seeded.specArtifactId, SPINE_ASK_BLOCK_ID);
+    expect(stored.shaped, "the answered ask's block ties no requirement it shaped").toEqual([
+      specBlockRef(seeded.key, SPINE_REQUIREMENTS.shapedElsewhere),
     ]);
-    expect(
-      await parentOfRow(page, decision),
-      "the decision is not drawn under the ask it answers"
-    ).toBe(seeded.answeredAskId);
+    expect(stored.readings, "the reading does not stand inside the answered ask").toEqual([
+      seeded.decisionBlockId,
+    ]);
     // A node with no stored parent stands at the outline's top level, under no row: the issue
     // itself is no row.
     expect(
-      await parentOfRow(page, seeded.answeredAskId),
+      await parentOfRow(page, asked),
       "the answered ask is not drawn at the outline's top level"
     ).toBeNull();
 
@@ -1103,7 +1104,7 @@ test("each node sits under the parent the model stores", async ({ browser }) => 
     ).toBe(fromFirstParent);
 
     // Every edge that is not the spine is a chip naming its target, and the spine is none: the
-    // decision's link to a requirement is its chip, once, and the ask it sits under is not one.
+    // answered ask's `shaped` tie to a requirement is its chip, once, and the ask is not its own.
     // A folded branch draws one line and no chip, so the tree is read open. A chip names its
     // target by the target's stored words, cut as a title is (`NodeRow.tsx`'s `Chip`), so each is
     // found by the words the seed stored.
@@ -1111,11 +1112,11 @@ test("each node sits under the parent the model stores", async ({ browser }) => 
     const chips = (await drawnRows(page)).flatMap((row) => row.chips);
     expect(
       chipsNaming(chips, seededBlockWords(SPINE_SPEC, SPINE_REQUIREMENTS.shapedElsewhere)).length,
-      `the decision's link is not drawn once as a chip: ${JSON.stringify(chips)}`
+      `the answered ask's tie is not drawn once as a chip: ${JSON.stringify(chips)}`
     ).toBe(1);
     expect(
       chipsNaming(chips, SPINE_ANSWERED_QUESTION),
-      "the ask the decision sits under is drawn as its chip as well"
+      "the answered ask is drawn as its own chip"
     ).toEqual([]);
   });
 
@@ -1123,7 +1124,6 @@ test("each node sits under the parent the model stores", async ({ browser }) => 
     const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
     const verificationSlug = (await getArtifact(seeded.verificationArtifactId)).slug;
     const planSlug = (await getArtifact(seeded.planArtifactId)).slug;
-    const decisionsSlug = (await getArtifact(seeded.decisionsArtifactId)).slug;
     const slugs = new Set(((await getIssue(seeded.key)).artifacts ?? []).map((one) => one.slug));
     const settling = watchApiRequests(page);
     await gotoIssue(page, `/issues/${seeded.key}`);
@@ -1132,11 +1132,15 @@ test("each node sits under the parent the model stores", async ({ browser }) => 
     const rows = await drawnRows(page);
     const parentOf = (id: string) => ancestorsIn(rows, id).at(-1);
 
-    // The decision that answers the issue's answered ask sits under that ask.
-    expect(
-      parentOf(blockNodeId(decisionsSlug, seeded.decisions[1] ?? "")),
-      "the decision that answers the ask is not drawn under it"
-    ).toBe(seeded.answeredAskId);
+    // The answered ask's block ties the requirements it shaped, and the reading of its answer
+    // stands inside it; a reading draws no row yet.
+    const asked = await askBlockOf(seeded.specArtifactId, ANSWERED_ASK_BLOCK_ID);
+    expect(asked.shaped, "the answered ask's block ties no requirement it shaped").toEqual(
+      answeredAskShaped(seeded.key)
+    );
+    expect(asked.readings, "the reading does not stand inside the answered ask").toEqual([
+      seeded.decisions[1],
+    ]);
 
     // Each check under the requirement its `serves` names, and each result under its check.
     for (const check of (await getIssueResults(seeded.key)).checks ?? []) {
@@ -3050,26 +3054,21 @@ function changeIn(before: string, after: string): string {
 // editor is the document's whole editor, and the keys it answers for a whole document reached past
 // the block: measured on a preview, Ctrl+Home moved the caret before the spec's `## Summary` and a
 // `Y` typed then made it `## YSummary`, and Up after Left put the caret before a heading above the
-// statement. Each move is pressed once Enter has put the caret at the start of a node's block, and
-// a `Y` typed after it. In a statement of the spec, Up from its first line and Down from its last
-// leave the caret at its start - unguarded, each put it between the statement and the block above
-// or below, and the `Y` became a paragraph of its own there - and select-all selects the
-// statement's words alone, which the `Y` replaces - unguarded, the `Y` replaced the whole spec.
-// In a decision's heading, Ctrl+Home leaves the caret at its start and Ctrl+End takes it to its
-// end - unguarded, they took it to the start of the document's first heading and the end of its
-// last paragraph; the spec opens and closes with typed blocks whose header and foot take no
-// caret, and Chromium's Ctrl+Home and Ctrl+End leave the caret where it is there. Backspace
-// pressed three times at the heading's start leaves the caret there too - unguarded, the editor
-// took the heading a level down and then made it a paragraph (Milkdown's `DowngradeHeading`), and
-// the third joined it to the paragraph above; the spec's statements are typed blocks, which no
-// join crosses. A paste of two lines at the heading's start, sent as a browser sends a paste, is
-// refused - unguarded, the editor put a line break into the heading, and the stored `## Keep...`
-// became a heading of two lines, `Two\`, `linesYKeep...` and `---` under them. Each time the
-// stored document holds the `Y` in that block, where the move stopped, and every other block byte
-// for byte as it was; the block is put back through the row after - past the `Y` and Backspace in
-// a heading, since Delete at a heading's start takes it a level down - and the stored document
-// read back as it was before.
-// SLOW(>=2s): the whole issue seeded and loaded, then seven edits made through the row, each read
+// statement. The row edits a statement of the spec, since the seed's decisions are decision blocks
+// of the spec and no row of the page edits a heading. Each move is pressed once Enter has put the
+// caret at the statement's start, and a `Y` typed after it. Up from its first line and Down from
+// its last leave the caret at its start - unguarded, each put it between the statement and the
+// block above or below, and the `Y` became a paragraph of its own there - and select-all selects
+// the statement's words alone, which the `Y` replaces - unguarded, the `Y` replaced the whole spec.
+// Ctrl+Home from the statement's middle takes the caret to its start, and Ctrl+End from its start
+// takes it to its end: the spec opens and closes with typed blocks whose header and foot take no
+// caret, and Chromium's Ctrl+Home and Ctrl+End leave the caret where it is there, so each is
+// pressed where a caret left in place would take the `Y` elsewhere. A paste of two lines at the
+// statement's start, sent as a browser sends a paste, goes into the statement as a line break and
+// makes no block beside it. Each time the stored document holds the `Y` in the statement, where
+// the move stopped, and every other block byte for byte as it was; the statement is put back
+// through the row after, and the stored document read back as it was before.
+// SLOW(>=2s): the whole issue seeded and loaded, then six edits made through the row, each read
 // back from the stored document, put back through the row and read back again.
 test("the keys of a row's editor move its caret and edit inside the node's own block alone", async ({
   browser,
@@ -3079,12 +3078,9 @@ test("the keys of a row's editor move its caret and edit inside the node's own b
   try {
     await expectTreeDrawn(page);
     const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
-    const decisionsSlug = (await getArtifact(seeded.decisionsArtifactId)).slug;
     const statementBlock = requirementBlockId(2);
     const statement = blockNodeId(specSlug, statementBlock);
     const words = requirementText(2);
-    const heading = "Keep every address the old page answered";
-    const decision = seeded.decisions[1] ?? "";
 
     /** Enter on the focused row, the caret in its node's block `blockId`, and the editor's own
      *  write of its selection after the focus passed. */
@@ -3192,53 +3188,38 @@ test("the keys of a row's editor move its caret and edit inside the node's own b
         await page.keyboard.type(words);
       },
     });
-
-    // A decision's heading, reached by `w` from the third requirement, which that decision
-    // shapes.
-    const inHeading = {
-      artifactId: seeded.decisionsArtifactId,
-      blockId: decision,
-      focus: async () => {
-        await focusRow(page, blockNodeId(specSlug, requirementBlockId(3)));
-        await page.keyboard.press("w");
-        expect(await focusedRow(page), "w did not move into the decision behind r3").toBe(
-          blockNodeId(decisionsSlug, decision)
-        );
-      },
-      undo: async () => {
-        await page.keyboard.press("ArrowRight");
-        await page.keyboard.press("Backspace");
-      },
-      words: heading,
-    };
     await editThroughRow({
-      ...inHeading,
-      edited: `Y${heading}`,
-      keys: ["Control+Home"],
-      name: "Ctrl+Home",
+      ...inStatement,
+      edited: `Y${words}`,
+      keys: ["ArrowRight", "ArrowRight", "ArrowRight", "Control+Home"],
+      name: "Ctrl+Home from the statement's middle",
     });
     await editThroughRow({
-      ...inHeading,
-      edited: `${heading}Y`,
+      ...inStatement,
+      edited: `${words}Y`,
       keys: ["Control+End"],
-      name: "Ctrl+End",
+      name: "Ctrl+End from the statement's start",
       undo: async () => {
         await page.keyboard.press("Control+End");
         await page.keyboard.press("Backspace");
       },
     });
+    // The editor reads a pasted text as markdown (`@milkdown/plugin-clipboard`), and two lines as
+    // one paragraph holding a line break, which goes into the statement's paragraph at the caret:
+    // the break stores as a backslash after `Two`, and `lines` and the `Y` open the statement's
+    // next line. Without the editor's hold on the block (`holdEditsToBlock`) the paste goes in the
+    // same way: the hold refuses a block made beside the statement, and two lines make none, since
+    // a statement holds paragraphs and a paragraph holds line breaks.
     await editThroughRow({
-      ...inHeading,
-      edited: `Y${heading}`,
-      keys: ["Backspace", "Backspace", "Backspace"],
-      name: "Backspace pressed three times at the heading's start",
-    });
-    await editThroughRow({
-      ...inHeading,
-      edited: `Y${heading}`,
+      ...inStatement,
+      edited: `Two\\\nlinesY${words}`,
       keys: [],
-      name: "a paste of two lines at the heading's start",
+      name: "a paste of two lines at the statement's start",
       paste: "Two\nlines",
+      undo: async () => {
+        await page.keyboard.press("Control+a");
+        await page.keyboard.type(words);
+      },
     });
   } finally {
     await context.close();

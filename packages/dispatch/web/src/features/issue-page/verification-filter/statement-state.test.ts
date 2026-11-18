@@ -421,7 +421,7 @@ function issueTree(checks: readonly CheckBlock[]): TreeNode {
     text: string
   ): TreeAnswerNode => ({
     attributes: {},
-    author: null,
+    author: [],
     document: { artifact_id: document.id, position, slug: document.slug },
     id,
     made_at: "2026-11-05T00:00:00Z",
@@ -506,7 +506,7 @@ function issueTree(checks: readonly CheckBlock[]): TreeNode {
           (one.results ?? []).map(
             (held): TreeAnswerNode => ({
               attributes: {},
-              author: null,
+              author: [],
               id: held.id,
               made_at: held.created_at,
               parent: one.block_id,

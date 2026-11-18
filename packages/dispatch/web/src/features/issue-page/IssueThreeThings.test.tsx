@@ -586,7 +586,7 @@ const decision: Decision = {
 function block(id: string, type: string, position: number, text: string): TreeAnswerNode {
   return {
     attributes: {},
-    author: null,
+    author: [],
     document: { artifact_id: specDocument.id, position, slug: "spec" },
     id,
     made_at: "2026-11-05T00:00:00Z",

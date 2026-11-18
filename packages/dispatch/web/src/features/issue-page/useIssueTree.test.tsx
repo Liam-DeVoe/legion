@@ -112,7 +112,7 @@ function answerNode(
 ): TreeAnswerNode {
   return {
     attributes: {},
-    author: null,
+    author: [],
     id,
     made_at: "2026-11-05T00:00:00Z",
     parent: KEY,
@@ -145,7 +145,7 @@ function treeAnswer(
       task,
       ...comments.map((one) =>
         answerNode(one.id, "comment", {
-          author: one.author,
+          author: [one.author],
           made_at: one.created_at,
           text: one.body,
         })
@@ -3251,7 +3251,7 @@ test("the outline's tree that took the focus for want of a row hands it to the f
     nodes: [answerNode(KEY, "issue", { parent: null }), ...nodes],
   });
   const reply = answerNode(comment.id, "comment", {
-    author: comment.author,
+    author: [comment.author],
     made_at: comment.created_at,
     text: comment.body,
   });
@@ -3370,6 +3370,43 @@ test("back on the issue, the decisions read made for an event while away reads t
   }
 });
 
+/** The tree as Dispatch answers it while it holds `held`, the issue's one comment: settled once
+ *  it is resolved. */
+function heldCommentTree(held: Comment): TreeAnswer {
+  return treeAnswer([], {
+    nodes: [
+      answerNode(held.id, "comment", {
+        author: [held.author],
+        made_at: held.created_at,
+        state: held.resolved ? "settled" : "live",
+        text: held.body,
+      }),
+    ],
+  });
+}
+
+/** The margin's resolve of the comment (`useMarginItems.ts`) on `client`, which Dispatch takes in
+ *  `write`: its `onMutate` writes the resolve into the comments read before Dispatch holds it, and
+ *  its `onSuccess` invalidates the comments and the issue once Dispatch answers. */
+function marginResolveOn(
+  client: QueryClient,
+  write: () => Promise<void>
+): MutationObserver<void, Error, void, void> {
+  return new MutationObserver(client, {
+    mutationFn: write,
+    onMutate: async () => {
+      await client.cancelQueries({ queryKey: ["comments", KEY] });
+      client.setQueryData<Comment[]>(["comments", KEY], (current) =>
+        current?.map((one) => ({ ...one, resolved: true }))
+      );
+    },
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: ["comments", KEY] });
+      void client.invalidateQueries({ queryKey: ["issue", KEY] });
+    },
+  });
+}
+
 // The margin's resolve of a comment (`useMarginItems.ts`): its `onMutate` writes the resolve
 // into the comments read before Dispatch holds it, its `onSuccess` invalidates the comments and
 // the issue once Dispatch answers, and the resolve's event refreshes the comments 150 ms later,
@@ -3383,16 +3420,7 @@ for (const latency of [200, 1_200]) {
     let held: Comment = comment;
     (api.listComments as Mock<typeof api.listComments>).mockImplementation(async () => [held]);
     (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(async () =>
-      treeAnswer([], {
-        nodes: [
-          answerNode(held.id, "comment", {
-            author: held.author,
-            made_at: held.created_at,
-            state: held.resolved ? "settled" : "live",
-            text: held.body,
-          }),
-        ],
-      })
+      heldCommentTree(held)
     );
     const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
     trackQueryFetches(client);
@@ -3405,21 +3433,9 @@ for (const latency of [200, 1_200]) {
       });
       const before = treeReadsOf();
 
-      const resolve = new MutationObserver(client, {
-        mutationFn: async () => {
-          held = { ...comment, resolved: true };
-          await Bun.sleep(latency);
-        },
-        onMutate: async () => {
-          await client.cancelQueries({ queryKey: ["comments", KEY] });
-          client.setQueryData<Comment[]>(["comments", KEY], (current) =>
-            current?.map((one) => ({ ...one, resolved: true }))
-          );
-        },
-        onSuccess: () => {
-          void client.invalidateQueries({ queryKey: ["comments", KEY] });
-          void client.invalidateQueries({ queryKey: ["issue", KEY] });
-        },
+      const resolve = marginResolveOn(client, async () => {
+        held = { ...comment, resolved: true };
+        await Bun.sleep(latency);
       });
       await act(async () => {
         await resolve.mutate();
@@ -3461,16 +3477,7 @@ test("a resolve from the margin with the live feed down reads the tree once, aft
   (api.listComments as Mock<typeof api.listComments>).mockImplementation(async () => [held]);
   (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(async () => {
     readsAnswered.push(answered);
-    return treeAnswer([], {
-      nodes: [
-        answerNode(held.id, "comment", {
-          author: held.author,
-          made_at: held.created_at,
-          state: held.resolved ? "settled" : "live",
-          text: held.body,
-        }),
-      ],
-    });
+    return heldCommentTree(held);
   });
   const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
   trackQueryFetches(client);
@@ -3482,22 +3489,10 @@ test("a resolve from the margin with the live feed down reads the tree once, aft
     });
     const before = readsAnswered.length;
 
-    const resolve = new MutationObserver(client, {
-      mutationFn: async () => {
-        held = { ...comment, resolved: true };
-        await Bun.sleep(200);
-        answered = true;
-      },
-      onMutate: async () => {
-        await client.cancelQueries({ queryKey: ["comments", KEY] });
-        client.setQueryData<Comment[]>(["comments", KEY], (current) =>
-          current?.map((one) => ({ ...one, resolved: true }))
-        );
-      },
-      onSuccess: () => {
-        void client.invalidateQueries({ queryKey: ["comments", KEY] });
-        void client.invalidateQueries({ queryKey: ["issue", KEY] });
-      },
+    const resolve = marginResolveOn(client, async () => {
+      held = { ...comment, resolved: true };
+      await Bun.sleep(200);
+      answered = true;
     });
     await act(async () => {
       await resolve.mutate();
@@ -4151,7 +4146,7 @@ test("the tree read an event asks for begins after the comments read the schedul
   const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
   trackQueryFetches(client);
   const feed = liveFeedOn(client);
-  const commentReads = () => (api.listComments as Mock<typeof api.listComments>).mock.calls.length;
+  const commentReads = () => readsSent().comments;
   try {
     const view = renderHook(() => useIssueTree(issue).root, { wrapper: stageWrapper(client) });
     await waitFor(() => expect(holdsComment(view.result.current)).toBe(true));
@@ -4266,17 +4261,7 @@ function openRig(read: RuleRead): Rig {
       if (rig.refusing) throw new Error(`the ${read} read was refused`);
     }
     if (query?.view === "spec") return SPEC_VIEW;
-    const { held } = rig;
-    return treeAnswer([], {
-      nodes: [
-        answerNode(held.id, "comment", {
-          author: held.author,
-          made_at: held.created_at,
-          state: held.resolved ? "settled" : "live",
-          text: held.body,
-        }),
-      ],
-    });
+    return heldCommentTree(rig.held);
   });
   startFeedOn(sockets, true);
   return rig;
@@ -4343,13 +4328,22 @@ function comeBack(rig: Rig): void {
  *  between two reads of one query, with nothing out but the read the row holds open: by then every
  *  read the scheduler or the page's subscription owes has begun. */
 async function quiet(rig: Rig): Promise<void> {
-  for (let window = 0; window < 10; window += 1) {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
     const sent = rig.requests();
     await tick(MIN_REFETCH_INTERVAL_MS + 200, 50);
     const out = rig.client.isFetching() - (rig.out === undefined ? 0 : 1);
     if (rig.requests() === sent && out === 0) return;
   }
   throw new Error("the page was still reading after 12 s");
+}
+
+/** An event of the issue: the event feed's refresh of the issue's comments, in an awaited `act`.
+ *  The page's subscription hears the comments marked stale and asks for its reads in a microtask,
+ *  which runs after a plain `act` has closed, and a read it begins updates the stage. */
+async function commentsEvent(rig: Rig): Promise<void> {
+  await act(async () => {
+    refreshQueries(rig.client, [{ queryKey: ["comments", KEY] }]);
+  });
 }
 
 /** Dispatch restarting under the page's socket, and 200 ms of the clock, in which the page makes
@@ -4378,7 +4372,7 @@ interface RuleState {
 }
 
 /** The read answered, the reader then away from it where the row says so. */
-async function answered(rig: Rig, observed: boolean): Promise<void> {
+async function reachAnswered(rig: Rig, observed: boolean): Promise<void> {
   mountStage(rig);
   await ruleSettled(rig, "success");
   if (!observed) leave(rig);
@@ -4398,15 +4392,13 @@ const STATES = {
       expect(rig.client.getQueryState(issueTreeKey(KEY))?.status).toBe("success");
     },
   },
-  answered: { words: "answered", reach: answered },
+  answered: { words: "answered", reach: reachAnswered },
   stale: {
     words: "answered and marked stale by an event while nothing observed it",
     reach: async (rig, observed) => {
       if (observed) throw new Error("an observer reads a stale answer");
-      await answered(rig, false);
-      act(() => {
-        refreshQueries(rig.client, [{ queryKey: ["comments", KEY] }]);
-      });
+      await reachAnswered(rig, false);
+      await commentsEvent(rig);
       await tick(100, 10);
       expect(rig.client.getQueryState(ruleKey(rig))?.isInvalidated).toBe(true);
     },
@@ -4462,21 +4454,9 @@ function marginResolve(latency: number): RuleWay {
   return {
     words: `a resolve from the margin answered in ${latency} ms, with its event`,
     does: async (rig) => {
-      const resolve = new MutationObserver(rig.client, {
-        mutationFn: async () => {
-          rig.held = { ...comment, resolved: true };
-          await Bun.sleep(latency);
-        },
-        onMutate: async () => {
-          await rig.client.cancelQueries({ queryKey: ["comments", KEY] });
-          rig.client.setQueryData<Comment[]>(["comments", KEY], (current) =>
-            current?.map((one) => ({ ...one, resolved: true }))
-          );
-        },
-        onSuccess: () => {
-          void rig.client.invalidateQueries({ queryKey: ["comments", KEY] });
-          void rig.client.invalidateQueries({ queryKey: ["issue", KEY] });
-        },
+      const resolve = marginResolveOn(rig.client, async () => {
+        rig.held = { ...comment, resolved: true };
+        await Bun.sleep(latency);
       });
       // The clock moves 10 ms at a time until Dispatch has answered, then 150 ms to the event.
       let answered = false;
@@ -4488,9 +4468,7 @@ function marginResolve(latency: number): RuleWay {
       }
       expect(answered, "Dispatch answered the resolve").toBe(true);
       await tick(150, 10);
-      act(() => {
-        refreshQueries(rig.client, [{ queryKey: ["comments", KEY] }]);
-      });
+      await commentsEvent(rig);
     },
     ends: (rig) => {
       expect(
@@ -4507,12 +4485,10 @@ const WAYS = {
   mount: {
     words: "a new surface mounting",
     does: async (rig) => {
-      // `pressSpecOffAndOn`, on the row's clock.
+      // The filter pressed off and on.
       if (rig.read === "spec" && rig.on.preset === "spec") {
-        rig.on.preset = "conversation";
-        stageOf(rig).rerender();
-        rig.on.preset = "spec";
-        stageOf(rig).rerender();
+        leave(rig);
+        comeBack(rig);
         await tick(300, 10);
         return;
       }
@@ -4565,11 +4541,7 @@ const WAYS = {
   },
   event: {
     words: "an event of the issue",
-    does: async (rig) => {
-      act(() => {
-        refreshQueries(rig.client, [{ queryKey: ["comments", KEY] }]);
-      });
-    },
+    does: commentsEvent,
   },
   retry: {
     words: "the reader's Retry",
@@ -4641,11 +4613,12 @@ function expectReads(sent: number, expected: RuleReads, message: string): void {
  *  observed, then the reader coming back to it, and the reads until the page is quiet. */
 async function holdsRule(rule: ReadRule): Promise<void> {
   const rig = openRig(rule.read);
+  const way: RuleWay = WAYS[rule.way];
   try {
     await STATES[rule.state].reach(rig, rule.observed);
     await quiet(rig);
     const before = ruleReads(rig);
-    await WAYS[rule.way].does(rig);
+    await way.does(rig);
     // A read held open answers once the way is done, and whatever the way asked for after it
     // then begins.
     await tick(50, 10);
@@ -4655,7 +4628,6 @@ async function holdsRule(rule: ReadRule): Promise<void> {
     });
     await quiet(rig);
     expectReads(ruleReads(rig) - before, rule.now, "the reads the way starts");
-    const way: RuleWay = WAYS[rule.way];
     way.ends?.(rig);
     if (rule.observed) return;
     for (const slot of rig.slots.splice(0)) slot.unmount();

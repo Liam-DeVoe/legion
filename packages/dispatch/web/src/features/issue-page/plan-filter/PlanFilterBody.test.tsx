@@ -640,7 +640,7 @@ function issueRead(verification?: Artifact): IssueDetails {
 function taskBlock(id: string, position: number): TreeAnswerNode {
   return {
     attributes: {},
-    author: null,
+    author: [],
     document: { artifact_id: PLAN_ARTIFACT, position, slug: PLAN },
     id,
     made_at: "2026-11-05T00:00:00Z",
