@@ -5,15 +5,18 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // Every DATABASE_URL a process opens goes through Open, the server's boot and each subcommand's
 // alike, so Open refuses one whose user part pgx may read apart from the rest of it, named by its
-// length and before any connect: pgx would take a piece of that part for a host or a database,
-// which its connect error prints. The control is the same value with that part percent-encoded,
-// which Open takes to pgx, whose connect to a port nothing listens on then fails naming no part of
-// the password (pgx names the user, which is the role). The user, the passwords and the token are
-// made for this test.
+// length and the cause the check found, before any connect: pgx would take a piece of that part for
+// a host or a database, which its connect error prints. The control is the same value with that
+// part percent-encoded, which Open takes to pgx, whose connect to a port nothing listens on then
+// fails naming no part of the password (pgx names the user, which is the role). The user, the
+// passwords and the token are made for this test.
 func TestOpenRefusesAMisreadURLByItsLength(t *testing.T) {
 	const (
 		user   = "made-up-user-2c5e"
@@ -21,16 +24,21 @@ func TestOpenRefusesAMisreadURLByItsLength(t *testing.T) {
 		second = "not-a-secret-8e21"
 		token  = "not-a-secret-tok4f3"
 	)
-	for _, tc := range []struct{ name, value, encoded string }{
-		{"a / in the password", "postgres://" + user + ":" + first + "/" + second + "@127.0.0.1:1/x?connect_timeout=3", "postgres://" + user + ":" + first + "%2F" + second + "@127.0.0.1:1/x?connect_timeout=3"},
-		{"a token and a / as the user part", "postgres://" + token + "/" + first + "@127.0.0.1:1/x?connect_timeout=3", "postgres://" + token + "%2F" + first + "@127.0.0.1:1/x?connect_timeout=3"},
-		{"an @ in the password", "postgresql://" + user + ":" + first + "@" + second + "@127.0.0.1:1/x?connect_timeout=3", "postgresql://" + user + ":" + first + "%40" + second + "@127.0.0.1:1/x?connect_timeout=3"},
+	for _, tc := range []struct {
+		name, value, encoded string
+		why                  redact.Misreading
+	}{
+		{"a / in the password", "postgres://" + user + ":" + first + "/" + second + "@127.0.0.1:1/x?connect_timeout=3", "postgres://" + user + ":" + first + "%2F" + second + "@127.0.0.1:1/x?connect_timeout=3", atAfterPath},
+		{"a token and a / as the user part", "postgres://" + token + "/" + first + "@127.0.0.1:1/x?connect_timeout=3", "postgres://" + token + "%2F" + first + "@127.0.0.1:1/x?connect_timeout=3", atAfterPath},
+		{"an @ in the password", "postgresql://" + user + ":" + first + "@" + second + "@127.0.0.1:1/x?connect_timeout=3", "postgresql://" + user + ":" + first + "%40" + second + "@127.0.0.1:1/x?connect_timeout=3", atsBeforePath},
+		{"a ? in the password", "postgres://" + user + ":" + first + "?" + second + "@127.0.0.1:1/x?connect_timeout=3", "postgres://" + user + ":" + first + "%3F" + second + "@127.0.0.1:1/x?connect_timeout=3", endBeforeAt},
+		{"an @ in a query with no / before it", "postgres://" + user + ":" + first + "@127.0.0.1:1?application_name=a@b", "postgres://" + user + ":" + first + "@127.0.0.1:1/?application_name=a@b&connect_timeout=3", atsBeforePath},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := Open(context.Background(), tc.value)
-			want := fmt.Sprintf("DATABASE_URL, a value of %d characters,", len(tc.value))
-			if err == nil || !strings.Contains(err.Error(), want) {
-				t.Fatalf("err = %v, want a refusal that names %q", err, want)
+			want := fmt.Sprintf("DATABASE_URL, a value of %d characters, %s", len(tc.value), tc.why)
+			if err == nil || err.Error() != want {
+				t.Fatalf("err = %v, want %q", err, want)
 			}
 			for _, part := range []string{user, first, second, token} {
 				if strings.Contains(err.Error(), part) {
@@ -38,13 +46,85 @@ func TestOpenRefusesAMisreadURLByItsLength(t *testing.T) {
 				}
 			}
 			_, err = Open(context.Background(), tc.encoded)
-			if err == nil || strings.Contains(err.Error(), want) {
+			if err == nil || strings.Contains(err.Error(), "DATABASE_URL, a value of") {
 				t.Fatalf("the control with the part percent-encoded: err = %v, want pgx's connect failure", err)
 			}
 			if strings.Contains(err.Error(), second) {
 				t.Errorf("the control: pgx's error holds the password: %q", err)
 			}
 		})
+	}
+}
+
+// A DATABASE_URL whose other @ is in its query or its database name, after its first /, is read by
+// pgx and net/url alike, so Open takes it to pgx, whose connect to a port nothing listens on then
+// fails naming no part of the password. The control is the misread form above, which is refused.
+// The user and the password are made for this test.
+func TestOpenTakesAnAtInTheQueryOrTheDatabaseNameToPgx(t *testing.T) {
+	const (
+		user     = "made-up-user-1b7c"
+		password = "not-a-secret-3f9a"
+	)
+	for _, value := range []string{
+		"postgres://" + user + ":" + password + "@127.0.0.1:1/dispatch?application_name=dispatch@box&connect_timeout=3",
+		"postgres://" + user + ":" + password + "@127.0.0.1:1/dispatch?sslmode=disable&application_name=ops@example.com&connect_timeout=3",
+		"postgres://" + user + "@127.0.0.1:1/dispatch?application_name=a@b&connect_timeout=3",
+		"postgres://" + user + ":" + password + "@127.0.0.1:1/dis@patch?connect_timeout=3",
+	} {
+		_, err := Open(context.Background(), value)
+		if err == nil || strings.Contains(err.Error(), "DATABASE_URL, a value of") || !strings.Contains(err.Error(), "127.0.0.1:1") {
+			t.Errorf("%d characters: err = %v, want pgx's connect failure naming 127.0.0.1:1", len(value), err)
+			continue
+		}
+		if strings.Contains(err.Error(), password) {
+			t.Errorf("%d characters: pgx's error holds the password: %q", len(value), err)
+		}
+	}
+	control := "postgres://" + user + ":" + password + "@x@127.0.0.1:1/dispatch?connect_timeout=3"
+	if _, err := Open(context.Background(), control); err == nil || !strings.Contains(err.Error(), "DATABASE_URL, a value of") {
+		t.Fatalf("UNKNOWN: the control %d characters long is not refused, so this test saw nothing: %v", len(control), err)
+	}
+}
+
+// The acceptance test's red test of a DATABASE_URL pgx cannot parse, kept as it ran with the cause
+// asserted: the boot logs Open's error at "dispatch: open database", and pgx's parse error masks the
+// password but quotes the user, which can be a token written where the user stands. Open names
+// such a value by its length and says that pgx cannot parse it. The control inside the test: the
+// same value with no user part is refused at the parse too, so the line under test is reached. The
+// user, the password and the token are made for this test.
+func TestOpenNamesAValuePgxCannotParseByItsLength(t *testing.T) {
+	const (
+		user     = "made-up-user-5f8c"
+		password = "made-up-pw-not-a-secret-2b7e"
+		token    = "madeuptoken4d1a"
+	)
+	open := func(databaseURL string) string {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		if _, err := Open(ctx, databaseURL); err != nil {
+			return err.Error()
+		}
+		return "(opened)"
+	}
+	controlURL := "postgres://127.0.0.1:1/x?sslmode=bogus"
+	control := open(controlURL)
+	if control != fmt.Sprintf("DATABASE_URL, a value of %d characters, %s", len(controlURL), unparsed) {
+		t.Fatalf("UNKNOWN: the control is not refused at the parse, so this test saw nothing: %q", control)
+	}
+	for name, databaseURL := range map[string]string{
+		"a password and a user": "postgres://" + user + ":" + password + "@127.0.0.1:1/x?sslmode=bogus",
+		"a token as the user":   "postgres://" + token + "@127.0.0.1:1/x?sslmode=bogus",
+	} {
+		text := open(databaseURL)
+		if want := fmt.Sprintf("DATABASE_URL, a value of %d characters, %s", len(databaseURL), unparsed); text != want {
+			t.Errorf("%s: %q, want %q", name, strings.NewReplacer(user, "<USER>", password, "<PASSWORD>", token, "<TOKEN>").Replace(text), want)
+		}
+		for _, part := range []string{user, password, token} {
+			if strings.Contains(text, part) {
+				t.Errorf("RED %s: the error the boot logs at \"dispatch: open database\" holds a part of DATABASE_URL's user part", name)
+				break
+			}
+		}
 	}
 }
 

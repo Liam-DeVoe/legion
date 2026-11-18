@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testsocks5"
 )
@@ -116,11 +117,13 @@ func TestConnectRefusesANATSServerThatIsNotThisMachines(t *testing.T) {
 }
 
 // A NATS URL nats.go cannot read apart from its user part is refused before any connect, named by
-// its length, whatever the run allows: nats.go's parse error quotes the URL whole, user part and
-// all, and the Dispatch server logs it at boot; a value that parses with an @ left after the user
-// part has a piece of the user part read as its host. Connect, ConnectOwningStream and Dial each
-// refuse it. The control is the same value with the user part percent-encoded, which parses and is
-// dialled in the background. Each password is made for this test.
+// its length and the cause the check found, whatever the run allows: nats.go's parse error quotes
+// the URL whole, user part and all, and the Dispatch server logs it at boot; a value that parses
+// with an @ left after the user part has a piece of the user part read as its host. A value with no
+// @ has no user part, so it is refused with net/url's own error, which names the port it could not
+// read. Connect, ConnectOwningStream and Dial each refuse it. The control is the same value with
+// the user part percent-encoded, which parses and is dialled in the background. Each password is
+// made for this test.
 func TestANATSURLItsClientCannotReadIsRefusedByItsLength(t *testing.T) {
 	const (
 		user     = "made-up-user-6a0f"
@@ -132,10 +135,15 @@ func TestANATSURLItsClientCannotReadIsRefusedByItsLength(t *testing.T) {
 		}
 		return "", false
 	}
-	for _, tc := range []struct{ name, raw, encoded string }{
-		{"a / in the password", "nats://" + user + ":ab/" + password + "@127.0.0.1:1", "nats://" + user + ":ab%2F" + password + "@127.0.0.1:1"},
-		{"a mistyped port", "nats://" + user + ":" + password + "@127.0.0.1:1x2", ""},
-		{"a token with a # as the user part", "nats://" + user + "#" + password + "@127.0.0.1:1", "nats://" + user + "%23" + password + "@127.0.0.1:1"},
+	byLength := func(raw string, why redact.Misreading) string {
+		return fmt.Sprintf("bus: a NATS URL, a value of %d characters, %s", len(raw), why)
+	}
+	mistyped := "nats://" + user + ":" + password + "@127.0.0.1:1x2"
+	for _, tc := range []struct{ name, raw, want, encoded string }{
+		{"a / in the password", "nats://" + user + ":ab/" + password + "@127.0.0.1:1", byLength("nats://"+user+":ab/"+password+"@127.0.0.1:1", redact.Unparsed), "nats://" + user + ":ab%2F" + password + "@127.0.0.1:1"},
+		{"a mistyped port after a user part", mistyped, byLength(mistyped, redact.Unparsed), ""},
+		{"a token with a # as the user part", "nats://" + user + "#" + password + "@127.0.0.1:1", byLength("nats://"+user+"#"+password+"@127.0.0.1:1", redact.AtOutsideUserPart), "nats://" + user + "%23" + password + "@127.0.0.1:1"},
+		{"a mistyped port and no user part", "nats://nats.example:42x22", `bus: a NATS URL nats.go cannot read: parse "nats://nats.example:42x22": invalid port ":42x22" after host`, "nats://nats.example:4222"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			connects := map[string]func(string) error{
@@ -163,9 +171,8 @@ func TestANATSURLItsClientCannotReadIsRefusedByItsLength(t *testing.T) {
 			}
 			for name, connect := range connects {
 				err := connect(tc.raw)
-				want := fmt.Sprintf("a NATS URL of %d characters", len(tc.raw))
-				if err == nil || !strings.Contains(err.Error(), want) {
-					t.Errorf("%s: err = %v, want a refusal that names %q", name, err, want)
+				if err == nil || err.Error() != tc.want {
+					t.Errorf("%s: err = %v, want %q", name, err, tc.want)
 					continue
 				}
 				if strings.Contains(err.Error(), password) || strings.Contains(err.Error(), user) {

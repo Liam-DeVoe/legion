@@ -1,17 +1,22 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // A DATABASE_URL whose user part pgx and net/url can read apart differently is refused at every
-// boot, named by its length. pgx ends the user part at the first @ before any /, and net/url at the
-// last @ and at the first /, ? or #, so each such form hands pgx a piece of the user part as a host
-// or a database name, which its connect error, logged at every boot that does not reach the
-// database, and the dev sign-in fence's refusal would print. Each form is refused with the dev
-// sign-in and without it. Its control is the same value with the @ or / of its user part
+// boot, named by its length and the cause the check found. pgx ends the user part at the first @
+// before any /, and net/url at the last @ and at the first /, ? or #, so each such form hands pgx a
+// piece of the user part as a host or a database name, which its connect error, logged at every
+// boot that does not reach the database, and the dev sign-in fence's refusal would print. Each form
+// is refused with the dev sign-in and without it, in the words store.Open refuses it with, since
+// one function makes both. Its control is the same value with the @ or / of its user part
 // percent-encoded: that boots, and under the dev sign-in it is admitted on a loopback host and
 // refused naming a remote one. The user, the passwords and the token are made for this test.
 func TestBootRefusesAMisreadDatabaseURLByItsLength(t *testing.T) {
@@ -21,15 +26,19 @@ func TestBootRefusesAMisreadDatabaseURLByItsLength(t *testing.T) {
 		second = "not-a-secret-b27e"
 		token  = "not-a-secret-tok3n4c9a"
 	)
+	const (
+		afterPath  = "has an @ after its first / and none before it"
+		beforePath = "has more than one @ before its first /"
+	)
 	for _, tc := range []struct {
-		name, value, encoded string
-		loopback             bool
+		name, value, encoded, cause string
+		loopback                    bool
 	}{
-		{name: "a / in the password", value: "postgres://" + user + ":" + first + "/" + second + "@db.example:5432/x", encoded: "postgres://" + user + ":" + first + "%2F" + second + "@db.example:5432/x"},
-		{name: "a token and a / as the user part", value: "postgres://" + token + "/" + first + "@db.example/x", encoded: "postgres://" + token + "%2F" + first + "@db.example/x"},
-		{name: "an @ in the password", value: "postgres://" + user + ":" + first + "@" + second + "@db.example:5432/x", encoded: "postgres://" + user + ":" + first + "%40" + second + "@db.example:5432/x"},
-		{name: "an @ and a , in the password", value: "postgres://" + user + ":" + first + "@" + second + ",x@db.example:5432/x", encoded: "postgres://" + user + ":" + first + "%40" + second + "%2Cx@db.example:5432/x"},
-		{name: "an @ in the password, on a loopback host", value: "postgresql://" + user + ":" + first + "@" + second + "@127.0.0.1:5432/x", encoded: "postgresql://" + user + ":" + first + "%40" + second + "@127.0.0.1:5432/x", loopback: true},
+		{name: "a / in the password", value: "postgres://" + user + ":" + first + "/" + second + "@db.example:5432/x", encoded: "postgres://" + user + ":" + first + "%2F" + second + "@db.example:5432/x", cause: afterPath},
+		{name: "a token and a / as the user part", value: "postgres://" + token + "/" + first + "@db.example/x", encoded: "postgres://" + token + "%2F" + first + "@db.example/x", cause: afterPath},
+		{name: "an @ in the password", value: "postgres://" + user + ":" + first + "@" + second + "@db.example:5432/x", encoded: "postgres://" + user + ":" + first + "%40" + second + "@db.example:5432/x", cause: beforePath},
+		{name: "an @ and a , in the password", value: "postgres://" + user + ":" + first + "@" + second + ",x@db.example:5432/x", encoded: "postgres://" + user + ":" + first + "%40" + second + "%2Cx@db.example:5432/x", cause: beforePath},
+		{name: "an @ in the password, on a loopback host", value: "postgresql://" + user + ":" + first + "@" + second + "@127.0.0.1:5432/x", encoded: "postgresql://" + user + ":" + first + "%40" + second + "@127.0.0.1:5432/x", cause: beforePath, loopback: true},
 	} {
 		for _, devSignIn := range []bool{false, true} {
 			name := tc.name
@@ -44,9 +53,12 @@ func TestBootRefusesAMisreadDatabaseURLByItsLength(t *testing.T) {
 			}
 			t.Run(name, func(t *testing.T) {
 				_, err := resolveBootConfig(environment(tc.value))
-				want := fmt.Sprintf("DATABASE_URL, a value of %d characters,", len(tc.value))
-				if err == nil || !strings.Contains(err.Error(), want) {
-					t.Fatalf("err = %v, want a refusal that names %q", err, want)
+				want := fmt.Sprintf("DATABASE_URL, a value of %d characters, %s", len(tc.value), tc.cause)
+				if err == nil || !strings.HasPrefix(err.Error(), want) {
+					t.Fatalf("err = %v, want a refusal that begins %q", err, want)
+				}
+				if _, opened := store.Open(context.Background(), tc.value); opened == nil || opened.Error() != err.Error() {
+					t.Errorf("store.Open refuses it with %v, and the boot with %q: the two differ", opened, err)
 				}
 				for _, part := range []string{user, first, second, token} {
 					if strings.Contains(err.Error(), part) {
@@ -63,6 +75,37 @@ func TestBootRefusesAMisreadDatabaseURLByItsLength(t *testing.T) {
 					t.Errorf("the control with the user part percent-encoded: err = %v, want the refusal of its remote host db.example", err)
 				}
 			})
+		}
+	}
+}
+
+// A DATABASE_URL whose other @ is in its query or its database name, after its first /, is read by
+// pgx and net/url alike: it boots, and under the dev sign-in it is admitted on a loopback host. Its
+// control is the same value with its host remote, which the dev sign-in refuses naming that host,
+// so the host the fence read is the one both readers read. The user and the password are made for
+// this test.
+func TestBootAdmitsADatabaseURLWhoseOtherAtIsInItsQueryOrDatabaseName(t *testing.T) {
+	const (
+		user     = "made-up-user-8e2d"
+		password = "not-a-secret-c41f"
+	)
+	for _, rest := range []string{
+		"/dispatch?application_name=dispatch@box",
+		"/dispatch?sslmode=require&application_name=ops@example.com",
+		"/dis@patch",
+	} {
+		for _, userPart := range []string{user + ":" + password + "@", user + "@"} {
+			value := "postgres://" + userPart + "127.0.0.1:5432" + rest
+			for _, environment := range []func(map[string]string) settingValues{bootEnvironment, devSignInEnvironment} {
+				if _, err := resolveBootConfig(environment(map[string]string{"DATABASE_URL": value})); err != nil {
+					t.Errorf("%d characters: %v, want it admitted", len(value), err)
+				}
+			}
+			remote := "postgres://" + userPart + "db.example:5432" + rest
+			_, err := resolveBootConfig(devSignInEnvironment(map[string]string{"DATABASE_URL": remote}))
+			if err == nil || !strings.Contains(err.Error(), `DATABASE_URL names host "db.example"`) {
+				t.Errorf("the control, %d characters, on a remote host: err = %v, want the refusal naming db.example", len(remote), err)
+			}
 		}
 	}
 }
@@ -103,11 +146,13 @@ func TestADatabaseURLWhosePasswordHoldsAnAtNamesNoPartOfIt(t *testing.T) {
 	}
 }
 
-// ENVOY_URL and DISPATCH_AGENT_SECRETS_URL are each refused at boot, named by its length, when an @
-// is left once net/url takes out its user part. A token written with a raw #, ? or / as the whole
-// user part (http://<a>#<b>@host) is otherwise read with <a> as the host, so the server asks DNS
-// for the token's first half and connects to it. The control is the same value with that character
-// percent-encoded, which boots. The token's halves are made for this test.
+// ENVOY_URL and DISPATCH_AGENT_SECRETS_URL are each refused at boot, named by its length and the
+// cause, when an @ is left once net/url takes out its user part. A token written with a raw #, ? or
+// / as the whole user part (http://<a>#<b>@host) is otherwise read with <a> as the host, so the
+// server asks DNS for the token's first half and connects to it; an @ in the query alone is refused
+// with the same cause, since net/url leaves it outside the user part too. The control is the same
+// value with that character percent-encoded, which boots. The token's halves are made for this
+// test.
 func TestBootRefusesAServiceURLWithAnAtLeftOverByItsLength(t *testing.T) {
 	const (
 		first  = "not-a-secret-tok1e4"
@@ -121,20 +166,23 @@ func TestBootRefusesAServiceURLWithAnAtLeftOverByItsLength(t *testing.T) {
 			}
 			return bootEnvironment(overrides)
 		}
-		for _, form := range []struct{ raw, encoded string }{{"#", "%23"}, {"?", "%3F"}, {"/", "%2F"}} {
-			t.Run(setting+" with a "+form.raw+" in its user part", func(t *testing.T) {
-				value := "http://" + first + form.raw + second + "@127.0.0.1:9020"
-				_, err := resolveBootConfig(environment(value))
-				want := fmt.Sprintf("%s, a value of %d characters,", setting, len(value))
-				if err == nil || !strings.Contains(err.Error(), want) {
-					t.Fatalf("err = %v, want a refusal that names %q", err, want)
+		for _, form := range []struct{ name, value, encoded string }{
+			{"a # in its user part", "http://" + first + "#" + second + "@127.0.0.1:9020", "http://" + first + "%23" + second + "@127.0.0.1:9020"},
+			{"a ? in its user part", "http://" + first + "?" + second + "@127.0.0.1:9020", "http://" + first + "%3F" + second + "@127.0.0.1:9020"},
+			{"a / in its user part", "http://" + first + "/" + second + "@127.0.0.1:9020", "http://" + first + "%2F" + second + "@127.0.0.1:9020"},
+			{"an @ in its query and no user part", "http://127.0.0.1:9020?via=" + first + "@" + second, "http://127.0.0.1:9020?via=" + first + "%40" + second},
+		} {
+			t.Run(setting+" with "+form.name, func(t *testing.T) {
+				_, err := resolveBootConfig(environment(form.value))
+				want := fmt.Sprintf("%s, a value of %d characters, %s", setting, len(form.value), redact.AtOutsideUserPart)
+				if err == nil || err.Error() != want {
+					t.Fatalf("err = %v, want %q", err, want)
 				}
 				if strings.Contains(err.Error(), first) || strings.Contains(err.Error(), second) {
 					t.Errorf("the refusal holds a part of the token: %q", err)
 				}
-				encoded := "http://" + first + form.encoded + second + "@127.0.0.1:9020"
-				if _, err := resolveBootConfig(environment(encoded)); err != nil {
-					t.Errorf("the control %s: %v, want it admitted", encoded, err)
+				if _, err := resolveBootConfig(environment(form.encoded)); err != nil {
+					t.Errorf("the control %s: %v, want it admitted", form.encoded, err)
 				}
 			})
 		}

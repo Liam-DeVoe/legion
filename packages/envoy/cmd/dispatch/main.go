@@ -1196,8 +1196,8 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	if boot.DatabaseURL == "" {
 		return bootConfig{}, errors.New("DATABASE_URL required")
 	}
-	if store.MisreadURL(boot.DatabaseURL) {
-		return bootConfig{}, misreadRefusal("DATABASE_URL", boot.DatabaseURL)
+	if err := store.RefuseMisreadURL(boot.DatabaseURL); err != nil {
+		return bootConfig{}, err
 	}
 	agentTokens := env.get("DISPATCH_AGENT_TOKEN")
 	if strings.TrimSpace(agentTokens) == "" {
@@ -1312,8 +1312,8 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	if envoyURL == "" {
 		envoyURL = defaultEnvoyURL
 	}
-	if redact.UserPartLeftOver(envoyURL) {
-		return bootConfig{}, misreadRefusal("ENVOY_URL", envoyURL)
+	if why := redact.Misread(envoyURL); why != "" {
+		return bootConfig{}, redact.Refusal("ENVOY_URL", envoyURL, why)
 	}
 	parsed, err := url.Parse(envoyURL)
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
@@ -1332,8 +1332,8 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 
 	agentSecretsURL := strings.TrimSuffix(strings.TrimSpace(env.get("DISPATCH_AGENT_SECRETS_URL")), "/")
 	if agentSecretsURL != "" {
-		if redact.UserPartLeftOver(agentSecretsURL) {
-			return bootConfig{}, misreadRefusal("DISPATCH_AGENT_SECRETS_URL", agentSecretsURL)
+		if why := redact.Misread(agentSecretsURL); why != "" {
+			return bootConfig{}, redact.Refusal("DISPATCH_AGENT_SECRETS_URL", agentSecretsURL, why)
 		}
 		parsed, err := url.Parse(agentSecretsURL)
 		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.Path != "" {
@@ -1448,9 +1448,9 @@ func logServiceTokens(boot bootConfig) {
 // logDevSignInMounted writes the WARN line that says the dev sign-in route is mounted. It names
 // the host and port the route serves, which routes.DevSignInOrigin reads from the dashboard
 // origin. Main calls it only after devSignInLoadedFence accepted serverURL, so that is a loopback
-// name or IP literal with an optional port. It names nothing of an origin with an @ left once
-// net/url takes out its user part (redact.UserPartLeftOver): that @ may end a user part that held a /,
-// whose password's first characters net/url then read as the port
+// name or IP literal with an optional port. It names nothing of an origin net/url misreads
+// (redact.Misread): an @ left once net/url takes out its user part may end a user part that held
+// a /, whose password's first characters net/url then read as the port
 // (http://localhost:4821/<rest>@127.0.0.1:8766), so no host net/url read from it is printed.
 func logDevSignInMounted(boot bootConfig, serverURL string) {
 	cookies := "cookies are valid on this process only"
@@ -1458,7 +1458,7 @@ func logDevSignInMounted(boot bootConfig, serverURL string) {
 		cookies = "cookies are valid on every process given this DISPATCH_DEV_SIGNIN_SHARED_KEY"
 	}
 	host, err := routes.DevSignInOrigin(serverURL)
-	if err != nil || redact.UserPartLeftOver(serverURL) {
+	if err != nil || redact.Misread(serverURL) != "" {
 		host = redact.NotPrinted
 	}
 	slog.Warn("dispatch: dev sign-in mounted: any email signs in at /auth/_dev/signin without the sign-in issuer; "+cookies, "host", host)
@@ -1469,8 +1469,8 @@ func logDevSignInMounted(boot bootConfig, serverURL string) {
 // both the URL and the key=value forms, multi-host lists included, exactly as store.Open will.
 // The value may carry a user and a password, so a value pgx cannot parse is named by its length:
 // pgx's own error for it names its user. A host pgx read is named: resolveBootConfig refused a
-// value whose user part pgx may read apart from its host (store.MisreadURL) before this runs,
-// so that host is no part of a user part.
+// value whose user part pgx and net/url read apart (store.RefuseMisreadURL) before this runs, so
+// both readers end the user part at the same @, before the host.
 func loopbackDatabase(databaseURL string) error {
 	config, err := pgx.ParseConfig(databaseURL)
 	if err != nil {
@@ -1487,13 +1487,6 @@ func loopbackDatabase(databaseURL string) error {
 		return fmt.Errorf("DISPATCH_DEV_SIGNIN=1 serves a loopback database only: DATABASE_URL names host %q", host)
 	}
 	return nil
-}
-
-// misreadRefusal is the refusal of raw, the value of setting, whose user part a reader may take
-// for its host or a part of its path: it names the value by its length, since any piece of it may
-// be the password, and says how to write it so.
-func misreadRefusal(setting, raw string) error {
-	return fmt.Errorf("%s, a value of %d characters, has a user part this server cannot read apart from the rest of it; write each @, /, ?, # and \\ in that part percent-encoded (@ as %%40, / as %%2F), or remove the user part", setting, len(raw))
 }
 
 // explainMigrateError wraps a migration failure Postgres attributes to a missing CREATE

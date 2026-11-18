@@ -48,12 +48,12 @@ const poolSizeParam = "pool_max_conns"
 // sharedPoolSize: how many connections Dispatch may hold is a property of Dispatch, not of the
 // string that names its database. Every connection it opens scans timestamptz in UTC
 // (scanTimestampsInUTC), as do the pools Pool.separate copies from its configuration. A URL whose
-// user part pgx may read apart from the rest of it (MisreadURL) is refused first, named by its
-// length, since pgx would take a piece of that part for a host or a database, which its errors
+// user part pgx may read apart from the rest of it is refused first (RefuseMisreadURL), named by
+// its length, since pgx would take a piece of that part for a host or a database, which its errors
 // print.
 func Open(ctx context.Context, databaseURL string) (*Store, error) {
-	if MisreadURL(databaseURL) {
-		return nil, fmt.Errorf("DATABASE_URL, a value of %d characters, has a user part this server cannot read apart from the rest of it; write each @, /, ?, # and \\ in that part percent-encoded (@ as %%40, / as %%2F), or remove the user part", len(databaseURL))
+	if err := RefuseMisreadURL(databaseURL); err != nil {
+		return nil, err
 	}
 	declared, err := declaresPoolSize(databaseURL)
 	if err != nil {
@@ -66,7 +66,7 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 	}
 	config, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
-		return nil, fmt.Errorf("parse Postgres URL: %w", err)
+		return nil, redact.Refusal("DATABASE_URL", databaseURL, unparsed)
 	}
 	config.MaxConns = sharedPoolSize
 	config.AfterConnect = scanTimestampsInUTC
@@ -81,18 +81,60 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 	return &Store{Pool: NewPool(pool)}, nil
 }
 
-// MisreadURL reports whether raw, a DATABASE_URL, is a Postgres URL whose user part pgx may read
-// apart from where net/url reads it, so that pgx takes a piece of the user part for a host or a
-// database name, which its connect error and a refusal naming its host would print. pgx reads the
-// user part as libpq does, up to the FIRST @ before any /, and net/url up to the LAST @, ending the
-// authority at the first /, ? or #: a value with more than one @ is one, and so is one with an @
-// left once net/url takes out its user part (redact.UserPartLeftOver). The key=value form has no
-// such part.
-func MisreadURL(raw string) bool {
-	if !strings.HasPrefix(raw, "postgres://") && !strings.HasPrefix(raw, "postgresql://") {
-		return false
+// The misreadings of a Postgres URL misreadURL finds, in redact.Refusal's words.
+const (
+	// atAfterPath: an @ after the first / and none before it. pgx and net/url both end the
+	// authority at that /, so a user part that holds a / is read as a host, a port and a database
+	// name, which pgx's connect error prints.
+	atAfterPath redact.Misreading = "has an @ after its first / and none before it, where a user part that holds a / is read as its host and database; write each / in its user part as %2F, and an @ in its database name or query as %40"
+	// atsBeforePath: more than one @ before the first /. pgx ends the user part at the first,
+	// net/url at the last, so one of them reads a piece of the password as the host.
+	atsBeforePath redact.Misreading = "has more than one @ before its first /, and pgx ends its user part at the first while Go's URL parser ends it at the last; write each @ in its user part as %40, and one in its query as %40 or after a / before the query"
+	// endBeforeAt: a ?, # or \ before the @ that ends pgx's user part, where net/url ends the
+	// authority, so net/url reads a piece of the user part as the host.
+	endBeforeAt redact.Misreading = "has a ?, # or \\ in its user part, where Go's URL parser ends its host; write each of them in the user part percent-encoded (? as %3F, # as %23, \\ as %5C)"
+	// unparsed: pgx cannot parse the value. pgx's parse error masks the password and quotes the
+	// rest, the user among it, which can be a token written where the user stands.
+	unparsed redact.Misreading = "is not a Postgres connection string pgx can parse; check its port and the name and value of each of its options (sslmode=require, say)"
+)
+
+// RefuseMisreadURL is the refusal of databaseURL, a DATABASE_URL, whose user part pgx may read
+// apart from where net/url reads it (misreadURL), named by its length and what the check found
+// (redact.Refusal), or nil. The server's boot and Open each refuse with it, so the two say the same.
+func RefuseMisreadURL(databaseURL string) error {
+	if why := misreadURL(databaseURL); why != "" {
+		return redact.Refusal("DATABASE_URL", databaseURL, why)
 	}
-	return strings.Count(raw, "@") > 1 || redact.UserPartLeftOver(raw)
+	return nil
+}
+
+// misreadURL is what makes raw, a DATABASE_URL, a Postgres URL whose user part pgx may read apart
+// from where net/url reads it, so that pgx takes a piece of the user part for a host or a database
+// name, which its connect error and a refusal naming its host would print; the empty Misreading
+// when nothing does. pgx reads the user part as libpq does, up to the FIRST @ before the first /
+// (pgconn's parseURLSettings), and net/url up to the LAST @ before the first /, ? or #. An @ after
+// the first / belongs to the path or the query for both, unless no @ comes before it: then it may
+// end a user part that held a /. The key=value form has no such part.
+func misreadURL(raw string) redact.Misreading {
+	rest, ok := strings.CutPrefix(raw, "postgres://")
+	if !ok {
+		if rest, ok = strings.CutPrefix(raw, "postgresql://"); !ok {
+			return ""
+		}
+	}
+	authority, afterPath, _ := strings.Cut(rest, "/")
+	at := strings.Index(authority, "@")
+	switch {
+	case at < 0 && strings.Contains(afterPath, "@"):
+		return atAfterPath
+	case at < 0:
+		return ""
+	case strings.Count(authority, "@") > 1:
+		return atsBeforePath
+	case strings.ContainsAny(authority[:at], "?#\\"):
+		return endBeforeAt
+	}
+	return ""
 }
 
 // connectFailure is a pgconn.ConnectError as a message may print it: what failed at each host the
@@ -154,11 +196,11 @@ func scanTimestampsInUTC(_ context.Context, conn *pgx.Conn) error {
 // Scanning the string instead would answer a different question: keyword/value values may be
 // quoted or backslash-escaped and may contain the parameter's own name, and a keyword may be
 // separated from its "=" by whitespace, so a scanner refuses valid passwords and misses
-// "pool_max_conns = 4", which pgx honours.
+// "pool_max_conns = 4", which pgx honours. A value pgx cannot parse is named by its length.
 func declaresPoolSize(databaseURL string) (bool, error) {
 	config, err := pgx.ParseConfig(databaseURL)
 	if err != nil {
-		return false, fmt.Errorf("parse Postgres URL: %w", err)
+		return false, redact.Refusal("DATABASE_URL", databaseURL, unparsed)
 	}
 	_, declared := config.RuntimeParams[poolSizeParam]
 	return declared, nil

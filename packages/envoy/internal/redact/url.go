@@ -63,21 +63,53 @@ func URL(raw string) string {
 // Clean reports whether raw is not empty and URL prints it unchanged.
 func Clean(raw string) bool { return raw != "" && clean(raw) }
 
-// UserPartLeftOver reports whether an @ is left in raw once the user part net/url found is taken
-// out, or net/url cannot parse a raw that holds an @. net/url ends a user part at its last @ and
-// ends the authority at the first /, ?, # or \, so a user part that holds one of those (a token in
-// base64 does) is read in part as the host or the path: a host read from such a value may be a
-// piece of its user part, and a setting that names one is refused by its length.
-func UserPartLeftOver(raw string) bool {
+// A Misreading is what a check of a setting's URL found that makes a reader take a piece of its
+// user part for another part, or makes the value unreadable, in words that hold no part of the
+// value and say what to write instead. Refusal puts them after the value's length. The empty
+// Misreading is none.
+type Misreading string
+
+// The misreadings Misread finds. A check of a URL that other readers read (a Postgres URL, whose
+// two readers end its user part apart) declares the ones it finds beside it.
+const (
+	// ControlCharacter: net/url refuses a control character, and a line that showed the value
+	// would carry it; a line ending left from a file is the usual one.
+	ControlCharacter Misreading = "holds a control character (a line ending or a tab, often one left from a file); remove it"
+	// Unparsed: net/url cannot parse a value that holds an @, whose error quotes it whole, and a
+	// user part that holds a /, ?, # or \ is the usual cause (its password then reads as a port).
+	Unparsed Misreading = "does not parse as a URL; if it carries a user part, write each @, /, ?, # and \\ in that part percent-encoded (@ as %40, / as %2F), or remove the user part"
+	// AtOutsideUserPart: an @ is left once net/url takes out the user part it found. net/url ends
+	// a user part at its last @ and the authority at the first /, ?, # or \, so a user part that
+	// holds one of those (a token in base64 does) is read in part as the host or the path.
+	AtOutsideUserPart Misreading = "has an @ outside its user part (in its path, query or fragment); if its user part holds a /, ?, # or \\, write each of them in it percent-encoded (/ as %2F, ? as %3F, # as %23, \\ as %5C), else write that @ as %40"
+)
+
+// Misread is what net/url's reading of raw, a value that holds an @, finds that makes a host read
+// from it a possible piece of its user part: ControlCharacter, Unparsed or AtOutsideUserPart, in
+// that order. A value with no @ has no user part, and Misread finds nothing in it.
+func Misread(raw string) Misreading {
 	if !strings.Contains(raw, "@") {
-		return false
+		return ""
+	}
+	if strings.ContainsFunc(raw, func(r rune) bool { return r < ' ' || r == 0x7f }) {
+		return ControlCharacter
 	}
 	parsed, err := url.Parse(raw)
 	if err != nil {
-		return true
+		return Unparsed
 	}
 	parsed.User = nil
-	return strings.Contains(parsed.String(), "@")
+	if strings.Contains(parsed.String(), "@") {
+		return AtOutsideUserPart
+	}
+	return ""
+}
+
+// Refusal is the refusal of raw, the value of the setting named, for what its check found (why).
+// It names raw by its length alone, since any piece of a value a reader may misread can be its
+// password. Every refusal of a misread setting's URL is made here, so each says the same.
+func Refusal(setting, raw string, why Misreading) error {
+	return fmt.Errorf("%s, a value of %d characters, %s", setting, len(raw), why)
 }
 
 // clean reports whether raw passes URL's allow-list.
