@@ -770,10 +770,12 @@ func (r *Runtime) launcherBound(ctx context.Context, s *sandbox, pod *corev1.Pod
 // launcherCommand is the start command a role's launcher receives for one generation: the shim's
 // argv (its flags, then `--`, then the agent's own argv), the generation's plain environment, the
 // launch credentials and files it writes into its private directory, and the session a resume
-// continues. Every launch's Files carry its composed system prompt as runtime.SystemPromptFile,
-// which the launcher writes before the child starts and whose path the agent's argv names, Oh My
-// Pi's and Claude Code's alike (systemPromptPath says where it is and who can read it;
-// runtime.SystemPromptFile why it is a file).
+// continues, by its recorded file (ResumeFile), which the launcher looks the session up by
+// whether or not the agent's argv resumes it by id (agentArgv). Every launch's Files carry its
+// composed system prompt as runtime.SystemPromptFile, which the launcher writes before the child
+// starts and whose path the agent's argv names, Oh My Pi's and Claude Code's alike
+// (systemPromptPath says where it is and who can read it; runtime.SystemPromptFile why it is a
+// file).
 //
 // The shim is told the pod's stop grace, the same TerminationGrace its launcher runs with, so the
 // wait it makes for an in-flight CodeGraph warm-up on its way out stays inside the grace after
@@ -839,7 +841,7 @@ func launcherCommand(l launch, r *Runtime) shimwire.LauncherStart {
 		files[claudeMCPFile] = l.claude.mcp
 	}
 	agentArgv := startArgv(roleStateHome(l.spec.Role), l.spec.Generation, l.spec.Plugins, claudeDir, l.skillsInstall(r), r.setup,
-		l.agentArgv(r.agent), installLockWait(r.bootTimeout, r.registrationIntervals))
+		l.agentArgv(r), installLockWait(r.bootTimeout, r.registrationIntervals))
 	return shimwire.LauncherStart{
 		ID: "start-" + fmt.Sprint(l.spec.Generation), Generation: l.spec.Generation,
 		Argv: append(shim, append([]string{"--"}, agentArgv...)...), Env: values, Files: files,

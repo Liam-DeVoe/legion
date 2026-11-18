@@ -2958,7 +2958,7 @@ func TestTextSurvivesTheKubeletsExpansion(t *testing.T) {
 		t.Fatal(err)
 	}
 	start := launcherCommand(l, r)
-	argv := l.agentArgv(r.agent)
+	argv := l.agentArgv(r)
 	if got := start.Argv[len(start.Argv)-len(argv):]; !slices.Equal(got, argv) {
 		t.Errorf("the agent's argv reaches the launcher as %q, want %q", got, argv)
 	}
@@ -2986,9 +2986,9 @@ func TestTextSurvivesTheKubeletsExpansion(t *testing.T) {
 	}
 }
 
-// uuid is the form a Claude Code session id takes (claudelaunch.NewSessionID), the only word of a
-// Claude launch's agent command that is not fixed.
-var uuid = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+// claudeSessionForm is the form a Claude Code session id takes (claudelaunch.NewSessionID), the
+// only word of a Claude launch's agent command that is not fixed.
+var claudeSessionForm = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 
 // A Claude Code role's pod runs Claude Code under `legion claude-bridge`, word for word: the
 // Claude Code this generation's start script installed under the role's state home on the issue's
@@ -3012,7 +3012,7 @@ func TestAClaudePodsAgentCommandIsClaudeCodeUnderTheBridge(t *testing.T) {
 	omp := launchOf(t, r, spec)
 	spec.Backend = runtime.BackendClaude
 	l := launchOf(t, r, spec)
-	argv := l.agentArgv(r.agent)
+	argv := l.agentArgv(r)
 	_, ompPrompt := systemPromptOf(t, spec.Role, launcherCommand(omp, r))
 	if _, claudePrompt := systemPromptOf(t, spec.Role, launcherCommand(l, r)); claudePrompt != ompPrompt {
 		t.Fatalf("the Claude launch's system prompt is %q, want the Oh My Pi launch's %q", claudePrompt, ompPrompt)
@@ -3020,7 +3020,7 @@ func TestAClaudePodsAgentCommandIsClaudeCodeUnderTheBridge(t *testing.T) {
 	session := ""
 	if at := slices.Index(argv, "--session-id"); at < 0 || at+1 == len(argv) {
 		t.Fatalf("the agent command %q names no --session-id", argv)
-	} else if session = argv[at+1]; !uuid.MatchString(session) {
+	} else if session = argv[at+1]; !claudeSessionForm.MatchString(session) {
 		t.Errorf("the session is %q, want a version 4 uuid", session)
 	}
 	claude := func(generation uint64) string {
@@ -3044,7 +3044,7 @@ func TestAClaudePodsAgentCommandIsClaudeCodeUnderTheBridge(t *testing.T) {
 	}
 	later := spec
 	later.Generation, later.BootToken = spec.Generation+1, "boot-later"
-	if got := launchOf(t, r, later).agentArgv(r.agent); !slices.Contains(got, claude(later.Generation)) || slices.Contains(got, claude(spec.Generation)) {
+	if got := launchOf(t, r, later).agentArgv(r); !slices.Contains(got, claude(later.Generation)) || slices.Contains(got, claude(spec.Generation)) {
 		t.Errorf("generation %d's agent command is %q, want it to name %s and not generation %d's install", later.Generation, got, claude(later.Generation), spec.Generation)
 	}
 	// Options.Agent is the Oh My Pi override and nothing else: a Claude role's command is the
@@ -3054,7 +3054,7 @@ func TestAClaudePodsAgentCommandIsClaudeCodeUnderTheBridge(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	overridden := launchOf(t, overriding, spec).agentArgv(overriding.agent)
+	overridden := launchOf(t, overriding, spec).agentArgv(overriding)
 	if slices.Contains(overridden, "--operator") {
 		t.Errorf("with Options.Agent set the Claude pod's command is %q, want the generation's Claude Code alone", overridden)
 	}
@@ -3105,7 +3105,7 @@ func TestAResumingClaudePodContinuesItsTranscriptByItsID(t *testing.T) {
 	}
 	spec := claudeResumeSpec(t)
 	l := launchOf(t, r, spec)
-	argv := l.agentArgv(r.agent)
+	argv := l.agentArgv(r)
 	want := []string{"--resume", claudeTranscriptID, "--append-system-prompt-file", systemPromptPath(spec.Generation)}
 	if got := argv[max(len(argv)-4, 0):]; !slices.Equal(got, want) {
 		t.Errorf("the resuming Claude command ends %q, want %q", got, want)
@@ -3194,11 +3194,11 @@ func TestAgentArgvCarriesTheConfiguredModel(t *testing.T) {
 			"--extension", envoyPlugin, "--extension", legionPlugin, "--model", "@default",
 			"--resume="+resumeSession, "--mode", "rpc", "--append-system-prompt", systemPromptPath(resumed.spec.Generation))},
 	} {
-		if got := tc.l.agentArgv(r.agent); !slices.Equal(got, tc.want) {
+		if got := tc.l.agentArgv(r); !slices.Equal(got, tc.want) {
 			t.Errorf("%s runs %q, want %q", tc.name, got, tc.want)
 		}
 	}
-	if claude := launchOf(t, r, claudeWorkerSpec(t)).agentArgv(r.agent); slices.Contains(claude, "--model") {
+	if claude := launchOf(t, r, claudeWorkerSpec(t)).agentArgv(r); slices.Contains(claude, "--model") {
 		t.Errorf("the Claude pod's command %q names a model, want claudelaunch's own command", claude)
 	}
 }

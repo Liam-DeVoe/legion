@@ -2763,11 +2763,13 @@ func (m *Machine) backOff(ctx context.Context) error {
 //
 // A resume runs under every name its record gives the session, so each is held to the claim
 // before anything starts (holdRecorded, plan E's t-e-54): an Oh My Pi launch continues the
-// recorded file (`--resume=<file>`), the tmux runtime one of the file's name or id where that path
-// is missing (sessionFileOf), and a Claude Code launch the session the transcript's name gives
-// (claudelaunch.ResumeSession), any of which a claim recorded before the hold could name for
-// another claim's session. One another claim holds is refused here, as a launch failure the caller
-// charges, and nothing starts under it.
+// recorded file (`--resume=<file>`), or, in a pod that trades an exchange identity, the session
+// by its id (`--resume <id>`: the claim's recorded session, which the resume's spec carries as
+// ResumeSessionID, else the id the file's name gives), the tmux runtime one of the file's name or
+// id where that path is missing (sessionFileOf), and a Claude Code launch the session the
+// transcript's name gives (claudelaunch.ResumeSession), any of which a claim recorded before the
+// hold could name for another claim's session. One another claim holds is refused here, as a
+// launch failure the caller charges, and nothing starts under it.
 func (m *Machine) start(ctx context.Context, token string) (runtime.Locator, error) {
 	spec, err := m.spawnSpec(ctx, token, false)
 	if err != nil {
@@ -2779,7 +2781,7 @@ func (m *Machine) start(ctx context.Context, token string) (runtime.Locator, err
 	if err := m.holdRecorded(ctx, m.claim.Session, m.claim.SessionFile); err != nil {
 		return runtime.Locator{}, err
 	}
-	spec.ResumeSessionFile = m.claim.SessionFile
+	spec.ResumeSessionFile, spec.ResumeSessionID = m.claim.SessionFile, m.claim.Session
 	loc, err := m.deps.Runtime.Resume(ctx, m.previous, spec)
 	if !errors.Is(err, runtime.ErrSessionFileMissing) {
 		return loc, err
@@ -2789,7 +2791,7 @@ func (m *Machine) start(ctx context.Context, token string) (runtime.Locator, err
 
 // spawnSpec is the launch's spec: what the daemon builds for this claim, with what only the
 // machine knows — who the claim is, the generation and the boot token this try mints. A resume
-// adds its session file; a spawn carries none.
+// adds its session file and the session id recorded beside it; a spawn carries neither.
 //
 // sessionLost is the one thing about this launch that is not the claim's own state: true says the
 // agent it starts is fresh because the recorded session was found nowhere (startFresh), which the
@@ -2803,7 +2805,7 @@ func (m *Machine) spawnSpec(ctx context.Context, token string, sessionLost bool)
 		return runtime.SpawnSpec{}, fmt.Errorf("build the launch of %s: %w", m.claim.Token, err)
 	}
 	spec.Claim, spec.Project, spec.Tree, spec.Issue, spec.Role = m.claim.Token, m.claim.Project, m.claim.Tree, m.claim.Issue, m.claim.Role
-	spec.Generation, spec.BootToken, spec.ResumeSessionFile = m.claim.Generation, token, ""
+	spec.Generation, spec.BootToken, spec.ResumeSessionFile, spec.ResumeSessionID = m.claim.Generation, token, "", ""
 	return spec, nil
 }
 

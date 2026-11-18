@@ -209,6 +209,12 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	if err := r.dispatchCredential(&l); err != nil {
 		return runtime.Locator{}, err
 	}
+	// So is whether its Oh My Pi resumes by id (trades): a launch that does, with no id Oh My Pi
+	// can read as one, is refused here, before anything of the pod is touched, and a launch that
+	// trades nothing resumes by its file as before (ompResumeRefusal).
+	if err := l.ompResumeRefusal(r); err != nil {
+		return runtime.Locator{}, fmt.Errorf("launch %s: %w", spec.Claim, err)
+	}
 	if installing && replace {
 		// Replaced for some other reason: the fresh pod's image is already current, so nothing is
 		// installed into it.

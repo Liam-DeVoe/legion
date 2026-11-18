@@ -312,14 +312,15 @@ func (m *Machine) revokeUnheld(ctx context.Context, refused error) error {
 // the agent's registration, or the session a relaunch resumes, so a relaunched pod's uid is
 // registered for the session it resumes at its shim's first hello, with that hello's thumbprint,
 // before the resumed agent registers again — or else the one the runtime chose for this launch
-// (runtime.LaunchSessionNamer): a Claude Code role's, registered at its shim's hello, before its
-// agent registers. An Oh My Pi role's fresh session is known at its registration, which its agent
-// makes after its shim's hello, and is registered there before the registration is answered
-// (register). The first write is made in this decision, bounded by the RPC timeout, and its refusal
-// changes nothing the machine decides; the renewal goes on on the machine's clock until the process
-// is let go (letGo, stopRegistration) or the claim moves to another session or key. Each pod,
-// session and key is registered once per incarnation: a later hello or observation of the same one
-// starts nothing.
+// (runtime.LaunchSessionNamer): a Claude Code role's, and an Oh My Pi role's whose pod trades an
+// exchange identity, registered at its shim's hello, before its agent registers. An Oh My Pi
+// role's fresh session the runtime named no id for (a launch into a kept pod that trades nothing)
+// is known at its registration, which its agent makes after its shim's hello, and is registered
+// there before the registration is answered (register). The first write is made in this decision,
+// bounded by the RPC timeout, and its refusal changes nothing the machine decides; the renewal
+// goes on on the machine's clock until the process is let go (letGo, stopRegistration) or the
+// claim moves to another session or key. Each pod, session and key is registered once per
+// incarnation: a later hello or observation of the same one starts nothing.
 //
 // The session is held to the claim before the first write, as an enrollment's is (holdRecorded,
 // plan E's t-e-54): every name the claim's record gives it, or, for the id

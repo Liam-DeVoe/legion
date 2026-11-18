@@ -84,29 +84,40 @@ func (r *Runtime) recorded(token claim.Token) (runtime.Locator, bool) {
 	return loc, ok
 }
 
-// launchedSession is the session a Claude Code launch started or resumed under, and the
-// incarnation that launch started as.
+// launchedSession is the session a launch the runtime chose the session for started or resumed
+// under, and the incarnation that launch started as.
 type launchedSession struct {
 	incarnation, session string
 }
 
-// nameSession records the session l's Claude Code launch, starting as loc, runs under: the id
-// prepare chose (claudeInputs), which its `--session-id` or `--resume` names. Only a deployment
-// that names exchange_audience registers a role's session, so only it keeps the record; an Oh My
-// Pi launch names nothing, since its agent mints its id, and leaves no record for the claim. The
+// nameSession records the session l's launch, starting as loc, runs under where prepare chose it:
+// a Claude Code launch's (claudeInputs), and an Oh My Pi launch's that trades an exchange identity
+// (ompInputs, launch.trades), which its `--session-id` or `--resume <id>` names. Only a deployment
+// that names exchange_audience registers a role's session, so only it keeps the record. An Oh My
+// Pi launch that trades nothing — a kept pod built before the exchange identity — names no id, its
+// agent mints one and reports it at its registration, and it leaves no record for the claim. The
 // record goes when the process is let go, with the watch's (forget, forgetIf).
 func (r *Runtime) nameSession(loc runtime.Locator, l launch) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if !l.runsClaude() || r.agentSecrets == nil || r.agentSecrets.ExchangeAudience == "" {
+	session := ""
+	switch {
+	case r.agentSecrets == nil || r.agentSecrets.ExchangeAudience == "":
+	case l.runsClaude():
+		session = l.claude.session
+	case l.trades(r):
+		session = l.omp.session
+	}
+	if session == "" {
 		delete(r.sessions, loc.Claim)
 		return
 	}
-	r.sessions[loc.Claim] = launchedSession{incarnation: loc.Incarnation, session: l.claude.session}
+	r.sessions[loc.Claim] = launchedSession{incarnation: loc.Incarnation, session: session}
 }
 
-// LaunchSession is runtime.LaunchSessionNamer: the session the claim's latest Claude Code launch
-// started or resumed under, while loc is the incarnation that launch started as.
+// LaunchSession is runtime.LaunchSessionNamer: the session the claim's latest launch started or
+// resumed under where the runtime chose it (nameSession), while loc is the incarnation that launch
+// started as.
 func (r *Runtime) LaunchSession(loc runtime.Locator) (string, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

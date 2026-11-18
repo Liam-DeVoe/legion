@@ -168,8 +168,9 @@ type Runtime struct {
 	watch map[claim.Token]runtime.Locator
 	// observer is the running Observe, nil when none runs.
 	observer *observer
-	// sessions is, by claim, the session the latest Claude Code launch of it started or resumed
-	// under and the incarnation it started as (LaunchSession), kept only when agentSecrets names
+	// sessions is, by claim, the session the latest launch of it the runtime chose the session for
+	// (a Claude Code launch, or an Oh My Pi launch that trades) started or resumed under and the
+	// incarnation it started as (LaunchSession), kept only when agentSecrets names
 	// an exchange audience (nameSession): written once that launch's start is sent, and dropped
 	// with the watch's record when the process is let go or the claim's next launch begins
 	// (forget, forgetIf). Memory only; a restarted daemon answers none.

@@ -217,12 +217,14 @@ type IssuePodReader interface {
 // LaunchSessionNamer names the session a launch's agent starts or resumes under, where the
 // runtime chose it before the agent started rather than leaving it to the agent to mint: a
 // Claude Code role's, whose `--session-id` or `--resume <id>` the Sandbox runtime decides when it
-// prepares the launch (claudeInputs). It answers for the incarnation loc records, and false for
-// any other — an Oh My Pi role, whose id its agent mints and reports at its registration, a
-// launch the runtime does not remember (a daemon restarted since), or an earlier incarnation. It
-// is what lets the daemon register a Claude role's session for its pod at the shim's hello, before
-// the agent registers (supervise's ensureRegistered). A runtime that names no session implements
-// nothing here.
+// prepares the launch (claudeInputs), and an Oh My Pi role's whose pod trades an exchange
+// identity, whose `--session-id` or `--resume <id>` it decides the same way (ompInputs). It
+// answers for the incarnation loc records, and false for any other — an Oh My Pi launch that named
+// no id (one into a kept pod that trades nothing, whose agent mints its id and reports it at its
+// registration), a launch the runtime does not remember (a daemon restarted since), or an earlier
+// incarnation. It is what lets the daemon register a role's chosen session for its pod at the
+// shim's hello, before the agent registers (supervise's ensureRegistered). A runtime that names no
+// session implements nothing here.
 type LaunchSessionNamer interface {
 	LaunchSession(loc Locator) (session string, named bool)
 }
@@ -357,7 +359,11 @@ func (k Known) Validate() error {
 // values — each is written to a 0600 file and reaches the process as a `<NAME>_FILE` pointer — and
 // carries only what is the claim's to carry: a credential every agent of the deployment shares,
 // like the Dispatch bearer, is a runtime option. ResumeSessionFile is set only by `Resume`, and it
-// names the transcript the same agent continues from.
+// names the transcript the same agent continues from. ResumeSessionID is set with it, to the
+// session id the claim recorded beside that file ("" for a claim that recorded none): the id the
+// Sandbox runtime resumes an Oh My Pi role by (`--resume <id>`) where its pod trades an exchange
+// identity (its launch's ompInputs). The tmux runtime, and a Sandbox launch whose pod trades
+// nothing, resume by the file and read no id.
 // Plugins, set only under Kubernetes (specs.SpawnSpec, LEGION-164), carries the plugin pair a
 // stale-plugin relaunch installs into the kept pod before Oh My Pi starts, in place of the
 // image's own copies; nil for every launch that installs nothing — every tmux launch, and every
@@ -389,6 +395,7 @@ type SpawnSpec struct {
 	Repository        ghrepo.Repository
 	DefaultBranch     string
 	ResumeSessionFile string
+	ResumeSessionID   string
 	Plugins           *PluginInstall
 	Variants          []Variant
 	IssueTrailer      string

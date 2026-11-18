@@ -311,20 +311,24 @@ type HoldKind string
 
 const (
 	// HoldSessionID is a session id: the one an agent registers, which the secrets broker enrolls
-	// as its wake address (ensureEnrolled), and the one a Claude Code launch resumes, `--resume
-	// <id>`, read from its transcript's name (claudelaunch.ResumeSession).
+	// as its wake address (ensureEnrolled), the one a Claude Code launch resumes, `--resume <id>`,
+	// read from its transcript's name (claudelaunch.ResumeSession), and the one an Oh My Pi launch
+	// in a pod that trades an exchange identity resumes, `--resume <id>`, the claim's recorded
+	// session (runtime/sandbox's ompSessionOf).
 	HoldSessionID HoldKind = "session"
 	// HoldFileName is a session file's base name (filepath.Base). It is every key a resume finds
-	// a session by its file with: an Oh My Pi launch resumes the recorded path (`--resume=<file>`,
-	// runtime/sandbox's agentArgv and the tmux runtime's launcher), the launcher finds the
-	// session's row in the session table by that path (launcher's resumable and claudeKeeper), and
-	// where the path is missing the tmux runtime resumes a file of the same name one folder below a
-	// sessions directory (sessionFileOf). Two paths that are one have one name, so holding the name
-	// holds the path too: no hold of the path alone is kept, since it could refuse nothing the
-	// name's hold does not.
+	// a session by its file with: an Oh My Pi launch that names no id resumes the recorded path
+	// (`--resume=<file>`, runtime/sandbox's agentArgv and the tmux runtime's launcher), the launcher
+	// finds the session's row in the session table by that path (launcher's resumable and
+	// claudeKeeper), and where the path is missing the tmux runtime resumes a file of the same name
+	// one folder below a sessions directory (sessionFileOf). Two paths that are one have one name,
+	// so holding the name holds the path too: no hold of the path alone is kept, since it could
+	// refuse nothing the name's hold does not.
 	HoldFileName HoldKind = "file-name"
 	// HoldFileID is the session id an Oh My Pi file name `<timestamp>_<id>.jsonl` gives, the part
-	// after its first `_`: the tmux runtime also resumes any `*_<id>.jsonl` there (newestSession).
+	// after its first `_`: the tmux runtime also resumes any `*_<id>.jsonl` there (newestSession),
+	// and an Oh My Pi launch in a pod that trades resumes that id, `--resume <id>`, for a claim that
+	// recorded no session id (runtime/sandbox's ompSessionOf, which reads it through RecordedHolds).
 	HoldFileID HoldKind = "file-id"
 )
 
