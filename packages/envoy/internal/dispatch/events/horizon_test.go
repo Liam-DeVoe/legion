@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -1170,6 +1171,33 @@ func TestTheOldestEventWriterIsDatedAcrossAnEpochBoundary(t *testing.T) {
 		}
 		if got != row.want {
 			t.Errorf("%s: the oldest event writer = %q, want %q", row.name, got, row.want)
+		}
+	}
+}
+
+// An observation compares the snapshot's xmin with the newest pending observer's id, a uint64,
+// and reads the lock table when the xmin does not pass it. The comparison must be exact for every
+// 64-bit id: an id at 2^63 or past it, sent as a bigint, would read as negative, every xmin would
+// pass it, and the observation would answer the xmin instead of the lock table's bound. A
+// transaction of another database holds the xmin below the observer's own id, so the two answers
+// differ: the lock table's bound, with no event writer open, is the observer's own id.
+func TestAnObservationComparesAPendingIDExactlyPastInt64(t *testing.T) {
+	database := storetest.Open(t)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	horizon := NewHorizon(database.Pool)
+	holdTransactionIDInThePostgresDatabase(ctx, t)
+
+	if observation, writer, err := horizon.take(ctx, 0); err != nil || writer >= observation.xid {
+		t.Fatalf("an observation with nothing pending = bound %d, own id %d, %v; want the xmin, below its own id, or this test proves nothing", writer, observation.xid, err)
+	}
+	for _, pending := range []uint64{math.MaxInt64, math.MaxInt64 + 1, math.MaxUint64} {
+		observation, writer, err := horizon.take(ctx, pending)
+		if err != nil {
+			t.Fatalf("observe with %d pending: %v", pending, err)
+		}
+		if writer != observation.xid {
+			t.Errorf("an observation with %d pending answered %d, not its own id %d: it compared %d as some other number and took the snapshot's xmin", pending, writer, observation.xid, pending)
 		}
 	}
 }

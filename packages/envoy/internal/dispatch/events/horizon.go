@@ -230,14 +230,15 @@ func eventWritersFrom(locks, xmax string) string {
 // horizonObserveSQL is an observation (the package documentation's "Safe horizon"): A and the
 // created_at of its event, as the statement's snapshot S sees them; F; and X, which
 // pg_current_xact_id assigns while the statement runs, after S was taken. $1 is the X of the
-// newest observation still pending, 0 when none is. F is the xmin of S when that already passes
-// $1, and the lock table goes unread; otherwise it is the greater of that xmin and the oldest
-// transaction id of an event writer, which is 0 when the read lists a writer it cannot date and X
-// when it lists none.
+// newest observation still pending, 0 when none is, in decimal text: compared as numeric, it is
+// exact for every 64-bit id, where a bigint holds none past 2^63 - 1. F is the xmin of S when
+// that already passes $1, and the lock table goes unread; otherwise it is the greater of that xmin
+// and the oldest transaction id of an event writer, which is 0 when the read lists a writer it
+// cannot date and X when it lists none.
 var horizonObserveSQL = `
 	with` + eventWritersCTE + `
 	select m.id, e.created_at,
-		(select case when s.xmin > $1::bigint then s.xmin else greatest(s.xmin, (
+		(select case when s.xmin > $1::text::numeric then s.xmin else greatest(s.xmin, (
 			select case when bool_or(xid is null) then 0 else least(min(xid), pg_current_xact_id()::text::numeric) end from writers
 		)) end from (select pg_snapshot_xmin(pg_current_snapshot())::text::numeric as xmin) s)::text,
 		pg_current_xact_id()::text
@@ -774,7 +775,7 @@ func (h *Horizon) take(ctx context.Context, newestPending uint64) (horizonObserv
 	batch := &pgx.Batch{}
 	batch.Queue(`begin`)
 	batch.Queue(`set local synchronous_commit = off`)
-	batch.Queue(horizonObserveSQL, int64(newestPending))
+	batch.Queue(horizonObserveSQL, strconv.FormatUint(newestPending, 10))
 	batch.Queue(`commit`)
 	results := h.db.SendBatch(ctx, batch)
 	var newest int64
