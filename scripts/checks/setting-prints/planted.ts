@@ -49,6 +49,10 @@ const plantedAdmitted = process.env.PLANTED_ADMITTED ?? "";
 if (shownSettingUrl(plantedAdmitted) === undefined) process.exit(2);
 const plantedOrigin = new URL(plantedAdmitted).origin; // planted: quiet
 void plantedOrigin;
+const plantedBuilt = new URL(\`\${plantedAdmitted}:planted\`).host; // planted: found
+void plantedBuilt;
+const plantedBased = new URL("/planted", plantedAdmitted).host; // planted: found
+void plantedBased;
 const plantedIgnored = process.env.PLANTED_IGNORED ?? "";
 shownSettingUrl(plantedIgnored);
 const plantedIgnoredHost = new URL(plantedIgnored).host; // planted: found

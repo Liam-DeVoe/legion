@@ -1,8 +1,9 @@
 /**
- * Which parses of a setting a guard admits. A `new URL(…)` of a setting writes no line only where a
- * guard runs before it on every path: an `if` before it, in a block around it, that ends the
- * function, the loop or the program when `shownSettingUrl` does not show that same value (or
- * `URL.canParse` refuses it), or a branch taken only when the judge admits it.
+ * Which parses of a setting a guard admits. A `new URL(…)` of a setting writes no line only where
+ * each value it is handed is one a guard admitted, whole: an `if` before it, in a block around it,
+ * that ends the function, the loop or the program when `shownSettingUrl` does not show that same
+ * value (or `URL.canParse` refuses it), or a branch taken only when the judge admits it. A value
+ * built from an admitted one is not admitted.
  */
 import ts from "typescript";
 import type { Labels } from "./model";
@@ -238,15 +239,13 @@ export function guardsOf(deps: {
     }
     return false;
   };
-  /** Whether each value of `expression` that carries a setting is guarded where it is read. */
+  /** Whether the value `expression` hands a parse is one a guard admits whole: a steady value that
+   *  is guarded where it is read, or a choice (`?:`, `??`) each of whose values that carries a
+   *  setting is. A value built from an admitted one (a template, a `+`) is not admitted: the guard
+   *  judged another value, and a text added to it can make the parse fail and print it. */
   const admitted = (expression: ts.Expression): boolean => {
     const e = strip(expression);
     if (ts.isIdentifier(e) || ts.isPropertyAccessExpression(e)) return guarded(e);
-    if (ts.isTemplateExpression(e)) {
-      return e.templateSpans.every(
-        (span) => !carries(ev(span.expression)) || admitted(span.expression)
-      );
-    }
     const either = (part: ts.Expression) => !carries(ev(part)) || admitted(part);
     if (ts.isConditionalExpression(e)) return either(e.whenTrue) && either(e.whenFalse);
     if (ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken) {

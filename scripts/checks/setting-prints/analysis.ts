@@ -630,14 +630,17 @@ export function search(files: readonly string[], extra: ReadonlyMap<string, stri
       if (first !== undefined && args[0] !== undefined) bind(first.name, ev(args[0]));
     }
     if (ts.isNewExpression(call) && name === "URL") {
-      const parsed = args.filter((arg) => carries(ev(arg)) && !admitted(arg));
-      if (parsed.length > 0) {
+      // Bun's error holds each argument, the base too, and a parse against an admitted base still
+      // fails when its input does: a parse that hands a setting is admitted only when each of its
+      // arguments is the very value a guard admitted.
+      const carrying = args.filter((arg) => carries(ev(arg)));
+      if (carrying.length > 0 && !args.every((arg) => admitted(arg))) {
         raise(
           call,
           write(
             call,
             "the error of new URL, which holds what it could not parse",
-            union(...parsed.map(ev))
+            union(...carrying.map(ev))
           )
         );
       }

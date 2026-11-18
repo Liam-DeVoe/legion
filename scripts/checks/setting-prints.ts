@@ -14,13 +14,16 @@
  * that Bun prints whole. The one function, `shownSettingUrl` (and `unshownSettingUrl`, which names
  * a value by its length), ends a value's path, and so does a value whose type cannot hold text (a
  * number, a boolean, a set of literal strings). A `new URL(…)` of a setting writes no line only
- * where a guard runs before it on every path: an `if` before it, in a block around it, that ends
- * the function, the loop or the program when `shownSettingUrl` does not show that same value (or
- * `URL.canParse` refuses it), or a branch (`if`, `?:`, `&&`, `||`) taken only when the judge
- * admits it. The value is a `const`, a parameter its function never assigns, or a member of one
- * that no line of the file assigns; the guard stands in the same function, or in one that makes
- * the arrow or function expression the parse is in after the guard. A judge whose answer nothing
- * reads, or one that runs after the parse, admits nothing.
+ * where each value it is handed, the base too, is one a guard admitted, whole: an `if` before it,
+ * in a block around it, that ends the function, the loop or the program when `shownSettingUrl` does
+ * not show that same value (or `URL.canParse` refuses it), or a branch (`if`, `?:`, `&&`, `||`)
+ * taken only when the judge admits it. The value is a `const`, a parameter its function never
+ * assigns, or a member of one that no line of the file assigns, or a choice (`?:`, `??`) of such
+ * values; the guard stands in the same function, or in one that makes the arrow or function
+ * expression the parse is in after the guard. A judge whose answer nothing reads, or one that runs
+ * after the parse, admits nothing, and neither does a guard of a value that the parse is handed
+ * built into another (a template, a `+`) or with an input against it as its base: Bun prints the
+ * base in the error of a parse whose input fails.
  *
  * A line it reports is where a setting AS READ is written into text: the template, `+`, `join`,
  * `String` or format that writes it, a parse error that holds it, or a print of the raw value. A

@@ -50,6 +50,17 @@ const ADMITTED_URL = (where: string) =>
   `a URL this file admits only when shownSettingUrl shows it (${where}), so it holds no user part and parses`;
 const PLAYWRIGHT_BASE =
   "baseUrl: PLAYWRIGHT_BASE_URL, which baseUrlOf (api.ts) hands on only when shownSettingUrl shows it and it carries no user part, or the harness's own loopback origin";
+/** The why of a parse of `path` against `base`, a URL admitted only when shownSettingUrl shows it.
+ *  Bun prints the base in the error of a parse whose input fails, so the base's guard admits the
+ *  parse only with what makes its path resolve: a / and then a word, which resolves against any
+ *  URL that parses. */
+const RESOLVED = (base: string, path: string) =>
+  `${path}, a / and then a word, resolved against ${base}, which parses: such a path resolves against any URL that parses, so the parse cannot fail and no error of it prints the base`;
+/** The same of a parse of `path` written after `base`, an http(s) URL that parses: a path of a /
+ *  and percent-encoded segments, with a query of URLSearchParams, after it leaves it a URL that
+ *  parses. */
+const APPENDED = (base: string, path: string) =>
+  `${path}, a / and then percent-encoded segments and a query URLSearchParams wrote, written after ${base}, an http(s) URL that parses: such a path after it leaves a URL that parses, so the parse cannot fail and no error of it prints the base`;
 
 const DISPATCH = "packages/envoy/cmd/dispatch/";
 
@@ -85,7 +96,7 @@ const RESTS = {
   databaseUrlRefusal: basis(
     "packages/dispatch/e2e/local-instance-support.ts",
     "export function databaseUrlRefusal(",
-    "d6b986ee7821"
+    "49bd219fcd6a"
   ),
   httpUrl: basis(
     "packages/envoy-client/src/envoy-config.ts",
@@ -144,21 +155,17 @@ const RESTS = {
   ),
   bootMisread: basis(
     `${DISPATCH}main.go`,
-    "if store.MisreadURL(boot.DatabaseURL) {",
-    "8ccb77ab8a9f"
+    "if err := store.RefuseMisreadURL(boot.DatabaseURL); err != nil {",
+    "699d5d94f606"
   ),
   misread: basis(
     "packages/envoy/internal/dispatch/store/store.go",
-    "func MisreadURL(",
-    "a012937fe927"
+    "func misreadURL(",
+    "a5fb01a0afd1"
   ),
-  leftOver: basis(
-    "packages/envoy/internal/redact/url.go",
-    "func UserPartLeftOver(",
-    "ee9864af2625"
-  ),
+  misreadNet: basis("packages/envoy/internal/redact/url.go", "func Misread(", "4a94bc07e988"),
   loopback: basis(`${DISPATCH}main.go`, "func loopbackDatabase(", "cb1739b16110"),
-  mounted: basis(`${DISPATCH}main.go`, "func logDevSignInMounted(", "732b00ad4201"),
+  mounted: basis(`${DISPATCH}main.go`, "func logDevSignInMounted(", "98a15d292b9a"),
   devOrigin: basis(
     "packages/envoy/internal/dispatch/routes/devsignin.go",
     "func DevSignInOrigin(",
@@ -182,7 +189,12 @@ const RESTS = {
   remoteNATS: basis(
     "packages/envoy/internal/bus/reach.go",
     "func refuseRemoteNATS(",
-    "98ece7f415b9"
+    "0bf020039841"
+  ),
+  unreadableNATS: basis(
+    "packages/envoy/internal/bus/reach.go",
+    "func unreadableNATSURL(",
+    "575e2ffe7f35"
   ),
   envoyConfigUrl: basis(
     "packages/envoy-client/src/envoy-settings.ts",
@@ -296,23 +308,35 @@ export const JUDGED: readonly Judged[] = [
   {
     file: "packages/dispatch/e2e/api.ts",
     text: "const url = new URL(path, options.baseUrl ?? baseUrl)",
-    why: "PLAYWRIGHT_BASE_URL, admitted by baseUrlOf only when shownSettingUrl shows it with no user part, or a stack's own loopback origin, so it parses",
+    why: RESOLVED(
+      "PLAYWRIGHT_BASE_URL, admitted by baseUrlOf only when shownSettingUrl shows it with no user part, or a stack's own loopback origin",
+      "the route each caller of request writes in code (/api/…, /auth/…)"
+    ),
     rests: [RESTS.baseUrlOf],
   },
-  ...[
-    "export const dashboardOrigin = new URL(baseUrl).origin",
-    "const mint = new URL(devSignInPath(login), baseUrl)",
-  ].map((text) => ({
+  {
     file: "packages/dispatch/e2e/api.ts",
-    text,
+    text: "export const dashboardOrigin = new URL(baseUrl).origin",
     why: PLAYWRIGHT_BASE,
     rests: [RESTS.baseUrlOf],
-  })),
+  },
+  {
+    file: "packages/dispatch/e2e/api.ts",
+    text: "const mint = new URL(devSignInPath(login), baseUrl)",
+    why: RESOLVED(
+      PLAYWRIGHT_BASE,
+      "/auth/_dev/signin?login=<the login, percent-encoded> (devSignInPath)"
+    ),
+    rests: [RESTS.baseUrlOf],
+  },
   ...['const liveUrl = new URL("/ws/live", options.url)', "fetch(new URL(route.route, base)"].map(
     (text) => ({
       file: "packages/dispatch/e2e/delivery-live-probe.ts",
       text,
-      why: "--url, which parseOptions admits only when shownSettingUrl shows it, and hands on as the URL it parsed then",
+      why: RESOLVED(
+        "--url, which parseOptions admits only when shownSettingUrl shows it, and hands on as the URL it parsed then",
+        "/ws/live, or a route of the probe's own reads (/api/v1/delivery/…)"
+      ),
       rests: [RESTS.liveProbe],
     })
   ),
@@ -590,13 +614,16 @@ export const JUDGED: readonly Judged[] = [
   {
     file: "packages/pi-legion/scripts/skill-scenarios/production-dispatch.ts",
     text: "const url = new URL(`${this.#base}${shown}`)",
-    why: DISPATCH_BASE,
+    why: APPENDED(
+      "the Dispatch URL, which the config admits only when shownSettingUrl shows it (httpUrl, dispatch-config.ts)",
+      "the path and query describe wrote"
+    ),
     rests: [RESTS.httpUrl],
   },
   {
     file: "packages/pi-legion/scripts/skill-scenarios/seed.ts",
     text: "const url = new URL(route, baseUrl)",
-    why: PLAYWRIGHT_BASE,
+    why: RESOLVED(PLAYWRIGHT_BASE, "the route each call of agentFetch writes (/api/v1/…)"),
     rests: [RESTS.baseUrlOf],
   },
   ...[
@@ -631,22 +658,26 @@ export const JUDGED: readonly Judged[] = [
     "fetch(new URL(path, dispatchUrl)",
     "new URL(`/__fixture/sessions/",
     'new URL("/__fixture/sends", envoyUrl)',
+    'new URL("/__fixture/sessions", envoyUrl)',
   ].map((text) => ({
     file: "scripts/e2e/dispatch-claimant-delivery.ts",
     text,
-    why: ADMITTED_URL(
-      "<dispatch-url> and <fake-envoy-url>, refused at the driver's top level before any of its functions runs"
+    why: RESOLVED(
+      "<dispatch-url> or <fake-envoy-url>, each refused at the driver's top level, before any of its functions runs, when shownSettingUrl does not show it",
+      "a route this driver writes (/api/…, /auth/…, /__fixture/…)"
     ),
     rests: [RESTS.claimantDispatch, RESTS.claimantEnvoy],
   })),
   ...[
     'await fetch(new URL("/healthz", base))',
     "new URL(`/api/v1/issues/${encodeURIComponent(options.issue)}/comments`, options.url),",
-    "const target = new URL(incoming.pathname + incoming.search, options.url)",
   ].map((text) => ({
     file: "scripts/e2e/lib/dispatch-keyed-comment.ts",
     text,
-    why: ADMITTED_URL("--url, at its parse"),
+    why: RESOLVED(
+      "--url, refused at its parse when shownSettingUrl does not show it",
+      "/healthz, or the comments route of the issue, its key percent-encoded"
+    ),
     rests: [RESTS.keyed],
   })),
   {
@@ -660,7 +691,10 @@ export const JUDGED: readonly Judged[] = [
   ].map((text) => ({
     file: "scripts/e2e/lib/dispatch-live-events.ts",
     text,
-    why: ADMITTED_URL("--url, at its parse"),
+    why: RESOLVED(
+      "--url, refused at its parse when shownSettingUrl does not show it",
+      "/auth/whoami or /ws/live"
+    ),
     rests: [RESTS.live],
   })),
   {
@@ -671,8 +705,9 @@ export const JUDGED: readonly Judged[] = [
   ...["fetch(new URL(path, dispatchUrl)", 'new URL("/__fixture/repos", githubUrl)'].map((text) => ({
     file: "scripts/e2e/verification-results.ts",
     text,
-    why: ADMITTED_URL(
-      "<dispatch-url> and <fake-github-url>, refused at the driver's top level before any of its functions runs"
+    why: RESOLVED(
+      "<dispatch-url> or <fake-github-url>, each refused at the driver's top level, before any of its functions runs, when shownSettingUrl does not show it",
+      "a route this driver writes (/api/…, /auth/…, /__fixture/repos)"
     ),
     rests: [RESTS.verificationDispatch, RESTS.verificationGitHub],
   })),
@@ -731,8 +766,8 @@ export const JUDGED: readonly Judged[] = [
   {
     file: `${DISPATCH}main.go`,
     text: 'slog.Error("dispatch: connect the agent conversation relay", "error", err)',
-    why: "bus.Dial's refusals, which name the variables, and a NATS URL only by its length or without its user part (internal/bus reach.go, refuseRemoteNATS, and socks5.go, held by their tests)",
-    rests: [RESTS.remoteNATS],
+    why: "bus.Dial's refusals, which name the variables, a NATS URL with an @ only by its length, and one with no @, which has no user part, in net/url's own error (internal/bus reach.go, refuseRemoteNATS and unreadableNATSURL, and socks5.go, held by their tests)",
+    rests: [RESTS.remoteNATS, RESTS.unreadableNATS],
   },
   {
     file: `${DISPATCH}main.go`,
@@ -795,14 +830,14 @@ export const JUDGED: readonly Judged[] = [
   {
     file: `${DISPATCH}main.go`,
     text: 'slog.Warn("dispatch: dev sign-in mounted',
-    why: "the host and port routes.DevSignInOrigin reads, after the dev sign-in fence admitted a loopback origin, and none of an origin with an @ left once net/url takes out its user part (redact.UserPartLeftOver)",
-    rests: [RESTS.mounted, RESTS.leftOver, RESTS.devOrigin],
+    why: "the host and port routes.DevSignInOrigin reads, after the dev sign-in fence admitted a loopback origin, and none of an origin net/url misreads, an @ left once it takes out its user part among them (redact.Misread)",
+    rests: [RESTS.mounted, RESTS.misreadNet, RESTS.devOrigin],
   },
   {
     file: `${DISPATCH}main.go`,
     text: "serves a loopback database only: DATABASE_URL names host %q",
-    why: "a host pgx read from DATABASE_URL, named only after resolveBootConfig refused a value whose user part pgx and net/url may read apart (store.MisreadURL: more than one @, or an @ left once net/url takes out its user part), so it is no part of a user part",
-    rests: [RESTS.bootMisread, RESTS.misread, RESTS.leftOver, RESTS.loopback],
+    why: "a host pgx read from DATABASE_URL, named only after resolveBootConfig refused a value whose user part pgx and net/url read apart (store.RefuseMisreadURL: more than one @ before the first /, a ?, # or \\ in the user part, or an @ after the first / with none before it), so both readers end the user part at the same @, before that host; a password that holds an @ and, after it, a / is read alike by both with a piece of it as the host, a limit the pull request states",
+    rests: [RESTS.bootMisread, RESTS.misread, RESTS.loopback],
   },
   {
     file: `${DISPATCH}main.go`,

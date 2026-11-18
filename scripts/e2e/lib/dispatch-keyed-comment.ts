@@ -180,7 +180,10 @@ async function postThroughCli(options: Options, body: string): Promise<void> {
   const proxy = Bun.serve({
     async fetch(request) {
       const incoming = new URL(request.url);
-      const target = new URL(incoming.pathname + incoming.search, options.url);
+      // The request's path and query written after --url's own origin, which holds no user part:
+      // parsed against --url instead, a path that begins `//` would name another host, or fail to
+      // parse with an error that prints --url whole.
+      const target = `${options.url.origin}${incoming.pathname}${incoming.search}`;
       const headers = new Headers(request.headers);
       headers.delete("host");
       // Asked unencoded, so the answer passes on as it came, with no encoding to undo twice.
