@@ -101,8 +101,20 @@ export function IssueActionsMenu({ actions }: { actions: readonly IssueAction[] 
         ref={control}
         type="button"
       >
-        <span aria-hidden="true" {...pageChrome}>
-          ⋯
+        {/* Three dots on the middle line, a shape and not the text ⋯, which the page's typeface
+            lacks: as text it was drawn in a face of the reader's own machine, at that face's
+            width. It hides itself from assistive technology and holds no words; its span keeps
+            the control's 20 px line, so the control is as tall as its one character made it. */}
+        <span>
+          <svg
+            aria-hidden="true"
+            className="inline-block size-[1em] align-middle"
+            viewBox="0 0 16 16"
+          >
+            <circle cx="3" cy="8" fill="currentColor" r="1.25" />
+            <circle cx="8" cy="8" fill="currentColor" r="1.25" />
+            <circle cx="13" cy="8" fill="currentColor" r="1.25" />
+          </svg>
         </span>
       </button>
       {/* The panel hangs from a zero-size anchor at the wrapper's bottom left, so it opens under

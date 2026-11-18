@@ -1,4 +1,6 @@
 import { beforeEach, expect, type Mock, setSystemTime, spyOn, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the title's right-press case needs a press of the right button that moves no focus and is never released, as when the context menu takes its mouseup, and user-event moves the focus as its pointer goes down.
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -29,6 +31,7 @@ import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap, useKeymapScope } from "../shell/keymap";
 import { ACTION_WORDS } from "./approval-chip-box";
 import { CONTROL_LABELS } from "./page-words";
+import { ShellNavigationContext } from "./shell-navigation";
 import { HeaderSlot } from "./slots/header";
 
 /**
@@ -497,6 +500,76 @@ test("the header keeps the primary document's chip when no gated step reviews it
   } finally {
     view.unmount();
     listProjects.mockRestore();
+    restore();
+  }
+});
+
+// The page's typeface holds only the characters of `subset.sh`'s UNICODES, which the face's
+// `unicode-range` in styles.css repeats: a character outside them is drawn in a face of the
+// reader's own machine, at that face's width, so the header draws such a shape as an inline svg -
+// the navigation's three strokes, the actions' three dots, the status's shape. The stub issue's
+// title, key, project and names are ASCII, so the case reads every text node the header draws,
+// author text among them, with the navigation's control drawn as the shell gives it below the
+// phone's width, and once every read the header made has answered.
+test("the header draws no character the page's typeface lacks", async () => {
+  const subsetSh = readFileSync(
+    join(import.meta.dir, "..", "..", "fonts", "inter", "subset.sh"),
+    "utf8"
+  );
+  const unicodes = /^UNICODES=(\S+)$/m.exec(subsetSh)?.[1];
+  if (unicodes === undefined) throw new Error("subset.sh has no UNICODES= line");
+  const ranges = unicodes.split(",").map((entry) => {
+    const match = /^U\+([0-9A-F]{4,6})(?:-([0-9A-F]{4,6}))?$/i.exec(entry.trim());
+    if (match === null) throw new Error(`${entry} in subset.sh's UNICODES is no U+ entry`);
+    const first = Number.parseInt(match[1], 16);
+    return [first, match[2] === undefined ? first : Number.parseInt(match[2], 16)] as const;
+  });
+  const restore = stubHeader(issue);
+  const queryClient = headerClient();
+  queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
+  const view = render(
+    <ShellNavigationContext.Provider value={{ onOpen: () => {}, open: false }}>
+      {headerTree("/issues/CORE-1/conversation", queryClient)}
+    </ShellNavigationContext.Provider>
+  );
+
+  try {
+    await screen.findByRole("heading", { level: 1, name: issue.title });
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+    const header = screen.getByTestId("issue-header");
+    // The two controls that draw a shape in place of a character are both in the header read.
+    expect(within(header).getByRole("button", { name: "Open navigation" })).toBeInTheDocument();
+    expect(
+      within(header).getByRole("button", { name: CONTROL_LABELS.issue_actions })
+    ).toBeInTheDocument();
+    const offenders: string[] = [];
+    let read = 0;
+    const walker = document.createTreeWalker(header, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+      const text = node.textContent ?? "";
+      for (const character of text) {
+        read += 1;
+        const point = character.codePointAt(0) ?? 0;
+        if (ranges.some(([first, last]) => point >= first && point <= last)) continue;
+        // The element that drew it, and the part of the header around it, by the name a reader
+        // hears, its test id or its words.
+        const drawer = node.parentElement;
+        const part = drawer?.closest("a, button, h1, select, [data-testid]");
+        const partName =
+          part?.getAttribute("aria-label") ??
+          part?.getAttribute("data-testid") ??
+          part?.textContent;
+        const code = point.toString(16).toUpperCase().padStart(4, "0");
+        offenders.push(
+          `U+${code} ${character} in "${text}", drawn by <${drawer?.tagName.toLowerCase()}> in ${part?.tagName.toLowerCase()} "${partName}"`
+        );
+      }
+    }
+    expect(offenders).toEqual([]);
+    // A walk that read no character would pass with nothing read.
+    expect(read).toBeGreaterThan(0);
+  } finally {
+    view.unmount();
     restore();
   }
 });
