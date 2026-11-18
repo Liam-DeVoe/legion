@@ -652,7 +652,7 @@ With no bearer configured at all, the session's credential is traded at the secr
 instead (`AGENT_SECRETS_URL` with `AGENT_SECRETS_MACHINE_IDENTITY`, `brokerCredential`). The
 credential is then a DPoP-bound access token presented under the `DPoP` scheme rather than a
 bearer. Every bearer source above is resolved first and unchanged, so a session that has one
-behaves exactly as it did. The machine's identity is one of four (`machineIdentity` in
+behaves exactly as it did. The machine's identity is one of three (`machineIdentity` in
 `@legion/broker-client/environment`). `kubernetes` reads a pod's projected token from
 `AGENT_SECRETS_MACHINE_TOKEN_FILE`. `metadata` asks the metadata server for a Compute Engine
 machine's Google identity token, for the audience `AGENT_SECRETS_MACHINE_AUDIENCE`. `pool` mints
@@ -660,12 +660,9 @@ a Google identity token through a workload identity pool, as the Go client's `Po
 does (`pool-identity.ts`), for a machine with no Google service account of its own, such as an
 Azure box. `pool` needs all four of `AGENT_SECRETS_MACHINE_TOKEN_FILE`,
 `AGENT_SECRETS_MACHINE_AUDIENCE`, `AGENT_SECRETS_POOL_AUDIENCE` and `AGENT_SECRETS_POOL_ACCOUNT`.
-`github-actions` asks a GitHub Actions job's runner for its OIDC token of the audience
-`AGENT_SECRETS_MACHINE_AUDIENCE` at every trade (`github-actions.ts`): the runner's endpoint is
-`ACTIONS_ID_TOKEN_REQUEST_URL` and its bearer `ACTIONS_ID_TOKEN_REQUEST_TOKEN`, which GitHub sets
-in a job granted `id-token: write`. A job with no endpoint reads the run's token from
-`AGENT_SECRETS_MACHINE_TOKEN_FILE`.
-An identity with one of its variables missing is an error that names the variable.
+An identity with one of its variables missing is an error that names the variable. A CI job's
+`dispatch result --project` trades no identity: it holds the airlock's placeholder of its run
+(`DISPATCH_RESULTS_TOKEN`, [`docs/ci-results.md`](docs/ci-results.md)).
 
 A pod writes under a session name only once its deployment has registered that name for the pod,
 and its trade can reach the broker first. The broker refuses that trade with a description
@@ -851,8 +848,9 @@ When Dispatch took the call but the session's state (a picture, the ledger, the 
 be written, the result still prints, with one line saying so.
 
 A CI job records its result of a check of the spec files with `dispatch result --project`, the
-one call that is no session's, and a session reads those results with `dispatch results --project`:
-[`docs/ci-results.md`](docs/ci-results.md) says how each works.
+one call that is no session's, run under `agent-secrets result-grant`, which gives it the airlock's
+placeholder of its run and no Dispatch credential; a session reads those results with `dispatch
+results --project`: [`docs/ci-results.md`](docs/ci-results.md) says how each works.
 
 `dispatch-session-state.ts` keeps one directory per session under `DISPATCH_STATE_DIR` (default
 `<XDG_STATE_HOME or ~/.local/state>/dispatch/sessions/<id>`): `state.json` carries what a

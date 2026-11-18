@@ -1730,9 +1730,11 @@ export const dispatchToolSpecs = [
       "the result was recorded on, and a caller whose credential carries a person. Every other " +
       "caller is 403 RETRACTION_FORBIDDEN. A result retracted already is 409 RESULT_RETRACTED. " +
       "With project, a CI job records its own result of one check of the spec files " +
-      "(.dispatch/spec) at the commit it tested. The job writes with its own identity: it " +
-      "trades the OIDC token of its run at the secrets broker for a results token, and Dispatch " +
-      "refuses this form from every other credential. The call sends commit, check, verdict and " +
+      "(.dispatch/spec) at the commit it tested. The job runs the command under agent-secrets " +
+      "result-grant, which gives it the secrets broker's airlock placeholder of its run as " +
+      "DISPATCH_RESULTS_TOKEN; the command presents that placeholder alone and trades nothing, " +
+      "and the airlock proxy puts the run's results token in its place. Dispatch refuses this form " +
+      "from every other credential. The call sends commit, check, verdict and " +
       "observed. Dispatch takes the job, the procedure and the recorder from the token, from " +
       "GitHub and from the spec files at the commit. The recorder is the run, and no person. " +
       "Spec files that the graph logic refuses hold no check: 409 SPEC_FILES_REFUSED names the " +
@@ -1742,19 +1744,15 @@ export const dispatchToolSpecs = [
       "not finish. The command prints the stored result as JSON, an in-toto statement of the " +
       "run. A write that reached Dispatch with no answer that says whether it stored the result " +
       'prints {"write_outcome_unknown":"<code>"} and exits 1: the result may be stored, and a ' +
-      "second run is safe, because Dispatch keeps each result. A call that the broker's rate " +
-      "limit (429), a broker that cannot answer the trade (a 5xx, or no answer in 30 s) or " +
-      "Dispatch's check of the job's token (429 BROKER_TOKEN_RATE_LIMITED, 503 " +
-      "BROKER_UNAVAILABLE) turns away before anything " +
+      "second run is safe, because Dispatch keeps each result. A tunnel the airlock proxy refuses " +
+      "prints AIRLOCK_TUNNEL_REFUSED with its status, and an answer the proxy gives itself prints " +
+      "its code and its words; each says nothing reached Dispatch and exits 1, and only a 503 is " +
+      "asked again. A call that Dispatch's check of the run's token (429 " +
+      "BROKER_TOKEN_RATE_LIMITED, 503 BROKER_UNAVAILABLE) turns away before anything " +
       "is stored is asked again after the answer's Retry-After, or a second. The whole call has " +
-      "one bound, 60 s from its start, which the runner's token request, the broker's trade and " +
-      "the write all run under, and no round starts in its last 7 s; a call turned away until " +
-      "then ends with the last answer, its code named, and exits 1, and a bound that ends in the " +
-      "trade says which part of the trade and that nothing was written. " +
-      "It reads DISPATCH_URL, AGENT_SECRETS_URL, AGENT_SECRETS_MACHINE_IDENTITY " +
-      "(github-actions in a GitHub Actions job), AGENT_SECRETS_MACHINE_AUDIENCE, and the runner's " +
-      "ACTIONS_ID_TOKEN_REQUEST_URL and ACTIONS_ID_TOKEN_REQUEST_TOKEN, or " +
-      "AGENT_SECRETS_MACHINE_TOKEN_FILE in their place. Its trade names no session. " +
+      "one bound, 60 s from its start, which every write runs under, and no round starts in its " +
+      "last 7 s; a call turned away until then ends with the last answer, its code named, and " +
+      "exits 1. It reads DISPATCH_URL and DISPATCH_RESULTS_TOKEN, and no broker variable. " +
       ISSUE_REFERENCE,
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE).optional(),

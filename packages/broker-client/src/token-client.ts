@@ -135,14 +135,12 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
  */
 export class BrokerRefusedError extends Error {
   /** `refused` names the identity traded, as its source describes it: this machine's, or a
-   *  person's sign-in on it. `retryAfterMs` is the wait the answer's `Retry-After` names, which
-   *  the broker's 429 carries, and null where it names none. */
+   *  person's sign-in on it. */
   constructor(
     readonly status: number,
     readonly code: string,
     readonly description: string,
-    refused: string,
-    readonly retryAfterMs: number | null = null
+    refused: string
   ) {
     super(
       description === ""
@@ -221,15 +219,6 @@ interface Waiter {
   readonly reject: (error: unknown) => void;
 }
 
-/** The wait a `Retry-After` value names (RFC 9110 Section 10.2.3), at `now`: a number of seconds,
- *  or a date, none for a date passed; null for no value, or one that is neither. */
-function retryAfterWait(value: string | null, now: number): number | null {
-  const text = value?.trim() ?? "";
-  if (/^\d+$/.test(text)) return Number(text) * 1000;
-  const at = Date.parse(text);
-  return Number.isNaN(at) ? null : Math.max(0, at - now);
-}
-
 /**
  * A trade that ended with no refusal of the broker's: no answer, a 5xx, or an answer that is not
  * this grant's. `status` is the HTTP status of the answer, 0 for none. `timedOut` says the
@@ -281,23 +270,6 @@ export function isFinalRefusal(error: unknown): boolean {
   return (
     (error instanceof BrokerRefusedError && error.permanent) || error instanceof SignInEndedError
   );
-}
-
-/** The part of a trade under way: the read of the identity it trades, or the exchange itself. */
-export type TradePart = "identity" | "exchange";
-
-/** The signal reasons a caller's wait on a trade ended at, each with the part of the trade that
- *  was under way then (`tradeWaitEnded`). */
-const TRADE_WAITS_ENDED = new WeakMap<object, TradePart>();
-
-/**
- * The part of a trade that was under way when `error`, the reason of a caller's own signal, ended
- * that caller's wait on the trade, or undefined for any other error. The reason is thrown as it
- * is, its class and name the signal's own (a caller reads an `AbortError` or a `TimeoutError` by
- * name), and only marked here. The trade itself goes on for the callers that still wait on it.
- */
-export function tradeWaitEnded(error: unknown): TradePart | undefined {
-  return typeof error === "object" && error !== null ? TRADE_WAITS_ENDED.get(error) : undefined;
 }
 
 /** One client: the broker it trades at, the identity it trades, and the key it proves. */
@@ -429,9 +401,6 @@ export class BrokerTokenClient {
   #wake: (() => void) | null = null;
   /** Ended by {@link close}, which stops a trade waiting out a missing registration. */
   readonly #closed = new AbortController();
-  /** The part of the trade under way, which a caller whose own signal ends its wait is told
-   *  (`tradeWaitEnded`). */
-  #part: TradePart = "identity";
 
   constructor(options: BrokerTokenClientOptions) {
     const brokerUrl = withoutTrailingSlashes(options.brokerUrl.trim());
@@ -479,8 +448,7 @@ export class BrokerTokenClient {
    * (`EXCHANGE_BACKSTOP_MS` for each exchange, and each identity source's own) and under no
    * caller's signal: `signal` ends this caller's wait alone, and the trade goes on for every other
    * caller. Where the trade is waiting out a missing registration, the caller stops with
-   * {@link RegistrationPendingError}, naming the session; otherwise with the signal's reason,
-   * marked with the part of the trade then under way (`tradeWaitEnded`).
+   * {@link RegistrationPendingError}, naming the session; otherwise with the signal's reason.
    */
   async token(signal?: AbortSignal): Promise<BrokerToken> {
     const held = this.#held;
@@ -509,9 +477,8 @@ export class BrokerTokenClient {
   /**
    * The answer of the trade under way, or what this caller is told when its `signal` ends first:
    * that the session's registration is still pending, where the trade is waiting one out, and
-   * otherwise the signal's own reason, marked with the part of the trade then under way
-   * (`tradeWaitEnded`). The trade itself goes on either way; the caller leaves the waiting set,
-   * so nothing of it stays behind.
+   * otherwise the signal's own reason. The trade itself goes on either way; the caller leaves the
+   * waiting set, so nothing of it stays behind.
    */
   #joined(signal: AbortSignal | undefined): Promise<BrokerToken> {
     const { promise, resolve, reject } = Promise.withResolvers<BrokerToken>();
@@ -522,9 +489,7 @@ export class BrokerTokenClient {
         reject(new RegistrationPendingError(this.#session, pending));
         return;
       }
-      const reason: unknown = signal?.reason;
-      if (typeof reason === "object" && reason !== null) TRADE_WAITS_ENDED.set(reason, this.#part);
-      reject(reason);
+      reject(signal?.reason);
     };
     const waiter: Waiter = {
       resolve: (token) => {
@@ -626,7 +591,6 @@ export class BrokerTokenClient {
    * process makes with the token it got.
    */
   async #trade(closed: AbortSignal): Promise<BrokerToken> {
-    this.#part = "identity";
     const subject = await this.#subject.read(closed);
     const form: Record<string, string> = {
       subject_token: subject.token,
@@ -673,7 +637,6 @@ export class BrokerTokenClient {
     const backstop = AbortSignal.timeout(this.#backstopMs);
     const bound = AbortSignal.any([closed, backstop]);
     config[customFetch] = (url, options) => this.#send(url, options, bound, raw);
-    this.#part = "exchange";
     let answered: TokenEndpointResponse;
     try {
       answered = await genericGrantRequest(config, GRANT_TYPE_TOKEN_EXCHANGE, form);
@@ -697,8 +660,7 @@ export class BrokerTokenClient {
         error.status,
         error.error,
         error.error_description ?? "",
-        this.#subject.describe(),
-        retryAfterWait(error.response.headers.get("Retry-After"), Date.now())
+        this.#subject.describe()
       );
     }
     const status = statusOf(error);

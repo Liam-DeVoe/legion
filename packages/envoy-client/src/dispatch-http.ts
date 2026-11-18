@@ -362,7 +362,9 @@ const UNANSWERED_WRITES = new WeakSet<object>();
 /**
  * The codes of a transport failure that opened no connection, so no request of the write left
  * this process: a refused connection (Bun's ECONNREFUSED, ConnectionRefused in an older Bun), a
- * name that did not resolve, and a network or a host with no route.
+ * name that did not resolve, a network or a host with no route, and a proxy that refused to open
+ * the tunnel (Bun's ERR_PROXY_TUNNEL, `AirlockTunnelRefusedError`), which sent nothing on to
+ * Dispatch.
  */
 const NO_CONNECTION: Readonly<Partial<Record<string, true>>> = {
   ECONNREFUSED: true,
@@ -371,7 +373,87 @@ const NO_CONNECTION: Readonly<Partial<Record<string, true>>> = {
   EAI_AGAIN: true,
   ENETUNREACH: true,
   EHOSTUNREACH: true,
+  ERR_PROXY_TUNNEL: true,
 };
+
+/**
+ * The header the secrets broker's airlock proxy writes on every answer of its own, `false` on one
+ * that reached no service: a refusal it made before it dialled anything. A CI job's result write
+ * goes out through that proxy (`airlockCredential`), and such an answer is not Dispatch's.
+ */
+const AIRLOCK_FORWARDED_HEADER = "Airlock-Forwarded";
+
+/** The header that carries the code of the airlock proxy's own answer, such as `NO_PLACEHOLDER`. */
+const AIRLOCK_CODE_HEADER = "Airlock-Code";
+
+/** The airlock proxy's code for a grant it could not read this moment (its 503), which a later
+ *  attempt may find readable: the one answer of its own a write asks again after. */
+const AIRLOCK_GRANT_UNREADABLE = "GRANT_UNREADABLE";
+
+/** Whether `response` is the airlock proxy's own answer, which reached no service. */
+function airlockAnswer(response: Response): boolean {
+  return response.headers.get(AIRLOCK_FORWARDED_HEADER)?.trim().toLowerCase() === "false";
+}
+
+/** How Bun words a proxy's refusal of a CONNECT: `Proxy refused to open a tunnel: <status>
+ *  <reason>`, the status and the reason phrase the proxy answered with. */
+const PROXY_TUNNEL_REFUSED = /: (\d{3}) ?(.*)$/;
+
+/**
+ * The secrets broker's airlock proxy refused to open the write's tunnel, so nothing was sent to
+ * Dispatch: Bun's `ERR_PROXY_TUNNEL`, whose message carries the status alone, since a refusal at
+ * the CONNECT reaches the caller as its status line and nothing more. `status` is that status, 0
+ * where the message names none, and `reason` its reason phrase. A 503 is a connection that never
+ * opened and is asked again within the write's bound; every other status ends the write at once,
+ * a 407 among them, which names a grant that ended or a proxy password that names none.
+ */
+export class AirlockTunnelRefusedError extends Error {
+  override readonly name = "AirlockTunnelRefusedError";
+  readonly code = "AIRLOCK_TUNNEL_REFUSED";
+
+  constructor(
+    readonly status: number,
+    readonly reason: string,
+    options?: ErrorOptions
+  ) {
+    const said = status === 0 ? reason : `${status}${reason === "" ? "" : ` ${reason}`}`;
+    super(
+      `the airlock proxy refused the connection (${said}); nothing was sent to Dispatch`,
+      options
+    );
+  }
+}
+
+/** `error` as the airlock's refusal of a tunnel where it is Bun's `ERR_PROXY_TUNNEL`, or undefined. */
+function tunnelRefusal(error: unknown): AirlockTunnelRefusedError | undefined {
+  if (!(error instanceof Error) || Reflect.get(error, "code") !== "ERR_PROXY_TUNNEL") {
+    return undefined;
+  }
+  const said = PROXY_TUNNEL_REFUSED.exec(error.message);
+  return said === null
+    ? new AirlockTunnelRefusedError(0, error.message, { cause: error })
+    : new AirlockTunnelRefusedError(Number(said[1]), said[2]?.trim() ?? "", { cause: error });
+}
+
+/**
+ * An answer the airlock proxy gave itself inside a connection that was open (`Airlock-Forwarded:
+ * false`): a refusal of the request, or a grant it could not read, before it dialled anything, so
+ * the request reached no service and stored nothing. `code` is its `Airlock-Code`, or
+ * `HTTP_<status>` where it names none, and `body` its text, each copy of the credential redacted
+ * whole. It is no `DispatchServiceError`, which a caller reads as a refusal Dispatch decided, and
+ * no rule reads it as a write whose outcome is unknown (`writeOutcomeUnknown`).
+ */
+export class AirlockRefusedError extends Error {
+  override readonly name = "AirlockRefusedError";
+
+  constructor(
+    readonly status: number,
+    readonly code: string,
+    readonly body: string
+  ) {
+    super(`the airlock proxy answered ${status} ${code} itself, and sent nothing on: ${body}`);
+  }
+}
 
 /**
  * Dispatch's two answers of its check of a broker token that judged nothing, before any handler
@@ -758,7 +840,8 @@ const NULL_BODY_STATUSES: ReadonlySet<number> = new Set([101, 204, 205, 304]);
  * gateway's, or Dispatch's own, which Dispatch never stores under the key), a 408 or 429 (a timeout
  * or a rate limit), or Dispatch's `409 KEY_IN_FLIGHT` (an earlier attempt still runs under the
  * key). An echoed 401 is a handler's, which can come after it committed, so it may have reached
- * one.
+ * one. The airlock proxy's own answer (`Airlock-Forwarded: false`) reached nothing, and is
+ * definitive but for its `503 GRANT_UNREADABLE`.
  */
 async function writeAnswer(response: Response, key: string): Promise<WriteAnswer> {
   const echoed = keyEchoed(response, key);
@@ -784,14 +867,30 @@ async function writeAnswer(response: Response, key: string): Promise<WriteAnswer
       shape = {};
     }
   }
+  const rebuilt = new Response(text, {
+    status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
+  // The airlock proxy's own answer reached no service, so it stored nothing and judged nothing of
+  // the key, whatever its status: it is final, but for a grant the proxy could not read this
+  // moment, which a later attempt may find readable.
+  if (airlockAnswer(response)) {
+    return {
+      response: rebuilt,
+      again:
+        status === 503 &&
+        response.headers.get(AIRLOCK_CODE_HEADER)?.trim() === AIRLOCK_GRANT_UNREADABLE,
+      reached: false,
+      running: false,
+      echoed,
+      kept: false,
+    };
+  }
   const again = retriesUnderKey(status, shape.code);
   const running = again && status === 409;
   return {
-    response: new Response(text, {
-      status,
-      statusText: response.statusText,
-      headers: response.headers,
-    }),
+    response: rebuilt,
     again,
     reached:
       (status >= 500 && !tokenNotCheckedAnswer(status, shape.code)) ||
@@ -2430,12 +2529,17 @@ export class DispatchClient {
         ) {
           throw this.#ended(error, request, attempt, sentOut || call.reached, call.keyed);
         }
-        thrown = error;
+        // A proxy that refused to open the tunnel sent nothing on, and says why in its status
+        // alone (`AirlockTunnelRefusedError`): its 503 is asked again, as any connection that never
+        // opened is, and every other status, a 407 for a grant that ended among them, is final.
+        const refusal = tunnelRefusal(error);
+        thrown = refusal ?? error;
         // A connection that was never opened sent nothing, so that attempt reached nothing, and
         // neither did one whose credential could not present.
         const code = typeof error === "object" && error !== null ? Reflect.get(error, "code") : "";
         call.reached ||= sentOut && (typeof code !== "string" || NO_CONNECTION[code] !== true);
         running ||= error instanceof WriteAttemptSilent && !upload;
+        if (refusal !== undefined && refusal.status !== 503) throw refusal;
       }
       const scheduled = running
         ? Math.min(pausesMs[attempt - 1] ?? inFlightPauseMs, inFlightPauseMs)
@@ -2457,6 +2561,13 @@ export class DispatchClient {
           // was stored (a late timer can bring this about inside the write's own bound).
           if (!call.reached && answer !== undefined && this.#timedOut(error)) {
             return this.#unsettled(method, url, answer.response, false, attempt, call.keyed);
+          }
+          if (
+            !call.reached &&
+            thrown instanceof AirlockTunnelRefusedError &&
+            this.#timedOut(error)
+          ) {
+            throw thrown;
           }
           throw this.#ended(error, request, attempt, call.reached, call.keyed);
         }
@@ -2635,7 +2746,9 @@ export class DispatchClient {
    * reads as a landing — is a `DispatchWriteLandedError`, neither a refusal nor a payload. A
    * `409 IDEMPOTENCY_KEY_COMMITTED` that does not name it back is no verdict of Dispatch's keyed
    * layer on this write, which names the key back on every answer it gives one, so the write's
-   * outcome is unknown (`#notThisCallsAnswer`), as for a 2xx.
+   * outcome is unknown (`#notThisCallsAnswer`), as for a 2xx. An answer the airlock proxy gave
+   * itself (`Airlock-Forwarded: false`) is an `AirlockRefusedError`, which names its
+   * `Airlock-Code` and quotes its words, each piece of the credential in them redacted.
    */
   async #response<T>(
     method: string,
@@ -2663,6 +2776,21 @@ export class DispatchClient {
       );
     }
     const text = await response.text();
+    // The airlock proxy's own answer is not Dispatch's, whatever its body: it names its code in a
+    // header of its own, and its text is the proxy's words.
+    if (!response.ok && airlockAnswer(response)) {
+      const code = response.headers.get(AIRLOCK_CODE_HEADER)?.trim() || `HTTP_${response.status}`;
+      // The words are the proxy's own, and they name the placeholder by that word, which the
+      // placeholder's own prefix spells, so the credential is redacted whole, never piece by piece
+      // as a gateway's page is (`excerpt`), which would cut the proxy's sentences.
+      const token = this.token;
+      const words = text.trim();
+      throw new AirlockRefusedError(
+        response.status,
+        code,
+        token === "" ? words : words.replaceAll(token, REDACTED)
+      );
+    }
     let payload: unknown = text;
     if (text && isJson(response)) {
       try {

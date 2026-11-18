@@ -6,12 +6,6 @@
 
 import { PROJECT_KEY_PATTERN, PROJECT_KEY_RULE } from "@legion/contracts/dispatch-tools";
 import { importDpopKey, newDpopKey } from "./dpop";
-import {
-  ACTIONS_TOKEN_URL_VAR,
-  ACTIONS_TOKEN_VAR,
-  githubActionsIdentity,
-  workflowRunTokenFile,
-} from "./github-actions";
 import { metadataIdentity } from "./metadata-identity";
 import { personIdentity } from "./person-identity";
 import { poolIdentity } from "./pool-identity";
@@ -37,12 +31,10 @@ export const BROKER_URL_VAR = "AGENT_SECRETS_URL";
  *  which is every deployment that has not turned the exchange on. */
 export const IDENTITY_VAR = "AGENT_SECRETS_MACHINE_IDENTITY";
 /** The projected Kubernetes service-account token file, which {@link IDENTITY_KUBERNETES} reads
- *  and {@link IDENTITY_POOL} federates, and the file a {@link IDENTITY_GITHUB_ACTIONS} job with
- *  no runner endpoint reads its run's token from. */
+ *  and {@link IDENTITY_POOL} federates. */
 export const MACHINE_TOKEN_FILE_VAR = "AGENT_SECRETS_MACHINE_TOKEN_FILE";
 /** The audience of this machine's Google identity token: the metadata server mints it for that
- *  audience, and a pool mint names it as the minted token's own. A GitHub Actions job's runner
- *  mints its OIDC token for it too. */
+ *  audience, and a pool mint names it as the minted token's own. */
 export const MACHINE_AUDIENCE_VAR = "AGENT_SECRETS_MACHINE_AUDIENCE";
 /** The session a trade writes under for a caller that acts as no session of its own, which a
  *  daemon, a command and a helper are ({@link tradeSession}). */
@@ -67,20 +59,16 @@ export const IDENTITY_METADATA = "metadata";
  *  {@link MACHINE_TOKEN_FILE_VAR} names (`pool-identity.ts`): a machine with no Google service
  *  account of its own. */
 export const IDENTITY_POOL = "pool";
-/** A GitHub Actions job's OIDC token, which its runner mints at {@link ACTIONS_TOKEN_URL_VAR}
- *  (`github-actions.ts`): a CI job that writes its own results. */
-export const IDENTITY_GITHUB_ACTIONS = "github-actions";
 
 /**
- * The variables this package reads, by name: this module's, the two a GitHub Actions job's runner
- * sets, whose names `github-actions.ts` holds (`ACTIONS_TOKEN_URL_VAR` and `ACTIONS_TOKEN_VAR`),
- * those `signins.ts` reads to find a person's sign-in on this machine and the client that renews
- * it, whose names that module holds (`SIGNIN_DIR_VAR`, `PERSON_VAR`, `SIGNIN_ISSUER_VAR`,
- * `SIGNIN_CLIENT_ID_VAR` and `SIGNIN_CLIENT_SECRET_FILE_VAR`), `PERSON_TRADE_VAR`, which turns a
- * person's trade off for a process whose own credentials are a service's, and `XDG_STATE_HOME`
- * and `HOME`, which its directory is read from when `SIGNIN_DIR_VAR` names none. A caller that
- * keeps what this package made by the environment that made it reads the names here, so a
- * variable added to the package reaches its key.
+ * The variables this package reads, by name: this module's, those `signins.ts` reads to find a
+ * person's sign-in on this machine and the client that renews it, whose names that module holds
+ * (`SIGNIN_DIR_VAR`, `PERSON_VAR`, `SIGNIN_ISSUER_VAR`, `SIGNIN_CLIENT_ID_VAR` and
+ * `SIGNIN_CLIENT_SECRET_FILE_VAR`), `PERSON_TRADE_VAR`, which turns a person's trade off for a
+ * process whose own credentials are a service's, and `XDG_STATE_HOME` and `HOME`, which its
+ * directory is read from when `SIGNIN_DIR_VAR` names none. A caller that keeps what this package
+ * made by the environment that made it reads the names here, so a variable added to the package
+ * reaches its key.
  */
 export const BROKER_VARIABLES = [
   BROKER_URL_VAR,
@@ -91,8 +79,6 @@ export const BROKER_VARIABLES = [
   PROJECTS_VAR,
   POOL_AUDIENCE_VAR,
   POOL_ACCOUNT_VAR,
-  ACTIONS_TOKEN_URL_VAR,
-  ACTIONS_TOKEN_VAR,
   SIGNIN_DIR_VAR,
   "XDG_STATE_HOME",
   "HOME",
@@ -129,7 +115,9 @@ function required(env: BrokerEnvironment, name: keyof BrokerVariables, kind: str
  * that trades nothing and is no error. A named identity whose own variables are missing throws
  * naming them, since a deployment that asked for one and gave it nothing has a mistake in it.
  * Each kind reads the variables Go's `MachineIdentity` reads for it
- * (`packages/envoy/internal/brokerclient/environment.go`), in the same order.
+ * (`packages/envoy/internal/brokerclient/environment.go`), in the same order. Go's also takes
+ * `github-actions`, a CI job's own identity, which this client never trades: a job's `dispatch
+ * result` holds the airlock's placeholder of its run, and the broker holds the run's token.
  */
 export function machineIdentity(env: BrokerEnvironment): TokenSource | undefined {
   const kind = value(env, IDENTITY_VAR);
@@ -152,22 +140,9 @@ export function machineIdentity(env: BrokerEnvironment): TokenSource | undefined
         tokenAudience,
       });
     }
-    case IDENTITY_GITHUB_ACTIONS: {
-      const requestUrl = value(env, ACTIONS_TOKEN_URL_VAR);
-      if (requestUrl === "") {
-        const file = value(env, MACHINE_TOKEN_FILE_VAR);
-        if (file !== "") return workflowRunTokenFile(file);
-        throw new Error(
-          `${ACTIONS_TOKEN_URL_VAR} is required by ${IDENTITY_VAR}=${kind}: the runner sets it in a job granted id-token: write. Else ${MACHINE_TOKEN_FILE_VAR} names a file that holds the run's token.`
-        );
-      }
-      const requestToken = required(env, ACTIONS_TOKEN_VAR, kind);
-      const audience = required(env, MACHINE_AUDIENCE_VAR, kind);
-      return githubActionsIdentity({ requestUrl, requestToken, audience });
-    }
     default:
       throw new Error(
-        `${IDENTITY_VAR}="${kind}" names no identity this machine can prove; it takes ${IDENTITY_KUBERNETES}, ${IDENTITY_METADATA}, ${IDENTITY_POOL} or ${IDENTITY_GITHUB_ACTIONS}`
+        `${IDENTITY_VAR}="${kind}" names no identity this machine can prove; it takes ${IDENTITY_KUBERNETES}, ${IDENTITY_METADATA} or ${IDENTITY_POOL}`
       );
   }
 }

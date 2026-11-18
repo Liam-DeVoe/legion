@@ -9,7 +9,6 @@ import { temporaryDirectories } from "@legion/test-fixtures/temporary-directorie
 import {
   BROKER_URL_VAR,
   brokerTokenClient,
-  IDENTITY_GITHUB_ACTIONS,
   IDENTITY_VAR,
   MACHINE_AUDIENCE_VAR,
   MACHINE_TOKEN_FILE_VAR,
@@ -19,7 +18,6 @@ import {
   tradeProjects,
   tradeSession,
 } from "../environment";
-import { ACTIONS_TOKEN_URL_VAR, ACTIONS_TOKEN_VAR } from "../github-actions";
 import {
   FORM_LAUNCHER_CREDENTIAL,
   FORM_LAUNCHER_CREDENTIAL_DECLINED,
@@ -69,34 +67,22 @@ test("an identity named with its variables missing is refused naming them", () =
     `${MACHINE_TOKEN_FILE_VAR} is required by ${IDENTITY_VAR}=pool`
   );
   expect(() => machineIdentity({ [IDENTITY_VAR]: "ec2" })).toThrow(
-    'AGENT_SECRETS_MACHINE_IDENTITY="ec2" names no identity this machine can prove; it takes kubernetes, metadata, pool or github-actions'
+    'AGENT_SECRETS_MACHINE_IDENTITY="ec2" names no identity this machine can prove; it takes kubernetes, metadata or pool'
   );
 });
 
-test("a GitHub Actions job's identity is read from the runner's variables, else from a token file", () => {
+// A CI job's write holds the airlock's placeholder of its run and trades nothing, so this client
+// takes no GitHub Actions identity, even with the runner's variables beside it: the Go client's
+// `github-actions` is the one `agent-secrets result-grant` presents.
+test("github-actions is no identity kind", () => {
   const job = {
-    [IDENTITY_VAR]: IDENTITY_GITHUB_ACTIONS,
-    [ACTIONS_TOKEN_URL_VAR]: "http://runner.test/_apis/idtoken?api-version=2.0",
-    [ACTIONS_TOKEN_VAR]: "runner-request-bearer",
+    [IDENTITY_VAR]: "github-actions",
+    ACTIONS_ID_TOKEN_REQUEST_URL: "http://runner.test/_apis/idtoken?api-version=2.0",
+    ACTIONS_ID_TOKEN_REQUEST_TOKEN: "runner-request-bearer",
     [MACHINE_AUDIENCE_VAR]: "example-audience",
   };
-  const endpoint = machineIdentity(job);
-  expect(endpoint?.describe()).toContain(ACTIONS_TOKEN_URL_VAR);
-  expect(endpoint?.describe()).not.toContain("runner-request-bearer");
-  // The runner sets the URL and the bearer together, in a job granted `id-token: write`.
-  expect(() => machineIdentity({ ...job, [ACTIONS_TOKEN_VAR]: "" })).toThrow(
-    `${ACTIONS_TOKEN_VAR} is required by ${IDENTITY_VAR}=github-actions`
-  );
-  expect(() => machineIdentity({ ...job, [MACHINE_AUDIENCE_VAR]: undefined })).toThrow(
-    `${MACHINE_AUDIENCE_VAR} is required by ${IDENTITY_VAR}=github-actions`
-  );
-  // A job with no endpoint reads the run's token from a file, where one is named.
-  const noEndpoint = { [IDENTITY_VAR]: IDENTITY_GITHUB_ACTIONS };
-  expect(
-    machineIdentity({ ...noEndpoint, [MACHINE_TOKEN_FILE_VAR]: "/run/job/token" })?.describe()
-  ).toContain("/run/job/token");
-  expect(() => machineIdentity(noEndpoint)).toThrow(
-    `${ACTIONS_TOKEN_URL_VAR} is required by ${IDENTITY_VAR}=github-actions`
+  expect(() => machineIdentity(job)).toThrow(
+    'AGENT_SECRETS_MACHINE_IDENTITY="github-actions" names no identity this machine can prove; it takes kubernetes, metadata or pool'
   );
 });
 

@@ -1,9 +1,4 @@
 import { closeSync, constants, fstatSync, openSync, readFileSync } from "node:fs";
-import {
-  BrokerRefusedError,
-  BrokerTradeFailedError,
-  tradeWaitEnded,
-} from "@legion/broker-client/token-client";
 import { sleep } from "@legion/contracts";
 import {
   askgateState,
@@ -28,6 +23,8 @@ import { type ActiveDispatchConfig, ownIdentityDispatch } from "./dispatch-confi
 import type { DispatchHost } from "./dispatch-cwd";
 import { checkDispatchCall, dispatchServerUrls, executeDispatchTool } from "./dispatch-execute";
 import {
+  AirlockRefusedError,
+  AirlockTunnelRefusedError,
   DISPATCH_TOOL_DEADLINE_MS,
   DISPATCH_WRITE_RETRY,
   DispatchClient,
@@ -84,14 +81,11 @@ const USAGE = 2;
 /**
  * The one bound of a CI job's `dispatch result --project` (`ownIdentityResult`). The whole call
  * ends `totalMs` after it starts: one timeout, made where the call starts, is the signal every
- * await of it runs under — its wait on the broker's trade and on the runner's token request the
- * trade makes, each write with the asks the write client makes again under its key, and each wait
- * after an answer that says "not now" (`notNow`) — since the write client takes that signal as
- * its deadline and hands it to the credential. The trade itself runs under its own bound, which a
- * second caller of the credential may share (`BrokerTokenClient.token`), so the signal ends the
- * call's wait on it and not the trade. No round starts, and the write client asks nothing again,
- * in its last `reserveMs`, the time a last attempt has to be answered before the bound ends it. A
- * job's step of many checks still ends, and the wait of one call stays far below a job's timeout.
+ * await of it runs under — each write with the asks the write client makes again under its key,
+ * and each wait after an answer that says "not now" (`notNow`) — since the write client takes that
+ * signal as its deadline. No round starts, and the write client asks nothing again, in its last
+ * `reserveMs`, the time a last attempt has to be answered before the bound ends it. A job's step
+ * of many checks still ends, and the wait of one call stays far below a job's timeout.
  */
 export interface ResultBound {
   readonly totalMs: number;
@@ -125,23 +119,14 @@ const NOT_NOW_STEP_MS = 1_000;
 
 /**
  * Why a call of `ownIdentityResult` was turned away before anything was stored, so it may be sent
- * again, and how long to wait first; undefined for every other failure. Three answers say so:
- * the broker's rate limit (its 429), the broker that could not answer the trade (a 5xx, or no
- * answer before the trade's own bound ended it; a trade stores nothing), and Dispatch's check of
- * the job's token, which answered before any handler ran (`tokenNotChecked`: its 429 of a spent
- * bucket, its 503 for a broker that answered nothing). An answer of the write itself is never
- * one: a refusal is final, and a write that may have stored is `writeOutcomeUnknown`'s.
+ * again, and how long to wait first; undefined for every other failure. One answer says so:
+ * Dispatch's check of the run's token, which answered before any handler ran (`tokenNotChecked`:
+ * its 429 of a spent bucket, its 503 for a broker that answered nothing). The airlock proxy puts
+ * that token into the write, and every CI write reaches Dispatch from a broker pod's address, so
+ * the jobs that write at one time share one bucket. An answer of the write itself is never one: a
+ * refusal is final, and a write that may have stored is `writeOutcomeUnknown`'s.
  */
 function notNow(error: unknown): { readonly why: string; readonly waitMs: number } | undefined {
-  if (error instanceof BrokerRefusedError && error.status === 429) {
-    return {
-      why: "the secrets broker's rate limit refused the trade",
-      waitMs: error.retryAfterMs ?? NOT_NOW_STEP_MS,
-    };
-  }
-  if (error instanceof BrokerTradeFailedError && (error.status >= 500 || error.timedOut)) {
-    return { why: "the secrets broker could not answer the trade", waitMs: NOT_NOW_STEP_MS };
-  }
   if (tokenNotChecked(error)) {
     return {
       why: "Dispatch's check of the job's token turned the write away",
@@ -149,26 +134,6 @@ function notNow(error: unknown): { readonly why: string; readonly waitMs: number
     };
   }
   return undefined;
-}
-
-/**
- * What the call was waiting on when its bound ended it before any write went out, or undefined
- * where that is not so: the trade, which runs under its own bound and goes on, while the bound
- * ends the call's wait on it, marked with the part then under way (`tradeWaitEnded`), the read of
- * the job's own token or the broker's exchange. The credential is asked before each attempt goes
- * out, and the write client gives such an error back as it is only where no attempt of the call
- * may have reached Dispatch (`#ended`, `#settle`), and every earlier round stored nothing, so
- * nothing was written.
- */
-function tradeCut(error: unknown): string | undefined {
-  switch (tradeWaitEnded(error)) {
-    case "identity":
-      return "it read the job's own token for the secrets broker";
-    case "exchange":
-      return "the secrets broker traded the job's token";
-    default:
-      return undefined;
-  }
 }
 
 const HOSTS = ["omp", "claude"] as const satisfies readonly DispatchHost[];
@@ -303,29 +268,32 @@ function isJobResult(argv: readonly string[]): boolean {
 
 /**
  * `dispatch result --project`, a CI job's record of its result of a check of the spec files. The
- * job writes with its own identity alone (`ownIdentityDispatch`): no host, no session, no
- * envoy.json, no AskGate and no listener, since a job has none of them, and no bearer or
- * person's sign-in, since the result must carry the identity the broker authenticated. The
- * call's own argument check runs first, as for every command, so a refused call sends nothing.
- * It prints the stored result as JSON and exits 0, or prints Dispatch's refusal as
+ * job runs it under `agent-secrets result-grant`, and writes with the airlock's placeholder of its
+ * run alone (`ownIdentityDispatch`): no host, no session, no envoy.json, no AskGate and no
+ * listener, since a job has none of them, no bearer or person's sign-in, since the result must
+ * carry the identity the airlock authenticated, and no trade, since the broker holds the run's
+ * token. The call's own argument check runs first, as for every command, so a refused call sends
+ * nothing. It prints the stored result as JSON and exits 0, or prints Dispatch's refusal as
  * `<CODE>: <message>` and exits 1. A write that landed with its answer lost prints
  * `{"landed_without_answer": <code>}`, the details the session path records for the same case,
  * and exits 0: the result is stored, and a results token reads nothing back. A write that may
  * have reached Dispatch while no answer says whether it stored the result (`writeOutcomeUnknown`)
  * prints `{"write_outcome_unknown": <code>}` and exits 1, as the write is not confirmed: the
- * result may be stored, and a second run is safe, since Dispatch keeps each result. A call the
- * broker or Dispatch's check of its token turns away before anything is stored (`notNow`) is
- * asked again inside the call's one bound (`ResultBound`), and ends with the last such answer,
- * its code named, and exit 1. No token reaches what it prints: the broker's and Dispatch's words
- * name none, and the runner's endpoint is named by its variable.
+ * result may be stored, and a second run is safe, since Dispatch keeps each result. A tunnel the
+ * airlock proxy refused prints `AIRLOCK_TUNNEL_REFUSED: …` with its status, and an answer the proxy
+ * gave itself prints its `Airlock-Code` and its words, each saying that nothing reached Dispatch,
+ * and exits 1. A call Dispatch's check of the run's token turns away before anything is stored
+ * (`notNow`) is asked again inside the call's one bound (`ResultBound`), and ends with the last
+ * such answer, its code named, and exit 1. No credential reaches what it prints: the proxy's and
+ * Dispatch's words name none, and the placeholder is named by its variable.
  *
  * What it prints goes into a GitHub Actions runner's log, which reads workflow commands from it,
- * so each text it did not write (an argument, a variable, an answer of the broker or of Dispatch)
- * is printed by runnerlog.Printable's rule (runner-log.ts): a problem of its arguments and the
- * refusal of its identity as `printable` text, Dispatch's refusal as a `printableLine`, and the
- * dry run, the stored result and the outcome line as `printableJson`. No value starts a line of
- * its own, and no line is a workflow command. The landed line holds no such text: its code is one
- * of the client's three constants.
+ * so each text it did not write (an argument, a variable, an answer of the airlock proxy or of
+ * Dispatch) is printed by runnerlog.Printable's rule (runner-log.ts): a problem of its arguments
+ * as `printable` text, Dispatch's and the proxy's refusals as a `printableLine`, and the dry run,
+ * the stored result and the outcome line as `printableJson`. No value starts a line of its own,
+ * and no line is a workflow command. The landed line holds no such text: its code is one of the
+ * client's three constants.
  */
 async function ownIdentityResult(
   parsed: Extract<ParsedCommand, { readonly kind: "call" }>,
@@ -361,7 +329,6 @@ async function ownIdentityResult(
     );
   }
   // One bound, one signal (`ResultBound`): the timeout made here is the write client's deadline,
-  // which it hands to the credential for each request, so the call's wait on the trade ends at it,
   // and every wait below ends at it too. The client's asks again under the key stop `reserveMs`
   // before it, and the rounds below are read on the same monotonic clock the client keeps its asks
   // on.
@@ -396,22 +363,22 @@ async function ownIdentityResult(
           parsed.tool
         );
       }
-      // The bound ended the call in the trade, before any write went out: the line names which
-      // part of the trade, and that nothing was written.
-      const cut = ended.aborted ? tradeCut(error) : undefined;
-      if (cut !== undefined) {
+      // The airlock proxy refused the tunnel, or answered the request itself: nothing reached
+      // Dispatch, and its line says so. Its words come from outside this command.
+      if (error instanceof AirlockTunnelRefusedError) {
+        return refuse(printableLine(`${error.code}: ${error.message}`), REFUSED, parsed.tool);
+      }
+      if (error instanceof AirlockRefusedError) {
         return refuse(
-          printableLine(
-            `this command's ${bound.totalMs / 1_000} s ended while ${cut}, and nothing was written: ${messageFor(error)}`
-          ),
+          printableLine(`${error.code}: ${error.body}; nothing was stored`),
           REFUSED,
           parsed.tool
         );
       }
-      // One job writes a result for each of its checks, so it meets the broker's and Dispatch's
-      // limits of one address with no fault of its own: a call turned away before anything was
-      // stored is sent again after the answer's wait, while the next round starts before the
-      // bound's last `reserveMs`. Past that, it ends with the last answer, which names its code.
+      // One job writes a result for each of its checks, so it meets Dispatch's limit of one
+      // address with no fault of its own: a call turned away before anything was stored is sent
+      // again after the answer's wait, while the next round starts before the bound's last
+      // `reserveMs`. Past that, it ends with the last answer, which names its code.
       const turnedAway = notNow(error);
       if (turnedAway !== undefined) {
         if (

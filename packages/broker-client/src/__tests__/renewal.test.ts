@@ -17,7 +17,6 @@ import {
   BrokerTradeFailedError,
   isFinalRefusal,
   SignInEndedError,
-  tradeWaitEnded,
 } from "../token-client";
 import { SUBJECT_TOKEN_TYPE_KUBERNETES } from "../wire";
 import { accepted, refusalOf, stubBroker } from "./stub";
@@ -145,10 +144,9 @@ test("the starter's signal ends its own wait, and never the trade another caller
     );
     expect({
       left: left?.name,
-      part: tradeWaitEnded(left),
       joined,
       trades: broker.trades.length,
-    }).toEqual({ left: "TimeoutError", part: "exchange", joined: "token-1", trades: 1 });
+    }).toEqual({ left: "TimeoutError", joined: "token-1", trades: 1 });
   } finally {
     release();
     broker.stop();
@@ -227,52 +225,6 @@ test("a trade its starter left ends at the exchange's own bound", async () => {
     });
   } finally {
     jest.useRealTimers();
-  }
-});
-
-// A caller whose own signal ends its wait is thrown the signal's reason as it is, marked with the
-// part of the trade then under way, here the read of its identity; an error of the trade itself,
-// such as the broker's refusal, carries no such mark.
-test("a wait its signal ends is marked with the part of the trade under way", async () => {
-  const broker = stubBroker(() => ({
-    status: 400,
-    body: { error: "invalid_grant", error_description: "the run is not listed" },
-  }));
-  const { promise: held, resolve: release } = Promise.withResolvers<void>();
-  const source: TokenSource = {
-    read: async () => {
-      await held;
-      return { token: "subject-1", tokenType: SUBJECT_TOKEN_TYPE_KUBERNETES };
-    },
-    describe: () => "an identity that answers once the test lets it",
-  };
-  const client = await clientAt(broker.url, { now: Date.now() }, source);
-  try {
-    const ended = new AbortController();
-    const waiting = client.token(ended.signal);
-    ended.abort(new DOMException("The operation timed out.", "TimeoutError"));
-    const left = await refusalOf(() => waiting);
-    const tradesWhenLeft = broker.trades.length;
-    release();
-    const refused = await refusalOf(() => client.token());
-    expect({
-      left: left?.name,
-      part: tradeWaitEnded(left),
-      tradesWhenLeft,
-      refused: refused instanceof BrokerRefusedError,
-      refusedPart: tradeWaitEnded(refused),
-      trades: broker.trades.length,
-    }).toEqual({
-      left: "TimeoutError",
-      part: "identity",
-      tradesWhenLeft: 0,
-      refused: true,
-      refusedPart: undefined,
-      trades: 1,
-    });
-  } finally {
-    release();
-    broker.stop();
   }
 });
 

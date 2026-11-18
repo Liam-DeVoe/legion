@@ -1,13 +1,6 @@
 import { afterAll, beforeEach, describe, expect, jest, test } from "bun:test";
-import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import {
-  FORM_LAUNCHER_CREDENTIAL,
-  FORM_LAUNCHER_CREDENTIAL_DECLINED,
-  FORM_SESSION,
-  SUBJECT_TOKEN_TYPE_GITHUB,
-} from "@legion/broker-client/wire";
 import type { ArtifactBlock } from "@legion/contracts";
 import {
   DISPATCH_BLOCK_UNITS,
@@ -22,7 +15,7 @@ import { temporaryDirectories } from "@legion/test-fixtures/temporary-directorie
 import type { Socket } from "bun";
 import { keyedLayer } from "../../test/keyed-layer";
 import { routeAnswer } from "../../test/route-answers";
-import { forgetBrokerClients } from "../broker-credential";
+import { type StubProxy, startStubProxy } from "../../test/stub-proxy";
 import {
   cliRefusals,
   DISPATCH_TOKEN_CHECK_WAIT_MS,
@@ -30,9 +23,8 @@ import {
   type ResultBound,
   runDispatchCli,
 } from "../dispatch-cli";
-import { ownIdentityDispatch } from "../dispatch-config";
 import { resetAdviceMemory } from "../dispatch-execute";
-import { DISPATCH_WRITE_RETRY, DispatchClient } from "../dispatch-http";
+import { DISPATCH_WRITE_RETRY } from "../dispatch-http";
 import { forgetShownPictures } from "../dispatch-picture-tools";
 
 interface Recorded {
@@ -1792,18 +1784,21 @@ describe("the dispatch entry as its own process", () => {
   }, 30_000);
 });
 
-// `dispatch result --project` is a CI job's own write, and the job has no session: it trades the
-// OIDC token its runner mints for it at the secrets broker, as a workflow run's token, and writes
-// with the results token it got. The three stand-ins below are the runner's token endpoint, the
-// broker's token endpoint and Dispatch's two project results routes.
+// `dispatch result --project` is a CI job's own write, and the job has no session: it runs under
+// `agent-secrets result-grant`, which gives it the airlock's placeholder of its run as
+// DISPATCH_RESULTS_TOKEN, and the airlock proxy puts the run's results token in its place. The job
+// trades nothing. The stand-ins below are the runner's token endpoint and the broker's token
+// endpoint, which the job must ask nothing, and Dispatch's two project results routes.
 describe("dispatch result --project, as a CI job writes it", () => {
   const entry = join(import.meta.dir, "..", "..", "bin", "dispatch.ts");
-  /** The run's OIDC token, the bearer the runner's endpoint takes, and the results token the
-   *  broker mints: none of the three may reach the command's output or its argument list. */
+  /** The airlock's placeholder of the job's run, the run's OIDC token, the bearer the runner's
+   *  endpoint takes, and a results token: none of them may reach the command's output or its
+   *  argument list. */
+  const PLACEHOLDER = "agent-secrets-placeholder-result-Run4242abcdefghijklmnopqrstu";
   const OIDC_TOKEN = "job.oidc.token.of-run-4242";
   const REQUEST_TOKEN = "runner-request-bearer-of-run-4242";
   const RESULTS_TOKEN = "broker-results-token-of-run-4242";
-  const SECRETS = [OIDC_TOKEN, REQUEST_TOKEN, RESULTS_TOKEN];
+  const SECRETS = [PLACEHOLDER, OIDC_TOKEN, REQUEST_TOKEN, RESULTS_TOKEN];
 
   interface Seen {
     readonly method: string;
@@ -1816,10 +1811,6 @@ describe("dispatch result --project, as a CI job writes it", () => {
   const trades: { form: URLSearchParams; proof: string }[] = [];
   const written: Seen[] = [];
   let brokerAnswer: () => Response | Promise<Response>;
-  /** What the runner's token endpoint waits on before it answers: settled at once by default, and
-   *  held by a test of a runner that answers only after the command's bound: false fails the
-   *  request with a 503. */
-  let runnerHold: Promise<boolean> = Promise.resolve(true);
   let dispatchAnswer: () => Response | Promise<Response>;
   /** Whether the stand-in answers the write naming no key back, as something in Dispatch's place
    *  does: Dispatch's own answer to a keyed write always names it. */
@@ -1840,7 +1831,6 @@ describe("dispatch result --project, as a CI job writes it", () => {
         audience: new URL(request.url).searchParams.get("audience"),
       });
       asked();
-      if (!(await runnerHold)) return new Response("unavailable", { status: 503 });
       return Response.json({ count: 1, value: OIDC_TOKEN });
     },
   });
@@ -1888,8 +1878,6 @@ describe("dispatch result --project, as a CI job writes it", () => {
     runnerAsked.length = 0;
     trades.length = 0;
     written.length = 0;
-    runnerHold = Promise.resolve(true);
-    forgetBrokerClients();
     brokerAnswer = () =>
       Response.json(
         Object.fromEntries([
@@ -1904,14 +1892,16 @@ describe("dispatch result --project, as a CI job writes it", () => {
   });
 
   const dispatchUrl = `http://127.0.0.1:${dispatch.port}`;
-  /** A job's environment as the reporter action writes it: no DISPATCH_HOST and no session. */
+  /** A job's environment as `agent-secrets result-grant` gives its command: no DISPATCH_HOST and
+   *  no session, Dispatch's URL and the airlock's placeholder, and the broker's and the runner's
+   *  variables of the step it runs in, of which the command reads none. */
   const jobEnvironment = (): Record<string, string | undefined> => ({
     PATH: process.env.PATH,
     HOME: stateDir,
     DISPATCH_STATE_DIR: stateDir,
     DISPATCH_URL: dispatchUrl,
+    DISPATCH_RESULTS_TOKEN: PLACEHOLDER,
     AGENT_SECRETS_URL: `http://127.0.0.1:${broker.port}`,
-    AGENT_SECRETS_MACHINE_IDENTITY: "github-actions",
     AGENT_SECRETS_MACHINE_AUDIENCE: "example-audience",
     ACTIONS_ID_TOKEN_REQUEST_URL: `http://127.0.0.1:${runner.port}/_apis/idtoken?api-version=2.0`,
     ACTIONS_ID_TOKEN_REQUEST_TOKEN: REQUEST_TOKEN,
@@ -2016,19 +2006,21 @@ describe("dispatch result --project, as a CI job writes it", () => {
 
   /**
    * `runJob` on the test runner's fake timers, with how far that clock had moved when the call
-   * ended (`ms`, undefined where it had not ended). The command's bound, the trade's own bound and
-   * each wait of the call run on a clock that moves only when `drive` moves it, so a row judges
-   * when on that clock the call ended, which the machine's load cannot change: on the real clock
-   * the 60 s bound once read 246,969 ms on a loaded host. The stand-ins answer on real sockets,
-   * and the clock stands still while they do, so `drive` moves it only once the call waits on
-   * it: a stand-in holds its request (`arrived`), or the call has set the timer of a wait
-   * (`timerSet`). After `drive`, the call has the event loop's turns to end in, and no time.
+   * ended (`ms`, undefined where it had not ended). The command's bound and each wait of the call
+   * run on a clock that moves only when `drive` moves it, so a row judges when on that clock the
+   * call ended, which the machine's load cannot change: on the real clock the 60 s bound once
+   * read 246,969 ms on a loaded host. The stand-ins answer on real sockets, and the clock stands
+   * still while they do, so `drive` moves it only once the call waits on it: a stand-in holds its
+   * request (`arrived`), or the call has set the timer of a wait (`timerSet`). After `drive`, the
+   * call has the event loop's turns to end in, and no time. `proxy`, where a row gives one, is the
+   * proxy every request of the call goes through, as HTTPS_PROXY sends it in a process of its own.
    */
   async function onFakeClock(
     argv: readonly string[],
     env: Record<string, string | undefined>,
     bound: ResultBound | undefined,
-    drive: (clock: FakeClock) => Promise<void> = (clock) => clock.ended
+    drive: (clock: FakeClock) => Promise<void> = (clock) => clock.ended,
+    proxy?: string
   ): Promise<{ code: number; stdout: string; stderr: string; ms: number | undefined }> {
     jest.useFakeTimers();
     const faked = globalThis.setTimeout;
@@ -2045,7 +2037,7 @@ describe("dispatch result --project, as a CI job writes it", () => {
     }) as unknown as typeof setTimeout;
     answersHeard = 0;
     const heard = (async (input: RequestInfo | URL, init?: RequestInit) => {
-      const response = await fetch(input, init);
+      const response = await fetch(input, proxy === undefined ? init : { ...init, proxy });
       answersHeard += 1;
       asked();
       return response;
@@ -2090,10 +2082,6 @@ describe("dispatch result --project, as a CI job writes it", () => {
     }
   }
 
-  /** One part of a compact JWS, as JSON. */
-  const jwsPart = (compact: string | null, at: number): Record<string, unknown> =>
-    JSON.parse(Buffer.from((compact ?? "").split(".")[at] ?? "", "base64url").toString("utf8"));
-
   /** Nothing went to the runner, the broker, Dispatch or the session's Dispatch. */
   const sentNothing = () => {
     expect(runnerAsked).toEqual([]);
@@ -2111,41 +2099,68 @@ describe("dispatch result --project, as a CI job writes it", () => {
     }
   };
 
-  // The 30 s limit is the hang guard of the rows above that run the entry as a child process.
-  test("trades the job's OIDC token as a workflow run and presents the DPoP token it got", async () => {
+  // The 30 s limit is the hang guard of the rows below that run the entry as a child process.
+  test("a CI job's result goes out with the placeholder as its DPoP token and no proof of its own", async () => {
     // A test's output opens with `---`, so the job gives it in the `=` form, which reads no flag.
     const argv = [...record, "--observed=--- PASS: TestP (0.01s)"];
     const { code, stdout, stderr } = await spawnJob(argv, jobEnvironment());
 
     expect({ code, stderr }, stdout).toEqual({ code: 0, stderr: "" });
     expect(JSON.parse(stdout)).toEqual(stored);
-    expect(runnerAsked).toEqual([
-      { authorization: `Bearer ${REQUEST_TOKEN}`, audience: "example-audience" },
+    expect(written.map((seen) => [seen.method, seen.path, seen.authorization, seen.dpop])).toEqual([
+      ["POST", "/api/v1/projects/ACME/results", `DPoP ${PLACEHOLDER}`, null],
     ]);
-    expect(trades).toHaveLength(1);
-    const form = trades[0]?.form;
-    expect(form?.get("subject_token")).toBe(OIDC_TOKEN);
-    expect(form?.get("subject_token_type")).toBe(SUBJECT_TOKEN_TYPE_GITHUB);
-    expect(form?.get(FORM_LAUNCHER_CREDENTIAL)).toBe(FORM_LAUNCHER_CREDENTIAL_DECLINED);
-    // The broker's result entry fixes the session, so the job names none.
-    expect(form?.has(FORM_SESSION)).toBe(false);
-    expect(written.map((seen) => [seen.method, seen.path])).toEqual([
-      ["POST", "/api/v1/projects/ACME/results"],
-    ]);
-    const write = written[0];
-    expect(write?.authorization).toBe(`DPoP ${RESULTS_TOKEN}`);
-    const proof = jwsPart(write?.dpop ?? null, 1);
-    expect(proof["htm"]).toBe("POST");
-    expect(proof["htu"]).toBe(`${dispatchUrl}/api/v1/projects/ACME/results`);
-    expect(proof["ath"]).toBe(createHash("sha256").update(RESULTS_TOKEN).digest("base64url"));
-    // One key: the one the trade proved is the one the write proves.
-    expect(jwsPart(write?.dpop ?? null, 0)["jwk"]).toEqual(
-      jwsPart(trades[0]?.proof ?? null, 0)["jwk"]
-    );
+    expect({ runner: runnerAsked.length, broker: trades.length }).toEqual({ runner: 0, broker: 0 });
     namesNoToken(argv, stdout, stderr);
   }, 30_000);
 
-  test("a refusal names no token either", async () => {
+  // The airlock's rules entry for Dispatch's host allows the results write and nothing else, so
+  // the write asks Dispatch nothing first and nothing after: the stand-in counts every request.
+  test("the job's write sends one POST and nothing else to Dispatch's host", async () => {
+    const { code, stdout } = await runJob(record, jobEnvironment());
+    expect(code, stdout).toBe(0);
+    expect(written.map((seen) => `${seen.method} ${seen.path}`)).toEqual([
+      "POST /api/v1/projects/ACME/results",
+    ]);
+    expect(requests).toEqual([]);
+  });
+
+  test("with no DISPATCH_RESULTS_TOKEN it refuses before any request, naming agent-secrets result-grant", async () => {
+    const { DISPATCH_RESULTS_TOKEN: _placeholder, ...none } = jobEnvironment();
+    for (const env of [none, { ...none, DISPATCH_RESULTS_TOKEN: "" }]) {
+      const { code, stdout } = await runJob(record, env);
+      expect({ code, stdout }).toEqual({
+        code: 2,
+        stdout:
+          "dispatch: dispatch result --project runs under `agent-secrets result-grant -- …`, which gives it DISPATCH_RESULTS_TOKEN; this environment holds none, so nothing was sent\n",
+      });
+    }
+    // A value that cannot be a header's is refused by its variable, and quoted nowhere.
+    const spaced = await runJob(record, { ...none, DISPATCH_RESULTS_TOKEN: `${PLACEHOLDER} x` });
+    expect({ code: spaced.code, stdout: spaced.stdout }).toEqual({
+      code: 2,
+      stdout:
+        "dispatch: DISPATCH_RESULTS_TOKEN holds white space or a control character, so it is no placeholder `agent-secrets result-grant` gives, and nothing was sent\n",
+    });
+    sentNothing();
+  });
+
+  // A job's step environment names the broker and the identity agent-secrets traded, and the
+  // command it runs inherits them: the write reads none of them, and trades nothing.
+  test("AGENT_SECRETS_MACHINE_IDENTITY=github-actions asks the broker nothing", async () => {
+    const { code, stdout } = await runJob(record, {
+      ...jobEnvironment(),
+      AGENT_SECRETS_MACHINE_IDENTITY: "github-actions",
+    });
+    expect(code, stdout).toBe(0);
+    expect({
+      broker: trades.length,
+      runner: runnerAsked.length,
+      sent: written.map((seen) => [seen.authorization, seen.dpop]),
+    }).toEqual({ broker: 0, runner: 0, sent: [[`DPoP ${PLACEHOLDER}`, null]] });
+  });
+
+  test("a refusal names no credential either", async () => {
     const refusal = `The files of .dispatch/spec at ${SPEC_COMMIT} hold no check p-9.`;
     dispatchAnswer = () =>
       Response.json({ code: "CHECK_NOT_IN_FILES", error: refusal }, { status: 409 });
@@ -2154,23 +2169,10 @@ describe("dispatch result --project, as a CI job writes it", () => {
     expect(dispatchRefused.code, dispatchRefused.stdout).toBe(1);
     expect(dispatchRefused.stdout.trim()).toBe(`CHECK_NOT_IN_FILES: ${refusal}`);
     namesNoToken(argv, dispatchRefused.stdout, dispatchRefused.stderr);
-
-    written.length = 0;
-    brokerAnswer = () =>
-      Response.json(
-        { error: "invalid_grant", error_description: "The subject token was presented before." },
-        { status: 400 }
-      );
-    const brokerRefused = await spawnJob(record, jobEnvironment());
-    expect(brokerRefused.code, brokerRefused.stdout).toBe(1);
-    expect(brokerRefused.stdout).toContain("invalid_grant");
-    expect(written).toEqual([]);
-    namesNoToken(record, brokerRefused.stdout, brokerRefused.stderr);
   }, 30_000);
 
   // A job's step writes `--project "$PROJECT" --check "$CHECK" --commit "$SHA"`, and an empty
-  // variable is the honest way to send one empty: it is refused before the trade or any write,
-  // naming the flag.
+  // variable is the honest way to send one empty: it is refused before any write, naming the flag.
   test("an empty --project, --check or --commit is refused before any request, naming the flag", async () => {
     for (const [flag, noun] of [
       ["--project", "project"],
@@ -2356,17 +2358,6 @@ describe("dispatch result --project, as a CI job writes it", () => {
       proxy.stop();
     }
   }, 30_000);
-
-  /** The broker's token endpoint's 429, as its per-address bucket answers it (`oauthToken`). */
-  const rateLimited = (retryAfter: string) =>
-    Response.json(
-      {
-        error: "invalid_request",
-        error_description: "RATE_LIMITED: too many token requests; try again later",
-        code: "RATE_LIMITED",
-      },
-      { status: 429, headers: { "Retry-After": retryAfter } }
-    );
 
   /** A bound of the command short enough for a test, on the fake clock each of its rows runs on
    *  (`onFakeClock`): no round starts later than `reserveMs` before `totalMs`. */
@@ -2738,71 +2729,6 @@ describe("dispatch result --project, as a CI job writes it", () => {
     }
   }, 30_000);
 
-  // The broker's rate limit refuses a trade before any work, and a job of many checks meets it
-  // with no fault of its own: the trade is asked again after the answer's Retry-After, and the
-  // result is stored once. Each wait is a second of the fake clock.
-  test("a trade the broker's rate limit refuses is asked again after its Retry-After, and the result is stored", async () => {
-    const answer = brokerAnswer;
-    brokerAnswer = () => (trades.length <= 2 ? rateLimited("1") : answer());
-    const { code, stdout, stderr, ms } = await onFakeClock(
-      record,
-      jobEnvironment(),
-      shortBound(5_000, 1_000),
-      eachWait
-    );
-    expect({
-      code,
-      stderr,
-      trades: trades.length,
-      waited: ms !== undefined && ms >= 2_000,
-    }).toEqual({
-      code: 0,
-      stderr: "",
-      trades: 3,
-      waited: true,
-    });
-    expect(JSON.parse(stdout)).toEqual(stored);
-    expect(written.map((seen) => [seen.method, seen.path])).toEqual([
-      ["POST", "/api/v1/projects/ACME/results"],
-    ]);
-  }, 15_000);
-
-  // A limit that never lets the trade through ends at the command's one bound, with one line that
-  // says so, and no write_outcome_unknown: nothing reached Dispatch. A Retry-After past the bound
-  // ends at once.
-  test("a trade the broker's rate limit refuses for ever ends at the command's one bound with one line", async () => {
-    for (const [retryAfter, wanted] of [
-      ["1", 3],
-      ["61", 1],
-    ] as const) {
-      trades.length = 0;
-      forgetBrokerClients();
-      brokerAnswer = () => rateLimited(retryAfter);
-      const { code, stdout, stderr, ms } = await onFakeClock(
-        record,
-        jobEnvironment(),
-        shortBound(3_000, 500),
-        eachWait
-      );
-      expect({
-        code,
-        stderr,
-        trades: trades.length,
-        withinTheBound: ms !== undefined && ms < 3_000,
-      }).toEqual({
-        code: 1,
-        stderr: "",
-        trades: wanted,
-        withinTheBound: true,
-      });
-      expect(stdout.split("\n")).toEqual([
-        "the secrets broker's rate limit refused the trade, and the 3 s this command may take leave no time to ask again: the secrets broker refused this GitHub Actions job's OIDC token (ACTIONS_ID_TOKEN_REQUEST_URL names the endpoint): HTTP 429 invalid_request: RATE_LIMITED: too many token requests; try again later",
-        "",
-      ]);
-      expect(written).toEqual([]);
-    }
-  }, 15_000);
-
   /** The results writes Dispatch got so far, the one it answers now included. */
   const posts = (): number => written.filter((seen) => seen.method === "POST").length;
   /** Dispatch's two answers of its check of a broker token that judged nothing, before any
@@ -2826,9 +2752,9 @@ describe("dispatch result --project, as a CI job writes it", () => {
         { status: 503 }
       ),
   };
-  /** The ways a call is turned away before anything is stored: Dispatch's check of the token
-   *  (its 429, and its 503 for a broker that answered nothing) and the broker's own 503 of the
-   *  trade. Each sets the stand-ins up to turn away `times` calls, then to answer as usual. */
+  /** The ways a call is turned away before anything is stored: Dispatch's check of the token, its
+   *  429 and its 503 for a broker that answered nothing. Each sets the stand-in up to turn away
+   *  `times` calls, then to answer as usual. */
   const turnedAway: readonly (readonly [name: string, setUp: (times: number) => void])[] = [
     [
       "Dispatch's 429 of its token check",
@@ -2842,26 +2768,16 @@ describe("dispatch result --project, as a CI job writes it", () => {
         dispatchAnswer = () => (posts() <= times ? tokenNotChecked.unavailable() : storedAnswer());
       },
     ],
-    [
-      "the broker's 503 of the trade",
-      (times) => {
-        const answer = brokerAnswer;
-        brokerAnswer = () =>
-          trades.length <= times ? new Response("unavailable", { status: 503 }) : answer();
-      },
-    ],
   ];
 
   // Dispatch's check of the job's token answers before any handler runs, so a write it turns away
-  // did nothing, and a trade the broker does not answer stores nothing: each is asked again after
-  // the answer's Retry-After, or a second, as the broker's rate limit is, and one result is stored.
-  test("a call Dispatch's token check or the broker turns away is asked again, and the result is stored", async () => {
-    const defaults = { brokerAnswer, dispatchAnswer };
+  // did nothing: it is asked again after the answer's Retry-After, or a second, and one result is
+  // stored.
+  test("a call Dispatch's token check turns away is asked again, and the result is stored", async () => {
+    const defaults = { dispatchAnswer };
     for (const [name, setUp] of turnedAway) {
-      ({ brokerAnswer, dispatchAnswer } = defaults);
+      ({ dispatchAnswer } = defaults);
       written.length = 0;
-      trades.length = 0;
-      forgetBrokerClients();
       setUp(2);
       const { code, stdout, stderr, ms } = await onFakeClock(
         record,
@@ -2878,7 +2794,7 @@ describe("dispatch result --project, as a CI job writes it", () => {
         },
         name
       ).toEqual({ code: 0, stderr: "", waited: true, stored });
-      expect(posts(), name).toBe(name.startsWith("the broker") ? 1 : 3);
+      expect(posts(), name).toBe(3);
     }
   }, 30_000);
 
@@ -2887,20 +2803,16 @@ describe("dispatch result --project, as a CI job writes it", () => {
   const turnedAwayLines = (seconds: number): Record<string, string> => ({
     "Dispatch's 429 of its token check": `Dispatch's check of the job's token turned the write away, and the ${seconds} s this command may take leave no time to ask again: BROKER_TOKEN_RATE_LIMITED: too many access tokens checked from this address; try again in 200ms`,
     "Dispatch's 503 for a broker that answered nothing": `Dispatch's check of the job's token turned the write away, and the ${seconds} s this command may take leave no time to ask again: BROKER_UNAVAILABLE: the secrets broker cannot be reached; try again in a minute`,
-    "the broker's 503 of the trade": `the secrets broker could not answer the trade, and the ${seconds} s this command may take leave no time to ask again: trade this GitHub Actions job's OIDC token (ACTIONS_ID_TOKEN_REQUEST_URL names the endpoint) at `,
   });
 
   // Turned away for ever, the call ends at its one bound with one line that says which turned it
-  // away, and no write_outcome_unknown: no write ran. The broker's 503 is the control: it never
-  // reaches Dispatch, so its line named the cause before the one bound as well.
-  test("a call Dispatch's token check or the broker turns away for ever ends at the one bound with one line", async () => {
-    const defaults = { brokerAnswer, dispatchAnswer };
+  // away, and no write_outcome_unknown: no write ran.
+  test("a call Dispatch's token check turns away for ever ends at the one bound with one line", async () => {
+    const defaults = { dispatchAnswer };
     const lines = turnedAwayLines(3);
     for (const [name, setUp] of turnedAway) {
-      ({ brokerAnswer, dispatchAnswer } = defaults);
+      ({ dispatchAnswer } = defaults);
       written.length = 0;
-      trades.length = 0;
-      forgetBrokerClients();
       setUp(Number.POSITIVE_INFINITY);
       const { code, stdout, stderr, ms } = await onFakeClock(
         record,
@@ -2996,89 +2908,204 @@ describe("dispatch result --project, as a CI job writes it", () => {
     });
   }, 90_000);
 
-  // The one bound reaches the trade too: the call waits on the runner's token request and the
-  // broker's exchange under the same signal as the write, so a runner or a broker that takes the
-  // request and never answers it ends the call at the bound, with a line that names which of the
-  // two it was and says nothing was written, and Dispatch is sent nothing. The answer is held on a
-  // promise the test settles only once the call has ended. The bound runs on the fake clock, whose
-  // timers all move together (one part's stopped clock is how the fault of D-A hid), moved its
-  // 400 ms once the held request arrived. The trade runs on under its own bound after the call
-  // ended, so the held runner fails it once it is let go, and it sends a later row's broker
-  // nothing. The immediate case is the control: with nothing held, the same bound stores the
-  // result.
-  for (const [name, hold, lead, heldThere] of [
-    [
-      "the runner's token request",
-      (held: Promise<void>) => {
-        runnerHold = held.then(() => false);
-      },
-      "this command's 0.4 s ended while it read the job's own token for the secrets broker, and nothing was written: ",
-      () => runnerAsked.length >= 1,
-    ],
-    [
-      "the broker's exchange",
-      (held: Promise<void>) => {
-        const answer = brokerAnswer;
-        brokerAnswer = async () => {
-          await held;
-          return answer();
-        };
-      },
-      "this command's 0.4 s ended while the secrets broker traded the job's token, and nothing was written: ",
-      () => trades.length >= 1,
-    ],
-  ] as const) {
-    test(`${name} that never answers ends the call at the bound, naming it`, async () => {
-      const { promise: held, resolve: release } = Promise.withResolvers<void>();
-      hold(held);
-      try {
-        const ran = await onFakeClock(
-          record,
-          jobEnvironment(),
-          shortBound(400, 50),
-          async (clock) => {
-            await arrived(heldThere);
-            clock.advance(400);
-            await clock.ended;
-          }
-        );
-        expect(
-          {
-            code: ran.code,
-            stderr: ran.stderr,
-            lines: ran.stdout.split("\n").length,
-            namesTheTrade: ran.stdout.startsWith(lead),
-            outcomeUnknown: ran.stdout.includes("write_outcome_unknown"),
-            sentToDispatch: written.length,
-            withinTheBound: ran.ms === 400,
-          },
-          ran.stdout
-        ).toEqual({
-          code: 1,
-          stderr: "",
-          lines: 2,
-          namesTheTrade: true,
-          outcomeUnknown: false,
-          sentToDispatch: 0,
-          withinTheBound: true,
-        });
-      } finally {
-        release();
-      }
-    }, 30_000);
-  }
+  /** Dispatch's public host as the job's write names it behind the airlock. No resolver here
+   *  answers it, so the write reaches nothing but the proxy. */
+  const airlocked = "https://dispatch.ci-results.test";
+  /** The proxy's URL as `agent-secrets result-grant` writes it in HTTPS_PROXY: the placeholder is
+   *  its password, so no line the command prints may quote it. */
+  const proxyUrl = (proxy: StubProxy): string =>
+    proxy.url.replace("http://", `http://agent-secrets:${PLACEHOLDER}@`);
+  /** The headers the airlock proxy writes on an answer of its own. */
+  const AIRLOCK_FORWARDED = "Airlock-Forwarded";
+  const AIRLOCK_CODE = "Airlock-Code";
 
-  test("the immediate trade, the control, stores the result inside the same bound", async () => {
-    const ran = await onFakeClock(record, jobEnvironment(), shortBound(400, 50));
-    expect({ code: ran.code, stderr: ran.stderr, withinTheBound: ran.ms === 0 }).toEqual({
-      code: 0,
-      stderr: "",
-      withinTheBound: true,
+  // The airlock proxy answers a CONNECT whose password names no live grant with 407, and Bun tells
+  // the caller its status line alone (ERR_PROXY_TUNNEL). Nothing went on to Dispatch, so the write
+  // ends at once and says so, with no write_outcome_unknown: asked again, the proxy answers the
+  // same. The command runs as its own process, with the proxy in the HTTPS_PROXY its step has.
+  test("a CONNECT the proxy refuses with 407 ends the write at once: nothing was sent, no write_outcome_unknown", async () => {
+    const proxy = startStubProxy(() => ({
+      status: 407,
+      reason: "Proxy Authentication Required",
+      code: "GRANT_NOT_LIVE",
+    }));
+    try {
+      const ran = await spawnJob(record, {
+        ...jobEnvironment(),
+        DISPATCH_URL: airlocked,
+        HTTPS_PROXY: proxyUrl(proxy),
+      });
+      expect({
+        code: ran.code,
+        stdout: ran.stdout,
+        stderr: ran.stderr,
+        connects: proxy.connects,
+      }).toEqual({
+        code: 1,
+        stdout:
+          "AIRLOCK_TUNNEL_REFUSED: the airlock proxy refused the connection (407 Proxy Authentication Required); nothing was sent to Dispatch\n",
+        stderr: "",
+        connects: ["dispatch.ci-results.test:443"],
+      });
+      expect(written).toEqual([]);
+      namesNoToken(record, ran.stdout, ran.stderr);
+    } finally {
+      proxy.stop();
+    }
+  }, 30_000);
+
+  // A 503 at the CONNECT is a connection that never opened, as a refused one is: the write asks
+  // again within its bound, on the schedule of every write, and then ends with that refusal, its
+  // status named, and no write_outcome_unknown. It runs on the fake clock, through the proxy as
+  // fetch's own option, the form HTTPS_PROXY takes in a process of its own.
+  test("a CONNECT the proxy refuses with 503 is asked again within the bound, and ends naming 503 and nothing sent", async () => {
+    const proxy = startStubProxy(() => ({
+      status: 503,
+      reason: "Service Unavailable",
+      code: "GRANT_UNREADABLE",
+    }));
+    try {
+      const ran = await onFakeClock(
+        record,
+        { ...jobEnvironment(), DISPATCH_URL: airlocked },
+        shortBound(5_000, 1_000),
+        eachWait,
+        proxyUrl(proxy)
+      );
+      expect({
+        code: ran.code,
+        stdout: ran.stdout,
+        stderr: ran.stderr,
+        askedAgain: proxy.connects.length >= 2,
+        withinTheBound: ran.ms !== undefined && ran.ms < 5_000,
+      }).toEqual({
+        code: 1,
+        stdout:
+          "AIRLOCK_TUNNEL_REFUSED: the airlock proxy refused the connection (503 Service Unavailable); nothing was sent to Dispatch\n",
+        stderr: "",
+        askedAgain: true,
+        withinTheBound: true,
+      });
+      expect(written).toEqual([]);
+    } finally {
+      proxy.stop();
+    }
+  }, 30_000);
+
+  // The tunnel's refusal says nothing of an earlier attempt that may have reached Dispatch: here
+  // the proxy opens the first tunnel and breaks it after the write went into it, and refuses the
+  // next CONNECT 407. The write may be stored, so the command prints write_outcome_unknown, never
+  // that nothing was sent.
+  test("a CONNECT refused after an attempt that may have reached Dispatch prints write_outcome_unknown", async () => {
+    const proxy = startStubProxy((connect) =>
+      connect === 1
+        ? "open-then-close"
+        : { status: 407, reason: "Proxy Authentication Required", code: "GRANT_NOT_LIVE" }
+    );
+    try {
+      const ran = await onFakeClock(
+        record,
+        { ...jobEnvironment(), DISPATCH_URL: airlocked },
+        shortBound(5_000, 1_000),
+        eachWait,
+        proxyUrl(proxy)
+      );
+      expect({
+        code: ran.code,
+        stdout: ran.stdout,
+        stderr: ran.stderr,
+        connects: proxy.connects.length,
+      }).toEqual({
+        code: 1,
+        stdout: `${JSON.stringify({ write_outcome_unknown: "AIRLOCK_TUNNEL_REFUSED" })}\n`,
+        stderr: "",
+        connects: 2,
+      });
+    } finally {
+      proxy.stop();
+    }
+  }, 30_000);
+
+  /** The airlock proxy's own refusal inside an open connection, in the proxy's words. */
+  const airlockRefusal = (status: number, code: string, words: string) => () =>
+    new Response(words, {
+      status,
+      headers: {
+        [AIRLOCK_FORWARDED]: "false",
+        [AIRLOCK_CODE]: code,
+        "Content-Type": "text/plain; charset=utf-8",
+      },
     });
-    expect(JSON.parse(ran.stdout)).toEqual(stored);
-    expect(written.map((seen) => [seen.method, seen.path])).toEqual([
-      ["POST", "/api/v1/projects/ACME/results"],
-    ]);
+
+  // Inside a connection that was open, the proxy answers a request it refuses before it dials
+  // anything, and says so (`Airlock-Forwarded: false`): the answer reached no service and stored
+  // nothing. It is final, printed with its code and the proxy's words whole, each piece of the
+  // placeholder redacted, and is no write_outcome_unknown.
+  test("the airlock's refusal inside an open connection prints its code and words and says nothing was stored", async () => {
+    const words =
+      "airlock: a request to this host carries the grant's placeholder as its one Authorization header, DPoP <placeholder>; this one does not, so nothing was sent (answer 7f3a)";
+    dispatchAnswer = airlockRefusal(403, "NO_PLACEHOLDER", `${words} ${PLACEHOLDER}`);
+    const { code, stdout, stderr } = await runJob(record, jobEnvironment());
+    expect({ code, stdout, stderr, posts: posts() }).toEqual({
+      code: 1,
+      stdout: `NO_PLACEHOLDER: ${words} [redacted]; nothing was stored\n`,
+      stderr: "",
+      posts: 1,
+    });
+    namesNoToken(record, stdout, stderr);
+  });
+
+  // A grant the proxy could not read this moment (its 503 GRANT_UNREADABLE) may be readable at the
+  // next attempt, so the write asks again under its key, and the result is stored. Turned away so
+  // for the whole bound, it ends with the proxy's refusal and no write_outcome_unknown, since no
+  // attempt reached a service. Dispatch's own 503, the control, may come after it committed, and
+  // ends as an outcome unknown.
+  test("the airlock's GRANT_UNREADABLE inside an open connection is asked again within the bound", async () => {
+    const unreadable = airlockRefusal(
+      503,
+      "GRANT_UNREADABLE",
+      "airlock: the grant could not be read"
+    );
+    const rows: readonly (readonly [
+      name: string,
+      answer: () => Response | Promise<Response>,
+      code: number,
+      stdout: (out: string) => boolean,
+    ])[] = [
+      [
+        "twice, then stored",
+        () => (posts() <= 2 ? unreadable() : storedAnswer()),
+        0,
+        (out) => JSON.stringify(JSON.parse(out)) === JSON.stringify(stored),
+      ],
+      [
+        "for the whole bound",
+        unreadable,
+        1,
+        (out) =>
+          out === "GRANT_UNREADABLE: airlock: the grant could not be read; nothing was stored\n",
+      ],
+      [
+        "Dispatch's own 503, the control",
+        () => Response.json({ code: "UNAVAILABLE", error: "internal" }, { status: 503 }),
+        1,
+        (out) => out === `${JSON.stringify({ write_outcome_unknown: "UNAVAILABLE" })}\n`,
+      ],
+    ];
+    for (const [name, answer, wanted, printed] of rows) {
+      written.length = 0;
+      dispatchAnswer = answer;
+      const ran = await onFakeClock(record, jobEnvironment(), shortBound(5_000, 1_000), eachWait);
+      expect(
+        {
+          code: ran.code,
+          stderr: ran.stderr,
+          printed: printed(ran.stdout),
+          askedAgain: posts() >= 3,
+        },
+        `${name}: ${ran.stdout}`
+      ).toEqual({ code: wanted, stderr: "", printed: true, askedAgain: true });
+    }
   }, 30_000);
 
   // The reserve of the one bound is set from the wait of Dispatch's check of a token on the broker,
@@ -3094,108 +3121,6 @@ describe("dispatch result --project, as a CI job writes it", () => {
       DISPATCH_TOKEN_CHECK_WAIT_MS
     );
   });
-
-  // The same at the real bound of 60 s, the case of the reviewer's B1 and the tester's D-C at
-  // 462bc83094, where a broker that took the trade and never answered held the call for 360 s: the
-  // call ends at its bound, names the trade, and sends Dispatch nothing. The trade's own 30 s bound
-  // ends the first trade, which got no answer, and the call trades again after a second, so it is
-  // the call's bound that ends the second. It runs on the fake clock, moved only while the call
-  // waits on it: the call has not ended a moment before its 60 s, and has ended at them.
-  test("a broker that never answers the trade ends the call at the real 60 s bound", async () => {
-    const { promise: held, resolve: release } = Promise.withResolvers<void>();
-    const answer = brokerAnswer;
-    brokerAnswer = async () => {
-      await held;
-      return answer();
-    };
-    let before: number | undefined;
-    try {
-      const ran = await onFakeClock(record, jobEnvironment(), undefined, async (clock) => {
-        let over = false;
-        void clock.ended.then(() => {
-          over = true;
-        });
-        await arrived(() => trades.length >= 1);
-        clock.advance(30_000);
-        // The trade's own bound ended the first trade, and the call waits a second to trade again.
-        let index = 0;
-        while ((await clock.timerSet(index)) !== 1_000) index++;
-        clock.advance(1_000);
-        await arrived(() => trades.length >= 2);
-        clock.advance(60_000 - 1 - clock.elapsed());
-        await Promise.race([clock.ended, turns(50)]);
-        before = over ? undefined : clock.elapsed();
-        clock.advance(1);
-      });
-      expect(
-        {
-          code: ran.code,
-          namesTheTrade: ran.stdout.startsWith(
-            "this command's 60 s ended while the secrets broker traded the job's token, and nothing was written: "
-          ),
-          sentToDispatch: written.length,
-          trades: trades.length,
-          runningAt: before,
-          endedAt: ran.ms,
-        },
-        ran.stdout
-      ).toEqual({
-        code: 1,
-        namesTheTrade: true,
-        sentToDispatch: 0,
-        trades: 2,
-        runningAt: 59_999,
-        endedAt: 60_000,
-      });
-    } finally {
-      release();
-    }
-  }, 30_000);
-
-  // Two Dispatch clients that share the job's broker credential share its one trade, and the end
-  // of one is no end of the other: client A starts the trade and is cancelled while it runs, and
-  // client B, which joined it with no signal of its own, gets its answer from it (B3 of the review
-  // of 2f29345b8d, its probe as a row). A asks first, so its credential starts the trade, and B's
-  // joins it before the trade reaches the broker, which answers only once A has left.
-  test("one client's cancellation during a shared trade ends that client alone", async () => {
-    const { promise: arrived, resolve: arrive } = Promise.withResolvers<void>();
-    const { promise: held, resolve: release } = Promise.withResolvers<void>();
-    const answer = brokerAnswer;
-    brokerAnswer = async () => {
-      arrive();
-      await held;
-      return answer();
-    };
-    dispatchAnswer = () => Response.json({ results: [] });
-    const resolution = ownIdentityDispatch(jobEnvironment());
-    if (!resolution.enabled) throw new Error(resolution.error ?? resolution.notice);
-    const cancel = new AbortController();
-    const a = new DispatchClient(resolution.url, resolution.credential, fetch, {
-      signal: cancel.signal,
-    });
-    const b = new DispatchClient(resolution.url, resolution.credential, fetch);
-    try {
-      const first = a.specCheckResults("ACME", SPEC_COMMIT).then(
-        () => "answered",
-        (error: Error) => error.name
-      );
-      const second = b.specCheckResults("ACME", SPEC_COMMIT).then(
-        () => "answered",
-        (error: Error) => `${error.name}: ${error.message}`
-      );
-      await arrived;
-      cancel.abort();
-      const left = await first;
-      release();
-      expect({ a: left, b: await second, trades: trades.length }).toEqual({
-        a: "AbortError",
-        b: "answered",
-        trades: 1,
-      });
-    } finally {
-      release();
-    }
-  }, 30_000);
 
   // A job's log is read by its runner, which ends a line at \n and at \r, and reads a workflow
   // command from a line that starts with "::" once its leading white space is trimmed and from a
@@ -3343,18 +3268,16 @@ describe("dispatch result --project, as a CI job writes it", () => {
         },
       ],
       [
-        "the broker's refusal",
+        "the airlock proxy's own refusal",
         "text",
         (value) => {
-          brokerAnswer = () =>
-            Response.json({ error: "invalid_grant", error_description: value }, { status: 400 });
+          dispatchAnswer = () =>
+            new Response(value, {
+              status: 403,
+              headers: { [AIRLOCK_FORWARDED]: "false", [AIRLOCK_CODE]: "NO_PLACEHOLDER" },
+            });
           return runJob(record, jobEnvironment());
         },
-      ],
-      [
-        "the machine identity of the environment",
-        "text",
-        (value) => runJob(record, { ...jobEnvironment(), AGENT_SECRETS_MACHINE_IDENTITY: value }),
       ],
       [
         "Dispatch's code of a write it may have stored",
@@ -3392,13 +3315,12 @@ describe("dispatch result --project, as a CI job writes it", () => {
         },
       ],
     ];
-    const defaults = { brokerAnswer, dispatchAnswer };
+    const defaults = { dispatchAnswer };
     /** One line per row that failed: its place, its value, and what was wrong with the output. */
     const failed: string[] = [];
     for (const [place, shows, run] of places) {
       for (const [name, value, text, json] of values) {
-        ({ brokerAnswer, dispatchAnswer } = defaults);
-        forgetBrokerClients();
+        ({ dispatchAnswer } = defaults);
         const { code, stdout, stderr } = await run(value);
         const out = `${stdout}${stderr}`;
         // Split wherever a runner or a log viewer can end a line, so no line can hide in another.
@@ -3424,32 +3346,6 @@ describe("dispatch result --project, as a CI job writes it", () => {
     }
     expect(failed).toEqual([]);
   }, 120_000);
-
-  // The broker's result entry fixes the session a job writes under, so the trade names none, even
-  // where the job's environment sets the session a command of this machine trades under.
-  test("the trade names no session where AGENT_SECRETS_SESSION is set", async () => {
-    const { code, stdout } = await runJob(record, {
-      ...jobEnvironment(),
-      AGENT_SECRETS_SESSION: "a-session-of-the-runner",
-    });
-    expect(code, stdout).toBe(0);
-    expect(trades).toHaveLength(1);
-    expect(trades[0]?.form.has(FORM_SESSION)).toBe(false);
-  });
-
-  test("a job whose runner gave it no token URL is refused naming the variable, and sends nothing", async () => {
-    const {
-      ACTIONS_ID_TOKEN_REQUEST_URL: _url,
-      ACTIONS_ID_TOKEN_REQUEST_TOKEN: _token,
-      ...noEndpoint
-    } = jobEnvironment();
-    const { code, stdout } = await runJob(record, noEndpoint);
-    expect(code, stdout).toBe(2);
-    expect(stdout).toContain(
-      "ACTIONS_ID_TOKEN_REQUEST_URL is required by AGENT_SECRETS_MACHINE_IDENTITY=github-actions"
-    );
-    sentNothing();
-  });
 
   test("--issue and --project are exclusive, refused before any request", async () => {
     for (const env of [jobEnvironment(), { ...jobEnvironment(), ...omp }]) {
@@ -3496,8 +3392,8 @@ describe("dispatch result --project, as a CI job writes it", () => {
       { commit: SPEC_COMMIT, check: "p-1", verdict: "pass" },
     ]);
     expect(written.map((seen) => seen.authorization)).toEqual([
-      `DPoP ${RESULTS_TOKEN}`,
-      `DPoP ${RESULTS_TOKEN}`,
+      `DPoP ${PLACEHOLDER}`,
+      `DPoP ${PLACEHOLDER}`,
     ]);
     expect(requests).toEqual([]);
   });

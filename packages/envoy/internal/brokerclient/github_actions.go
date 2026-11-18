@@ -29,8 +29,8 @@ const maxActionsAnswer = 1 << 20
 // for Audience, asked of the runner's endpoint with the bearer the runner gave the job, and
 // presented as a workflow run's token. The broker takes such a token once, so every Token asks
 // the runner for a new one. No error names the bearer or the token, and nothing here reads a
-// claim: that is the broker's work. The TypeScript client's githubActionsIdentity
-// (packages/broker-client/src/github-actions.ts) reads the same endpoint the same way.
+// claim: that is the broker's work. The TypeScript client has no such identity: a job's
+// `dispatch result` holds the airlock's placeholder of its run and trades nothing.
 type GitHubActionsIdentity struct {
 	// RequestURL is the runner's endpoint, ActionsTokenURLVar; it carries a query of its own.
 	RequestURL string

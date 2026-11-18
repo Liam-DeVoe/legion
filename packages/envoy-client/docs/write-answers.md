@@ -54,7 +54,26 @@ The listener's client refuses a redirect the same way.
 An `EnvoyApiError` of a 3xx names the method, the URL without its user and password, the status and the origin (`transport.ts`).
 It names nothing of the body.
 The pool identity of `@legion/broker-client` names a 3xx of the security token service by its status alone, as `HTTP <status>`.
-The GitHub Actions identity, of `@legion/broker-client` and of the Go broker client, follows no redirect of the runner's OIDC token endpoint either, since that request carries the runner's bearer, and names a 3xx by its status alone.
+The GitHub Actions identity of the Go broker client follows no redirect of the runner's OIDC token endpoint either, since that request carries the runner's bearer, and names a 3xx by its status alone.
+
+## An answer of the secrets broker's airlock proxy
+
+A CI job's result write goes out through the secrets broker's airlock proxy, with the airlock's placeholder as its credential (`airlockCredential`).
+The proxy can refuse the write itself, and then the write reached no service and stored nothing.
+
+A tunnel that the proxy refuses at the `CONNECT` reaches the client as Bun's `ERR_PROXY_TUNNEL`, whose message carries the proxy's status line and nothing else of its answer.
+The write loop reads it as an `AirlockTunnelRefusedError`, with code `AIRLOCK_TUNNEL_REFUSED`, the `status` and the `reason` phrase.
+Its message says that the proxy refused the connection and that nothing was sent to Dispatch.
+A 503 is a connection that never opened, so the write asks again on its schedule, and ends with that error when the schedule runs out.
+Every other status ends the write at once, a 407 for a grant that ended among them.
+
+An answer that the proxy gives itself inside an open connection carries `Airlock-Forwarded: false` and an `Airlock-Code`.
+It is an `AirlockRefusedError`, with the status, that code, or `HTTP_<status>` where it names none, and the proxy's words as `body`, each copy of the credential in them redacted.
+The redaction is of whole copies, because the proxy's words name the placeholder by that word, which the placeholder's own prefix spells.
+The write asks again only after its `503 GRANT_UNREADABLE`, a grant that the proxy could not read at that moment.
+
+Neither error is a `DispatchServiceError`, and `writeOutcomeUnknown` is false for both.
+Where an earlier attempt of the same write may have reached Dispatch, the write ends as a `DispatchWriteUnsettledError`, as for any answer that proves nothing of that attempt.
 
 ## A path value that names nothing
 
@@ -107,6 +126,7 @@ The client throws the caller's own cancellation as it is.
 It does for a `DispatchWriteUnsettledError`, for a gateway's answer with `mayHaveReachedDispatch`, and for Dispatch's own 5xx.
 It also does for a transport failure after an attempt that may have reached Dispatch, which the client throws as it is.
 A connection that never opened reached nothing: the host refused it, its name did not resolve, or no route reached the host.
+So did a tunnel that a proxy refused to open, which Bun reports as `ERR_PROXY_TUNNEL`.
 A request that Dispatch's check of its broker token turned away before any handler ran reached nothing too.
 Those answers are `429 BROKER_TOKEN_RATE_LIMITED` and `503 BROKER_UNAVAILABLE` (`tokenNotChecked`).
 A refusal carries its `Retry-After` as `retryAfterMs`.
@@ -174,6 +194,9 @@ A session's `dispatch` command prints what the model reads, and the README ("The
 - Dispatch's refusal: the command prints `<CODE>: <message>`, and exits 1.
 
 - A gateway's answer or a redirect: the command prints `HTTP_<status>: ` and the message, and exits 1.
+
+- An answer of the airlock proxy: the command prints the error's message, and exits 1.
+  A CI job's `dispatch result --project` prints the code first, as [`ci-results.md`](ci-results.md) says.
 
 - A missing answer or an unknown outcome: the command prints the error's message, and exits 1.
 
