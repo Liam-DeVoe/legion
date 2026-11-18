@@ -724,10 +724,12 @@ relayed it (`showFailureNotice` hands `showReplayCard` that session): a notice f
 host has left is shown to nobody, the conversation it moved to being told nothing of a message
 nobody sent it, and the ledger's own warning says so.
 One card that starts no turn
-(`tellGapNotice` sends this kind to a card, through `UnwrittenFrames.sendNotice`) says that
-the stream was recreated, so messages from before it may be lost, or that the consumer was created
-below the stream's oldest message, so messages older than 72 hours may be missing
-(`ConsumerGapNotice`, worded once in `@legion/envoy-client/consumer-delivery` and rendered by
+(`tellGapNotice` sends this kind to a card, through `UnwrittenFrames.sendNotice`) is the
+`messages may be missing` notice.
+Its `cause` is `stream_recreated`, where the stream was recreated and it names both streams,
+or `retention_gap`, where the consumer was created below the stream's oldest message and it names
+the stream's retention in hours
+(`ConsumerGapNotice`, built once in `@legion/envoy-client/consumer-delivery` and rendered by
 `gapNoticeText`). The relay is the one place that learns of either, from the registration answer's
 `gap` and `stream_id` or from a frame's `Envoy-Gap` header.
 The card is a steer with

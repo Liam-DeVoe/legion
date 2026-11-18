@@ -39,8 +39,8 @@ import { readCardLines } from "../test/card-entries";
 // (`ompNatsGuard`).
 const { skip, setup } = ompNatsGuard();
 
-/** What the wake (src/card-wake.ts, `CardWake`) says, in its one- and many-card forms. */
-const WAKE_TEXT = /Envoy messages? above arrived with no turn to read (it|them)/;
+/** The kind line of the wake (src/card-wake.ts, `CardWake`), whatever count it states. */
+const WAKE_TEXT = /notice: unread messages/;
 
 /** How long a case waits for one thing the session owes it before failing on it. */
 const DEADLINE_MS = 30_000;

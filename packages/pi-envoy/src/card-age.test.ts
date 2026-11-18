@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { renderInbound } from "@legion/envoy-client/delivery";
-import { envoyNoticeText, failureNoticeFields } from "@legion/envoy-client/delivery-ledger";
+import { failureNoticeText } from "@legion/envoy-client/delivery-ledger";
 import { CardAges, duration, MATERIAL_WAIT_MS } from "./card-age";
 import { REPLAY_DELIVERED_ENTRY } from "./missed-messages";
 
@@ -40,17 +40,15 @@ function failureNotice(eventID: string, options: { btw?: boolean }): Record<stri
   return {
     role: "custom",
     customType: "envoy-message",
-    content: envoyNoticeText(
-      failureNoticeFields({
-        eventId: eventID,
-        sender: "ses_sender",
-        summary: "unread card",
-        publishedAt: new Date(SENT).toISOString(),
-        error: "host refused card",
-        readWith: "envoy_inbox",
-        envelope: { event_id: eventID, source: "agent" },
-      })
-    ),
+    content: failureNoticeText({
+      eventId: eventID,
+      sender: "ses_sender",
+      summary: "unread card",
+      publishedAt: new Date(SENT).toISOString(),
+      error: "host refused card",
+      readWith: "envoy_inbox",
+      envelope: { event_id: eventID, source: "agent" },
+    }),
     display: true,
     details: {
       event_id: eventID,

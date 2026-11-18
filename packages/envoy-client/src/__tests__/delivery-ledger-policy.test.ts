@@ -94,12 +94,27 @@ describe("a stored subscription removal", () => {
 describe("a gap notice", () => {
   const card = (notice: ConsumerGapNotice) => decode(gapNoticeText(notice));
 
-  test("is a card for the session, named by its kind", () => {
-    expect(card({ kind: "stream_recreated", message: "recreated" })).toEqual({
-      envoy: { notice: "stream recreated", detail: "recreated" },
+  // The cause is a field, and so is what the relay knows of it; the log's sentence stays out.
+  test("is a card for the session that names the gap's cause and its facts", () => {
+    expect(
+      card({
+        kind: "stream_recreated",
+        stream: "stream-new",
+        previousStream: "stream-old",
+        message: "recreated",
+      })
+    ).toEqual({
+      envoy: {
+        notice: "messages may be missing",
+        cause: "stream_recreated",
+        stream: "stream-new",
+        previous_stream: "stream-old",
+      },
     });
-    expect(card({ kind: "retention_gap", message: "too old" })).toEqual({
-      envoy: { notice: "messages may be missing", detail: "too old" },
+    expect(
+      card({ kind: "retention_gap", stream: undefined, retentionHours: 72, message: "too old" })
+    ).toEqual({
+      envoy: { notice: "messages may be missing", cause: "retention_gap", retention_hours: 72 },
     });
   });
 });

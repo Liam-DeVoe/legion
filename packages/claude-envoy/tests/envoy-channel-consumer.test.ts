@@ -9,6 +9,7 @@ import {
   type SubscribeInput,
   type SubscribeResult,
 } from "@legion/envoy-client/transport"
+import { noticeFields } from "@legion/test-fixtures/notice-fields"
 import {
   type ChannelNotification,
   type ChannelNotifier,
@@ -551,7 +552,11 @@ test("a gap the registration reports is told once, through the notice path", asy
     // A notice of Envoy's own names no envelope; every other line written is a frame's.
     const notices = notifier.written.filter((written) => written.eventId === undefined)
     expect(notices).toHaveLength(1)
-    expect(notices[0]?.content).toContain("72 hours")
+    expect(noticeFields(notices[0]?.content ?? "")).toMatchObject({
+      notice: "messages may be missing",
+      cause: "retention_gap",
+      retention_hours: "72",
+    })
   } finally {
     for (const write of notifier.pending) write.resolve()
     await session.shutdown()

@@ -117,8 +117,9 @@ wake gives it>; `todo` with the `legion` label queues it again". Other admission
 
 ## `awaiting-person on <KEY>` (`{kind: "awaiting-person", issue, ask, document, version}`)
 
-A root whose architect asked a person a question (`ask`, as a `dispatch://` link), or handed its
-spec to a person for approval (`document` at `version`), and now waits only on them: it keeps the
+A root whose architect asked a person a question, or handed its spec to a person for approval,
+and now waits only on them. The notice names the question by its `dispatch://` link
+(`ask`), or the document (`document`) at its `version`. The root keeps the
 slot it took when the daemon started it, and its architect stays live to read the person's
 comments and replies. The notice is `low`: it starts no turn, so you read it at your next turn,
 whatever starts that turn. Read `issues.<KEY>.waitingOn`. Do not park

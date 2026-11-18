@@ -144,11 +144,11 @@ const CONTROLLER_EXTENSIONS = [
 ];
 
 /**
- * What pi-envoy's wake (src/card-wake.ts, `CardWake`) says, in any count, and for the one card the
- * startup cases send.
+ * The kind line of pi-envoy's wake (src/card-wake.ts, `CardWake`), whatever count it states, and
+ * the wake for the one card the startup cases send, as a request's JSON writes its two lines.
  */
-const WAKE_TEXT = /Envoy messages? above arrived with no turn to read (it|them)/;
-const WAKE_ONE = "1 Envoy message above arrived with no turn to read it";
+const WAKE_TEXT = /notice: unread messages/;
+const WAKE_ONE = 'notice: unread messages\\n  unread: 1"';
 
 /** The TUI's busy row while a turn runs (`⎋ Working…`). */
 const BUSY = "Working…";
@@ -1831,7 +1831,7 @@ test.skipIf(skip)(
 // turn's reply ran the start procedure rather than reading the card. A turn after the start turn
 // that has the card in its context is that one turn: here, the one a card published while the
 // start turn runs gets. A wake after it would start a further turn telling the controller that
-// cards it already read "arrived with no turn to read them".
+// cards it already read are unread.
 test.skipIf(skip)(
   "a startup card that a turn after the start turn reads gets no second wake",
   async () => {

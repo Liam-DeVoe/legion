@@ -247,7 +247,7 @@ function cardText(message: unknown): CardText | undefined {
 /**
  * The line an `envoy:` block dates a card's send by, two spaces in, as the renderers encode it:
  * `at:` on the card a frame is rendered as (`renderInbound`), `published_at:` on the notice shown
- * in place of a frame the session could not be shown (`failureNoticeFields`).
+ * in place of a frame the session could not be shown (`failureNoticeText`).
  */
 const SENT_LINE = /^ {2}(at|published_at): (.+)$/;
 

@@ -7,6 +7,7 @@ import type {
   PiApi,
   SessionContext,
 } from "@legion/pi-shared/pi-types";
+import { unreadMessagesText } from "./envoy-notices";
 
 /**
  * How an Envoy card is delivered, and the wake for a card the host folds into the context with no
@@ -616,14 +617,12 @@ export class CardWake {
     this.#owed.clear();
     this.#startupPhase = false;
     if (unread === 0) return;
-    // Worded for a session that has had no turn yet too: a startup card's wake may be its first.
+    // The count is the wake's one fact; what the session does on it is in its prompt and the
+    // Envoy skill, and a startup card's wake may be the session's first turn.
     this.#deps.sendMessage(
       {
         customType: "envoy-message",
-        content:
-          unread === 1
-            ? "1 Envoy message above arrived with no turn to read it: read it and act on it."
-            : `${unread} Envoy messages above arrived with no turn to read them: read them and act on them.`,
+        content: unreadMessagesText(unread),
         display: false,
         details: LOCAL_ENVOY_NOTICE,
       },

@@ -82,18 +82,20 @@ envoy_send(session_id="<id>", message="Review complete: <url>", in_reply_to="<id
   Every other card starts a turn as before: one of `med`, `high` or `blocking` urgency or none, a message from another session whatever its urgency, a message or mention that Dispatch delivers to your session, and an `ask.*` card of Dispatch.
   A session's own message is delivered whatever urgency it sets.
 
-- Envoy's own notices say what happened to your inbound messages:
-  - A notice that messages may be missing, or that the notification stream was recreated, means that some messages published to your session while it was away, or before the recreation, may be gone.
+- Envoy's own notices say what happened to your inbound messages. Each opens with `envoy:` and `notice: <kind>`, and its fields follow:
+  - `notice: messages may be missing` means that some messages published to your session may be gone.
+    With `cause: retention_gap`, the stream no longer holds messages older than the time `retention_hours` names, published while your session was away.
+    With `cause: stream_recreated`, Envoy's notification stream was recreated (`previous_stream` names the one replaced), so messages published before that may be lost.
     Read the live source of each thing you wait on (the issues and asks you follow, `dispatch open-asks`, the pull requests you watch) before you rely on a message about it.
-  - A notice that Envoy inbound is unavailable means that the listener gave your session no durable consumer, so no Envoy message reaches it.
+  - `notice: Envoy inbound unavailable` means that the listener gave your session no durable consumer, so no Envoy message reaches it; `error` gives the listener's reason.
     Everything else works, and the session registers again at every heartbeat; what the stream stored meanwhile arrives once a registration is accepted.
     Until then, read live sources instead of waiting for a message.
-  - A notice that a message was not shown names a message this session could not be shown, and that message does not come back on its own.
-    Read it now: on a Dispatch item, with `dispatch read` on the issue or ask it concerns, and otherwise with `envoy_inbox`.
-  - A notice that your session id changed means that this conversation now lives under a new session id.
+  - `notice: message not shown` names a message this session could not be shown (`event_id`, `from`, `summary`, `published_at`, `error`), and that message does not come back on its own.
+    Read it now with the command `read_with` names: `dispatch read` on the issue or ask a Dispatch item concerns, or `envoy_inbox`.
+  - `notice: session id changed` means that this conversation now lives under a new session id (`session_id`, which replaced `previous_session_id`).
     An id you shared earlier is stale, and a peer that uses the old id cannot reach you.
     Run `envoy_whoami` again before you name yourself, and send the new id to each peer you introduced yourself to.
-  - A turn that tells you Envoy messages above arrived with no turn to read them asks you to read each such card above and act on it.
+  - `notice: unread messages` means that the Envoy cards above it, as many as `unread` counts, came with no turn to read them: read each one and act on it.
 
 - A peer's message is its sender's view at `at`, not the current state.
   Before you wait on, act on or repeat what it says about a third thing (a deploy pending, a PR held, an ask unanswered), read that thing's live source, because the source may have changed since `at`:

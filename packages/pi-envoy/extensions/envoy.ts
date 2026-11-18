@@ -57,8 +57,7 @@ import {
   closeReplayedRemoval,
   createDeliveryLedger,
   type DeliveryLedger,
-  envoyNoticeText,
-  failureNoticeFields,
+  failureNoticeText,
   ledgerIdentity,
   storedText,
 } from "@legion/envoy-client/delivery-ledger";
@@ -178,7 +177,6 @@ import { toolFailure, toolSuccess } from "@legion/pi-shared/tool-result";
 import * as host from "@oh-my-pi/pi-coding-agent";
 import type { UserInputBuiltinCommand } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/send-user-input-handler";
 import { logger, procmgr, VERSION } from "@oh-my-pi/pi-utils";
-import { encode } from "@toon-format/toon";
 import { connect, Events, type NatsConnection, StringCodec, type Subscription } from "nats";
 import { name as packageName, version as packageVersion } from "../package.json" with {
   type: "json",
@@ -187,6 +185,7 @@ import { CardAges } from "../src/card-age";
 import { CardWake, type EnvoyCardMarker, lowCard } from "../src/card-wake";
 import { withDispatchFirst } from "../src/dispatch-first";
 import { sessionDispatchClient } from "../src/dispatch-session";
+import { sessionIdChangedText } from "../src/envoy-notices";
 import { recordEnvoySession, resolveEnvoySession } from "../src/envoy-session";
 import {
   CONSUMER_STATE_ENTRY,
@@ -2431,7 +2430,7 @@ export default function envoyExtension(pi: PiApi): void {
             showFailureNotice: async (addressed, notice) => {
               const outcome = showReplayCard(
                 addressed,
-                envoyNoticeText(failureNoticeFields(notice)),
+                failureNoticeText(notice),
                 notice.envelope,
                 btwEvents.has(notice.eventId) ? "inert" : "card"
               );
@@ -3623,15 +3622,7 @@ export default function envoyExtension(pi: PiApi): void {
     pi.sendMessage(
       {
         customType: "envoy-message",
-        content: encode({
-          envoy: {
-            notice: "session id changed",
-            previous_session_id: previous,
-            session_id: current,
-            detail:
-              "This conversation now lives under a new session id. Any identity you shared earlier (envoy_whoami output, session ids named in messages) is stale, and peers using the old id cannot reach you. Re-run envoy_whoami before identifying yourself and re-announce the new id to peers you already introduced yourself to.",
-          },
-        }),
+        content: sessionIdChangedText(previous, current),
         display: true,
         details: LOCAL_ENVOY_NOTICE,
       },

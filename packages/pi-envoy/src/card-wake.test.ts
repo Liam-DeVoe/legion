@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { renderInbound } from "@legion/envoy-client/delivery";
 import { type EnvoyPluginInterface, LOCAL_ENVOY_NOTICE } from "@legion/pi-shared/interface";
 import type { SessionContext } from "@legion/pi-shared/pi-types";
+import { decode } from "@toon-format/toon";
 
 import {
   type CardDelivery,
@@ -15,6 +16,7 @@ import {
   STARTUP_TURN_POLL_MS,
   unreadCards,
 } from "./card-wake";
+import { unreadMessagesText } from "./envoy-notices";
 
 type HostMessage = { readonly role: string } & Record<string, unknown>;
 
@@ -202,9 +204,10 @@ function harness(
   };
 }
 
-const wakeMessage = (content: unknown) => ({
+/** The wake `CardWake` sends for `unread` cards: the session's own notice, stating the count. */
+const wakeMessage = (unread: number) => ({
   message: {
-    content,
+    content: unreadMessagesText(unread),
     customType: "envoy-message",
     details: LOCAL_ENVOY_NOTICE,
     display: false,
@@ -212,11 +215,17 @@ const wakeMessage = (content: unknown) => ({
   options: { deliverAs: "nextTurn", triggerTurn: true },
 });
 
+/** The fields of a wake that states `unread` cards. */
+const wakeFor = (unread: number) => ({ envoy: { notice: "unread messages", unread } });
+
 const contentOf = (sent: Sent | undefined): string => {
   const message = sent?.message;
   if (typeof message !== "object" || message === null || !("content" in message)) return "";
   return String(message.content);
 };
+
+/** The fields of the notice `sent` carries. */
+const fieldsOf = (sent: Sent | undefined): unknown => decode(contentOf(sent));
 
 describe("the delivery a card gets", () => {
   test("a card that finds a turn running is an aside that starts a turn", () => {
@@ -480,7 +489,7 @@ describe("a card the host folds into the context with no turn", () => {
       if (order === "before") host.end();
       await host.fire();
 
-      expect(host.sent).toEqual([wakeMessage(expect.stringContaining("Envoy message"))]);
+      expect(host.sent).toEqual([wakeMessage(1)]);
     });
   }
 
@@ -494,7 +503,7 @@ describe("a card the host folds into the context with no turn", () => {
     await host.fire();
 
     expect(host.sent).toHaveLength(1);
-    expect(contentOf(host.sent[0])).toContain("3 Envoy messages");
+    expect(fieldsOf(host.sent[0])).toEqual(wakeFor(3));
   });
 
   test("counts only the folded card when a card a run read is handled in the same window", async () => {
@@ -510,7 +519,7 @@ describe("a card the host folds into the context with no turn", () => {
     await host.fire();
 
     expect(host.sent).toHaveLength(1);
-    expect(contentOf(host.sent[0])).toContain("1 Envoy message ");
+    expect(fieldsOf(host.sent[0])).toEqual(wakeFor(1));
   });
 
   test("sends no wake for a card the run read, handled after its agent_end", async () => {
@@ -614,7 +623,7 @@ describe("a card the host folds into the context with no turn", () => {
     await host.fire();
 
     expect(host.sent).toHaveLength(1);
-    expect(contentOf(host.sent[0])).toContain("1 Envoy message ");
+    expect(fieldsOf(host.sent[0])).toEqual(wakeFor(1));
   });
 
   test("sends no wake on a host that reports no idle state", async () => {
@@ -736,9 +745,7 @@ describe("in the startup phase", () => {
 
     host.message(card.message);
     await host.fire();
-    expect(host.sent).toEqual([
-      wakeMessage("1 Envoy message above arrived with no turn to read it: read it and act on it."),
-    ]);
+    expect(host.sent).toEqual([wakeMessage(1)]);
 
     expect(host.card("after-startup").delivery).toMatchObject(aside);
   });
@@ -755,7 +762,7 @@ describe("in the startup phase", () => {
     await host.fire();
 
     expect(host.sent).toHaveLength(1);
-    expect(contentOf(host.sent[0])).toContain("3 Envoy messages");
+    expect(fieldsOf(host.sent[0])).toEqual(wakeFor(3));
   });
 
   test("leaves startup cards a busy check finds to the run, which read them", async () => {
@@ -790,7 +797,7 @@ describe("in the startup phase", () => {
     host.end();
     await host.fire();
     expect(host.sent).toHaveLength(1);
-    expect(contentOf(host.sent[0])).toContain("2 Envoy messages");
+    expect(fieldsOf(host.sent[0])).toEqual(wakeFor(2));
   });
 
   test("wakes for a startup card after an interrupted run", async () => {
@@ -835,7 +842,7 @@ describe("in the startup phase", () => {
     host.advance(STARTUP_CARD_CAP_MS - 20_000);
     await host.fire();
     expect(host.sent).toHaveLength(1);
-    expect(contentOf(host.sent[0])).toContain("1 Envoy message ");
+    expect(fieldsOf(host.sent[0])).toEqual(wakeFor(1));
     expect(host.card("after-cap").delivery).toMatchObject(aside);
   });
 
@@ -854,9 +861,7 @@ describe("in the startup phase", () => {
     await host.fire();
     // One check, at once: no unseen startup card held it back for its cap.
     expect(host.delays).toEqual([0]);
-    expect(host.sent).toEqual([
-      wakeMessage("1 Envoy message above arrived with no turn to read it: read it and act on it."),
-    ]);
+    expect(host.sent).toEqual([wakeMessage(1)]);
   });
 });
 
@@ -866,9 +871,8 @@ describe("in the startup phase", () => {
 // once `/legion-controller-start` sends it, and the daemon's in RPC mode sent right before the
 // daemon writes the prompt.
 describe("while the start-turn mark names the session", () => {
-  const oneCard = "1 Envoy message above arrived with no turn to read it: read it and act on it.";
-  const twoCards =
-    "2 Envoy messages above arrived with no turn to read them: read them and act on them.";
+  const oneCard = 1;
+  const twoCards = 2;
 
   test("sends a terminal's idle card as a follow-up that starts no turn while the start is unsent, and wakes for none before the cap, reading the mark again at each poll", async () => {
     const host = harness({ mode: "tui" });
