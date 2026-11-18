@@ -1,0 +1,7 @@
+kind: Added
+custom:
+  Issue: pr4369
+body: |-
+  A Dispatch tool spec can carry `dryRun`, the sentence its command's `--dry-run` help prints. The
+  `dispatch_artifact` spec's sentence says that the dry run asks Dispatch how it would store inline
+  text and refuses a text that Dispatch would store under another spelling.

@@ -1,0 +1,11 @@
+kind: Changed
+custom:
+  Issue: pr4369
+body: |-
+  `dispatch artifact --dry-run` with inline content asks Dispatch how it would store the text
+  (`POST /api/v1/markdown/round-trip`), as the call does, and refuses a text that Dispatch would
+  store under another spelling with the call's own refusal and exit code. It stores nothing. When
+  Dispatch gives no answer within 5 s, or has no such route, or is not configured, the dry run
+  passes and says so on stderr, so its standard output is the arguments' JSON alone.
+  `DISPATCH_DRY_RUN_LOCAL=1` keeps a dry run local: it then checks the arguments alone, as every
+  dry run did before.
