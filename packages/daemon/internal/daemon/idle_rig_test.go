@@ -320,8 +320,10 @@ func (r *idleWakeRig) address() string {
 	return r.built.address
 }
 
-// podReady starts the pod's launchers, for the roles the rig gave the issue a claim, and records
-// where each launcher writes its generations so the role process can be handed its boot token.
+// podReady starts the pod's launchers, for the roles the rig gave the issue a claim — the
+// implementer, and each role the rig's configuration defines (cfg.Roles), which no other test of
+// the rig defines — and records where each launcher writes its generations so the role process
+// can be handed its boot token.
 func (r *idleWakeRig) podReady(pod, uid string, roles map[string]string) {
 	key := pod
 	for _, issue := range r.issues {
@@ -331,7 +333,7 @@ func (r *idleWakeRig) podReady(pod, uid string, roles map[string]string) {
 	}
 	wanted := map[string]string{}
 	for role, token := range roles {
-		if role == string(claim.RoleImplementer) {
+		if role == string(claim.RoleImplementer) || slices.ContainsFunc(r.cfg.Roles, func(defined config.Role) bool { return string(defined.Name) == role }) {
 			wanted[role] = token
 		}
 	}
@@ -576,7 +578,7 @@ func (r *idleWakeRig) newRuntime(ctx context.Context, listener *stream.Listener,
 	opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored = st.TakeWorkspaceBundleForRestore, st.DeleteRestoredWorkspaceBundle
 	opts.Tokens = idleRigTokens{}
 	opts.GitHubCredential = func(_ context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
-		app, err := appauth.AppRoleFor(role, nil)
+		app, err := appauth.AppRoleFor(role, opts.DeploymentApps)
 		if err != nil {
 			return ghconfig.Bundle{}, err
 		}
