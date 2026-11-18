@@ -191,7 +191,7 @@ func prepareSandbox(cfg config.Config, o overrides, reads sandboxReads, p *plan)
 	// The memory guards' kill holder (memoryGuardKills), on the plan by pointer, so the plan's own
 	// copy carries the one holder the factory closed over, as plan.repositories does.
 	p.memoryGuardKills = &memoryGuardKills{}
-	p.newRuntime = sandboxRuntime(reads.client, reads.opts, p.repositories.Accepted, p.repositories.serving, cfg.RepositoryRenames, deploymentApps(cfg.Roles), o.githubAPI, p.memoryGuardKills)
+	p.newRuntime = sandboxRuntime(reads.client, reads.opts, p.repositories.Accepted, p.repositories.serving, cfg.RepositoryRenames, reads.opts.DeploymentApps, o.githubAPI, p.memoryGuardKills)
 	p.clusterCheck = boot.clusterCheck
 	p.claimsCheck = func(ctx context.Context, st *store.Store) error {
 		legacy, err := st.HasLegacySandboxClaims(ctx, p.project)
@@ -363,6 +363,7 @@ func sandboxOptions(cfg config.Config, k config.Kubernetes, project, dispatchTok
 		ControllerSlackChannels: cfg.Projects[cfg.Project].SlackChannels,
 		Tools:                   workerImageTools,
 		Pod:                     sandbox.Pod(k.Pod),
+		DeploymentApps:          deploymentApps(cfg.Roles),
 		RoleConfigFiles:         cfg.RoleConfigFiles,
 		ProviderKeys:            providerSecretKeys(cfg.ProviderKeys),
 		LaunchSecrets:           launchSecretNames(cfg, lookup),

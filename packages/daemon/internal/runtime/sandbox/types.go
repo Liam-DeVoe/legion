@@ -128,6 +128,11 @@ type Options struct {
 	ControllerSlackChannels []string
 	// Pod is the operator's pod configuration, added to every worker pod and to the probe pod.
 	Pod Pod
+	// DeploymentApps is each role the deployment defines in its settings (`roles`) with the
+	// GitHub App it acts as (the daemon's deploymentApps). Its roles, sorted by name, follow
+	// Legion's six in the runtime's issue roles (issueRolesOf), and each takes overlays
+	// (RoleConfigFiles) as one of Legion's does. Nil is a deployment that defines no role.
+	DeploymentApps appauth.DeploymentApps
 	// RoleConfigFiles is the operator's `role_config_files`: absolute paths of Oh My Pi settings
 	// overlays a role alone names in PI_CONFIG_FILES, by role, after the operator's own (Pod.Env's
 	// PI_CONFIG_FILES), so each outranks those (mainEnvironment, roleOperatorEnv), and the shim

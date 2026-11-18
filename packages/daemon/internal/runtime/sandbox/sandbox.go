@@ -88,7 +88,14 @@ type Runtime struct {
 	natsURLs                       []string
 	tools                          Tools
 	pod                            Pod
-	roleConfigFiles                map[claim.Role][]string
+	// issueRoles are the runtime's issue roles: Legion's six (claim.Roles), then each role the
+	// deployment defines, sorted by name (issueRolesOf over Options.DeploymentApps).
+	// deploymentApps is that map, the App each role of the deployment acts as. Both are set once
+	// in configureProber and only read after, and no package variable holds either: two runtimes
+	// of one process keep their own.
+	issueRoles      []claim.Role
+	deploymentApps  appauth.DeploymentApps
+	roleConfigFiles map[claim.Role][]string
 	// experimentVariants are every arm of every experiment the project declares
 	// (Options.ExperimentVariants), and variantFiles their overlay files as one list, in that
 	// same order: the union every reader that holds a pod or the deployment and no tree takes,
@@ -348,8 +355,9 @@ func configureProber(opts Options) (*Runtime, error) {
 			return refuse("providers secret %s is not a launch secret (%s)", name, strings.Join(opts.LaunchSecrets, ", "))
 		}
 	}
+	issueRoles := issueRolesOf(opts.DeploymentApps)
 	for role, files := range opts.RoleConfigFiles {
-		if !slices.Contains(roleConfigRoles, role) {
+		if role != claim.RoleController && !slices.Contains(issueRoles, role) {
 			return refuse("Oh My Pi overlays for %q, which is not a Legion role", role)
 		}
 		for _, file := range files {
@@ -370,7 +378,8 @@ func configureProber(opts Options) (*Runtime, error) {
 		volumeSize: opts.IssueVolume, scheduling: opts.Scheduling, resources: opts.Resources,
 		streamURL: opts.StreamURL, daemonURL: opts.DaemonURL, envoyURL: opts.EnvoyURL, dispatchURL: opts.DispatchURL,
 		dispatchToken: opts.DispatchToken, natsURLs: opts.NATSURLs, tools: opts.Tools, agentSecrets: opts.AgentSecrets,
-		pod: opts.Pod, roleConfigFiles: opts.RoleConfigFiles, experimentVariants: opts.ExperimentVariants,
+		pod: opts.Pod, issueRoles: issueRoles, deploymentApps: opts.DeploymentApps,
+		roleConfigFiles: opts.RoleConfigFiles, experimentVariants: opts.ExperimentVariants,
 		variantFiles: runtime.VariantOverlays(opts.ExperimentVariants),
 		providerKeys: opts.ProviderKeys, providersSecrets: slices.Sorted(slices.Values(opts.ProvidersSecrets)), natsUser: opts.NATSUser,
 		sessionStore: opts.SessionStore, controllerSlackChannels: slices.Clone(opts.ControllerSlackChannels),
@@ -405,9 +414,18 @@ func configureProber(opts Options) (*Runtime, error) {
 	return r, nil
 }
 
-// roleConfigRoles are the roles Options.RoleConfigFiles may name, in the workflow's order: every
-// issue role, then the controller.
-var roleConfigRoles = append(slices.Clone(claim.Roles), claim.RoleController)
+// issueRolesOf is the one rule of the order of an issue pod's roles: Legion's six in the workflow's
+// order (claim.Roles), then each role deployed defines, sorted by name, so every reader of the
+// list and every pod built from it sees the same order whatever order the map gives.
+func issueRolesOf(deployed appauth.DeploymentApps) []claim.Role {
+	return append(slices.Clone(claim.Roles), slices.Sorted(maps.Keys(deployed))...)
+}
+
+// roleConfigRoles are the roles Options.RoleConfigFiles may name, in the order the image probe is
+// told them: every issue role (issueRoles), then the controller.
+func (r *Runtime) roleConfigRoles() []claim.Role {
+	return append(slices.Clone(r.issueRoles), claim.RoleController)
+}
 
 // checkRequirements is why requirements, what's (an issue pod's, the controller's pod's, or the
 // repository cache's), is not a reservation, or nil when it is one: cpu and memory each limited and

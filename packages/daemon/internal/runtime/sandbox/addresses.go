@@ -536,7 +536,7 @@ func (r *Runtime) movedRoleOverlays(pod corev1.PodSpec, role claim.Role) (movedA
 	if !ok {
 		return movedAddress{}, false
 	}
-	for _, named := range roleConfigRoles {
+	for _, named := range r.roleConfigRoles() {
 		if podContainer(named) != podContainer(role) {
 			continue
 		}
