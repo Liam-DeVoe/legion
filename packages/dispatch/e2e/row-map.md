@@ -235,7 +235,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/deep-links.e2e.ts` | document landings need the live room and server-settled anchored marks |
 | `e2e/delivery-groups.e2e.ts` | grouping and the window's counts are the server's aggregation |
 | `e2e/delivery-live.e2e.ts` | `sql` writes delivered as live frames |
-| `e2e/delivery-queued.e2e.ts` | a queued attempt is what Dispatch stores from the fake Envoy's answer to a send for a stopped session, read back on a message, a mention and a broadcast; the refusal of an unknown session is the server's |
+| `e2e/delivery-queued.e2e.ts` | a queued attempt is what Dispatch stores from the fake Envoy's answer to a send for a stopped session, read back on a message, a mention and a broadcast; a message to a session no store holds is queued by the server's own publish |
 | `e2e/delivery.e2e.ts` | facet counts come from the server; a reconcile error must arrive from the server mid-gesture; the title says it: the server narrows |
 | `e2e/doc-reload-line.e2e.ts` | the read-only admission is decided at socket open |
 | `e2e/doc.e2e.ts` | every row lives in the live document room, its connections and versions |
@@ -303,6 +303,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/large-documents-measured.e2e.ts` | its two measurements are taken over a build the server's sync begins, in front of the draw that server sent, and run one row at a time in `iphone-measure-alone` |
 | `e2e/large-documents-reader.e2e.ts` | the document is read in its live editor and the decisions in it are answered against the asks the server records; the reconnect row reads the frames the document's room answers a SyncStep1 with, and an edit's arrival in the server's `/text` |
 | `e2e/layout.e2e.ts` | its two rows read a whole page load on each of the routes that draw a margin, and one of those is a project document, whose margin sits on the live document's room |
+| `e2e/legion.e2e.ts` | the Settings page's Legion daemon field: naming a project's daemon, refusing a state URL that is not a daemon's in the server's own words, and removing it |
 | `e2e/live-socket.e2e.ts` | the `/ws/live` socket's own behaviour |
 | `e2e/live.e2e.ts` | live delivery of writes made after the page loaded |
 | `e2e/machine-login.e2e.ts` | device grants decided on the real broker |
