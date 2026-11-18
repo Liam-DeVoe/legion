@@ -8197,6 +8197,90 @@ describe("executeDispatchTool", () => {
     ]);
   });
 
+  // A result whose commit is taken to be of a repository the issue links a pull request in is
+  // decided by that repository, and the server names it in commit_stands.repo: the reading says
+  // which repository Dispatch could not read, or whose commit the result is at, rather than "the
+  // repository", which reads as the issue's own. An answer that names none reads as it always did.
+  test("dispatch_results names the repository of a linked result's other_commit and unknown answers", async () => {
+    const linkedCommit = "7777777777777777777777777777777777777777";
+    const result = (id: string, stands: Record<string, unknown>) => ({
+      id,
+      issue_key: "DSP-42",
+      check_issue_key: "DSP-42",
+      check_artifact_id: "artifact-9",
+      check_block_id: "k1",
+      check_version: 1,
+      check_sha256: "d1",
+      check_words_moved: false,
+      role: "tester",
+      verdict: "pass",
+      commit_sha: linkedCommit,
+      commit_stands: stands,
+      surface: "",
+      run: "",
+      observed: "",
+      negative_control: "",
+      failed: 0,
+      skipped: 0,
+      excluded: 0,
+      screenshots: null,
+      session: "session-1",
+      actor: { kind: "session", id: "session-1" },
+      created_at: "2026-11-10T10:00:00Z",
+    });
+    const answers = {
+      issue: "DSP-42",
+      verification_artifact_id: "artifact-9",
+      checks: [
+        {
+          artifact_id: "artifact-9",
+          block_id: "k1",
+          issue_key: "DSP-42",
+          ref: "dispatch://DSP-42/artifact/verification-md#b-k1",
+          sha256: "d1",
+          version: 1,
+          when: "before_merge",
+          text: "The check's words.",
+          surface: "",
+          run: "",
+          negative_control: "",
+          compared_with: [{ kind: "pull_request", commit: headCommit, pull_request: 9 }],
+          pass_stands: { answer: "unknown" },
+          results: [
+            result("res-1", { answer: "other_commit", repo: "acme/tools" }),
+            result("res-2", { answer: "unknown", reason: "repository_unreadable", repo: "acme/tools" }),
+            result("res-3", { answer: "unknown", reason: "read_failed", repo: "acme/tools" }),
+            result("res-4", { answer: "unknown", reason: "repository_unreadable" }),
+          ],
+        },
+      ],
+    };
+    const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+      const target = new URL(String(url));
+      if (target.pathname === "/api/v1/issues/DSP-42/results") return response(answers);
+      throw new Error(`unexpected request: ${target.pathname}`);
+    };
+
+    const read = await executeDispatchTool({
+      tool: "dispatch_results",
+      args: { issue: "DSP-42" },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    const said = read.text.split("\n").filter((line) => line.startsWith("  - pass by tester"));
+    expect(said.map((line) => line.split(". ")[1])).toEqual([
+      "That commit, of acme/tools, is none of the compared commits",
+      "Where that commit stands is not known: Dispatch cannot read acme/tools",
+      "Where that commit stands is not known: a read Dispatch made of acme/tools did not answer",
+      "Where that commit stands is not known: Dispatch cannot read the repository",
+    ]);
+  });
+
   // --brief is for an issue holding hundreds of results: it cuts the readings that stand at none
   // of the compared commits, and leaves whole every reading a reader may act on.
   test("dispatch_results --brief cuts only a reading that stands at no compared commit", async () => {

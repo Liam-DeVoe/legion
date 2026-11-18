@@ -1,10 +1,22 @@
 package delivery
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
+
+	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/githubtest"
 )
 
 // PullRequestOpenOrMerged answers yes for a pull request that is open or merged, whichever of
@@ -47,5 +59,68 @@ func TestPullRequestOpenOrMergedReadsTheStateGitHubAnswers(t *testing.T) {
 	}
 	if got, err := PullRequestOpenOrMerged(t.Context(), client, "acme/widgets", 5); !errors.Is(err, ErrPullRequestNotFound) {
 		t.Errorf("a pull request GitHub answers 404 for: PullRequestOpenOrMerged = %v, %v, want ErrPullRequestNotFound", got, err)
+	}
+}
+
+// A stored name GitHub's names do not allow never becomes a GitHub path: splitRepo refuses it,
+// naming it, before any request, whichever read of the repository asks. `acme/..` and `acme/`
+// are what a mapping written as `acme/...git` and `acme/.git` was stored as once the trailing
+// `.git` was trimmed, and `..` in a path asks GitHub about the one above the repository's
+// (`/repos/acme/../installation`). A renamed_to stored before the settings route held a pair to
+// GitHub's names, or by direct SQL, is the same name reached another way: the reconcile's refresh
+// and the read-through canonicalise the repository they are handed through it, and ask GitHub
+// nothing either. The GitHub stand-in counts every request it receives, and answers none.
+func TestAStoredNameGitHubDoesNotAllowMakesNoGitHubRequest(t *testing.T) {
+	const sha = "6767676767676767676767676767676767676767"
+	pool, ctx := deliveryTestPool(t)
+	var requests atomic.Int32
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate fixture key: %v", err)
+	}
+	pemText := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
+	base := githubtest.Server(t, githubtest.Spec{
+		Record: func(*http.Request) { requests.Add(1) },
+		Handle: func(w http.ResponseWriter, r *http.Request) { githubtest.Unexpected(t, w, r) },
+	})
+	client, err := githubapp.New(&auth.AppConfig{ClientID: "Iv1.testclient", PEM: pemText}, base)
+	if err != nil || client == nil {
+		t.Fatalf("new client: %v, %v", client, err)
+	}
+
+	refused := func(read, name string, err error) {
+		t.Helper()
+		if !errors.Is(err, refs.ErrNotGitHubRepo) || !strings.Contains(err.Error(), fmt.Sprintf("%q", name)) {
+			t.Errorf("%s of %q: error %v, want refs.ErrNotGitHubRepo naming it", read, name, err)
+		}
+	}
+	for _, name := range []string{"acme/..", "acme/", "acme/...git", "acme/.git", "acme/."} {
+		_, err := RepositoryHoldsCommit(ctx, client, name, sha)
+		refused("RepositoryHoldsCommit", name, err)
+		_, err = PullRequestOpenOrMerged(ctx, client, name, 7)
+		refused("PullRequestOpenOrMerged", name, err)
+		_, err = repositoryDefaultBranch(ctx, client, name)
+		refused("repositoryDefaultBranch", name, err)
+		_, err = askGitHubCommitOnBranch(ctx, client, name, "main", sha)
+		refused("askGitHubCommitOnBranch", name, err)
+	}
+
+	// Two mappings renamed to such names, as a row stored before the rule reads.
+	seedProjectRepository(t, ctx, pool, "TOOL", "Tools", "acme/tools")
+	for old, renamedTo := range map[string]string{"oldco/tools": "acme/..", "oldco/gadgets": "acme/"} {
+		if _, err := pool.Exec(ctx, `
+			insert into repo_projects (repo, project, created_by, is_default, renamed_to)
+			values ($1, 'TOOL', '{"kind":"system","id":"delivery-test"}'::jsonb, false, $2)
+		`, old, renamedTo); err != nil {
+			t.Fatalf("record %s as renamed to %s: %v", old, renamedTo, err)
+		}
+		err := RefreshPullRequestHead(ctx, pool, client, nil, old, 7, time.Now())
+		refused("RefreshPullRequestHead", renamedTo, err)
+		_, _, err = ReadThroughCommitPulls(ctx, pool, client, nil, old, sha, time.Now())
+		refused("ReadThroughCommitPulls", renamedTo, err)
+	}
+
+	if sent := requests.Load(); sent != 0 {
+		t.Fatalf("the stored names sent GitHub %d requests, want none", sent)
 	}
 }

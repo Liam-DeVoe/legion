@@ -513,13 +513,13 @@ func (c *Branches) markSeen(pair repoBranch, readAt time.Time) {
 	c.compares[pair] = held
 }
 
-// cannotSeeRepository is repositoryUnreadable — the App is installed on no repository covering
+// cannotSeeRepository is RepositoryUnreadable — the App is installed on no repository covering
 // this one, or its token is refused it — and the deployment holding no App key at all. Each
 // means Dispatch cannot see the repository, which is an answer rather than a fault worth
-// logging; repositoryUnreadable alone is the reconcile's rule for a row it stamps instead of
+// logging; RepositoryUnreadable alone is the reconcile's rule for a row it stamps instead of
 // warning about, and a deployment with no key has no rows to stamp.
 func cannotSeeRepository(err error) bool {
-	return repositoryUnreadable(err) || errors.Is(err, githubapp.ErrNoAppKey)
+	return RepositoryUnreadable(err) || errors.Is(err, githubapp.ErrNoAppKey)
 }
 
 // readBranchCommit is what branch_commits holds for one commit of one branch, and whether it
@@ -585,8 +585,9 @@ func writeBranchCommit(ctx context.Context, db refs.Execer, repoFull, branch, sh
 // repositoryRead is the prologue of every read the App makes about one repository, here, in
 // commit_held.go and in pull_request_heads.go's ReadThroughCommitPulls: it splits repoFull
 // into the owner and repo GitHub's paths take and mints that repository's installation token.
-// A malformed name comes back as splitRepo's own error and a refused mint as that error
-// wrapped, which cannotSeeRepository and repositoryUnreadable classify.
+// A name GitHub's names do not allow comes back as splitRepo's own error, before any GitHub
+// call, and a refused mint as that error wrapped, which cannotSeeRepository and
+// RepositoryUnreadable classify.
 func repositoryRead(ctx context.Context, client *githubapp.Client, repoFull string) (owner, repo, token string, err error) {
 	owner, repo, err = splitRepo(repoFull)
 	if err != nil {

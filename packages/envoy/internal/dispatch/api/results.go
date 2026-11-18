@@ -161,9 +161,10 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 	// a check that compares with nothing from one it could not compare (results_comparison.go,
 	// nothingReason). This route takes the repository alone, on purpose: the refusal below and
 	// the read-through it answers for are already answered by a nil, and the two nothings would
-	// earn one answer here anyway. Nothing but GitHub's proof that the repository holds no such
-	// commit refuses a record, so a resolve that did not answer must store the result, exactly
-	// as a deployment with no App key and an issue with no repository do.
+	// earn one answer here anyway. Only GitHub's proof that the repository holds no such commit,
+	// and a read of a linked repository that did not answer, refuse a record, and neither is
+	// asked of a nil repository, so a resolve that did not answer stores the result, exactly as
+	// a deployment with no App key and an issue with no repository do.
 	var checkRepo *string
 	if s.deps.GitHub != nil {
 		checkRepo, _ = s.checkIssueRepository(r.Context(), pool, check.IssueKey)
@@ -174,22 +175,22 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 	// under the two issue row locks costs. Nothing is written before it, so a refusal leaves no
 	// row and no event behind. commitRepo is the repository the commit is taken to be of, which
 	// is not always checkRepo: a result at the head of a pull request the issue links in another
-	// repository names a commit of that repository, and where no read could say which repository
-	// holds the commit it is the first that may (refuseUnknownCommit, results_linked.go).
+	// repository names a commit of that repository. A linked read that did not answer, where no
+	// repository was shown to hold the commit, refuses the record for now rather than storing
+	// it under a repository no read showed to hold it (refuseUnknownCommit, results_linked.go).
 	commitRepo, err := s.refuseUnknownCommit(r.Context(), pool, check.IssueKey, checkRepo, input.Commit)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	// The row keeps commitRepo where it is not checkRepo, so the results read compares the
-	// result with the branches of that linked repository (comparisonReader, onNamedBranch) and
-	// reads its pull requests through it (readThroughHead): asked of checkRepo, GitHub answers
-	// 404 for such a commit and the result reads unknown. Such a repository is one GitHub said
-	// holds the commit, or, where GitHub proved checkRepo does not hold it and no linked
-	// repository was shown to, the first linked repository whose read did not answer. Every
-	// other row keeps none and is compared in the repository the check's issue resolves to, as
-	// every row recorded before the column existed is, at the cost it always had. commitRepo is
-	// nil wherever checkRepo is, since refuseUnknownCommit asks nothing of a nil repository.
+	// result with the branches of that linked repository (comparisonReader, onNamedBranch),
+	// reads its pull requests through it (readThroughHead) and decides a `before_merge` result
+	// by it (commitStands): asked of checkRepo, GitHub answers 404 for such a commit and the
+	// result reads unknown. Such a repository is one GitHub said holds the commit. Every other
+	// row keeps none and is compared in the repository the check's issue resolves to, as every
+	// row recorded before the column existed is, at the cost it always had. commitRepo is nil
+	// wherever checkRepo is, since refuseUnknownCommit asks nothing of a nil repository.
 	var linkedCommitRepo *string
 	if commitRepo != nil && !strings.EqualFold(*commitRepo, *checkRepo) {
 		linkedCommitRepo = commitRepo

@@ -204,6 +204,9 @@ func (s *server) putRepoProject(w http.ResponseWriter, r *http.Request) {
 // repository is any owner/name and needs no mapping, so an issue that names this repository
 // keeps it and still resolves to it. An issue that names none resolves, as before, through its
 // parent chain and then its project's default, which is gone where this mapping was that default.
+// Its path is read as every mapping's path was before the PUT held its own to GitHub's names
+// (storedRepoProjectPath), so a mapping stored then under a name the PUT now refuses can still be
+// removed.
 func (s *server) deleteRepoProject(w http.ResponseWriter, r *http.Request) {
 	var input actorInput
 	if !s.decodeOptionalJSON(w, r, &input) {
@@ -213,7 +216,7 @@ func (s *server) deleteRepoProject(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	repo, err := repoProjectPath(r)
+	repo, err := storedRepoProjectPath(r)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -390,7 +393,28 @@ func (s *server) repoProject(ctx context.Context, repo string) (string, error) {
 	return "", err
 }
 
+// repoProjectPath reads the {owner}/{repo} path of a mapping write, and of the App's installation
+// read (getAppInstallation), as parseSourceRepo reads a repository (sourcePathRepo): an owner and
+// a name of the characters GitHub allows, and never a name of `.` or `..`, before or after a
+// trailing `.git` is trimmed, canonicalised. A path the rule refuses is 400 INVALID_REPO_PROJECT.
+// The mapping's repository becomes the repository of every issue of its project that names none,
+// whose halves delivery puts into GitHub paths, and the installation read puts its halves into
+// one at once; `...git` and `.git` are no dot segments, so the mux does not clean them, and the
+// trailing `.git` canonicalRepo trims would leave `..` or an empty name behind.
 func repoProjectPath(r *http.Request) (string, error) {
+	owner, name, err := sourcePathRepo(r)
+	if err != nil {
+		return "", errorf(http.StatusBadRequest, "INVALID_REPO_PROJECT", `the path must name a repository "owner/name" (got %q)`,
+			r.PathValue("owner")+"/"+r.PathValue("repo"))
+	}
+	return owner + "/" + name, nil
+}
+
+// storedRepoProjectPath reads the {owner}/{repo} path of a mapping removal as every mapping's path
+// was read before repoProjectPath held it to GitHub's names: canonicalised by externalRef alone.
+// A mapping stored then under a name that rule refuses, `acme/..` among them, is one only this
+// reading names, and removing it is the repair; no GitHub path is built from it here.
+func storedRepoProjectPath(r *http.Request) (string, error) {
 	repo, _, err := externalRef(r.PathValue("owner") + "/" + r.PathValue("repo") + "#1")
 	return repo, err
 }

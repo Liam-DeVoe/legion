@@ -133,9 +133,23 @@ function Basis({ basis }: { basis: CheckBasis }): ReactNode {
   );
 }
 
+/** Why one result's commit could not be placed, naming `repo`, the repository the server says the
+ *  answer is about, where it names one: a result whose commit is taken to be of a repository the
+ *  issue links a pull request in is decided by that repository, and "the repository" would read
+ *  as the issue's own. */
+function standsReasonWords(
+  reason: NonNullable<ResultCommitStands["reason"]>,
+  repo: string | undefined
+): string {
+  if (repo === undefined) return REASON_WORDS[reason];
+  return reason === "repository_unreadable"
+    ? `Dispatch cannot read ${repo}.`
+    : `A read Dispatch made of ${repo} did not answer.`;
+}
+
 /** The first fact of each result: where its commit stands against what its check compared
  *  with. At one of those commits, naming which; at another commit; or not known, with the
- *  reason Dispatch could not say. */
+ *  reason Dispatch could not say. An answer a linked repository decided names it (`repo`). */
 function CommitStands({ stands }: { stands: ResultCommitStands | undefined }): ReactNode {
   if (stands === undefined) {
     return undefined;
@@ -150,11 +164,14 @@ function CommitStands({ stands }: { stands: ResultCommitStands | undefined }): R
     );
   }
   if (stands.answer === "other_commit") {
-    return "At another commit";
+    return stands.repo === undefined ? "At another commit" : `At another commit of ${stands.repo}`;
   }
   // The reason is the server's to give and may be absent, so an unknown answer stands on its
   // own where there is none.
-  return stands.reason === undefined ? "Not known." : `Not known. ${REASON_WORDS[stands.reason]}`;
+  if (stands.reason === undefined) {
+    return stands.repo === undefined ? "Not known." : `Not known in ${stands.repo}.`;
+  }
+  return `Not known. ${standsReasonWords(stands.reason, stands.repo)}`;
 }
 
 /** The second fact of each result: whether the check's words moved after the result was

@@ -358,6 +358,46 @@ test("a basis in a linked repository names that repository", async () => {
   expect(stands).toEqual([`At the head of acme/tools#7 ${commit}`, "At branch main of acme/tools"]);
 });
 
+// A result whose commit is taken to be of a linked repository is decided by that repository, and
+// the server names it in commit_stands.repo, so the tab says which repository Dispatch could not
+// read, or whose commit the result is at, rather than reading as the issue's own repository. An
+// answer that names no repository reads as it always did.
+test("a linked result's other_commit and unknown answers name that repository", async () => {
+  const { getIssueResults, view } = renderTab(verification, [
+    check("c1", [
+      result({ commit_stands: { answer: "other_commit", repo: "acme/tools" }, id: "result-1" }),
+      result({
+        commit_stands: { answer: "unknown", reason: "repository_unreadable", repo: "acme/tools" },
+        id: "result-2",
+      }),
+      result({
+        commit_stands: { answer: "unknown", reason: "read_failed", repo: "acme/tools" },
+        id: "result-3",
+      }),
+      result({
+        commit_stands: { answer: "unknown", reason: "repository_unreadable" },
+        id: "result-4",
+      }),
+    ]),
+  ]);
+  restore = () => {
+    getIssueResults.mockRestore();
+    view.unmount();
+  };
+
+  await screen.findByTestId("verification-checks");
+  expect(
+    screen
+      .getAllByTestId("verification-result-commit-stands")
+      .map((field) => field.textContent)
+  ).toEqual([
+    "At another commit of acme/tools",
+    "Not known. Dispatch cannot read acme/tools.",
+    "Not known. A read Dispatch made of acme/tools did not answer.",
+    "Not known. Dispatch cannot read the repository.",
+  ]);
+});
+
 test("a result shows how it ran, what was seen, its counts, its role and its screenshots", async () => {
   const { getIssueResults, view } = renderTab(verification, [
     check("c1", [

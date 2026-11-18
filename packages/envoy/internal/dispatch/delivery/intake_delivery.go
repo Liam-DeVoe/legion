@@ -422,9 +422,11 @@ func subjectKey(subject string, tokens []string, pullRequest bool) string {
 
 // subjectNamesRepo reports whether a GitHub subject's owner and repository tokens (2 and 3) name
 // repo, the "<owner>/<name>" a payload carries, each side sanitized as the publisher sanitizes it
-// (contracts.SanitizeSubjectSegment) and compared without case. A repo that does not split into
-// an owner and a name -- an empty one above all -- names no repository to compare, and answers
-// true, so intakeKey wants that message as it always did rather than dropping it.
+// (contracts.SanitizeSubjectSegment) and compared without case. A repo splitRepo refuses -- an
+// empty one above all, and one whose owner or name GitHub's names do not allow -- names no
+// repository to compare, and answers true, so intakeKey wants that message as it always did
+// rather than dropping it; its handler then refuses the name at its own splitRepo, before any
+// GitHub call.
 func subjectNamesRepo(tokens []string, repo string) bool {
 	owner, name, err := splitRepo(repo)
 	if err != nil {

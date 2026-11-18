@@ -20,9 +20,12 @@ import (
 // only answer that proves the repository does not hold the commit (githubapp.Client.HasCommit
 // and its noCommitForSHA: GitHub answers the same status for a validation failure and for an
 // endpoint it has throttled, so the message is what tells them apart). Every other failure is
-// the error, which says only that Dispatch cannot tell: any other 422, a malformed repository
-// name, a deployment with no App key, a repository the App cannot read, a rate limit, a 5xx, a
-// transport failure.
+// the error, which says only that Dispatch cannot tell whether the commit is there: any other
+// 422, a name GitHub's names do not allow (splitRepo), a deployment with no App key, a
+// repository the App cannot read (RepositoryUnreadable), a rate limit, a 5xx, a transport
+// failure. The results route reads the unreadable repository by its kind: the issue's own stores
+// the result as before, while a linked one counts for nothing, as it does where its pull request
+// cannot be read (api/results_linked.go, linkedRepositoryHolds).
 func RepositoryHoldsCommit(ctx context.Context, client *githubapp.Client, repoFull, sha string) (bool, error) {
 	owner, repo, token, err := repositoryRead(ctx, client, repoFull)
 	if err != nil {
@@ -37,15 +40,19 @@ func RepositoryHoldsCommit(ctx context.Context, client *githubapp.Client, repoFu
 // (PullRequestHeadState), so a pull request this answers no for is one the head rows call
 // closed: it closed and did not merge.
 //
-// Every failure is the error: a malformed repository name, a deployment with no App key, a
-// repository the App is not installed on (githubapp.ErrNoInstallation, the 404 of its
-// installation lookup) or cannot read otherwise, a pull request GitHub answers 404 or 410 for
-// (ErrPullRequestNotFound), a rate limit, a 5xx, a transport failure. Each says only that
-// Dispatch cannot tell but two, which are GitHub's answers: ErrPullRequestNotFound, that there is
-// no such pull request, and githubapp.ErrNoInstallation, that the App is not installed on the
-// repository. The results route reads the first as a pull request that does not count, and the
-// second as one that does not count and that no other pull request of the repository can make
-// count (api/results_linked.go, linkedRepositoryHolds).
+// Every failure is the error: a name GitHub's names do not allow (splitRepo's
+// refs.ErrNotGitHubRepo), a deployment with no App key, a repository the App is not installed on
+// (githubapp.ErrNoInstallation, the 404 of its installation lookup) or cannot read otherwise
+// (githubapp.ErrRepositoryUnreadable, a 403 that is no rate limit), a pull request GitHub answers
+// 404 or 410 for (ErrPullRequestNotFound), a rate limit, a 5xx, a transport failure. Four of them
+// are answers no retry changes, and the rest say only that Dispatch cannot tell for now.
+// ErrPullRequestNotFound says there is no such pull request; RepositoryUnreadable's two say the
+// App cannot read the repository until someone gives it the repository; and a name GitHub's
+// names do not allow is no repository GitHub could hold. The results route reads the first as a
+// pull request that does not count and the other three as a repository that does not count,
+// whose other pull requests it reads no further; every other error leaves the record to be made
+// again, unless another repository is shown to hold the commit (api/results_linked.go,
+// linkedRepositoryHolds).
 func PullRequestOpenOrMerged(ctx context.Context, client *githubapp.Client, repoFull string, number int) (bool, error) {
 	owner, repo, token, err := repositoryRead(ctx, client, repoFull)
 	if err != nil {

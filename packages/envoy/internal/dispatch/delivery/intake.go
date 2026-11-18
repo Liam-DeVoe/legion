@@ -19,7 +19,6 @@ import (
 	"net/url"
 	"regexp"
 	"strconv"
-	"strings"
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
@@ -27,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -802,13 +802,16 @@ func mapJobConclusion(raw *string) *DeliveryJobConclusion {
 	}
 }
 
-// splitRepo splits "owner/repo" into its two segments.
+// splitRepo splits a stored "owner/repo" into the two segments GitHub's paths take: the one place
+// delivery turns a repository name into a GitHub path, which every read of a repository goes
+// through (repositoryRead and the reads that split a name of their own). Each half is held to
+// the names GitHub allows (refs.SplitGitHubRepo, the rule the API routes hold a name to before
+// they store it), and a name the rule refuses is an error naming it, before any GitHub call. So
+// a mapping or a renamed_to stored before those routes held it to the rule, or by direct SQL —
+// `acme/..`, or `acme/` — never becomes a GitHub path, which `..` would take above the
+// repository's own.
 func splitRepo(repoFull string) (owner, repo string, err error) {
-	parts := strings.SplitN(repoFull, "/", 2)
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return "", "", fmt.Errorf("malformed repository %q: want owner/repo", repoFull)
-	}
-	return parts[0], parts[1], nil
+	return refs.SplitGitHubRepo(repoFull)
 }
 
 // containsString reports whether values contains s, exactly.

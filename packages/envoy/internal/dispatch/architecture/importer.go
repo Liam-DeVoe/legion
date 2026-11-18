@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/dispatch/texttrees"
@@ -935,12 +936,13 @@ func snapshotFiles(files map[string][]byte) map[string]string {
 	return stored
 }
 
+// splitRepo is a stored source's `owner/name` as the two halves the App's reads put into GitHub
+// paths, held to the names GitHub allows (refs.SplitGitHubRepo, the one rule every place that
+// builds a GitHub path reads), and an error naming it otherwise, before any GitHub call. The
+// route that saves a source holds it to that rule already (api's parseSourceRepo); this is what
+// keeps a row stored before that, or by direct SQL, from ever reaching GitHub.
 func splitRepo(repo string) (owner, name string, err error) {
-	owner, name, found := strings.Cut(repo, "/")
-	if !found || owner == "" || name == "" || strings.Contains(name, "/") {
-		return "", "", fmt.Errorf("stored repository %q is not owner/name", repo)
-	}
-	return owner, name, nil
+	return refs.SplitGitHubRepo(repo)
 }
 
 // ScanSource decodes one SourceColumns row into a model.ArchitectureSource.

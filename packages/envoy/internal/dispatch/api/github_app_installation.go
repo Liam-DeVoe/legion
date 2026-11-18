@@ -18,9 +18,11 @@ type appInstallationResponse struct {
 // events of its repositories through, is installed on the path's repository: GitHub's
 // installation lookup under the App's JWT, its 404 being false. Any authenticated caller may ask:
 // the Legion daemon asks it for every repository it serves, since on a repository the App is not
-// installed on GitHub sends Legion none of its events and nothing redelivers them. Dispatch with
-// no App key answers 503 GITHUB_APP_UNCONFIGURED; any other failed lookup 502 GITHUB_UNREADABLE,
-// naming the repository and GitHub's error.
+// installed on GitHub sends Legion none of its events and nothing redelivers them. A path that
+// names no repository GitHub allows is 400 INVALID_REPO_PROJECT before GitHub is asked anything
+// (repoProjectPath), since its halves go into the lookup's path as they are. Dispatch with no App
+// key answers 503 GITHUB_APP_UNCONFIGURED; any other failed lookup 502 GITHUB_UNREADABLE, naming
+// the repository and GitHub's error.
 func (s *server) getAppInstallation(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return

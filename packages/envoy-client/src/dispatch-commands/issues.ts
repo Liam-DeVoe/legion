@@ -709,9 +709,23 @@ function basisPlace(basis: CheckBasis): string {
   return "the commit you named";
 }
 
+/** Why a result's commit could not be placed, naming `repo`, the repository the server says the
+ *  answer is about, where it names one: a result whose commit is taken to be of a repository the
+ *  issue links a pull request in is decided by that repository, and "the repository" would read
+ *  as the issue's own. */
+function standsReasonText(
+  reason: NonNullable<NonNullable<CheckResult["commit_stands"]>["reason"]>,
+  repo: string | undefined
+): string {
+  if (repo === undefined) return COMPARISON_REASONS[reason];
+  return reason === "repository_unreadable"
+    ? `Dispatch cannot read ${repo}`
+    : `a read Dispatch made of ${repo} did not answer`;
+}
+
 /** The first of R4's two facts: where one result's commit stands against what its check compared
  *  with. A Dispatch server that does not answer it says so rather than reading as another
- *  commit. */
+ *  commit. An answer a linked repository decided names it (`repo`). */
 function commitStandsText(stands: CheckResult["commit_stands"]): string {
   if (stands === undefined) {
     return "Where that commit stands is not known: this Dispatch server does not say";
@@ -721,12 +735,19 @@ function commitStandsText(stands: CheckResult["commit_stands"]): string {
       ? "That commit is one of the compared commits"
       : `That commit is ${basisPlace(stands.basis)}`;
   }
-  if (stands.answer === "other_commit") return "That commit is none of the compared commits";
+  if (stands.answer === "other_commit") {
+    return stands.repo === undefined
+      ? "That commit is none of the compared commits"
+      : `That commit, of ${stands.repo}, is none of the compared commits`;
+  }
   // The reason is the server's to give and may be absent, so the answer stands on its own
   // where there is none.
-  return stands.reason === undefined
-    ? "Where that commit stands is not known"
-    : `Where that commit stands is not known: ${COMPARISON_REASONS[stands.reason]}`;
+  if (stands.reason === undefined) {
+    return stands.repo === undefined
+      ? "Where that commit stands is not known"
+      : `Where that commit of ${stands.repo} stands is not known`;
+  }
+  return `Where that commit stands is not known: ${standsReasonText(stands.reason, stands.repo)}`;
 }
 
 /** R4's other fact: whether the check's words moved after the result was recorded. Both versions

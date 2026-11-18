@@ -1114,14 +1114,14 @@ func RefreshPullRequestHead(
 	}
 	token, err := client.RepositoryToken(ctx, owner, repo)
 	if err != nil {
-		if repositoryUnreadable(err) {
+		if RepositoryUnreadable(err) {
 			return MarkPullRequestHeadChecked(ctx, pool, repoFull, number, now)
 		}
 		return fmt.Errorf("mint installation token for %s PR #%d: %w", canonical, number, err)
 	}
 	payload, err := fetchPullRequestPayload(ctx, client, token, owner, repo, number)
 	if err != nil {
-		if errors.Is(err, ErrPullRequestNotFound) || repositoryUnreadable(err) {
+		if errors.Is(err, ErrPullRequestNotFound) || RepositoryUnreadable(err) {
 			return MarkPullRequestHeadChecked(ctx, pool, repoFull, number, now)
 		}
 		return err
@@ -1133,12 +1133,17 @@ func RefreshPullRequestHead(
 	return upsertHeadUnderCanonicalName(ctx, pool, broker, headRow(canonical, payload, attributed, &now), repoFull)
 }
 
-// repositoryUnreadable reports whether err is the App saying it cannot read a repository: it is
+// RepositoryUnreadable reports whether err is the App saying it cannot read a repository: it is
 // installed on none that covers it (githubapp.ErrNoInstallation), or its token is refused the
-// repository or the resource (githubapp.ErrRepositoryUnreadable). Neither is this row's own
-// problem and neither mends itself within a pass, so the row is stamped read rather than warned
-// about and left at the front of every batch.
-func repositoryUnreadable(err error) bool {
+// repository or the resource (githubapp.ErrRepositoryUnreadable, a 403 or 404 that
+// githubapp.RateLimit does not read as a rate limit; the pull request read makes its own 404
+// ErrPullRequestNotFound instead). Both are GitHub's answer about the repository and not a read
+// that failed: no retry changes either until someone gives the App the repository, while a rate
+// limit, a 5xx and a transport failure are reads to make again. So the reconcile stamps the row
+// read rather than warning about it and leaving it at the front of every batch, and the results
+// route counts a pull request an issue links in such a repository for nothing, as it counts one
+// GitHub answers 404 for (api/results_linked.go, linkedRepositoryHolds).
+func RepositoryUnreadable(err error) bool {
 	return errors.Is(err, githubapp.ErrNoInstallation) || errors.Is(err, githubapp.ErrRepositoryUnreadable)
 }
 
