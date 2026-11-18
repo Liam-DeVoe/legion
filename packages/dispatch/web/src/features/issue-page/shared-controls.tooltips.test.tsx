@@ -1054,12 +1054,20 @@ const MOUNTS: readonly Mount[] = [
     settle: pressing("Edit labels"),
   },
   {
-    name: "RepoControl, its own repository, an inherited one and none in a row of Details",
+    name: "RepoControl, its own repository and an inherited one, out of a row of Details and in one, and none in one",
     node: () => (
       <>
         <RepoControl issueKey="CORE-1" project="CORE" repo="acme/api" resolvedRepo="acme/api" />
         <RepoControl issueKey="CORE-2" project="CORE" repo={null} resolvedRepo="acme/web" />
         <RepoControl inRow issueKey="CORE-3" project="CORE" repo={null} resolvedRepo={null} />
+        <RepoControl
+          inRow
+          issueKey="CORE-4"
+          project="CORE"
+          repo="acme/app"
+          resolvedRepo="acme/app"
+        />
+        <RepoControl inRow issueKey="CORE-5" project="CORE" repo={null} resolvedRepo="acme/site" />
       </>
     ),
   },
@@ -1658,8 +1666,14 @@ const MAIN_TITLES: ReadonlyMap<Mount, readonly string[]> = new Map([
   [mountNamed("IssueLabels, its chips and its picker open"), ["api", "frontend"]],
   [labelsEmptyAndSaving, []],
   [
-    mountNamed("RepoControl, its own repository, an inherited one and none in a row of Details"),
-    ["Clear it, and the issue inherits a repository again"],
+    mountNamed(
+      "RepoControl, its own repository and an inherited one, out of a row of Details and in one, and none in one"
+    ),
+    // Outside `NoTooltips` a row of Details draws `main`'s box, its clear control with it.
+    [
+      "Clear it, and the issue inherits a repository again",
+      "Clear it, and the issue inherits a repository again",
+    ],
   ],
   [repoNothingResolved, []],
   [componentsWithPicker, []],
@@ -2029,7 +2043,9 @@ const LONG_VALUES: ReadonlyMap<Mount, Mount> = new Map([
     values: [LONG.label],
   }),
   withLongValues(
-    mountNamed("RepoControl, its own repository, an inherited one and none in a row of Details"),
+    mountNamed(
+      "RepoControl, its own repository and an inherited one, out of a row of Details and in one, and none in one"
+    ),
     {
       node: () => (
         <>
@@ -2045,12 +2061,20 @@ const LONG_VALUES: ReadonlyMap<Mount, Mount> = new Map([
             repo={null}
             resolvedRepo={LONG.inheritedRepository}
           />
+          <RepoControl inRow issueKey="CORE-3" project="CORE" repo={null} resolvedRepo={null} />
           <RepoControl
             inRow
-            issueKey="CORE-3"
+            issueKey="CORE-4"
             project="CORE"
             repo={LONG.repository}
             resolvedRepo={LONG.repository}
+          />
+          <RepoControl
+            inRow
+            issueKey="CORE-5"
+            project="CORE"
+            repo={null}
+            resolvedRepo={LONG.inheritedRepository}
           />
         </>
       ),
@@ -2185,6 +2209,7 @@ const ON_PAGE_FILES = [
   "components/MultiSelect.tsx",
   "features/doc/ApprovalChip.tsx",
   "features/inbox/AskCard.tsx",
+  "features/issue-page/IssueFieldForms.tsx",
   "features/issue/RepoControl.tsx",
 ] as const;
 
@@ -2520,9 +2545,9 @@ test("outside NoTooltips each shared control sets the title that main sets", asy
 
 // Inside `NoTooltips` no shared control sets a `title` it sets on `main`,
 // the two the source kept (the stale chip and `AgentUnresponsiveNote`), an open
-// `MultiSelect`'s options and a repository row's "None" in Details among them. `AskCard`'s own
-// elements are read, the asker's name and the submit among them, and its children of other files
-// are not (`askCardChildren`).
+// `MultiSelect`'s options and a repository row's "None" and its repository's text in Details among
+// them. `AskCard`'s own elements are read, the asker's name and the submit among them, and its
+// children of other files are not (`askCardChildren`).
 test("inside NoTooltips no shared control sets a title", async () => {
   const scope = (view: RenderResult) => within(view.baseElement);
   const named = new Map<Mount, (view: RenderResult) => readonly Element[]>([
@@ -2552,9 +2577,13 @@ test("inside NoTooltips no shared control sets a title", async () => {
       ],
     ],
     [
-      mountNamed("RepoControl, its own repository, an inherited one and none in a row of Details"),
+      mountNamed(
+        "RepoControl, its own repository and an inherited one, out of a row of Details and in one, and none in one"
+      ),
       (view) => [
         scope(view).getByRole("button", { name: `${CONTROL_LABELS.none}, Repository of CORE-3` }),
+        scope(view).getByRole("button", { name: "acme/app, Repository of CORE-4" }),
+        scope(view).getByRole("button", { name: "acme/site, Repository of CORE-5" }),
       ],
     ],
   ]);
@@ -2747,17 +2776,25 @@ test("inside NoTooltips a fact that only a title held is drawn", async () => {
     ]);
   });
 
-  // `RepoControl` says beside an inherited repository that it is inherited or the default.
+  // `RepoControl` says beside an inherited repository that it is inherited or the default: beside
+  // the box, and in a row of Details beside the repository's text.
   await readDrawn(
-    mountNamed("RepoControl, its own repository, an inherited one and none in a row of Details"),
+    mountNamed(
+      "RepoControl, its own repository and an inherited one, out of a row of Details and in one, and none in one"
+    ),
     "inside",
     (view) => {
       const scope = within(view.container);
       const drawn = scope.getAllByText(CONTROL_LABELS.repository_inherited);
-      expect(drawn).toHaveLength(1);
+      expect(drawn).toHaveLength(2);
       expect(
         drawn[0]?.parentElement?.contains(
           scope.getByRole("combobox", { name: "Repository of CORE-2" })
+        )
+      ).toBe(true);
+      expect(
+        drawn[1]?.parentElement?.contains(
+          scope.getByRole("button", { name: "acme/site, Repository of CORE-5" })
         )
       ).toBe(true);
     }
@@ -3120,13 +3157,17 @@ test("inside NoTooltips the words come from the page's word list and carry their
   );
 
   await readDrawn(
-    mountNamed("RepoControl, its own repository, an inherited one and none in a row of Details"),
+    mountNamed(
+      "RepoControl, its own repository and an inherited one, out of a row of Details and in one, and none in one"
+    ),
     "inside",
     (view) => {
       expectMarks(view.container, [
         [`${PROPERTY_LABELS.repository}:`, "page-chrome"],
         ["acme/api", "author-text"],
         ["acme/web", "author-text"],
+        ["acme/app", "author-text"],
+        ["acme/site", "author-text"],
         [CONTROL_LABELS.repository_inherited, "page-chrome"],
         [`, ${CONTROL_LABELS.repository_inherited}`, "page-chrome"],
         [CONTROL_LABELS.none, "page-chrome"],
