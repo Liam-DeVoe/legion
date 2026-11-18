@@ -369,9 +369,9 @@ export function IssuePriorityLine({
           // instead.
           aria-label={addPriorityControlName(issue.key)}
           // Inside `NoTooltips` it is 28 px tall from `md`, as the controls beside it in Details
-          // are (`badgeSelectPageRailWrapper`'s `md:min-h-7`, the labels' and the components'
-          // triggers' `sm:min-h-7`); below 1280 px `styles.css` gives each of them a 44 px floor
-          // all the same. Outside it the class is `main`'s.
+          // are (the repository's box, `main`'s input in `RepoControl.tsx`, with its `md:min-h-7`;
+          // the labels' and the components' triggers' `sm:min-h-7`); below 1280 px `styles.css`
+          // gives each of them a 44 px floor all the same. Outside it the class is `main`'s.
           className={`inline-flex min-h-11 shrink-0 items-center rounded-full px-2 py-2 text-sm whitespace-nowrap outline-none ${page === null ? `${surfaceMutedStrongBg} ${textSecondaryOnSurface} ${textSecondaryHoverToPrimary}` : `${pagePaneBg} ${pageMutedText} hover:text-page-ink md:min-h-7 md:py-1`}`}
           disabled={controlDisabled}
           onClick={() => {

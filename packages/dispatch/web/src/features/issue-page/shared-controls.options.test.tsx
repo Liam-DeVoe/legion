@@ -45,7 +45,7 @@ import { ConnectionDot } from "../doc/ConnectionDot";
 import { AskCard } from "../inbox/AskCard";
 import { ApprovalSteps } from "../issue/ApprovalSteps";
 import { AssigneeControl } from "../issue/AssigneeControl";
-import { badgeSelectPageRailWrapper, badgeSelectWrapper } from "../issue/badge-select";
+import { badgeSelectWrapper } from "../issue/badge-select";
 import { ClaimChip } from "../issue/ClaimChip";
 import { GitHubLink } from "../issue/GitHubLink";
 import type { StepEntry } from "../issue/gated-steps";
@@ -1011,7 +1011,18 @@ test("inRow draws no label and the words of Details", async () => {
       `, ${CONTROL_LABELS.takeable_now}`
     );
 
-    expect(caseOf(view, "no repository").textContent).toBe(CONTROL_LABELS.none);
+    // With nothing resolved the row draws `main`'s empty box, with its placeholder and a
+    // description in the page's words, and no word of its own such as "None".
+    const noRepository = within(caseOf(view, "no repository"));
+    const emptyBox = noRepository.getByRole("combobox", {
+      description: CONTROL_LABELS.no_repository,
+      name: "Repository of CORE-1",
+    });
+    expect([(emptyBox as HTMLInputElement).value, emptyBox.getAttribute("placeholder")]).toEqual([
+      "",
+      "owner/name",
+    ]);
+    expect(noRepository.queryByText(CONTROL_LABELS.none)).toBeNull();
     expect(
       within(caseOf(view, "repository")).getByRole("combobox", { name: "Repository of CORE-2" })
     ).toBeInTheDocument();
@@ -1351,12 +1362,22 @@ test("in Details' row every word of the claim wraps, and none is held whole agai
 });
 
 // Inside `NoTooltips` the priority's add control in a row of Details is, from `md`, as tall as the
-// controls beside it there (the repository's select, drawn in `badgeSelectPageRailWrapper`), and
-// keeps the 44 px below `md`. Outside, its class is `main`'s.
+// controls beside it there (the repository's box, `main`'s input, read from the box drawn in a
+// row of Details), and keeps the 44 px below `md`. Outside, its class is `main`'s.
 test("the priority's add control has the height of its siblings in Details", async () => {
-  const siblings = tokens(badgeSelectPageRailWrapper).filter((token) =>
-    token.startsWith("md:min-h-")
+  const repository = draw(
+    <RepoControl inRow issueKey="CORE-1" project="CORE" repo="acme/api" resolvedRepo="acme/api" />,
+    "inside"
   );
+  const siblings = (() => {
+    try {
+      return classOf(
+        within(repository.container).getByRole("combobox", { name: "Repository of CORE-1" })
+      ).filter((token) => token.startsWith("md:min-h-"));
+    } finally {
+      undraw(repository);
+    }
+  })();
   expect(siblings).toEqual(["md:min-h-7"]);
   for (const surface of ["inside", "outside"] as const) {
     const view = draw(addablePriorityLine(surface), surface);
@@ -1953,14 +1974,21 @@ test("the default shapes keep main's class strings", async () => {
     "ClaimChip unresponsive dot": "shrink-0",
     "ClaimChip unresponsive": "shrink-0",
 
+    // `main`'s features/issue/RepoControl.tsx: the line, its label, the box's wrapper, the box
+    // holding the issue's own repository and the box of an inherited one, the clear control, the
+    // box's description and the refusal of a value that is not owner/name.
     "RepoControl line":
       "flex shrink-0 items-center gap-2 text-sm text-slate-700 dark:text-slate-300",
-    "RepoControl wrapper":
-      "relative inline-flex min-h-11 shrink-0 items-center rounded-sm md:min-h-7 has-focus-visible:ring-2 has-focus-visible:ring-sky-600 dark:has-focus-visible:ring-sky-400 ",
-    "RepoControl badge, its own":
-      "inline-flex items-center rounded-sm px-1.5 py-0.5 text-xs font-semibold font-mono bg-sky-100 dark:bg-sky-950 text-sky-800 dark:text-sky-300",
-    "RepoControl badge, inherited":
-      "inline-flex items-center rounded-sm px-1.5 py-0.5 text-xs font-semibold font-mono bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300",
+    "RepoControl label": "font-medium",
+    "RepoControl wrapper": "relative inline-flex shrink-0 items-center",
+    "RepoControl box, its own":
+      "min-h-11 w-[200px] rounded-sm border py-0.5 pl-1.5 font-mono text-xs outline-none focus-visible:ring-2 disabled:opacity-50 md:min-h-7 pr-8 border-slate-300 bg-white focus:border-sky-600 dark:border-slate-700 dark:bg-slate-900 dark:focus:border-sky-400 focus-visible:ring-sky-600 dark:focus-visible:ring-sky-400",
+    "RepoControl box, inherited":
+      "min-h-11 w-[200px] rounded-sm border py-0.5 pl-1.5 font-mono text-xs outline-none focus-visible:ring-2 disabled:opacity-50 md:min-h-7 pr-1.5 border-slate-300 bg-white focus:border-sky-600 dark:border-slate-700 dark:bg-slate-900 dark:focus:border-sky-400 focus-visible:ring-sky-600 dark:focus-visible:ring-sky-400",
+    "RepoControl clear":
+      "absolute inset-y-0 right-0 inline-flex w-8 items-center justify-center rounded-sm text-base outline-none focus-visible:ring-2 disabled:opacity-50 text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100 focus-visible:ring-sky-600 dark:focus-visible:ring-sky-400",
+    "RepoControl description": "sr-only",
+    "RepoControl refusal": "text-rose-700 dark:text-rose-400",
 
     "IssueComponentsLine line":
       "flex shrink-0 items-center gap-2 text-sm text-slate-700 dark:text-slate-300",
@@ -2446,16 +2474,28 @@ test("the default shapes keep main's class strings", async () => {
     );
     classAt("ClaimChip unresponsive", within(unresponsive).getByTestId("issue-claim-unresponsive"));
 
-    const repository = within(caseOf(view, "repository")).getByRole("combobox", {
-      name: "Repository of CORE-1",
-    });
-    classAt("RepoControl wrapper", repository.parentElement);
+    const ownRepository = within(caseOf(view, "repository"));
+    const repository = ownRepository.getByRole("combobox", { name: "Repository of CORE-1" });
     classAt("RepoControl line", repository.parentElement?.parentElement);
-    classAt("RepoControl badge, its own", repository.parentElement?.querySelector("span"));
+    classAt("RepoControl label", ownRepository.getByText("Repository:"));
+    classAt("RepoControl wrapper", repository.parentElement);
+    classAt("RepoControl box, its own", repository);
     classAt(
-      "RepoControl badge, inherited",
-      caseOf(view, "inherited repository").querySelector("span[aria-hidden='true']")
+      "RepoControl clear",
+      ownRepository.getByRole("button", { name: "Clear the repository of CORE-1" })
     );
+    classAt(
+      "RepoControl description",
+      document.getElementById(repository.getAttribute("aria-describedby") ?? "")
+    );
+    const inheritedRepository = within(caseOf(view, "inherited repository"));
+    const inherited = inheritedRepository.getByRole("combobox", { name: "Repository of CORE-2" });
+    classAt("RepoControl box, inherited", inherited);
+    // A value that is not owner/name, written with Enter, draws the refusal; the focus starts the
+    // mappings' read, which lands before the next read of the mount.
+    await user.type(inherited, "nope{Enter}");
+    await settleReads();
+    classAt("RepoControl refusal", inheritedRepository.getByRole("alert"));
 
     const components = within(caseOf(view, "components"));
     classAt("IssueComponentsLine line", components.getByTestId("issue-components"));
