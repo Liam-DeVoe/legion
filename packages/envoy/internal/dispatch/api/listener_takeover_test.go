@@ -40,6 +40,8 @@ type takeOverAnswer struct {
 // send it published, a late answer's included, and how many requests reached each route.
 type takeOverListener struct {
 	server *httptest.Server
+	// lookups is every read the listener served, a refused one included, for a failure message.
+	lookups listenerLookups
 
 	mu       sync.Mutex
 	script   []takeOverAnswer
@@ -54,7 +56,7 @@ type takeOverListener struct {
 func startTakeOverListener(t *testing.T) *takeOverListener {
 	t.Helper()
 	listener := &takeOverListener{requests: map[takeOverRoute]int{}}
-	listener.server = httptest.NewServer(http.HandlerFunc(listener.serve))
+	listener.server = httptest.NewServer(listener.lookups.recording(http.HandlerFunc(listener.serve)))
 	t.Cleanup(listener.server.Close)
 	return listener
 }
@@ -458,19 +460,30 @@ func TestASenderWaitingOutAListenerTakeOverRenewsItsClaimBeforeEachTry(t *testin
 			claimsMu.Lock()
 			observed := slices.Clone(claims)
 			claimsMu.Unlock()
+			// storedAttempts is the attempt as its row holds it, the error it settled with included:
+			// a try cut short by the client's window reaches the listener as nothing.
+			storedAttempts := func() string {
+				t.Helper()
+				if tc.table == "comment_deliveries" {
+					return describeAttempts(commentAttempts(t, database, id))
+				}
+				return describeAttempts(messageAttempts(t, database, id))
+			}
 			if len(observed) < 4 {
-				t.Fatalf("claimed_at was read %d times, want at least four: at the two refused tries, then at the answered try's registry read and its send", len(observed))
+				t.Fatalf("claimed_at was read %d times, want at least four: at the two refused tries, then at the answered try's registry read and its send; attempts: %s",
+					len(observed), storedAttempts())
 			}
 			for index := 1; index < len(observed); index++ {
 				if !observed[index].After(observed[index-1]) {
-					t.Fatalf("claimed_at as each try found it = %v, want it later at every try: the claim is renewed before each", observed)
+					t.Fatalf("claimed_at as each try found it = %v, want it later at every try: the claim is renewed before each; attempts: %s",
+						observed, storedAttempts())
 				}
 			}
 			if states := attemptStates(t, database, tc.table, tc.column, id); !slices.Equal(states, []string{"1:sent"}) {
-				t.Fatalf("attempts = %v, want attempt 1 alone, sent on the claim renewed last", states)
+				t.Fatalf("attempts = %s, want attempt 1 alone, sent on the claim renewed last", storedAttempts())
 			}
 			if sends := listener.published(); len(sends) != 1 || sends[0] != (resumeSend{key: tc.key(id), target: "s1"}) {
-				t.Fatalf("published %#v, want one send to s1 under %q", sends, tc.key(id))
+				t.Fatalf("published %#v, want one send to s1 under %q; attempts: %s", sends, tc.key(id), storedAttempts())
 			}
 			if receipts := deliveryReceiptsOf(t, database, tc.receipt, tc.column, id); receipts != 1 {
 				t.Fatalf("attempt 1 has %d receipts, want one", receipts)

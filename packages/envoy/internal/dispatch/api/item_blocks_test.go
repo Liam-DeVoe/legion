@@ -451,7 +451,7 @@ func itemBlockRefs(t *testing.T, database *store.Store, kind, itemID string) []s
 // covered in TestBroadcastSendsOneMessagePerRecipientAndExcludesTheRest.)
 func TestEveryMessageWriteIndexesItsBlocks(t *testing.T) {
 	t.Parallel()
-	listener, _ := newBroadcastListener(t, broadcastSessions)
+	listener, listenerState := newBroadcastListener(t, broadcastSessions)
 	handler, database := newTargetedMessageHandler(t, listener.URL)
 	issue := createInteractionIssue(t, handler, "TEST", "Message blocks", "before")
 	cited := "dispatch://" + issue.Key
@@ -512,7 +512,8 @@ func TestEveryMessageWriteIndexesItsBlocks(t *testing.T) {
 		"actor": map[string]any{"kind": "session", "id": "planner"}, "attempt": 1, "body": "Callback one.\n\nCallback two cites " + cited + ".",
 	})
 	if callback.Code != http.StatusCreated {
-		t.Fatalf("callback reply: status=%d body=%s", callback.Code, callback.Body.String())
+		t.Fatalf("callback reply: status=%d body=%s; the mention's attempts as stored: %s; the listener served: %s",
+			callback.Code, callback.Body.String(), describeAttempts(commentAttempts(t, database, comment.ID)), &listenerState.lookups)
 	}
 	callbackID := decodeBody[mentionedCommentRead](t, callback).ID
 	requireCommentBlocks(t, database, callbackID, "callback reply", "b1@1 b2@1", 1)

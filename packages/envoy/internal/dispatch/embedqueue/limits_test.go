@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/retry"
@@ -17,20 +18,33 @@ import (
 
 // azureFake stands in for an Azure AI Foundry deployment's embeddings route: it answers 429 while
 // throttling is set, 404 DeploymentNotFound while missing is set (the deployment name is not one
-// the resource has), and vectors otherwise, recording each request's inputs.
+// the resource has), and vectors otherwise, recording each request's inputs and what it answered.
 type azureFake struct {
 	mu         sync.Mutex
 	throttling bool
 	missing    bool
 	requests   [][]string
+	// answers is each request's answer: its status, when the request arrived and how long the
+	// answer took. A call the client's own timeout cut is a failure in place of the 429, which
+	// starts a bisection that logs nothing, so these are what a failure message can show of it.
+	answers []string
 }
 
 func (f *azureFake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	arrived := time.Now()
+	status := http.StatusOK
+	defer func() {
+		f.mu.Lock()
+		f.answers = append(f.answers, fmt.Sprintf("%d (arrived %s, answered after %s)",
+			status, arrived.Format(time.RFC3339Nano), time.Since(arrived)))
+		f.mu.Unlock()
+	}()
 	var request struct {
 		Input []string `json:"input"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		status = http.StatusBadRequest
+		http.Error(w, err.Error(), status)
 		return
 	}
 	f.mu.Lock()
@@ -39,12 +53,14 @@ func (f *azureFake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Unlock()
 	w.Header().Set("Content-Type", "application/json")
 	if throttling {
-		w.WriteHeader(http.StatusTooManyRequests)
+		status = http.StatusTooManyRequests
+		w.WriteHeader(status)
 		_, _ = w.Write([]byte(`{"error":{"code":"RateLimitReached","message":"Rate limit is exceeded."}}`))
 		return
 	}
 	if missing {
-		w.WriteHeader(http.StatusNotFound)
+		status = http.StatusNotFound
+		w.WriteHeader(status)
 		_, _ = w.Write([]byte(`{"error":{"code":"DeploymentNotFound","message":"The API deployment for this resource does not exist."}}`))
 		return
 	}
@@ -60,11 +76,17 @@ func (f *azureFake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (f *azureFake) take() [][]string {
+	requests, _ := f.takeAnswered()
+	return requests
+}
+
+// takeAnswered is take with each request's answer beside it.
+func (f *azureFake) takeAnswered() (requests [][]string, answers []string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	requests := f.requests
-	f.requests = nil
-	return requests
+	requests, answers = f.requests, f.answers
+	f.requests, f.answers = nil, nil
+	return requests, answers
 }
 
 // An Azure 429, through the real AzureClient, is a throttle: the whole batch is retried as one
@@ -100,8 +122,8 @@ func TestAnAzureThrottleRetriesTheWholeBatchAndNeverDeadLetters(t *testing.T) {
 		if err != nil || blocked || !throttled || succeeded != 0 || failed != len(ids) {
 			t.Fatalf("cycle %d: ProcessBatch = %d, %d, %v, %v, %v; want 0, %d, not blocked, throttled", cycle, succeeded, failed, blocked, throttled, err, len(ids))
 		}
-		if requests := fake.take(); len(requests) != 1 || len(requests[0]) != len(ids) {
-			t.Fatalf("cycle %d: Azure saw %v, want one request carrying the whole batch", cycle, requests)
+		if requests, answers := fake.takeAnswered(); len(requests) != 1 || len(requests[0]) != len(ids) {
+			t.Fatalf("cycle %d: Azure saw %v, want one request carrying the whole batch; Azure answered %v", cycle, requests, answers)
 		}
 	}
 	var dead, confirmed int

@@ -109,6 +109,62 @@ func aResolvedMentionCreation(
 	}
 }
 
+// listenerLookups records every read a listener stand-in served - a session, a role, the session
+// list - with when it arrived, how long the stand-in took over it and how the request's context
+// stood once it had, for a failure message. A read Dispatch gives up on is answered as nothing: a
+// mention's creation commits its attempt with neither a session nor an error once a lookup passes
+// mentionLookupTimeout (250 ms), and a route reads unknown once the roster passes
+// routeRosterTimeout (2 s), so these times are the only cause such a failure can print.
+type listenerLookups struct {
+	mu    sync.Mutex
+	calls []string
+}
+
+// recording is handler with every GET it serves recorded.
+func (l *listenerLookups) recording(handler http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			handler.ServeHTTP(w, r)
+			return
+		}
+		arrived := time.Now()
+		handler.ServeHTTP(w, r)
+		l.mu.Lock()
+		l.calls = append(l.calls, fmt.Sprintf("GET %s arrived %s, handled in %s, its context then: %v",
+			r.URL.RequestURI(), arrived.Format(time.RFC3339Nano), time.Since(arrived), r.Context().Err()))
+		l.mu.Unlock()
+	})
+}
+
+// String is every read recorded so far, in the order the stand-in finished them.
+func (l *listenerLookups) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if len(l.calls) == 0 {
+		return "no reads"
+	}
+	return strings.Join(l.calls, "; ")
+}
+
+// commentAttempts reads every attempt of the comment once, by target and attempt, straight from its
+// rows.
+func commentAttempts(t *testing.T, database *store.Store, commentID string) []model.CommentDelivery {
+	t.Helper()
+	rows, err := database.Pool.Query(context.Background(), `
+		select `+commentDeliveryColumns+` from comment_deliveries where comment_id = $1 order by target, attempt
+	`, commentID)
+	if err != nil {
+		t.Fatalf("read comment %s attempts: %v", commentID, err)
+	}
+	attempts, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (model.CommentDelivery, error) {
+		return scanCommentDelivery(row)
+	})
+	if err != nil {
+		t.Fatalf("read comment %s attempts: %v", commentID, err)
+	}
+	return attempts
+}
+
 // waitForCommentDeliveries reads the comment's attempts, by target and attempt, until done accepts
 // them; want says what done waits for. Its patience covers a whole take-over window and ten
 // seconds past it, because a send on the mention sender's lanes may wait one out after the
@@ -120,23 +176,12 @@ func waitForCommentDeliveries(
 	t.Helper()
 	deadline := time.Now().Add(listenerTakeoverWindow + concurrentWait)
 	for {
-		rows, err := database.Pool.Query(context.Background(), `
-			select `+commentDeliveryColumns+` from comment_deliveries where comment_id = $1 order by target, attempt
-		`, commentID)
-		if err != nil {
-			t.Fatalf("read comment %s attempts: %v", commentID, err)
-		}
-		attempts, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (model.CommentDelivery, error) {
-			return scanCommentDelivery(row)
-		})
-		if err != nil {
-			t.Fatalf("read comment %s attempts: %v", commentID, err)
-		}
+		attempts := commentAttempts(t, database, commentID)
 		if done(attempts) {
 			return attempts
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("comment %s attempts = %#v, want %s", commentID, attempts, want)
+			t.Fatalf("comment %s attempts = %s, want %s", commentID, describeAttempts(attempts), want)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -166,7 +211,7 @@ func TestMentionedCommentRecordsFailedOfflineSession(t *testing.T) {
 	}
 	if settled := settledCommentDeliveries(t, database, created.ID); len(settled) != 1 || settled[0].State != "failed" ||
 		settled[0].SessionID != nil || settled[0].Error == nil || *settled[0].Error != "no live session gone" {
-		t.Fatalf("offline delivery = %#v, want a failed delivery with no resolved session", settled)
+		t.Fatalf("offline delivery = %s, want a failed delivery with no resolved session", describeAttempts(settled))
 	}
 	events := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/events", nil, "alice")
 	if events.Code != http.StatusOK || !strings.Contains(events.Body.String(), `"type":"comment.delivery"`) ||
@@ -212,14 +257,14 @@ func TestMentionedCommentUsesRequestedOrDefaultDeliveryMode(t *testing.T) {
 	}
 	if settled := settledCommentDeliveries(t, database, defaultMode.ID); len(settled) != 1 ||
 		settled[0].Delivery != "steer" || settled[0].State != "sent" {
-		t.Fatalf("default mode delivery = %#v", settled)
+		t.Fatalf("default mode delivery = %s", describeAttempts(settled))
 	}
 	btwMode := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
 		"body": "BTW mode.", "mentions": []map[string]any{{"target": "session:s1"}}, "delivery": "btw",
 	}))
 	if settled := settledCommentDeliveries(t, database, btwMode.ID); len(settled) != 1 ||
 		settled[0].Delivery != "btw" || settled[0].State != "sent" {
-		t.Fatalf("btw mode delivery = %#v", settled)
+		t.Fatalf("btw mode delivery = %s", describeAttempts(settled))
 	}
 	if len(sent) != 2 {
 		t.Fatalf("mention sends = %#v, want default and btw sends", sent)
@@ -351,14 +396,14 @@ func TestMentionedCommentPinsRoleHolderBeforeSending(t *testing.T) {
 	// came, one the sender made before this test read the response included, and they are the
 	// whole proof that no role transition redirected the frame. The creation's own lookup is not
 	// among them: it is the one that answered s1, as the mention's pinned session shows.
-	settledCommentDeliveries(t, database, created.ID)
+	settled := settledCommentDeliveries(t, database, created.ID)
 	mu.Lock()
 	holder, lookups, sends := roleHolder, relookups, slices.Clone(sent)
 	mu.Unlock()
 	if lookups != 0 || holder != "s2" || len(created.Mentions) != 1 || created.Mentions[0].SessionID == nil ||
 		*created.Mentions[0].SessionID != "s1" || len(sends) != 1 || sends[0]["target_session"] != "s1" {
-		t.Fatalf("role resolution/sends = holder:%s lookups after the one that pinned s1:%d mentions:%#v sends:%#v, want one pinned s1 delivery after role moves to s2",
-			holder, lookups, created.Mentions, sends)
+		t.Fatalf("role resolution/sends = holder:%s lookups after the one that pinned s1:%d mentions:%d the creation's attempts:%s sends:%#v attempts:%s, want one pinned s1 delivery after role moves to s2",
+			holder, lookups, len(created.Mentions), describeAttempts(created.Deliveries), sends, describeAttempts(settled))
 	}
 	events := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/events", nil, "alice")
 	if events.Code != http.StatusOK || !strings.Contains(events.Body.String(), `"suppress_route":true`) ||
@@ -482,7 +527,7 @@ func TestMentionReplyErrorRecordsAttemptWithoutComment(t *testing.T) {
 	}
 	attempt := decodeBody[commentDeliveryRead](t, failure)
 	if attempt.State != "failed" || attempt.Error == nil || *attempt.Error != "No active model." || attempt.ReplyID != nil {
-		t.Fatalf("failed answer attempt = %#v", attempt)
+		t.Fatalf("failed answer attempt = %s", describeAttempts([]commentDeliveryRead{attempt}))
 	}
 	reloaded := dispatchRequest(t, handler, http.MethodGet, "/api/v1/comments/"+comment.ID, nil, "alice")
 	if reloaded.Code != http.StatusOK {
@@ -550,7 +595,7 @@ func TestMentionRetrySelectsOneTargetAndReresolvesIt(t *testing.T) {
 		"body": "Retry a single mention.", "mentions": []map[string]any{{"target": "session:s1"}},
 	}))
 	if settled := settledCommentDeliveries(t, database, single.ID); len(settled) != 1 || settled[0].State != "failed" {
-		t.Fatalf("initial retry candidate = %#v", settled)
+		t.Fatalf("initial retry candidate = %s", describeAttempts(settled))
 	}
 	live = true
 	humanRetry := dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+single.ID+"/deliveries", map[string]any{"delivery": "steer"}, "alice")
@@ -558,7 +603,7 @@ func TestMentionRetrySelectsOneTargetAndReresolvesIt(t *testing.T) {
 		t.Fatalf("human retry: status=%d body=%s", humanRetry.Code, humanRetry.Body.String())
 	}
 	if attempt := decodeBody[commentDeliveryRead](t, humanRetry); attempt.Attempt != 2 || attempt.Target != "session:s1" || attempt.State != "sent" {
-		t.Fatalf("human retry attempt = %#v", attempt)
+		t.Fatalf("human retry attempt = %s", describeAttempts([]commentDeliveryRead{attempt}))
 	}
 	bearerRetry := bearerRequest(t, handler, http.MethodPost, "/api/v1/comments/"+single.ID+"/deliveries", map[string]any{
 		"actor": map[string]any{"kind": "session", "id": "s2"}, "delivery": "btw",
@@ -567,7 +612,7 @@ func TestMentionRetrySelectsOneTargetAndReresolvesIt(t *testing.T) {
 		t.Fatalf("bearer retry: status=%d body=%s", bearerRetry.Code, bearerRetry.Body.String())
 	}
 	if attempt := decodeBody[commentDeliveryRead](t, bearerRetry); attempt.Attempt != 3 || attempt.Delivery != "btw" || attempt.State != "sent" {
-		t.Fatalf("bearer retry attempt = %#v", attempt)
+		t.Fatalf("bearer retry attempt = %s", describeAttempts([]commentDeliveryRead{attempt}))
 	}
 
 	multiple := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
@@ -717,8 +762,8 @@ func TestMentionedCommentDoesNotReresolveMissingRoleHolder(t *testing.T) {
 		created.Deliveries[0].ResolveError == nil || *created.Deliveries[0].ResolveError != "no holder for role reviewer" ||
 		len(settled) != 1 || settled[0].SessionID != nil || settled[0].State != "failed" ||
 		settled[0].Error == nil || *settled[0].Error != "no holder for role reviewer" {
-		t.Fatalf("missing-holder mention = lookups by the creation and its send:%d sends:%d comment:%#v attempts:%#v, want the creation's one lookup and one unresolved failed attempt",
-			lookups, sendCount, created, settled)
+		t.Fatalf("missing-holder mention = lookups by the creation and its send:%d sends:%d mentions:%d the creation's attempts:%s attempts:%s, want the creation's one lookup and one unresolved failed attempt",
+			lookups, sendCount, len(created.Mentions), describeAttempts(created.Deliveries), describeAttempts(settled))
 	}
 	events := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/events", nil, "alice")
 	if events.Code != http.StatusOK || !strings.Contains(events.Body.String(), `"suppress_route":false`) {
@@ -1106,7 +1151,8 @@ func TestReplyDuringAMentionSendStillRecordsTheDeliveryReceipt(t *testing.T) {
 	// after the send returns, is what appends the receipt the answered row owes.
 	receipts := awaitCommentDeliveryReceipts(t, database, comment.ID, "session:s1", 1)
 	if replied != 1 {
-		t.Fatalf("the session answered %d times, want exactly one reply from inside the send", replied)
+		t.Fatalf("the session answered %d times, want exactly one reply from inside the send; attempts: %s",
+			replied, describeAttempts(commentAttempts(t, database, comment.ID)))
 	}
 
 	attempt := commentAttemptRow(t, database, comment.ID, "session:s1", 1)

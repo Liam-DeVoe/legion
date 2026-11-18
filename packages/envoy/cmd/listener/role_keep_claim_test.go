@@ -132,16 +132,26 @@ func TestADrainThatEndedBetweenItsForwardAndItsConfirmLeavesTheHolderOneStoredCo
 	defer cancel()
 	claimRoleWith(t, harness, holder, role, entry)
 	var handed []string
+	// forwards is each forward the drains made with its outcome: a drain retries a forward whose
+	// stored copy was not acknowledged within its wait and drops that error once a later walk
+	// succeeds, so this is the only record of why a key was forwarded more often than expected.
+	var forwards []string
 	record := func(cfg listenerDeliveryHandlerConfig, after func()) func(string, contracts.Envelope, string, time.Duration) (func() error, error) {
 		forward := cfg.forwardRole
 		return func(subject string, forwarded contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
 			wait, err := forward(subject, forwarded, msgID, timeout)
 			if err != nil {
+				forwards = append(forwards, fmt.Sprintf("%s: not published: %v", forwarded.DedupeKey, err))
 				return nil, err
 			}
 			return func() error {
 				err := wait()
 				handed = append(handed, forwarded.DedupeKey)
+				outcome := "stored"
+				if err != nil {
+					outcome = err.Error()
+				}
+				forwards = append(forwards, fmt.Sprintf("%s: %s", forwarded.DedupeKey, outcome))
 				after()
 				return err
 			}, nil
@@ -176,7 +186,7 @@ func TestADrainThatEndedBetweenItsForwardAndItsConfirmLeavesTheHolderOneStoredCo
 		t.Fatalf("the next drain of role %s's kept lane: %v", role, err)
 	}
 	if !slices.Equal(handed, []string{key, key}) {
-		t.Fatalf("the two drains forwarded %v, want the one copy under %s forwarded once by each: the copy is not lost, and at most one more is sent", handed, key)
+		t.Fatalf("the two drains forwarded %v, want the one copy under %s forwarded once by each: the copy is not lost, and at most one more is sent; each forward's outcome: %q", handed, key, forwards)
 	}
 
 	first, err := harness.client.NextStoredMessage(ctx, subject, 1)

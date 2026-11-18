@@ -464,7 +464,7 @@ func TestSessionAnswersListsAMention(t *testing.T) {
 	}, "alice")
 	f.publishOutbox(t)
 	if !f.sentCommentDelivery(t, comment, answersSession) {
-		t.Fatal("the mention was not delivered to the session")
+		t.Fatalf("the mention was not delivered to the session; attempts: %s", describeAttempts(commentAttempts(t, f.database, comment)))
 	}
 	if slices.Contains(f.destinations(t, "comment.created", comment), contracts.LegacyAgentSubject(answersSession)) {
 		t.Fatal("the comment also reached the session's own topic; this case is the mention alone (S3)")
@@ -513,7 +513,7 @@ func TestSessionAnswersListsABroadcastCopy(t *testing.T) {
 	copies := map[string]string{}
 	for _, recipient := range awaitBroadcastDeliveries(t, f.handler, decodeBody[broadcastResponse](t, response).ID).Recipients {
 		if len(recipient.Message.Deliveries) != 1 || recipient.Message.Deliveries[0].State != "sent" {
-			t.Fatalf("recipient %s deliveries = %+v, want one sent attempt", recipient.SessionID, recipient.Message.Deliveries)
+			t.Fatalf("recipient %s deliveries = %s, want one sent attempt", recipient.SessionID, describeAttempts(recipient.Message.Deliveries))
 		}
 		copies[recipient.SessionID] = recipient.Message.ID
 	}
@@ -655,7 +655,7 @@ func TestSessionAnswersLeavesAFollowersReplyToTheDeliveredMentionAndListsItOnce(
 	}, "alice")
 	f.publishOutbox(t)
 	if !f.sentCommentDelivery(t, reply, answersSession) {
-		t.Fatal("the mention was not delivered to the session")
+		t.Fatalf("the mention was not delivered to the session; attempts: %s", describeAttempts(commentAttempts(t, f.database, reply)))
 	}
 	if topics := f.destinations(t, "comment.created", reply); slices.Contains(topics, contracts.LegacyAgentSubject(answersSession)) {
 		t.Fatalf("the reply reached %v, want the follower copy left to the delivered mention", topics)
@@ -679,7 +679,7 @@ func TestSessionAnswersListsACommentBothTheRouteAndAMentionHoldOnce(t *testing.T
 		"body": "@answers, the queue is yours.", "mentions": []map[string]any{{"target": "session:" + answersSession}},
 	}, "alice")
 	if !f.sentCommentDelivery(t, comment, answersSession) {
-		t.Fatal("the mention was not delivered to the session")
+		t.Fatalf("the mention was not delivered to the session; attempts: %s", describeAttempts(commentAttempts(t, f.database, comment)))
 	}
 	// At publish time the send is not known to have landed (a receipt timeout records it failed),
 	// so the outbox publishes the route copy to the session's topic.

@@ -137,7 +137,12 @@ func TestAnOutboxStoppedMidBatchMarksTheAnsweredAndReleasesTheRest(t *testing.T)
 	stop()
 
 	if publishedAt(t, database, first.ID) == nil {
-		t.Fatal("the event NATS answered in full was not marked published when the outbox stopped")
+		// The record that runs out while the outbox stops is returned unlogged (publisher.go), so
+		// the row is the only evidence of it: an unrecorded batch leaves no destinations though
+		// NATS answered all three.
+		attempts, failure, destinations := eventState(t, database, first.ID)
+		t.Fatalf("the event NATS answered in full was not marked published when the outbox stopped: "+
+			"attempts %d, publish error %s, published_destinations %v", attempts, publishFailure(failure), destinations)
 	}
 	if publishedAt(t, database, second.ID) != nil {
 		t.Fatal("the event still waiting for its answers was marked published")

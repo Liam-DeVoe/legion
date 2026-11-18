@@ -342,7 +342,13 @@ func TestACommentsMentionFinishesWhenItsClientGivesUp(t *testing.T) {
 			server.Close()
 			served.detached.wait()
 			if state != "sent" || len(keysOf(sends)) != 1 {
-				t.Fatalf("the mention's attempt is %q after %d sends, want it sent once though the client gave up", state, len(keysOf(sends)))
+				var commentID string
+				if err := database.Pool.QueryRow(context.Background(),
+					`select coalesce(min(comment_id::text), '') from comment_deliveries`).Scan(&commentID); err != nil {
+					t.Fatal(err)
+				}
+				t.Fatalf("the mention's attempt is %q after %d sends, want it sent once though the client gave up; attempts: %s",
+					state, len(keysOf(sends)), describeAttempts(commentAttempts(t, database, commentID)))
 			}
 		})
 	}
@@ -392,8 +398,8 @@ func TestTheDeliverySweepLeavesWhatIsNotOwed(t *testing.T) {
 		t.Fatal(err)
 	}
 	if keys := keysOf(sends); !equalStrings(keys, []string{owed + ":steer"}) {
-		t.Fatalf("the sweep sent %v, want only the owed %s (live %s, overtaken %s, unclaimed %s, old %s)",
-			keys, owed, live, overtaken, unclaimed, old)
+		t.Fatalf("the sweep sent %v, want only the owed %s (live %s, overtaken %s, unclaimed %s, old %s); the owed attempts: %s",
+			keys, owed, live, overtaken, unclaimed, old, describeAttempts(messageAttempts(t, database, owed)))
 	}
 }
 
@@ -432,7 +438,7 @@ func TestTheMaintenanceLoopResumesOwedDeliveries(t *testing.T) {
 	<-done
 	served.detached.wait()
 	if keys := keysOf(sends); !equalStrings(keys, []string{id + ":steer"}) {
-		t.Fatalf("the loop sent %v, want the owed attempt of %s", keys, id)
+		t.Fatalf("the loop sent %v, want the owed attempt of %s; attempts: %s", keys, id, describeAttempts(messageAttempts(t, database, id)))
 	}
 }
 
@@ -666,8 +672,10 @@ func TestTheDeliverySweepSettlesWhatItCannotSend(t *testing.T) {
 			t.Fatalf("sweep pass %d: %v", pass+1, err)
 		}
 		if keys := keysOf(sends); !slices.Equal(keys, want) {
-			t.Fatalf("after sweep pass %d the listener was sent %v, want the comment's first send and the closed issue's three attempts %v",
-				pass+1, keys, want)
+			t.Fatalf("after sweep pass %d the listener was sent %v, want the comment's first send and the closed issue's three attempts %v; "+
+				"the closed issue's attempts: mention %s; message %s; keyed send %s",
+				pass+1, keys, want, describeAttempts(commentAttempts(t, database, closedMention)),
+				describeAttempts(messageAttempts(t, database, closedMessage)), describeAttempts(messageAttempts(t, database, closedKeyed)))
 		}
 		if got := settled(); !maps.Equal(got, wantSettled) {
 			t.Fatalf("after sweep pass %d: %v, want %v", pass+1, got, wantSettled)
@@ -733,15 +741,16 @@ func TestTheDeliverySweepSendsTheAttemptItFoundOwed(t *testing.T) {
 		want := slices.Concat(before, []string{comment + ":session:s1:steer"})
 		slices.Sort(want)
 		if keys := keysOf(sends); !equalStrings(keys, want) {
-			t.Fatalf("the sweep sent %v after the comment's own send, want %v: the retry's attempt alone", keys, want)
+			t.Fatalf("the sweep sent %v after the comment's own send, want %v: the retry's attempt alone; attempts: %s",
+				keys, want, describeAttempts(commentAttempts(t, database, comment)))
 		}
 		if states := rig.count(`
 			select count(*) from comment_deliveries
 			where comment_id = $1 and ((attempt, state) = (2, 'sent')
 			  or (attempt, state, error) = (1, 'failed', $2))
 		`, comment, mentionSupersededError); states != 2 {
-			t.Fatalf("after the sweep the attempts are not the retry's sent and the one it overtook " +
-				"settled superseded by it")
+			t.Fatalf("after the sweep the attempts are not the retry's sent and the one it overtook "+
+				"settled superseded by it: %s", describeAttempts(commentAttempts(t, database, comment)))
 		}
 	})
 	t.Run("a message", func(t *testing.T) {
@@ -768,13 +777,15 @@ func TestTheDeliverySweepSendsTheAttemptItFoundOwed(t *testing.T) {
 			t.Fatal(err)
 		}
 		if targets := sends.targets(); !slices.Equal(targets, []string{"s2"}) {
-			t.Fatalf("the sweep sent to %v, want the retry's attempt to s2 alone", targets)
+			t.Fatalf("the sweep sent to %v, want the retry's attempt to s2 alone; attempts: %s",
+				targets, describeAttempts(messageAttempts(t, database, message)))
 		}
 		if states := rig.count(`
 			select count(*) from message_deliveries
 			where message_id = $1 and (attempt, state) in ((1, 'pending'), (2, 'sent'))
 		`, message); states != 2 {
-			t.Fatalf("after the sweep the attempts are not the first pending and the retry's sent")
+			t.Fatalf("after the sweep the attempts are not the first pending and the retry's sent: %s",
+				describeAttempts(messageAttempts(t, database, message)))
 		}
 	})
 }

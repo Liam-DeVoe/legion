@@ -92,6 +92,19 @@ func (r *roleClaimRenewalRig) register(sessionID, instance string) {
 	registerThrough(r.t, r.subscribe, sessionID, instance)
 }
 
+// unrenewed is every "left a role claim unrenewed" line the rig's route logged, each carrying the
+// renewal's error: a registration whose renewal ran out of the request's budget is answered 200
+// all the same, so these lines are the only cause a case can print of a claim left unrenewed.
+func (r *roleClaimRenewalRig) unrenewed() []string {
+	var lines []string
+	for line := range strings.Lines(r.logs.String()) {
+		if strings.Contains(line, "left a role claim unrenewed") {
+			lines = append(lines, strings.TrimSpace(line))
+		}
+	}
+	return lines
+}
+
 // lapsedClaim is the claim a session took an hour ago and has not answered for since, the record
 // each case starts from: a renewal moving it forward is visible against any clock.
 func lapsedClaim(holder, instance string) store.RoleClaim {
@@ -122,8 +135,8 @@ func TestARegistrationRenewsTheClaimsItsOwnProcessHolds(t *testing.T) {
 
 	renewed := rig.stored(role)
 	if renewed.RenewedAt < registered {
-		t.Fatalf("the claim was renewed at %d, want the registration's own moment, %d or later (it was claimed at %d)",
-			renewed.RenewedAt, registered, seeded.ClaimedAt)
+		t.Fatalf("the claim was renewed at %d, want the registration's own moment, %d or later (it was claimed at %d); the route logged %q",
+			renewed.RenewedAt, registered, seeded.ClaimedAt, rig.unrenewed())
 	}
 	if renewed.HolderSessionID != seeded.HolderSessionID || renewed.ClaimedAt != seeded.ClaimedAt ||
 		renewed.PreviousSessionID != seeded.PreviousSessionID || renewed.ClientInstanceID != seeded.ClientInstanceID {
@@ -149,10 +162,12 @@ func TestAnAdoptingRegistrationNamesItsProcessOnAClaimThatNamesNone(t *testing.T
 
 	adopted := rig.stored(role)
 	if adopted.ClientInstanceID != holdingProcess {
-		t.Fatalf("the adopted claim names the process %q, want the registering process %q", adopted.ClientInstanceID, holdingProcess)
+		t.Fatalf("the adopted claim names the process %q, want the registering process %q; the route logged %q",
+			adopted.ClientInstanceID, holdingProcess, rig.unrenewed())
 	}
 	if adopted.RenewedAt < registered {
-		t.Fatalf("the adopted claim was renewed at %d, want the registration's own moment, %d or later", adopted.RenewedAt, registered)
+		t.Fatalf("the adopted claim was renewed at %d, want the registration's own moment, %d or later; the route logged %q",
+			adopted.RenewedAt, registered, rig.unrenewed())
 	}
 	if adopted.HolderSessionID != seeded.HolderSessionID || adopted.ClaimedAt != seeded.ClaimedAt || adopted.PreviousSessionID != seeded.PreviousSessionID {
 		t.Fatalf("the adopted claim is %+v, want %+v with its process and renewal alone written", adopted, seeded)
@@ -217,14 +232,8 @@ func TestARegistrationOfTheLargestShapeInProductionStillRenewsItsClaim(t *testin
 	}
 	adopted := rig.stored(role)
 	if adopted.ClientInstanceID != holdingProcess || adopted.RenewedAt < registered.UnixMilli() {
-		var unrenewed []string
-		for line := range strings.Lines(rig.logs.String()) {
-			if strings.Contains(line, "left a role claim unrenewed") {
-				unrenewed = append(unrenewed, strings.TrimSpace(line))
-			}
-		}
 		t.Fatalf("the claim is now %+v, want %+v adopted by the registering process %q and renewed at the registration, %d or later; the route logged %q",
-			adopted, seeded, holdingProcess, registered.UnixMilli(), unrenewed)
+			adopted, seeded, holdingProcess, registered.UnixMilli(), rig.unrenewed())
 	}
 }
 
@@ -270,7 +279,8 @@ func TestARegistrationWhoseRoleClaimViewCannotAnswerRenewsTheClaimItsRowNames(t 
 
 	stored := rig.stored(role)
 	if stored.RenewedAt <= seeded.RenewedAt || stored.HolderSessionID != sessionID || stored.ClientInstanceID != holdingProcess {
-		t.Fatalf("the claim is now %+v, want %+v renewed by the registration: its row names the role", stored, seeded)
+		t.Fatalf("the claim is now %+v, want %+v renewed by the registration: its row names the role; the route logged %q",
+			stored, seeded, rig.unrenewed())
 	}
 	if strings.Contains(rig.logs.String(), "left a role claim unrenewed") {
 		t.Fatalf("the route logged a renewal failure for a view that cannot answer:\n%s", rig.logs.String())
@@ -324,7 +334,8 @@ func TestARegistrationWhoseRenewalLosesItsCompareAndSwapStillRegisters(t *testin
 	rig.register(sessionID, holdingProcess)
 
 	if racing.updates != 1 {
-		t.Fatalf("the renewal made %d conditional updates, want exactly one: a lost renewal is never retried", racing.updates)
+		t.Fatalf("the renewal made %d conditional updates, want exactly one: a lost renewal is never retried; the route logged %q",
+			racing.updates, rig.unrenewed())
 	}
 	stored := rig.stored(role)
 	stored.Revision = 0

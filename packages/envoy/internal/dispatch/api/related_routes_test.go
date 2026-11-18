@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -29,12 +31,33 @@ func relatedWrites(t *testing.T, database *store.Store) map[string]int {
 	return counts
 }
 
-// expectNothingWritten fails when any count relatedWrites reads moved from before.
+// expectNothingWritten fails when any count relatedWrites reads moved from before, and names the
+// related_checks and write_suggestions rows written since: a create before the read records its
+// check behind its answer and again on a retry when the first attempt runs past its 1 s bound
+// (retryRecord, suggestions.go), so a row whose source is an issue the test created earlier is
+// that record landing late, and not the no-write route writing.
 func expectNothingWritten(t *testing.T, database *store.Store, before map[string]int) {
 	t.Helper()
-	if after := relatedWrites(t, database); fmt.Sprint(after) != fmt.Sprint(before) {
-		t.Fatalf("row counts went from %v to %v, want the no-write route to write nothing", before, after)
+	after := relatedWrites(t, database)
+	if fmt.Sprint(after) == fmt.Sprint(before) {
+		return
 	}
+	var written []string
+	for _, table := range []string{"related_checks", "write_suggestions"} {
+		rows, err := database.Pool.Query(context.Background(), `
+			select source_kind || ' of ' || coalesce(source_issue_key, 'no issue') || ' at ' || created_at::text
+			from `+table+` order by created_at desc limit $1`, max(after[table]-before[table], 0))
+		if err != nil {
+			t.Fatalf("read the newest %s rows: %v", table, err)
+		}
+		newest, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			t.Fatalf("read the newest %s rows: %v", table, err)
+		}
+		written = append(written, fmt.Sprintf("%s wrote %q", table, newest))
+	}
+	t.Fatalf("row counts went from %v to %v, want the no-write route to write nothing; the rows written since, newest first: %s",
+		before, after, strings.Join(written, "; "))
 }
 
 // getRelated GETs the no-write route with params, failing unless it answers 200.
@@ -126,18 +149,19 @@ func TestRelatedRouteExcludeIssueLeavesItsOwnItemsOut(t *testing.T) {
 	before := relatedWrites(t, database)
 
 	params := url.Values{"title": {"Zymurgy ledger"}}
-	if owners := relatedOwners(getRelated(t, handler, "REXCL", params)); !slices.Contains(owners, excluded) {
-		t.Fatalf("related owners without exclude_issue = %v, want %s among them", owners, excluded)
+	if unfiltered := getRelated(t, handler, "REXCL", params); !slices.Contains(relatedOwners(unfiltered), excluded) {
+		t.Fatalf("related owners without exclude_issue = %v, want %s among them; suggestions = %s",
+			relatedOwners(unfiltered), excluded, wholeSuggestions(unfiltered))
 	}
 	params.Set("exclude_issue", excluded)
 	suggestions := getRelated(t, handler, "REXCL", params)
 	for _, item := range suggestions.Related {
 		if item.Owner.Key == excluded || item.ID == excluded {
-			t.Fatalf("related = %+v, want nothing of %s", suggestions.Related, excluded)
+			t.Fatalf("suggestions = %s, want nothing of %s", wholeSuggestions(suggestions), excluded)
 		}
 	}
 	if !slices.Contains(relatedOwners(suggestions), other) {
-		t.Fatalf("related owners = %v, want %s", relatedOwners(suggestions), other)
+		t.Fatalf("related owners = %v, want %s; suggestions = %s", relatedOwners(suggestions), other, wholeSuggestions(suggestions))
 	}
 	expectNothingWritten(t, database, before)
 

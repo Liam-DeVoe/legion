@@ -150,7 +150,7 @@ func TestPendingRoleMentionRetryKeepsTheCreateTimeHolder(t *testing.T) {
 		t.Fatalf("retry pending role mention: status=%d body=%s", retry.Code, retry.Body.String())
 	}
 	if attempt := decodeBody[commentDeliveryRead](t, retry); attempt.Attempt != 1 || attempt.SessionID == nil || *attempt.SessionID != "s1" || attempt.State != "sent" {
-		t.Fatalf("pending role retry attempt = %#v, want original-holder attempt 1", attempt)
+		t.Fatalf("pending role retry attempt = %s, want original-holder attempt 1", describeAttempts([]commentDeliveryRead{attempt}))
 	}
 	if lookups, sessionReads, sent := registry.answered(); lookups != 0 || sessionReads != 1 || len(sent) != 1 ||
 		sent[0]["target_session"] != "s1" {
@@ -244,7 +244,7 @@ func TestStrandedAttemptRetriedDuringAListenerOutageKeepsThePinAndAcceptsTheRepl
 	}
 	attempt := decodeBody[commentDeliveryRead](t, retry)
 	if attempt.Attempt != 2 || attempt.State != "failed" || attempt.SessionID == nil || *attempt.SessionID != "s1" {
-		t.Fatalf("attempt settled during the outage = %#v, want the pin kept on a failed attempt", attempt)
+		t.Fatalf("attempt settled during the outage = %s, want the pin kept on a failed attempt", describeAttempts([]commentDeliveryRead{attempt}))
 	}
 
 	// The receipt that settle appended says what its row says, the session holding the frame
@@ -317,7 +317,7 @@ func TestStrandedRoleAttemptRetriedDuringAnOutageKeepsThePinAndRefusesTheNewHold
 	}
 	attempt := decodeBody[commentDeliveryRead](t, retry)
 	if attempt.Attempt != 1 || attempt.State != "failed" || attempt.SessionID == nil || *attempt.SessionID != "s1" {
-		t.Fatalf("attempt settled during the outage = %#v, want the pin on s1 kept", attempt)
+		t.Fatalf("attempt settled during the outage = %s, want the pin on s1 kept", describeAttempts([]commentDeliveryRead{attempt}))
 	}
 	// "no live session" is what a listener take-over answers too, so the retry rechecks the pin
 	// on every try of the take-over window before it settles; each read is of s1 itself.
@@ -403,7 +403,7 @@ func TestPendingMentionRetryKeepsItsOriginalDeliveryMode(t *testing.T) {
 		t.Fatalf("complete pending BTW attempt: status=%d body=%s", completePending.Code, completePending.Body.String())
 	}
 	if attempt := decodeBody[commentDeliveryRead](t, completePending); attempt.Attempt != 1 || attempt.Delivery != "btw" || attempt.State != "sent" {
-		t.Fatalf("completed pending attempt = %#v, want the stored BTW attempt", attempt)
+		t.Fatalf("completed pending attempt = %s, want the stored BTW attempt", describeAttempts([]commentDeliveryRead{attempt}))
 	}
 	if len(sentModes) != 1 || sentModes[0] != "btw" {
 		t.Fatalf("completed pending modes = %#v, want [btw]", sentModes)
@@ -459,7 +459,7 @@ func TestPendingMentionRetryRechecksCapabilityAgainstCurrentRegistration(t *test
 		"body": "Created while steer was advertised.", "mentions": []map[string]any{{"target": "session:s1"}}, "delivery": "steer",
 	}))
 	if settled := settledCommentDeliveries(t, database, comment.ID); len(settled) != 1 || settled[0].State != "sent" {
-		t.Fatalf("initial delivery = %#v, want sent", settled)
+		t.Fatalf("initial delivery = %s, want sent", describeAttempts(settled))
 	}
 	if _, err := database.Pool.Exec(context.Background(), `
 		update comment_deliveries set state = 'pending', envelope_id = null, error = null, claimed_at = null
@@ -478,7 +478,8 @@ func TestPendingMentionRetryRechecksCapabilityAgainstCurrentRegistration(t *test
 	attempt := decodeBody[commentDeliveryRead](t, retry)
 	if attempt.Attempt != 1 || attempt.State != "failed" || attempt.Error == nil ||
 		*attempt.Error != "session s1 (planner) does not advertise steer" || sends != 0 {
-		t.Fatalf("pending retry reused stale capability: session reads=%d sends=%d attempt=%#v", sessionReads, sends, attempt)
+		t.Fatalf("pending retry reused stale capability: session reads=%d sends=%d attempt=%s",
+			sessionReads, sends, describeAttempts([]commentDeliveryRead{attempt}))
 	}
 }
 
@@ -524,12 +525,13 @@ func TestInitialCommentDeliveryRechecksCapabilityAgainstCurrentRegistration(t *t
 	}))
 	settled := settledCommentDeliveries(t, database, comment.ID)
 	if len(settled) != 1 {
-		t.Fatalf("deliveries = %#v, want one", settled)
+		t.Fatalf("deliveries = %s, want one", describeAttempts(settled))
 	}
 	attempt := settled[0]
 	if attempt.State != "failed" || attempt.Error == nil ||
 		*attempt.Error != "session s1 (planner) does not advertise steer" || sends != 0 {
-		t.Fatalf("initial delivery reused stale capability: session reads=%d sends=%d attempt=%#v", sessionReads, sends, attempt)
+		t.Fatalf("initial delivery reused stale capability: session reads=%d sends=%d attempt=%s",
+			sessionReads, sends, describeAttempts([]model.CommentDelivery{attempt}))
 	}
 }
 
@@ -563,7 +565,7 @@ func TestPendingUnresolvedMentionRetryKeepsTheOriginalError(t *testing.T) {
 	}))
 	if settled := settledCommentDeliveries(t, database, comment.ID); len(settled) != 1 || settled[0].Error == nil ||
 		*settled[0].Error != "no holder for role reviewer" {
-		t.Fatalf("initial unresolved delivery = %#v", settled)
+		t.Fatalf("initial unresolved delivery = %s", describeAttempts(settled))
 	}
 	if _, err := database.Pool.Exec(context.Background(), `
 		update comment_deliveries set state = 'pending', envelope_id = null, error = null, claimed_at = null
@@ -589,7 +591,7 @@ func TestPendingUnresolvedMentionRetryKeepsTheOriginalError(t *testing.T) {
 	if attempt := decodeBody[commentDeliveryRead](t, retry); attempt.Attempt != 1 || attempt.SessionID != nil ||
 		attempt.Delivery != "steer" || attempt.State != "failed" || attempt.Error == nil ||
 		*attempt.Error != "no holder for role reviewer" {
-		t.Fatalf("pending unresolved retry = %#v, want the original failed resolution", attempt)
+		t.Fatalf("pending unresolved retry = %s, want the original failed resolution", describeAttempts([]commentDeliveryRead{attempt}))
 	}
 	if roleLookups != 0 || sends != 0 {
 		t.Fatalf("pending unresolved retry = lookups:%d sends:%d, want no fresh decisions or sends", roleLookups, sends)

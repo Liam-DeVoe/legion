@@ -219,7 +219,9 @@ func TestAResumedMentionOfARoutedCommentReachesTheRouteHolderOnce(t *testing.T) 
 	for _, comment := range comments {
 		if mentionSends, routeSends := heard(comment); mentionSends != 0 || routeSends != 1 {
 			t.Fatalf("comment %s reached s1 by %d mention send(s) and %d route fan-out(s), want the route alone: "+
-				"its mention's resolution ran the take-over window out before the commit", comment.ID, mentionSends, routeSends)
+				"its mention's resolution ran the take-over window out before the commit; the create's attempt: %s; "+
+				"the attempts stored now: %s; the listener served: %s", comment.ID, mentionSends, routeSends,
+				describeAttempts(comment.Deliveries), describeAttempts(commentAttempts(t, database, comment.ID)), &listener.lookups)
 		}
 	}
 

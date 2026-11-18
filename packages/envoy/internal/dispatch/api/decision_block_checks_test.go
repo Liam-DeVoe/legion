@@ -80,6 +80,25 @@ func readDecisionBlockRows(t *testing.T, database *store.Store) []decisionBlockR
 	return found
 }
 
+// decisionBlockRowsRead is rows as a test read them, each as "<block> <outcome> on <issue or
+// document> reason <reason> by <actor>", beside the rows read again once srv's detached work has
+// ended. A check's record whose first attempt runs past its 1 s bound (relatedRecordTimeout) is
+// written by a retry behind the edit's answer (retryRecord, suggestions.go), so a row there only
+// after the wait is that record landing late, and not a check that was never recorded.
+func decisionBlockRowsRead(t *testing.T, srv *server, database *store.Store, rows []decisionBlockRow) string {
+	t.Helper()
+	describe := func(rows []decisionBlockRow) string {
+		described := make([]string, len(rows))
+		for index, row := range rows {
+			described[index] = fmt.Sprintf("%s %s on issue %s document %s reason %s by %s", row.BlockID, row.Outcome,
+				describeOptionalString(row.IssueKey), describeOptionalString(row.ArtifactID), describeOptionalString(row.Reason), row.ActorID)
+		}
+		return "[" + strings.Join(described, "; ") + "]"
+	}
+	awaitBackgroundWrites(t, srv)
+	return describe(rows) + "; once the server's detached work had ended: " + describe(readDecisionBlockRows(t, database))
+}
+
 // suggestedOwnerKeys is the issue each related item of suggestions stands for.
 func suggestedOwnerKeys(suggestions *model.Suggestions) []string {
 	if suggestions == nil {
@@ -102,7 +121,7 @@ func insertAtEnd(markdown string) map[string]any {
 // issue. An edit after it that adds no block - plain text, a reworded block - answers no check.
 func TestDecisionBlockCheckAnswersTheEditsNewBlock(t *testing.T) {
 	t.Parallel()
-	handler, database, _ := newTestServer(t, testServerOptions{})
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "DBLK")
 	target := createSearchIssue(t, handler, "DBLK", "Dashboard ledger for zymurgy batches", "")
 	spec := "# Spec\n\nPlanning notes.\n"
@@ -128,7 +147,7 @@ func TestDecisionBlockCheckAnswersTheEditsNewBlock(t *testing.T) {
 	rows := readDecisionBlockRows(t, database)
 	if len(rows) != 1 || rows[0].BlockID != "rounding" || rows[0].IssueKey == nil || *rows[0].IssueKey != issue.Key ||
 		rows[0].ArtifactID != nil || rows[0].Outcome != "found" || rows[0].ActorID != "alice" {
-		t.Fatalf("decision block rows = %+v, want one found check of rounding on %s", rows, issue.Key)
+		t.Fatalf("decision block rows = %s, want one found check of rounding on %s", decisionBlockRowsRead(t, served, database, rows), issue.Key)
 	}
 
 	for name, body := range map[string]map[string]any{
@@ -151,7 +170,7 @@ func TestDecisionBlockCheckAnswersTheEditsNewBlock(t *testing.T) {
 // sixth that its check was not made, recording that too.
 func TestDecisionBlockChecksPastFiveAreNotMade(t *testing.T) {
 	t.Parallel()
-	handler, database, _ := newTestServer(t, testServerOptions{})
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "SIX")
 	createSearchIssue(t, handler, "SIX", "Dashboard ledger for zymurgy batches", "")
 	spec := "# Spec\n\nPlanning notes.\n"
@@ -184,7 +203,7 @@ func TestDecisionBlockChecksPastFiveAreNotMade(t *testing.T) {
 	}
 	rows := readDecisionBlockRows(t, database)
 	if len(rows) != 6 {
-		t.Fatalf("decision block rows = %+v, want six", rows)
+		t.Fatalf("decision block rows = %s, want six", decisionBlockRowsRead(t, served, database, rows))
 	}
 	var tooMany []string
 	for _, row := range rows {
@@ -276,7 +295,7 @@ func TestDecisionBlockCheckDoesNotHoldTheConditionalEditGate(t *testing.T) {
 // against that document.
 func TestDecisionBlockCheckOnAProjectDocumentLeavesTheDocumentOut(t *testing.T) {
 	t.Parallel()
-	handler, database, _ := newTestServer(t, testServerOptions{})
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "PDBL")
 	target := createSearchIssue(t, handler, "PDBL", "Dashboard ledger for zymurgy batches", "")
 	upload := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects/PDBL/artifacts", map[string]string{
@@ -309,7 +328,7 @@ func TestDecisionBlockCheckOnAProjectDocumentLeavesTheDocumentOut(t *testing.T) 
 	rows := readDecisionBlockRows(t, database)
 	if len(rows) != 1 || rows[0].IssueKey != nil || rows[0].ArtifactID == nil || *rows[0].ArtifactID != document ||
 		rows[0].BlockID != "rounding" || rows[0].Outcome != "found" {
-		t.Fatalf("decision block rows = %+v, want one found check of rounding on the document %s", rows, document)
+		t.Fatalf("decision block rows = %s, want one found check of rounding on the document %s", decisionBlockRowsRead(t, served, database, rows), document)
 	}
 }
 
@@ -322,7 +341,7 @@ func TestDecisionBlockCheckOnAProjectDocumentLeavesTheDocumentOut(t *testing.T) 
 // state and its cursor stays open over several network reads, which is when the others collided.
 func TestDecisionBlockChecksEachReadTheirAskStatesAndRecord(t *testing.T) {
 	t.Parallel()
-	handler, database, _ := newTestServer(t, testServerOptions{})
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "RACE")
 	const shared = " For the aerostat programme."
 	blocks := []struct{ id, title, asked, restated string }{
@@ -373,15 +392,16 @@ func TestDecisionBlockChecksEachReadTheirAskStatesAndRecord(t *testing.T) {
 			}
 		}
 		if !listed {
-			t.Fatalf("block %s: related = %+v, want the ask %s listed with its answered state", block.id, check.Suggestions.Related, asks[block.id])
+			t.Fatalf("block %s: suggestions = %s, want the ask %s listed with its answered state", block.id, wholeSuggestions(check.Suggestions), asks[block.id])
 		}
 	}
+	rows := readDecisionBlockRows(t, database)
 	var recorded []string
-	for _, row := range readDecisionBlockRows(t, database) {
+	for _, row := range rows {
 		recorded = append(recorded, row.BlockID)
 	}
 	slices.Sort(recorded)
 	if want := []string{"fjord", "hangar", "harbour", "lacquer", "pilot"}; !slices.Equal(recorded, want) {
-		t.Fatalf("recorded decision blocks = %v, want %v", recorded, want)
+		t.Fatalf("recorded decision blocks = %v, want %v; the rows: %s", recorded, want, decisionBlockRowsRead(t, served, database, rows))
 	}
 }

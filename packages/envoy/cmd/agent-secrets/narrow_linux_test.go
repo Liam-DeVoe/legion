@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -36,9 +37,15 @@ import (
 // not the JSON object of installations, minted with the access_tokens body of that narrowing.
 func TestTheExecFormReleasesANarrowedGitHubAppTokenEndToEnd(t *testing.T) {
 	t.Parallel()
-	type tokenRequest struct{ installation, body string }
+	// tokenRequest is one access_tokens request the stub received, with when it arrived and when
+	// its answer was written: a repeat sent after an answer that took longer than the broker's
+	// mintAttemptTimeout (secrets/retry.go, 5 s) is the broker's retry of an attempt it cut.
+	type tokenRequest struct {
+		installation, body string
+		arrived, answered  time.Time
+	}
 	var mu sync.Mutex
-	var asked []tokenRequest
+	var asked []*tokenRequest
 	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/app/installations":
@@ -49,9 +56,15 @@ func TestTheExecFormReleasesANarrowedGitHubAppTokenEndToEnd(t *testing.T) {
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/access_tokens"):
 			body, _ := io.ReadAll(r.Body)
 			id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/app/installations/"), "/access_tokens")
+			seen := &tokenRequest{installation: id, body: string(body), arrived: time.Now()}
 			mu.Lock()
-			asked = append(asked, tokenRequest{id, string(body)})
+			asked = append(asked, seen)
 			mu.Unlock()
+			defer func() {
+				mu.Lock()
+				seen.answered = time.Now()
+				mu.Unlock()
+			}()
 			var narrowing struct {
 				Repositories []string          `json:"repositories"`
 				Permissions  map[string]string `json:"permissions"`
@@ -86,10 +99,27 @@ func TestTheExecFormReleasesANarrowedGitHubAppTokenEndToEnd(t *testing.T) {
 		}
 	}))
 	t.Cleanup(github.Close)
+	// describeTokens renders what take returns for a failure message: each request's installation,
+	// its body, when it arrived and how long its answer took.
+	describeTokens := func(tokens []tokenRequest) string {
+		described := make([]string, len(tokens))
+		for index, token := range tokens {
+			answer := "not answered yet"
+			if !token.answered.IsZero() {
+				answer = "answered after " + token.answered.Sub(token.arrived).String()
+			}
+			described[index] = fmt.Sprintf("{installation %s body %q arrived %s, %s}",
+				token.installation, token.body, token.arrived.Format(time.RFC3339Nano), answer)
+		}
+		return "[" + strings.Join(described, " ") + "]"
+	}
 	take := func() []tokenRequest {
 		mu.Lock()
 		defer mu.Unlock()
-		got := asked
+		got := make([]tokenRequest, len(asked))
+		for index, seen := range asked {
+			got[index] = *seen
+		}
 		asked = nil
 		return got
 	}
@@ -147,7 +177,7 @@ func TestTheExecFormReleasesANarrowedGitHubAppTokenEndToEnd(t *testing.T) {
 	}
 	tokens := take()
 	if len(tokens) != 1 || tokens[0].installation != "8" {
-		t.Fatalf("GitHub was asked for tokens %+v, want installation 8's alone", tokens)
+		t.Fatalf("GitHub was asked for tokens %s, want installation 8's alone; the release's stderr %q", describeTokens(tokens), stderr)
 	}
 	var body map[string]any
 	if err := json.Unmarshal([]byte(tokens[0].body), &body); err != nil {
@@ -162,7 +192,7 @@ func TestTheExecFormReleasesANarrowedGitHubAppTokenEndToEnd(t *testing.T) {
 		t.Fatalf("owner-wide release of the same grant: exit %d, installations %+v, stderr %q; want acme's and ada's owner-wide tokens", exit, installations, stderr)
 	}
 	if tokens := take(); len(tokens) != 2 || tokens[0].body != "" || tokens[1].body != "" {
-		t.Fatalf("GitHub was asked for tokens %+v, want two with no body", tokens)
+		t.Fatalf("GitHub was asked for tokens %s, want two with no body; the release's stderr %q", describeTokens(tokens), stderr)
 	}
 
 	_, stderr, exit = release("--github-owner", "outsider", "--github-read-only")
@@ -170,7 +200,7 @@ func TestTheExecFormReleasesANarrowedGitHubAppTokenEndToEnd(t *testing.T) {
 		t.Fatalf("release narrowed to an unlisted owner: exit %d, stderr %q; want exit 1 and NARROWING_OWNER_NOT_LISTED naming github-owners", exit, stderr)
 	}
 	if tokens := take(); len(tokens) != 0 {
-		t.Fatalf("GitHub was asked for tokens %+v for an unlisted owner, want none", tokens)
+		t.Fatalf("GitHub was asked for tokens %s for an unlisted owner, want none", describeTokens(tokens))
 	}
 
 	_, stderr, exit = release("--github-owner", "ada", "--github-repo", "missing")
@@ -178,7 +208,7 @@ func TestTheExecFormReleasesANarrowedGitHubAppTokenEndToEnd(t *testing.T) {
 		t.Fatalf("release narrowed to a repository GitHub refuses: exit %d, stderr %q; want exit 1 and NARROWING_REFUSED naming the repository", exit, stderr)
 	}
 	if tokens := take(); len(tokens) != 1 || tokens[0].installation != "8" {
-		t.Fatalf("GitHub was asked for tokens %+v, want installation 8's alone", tokens)
+		t.Fatalf("GitHub was asked for tokens %s, want installation 8's alone; the release's stderr %q", describeTokens(tokens), stderr)
 	}
 
 	// --github-token is no narrowing: the broker releases the same one installation, and the exec
@@ -194,7 +224,7 @@ func TestTheExecFormReleasesANarrowedGitHubAppTokenEndToEnd(t *testing.T) {
 	}
 	tokens = take()
 	if len(tokens) != 1 || tokens[0].installation != "8" {
-		t.Fatalf("GitHub was asked for tokens %+v, want installation 8's alone", tokens)
+		t.Fatalf("GitHub was asked for tokens %s, want installation 8's alone; the release's stderr %q", describeTokens(tokens), stderr)
 	}
 	var tokenBody map[string]any
 	if err := json.Unmarshal([]byte(tokens[0].body), &tokenBody); err != nil {

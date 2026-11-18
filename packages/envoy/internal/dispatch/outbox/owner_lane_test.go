@@ -74,7 +74,7 @@ func TestAnOwnerOfTheStalledHoldersBatchIsReleasedBeforeTheBatchEnds(t *testing.
 	stalled := rig.receiver(t, stalledHolder)
 	live := rig.receiver(t, liveHolder)
 	held := rig.routedEvent(t, "T-1", stalledRole, alice)
-	rig.routedEvent(t, "T-2", liveRole, alice)
+	liveFirst := rig.routedEvent(t, "T-2", liveRole, alice)
 
 	deps := rig.deps()
 	deps.Listen = rig.database.Pool.Listener
@@ -113,9 +113,15 @@ func TestAnOwnerOfTheStalledHoldersBatchIsReleasedBeforeTheBatchEnds(t *testing.
 		t.Logf("the live holder received its issue's later forward %s after its commit",
 			time.Since(committed).Round(time.Millisecond))
 	case <-time.After(hangGuard):
+		// An early settle whose record failed keeps that error in the batch, logged only when the
+		// batch returns after the stalled forward's wait, so the rows are what the test can print.
+		_, heldState := settledState(t, rig.database, held.ID)
+		_, liveState := settledState(t, rig.database, liveFirst.ID)
+		_, _, liveDestinations := eventState(t, rig.database, liveFirst.ID)
 		t.Fatalf("the live holder never received its issue's later forward within %s, while the "+
 			"stalled holder's %s acknowledgement wait was still running: the owner was held in "+
-			"flight until its batch ended", hangGuard, stalledForwardWait)
+			"flight until its batch ended; the stalled holder's event %d: %s; the live holder's first event %d: %s, published_destinations %v",
+			hangGuard, stalledForwardWait, held.ID, heldState, liveFirst.ID, liveState, liveDestinations)
 	}
 }
 

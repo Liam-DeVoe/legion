@@ -2657,7 +2657,9 @@ func TestTheSenderStampReadsAnInterestTheCacheMissedThroughToTheBucket(t *testin
 			state := &listenerDeps{client: client, registry: registry, sessions: sessions}
 
 			recorder := httptest.NewRecorder()
+			started := time.Now()
 			route.handler(state).ServeHTTP(recorder, postJSON(route.path, sendBody(route.body)))
+			elapsed := time.Since(started)
 			if recorder.Code != http.StatusOK {
 				t.Fatalf("%s: status %d, body %s; want 200", route.name, recorder.Code, recorder.Body.String())
 			}
@@ -2666,7 +2668,8 @@ func TestTheSenderStampReadsAnInterestTheCacheMissedThroughToTheBucket(t *testin
 				t.Fatalf("decode the %s response %s: %v", route.name, recorder.Body.String(), err)
 			}
 			if response.Sender == nil || response.Sender.SessionID != sender || response.Sender.Machine != "test-machine" || response.Sender.Cwd != "/test/"+sender {
-				t.Fatalf("sender = %+v, want %s on test-machine in /test/%s", response.Sender, sender, sender)
+				t.Fatalf("sender = %+v, want %s on test-machine in /test/%s; the %s answered %s after %s of the stamp's %s window (a read-through it did not answer is logged at WARN)",
+					response.Sender, sender, sender, route.name, recorder.Body.String(), elapsed, senderStampReadTimeout)
 			}
 		})
 	}
@@ -2746,7 +2749,9 @@ func TestTheSenderStampReadsATitleTheCacheMissedThroughToTheBucket(t *testing.T)
 				title  string
 			}{{sender: sender, title: title}, {sender: untitled}} {
 				recorder := httptest.NewRecorder()
+				started := time.Now()
 				route.handler(state).ServeHTTP(recorder, postJSON(route.path, sendBody(route.body(want.sender))))
+				elapsed := time.Since(started)
 				if recorder.Code != http.StatusOK {
 					t.Fatalf("%s from %s: status %d, body %s; want 200", route.name, want.sender, recorder.Code, recorder.Body.String())
 				}
@@ -2755,7 +2760,8 @@ func TestTheSenderStampReadsATitleTheCacheMissedThroughToTheBucket(t *testing.T)
 					t.Fatalf("decode the %s response %s: %v", route.name, recorder.Body.String(), err)
 				}
 				if response.Sender == nil || response.Sender.SessionID != want.sender || response.Sender.Title != want.title {
-					t.Fatalf("sender = %+v, want %s carrying the title %q the bucket holds", response.Sender, want.sender, want.title)
+					t.Fatalf("sender = %+v, want %s carrying the title %q the bucket holds; the %s answered %s after %s of the stamp's %s window (a read-through it did not answer is logged at WARN)",
+						response.Sender, want.sender, want.title, route.name, recorder.Body.String(), elapsed, senderStampReadTimeout)
 				}
 			}
 		})

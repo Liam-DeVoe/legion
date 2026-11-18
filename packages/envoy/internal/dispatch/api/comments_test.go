@@ -29,7 +29,8 @@ func TestMentionedCommentDeliversAndProjectsResolvedMention(t *testing.T) {
 	t.Parallel()
 	sent := []map[string]any{}
 	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["aside","btw","steer"]}]`
-	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	lookups := &listenerLookups{}
+	listener := httptest.NewServer(lookups.recording(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/registry/s1":
 			writeSessionRecord(t, w, sessions, "s1")
@@ -45,7 +46,7 @@ func TestMentionedCommentDeliversAndProjectsResolvedMention(t *testing.T) {
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
-	}))
+	})))
 	defer listener.Close()
 	handler, database := newTargetedMessageHandler(t, listener.URL)
 	issue := createInteractionIssue(t, handler, "TEST", "Comment mentions", "before")
@@ -74,7 +75,8 @@ func TestMentionedCommentDeliversAndProjectsResolvedMention(t *testing.T) {
 	if len(created.Mentions) != 1 || created.Mentions[0].Target != "session:s1" ||
 		created.Mentions[0].Delivery != "steer" || created.Mentions[0].SessionID == nil ||
 		*created.Mentions[0].SessionID != "s1" {
-		t.Fatalf("created mentions = %#v, want the resolved default-steer session mention", created.Mentions)
+		t.Fatalf("the create answered %s, want its mention resolved to s1 with the default steer; the listener served: %s",
+			response.Body.String(), lookups)
 	}
 	if len(created.Deliveries) != 1 || created.Deliveries[0].Target != "session:s1" ||
 		created.Deliveries[0].State != "pending" {
@@ -82,10 +84,11 @@ func TestMentionedCommentDeliversAndProjectsResolvedMention(t *testing.T) {
 	}
 	if settled := settledCommentDeliveries(t, database, created.ID); len(settled) != 1 ||
 		settled[0].Target != "session:s1" || settled[0].State != "sent" {
-		t.Fatalf("settled deliveries = %#v, want one sent session:s1 attempt", settled)
+		t.Fatalf("settled deliveries = %s, want one sent session:s1 attempt", describeAttempts(settled))
 	}
 	if len(sent) != 1 {
-		t.Fatalf("listener sends = %#v, want exactly one mention delivery", sent)
+		t.Fatalf("listener sends = %#v, want exactly one mention delivery; attempts: %s",
+			sent, describeAttempts(commentAttempts(t, database, created.ID)))
 	}
 	frame, ok := sent[0]["payload"].(string)
 	if !ok {
@@ -118,7 +121,7 @@ func TestMentionedCommentDeliversAndProjectsResolvedMention(t *testing.T) {
 		*delivered.Event.Payload.Mentions[0].SessionID != "s1" || delivered.Delivery.Attempt != 1 ||
 		delivered.Delivery.Mode != "steer" || delivered.Delivery.Comment != created.ID ||
 		delivered.Delivery.Target != "session:s1" {
-		t.Fatalf("mention delivery frame = %#v", delivered)
+		t.Fatalf("mention delivery frame = %s; the create answered %s; the listener served: %s", frame, response.Body.String(), lookups)
 	}
 
 	reloaded := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/comments", nil, "alice")

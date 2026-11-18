@@ -328,7 +328,8 @@ func TestTheThreadReadsAreUnchangedByTheAnswersColumn(t *testing.T) {
 func TestADeliveryCallbackReplyAnswersTheCommentItWasHanded(t *testing.T) {
 	t.Parallel()
 	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["btw","steer"]}]`
-	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	lookups := &listenerLookups{}
+	listener := httptest.NewServer(lookups.recording(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/registry/s1":
 			writeSessionRecord(t, w, sessions, "s1")
@@ -339,9 +340,9 @@ func TestADeliveryCallbackReplyAnswersTheCommentItWasHanded(t *testing.T) {
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
-	}))
+	})))
 	defer listener.Close()
-	handler, _ := newTargetedMessageHandler(t, listener.URL)
+	handler, database := newTargetedMessageHandler(t, listener.URL)
 	issue := createInteractionIssue(t, handler, "TEST", "A callback's reply", "before")
 
 	root := createThreadComment(t, handler, issue.Key, map[string]any{"body": "The root."}, "alice")
@@ -355,7 +356,8 @@ func TestADeliveryCallbackReplyAnswersTheCommentItWasHanded(t *testing.T) {
 		"actor": map[string]any{"kind": "session", "id": "s1"}, "attempt": 1, "body": "Yes, it can ship.",
 	})
 	if answered.Code != http.StatusCreated {
-		t.Fatalf("answer the mention: status=%d body=%s", answered.Code, answered.Body.String())
+		t.Fatalf("answer the mention: status=%d body=%s; the mention's attempts as stored: %s; the listener served: %s",
+			answered.Code, answered.Body.String(), describeAttempts(commentAttempts(t, database, mentioned.ID)), lookups)
 	}
 	reply := decodeBody[mentionedCommentRead](t, answered)
 	requireReplyTo(t, "the callback's reply", reply.ReplyTo, root.ID)

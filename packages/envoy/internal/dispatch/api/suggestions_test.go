@@ -41,6 +41,18 @@ type testSuggestions struct {
 	TitleMatches []model.DuplicateCandidate `json:"title_matches"`
 }
 
+// wholeSuggestions is a related check's whole answer as JSON - its outcome, what it is missing, how
+// it searched and its items - for a failure message. A check that ran past its allowance
+// (relatedCheckAllowance, 5 s) says so in outcome and missing alone, and answers no items, so a
+// message that prints the items alone reads as a search that found nothing.
+func wholeSuggestions(suggestions any) string {
+	encoded, err := json.Marshal(suggestions)
+	if err != nil {
+		return "suggestions that do not encode: " + err.Error()
+	}
+	return string(encoded)
+}
+
 type testAdvisedSuggestions struct {
 	Suggestions *testSuggestions `json:"suggestions"`
 }
@@ -212,7 +224,7 @@ func TestSuggestionsOfferNoAnsweredAskBehindTheTopThree(t *testing.T) {
 		"title": {question}, "exclude_issues": open,
 	})
 	if relatedAsk(t, withoutTheThree, settled).ID != settled {
-		t.Fatalf("related = %+v, want the ask %s, which the search does find", withoutTheThree.Related, settled)
+		t.Fatalf("suggestions = %s, want the ask %s, which the search does find", wholeSuggestions(withoutTheThree), settled)
 	}
 
 	target := createSearchIssue(t, handler, "NOOFFER", "Pick an API transport for the checkout service", "")
@@ -227,7 +239,8 @@ func TestSuggestionsOfferNoAnsweredAskBehindTheTopThree(t *testing.T) {
 		t.Fatalf("advice.suggestions missing: %s", response.Body.String())
 	}
 	if owners := relatedOwners(*created.Advice.Suggestions); len(owners) != suggestionRelatedCount {
-		t.Fatalf("related owners = %v, want the %d open issues %v", owners, suggestionRelatedCount, open)
+		t.Fatalf("related owners = %v, want the %d open issues %v; suggestions = %s",
+			owners, suggestionRelatedCount, open, wholeSuggestions(created.Advice.Suggestions))
 	}
 	for _, item := range created.Advice.Suggestions.Related {
 		if !slices.Contains(open, item.Owner.Key) {
@@ -518,7 +531,7 @@ func TestCreateIssueSuggestsTheOpenSurvivorAboveAClosedDuplicate(t *testing.T) {
 	related := created.Advice.Suggestions.Related
 	open, done := relatedIndex(related, survivor), relatedIndex(related, closed)
 	if open < 0 || (done >= 0 && done < open) {
-		t.Fatalf("related = %+v, want the open %s ahead of the closed %s", related, survivor, closed)
+		t.Fatalf("suggestions = %s, want the open %s ahead of the closed %s", wholeSuggestions(created.Advice.Suggestions), survivor, closed)
 	}
 }
 
@@ -551,11 +564,11 @@ func TestCreateAskExcludesItsOwnIssue(t *testing.T) {
 	}
 	for _, item := range created.Advice.Suggestions.Related {
 		if item.ID == own || item.Owner.Key == own {
-			t.Fatalf("related = %+v, want nothing owned by the ask's own issue %s", created.Advice.Suggestions.Related, own)
+			t.Fatalf("suggestions = %s, want nothing owned by the ask's own issue %s", wholeSuggestions(created.Advice.Suggestions), own)
 		}
 	}
 	if relatedIndex(created.Advice.Suggestions.Related, other) < 0 {
-		t.Fatalf("related = %+v, want %s, which shares a word with the question", created.Advice.Suggestions.Related, other)
+		t.Fatalf("suggestions = %s, want %s, which shares a word with the question", wholeSuggestions(created.Advice.Suggestions), other)
 	}
 }
 
@@ -590,7 +603,7 @@ func TestCreateAskOnProjectDocumentSuggests(t *testing.T) {
 		t.Fatalf("advice.suggestions missing on a project-document ask: %s", response.Body.String())
 	}
 	if relatedIndex(created.Advice.Suggestions.Related, match) < 0 {
-		t.Fatalf("related = %+v, want %s from the document's project", created.Advice.Suggestions.Related, match)
+		t.Fatalf("suggestions = %s, want %s from the document's project", wholeSuggestions(created.Advice.Suggestions), match)
 	}
 }
 

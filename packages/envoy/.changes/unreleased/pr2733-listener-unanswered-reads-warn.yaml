@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+  The listener logs at WARN when a read it bounds does not answer in time and it goes on
+  without the answer, so an operator can see why: a sender stamp sent without what the
+  interest or the session bucket did not answer within its window, an agent delivery that
+  could not read the session's record within its bound, and a kept role drain that leaves
+  the lane to the role's next claim, which now names the read that did not answer, its bound
+  and its error, where it logged at DEBUG. None of them is written on a cache hit or for a
+  record the bucket does not hold.

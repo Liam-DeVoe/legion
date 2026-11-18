@@ -28,6 +28,9 @@ type fakeRoster struct {
 	lookups   atomic.Int32
 	down      atomic.Bool
 	refilling atomic.Bool
+	// calls is every GET the listener served, with its arrival, how long it took and how its
+	// context stood once it was answered, which cachedRouteStatusServer prints when a test fails.
+	calls listenerLookups
 }
 
 func (r *fakeRoster) set(sessionID string, roles ...string) {
@@ -59,9 +62,19 @@ func routeStatusServer(t *testing.T, roster *fakeRoster) (http.Handler, *store.S
 
 // cachedRouteStatusServer is routeStatusServer keeping the TTLs register sets, and also returns
 // the server, so a test can shorten them before its first read.
+//
+// A route reads unknown, reason unreachable, both when the listener is down and when its answer
+// came after routeRosterTimeout (2 s, issue_route_status.go), and the read says nothing of which.
+// So a test that fails on this server prints every call its listener served beside its failure:
+// a call that took past the bound, or whose context had ended, is that bound firing.
 func cachedRouteStatusServer(t *testing.T, roster *fakeRoster) (http.Handler, *store.Store, *server) {
 	t.Helper()
-	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("the listener's GET /v1/sessions calls (the roster read gives up after %s): %s", routeRosterTimeout, &roster.calls)
+		}
+	})
+	listener := httptest.NewServer(roster.calls.recording(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/sessions" {
 			http.NotFound(w, r)
 			return
@@ -82,7 +95,7 @@ func cachedRouteStatusServer(t *testing.T, roster *fakeRoster) (http.Handler, *s
 		}
 		roster.mu.Unlock()
 		_ = json.NewEncoder(w).Encode(rows)
-	}))
+	})))
 	t.Cleanup(listener.Close)
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL})
 	return handler, database, served

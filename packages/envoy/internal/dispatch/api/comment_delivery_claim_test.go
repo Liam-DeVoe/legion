@@ -79,7 +79,7 @@ func TestMentionDeliveryPersistsPendingBeforeSendAndRetryCompletesIt(t *testing.
 		t.Fatalf("retry pending mention: status=%d body=%s", retry.Code, retry.Body.String())
 	}
 	if attempt := decodeBody[commentDeliveryRead](t, retry); attempt.Attempt != 1 || attempt.State != "sent" {
-		t.Fatalf("retried pending attempt = %#v, want attempt 1 completed as sent", attempt)
+		t.Fatalf("retried pending attempt = %s, want attempt 1 completed as sent", describeAttempts([]commentDeliveryRead{attempt}))
 	}
 	var attempts int
 	if err := database.Pool.QueryRow(context.Background(), `
@@ -222,7 +222,8 @@ func TestConcurrentMentionRetryResolvesNewAttemptUnderLock(t *testing.T) {
 	// attempt, opened with no resolution of its own, asks who holds the role now.
 	sort.Strings(sent)
 	if roleLookups != 1 || len(sent) != 2 || sent[0] != "s1" || sent[1] != "s2" {
-		t.Fatalf("concurrent retry decisions = lookups:%d sends:%#v, want one send to the original s1 and one to the fresh s2", roleLookups, sent)
+		t.Fatalf("concurrent retry decisions = lookups:%d sends:%#v attempts:%s, want one send to the original s1 and one to the fresh s2",
+			roleLookups, sent, describeAttempts([]model.CommentDelivery{firstResult.attempt, secondResult.attempt}))
 	}
 }
 
@@ -380,7 +381,7 @@ func TestStrandedMentionAttemptIsResolvedRatherThanFailedUnsent(t *testing.T) {
 	attempt := decodeBody[commentDeliveryRead](t, resumed)
 	if attempt.Attempt != 1 || attempt.State != "sent" || attempt.Error != nil ||
 		attempt.SessionID == nil || *attempt.SessionID != "s1" {
-		t.Fatalf("resumed stranded attempt = %#v, want attempt 1 sent to the live session s1", attempt)
+		t.Fatalf("resumed stranded attempt = %s, want attempt 1 sent to the live session s1", describeAttempts([]commentDeliveryRead{attempt}))
 	}
 	original := comment.ID + ":session:s1:steer"
 	if len(keys) != 1 || keys[0] != original {

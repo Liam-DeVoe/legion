@@ -623,6 +623,13 @@ func expectsReplyAnswer(requested json.RawMessage) json.RawMessage {
 // same drop point (session.SessionRegistry.Get), so a row this cache calls expired is one the
 // bucket no longer holds. A registration that carries no title is a hit with an empty value rather
 // than a miss, so it reaches the bucket not at all.
+//
+// A read-through that answers neither the row nor the bucket's word that it holds none - one the
+// window ended, or one the bus failed - is logged at WARN through the registry's logger, with the
+// window and its error: the stamp it left short says nothing of why. A cache hit makes no read, a
+// sender with no row is answered nats.ErrKeyNotFound and a key the bucket cannot hold
+// bus.ErrRefused, so the line is never one a healthy bus writes per message; a record that does
+// not decode is left to the registry's own line.
 func senderStamp(ctx context.Context, registry *store.Registry, sessions *session.SessionRegistry, sourceSession string) *contracts.EnvelopeSender {
 	if sourceSession == "" {
 		return nil
@@ -630,9 +637,12 @@ func senderStamp(ctx context.Context, registry *store.Registry, sessions *sessio
 	sender := &contracts.EnvelopeSender{SessionID: sourceSession}
 	readCtx, cancel := context.WithTimeout(ctx, senderStampReadTimeout)
 	defer cancel()
+	var interestErr, titleErr error
 	if interest, err := registry.Get(readCtx, sourceSession); err == nil {
 		sender.Machine = interest.MachineID
 		sender.Cwd = interest.Dir
+	} else if !errors.Is(err, nats.ErrKeyNotFound) && !errors.Is(err, bus.ErrRefused) && !errors.Is(err, store.ErrMalformedInterest) {
+		interestErr = err
 	}
 	if held, err := registry.RolesHeldBy(sourceSession); err == nil {
 		sender.Roles = held
@@ -642,7 +652,16 @@ func senderStamp(ctx context.Context, registry *store.Registry, sessions *sessio
 	} else if errors.Is(err, nats.ErrKeyNotFound) {
 		if refreshed, err := sessions.Refresh(readCtx, sourceSession); err == nil {
 			sender.Title = refreshed.Title
+		} else if !errors.Is(err, nats.ErrKeyNotFound) {
+			titleErr = err
 		}
+	}
+	if readErr := errors.Join(interestErr, titleErr); readErr != nil {
+		registry.Logger().Warn("listener sender stamp left out what a read-through did not answer within its window",
+			slog.String("session_id", sourceSession),
+			slog.Duration("window", senderStampReadTimeout),
+			slog.String("error", readErr.Error()),
+		)
 	}
 	return sender
 }

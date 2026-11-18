@@ -891,9 +891,12 @@ func handOverKeptRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, ro
 	}
 	// shutDown reports whether the listener's shutdown, and not a deadline, ended ctx.
 	shutDown := func() bool { return errors.Is(ctx.Err(), context.Canceled) }
-	// retry is what a pass does with a read that did not answer: it writes line for that read and
-	// reports whether this handover reads again, which the rule above decides.
-	retry := func(line string, cause error) bool {
+	// retry is what a pass does with a read that did not answer within bound: it writes line for
+	// that read and reports whether this handover reads again, which the rule above decides. A
+	// handover that does not read again returns no error of that read's (ended), so the read's
+	// error is logged at WARN there: the role's wake then passes the lane over with nothing else
+	// to say why. A read answers on a healthy bus, so the line is never one written per message.
+	retry := func(line string, bound time.Duration, cause error) bool {
 		cfg.logger.LogEvent(slog.LevelDebug, line,
 			slog.String("role", role),
 			slog.String("error", cause.Error()))
@@ -909,8 +912,11 @@ func handOverKeptRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, ro
 			waitOut()
 			return true
 		}
-		cfg.logger.LogEvent(slog.LevelDebug, "listener kept role drain left the lane to the role's next claim",
+		cfg.logger.LogEvent(slog.LevelWarn, "listener kept role drain left the lane to the role's next claim",
 			slog.String("role", role),
+			slog.String("unanswered", line),
+			slog.Duration("bound", bound),
+			slog.String("error", cause.Error()),
 			slog.Bool("claim_read_failed", claimErr != nil))
 		return false
 	}
@@ -928,7 +934,7 @@ func handOverKeptRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, ro
 		head, headErr := readKeptLaneHead(headCtx, cfg.client, role)
 		cancelHead()
 		if headErr != nil {
-			if !retry("listener kept role message could not read the role's kept lane", headErr) {
+			if !retry("listener kept role message could not read the role's kept lane", roleKeepDrainWindow, headErr) {
 				return ended()
 			}
 			continue
@@ -965,7 +971,7 @@ func handOverKeptRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, ro
 			idle, backoff = 0, 0
 		}
 		if holderErr != nil && result.end != roleKeepLaneDrained {
-			if !retry("listener kept role message could not resolve the role's holder", holderErr) {
+			if !retry("listener kept role message could not resolve the role's holder", roleKeepHolderWindow, holderErr) {
 				return ended()
 			}
 			continue

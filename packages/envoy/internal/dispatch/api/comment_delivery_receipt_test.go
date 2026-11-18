@@ -238,7 +238,7 @@ func TestInitialMentionDeliveryReturnsFailedAttemptAfterErrorReplyConsumesPendin
 	}
 	if attempt.Attempt != 1 || attempt.State != "failed" || attempt.Error == nil ||
 		*attempt.Error != "The agent could not answer." || attempt.ReplyID != nil {
-		t.Fatalf("initial mention after error reply = %#v, want its terminal failed attempt", attempt)
+		t.Fatalf("initial mention after error reply = %s, want its terminal failed attempt", describeAttempts([]model.CommentDelivery{attempt}))
 	}
 	var attempts int
 	if err := database.Pool.QueryRow(context.Background(), `
@@ -329,7 +329,7 @@ func TestASenderPastItsLeaseLeavesTheResumedAttemptsReceiptAlone(t *testing.T) {
 		t.Fatalf("resume the lapsed attempt: status=%d body=%s", resumed.Code, resumed.Body.String())
 	}
 	if attempt := decodeBody[commentDeliveryRead](t, resumed); attempt.Attempt != 1 {
-		t.Fatalf("the retry took attempt %d, want the lapsed attempt 1 resumed", attempt.Attempt)
+		t.Fatalf("the retry took %s, want the lapsed attempt 1 resumed", describeAttempts([]commentDeliveryRead{attempt}))
 	}
 	answerTheSend = false
 	// Attempt 1 already carried the receipt its creation send recorded, which the reset above
@@ -360,7 +360,7 @@ func TestASenderPastItsLeaseLeavesTheResumedAttemptsReceiptAlone(t *testing.T) {
 		t.Fatalf("the stalled sender's settle: %v", err)
 	}
 	if settled.State != "sent" || settled.ReplyID == nil {
-		t.Fatalf("the stalled sender read back %#v, want the row the reply settled", settled)
+		t.Fatalf("the stalled sender read back %s, want the row the reply settled", describeAttempts([]model.CommentDelivery{settled}))
 	}
 
 	if after := commentDeliveryReceipts(t, database, comment.ID, "session:s1", 1); after != before {
@@ -435,10 +435,11 @@ func TestReplyDuringAMentionRetrySendStillRecordsTheDeliveryReceipt(t *testing.T
 		t.Fatalf("retry the mention: status=%d body=%s", retry.Code, retry.Body.String())
 	}
 	if attempt := decodeBody[commentDeliveryRead](t, retry); attempt.Attempt != 2 {
-		t.Fatalf("the retry took attempt %d, want a second attempt beside the first", attempt.Attempt)
+		t.Fatalf("the retry took %s, want a second attempt beside the first", describeAttempts([]commentDeliveryRead{attempt}))
 	}
 	if len(replies) != 1 || replies[0] != http.StatusCreated {
-		t.Fatalf("the session's reply from inside the retry's send = %v, want exactly one 201", replies)
+		t.Fatalf("the session's reply from inside the retry's send = %v, want exactly one 201; attempts: %s",
+			replies, describeAttempts(commentAttempts(t, database, comment.ID)))
 	}
 	row := commentAttemptRow(t, database, comment.ID, "session:s1", 2)
 	if !strings.HasPrefix(row, "sent//") || strings.HasPrefix(row, "sent///") {

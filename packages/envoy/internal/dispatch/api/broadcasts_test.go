@@ -20,10 +20,12 @@ import (
 )
 
 // broadcastListener is a fake Envoy listener for the broadcast tests: it advertises the given
-// sessions and records every send it is asked to make.
+// sessions and records every send it is asked to make, and every read it serves.
 type broadcastListener struct {
 	sync.Mutex
 	sends []struct{ target, key, body string }
+	// lookups is every read the listener served, for a failure message.
+	lookups listenerLookups
 }
 
 // newBroadcastListener's intercepts run first on every request, in order; one that answers the
@@ -34,7 +36,7 @@ func newBroadcastListener(
 ) (*httptest.Server, *broadcastListener) {
 	t.Helper()
 	state := &broadcastListener{}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(state.lookups.recording(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		for _, intercept := range intercepts {
 			if intercept(w, r) {
 				return
@@ -63,7 +65,7 @@ func newBroadcastListener(
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
-	}))
+	})))
 	t.Cleanup(server.Close)
 	return server, state
 }
@@ -162,7 +164,8 @@ func TestBroadcastSendsOneMessagePerRecipientAndExcludesTheRest(t *testing.T) {
 	for _, recipient := range delivered.Recipients {
 		attempt := recipient.Message.Deliveries[0]
 		if attempt.State != "sent" || attempt.Delivery != "steer" || attempt.SessionID != recipient.SessionID {
-			t.Fatalf("%s attempt = %#v, want a steer sent to that session", recipient.SessionID, attempt)
+			t.Fatalf("%s attempt = %s, want a steer sent to that session",
+				recipient.SessionID, describeAttempts([]model.MessageDelivery{attempt}))
 		}
 	}
 	if len(messageIDs) != 2 {
@@ -199,7 +202,7 @@ func TestBroadcastSendsOneMessagePerRecipientAndExcludesTheRest(t *testing.T) {
 	}
 	for _, recipient := range stored.Recipients {
 		if len(recipient.Message.Deliveries) != 1 || recipient.Message.Deliveries[0].State != "sent" {
-			t.Fatalf("%s stored attempts = %#v", recipient.SessionID, recipient.Message.Deliveries)
+			t.Fatalf("%s stored attempts = %s", recipient.SessionID, describeAttempts(recipient.Message.Deliveries))
 		}
 	}
 }
@@ -211,6 +214,16 @@ func sendTargets(response broadcastResponse) []string {
 	}
 	sort.Strings(targets)
 	return targets
+}
+
+// recipientAttempts is every recipient's attempts as describeAttempts renders them, for a failure
+// message about what a broadcast sent.
+func recipientAttempts(response broadcastResponse) string {
+	described := make([]string, 0, len(response.Recipients))
+	for _, recipient := range response.Recipients {
+		described = append(described, recipient.SessionID+": "+describeAttempts(recipient.Message.Deliveries))
+	}
+	return strings.Join(described, "; ")
 }
 
 func equalStrings(got, want []string) bool {
@@ -253,7 +266,8 @@ func TestBroadcastBodyReachesStorageAndTheWireUnchanged(t *testing.T) {
 	sends.Lock()
 	defer sends.Unlock()
 	if len(sends.sends) != 2 {
-		t.Fatalf("listener sends = %d, want one per recipient", len(sends.sends))
+		t.Fatalf("listener sends = %d, want one per recipient; the recipients' attempts: %s",
+			len(sends.sends), recipientAttempts(delivered))
 	}
 	for _, send := range sends.sends {
 		if send.body != body {
@@ -451,9 +465,10 @@ func TestBroadcastReachesSessionsTheLiveListNoLongerHolds(t *testing.T) {
 	if len(created.Excluded) != 0 {
 		t.Fatalf("excluded = %#v, want nothing excluded for a list that holds neither", created.Excluded)
 	}
-	awaitBroadcastDeliveries(t, handler, created.ID)
+	delivered := awaitBroadcastDeliveries(t, handler, created.ID)
 	if got := sends.targets(); !equalStrings(got, []string{"planner", "tester"}) {
-		t.Fatalf("listener sends = %v, want one frame per recipient", got)
+		t.Fatalf("listener sends = %v, want one frame per recipient; the recipients' attempts: %s",
+			got, recipientAttempts(delivered))
 	}
 }
 
@@ -706,7 +721,7 @@ func awaitBroadcastDeliveries(t *testing.T, handler http.Handler, id string) bro
 			return stored
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("recipients still without a settled attempt: %#v", stored.Recipients)
+			t.Fatalf("recipients still without a settled attempt: %s", recipientAttempts(stored))
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -756,7 +771,8 @@ func TestBroadcastAnswersBeforeDeliveringAndStillReachesEveryRecipient(t *testin
 	sends := listenerState.sends
 	listenerState.Unlock()
 	if sends != 0 {
-		t.Fatalf("%d sends completed before the create answered; delivery must run behind it", sends)
+		t.Fatalf("%d sends completed before the create answered; delivery must run behind it; the recipients' attempts: %s",
+			sends, recipientAttempts(created))
 	}
 	// Every recipient carries its attempt from the moment the broadcast is written, opened
 	// pending and unclaimed: a recipient with no attempt could only be moved by a delivery in
@@ -783,8 +799,8 @@ func TestBroadcastAnswersBeforeDeliveringAndStillReachesEveryRecipient(t *testin
 		// The worker settles the attempt the write opened; it never opens a second one beside it.
 		if len(recipient.Message.Deliveries) != 1 || recipient.Message.Deliveries[0].Attempt != 1 ||
 			recipient.Message.Deliveries[0].State != "sent" {
-			t.Fatalf("%s attempts = %#v, want the one attempt settled sent",
-				recipient.SessionID, recipient.Message.Deliveries)
+			t.Fatalf("%s attempts = %s, want the one attempt settled sent",
+				recipient.SessionID, describeAttempts(recipient.Message.Deliveries))
 		}
 	}
 }
@@ -885,7 +901,8 @@ func TestBroadcastWorkerSkipsARecipientTakenOverFromTheAgentCard(t *testing.T) {
 	sends := append([]string(nil), listenerState.sends...)
 	listenerState.Unlock()
 	if len(sends) != 1 || sends[0] != message+":steer" {
-		t.Fatalf("listener sends = %#v, want only the human's mode change (%s:steer)", sends, message)
+		t.Fatalf("listener sends = %#v, want only the human's mode change (%s:steer); the message's attempts: %s",
+			sends, message, describeAttempts(messageAttempts(t, database, message)))
 	}
 	var attempts int
 	if err := database.Pool.QueryRow(context.Background(),

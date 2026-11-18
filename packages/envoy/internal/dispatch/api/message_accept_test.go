@@ -131,7 +131,8 @@ func TestAcceptRecordsAPersonsFreshAttemptAsTheSessionsTurnOnce(t *testing.T) {
 	}
 	// The accept never settles the attempt: that is the send's own receipt.
 	if attempt.Attempt != 1 || attempt.SessionID != "s1" || attempt.State != "sent" {
-		t.Fatalf("accepted attempt = %+v, want attempt 1 to s1 still sent", attempt)
+		t.Fatalf("accepted attempt %d to %q is %s, want attempt 1 to s1 still sent; the stored attempts: %s",
+			attempt.Attempt, attempt.SessionID, attempt.State, describeAttempts(messageAttempts(t, database, root.ID)))
 	}
 	if attempt.RequestedBy == nil || attempt.RequestedBy.Kind != "user" || attempt.RequestedBy.ID != "alice" {
 		t.Fatalf("accepted attempt's requested_by = %+v, want alice", attempt.RequestedBy)
@@ -660,14 +661,20 @@ func TestAcceptDuringTheSendLeavesTheSettleItsReceipt(t *testing.T) {
 	}
 	message := decodeBody[model.Message](t, created)
 	if len(accepts) != 1 || accepts[0].State != "pending" {
-		t.Fatalf("accepts from inside the send = %+v, want one, taken while the attempt was pending", accepts)
+		taken := make([]string, len(accepts))
+		for index, accept := range accepts {
+			taken[index] = fmt.Sprintf("attempt %d %s", accept.Attempt, accept.State)
+		}
+		t.Fatalf("accepts from inside the send = %v, want one, taken while the attempt was pending; the stored attempts: %s",
+			taken, describeAttempts(messageAttempts(t, database, message.ID)))
 	}
 	if len(message.Deliveries) != 1 || message.Deliveries[0].State != "sent" {
-		t.Fatalf("the send settled its attempt as %+v, want sent", message.Deliveries)
+		t.Fatalf("the send settled its attempt as %s, want sent", describeAttempts(message.Deliveries))
 	}
 	settled := readMessageDelivery(t, database, message.ID, 1)
 	if settled.State != "sent" || settled.EnvelopeID == nil || *settled.EnvelopeID != "target-envelope" {
-		t.Fatalf("attempt 1 after the settle = %+v, want sent with the listener's envelope", settled)
+		t.Fatalf("attempt 1 after the settle = %s with envelope %s, want sent with the listener's envelope",
+			describeAttempts([]model.MessageDelivery{settled}), describeOptionalString(settled.EnvelopeID))
 	}
 	var acceptedAs *string
 	if err := database.Pool.QueryRow(context.Background(), `

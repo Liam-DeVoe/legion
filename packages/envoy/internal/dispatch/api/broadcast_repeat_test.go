@@ -82,9 +82,10 @@ func TestBroadcastRepeatWithItsKeyAnswersTheOriginalAndDeliversOnce(t *testing.T
 	if listed := broadcastCount(t, handler); listed != 1 {
 		t.Fatalf("the broadcast list holds %d broadcasts, want the one send", listed)
 	}
-	awaitBroadcastDeliveries(t, handler, original.ID)
+	delivered := awaitBroadcastDeliveries(t, handler, original.ID)
 	if got := sends.targets(); !equalStrings(got, []string{"planner", "tester"}) {
-		t.Fatalf("listener sends = %v, want one frame per recipient", got)
+		t.Fatalf("listener sends = %v, want one frame per recipient; the recipients' attempts: %s",
+			got, recipientAttempts(delivered))
 	}
 	if messages := countMessages(t, database); messages != 2 {
 		t.Fatalf("the database holds %d messages, want one per recipient", messages)
@@ -308,11 +309,22 @@ func TestBroadcastRepeatResumesEveryOwedRecipientAndDeliversEachOnce(t *testing.
 			break
 		}
 	}
+	// storedAttempts is every recipient's attempts as their rows hold them, the error each settled
+	// with included: a resume whose send ran out reaches the listener as nothing.
+	storedAttempts := func() string {
+		t.Helper()
+		described := make([]string, 0, len(requested))
+		for _, sessionID := range requested {
+			described = append(described, sessionID+": "+describeAttempts(messageAttempts(t, database, recipient(sessionID).ID)))
+		}
+		return strings.Join(described, "; ")
+	}
 	if !equalStrings(settled, want) {
-		t.Fatalf("the recipients settled as %v, want %v", settled, want)
+		t.Fatalf("the recipients settled as %v, want %v; their attempts: %s", settled, want, storedAttempts())
 	}
 	if got := sends.targets(); !equalStrings(got, []string{"planner", "reviewer", "tester"}) {
-		t.Fatalf("listener sends = %v, want the planner's first frame and one each for the two owed", got)
+		t.Fatalf("listener sends = %v, want the planner's first frame and one each for the two owed; the recipients' attempts: %s",
+			got, storedAttempts())
 	}
 	if messages := countMessages(t, database); messages != len(requested) {
 		t.Fatalf("the database holds %d messages, want one per recipient", messages)

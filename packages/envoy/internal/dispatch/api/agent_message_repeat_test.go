@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sort"
@@ -64,6 +65,42 @@ func messageAttempts(t *testing.T, database *store.Store, messageID string) []mo
 		t.Fatalf("read the attempts of %s: %v", messageID, err)
 	}
 	return attempts
+}
+
+// describeAttempts renders delivery attempts for a failure message, one per attempt: its number,
+// mode and session, the state it settled in, the error recorded on it and the reply that answered
+// it, and on a mention its target and the error its resolution recorded. A send or a lookup that
+// runs out settles its attempt failed and logs nothing (internal/dispatch/envoy/client.go has no
+// log call), so that error is the only cause a failing test can print; %#v of these structs
+// prints it as a pointer.
+func describeAttempts[A model.MessageDelivery | model.CommentDelivery | commentDeliveryRead](attempts []A) string {
+	if len(attempts) == 0 {
+		return "no attempts"
+	}
+	described := make([]string, len(attempts))
+	for index, attempt := range attempts {
+		var target, mode, state string
+		var number int
+		var session, failure, reply, resolveFailure *string
+		switch attempt := any(attempt).(type) {
+		case model.MessageDelivery:
+			number, mode, session, state, failure, reply = attempt.Attempt, attempt.Delivery, &attempt.SessionID,
+				attempt.State, attempt.Error, attempt.ReplyID
+		case model.CommentDelivery:
+			target, number, mode, session, state, failure, reply, resolveFailure = attempt.Target, attempt.Attempt,
+				attempt.Delivery, attempt.SessionID, attempt.State, attempt.Error, attempt.ReplyID, attempt.ResolveError
+		case commentDeliveryRead:
+			target, number, mode, session, state, failure, reply, resolveFailure = attempt.Target, attempt.Attempt,
+				attempt.Delivery, attempt.SessionID, attempt.State, attempt.Error, attempt.ReplyID, attempt.ResolveError
+		}
+		line := fmt.Sprintf("attempt %d %s to %s: %s, error %s, reply %s", number, mode, describeOptionalString(session),
+			state, describeOptionalString(failure), describeOptionalString(reply))
+		if target != "" {
+			line = target + " " + line + ", resolve error " + describeOptionalString(resolveFailure)
+		}
+		described[index] = line
+	}
+	return strings.Join(described, "; ")
 }
 
 // commitKeyedMessage writes what alice's keyed send to s1 commits before its delivery starts - the
@@ -132,7 +169,8 @@ func TestASingleSessionSendWithoutAKeyIsSent(t *testing.T) {
 		t.Fatalf("a keyless send: status=%d body=%s, want 201", keyless.Code, keyless.Body.String())
 	}
 	if got := sends.targets(); !equalStrings(got, []string{"s1"}) {
-		t.Fatalf("listener sends = %v, want the keyless send's one", got)
+		t.Fatalf("listener sends = %v, want the keyless send's one; the message's attempts: %s",
+			got, describeAttempts(decodeBody[model.Message](t, keyless).Deliveries))
 	}
 }
 
@@ -155,7 +193,7 @@ func TestARepeatedKeyAnswersTheMessageItMadeAndDeliversOnce(t *testing.T) {
 	}
 	original := decodeBody[model.Message](t, first)
 	if len(original.Deliveries) != 1 || original.Deliveries[0].State != "sent" {
-		t.Fatalf("first send's deliveries = %#v, want one sent attempt", original.Deliveries)
+		t.Fatalf("first send's deliveries = %s, want one sent attempt", describeAttempts(original.Deliveries))
 	}
 
 	repeat := send()
@@ -329,7 +367,7 @@ func TestConcurrentSendsUnderOneKeyMakeOneMessage(t *testing.T) {
 	}
 	for id := range ids {
 		if attempts := messageAttempts(t, database, id); len(attempts) != 1 || attempts[0].State != "sent" {
-			t.Fatalf("the message's attempts = %#v, want one sent attempt", attempts)
+			t.Fatalf("the message's attempts = %s, want one sent attempt", describeAttempts(attempts))
 		}
 	}
 	if got := sends.targets(); !equalStrings(got, []string{"s1"}) {
@@ -389,7 +427,7 @@ func TestAClientAbortMidSendStillDeliversOnce(t *testing.T) {
 		t.Fatalf("find the message: %v", err)
 	}
 	if attempts := messageAttempts(t, database, id); len(attempts) != 1 || attempts[0].State != "sent" {
-		t.Fatalf("the cut-off send's attempts = %#v, want one attempt settled sent", attempts)
+		t.Fatalf("the cut-off send's attempts = %s, want one attempt settled sent", describeAttempts(attempts))
 	}
 
 	retry := postAgentMessageKeyed(t, handler, "s1", input, "alice", "abort-1")
@@ -531,7 +569,8 @@ func TestARetryIsAnsweredWhileTheListenerIsDown(t *testing.T) {
 		t.Fatalf("a repeat while the listener is down: status=%d body=%s, want the message replayed", repeat.Code, repeat.Body.String())
 	}
 	if got := decodeBody[model.Message](t, repeat); got.ID != original.ID || len(got.Deliveries) != 1 || got.Deliveries[0].State != "sent" {
-		t.Fatalf("the repeat answered %#v, want message %s with its one sent attempt", got, original.ID)
+		t.Fatalf("the repeat answered message %s with attempts %s, want message %s with its one sent attempt",
+			got.ID, describeAttempts(got.Deliveries), original.ID)
 	}
 	if n := asked.Load(); n != 0 {
 		t.Fatalf("the repeat asked the listener %d times, want none", n)
@@ -606,7 +645,8 @@ func TestAFailureAfterTheSendCommittedIsAnsweredFromItsMessage(t *testing.T) {
 		t.Fatalf("the next attempt: status=%d body=%s, want the message replayed", retry.Code, retry.Body.String())
 	}
 	if got := decodeBody[model.Message](t, retry); got.ID != id || len(got.Deliveries) != 1 || got.Deliveries[0].State != "sent" {
-		t.Fatalf("the next attempt answered %#v, want message %s sent once", got, id)
+		t.Fatalf("the next attempt answered message %s with attempts %s, want message %s sent once",
+			got.ID, describeAttempts(got.Deliveries), id)
 	}
 	if messages := countMessages(t, database); messages != 1 {
 		t.Fatalf("the database holds %d messages, want the one", messages)

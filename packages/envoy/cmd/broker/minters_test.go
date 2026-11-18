@@ -3,11 +3,13 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -157,20 +159,28 @@ func TestTypeMintersShareOneRetryBudget(t *testing.T) {
 	}))
 	defer google.Close()
 	now := time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)
-	retry := secrets.NewRetry(metrics.New())
+	registry := metrics.New()
+	retry := secrets.NewRetry(registry)
 	retry.Now = func() time.Time { return now }
 	retry.Sleep = func(context.Context, time.Duration) error { return nil }
 	minters := newRequestMachine(config.Config{AirlockTestGitHubAPIBase: github.URL, AirlockTestGoogleTokenURL: google.URL}, nil, nil, nil, nil, airlock.Rules{}, "", retry).Minters
 	app := secrets.MintRequest{Type: policy.TypeGitHubApp, Value: policytest.TypeValue(policy.TypeGitHubApp), GitHubOwners: []string{"acme-org"}}
 	login := secrets.MintRequest{Type: policy.TypeGoogleLogin, Value: policytest.TypeValue(policy.TypeGoogleLogin)}
 
-	for range 30 {
-		if _, err := minters[policy.TypeGitHubApp](t.Context(), app); secrets.MintAttempts(err) != 3 {
+	// mints is each github-app mint's attempts and error: a mint whose attempts are 3 beside fewer
+	// calls than 90 is an attempt the broker cut before it reached the stand (mintAttemptTimeout),
+	// which the mint's own error does not name once a later attempt answered.
+	mints := make([]string, 0, 30)
+	for index := range 30 {
+		_, err := minters[policy.TypeGitHubApp](t.Context(), app)
+		mints = append(mints, fmt.Sprintf("mint %d: %d attempts, %v", index+1, secrets.MintAttempts(err), err))
+		if secrets.MintAttempts(err) != 3 {
 			t.Fatalf("a github-app mint against a 503 = %v after %d attempts; want 3", err, secrets.MintAttempts(err))
 		}
 	}
 	if githubCalls.Load() != 90 {
-		t.Fatalf("thirty github-app mints made %d calls; want 90", githubCalls.Load())
+		t.Fatalf("thirty github-app mints made %d calls; want 90; the mints:\n%s\nthe registry's attempts:\n%s",
+			githubCalls.Load(), strings.Join(mints, "\n"), mintAttemptSamples(registry))
 	}
 	if _, err := minters[policy.TypeGoogleLogin](t.Context(), login); googleCalls.Load() != 1 || secrets.MintAttempts(err) != 1 {
 		t.Fatalf("a google-login mint once GitHub's spent the budget = %v after %d calls; want one attempt", err, googleCalls.Load())
@@ -193,7 +203,22 @@ func TestRequestMachineCountsEachMintAttemptOnItsRegistry(t *testing.T) {
 	}
 	defer service.Close()
 	stand := airlocktest.NewGitHubStand(airlocktest.GitHubOptions{Installations: map[string]int64{"acme-org": 7}, Answer: airlocktest.GitHubAnswer{Mode: airlocktest.GitHubTokensFailOnce}})
-	service.AnswerWith(stand.Answer)
+	// calls is every request the stand received, when it arrived, the status it answered and how
+	// long that answer took: an upstream count beside a call the stand answered 201 is an attempt
+	// the broker cut itself, whose error ("GitHub did not answer in time") a mint that then
+	// succeeded does not return.
+	var callsMu sync.Mutex
+	var calls []string
+	service.AnswerWith(func(w http.ResponseWriter, r *http.Request, seen airlocktest.Request) bool {
+		arrived := time.Now()
+		answer := &answeredStatus{ResponseWriter: w}
+		answered := stand.Answer(answer, r, seen)
+		callsMu.Lock()
+		calls = append(calls, fmt.Sprintf("%s %s arrived %s, answered %d (by the stand: %t) after %s",
+			seen.Method, seen.Path, arrived.Format(time.RFC3339Nano), answer.code(), answered, time.Since(arrived)))
+		callsMu.Unlock()
+		return answered
+	})
 	registry := metrics.New()
 	machine := newRequestMachine(config.Config{AirlockTestGitHubAPIBase: service.URL()}, nil, nil, nil, nil, airlock.Rules{}, "", secrets.NewRetry(registry))
 
@@ -210,9 +235,45 @@ func TestRequestMachineCountsEachMintAttemptOnItsRegistry(t *testing.T) {
 		`broker_mint_attempts_total{type="github-app",outcome="ok",attempt="2"} 1`,
 	} {
 		if !strings.Contains(recorder.Body.String(), sample+"\n") {
-			t.Errorf("the registry serves\n%s\nwant the sample %s", recorder.Body.String(), sample)
+			callsMu.Lock()
+			received := strings.Join(calls, "\n")
+			callsMu.Unlock()
+			t.Errorf("the registry serves\n%s\nwant the sample %s; the GitHub stand received:\n%s", recorder.Body.String(), sample, received)
 		}
 	}
+}
+
+// answeredStatus is a stand-in's ResponseWriter that keeps the status its answer wrote.
+type answeredStatus struct {
+	http.ResponseWriter
+	status int
+}
+
+func (w *answeredStatus) WriteHeader(status int) {
+	w.status = status
+	w.ResponseWriter.WriteHeader(status)
+}
+
+// code is the status the answer wrote, 200 for one that wrote a body alone.
+func (w *answeredStatus) code() int {
+	if w.status == 0 {
+		return http.StatusOK
+	}
+	return w.status
+}
+
+// mintAttemptSamples is the registry's broker_mint_attempts_total samples, one a line, as its own
+// handler serves them.
+func mintAttemptSamples(registry *metrics.Registry) string {
+	recorder := httptest.NewRecorder()
+	registry.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	var samples []string
+	for line := range strings.Lines(recorder.Body.String()) {
+		if strings.HasPrefix(line, "broker_mint_attempts_total{") {
+			samples = append(samples, strings.TrimSuffix(line, "\n"))
+		}
+	}
+	return strings.Join(samples, "\n")
 }
 
 // TestRequestMachineGivesBackAGitHubAppTokenAtTheMintersGitHub: newRequestMachine gives a release

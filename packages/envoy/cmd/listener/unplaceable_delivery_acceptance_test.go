@@ -168,7 +168,8 @@ func TestAgentDeliveryReadsTheSessionStoreWhileTheCacheIsCold(t *testing.T) {
 	}
 	body := metricsBody(t, harness)
 	if got := counterValue(t, body, deliveredSeries("skipped")); got != 1 {
-		t.Fatalf("%s = %d, want 1 - a delivery that read through to the bucket resolves the session, rather than giving its message up:\n%s", deliveredSeries("skipped"), got, body)
+		t.Fatalf("%s = %d, want 1 - a delivery that read through to the bucket resolves the session, rather than giving its message up:\n%s\nthe listener's delivery records:\n%s",
+			deliveredSeries("skipped"), got, body, harness.logs.String())
 	}
 	if giveUps := deliveryRecords(t, harness.logs.String(), "listener agent delivery given up"); len(giveUps) != 0 {
 		t.Fatalf("%d give-up lines, want none: the bucket holds the target's record:\n%s", len(giveUps), harness.logs.String())

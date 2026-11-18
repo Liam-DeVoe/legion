@@ -212,11 +212,11 @@ func TestTargetedMessageDeliveryRetriesAndAcceptsOnlyTargetReplies(t *testing.T)
 	}
 	if delivery := created.Deliveries[0]; delivery.Attempt != 1 || delivery.State != "sent" ||
 		delivery.EnvelopeID == nil || *delivery.EnvelopeID != "envelope-1" {
-		t.Fatalf("first delivery = %#v", delivery)
+		t.Fatalf("first delivery = %s with envelope %s", describeAttempts(created.Deliveries), describeOptionalString(delivery.EnvelopeID))
 	}
 	if len(sent) != 1 || sent[0]["source"] != "dispatch" || sent[0]["target_session"] != "s1" ||
 		sent[0]["expects_reply"] != "required" || sent[0]["idempotency_key"] != created.ID+":btw" {
-		t.Fatalf("listener request = %#v", sent)
+		t.Fatalf("listener request = %#v; the message's attempts: %s", sent, describeAttempts(created.Deliveries))
 	}
 	frame := decodeDeliveryFrame(t, sent[0])
 	if frame.Event.Type != "message.created" || frame.Event.Payload.ID != created.ID ||
@@ -481,14 +481,14 @@ func TestTargetedMessageRecordsCapabilityAndListenerFailures(t *testing.T) {
 	}, "alice")
 	if got := missingCapability.Deliveries; len(got) != 1 || got[0].State != "failed" ||
 		got[0].Error == nil || *got[0].Error != "session s1 (planner) does not advertise btw" {
-		t.Fatalf("missing capability delivery = %#v", got)
+		t.Fatalf("missing capability delivery = %s", describeAttempts(got))
 	}
 	unadvertisedSteer := createIssueMessage(t, handler, issue.Key, map[string]any{
 		"body": "Can you receive a steer?", "target": "session:s1", "delivery": "steer",
 	}, "alice")
 	if got := unadvertisedSteer.Deliveries; len(got) != 1 || got[0].State != "failed" ||
 		got[0].Error == nil || *got[0].Error != "session s1 (planner) does not advertise steer" {
-		t.Fatalf("unadvertised steer delivery = %#v", got)
+		t.Fatalf("unadvertised steer delivery = %s", describeAttempts(got))
 	}
 	retry := dispatchRequest(t, handler, http.MethodPost, "/api/v1/messages/"+missingCapability.ID+"/deliveries",
 		map[string]any{"delivery": "steer"}, "alice")
@@ -498,7 +498,7 @@ func TestTargetedMessageRecordsCapabilityAndListenerFailures(t *testing.T) {
 	retriedSteer := decodeBody[model.MessageDelivery](t, retry)
 	if retriedSteer.State != "failed" || retriedSteer.Error == nil ||
 		*retriedSteer.Error != "session s1 (planner) does not advertise steer" {
-		t.Fatalf("retry unadvertised steer = %#v", retriedSteer)
+		t.Fatalf("retry unadvertised steer = %s", describeAttempts([]model.MessageDelivery{retriedSteer}))
 	}
 	if sendCalls != 0 {
 		t.Fatalf("missing capability sent %d listener requests", sendCalls)
@@ -514,7 +514,7 @@ func TestTargetedMessageRecordsCapabilityAndListenerFailures(t *testing.T) {
 	}, "alice")
 	if got := listenerFailure.Deliveries; len(got) != 1 || got[0].State != "failed" ||
 		got[0].Error == nil || *got[0].Error != "message is required" {
-		t.Fatalf("listener 400 delivery = %#v", got)
+		t.Fatalf("listener 400 delivery = %s", describeAttempts(got))
 	}
 }
 
@@ -597,7 +597,7 @@ func TestTargetedMessageResolvesRolesAndEnforcesReplyBoundaries(t *testing.T) {
 		"body": "Can this ship?", "target": "role:legion-planner", "delivery": "btw",
 	}, "alice")
 	if got := message.Deliveries; len(got) != 1 || got[0].SessionID != "s1" || got[0].State != "sent" {
-		t.Fatalf("role delivery = %#v", got)
+		t.Fatalf("role delivery = %s", describeAttempts(got))
 	}
 	retry := dispatchRequest(t, handler, http.MethodPost, "/api/v1/messages/"+message.ID+"/deliveries",
 		map[string]any{"delivery": "steer"}, "alice")
@@ -775,7 +775,7 @@ func TestAgentTargetedMessagesNeedThePersonScopeAndKeepTheirOwnConversation(t *t
 	firstMessage := decodeBody[model.Message](t, first)
 	if firstMessage.Target == nil || *firstMessage.Target != "session:s1" ||
 		len(firstMessage.Deliveries) != 1 || firstMessage.Deliveries[0].State != "sent" {
-		t.Fatalf("first issue-less message = %#v", firstMessage)
+		t.Fatalf("first issue-less message target %s attempts %s", describeOptionalString(firstMessage.Target), describeAttempts(firstMessage.Deliveries))
 	}
 	var sequence int
 	if err := database.Pool.QueryRow(context.Background(),
@@ -940,7 +940,14 @@ func decodeDeliveryFrame(t *testing.T, send map[string]any) deliveryFrame {
 // records every send; `live` toggles whether s1 is listed.
 func sessionListener(t *testing.T, live *bool, sent *[]map[string]any) *httptest.Server {
 	t.Helper()
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return httptest.NewServer(sessionListenerHandler(t, live, sent))
+}
+
+// sessionListenerHandler is what sessionListener serves, for a test that records the reads it is
+// asked (listenerLookups).
+func sessionListenerHandler(t *testing.T, live *bool, sent *[]map[string]any) http.Handler {
+	t.Helper()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/registry/s1":
 			if !*live {
@@ -966,7 +973,7 @@ func sessionListener(t *testing.T, live *bool, sent *[]map[string]any) *httptest
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = w.Write([]byte(`{"error":"not found"}`))
 		}
-	}))
+	})
 }
 
 func TestReplyOnFailedAttemptRecordsTheAnswer(t *testing.T) {
@@ -1010,11 +1017,11 @@ func TestReplyOnFailedAttemptRecordsTheAnswer(t *testing.T) {
 	}
 	stored := decodeBody[messageRead](t, read)
 	if len(stored.Message.Deliveries) != 1 {
-		t.Fatalf("deliveries = %#v", stored.Message.Deliveries)
+		t.Fatalf("deliveries = %s", describeAttempts(stored.Message.Deliveries))
 	}
 	if attempt := stored.Message.Deliveries[0]; attempt.State != "sent" || attempt.Error != nil ||
 		attempt.ReplyID == nil || *attempt.ReplyID != answer.ID {
-		t.Fatalf("answered attempt = %#v, want sent with reply %s and no error", attempt, answer.ID)
+		t.Fatalf("answered attempt = %s, want sent with reply %s and no error", describeAttempts([]model.MessageDelivery{attempt}), answer.ID)
 	}
 	if len(stored.Replies) != 1 || stored.Replies[0].ID != answer.ID {
 		t.Fatalf("replies = %#v, want [%s]", stored.Replies, answer.ID)
@@ -1062,10 +1069,10 @@ func TestHumanReplyInheritsTheThreadTarget(t *testing.T) {
 	}
 	if len(followUp.Deliveries) != 1 || followUp.Deliveries[0].Delivery != "btw" ||
 		followUp.Deliveries[0].State != "sent" || followUp.Deliveries[0].SessionID != "s1" {
-		t.Fatalf("follow-up deliveries = %#v, want one sent btw attempt to s1", followUp.Deliveries)
+		t.Fatalf("follow-up deliveries = %s, want one sent btw attempt to s1", describeAttempts(followUp.Deliveries))
 	}
 	if len(sent) != sendsBefore+1 || sent[sendsBefore]["target_session"] != "s1" {
-		t.Fatalf("listener sends = %#v, want one more to s1", sent[sendsBefore:])
+		t.Fatalf("listener sends = %#v, want one more to s1; the follow-up's attempts: %s", sent[sendsBefore:], describeAttempts(followUp.Deliveries))
 	}
 	frame := decodeDeliveryFrame(t, sent[sendsBefore])
 	if frame.Event.Type != "message.created" || frame.Event.Payload.ID != followUp.ID ||
@@ -1327,10 +1334,10 @@ func TestReplyDeliveryFrameNamesItsThreadTarget(t *testing.T) {
 
 	// Each step is read off the send it produced rather than off the tail of `sent`, so a
 	// step that stopped sending fails here instead of silently re-reading the previous frame.
-	threadTargetOfSend := func(step string, sendsBefore int) (string, bool) {
+	threadTargetOfSend := func(step string, sendsBefore int, attempts []model.MessageDelivery) (string, bool) {
 		t.Helper()
 		if len(sent) != sendsBefore+1 {
-			t.Fatalf("%s listener sends = %d, want %d", step, len(sent), sendsBefore+1)
+			t.Fatalf("%s listener sends = %d, want %d; the step's attempts: %s", step, len(sent), sendsBefore+1, describeAttempts(attempts))
 		}
 		target := decodeDeliveryFrame(t, sent[sendsBefore]).Event.Payload.ThreadTarget
 		if target == nil {
@@ -1343,7 +1350,7 @@ func TestReplyDeliveryFrameNamesItsThreadTarget(t *testing.T) {
 	root := createIssueMessage(t, handler, issue.Key, map[string]any{
 		"body": "Can this ship?", "target": "session:s1", "delivery": "btw",
 	}, "alice")
-	if target, named := threadTargetOfSend("root", sendsBefore); named {
+	if target, named := threadTargetOfSend("root", sendsBefore, root.Deliveries); named {
 		t.Fatalf("root frame thread_target = %q, want none - a root message is its own thread", target)
 	}
 	// A session's own reply names no target, so a message hanging under it has a parent whose
@@ -1364,7 +1371,7 @@ func TestReplyDeliveryFrameNamesItsThreadTarget(t *testing.T) {
 	followUp := createIssueMessage(t, handler, issue.Key, map[string]any{
 		"body": "It is green now - ship it.", "in_reply_to": midwayReply.ID,
 	}, "alice")
-	if target, named := threadTargetOfSend("follow-up", sendsBefore); !named || target != "session:s1" {
+	if target, named := threadTargetOfSend("follow-up", sendsBefore, followUp.Deliveries); !named || target != "session:s1" {
 		t.Fatalf("follow-up frame thread_target = %q (named=%v), want session:s1", target, named)
 	}
 
@@ -1377,7 +1384,8 @@ func TestReplyDeliveryFrameNamesItsThreadTarget(t *testing.T) {
 	if retry.Code != http.StatusCreated {
 		t.Fatalf("retry the follow-up: status=%d body=%s", retry.Code, retry.Body.String())
 	}
-	if target, named := threadTargetOfSend("retry", sendsBefore); !named || target != "session:s1" {
+	if target, named := threadTargetOfSend("retry", sendsBefore,
+		[]model.MessageDelivery{decodeBody[model.MessageDelivery](t, retry)}); !named || target != "session:s1" {
 		t.Fatalf("retry frame thread_target = %q (named=%v), want session:s1", target, named)
 	}
 }
@@ -1446,7 +1454,7 @@ func TestTargetedMessageAttemptIsPendingAcrossItsSend(t *testing.T) {
 	}
 	if len(message.Deliveries) != 1 || message.Deliveries[0].State != "sent" ||
 		message.Deliveries[0].EnvelopeID == nil || *message.Deliveries[0].EnvelopeID != "target-envelope" {
-		t.Fatalf("settled attempt = %#v, want one sent attempt carrying its envelope", message.Deliveries)
+		t.Fatalf("settled attempt = %s, want one sent attempt carrying its envelope", describeAttempts(message.Deliveries))
 	}
 
 	// A sender is still working on attempt 1: the row is pending and its claim is live.
@@ -1609,7 +1617,7 @@ func TestStrandedMessageAttemptIsResumedRatherThanDeliveredTwice(t *testing.T) {
 	}
 	resumed := decodeBody[model.MessageDelivery](t, retry)
 	if resumed.Attempt != 1 || resumed.State != "sent" {
-		t.Fatalf("retry of a stranded attempt = %#v, want the original attempt 1 completed", resumed)
+		t.Fatalf("retry of a stranded attempt = %s, want the original attempt 1 completed", describeAttempts([]model.MessageDelivery{resumed}))
 	}
 
 	// The stalled sender is answered at last. Its claim is no longer the row's, so it records
@@ -1875,7 +1883,7 @@ func TestSendThatFailedBeforeLandingStillDeliversOnRetry(t *testing.T) {
 	}
 	message := decodeBody[model.Message](t, created)
 	if len(message.Deliveries) != 1 || message.Deliveries[0].State != "failed" {
-		t.Fatalf("first attempt = %#v, want one attempt recorded failed once every try was refused", message.Deliveries)
+		t.Fatalf("first attempt = %s, want one attempt recorded failed once every try was refused", describeAttempts(message.Deliveries))
 	}
 	listenerState.Lock()
 	listenerState.answering = true
@@ -1889,13 +1897,14 @@ func TestSendThatFailedBeforeLandingStillDeliversOnRetry(t *testing.T) {
 	}
 	resumed := decodeBody[model.MessageDelivery](t, retry)
 	if resumed.State != "sent" {
-		t.Fatalf("retry of an attempt that never landed = %#v, want it delivered", resumed)
+		t.Fatalf("retry of an attempt that never landed = %s, want it delivered", describeAttempts([]model.MessageDelivery{resumed}))
 	}
 	listenerState.Lock()
 	delivered := len(listenerState.delivered)
 	listenerState.Unlock()
 	if delivered != 1 {
-		t.Fatalf("the listener delivered %d distinct keys, want the retry to reach the agent once", delivered)
+		t.Fatalf("the listener delivered %d distinct keys, want the retry to reach the agent once; attempts: %s",
+			delivered, describeAttempts(messageAttempts(t, database, message.ID)))
 	}
 	// The first attempt failed without landing, so the second is a real delivery, not a duplicate.
 	if got := readMessageAttemptHistory(t, database, message.ID); !reflect.DeepEqual(got, []attemptRow{
@@ -1971,7 +1980,7 @@ func TestRetryInAnotherModeSupersedesTheStrandedAttempt(t *testing.T) {
 			}
 			opened := decodeBody[model.MessageDelivery](t, retry)
 			if opened.Attempt != 2 || opened.Delivery != "btw" || opened.State != "sent" {
-				t.Fatalf("mode-change retry = %#v, want a second attempt sent as btw", opened)
+				t.Fatalf("mode-change retry = %s, want a second attempt sent as btw", describeAttempts([]model.MessageDelivery{opened}))
 			}
 			if opened.SessionID != "s1" {
 				t.Fatalf("mode-change retry session = %q, want the session the stranded attempt named", opened.SessionID)
@@ -1980,10 +1989,10 @@ func TestRetryInAnotherModeSupersedesTheStrandedAttempt(t *testing.T) {
 			// The stranded attempt is settled, not left pending and not silently rewritten.
 			superseded := readMessageDelivery(t, database, message.ID, 1)
 			if superseded.State != "failed" {
-				t.Fatalf("stranded attempt = %#v, want it settled failed as superseded", superseded)
+				t.Fatalf("stranded attempt = %s, want it settled failed as superseded", describeAttempts([]model.MessageDelivery{superseded}))
 			}
 			if superseded.Error == nil || !strings.Contains(*superseded.Error, "superseded") {
-				t.Fatalf("stranded attempt error = %v, want it to say it was superseded", superseded.Error)
+				t.Fatalf("stranded attempt error = %s, want it to say it was superseded", describeOptionalString(superseded.Error))
 			}
 			if superseded.Delivery != "steer" {
 				t.Fatalf("stranded attempt mode = %q, want its own mode kept", superseded.Delivery)
@@ -2218,7 +2227,8 @@ func TestReplyDuringASendStillRecordsTheDeliveryReceipt(t *testing.T) {
 		"body": "Answer this while it is still in flight.", "target": "session:s1", "delivery": "steer",
 	}, "alice")
 	if replied != 1 {
-		t.Fatalf("the session answered %d times, want exactly one reply from inside the send", replied)
+		t.Fatalf("the session answered %d times, want exactly one reply from inside the send; the message's attempts: %s",
+			replied, describeAttempts(message.Deliveries))
 	}
 
 	var receipts int
@@ -2229,7 +2239,8 @@ func TestReplyDuringASendStillRecordsTheDeliveryReceipt(t *testing.T) {
 		t.Fatalf("count delivery receipts: %v", err)
 	}
 	if receipts != 1 {
-		t.Fatalf("message.delivery events for attempt 1 = %d, want exactly one receipt", receipts)
+		t.Fatalf("message.delivery events for attempt 1 = %d, want exactly one receipt; attempts: %s",
+			receipts, describeAttempts(messageAttempts(t, database, message.ID)))
 	}
 	var answers int
 	if err := database.Pool.QueryRow(context.Background(), `
@@ -2304,7 +2315,8 @@ func TestReplyDuringASendThatErrorsStillRecordsTheOwedReceiptAsSent(t *testing.T
 		"body": "Answer this before the send errors.", "target": "session:s1", "delivery": "steer",
 	}, "alice")
 	if replied != 1 {
-		t.Fatalf("the session answered %d times, want exactly one reply from inside the send", replied)
+		t.Fatalf("the session answered %d times, want exactly one reply from inside the send; the message's attempts: %s",
+			replied, describeAttempts(message.Deliveries))
 	}
 
 	row := messageAttemptRow(t, database, message.ID, 1)
@@ -2375,7 +2387,8 @@ func TestErrorReplyDuringASendLeavesOneReceiptAgreeingWithTheAttempt(t *testing.
 		"body": "Refuse this while it is still in flight.", "target": "session:s1", "delivery": "steer",
 	}, "alice")
 	if replied != 1 {
-		t.Fatalf("the session refused %d times, want exactly one refusal from inside the send", replied)
+		t.Fatalf("the session refused %d times, want exactly one refusal from inside the send; the message's attempts: %s",
+			replied, describeAttempts(message.Deliveries))
 	}
 
 	var receipts []string
@@ -2484,7 +2497,7 @@ func TestAMessageSenderPastItsLeaseLeavesTheResumedAttemptsReceiptAlone(t *testi
 		t.Fatalf("resume the lapsed attempt: status=%d body=%s", resumed.Code, resumed.Body.String())
 	}
 	if attempt := decodeBody[model.MessageDelivery](t, resumed); attempt.Attempt != 1 {
-		t.Fatalf("the retry took attempt %d, want the lapsed attempt 1 resumed", attempt.Attempt)
+		t.Fatalf("the retry took %s, want the lapsed attempt 1 resumed", describeAttempts([]model.MessageDelivery{attempt}))
 	}
 	answerTheSend = false
 	// Attempt 1 already carried the receipt its first send recorded, which the reset above left
@@ -2588,10 +2601,11 @@ func TestAResumedRoleMessageKeepsItsOriginalRecipient(t *testing.T) {
 	}
 	resumed := decodeBody[model.MessageDelivery](t, retry)
 	if resumed.Attempt != 1 || resumed.SessionID != "s1" || resumed.State != "sent" {
-		t.Fatalf("resumed attempt = %#v, want attempt 1 still recorded against s1", resumed)
+		t.Fatalf("resumed attempt = %s, want attempt 1 still recorded against s1", describeAttempts([]model.MessageDelivery{resumed}))
 	}
 	if len(sends) != 1 || sends[0]["target_session"] != "s1" || sends[0]["idempotency_key"] != message.ID+":steer" {
-		t.Fatalf("resumed send = %#v, want the original key delivered to s1", sends)
+		t.Fatalf("resumed send = %#v, want the original key delivered to s1; attempts: %s",
+			sends, describeAttempts(messageAttempts(t, database, message.ID)))
 	}
 	if roleLookups != 1 {
 		t.Fatalf("role lookups = %d, want only the one the message's creation made", roleLookups)
@@ -2705,7 +2719,7 @@ func TestIssueMessageListCarriesEachRootWithItsThreadAndDeliveries(t *testing.T)
 	}
 	if got := rows[1].Message.Deliveries; len(got) != 1 || got[0].Attempt != 1 ||
 		got[0].SessionID != "s1" || got[0].State != "sent" {
-		t.Fatalf("targeted root deliveries = %#v, want its one sent attempt to s1", got)
+		t.Fatalf("targeted root deliveries = %s, want its one sent attempt to s1", describeAttempts(got))
 	}
 	if len(rows[1].Replies) != 0 {
 		t.Fatalf("targeted root replies = %#v, want none", rows[1].Replies)
