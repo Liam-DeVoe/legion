@@ -18,9 +18,12 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testnats"
 )
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+// TestMain removes the NATS server the package's tests share (testnats.Main), which the intake's
+// tests connect to, and the databases their pools are cloned on (storetest.Run).
+func TestMain(m *testing.M) { os.Exit(storetest.Run(func() int { return testnats.Main(m) })) }
 
 // fakeDaemon is a Legion daemon stand-in whose state document and status the test moves between
 // passes, counting the reads it served.

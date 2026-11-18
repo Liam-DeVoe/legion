@@ -30,11 +30,12 @@ import (
 const StatePath = "/legion/v1/state"
 
 // RequestTimeout bounds one call to a daemon — the request and reading its body — unless the
-// caller's own context ends sooner, which always wins. It is the plan's D14: twenty seconds is
-// room for a daemon under load to project a state of some megabytes and for Dispatch to read it
-// at ResponseLimit, and a bound at all is what keeps a minute's pass from piling up behind a
-// daemon that accepts a connection and never answers.
-const RequestTimeout = 20 * time.Second
+// caller's own context ends sooner, which always wins. It is the daemon's own bound on the read it
+// serves, sixty seconds (stateReadBound, packages/daemon/internal/api/server.go:46-51, which
+// measured a healthy read of the production deployment at 8.34 s): a shorter window would give up
+// on a read the daemon is still allowed to finish, and a bound at all is what keeps a whole read
+// from holding its project's runner behind a daemon that accepts a connection and never answers.
+const RequestTimeout = 60 * time.Second
 
 // ResponseLimit is the most of a daemon's answer Dispatch reads: 8 MiB, about nine times the
 // 877,746 bytes the INFRA daemon's state measured at (the plan's D14). A body over it is a failed

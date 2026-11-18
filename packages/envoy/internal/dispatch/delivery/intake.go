@@ -58,7 +58,7 @@ type Intake struct {
 // newIntake builds an Intake on natsClient, a connected client StartIntakes opens for it alone,
 // holding its durable and taking it over under a hold and a lease it takes on leases, and routing
 // by settings.
-func newIntake(natsClient *bus.Client, pool *store.Pool, leases intakeLeases, github *githubapp.Client, broker *events.Broker, settings *SettingsCache) *Intake {
+func newIntake(natsClient *bus.Client, pool *store.Pool, leases DurableLeases, github *githubapp.Client, broker *events.Broker, settings *SettingsCache) *Intake {
 	in := &Intake{pool: pool, github: github, events: broker, settings: settings}
 	in.heldDurable = newHeldDurable(natsClient, leases, deliveryConsumerConfig, intakeKey, in.deliver)
 	return in

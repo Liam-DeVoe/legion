@@ -55,9 +55,14 @@ type intakeDelivery struct {
 // decoded it, so the handler does not decode it again. Keying decodes every message it wants, a
 // pull request's and a workflow run's alike, so the envelope is absent only when that decode
 // failed and deliver reports the failure.
+//
+// It is instead work that is not a message when work is set (heldDurable.queue): the key's
+// goroutine runs it in its turn, under the delivery's handling context, and the item holds no
+// message.
 type intakeMessage struct {
 	msg      *natsgo.Msg
 	envelope *contracts.Envelope
+	work     func(context.Context)
 }
 
 // subscribe subscribes the intake's handling to its durable's push deliveries at deliverSubject
@@ -74,7 +79,13 @@ func (d *heldDurable) subscribe(deliverSubject string) (*natsgo.Subscription, er
 		nats: d.nats, key: d.key, hold: d.hold, subject: deliverSubject,
 		handling: handling, abandon: abandon,
 	}
-	delivery.keys = newKeyedRunner(func(message intakeMessage) { d.handle(delivery, message) })
+	delivery.keys = newKeyedRunner(func(message intakeMessage) {
+		if message.work != nil {
+			message.work(delivery.handling)
+			return
+		}
+		d.handle(delivery, message)
+	})
 	wanted := d.config()
 	sub, err := subscribeDurable(d.nats, wanted, deliverSubject, delivery.receive)
 	if err != nil {
@@ -197,7 +208,11 @@ func (d *intakeDelivery) stop(ctx context.Context) {
 			slog.Error("dispatch delivery: drain the intake's subscription", "error", err)
 		}
 		for _, waiting := range d.keys.stop() {
-			d.giveBack(waiting.msg)
+			// Work queued on a key (heldDurable.queue) holds no message to give back: it is
+			// dropped, and its owner queues it again at its next take-over.
+			if waiting.msg != nil {
+				d.giveBack(waiting.msg)
+			}
 		}
 		// Returns once every handler has, which a handler given up (abandon) does promptly: its
 		// GitHub calls and its writes all run under its context.

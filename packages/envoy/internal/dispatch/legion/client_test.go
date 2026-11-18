@@ -25,12 +25,13 @@ func stateServer(t *testing.T, body string) *httptest.Server {
 	return server
 }
 
-// TestTheStateReadIsBoundedByTheRequestTimeout: the window is the plan's D14, twenty seconds, and
-// New gives it to every client it builds, so a daemon that accepts a connection and never answers
-// ends one pass rather than holding the minute's loop for good.
+// TestTheStateReadIsBoundedByTheRequestTimeout: the window is the daemon's own bound on the read,
+// sixty seconds (dispatch://INFRA-3931's D9), and New gives it to every client it builds, so a
+// daemon that accepts a connection and never answers ends one whole read rather than holding its
+// project's runner for good.
 func TestTheStateReadIsBoundedByTheRequestTimeout(t *testing.T) {
-	if RequestTimeout != 20*time.Second {
-		t.Fatalf("RequestTimeout = %s, want the 20s of the plan's D14", RequestTimeout)
+	if RequestTimeout != 60*time.Second {
+		t.Fatalf("RequestTimeout = %s, want the daemon's own 60s bound on the read", RequestTimeout)
 	}
 	if window := New("http://daemon.internal.example").http.Timeout; window != RequestTimeout {
 		t.Fatalf("New gives a client a %s window, want RequestTimeout (%s)", window, RequestTimeout)
@@ -41,7 +42,7 @@ func TestTheStateReadIsBoundedByTheRequestTimeout(t *testing.T) {
 	defer silent.Close()
 
 	// The client's window is what ends the read, shrunk here so the test does not wait the
-	// production twenty seconds out.
+	// production sixty seconds out.
 	client := New(silent.URL, WithTimeout(150*time.Millisecond))
 
 	started := time.Now()
