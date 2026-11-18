@@ -1232,3 +1232,37 @@ test("a tap that ends the edit holds the title whole until its click", async () 
     restore();
   }
 });
+
+// The open actions group hangs over the header's first rows, and at 390 px it covers the title
+// and the properties line whole. A reader who Tabs on past its last action puts the focus on a
+// control under it, which they then cannot see (WCAG 2.4.11), so the group closes as the focus
+// leaves it by Tab, as it does at a press outside it and at Escape: the ARIA menu-button pattern
+// closes the menu at a Tab too.
+test("the actions group closes once Tab takes the focus out of it", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const view = renderHeader();
+
+  try {
+    const control = await screen.findByRole("button", { name: "Issue actions" });
+    act(() => control.focus());
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(control).toHaveAttribute("aria-expanded", "true"));
+    const group = document.getElementById(control.getAttribute("aria-controls") ?? "");
+    if (group === null) throw new Error("the actions control names no group");
+    const actions = within(group).getAllByRole("button");
+    expect(actions.length).toBeGreaterThan(0);
+    for (const action of actions) {
+      await user.tab();
+      expect(action).toHaveFocus();
+      expect(control).toHaveAttribute("aria-expanded", "true");
+    }
+    // One Tab more takes the focus out of the group, to the control after it in the header.
+    await user.tab();
+    expect(group.contains(document.activeElement)).toBe(false);
+    await waitFor(() => expect(control).toHaveAttribute("aria-expanded", "false"));
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
