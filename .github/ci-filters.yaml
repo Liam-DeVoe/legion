@@ -604,6 +604,10 @@ claude_envoy:
   - 'packages/test-fixtures/src/**'
   # why: .github/ci-notes/ci.md#claude_envoy-testsenvoy-channel-servertestts-holds-the-marketplace
   - '.claude-plugin/marketplace.json'
+  # tests/packed-skills.test.ts runs the release's check of the packed tarball and the
+  # script that check asks for this repository's url.
+  - '.github/scripts/release-claude-envoy-check-packed.sh'
+  - '.github/scripts/repo-paths.sh'
 contracts:
   - *ci_router
   - *ci_filters_data

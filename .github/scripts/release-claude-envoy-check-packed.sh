@@ -36,8 +36,10 @@ for manifest in package/package.json package/.claude-plugin/plugin.json \
     | jq -e --arg v "$VERSION" '.version == $v'
 done
 members=$(tar -tzf packages/claude-envoy/*.tgz)
+# A here-string and no `printf … | grep -q`, for the reason check-packed-skills.sh gives: grep -q
+# exits at its first match, and under pipefail the printf it leaves writing fails the step.
 for member in package/dist/envoy-channel.js package/legion/.claude-plugin/plugin.json; do
-  if ! printf '%s\n' "$members" | grep -qxF "$member"; then
+  if ! grep -qxF "$member" <<<"$members"; then
     echo "::error::the packed tarball holds no $member, which the installed plugin runs from"
     exit 1
   fi
