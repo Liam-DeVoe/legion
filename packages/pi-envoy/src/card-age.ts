@@ -258,7 +258,10 @@ const DELIVERED_LINE = /^ {2}delivered: /;
  * A card's text with `delivered:`, and `waited:` and `clocks:` when material, after the line that
  * dates its send; undefined for a text with no such line, or one that already says when it was
  * delivered. `clockOffset` is how far this machine's clock ran ahead of the Envoy listener's
- * (negative: behind) when the card's time was first used, when known.
+ * (negative: behind) when the card's time was first used, when known. Only the card's fields are
+ * read, the `envoy:` line and the lines indented under it: what follows them (the blocks of
+ * another author's words, `renderInbound`, and a person's diff) holds whatever its author wrote,
+ * `delivered:` lines included.
  */
 export function withDelivery(
   text: string,
@@ -266,8 +269,10 @@ export function withDelivery(
   clockOffset?: number
 ): string | undefined {
   const lines = text.split("\n");
-  const sentIndex = lines.findIndex((line) => SENT_LINE.test(line));
-  if (sentIndex < 0 || lines.some((line) => DELIVERED_LINE.test(line))) return undefined;
+  const endsAt = lines.findIndex((line, index) => index > 0 && !line.startsWith(" "));
+  const fieldLines = endsAt < 0 ? lines : lines.slice(0, endsAt);
+  const sentIndex = fieldLines.findIndex((line) => SENT_LINE.test(line));
+  if (sentIndex < 0 || fieldLines.some((line) => DELIVERED_LINE.test(line))) return undefined;
   const matched = SENT_LINE.exec(lines[sentIndex] ?? "");
   const field = matched?.[1] ?? "at";
   const sent = Date.parse(toonString(matched?.[2] ?? ""));

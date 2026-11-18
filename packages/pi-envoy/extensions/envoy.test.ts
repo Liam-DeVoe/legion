@@ -66,6 +66,7 @@ import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
 import type { TmuxPlace, TmuxPlaceReading } from "@legion/envoy-client/tmux-place";
 import { envoyToolSpecs } from "@legion/envoy-client/tool-contract";
 import { UNRESPONSIVE_RULE } from "@legion/envoy-client/transport";
+import { splitWordsBlocks } from "@legion/envoy-client/words-block";
 import { matchInjectedUserTurn } from "@legion/pi-shared/injected-user-turns";
 import {
   envoyPluginInterface,
@@ -6682,7 +6683,7 @@ console.log(JSON.stringify(args));
     if (content === undefined) throw new Error("structured delivery was not injected");
     expect(decode(content)).toEqual({
       envoy: {
-        to: "you (ses_omp)",
+        to: "you",
         from: "envoy",
         at: "1970-01-01T00:00:00Z",
         id: "evt-toon-structured",
@@ -6726,7 +6727,7 @@ console.log(JSON.stringify(args));
     if (content === undefined) throw new Error("plain-text delivery was not injected");
     expect(decode(content)).toEqual({
       envoy: {
-        to: "you (ses_omp)",
+        to: "you",
         from: "envoy",
         at: "1970-01-01T00:00:00Z",
         id: "evt-toon-plain-text",
@@ -6736,7 +6737,7 @@ console.log(JSON.stringify(args));
     });
   });
 
-  test("names the sender and injects a reply instruction for a peer agent message", async () => {
+  test("names the sender of a peer agent message and puts its words in a block, with no reply command", async () => {
     // Query isolation gives this stateful extension its own NATS subscription.
     const { default: envoyExtension } = await import("./envoy.ts?sender-reply-hint");
     const fixture = createPi();
@@ -6767,19 +6768,16 @@ console.log(JSON.stringify(args));
     await injected.promise;
     const content = fixture.messages[0];
     if (content === undefined) throw new Error("peer delivery was not injected");
-    expect(decode(content)).toEqual({
+    const { head, blocks } = splitWordsBlocks(content);
+    expect(decode(head)).toEqual({
       envoy: {
-        to: "you (ses_omp)",
+        to: "you",
         from: "ses_peer",
         at: "1970-01-01T00:00:00Z",
         id: "evt-peer-message",
-        reply_with: {
-          tool: "envoy_send",
-          args: { session_id: "ses_peer", in_reply_to: "evt-peer-message", message: "..." },
-        },
-        summary: "hello from a peer",
       },
     });
+    expect(blocks).toEqual([{ tag: "message", name: "message", text: "hello from a peer" }]);
   });
 
   test("renders a human envelope without reply metadata", async () => {
@@ -6814,7 +6812,7 @@ console.log(JSON.stringify(args));
     if (content === undefined) throw new Error("human delivery was not injected");
     expect(decode(content)).toEqual({
       envoy: {
-        to: "you (ses_omp)",
+        to: "you",
         from: "human",
         at: "1970-01-01T00:00:00Z",
         id: "evt-human-message",
@@ -6854,18 +6852,16 @@ console.log(JSON.stringify(args));
     await injected.promise;
     const content = fixture.messages[0];
     if (content === undefined) throw new Error("echo delivery was not injected");
-    const note = decode(content) as { envoy: Record<string, unknown> };
-    expect(note.envoy).toEqual({
-      to: "you (ses_omp)",
-      from: "ses_omp",
-      at: "1970-01-01T00:00:00Z",
-      id: "evt-self-echo",
-      reply_with: {
-        tool: "envoy_send",
-        args: { session_id: "ses_omp", in_reply_to: "evt-self-echo", message: "..." },
+    const { head, blocks } = splitWordsBlocks(content);
+    expect(decode(head)).toEqual({
+      envoy: {
+        to: "you",
+        from: "ses_omp",
+        at: "1970-01-01T00:00:00Z",
+        id: "evt-self-echo",
       },
-      summary: "note to self",
     });
+    expect(blocks).toEqual([{ tag: "message", name: "message", text: "note to self" }]);
   });
   test("deduplicates a webhook redelivery without suppressing a later envelope", async () => {
     const { default: envoyExtension } = await import("./envoy.ts?dispatch-echo");
@@ -22446,9 +22442,9 @@ describe("consumer delivery", () => {
       });
 
       expect(reads).toEqual([`/api/v1/comments/${CUT_COMMENT}`]);
-      // Byte for byte: the body the route answered, written as the card writes a text holding
-      // blank lines (one quoted scalar), and no note, because nothing is missing.
-      expect(card).toContain(`body: ${JSON.stringify(WHOLE)}`);
+      // Byte for byte: the body the route answered, in the block after the card's fields that
+      // holds the author's words as they are, and no note, because nothing is missing.
+      expect(card).toContain(`\n<body>\n${WHOLE}\n</body>`);
       expect(card).not.toContain("first part only");
     });
 
@@ -22482,7 +22478,7 @@ describe("consumer delivery", () => {
       );
 
       expect(reads).toEqual([`/api/v1/comments/${CUT_COMMENT}`]);
-      expect(card).toContain(`body: ${JSON.stringify(WHOLE)}`);
+      expect(card).toContain(`\n<body>\n${WHOLE}\n</body>`);
       expect(card).not.toContain("too large for the bus");
     });
 

@@ -65,7 +65,7 @@ envoy_send(session_id="<id>", message="Review complete: <url>", in_reply_to="<id
 
 - Reply to a card from another session from its own fields, since the card carries no reply command.
   A direct reply is `envoy_send` to the session in `from`, with `in_reply_to` set to the card's `id`.
-  A reply to a role the sender holds is `envoy_publish` to `notifications.role.<role>`, where `<role>` is one of the card's `role` values, with `in_reply_to` set to the card's `id`.
+  A reply to a role the sender holds is `envoy_publish` to `notifications.role.<role>`, where `<role>` is the card's `role` field, or one of its `roles` where the sender holds more than one, with `in_reply_to` set to the card's `id`.
   A card that reads `to: you` came to your session directly.
   A card with no `to` came through a role you hold or a topic you follow.
 

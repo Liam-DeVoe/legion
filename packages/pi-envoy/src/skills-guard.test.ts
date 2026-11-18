@@ -171,8 +171,11 @@ test("the injected dispatch-first context holds the blocker and accepted-request
 // reads there, so it cannot live elsewhere. The line is 14 words, the shortest that carries the
 // two strings the check reads, so the three skills, 2,325 words on main, stand at 2,325 + 14 =
 // 2,339 and the bound moves from 2,326 by those 14 to 2,340, keeping the margin above it the raise
-// before set and adding none.
-test("the three Dispatch skills total fewer than 2,340 words", () => {
+// before set and adding none. R5 of dispatch://INFRA-3686 has every session that follows a
+// Legion issue's topic told that a status move the daemon writes comes at `low`, for its next
+// turn, and `dispatch` is the skill every such session loads. That sentence is 15 words, so the
+// bound moves by those 15 to 2,355.
+test("the three Dispatch skills total fewer than 2,355 words", () => {
   const words = ["dispatch", "dispatch-first", "dispatch-writing-specs"]
     .flatMap((skill) => files(path.join(staged, skill)))
     .map(
@@ -182,7 +185,7 @@ test("the three Dispatch skills total fewer than 2,340 words", () => {
           .filter((token) => token !== "").length
     )
     .reduce((total, count) => total + count, 0);
-  expect(words).toBeLessThan(2_340);
+  expect(words).toBeLessThan(2_355);
 });
 
 test("the staged decisions rule separates material choices from spec details", () => {

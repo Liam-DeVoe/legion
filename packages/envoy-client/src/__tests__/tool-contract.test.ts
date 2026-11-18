@@ -521,8 +521,10 @@ describe("message metadata", () => {
     ]);
   });
 
-  // Nothing in Envoy orders, holds or delivers a message by its urgency: the renderers only show
-  // it. A sender told nothing more takes a "high" for a faster lane that does not exist.
+  // A host delivers a session's message whatever its urgency, and its card shows the urgency the
+  // sender set: only a `low` card of the Legion daemon or of a Dispatch event waits for the
+  // reader's next turn, and these tools send neither. A sender told nothing more takes a "high"
+  // for a faster lane that does not exist.
   test("tells a sender that urgency is for the reader and does not deliver a message sooner", () => {
     // The JSON schema is what a model is shown for the tool's arguments.
     const shown = JSON.stringify(z.toJSONSchema(MessageMetadataSchema));
