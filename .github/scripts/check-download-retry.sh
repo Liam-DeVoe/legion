@@ -320,7 +320,8 @@
 #     (odd_command);
 #   - an option of a wrapper this check drops (PASSTHROUGH) other than those it reads, `env -i`,
 #     `env -u <name>`, `nice -n <n>`, `sudo -E` and `command -v` (WRAPPER_OPTIONS), `env -S`
-#     among them, and `busybox` as a command word with any program after it, wherever written,
+#     among them, and `busybox` as a command word with any program after it, wherever written
+#     (`busybox --help`, `--list` and `--list-full` run no program and pass),
 #     whatever the command holds, in a step, a script, the text of a shell's `-c` and a
 #     Dockerfile RUN: this check reads no fetch and no run of a script after either, and until
 #     round 38 it read the option, or `busybox`, as the program that runs and so the fetch behind
@@ -2499,6 +2500,11 @@ def odd_command(words: list[str]) -> tuple[str, bool, bool] | None:
                 wrapper = first
             continue
         if PROGRAM.sub("", first).rsplit("/", 1)[-1] == "busybox":
+            # `busybox --help`, `--list` and `--list-full` print busybox's own text and run no
+            # applet, as `command -v` runs no command; the worker image's version check writes
+            # the first (cybermonklabs/legion#4377). Every other word names an applet it runs.
+            if rest[1:2] in (["--help"], ["--list"], ["--list-full"]):
+                return None
             return BUSYBOX_RUN.format(program=" ".join(rest[:2])), False, True
         if first == "retry_fetch":
             if wrapper is not None:

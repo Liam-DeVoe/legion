@@ -12573,7 +12573,8 @@ check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')
 echo "case: r37 W14 a wrapper option this check does not read, and busybox, are refused by name, and the options it reads pass through to the command"
 root=$(fixture r37-w14-wrappers)
 printf '%s\n' 'RUN nice --adjustment=5 curl -fsSL -o b https://example.com/b' \
-  'RUN test "$(env -u CGO_ENABLED go env CGO_ENABLED)" = 0' >> "$root/packages/daemon/docker/worker.Dockerfile"
+  'RUN test "$(env -u CGO_ENABLED go env CGO_ENABLED)" = 0' \
+  'RUN busybox --help > /tmp/busybox-help' >> "$root/packages/daemon/docker/worker.Dockerfile"
 cat > "$root/.github/workflows/case.yaml" <<'YAML'
 name: Case
 on: [push]
@@ -12602,6 +12603,8 @@ jobs:
         run: |
           . .github/scripts/ci-retry.sh
           retry_fetch "the asset" 30 -- env -i PATH=/x curl -fsSL --max-time 30 -o b https://example.com/b
+      - name: Print busybox's own help, which runs no applet
+        run: busybox --help | head -n 1 && busybox --list
 YAML
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
@@ -12629,6 +12632,13 @@ check "passes env -i inside the helper, a retried fetch under its key" \
   "$(is "$(contains "$out" "Run env -i inside the helper")" false)"
 check "passes the RUN that reads go env behind env -u" \
   "$(is "$(contains "$out" "worker.Dockerfile,line=4")" false)"
+# `busybox --help`, `--list` and `--list-full` run no applet, as `command -v` runs no command, so
+# they pass in a step and in a RUN; the worker image's version check writes the first
+# (cybermonklabs/legion#4377).
+check "passes a step that prints busybox's own help and list" \
+  "$(is "$(contains "$out" "Print busybox's own help")" false)"
+check "passes the RUN that prints busybox's own help" \
+  "$(is "$(contains "$out" "worker.Dockerfile,line=5")" false)"
 check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 9)"
 
 # W15. Four routes the Spec draft's review drove past the gate at a856bb35, each exit 0 under a
