@@ -897,6 +897,8 @@ Two kinds of row keep an exact count.
   that work, and the acknowledgement's trip to the server, which the campaign of dispatch://INFRA-1113 measured at 516.8 ms at its largest, come to about 717 ms together, a factor of about 80 below a minute.
   The progress keeper is no part of it.
   At a minute its period is 20 s (`spec.AckWait/3` in `consume.go`) and that handler acknowledges in about 200 ms, so the keeper never reports for that message at all.
+  `TestConsumePreparesAnIssueEventsRepositoryBeforeApplyingIt` (`packages/daemon/internal/intake/intake_test.go`) counts the preparations of one Dispatch issue event, the failed one and its retry, behind the same one-minute window, on the same margin.
+  At `consumerSpec`'s 200 ms a late progress report let the server deliver the applied message again, and the count read a third preparation under 32 busy loops (dispatch://INFRA-3149).
   The carve-out ends where the margin closes, and a reader finds that out by measuring the handler's work and the acknowledgement's trip again, not by reading this sentence.
 
 - A row whose subject is the broker's own delivery behaviour must count deliveries, because the count is what it proves.
