@@ -30,8 +30,8 @@ structure SecretRule where
   /-- `none` means the default `["authorization"]`. Compared ASCII-case-insensitively. -/
   headers : Option (List String) := none
   allow : Option (List Allow) := none
-  /-- `""`, `"aws"` or `"azure"`. A plain `String`, not an `Option`, because the Go side
-  sends the empty string for an entry with no kind. -/
+  /-- `""`, `"aws"`, `"azure"` or `"dpop"`. A plain `String`, not an `Option`, because the Go
+  side sends the empty string for an entry with no kind. -/
   kind : String := ""
   /-- Judge lifetime in seconds. -/
   judge : Option Nat := none
@@ -231,12 +231,12 @@ def judgeOK : Option Nat → Bool
   | none => true
   | some l => decide (l ≤ 900)
 
-/-- The three kinds an entry may name. -/
-def kindOK (k : String) : Bool := k == "" || k == "aws" || k == "azure"
+/-- The four kinds an entry may name. -/
+def kindOK (k : String) : Bool := k == "" || k == "aws" || k == "azure" || k == "dpop"
 
 /-- Rules-file validation. This is the same answer as Go's `Validate` returning `nil`:
 the names are distinct, **every** entry binds at least one host (not only a judged one),
-a judge lifetime is at most 900 s, and a kind is `""`, `"aws"` or `"azure"`. -/
+a judge lifetime is at most 900 s, and a kind is `""`, `"aws"`, `"azure"` or `"dpop"`. -/
 def validate (rules : Rules) : Bool :=
   namesUnique (rules.secrets.map (·.name)) &&
   rules.secrets.all fun s => !s.hosts.isEmpty && judgeOK s.judge && kindOK s.kind

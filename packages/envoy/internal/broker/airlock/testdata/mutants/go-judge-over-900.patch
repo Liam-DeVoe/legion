@@ -11,6 +11,6 @@
 -		case s.Judge != nil && *s.Judge > maxJudgeSeconds:
 -			return fmt.Errorf("%s: judge %d is above %d seconds", entry(i, s), *s.Judge, maxJudgeSeconds)
 +		// MUTANT: a judge above 900 seconds is accepted.
- 		case s.Kind != "" && s.Kind != "aws" && s.Kind != "azure":
- 			return fmt.Errorf("%s: kind %q is not %q, %q or %q", entry(i, s), s.Kind, "", "aws", "azure")
+ 		case s.Kind != "" && s.Kind != KindAWS && s.Kind != KindAzure && s.Kind != KindDPoP:
+ 			return fmt.Errorf("%s: kind %q is not %q, %q, %q or %q", entry(i, s), s.Kind, "", KindAWS, KindAzure, KindDPoP)
  		}
