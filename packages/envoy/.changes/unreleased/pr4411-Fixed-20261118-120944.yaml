@@ -1,0 +1,5 @@
+kind: Fixed
+body: A keyed Dispatch write whose caller the keyed layer could not resolve, because the sign-in issuer, a session store or a service-account token's issuer was down for a moment, no longer runs with no key when the handler's own lookup of the caller then succeeds. The handler is handed the layer's refusal as the caller, so the attempt is refused exactly as before with nothing kept under the key, and the client's retry under the same `Idempotency-Key` writes once instead of a second time.
+time: 2026-11-18T12:09:44.668131759Z
+custom:
+    Issue: pr4411
