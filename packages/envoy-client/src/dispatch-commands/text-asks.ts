@@ -30,8 +30,8 @@ function openerOf(line: string): TextAsk | undefined {
   if (start < 0 || end <= start) return undefined;
   const attributes = line.slice(start + "ask{".length, end);
   const values = new Map<string, string>();
-  for (const match of attributes.matchAll(/([\w-]+)="([^"]*)"/g)) {
-    values.set(match[1], attributeValue(match[2]));
+  for (const [, name = "", raw = ""] of attributes.matchAll(/([\w-]+)="([^"]*)"/g)) {
+    values.set(name, attributeValue(raw));
   }
   const id = /^#([^\s}]+)/.exec(attributes)?.[1] ?? values.get("id");
   if (id === undefined) return undefined;
