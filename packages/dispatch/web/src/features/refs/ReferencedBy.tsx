@@ -339,14 +339,14 @@ export function ReferencedBy({
           <span>Referenced by unavailable.</span>
           {/* In Details (`page`) the Retry is not disabled while it reads, since Chromium drops
               the focus of a focused button that turns disabled to the page: a keyboard reader
-              stays on it, and a press then sends nothing. */}
+              stays on it, and a press made meanwhile joins the read that is out rather than
+              ending it and sending another, which a check of the drawn `isFetching` would let
+              through for a second press made before the first one's read is drawn. */}
           <button
             aria-busy={page ? query.isFetching || undefined : undefined}
             className={`font-medium underline ${tokens.link}`}
             disabled={!page && query.isFetching}
-            onClick={() => {
-              if (!query.isFetching) void query.refetch();
-            }}
+            onClick={() => void (page ? query.refetch({ cancelRefetch: false }) : query.refetch())}
             type="button"
           >
             Retry

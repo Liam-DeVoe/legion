@@ -172,7 +172,7 @@ test("with page false an issue's own comment that references it is listed, and w
 // In Details the Retry of a failed read of what references the issue is not disabled while it
 // reads: Chromium would drop its focus to the page (`chromium-focus-fixup.ts`). A keyboard
 // reader on the Retry above the list Details holds stays on it while the read is out, and a
-// press then sends nothing.
+// press then joins that read.
 test("Details' Referenced by Retry pressed by keyboard over the list it holds keeps the focus while it reads", async () => {
   const getReferences = spyOn(api, "getReferences").mockResolvedValue(READ);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -218,6 +218,51 @@ test("Details' Referenced by Retry pressed by keyboard over the list it holds ke
     await waitFor(() => expect(within(list).queryByRole("button", { name: "Retry" })).toBeNull());
   } finally {
     restoreFocus?.();
+    view.unmount();
+    client.clear();
+    getReferences.mockRestore();
+  }
+});
+
+// A second press of Details' Referenced by Retry made before React draws the first press's read
+// joins that read: the drawn `isFetching` is still false then, and a refetch that ends the read
+// out and sends another would send two reads for the two presses.
+test("two presses of Details' Referenced by Retry before the list is drawn again send one read", async () => {
+  const getReferences = spyOn(api, "getReferences").mockResolvedValue(READ);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <ReferencedBy page reference={REFERENCE} />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+
+  try {
+    const list = await screen.findByRole("region", { name: "Referenced by" });
+    await within(list).findByText(WORDS.otherComment);
+    getReferences.mockRejectedValue(new Error("the references are down"));
+    await act(async () => {
+      await client.invalidateQueries();
+    });
+    const retry = within(list).getByRole("button", { name: "Retry" });
+    const again = Promise.withResolvers<GraphReferences>();
+    getReferences.mockImplementation(() => again.promise);
+    // Both presses in one task, so React draws neither press's read before the second.
+    act(() => {
+      retry.click();
+      retry.click();
+    });
+    expect(
+      getReferences,
+      "the second press ended the read the first one sent and sent another"
+    ).toHaveBeenCalledTimes(3);
+
+    await act(async () => {
+      again.resolve(READ);
+    });
+    await waitFor(() => expect(within(list).queryByRole("button", { name: "Retry" })).toBeNull());
+  } finally {
     view.unmount();
     client.clear();
     getReferences.mockRestore();
