@@ -2,14 +2,17 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -28,13 +31,28 @@ import (
 // release marked it with while the document stood (laterNodeState),
 // which is no less the removed document's.
 //
+// The earlier build's removal takes the document's owner row first, as every writer of the store
+// does: a settlement of the document, which the document's own room runs in the background, takes
+// the issue's row, then the document's revision fence, then the document's row as a version's
+// insert checks its foreign key, and a removal that deleted the document without the owner row
+// held its row and then waited at the delete's cascade into that fence, which the settlement
+// held: a deadlock, now and then, in the rows above. The last row forces that order
+// (removeBesideASettlement): a transaction holds the issue's row and the fence while the removal
+// runs, and takes the document's row only once the removal waits. The removal must wait at the
+// issue's row and finish after the settlement commits.
+//
 // Its controls are the create's gone step taken out: the node then states nothing for the new
-// document, and keeps the removed one's event and its one live statement; and the gone step taken
-// for a live node alone, which moves the marked node live with no gone statement between.
+// document, and keeps the removed one's event and its one live statement; the gone step taken
+// for a live node alone, which moves the marked node live with no gone statement between; and
+// the removal's owner row taken out, which deadlocks the last row.
 func TestADocumentMadeWhereAnOrphanedNodeStandsStatesItGoneThenLive(t *testing.T) {
-	for _, orphan := range []struct{ name, state string }{
-		{"a live node", graphstore.StateLive},
-		{"a node a later release marked", laterNodeState},
+	for _, orphan := range []struct {
+		name, state string
+		settling    bool
+	}{
+		{"a live node", graphstore.StateLive, false},
+		{"a node a later release marked", laterNodeState, false},
+		{"a live node, removed while a settlement holds the issue and the fence", graphstore.StateLive, true},
 	} {
 		t.Run(orphan.name, func(t *testing.T) {
 			handler, database := newTestHandlerWithStore(t)
@@ -47,7 +65,11 @@ func TestADocumentMadeWhereAnOrphanedNodeStandsStatesItGoneThenLive(t *testing.T
 				markNodeState(t, database, graphstore.KindArtifact, first.RefKey, orphan.state)
 				want = append(want, orphan.state)
 			}
-			removeAsAnEarlierBuild(t, database, first.ID)
+			if orphan.settling {
+				removeBesideASettlement(t, database, issue.Key, first.ID)
+			} else {
+				removeAsAnEarlierBuild(t, database, first.ID)
+			}
 
 			second := emptyDocument(t, handler, issue.Key, "Scratch.md")
 			if second.RefKey != first.RefKey {
@@ -286,38 +308,129 @@ func TestARemovalLeavesTheGoneNodeOfAnEarlierBuildsDocumentGone(t *testing.T) {
 	requireProjectsComplete(t, database)
 }
 
-// removeAsAnEarlierBuild removes the untouched document as a build before this one does: the rows
-// removeArtifact clears and the artifact row, in one transaction, and no node written.
+// removeAsAnEarlierBuild removes the untouched document as a build before this one does
+// (earlierBuildRemoval), failing the test where it cannot.
 func removeAsAnEarlierBuild(t *testing.T, database *store.Store, artifactID string) {
 	t.Helper()
-	ctx := context.Background()
-	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
-		clearAndDeleteArtifact(t, ctx, tx, artifactID)
-		return nil
-	}); err != nil {
+	if err := earlierBuildRemoval(context.Background(), database, artifactID); err != nil {
 		t.Fatalf("remove document %s as an earlier build does: %v", artifactID, err)
 	}
 }
 
+// earlierBuildRemoval removes the untouched document as a build before this one does, in one
+// transaction: the document's owner row first, as every writer of the store takes it
+// (events.LockOwnerRows, the order a settlement of the document takes it in), then the rows
+// removeArtifact clears and the artifact row, and no node written.
+func earlierBuildRemoval(ctx context.Context, database *store.Store, artifactID string) error {
+	return pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+		artifact, err := loadArtifactRowByID(ctx, tx, artifactID)
+		if err != nil {
+			return fmt.Errorf("read document %s: %w", artifactID, err)
+		}
+		owners := events.OwnerRows{}
+		var issue string
+		if artifact.IssueKey != nil {
+			issue = *artifact.IssueKey
+		}
+		owners.Add(issue, artifact.ID, "document "+artifact.ID)
+		if err := events.LockOwnerRows(ctx, tx, owners); err != nil {
+			return err
+		}
+		return deleteArtifactRows(ctx, tx, artifact)
+	})
+}
+
+// removeBesideASettlement removes the untouched document as an earlier build does while a
+// transaction holds what a settlement of it takes, in the store's lock order: the issue's row,
+// then the document's revision fence row (document_block_versions), and then, once the removal
+// waits, the document's own row `for key share`, as a version's insert checks its foreign key.
+// The removal must wait at the issue's row, so the settlement's last step takes nothing the
+// removal holds; it then commits, and the removal finishes.
+func removeBesideASettlement(t *testing.T, database *store.Store, issue, artifactID string) {
+	t.Helper()
+	ctx := context.Background()
+	settlement, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the settlement: %v", err)
+	}
+	defer settlement.Rollback(ctx)
+	for _, step := range []struct{ what, statement, key string }{
+		{"the issue's row", `select closed_at is null from issues where key = $1 for no key update`, issue},
+		{"the document's revision fence", `select 1 from document_block_versions where artifact_id = $1::uuid for no key update`, artifactID},
+	} {
+		if tag, err := settlement.Exec(ctx, step.statement, step.key); err != nil || tag.RowsAffected() != 1 {
+			t.Fatalf("take %s as a settlement does: %d row(s), %v", step.what, tag.RowsAffected(), err)
+		}
+	}
+	// The removal runs on a connection of its own, so the wait read is its own and never a
+	// background settlement's queued on the same row.
+	remover := storetest.SingleConnection(t, database)
+	var pid uint32
+	if err := remover.Pool.QueryRow(ctx, `select pg_backend_pid()`).Scan(&pid); err != nil {
+		t.Fatalf("read the removal's backend: %v", err)
+	}
+	removed := make(chan error, 1)
+	go func() { removed <- earlierBuildRemoval(ctx, remover, artifactID) }()
+	var waitingAt string
+	for deadline := time.Now().Add(10 * time.Second); ; {
+		if err := database.Pool.QueryRow(ctx, `
+			select coalesce((select query from pg_stat_activity where pid = $1 and wait_event_type = 'Lock'), '')
+		`, pid).Scan(&waitingAt); err != nil {
+			t.Fatalf("read where the removal waits: %v", err)
+		}
+		if waitingAt != "" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the removal waited on no lock within 10s of the settlement taking the issue's row and the fence, so this row proves nothing")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Logf("the removal waits at %q", strings.Join(strings.Fields(waitingAt), " "))
+	if _, err := settlement.Exec(ctx, `select 1 from artifacts where id = $1::uuid for key share`, artifactID); err != nil {
+		t.Fatalf("take the document's row as a settlement's version insert does, with the removal waiting: %v", err)
+	}
+	if err := settlement.Commit(ctx); err != nil {
+		t.Fatalf("commit the settlement: %v", err)
+	}
+	select {
+	case err := <-removed:
+		if err != nil {
+			t.Fatalf("remove document %s beside the settlement as an earlier build does: %v", artifactID, err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("the removal did not finish within 30s of the settlement's commit")
+	}
+}
+
 // clearAndDeleteArtifact runs, in tx, the statements removeArtifact runs to take an untouched
-// document's rows away: its clears, its reference rows and the artifact row.
+// document's rows away (deleteArtifactRows), failing the test where one fails.
 func clearAndDeleteArtifact(t *testing.T, ctx context.Context, tx pgx.Tx, artifactID string) {
 	t.Helper()
 	artifact, err := loadArtifactRowByID(ctx, tx, artifactID)
 	if err != nil {
 		t.Fatalf("read document %s: %v", artifactID, err)
 	}
+	if err := deleteArtifactRows(ctx, tx, artifact); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// deleteArtifactRows runs, in tx, the statements removeArtifact runs to take an untouched
+// document's rows away: its clears, its reference rows and the artifact row.
+func deleteArtifactRows(ctx context.Context, tx pgx.Tx, artifact model.Artifact) error {
 	for _, clear := range artifactRemovalClears(artifact) {
 		if _, err := tx.Exec(ctx, clear.statement, clear.args...); err != nil {
-			t.Fatalf("clear the %s of document %s: %v", clear.what, artifactID, err)
+			return fmt.Errorf("clear the %s of document %s: %w", clear.what, artifact.ID, err)
 		}
 	}
-	if err := refs.ForgetDocument(ctx, tx, artifactID); err != nil {
-		t.Fatalf("forget the references of document %s: %v", artifactID, err)
+	if err := refs.ForgetDocument(ctx, tx, artifact.ID); err != nil {
+		return fmt.Errorf("forget the references of document %s: %w", artifact.ID, err)
 	}
-	if _, err := tx.Exec(ctx, `delete from artifacts where id = $1`, artifactID); err != nil {
-		t.Fatalf("delete document %s: %v", artifactID, err)
+	if _, err := tx.Exec(ctx, `delete from artifacts where id = $1`, artifact.ID); err != nil {
+		return fmt.Errorf("delete document %s: %w", artifact.ID, err)
 	}
+	return nil
 }
 
 // requireProjectsComplete fails unless the project census names no row or node incomplete.

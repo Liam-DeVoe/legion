@@ -19,7 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
-// laterBlockState is a state no writer of this release writes: dispatch://INFRA-1950's build
+// laterBlockState is a state no writer of this release writes: a later release's build
 // marks a requirement proposed, and this release serves beside that build during a roll.
 const laterBlockState = "proposed"
 
@@ -52,7 +52,7 @@ type blockLinkRow struct {
 // must read no difference of any kind.
 //
 // The version drops a second block, the outer callout's own paragraph, which a later release
-// marked proposed by then (as dispatch://INFRA-1950's build marks a requirement, written here by
+// marked proposed by then (as that release's build marks a requirement, written here by
 // SQL). The index pass keeps a block's stored state unless the pass itself makes the block gone
 // (R8), so a block that release dropped is gone whatever state the store held it in: a pass that
 // read the store's blocks in state live alone would leave this one proposed for ever, with no row

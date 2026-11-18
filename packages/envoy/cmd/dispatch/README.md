@@ -942,7 +942,11 @@ What the two processes share, and what each keeps to itself:
 - A send waits out a listener take-over.
   While the active Envoy listener pod is replaced, its successor refuses connections, answers 502, 503 or 504, or does not hold the session yet;
   a send that meets one of those (or a receipt timeout) is tried again under the attempt it holds and the same idempotency key, renewing its claim before each try, for up to 12 seconds from its first try, and only then settles `failed` (`api/envoy_resolve.go`, `listenerTakeoverWindow`).
-  A request that sends during a take-over answers up to 12 seconds later, and a send to a session that is really gone reads `failed: no live session` about 12 seconds after it was made.
+  A request that sends during a take-over answers up to 12 seconds later, and a mention of a session that is really gone reads `failed: no live session` about 12 seconds after it was made.
+  A targeted message to such a session is queued instead at that moment:
+  when neither the listener's registry nor its known-session store holds the session, Dispatch publishes the message on the session's own subject, `notifications.agent.<session>`, under the dedupe key the listener's send would have used, and records the attempt `queued` (`api/message_queue_publish.go`).
+  The listener gives that copy up after its retry window with the agent wake, and the session reads it when it registers again under its id within the stream's 72 hours.
+  A process with no NATS (`DISPATCH_NATS_DISABLED=1` without test hooks), a failed publish, a role target, a send whose request set `connected_only`, and a model or thinking switch, which is sent `connected_only` whatever its request says, still settle `failed`.
   A process killed during the wait leaves the attempt to the delivery sweep.
 
 - Times that one process writes and another compares come from the database's clock, never a host's:
@@ -966,7 +970,7 @@ What the two processes share, and what each keeps to itself:
 
 - No leased background loop runs a pass beside another process's pass of the same loop.
   Each pass takes a named session-level advisory lease for its length (`duty.Exclusive`), so a process whose attempt lands inside another's pass finds it held and logs a skip.
-  The twelve timer loops — the delivery reconcile, the architecture import, the webhook redelivery sweep, the CI reconcile pass (lease `ci-reconcile`, beside the redelivery sweep in what it recovers), the hourly document compaction sweep (lease `document-compaction`, first tick at start, with or without NATS), the block index reconciliation, the term-statistics refresh, the repair of closed and reopened issues' asks, the keyed writes' maintenance sweep (lease `suggestion-outcomes`), the document settlement resumption, the prune of the registry of live server processes and the display tree fill (`texttreefill`, lease `text-tree-fill`)
+  The thirteen timer loops — the delivery reconcile, the architecture import, the webhook redelivery sweep, the CI reconcile pass (lease `ci-reconcile`, beside the redelivery sweep in what it recovers), the hourly document compaction sweep (lease `document-compaction`, first tick at start, with or without NATS), the block index reconciliation, the term-statistics refresh, the repair of closed and reopened issues' asks, the keyed writes' maintenance sweep (lease `suggestion-outcomes`), the document settlement resumption, the prune of the registry of live server processes, the Legion sampler's read of each project's daemon (lease `legion-state`, first tick at start, one pass a minute) and the display tree fill (`texttreefill`, lease `text-tree-fill`)
   — also record each pass in `duty_passes` (migration `0115`), in a row per lease and period, so a process whose tick lands between another's passes
   — the ordinary case, since each ticker draws its phase at boot and a rolling update starts the second process minutes after the first
   — finds the period already served and logs the same skip: each runs once per period across the processes.
@@ -980,7 +984,7 @@ What the two processes share, and what each keeps to itself:
 
 - The embeddings `project_key` fill (lease `embeddings-project-key-fill`, `api.RunEmbeddingProjectKeyFill`) is leased and is no loop of a cadence: it is one pass of one to two hours that labels the rows stored before migration `20261109120000`, started once at boot, and it takes its lease with no period because the cursor row of `20261109120100` says when there is nothing left to do, so the process of a roll that finds the lease held logs the skip and fills nothing.
   That process then tries for the lease again every five minutes until that cursor row reads done, so a holder killed mid-pass costs the labelling one wait rather than lasting until something next boots, and each process's goroutine and its lease-pool connection go back for good once the rows are labelled.
-  Seventeen names are leased in all: the fourteen leased loops of the two items above, the CI reconcile among them, one per delivery durable for the intake's take-over, and the fill, and the lease pool holds a connection for each of those callers and for each of the four callers of the two intakes' holds, twenty-one (`store.LeasePoolSize`'s comment in `internal/dispatch/store/pool.go` lists the names; every caller reserves its connection by name at boot and `store.LeaseCallers.Complete` refuses to serve unless the reservations are exactly the pool's size).
+  Eighteen names are leased in all: the fourteen leased loops of the two items above and the Legion sampler, the CI reconcile among them, one per delivery durable for the intake's take-over, and the fill, and the lease pool holds a connection for each of those callers and for each of the four callers of the two intakes' holds, twenty-two (`store.LeasePoolSize`'s comment in `internal/dispatch/store/pool.go` lists the names; every caller reserves its connection by name at boot and `store.LeaseCallers.Complete` refuses to serve unless the reservations are exactly the pool's size).
   The delivery live hub, the event-stream relay, the process's shared listener connection, with the document rooms' room sync and the woken loops' wakes on it, and the document rooms' timers stay per-process by design (below), the embedding queue and the task progress reconciliation claim their own work, and the outbox publishes under its hold (above);
   the embedding queue's coverage pass runs in every process with no lease, each of its steps safe beside another process's, and only the processes whose embedder has the one active identity embed or drop a vector (Search, below);
   `cmd/dispatch/main.go` says at the call site which loop is which and why.
@@ -1166,12 +1170,12 @@ During the roll that releases this behaviour, processes of the earlier build beh
 Every change this build writes still notifies `dispatch_doc_changed`, which the earlier build reads, and an issue that the earlier build closes still closes this build's rooms through the trigger.
 
 **Each process holds its own connections, so a second process doubles them.**
-Every pool's size is fixed in code (`internal/dispatch/store/pool.go`), and a serving process opens at most 64 + 21 + 8 + 4 + 2 + 2 + 1 + 2 + 2 + 1 + 5 = 112 connections to Postgres (`store.ConnectionsPerProcess`):
+Every pool's size is fixed in code (`internal/dispatch/store/pool.go`), and a serving process opens at most 64 + 22 + 8 + 4 + 2 + 2 + 1 + 2 + 2 + 1 + 5 = 113 connections to Postgres (`store.ConnectionsPerProcess`):
 
 | Pool | Connections | What takes them |
 | --- | --- | --- |
 | Shared (`sharedPoolSize`) | 64 | Requests, settlements, and the document writers that hold a room's lock on a connection of their own (`lockRoom` through `withRoomLock`: snapshots, prunes, deletions). |
-| Leases (`store.LeasePoolSize`) | 21 | The periodic maintenance loops' once-overall leases (`duty.Exclusive`) and the delivery intakes' holds (`duty.Hold`), the embeddings `project_key` fill and the display tree fill among them, one per caller that can be inside a lease or a hold statement at once (`store.LeaseCallers`). |
+| Leases (`store.LeasePoolSize`) | 22 | The periodic maintenance loops' once-overall leases (`duty.Exclusive`) and the delivery intakes' holds (`duty.Hold`), the Legion sampler's read of each project's daemon, the embeddings `project_key` fill and the display tree fill among them, one per caller that can be inside a lease or a hold statement at once (`store.LeaseCallers`). |
 | Room appends (`roomAppendsPoolSize`) | 8 | The document rooms' batches of browser updates; `application_name=dispatch-room-appends`. |
 | Rooms (`RoomsPoolSize`) | 4 | Document loads; `application_name=dispatch-rooms`. |
 | Compaction (`compactionPoolSize`) | 2 | A document's compaction: the read transaction of the rows it folds, and its write back under the document's lock (`Pool.Compaction`); `application_name=dispatch-compaction`. |
@@ -1182,7 +1186,7 @@ Every pool's size is fixed in code (`internal/dispatch/store/pool.go`), and a se
 | Registry (`registryPoolSize`) | 1 | Held for the life of the process: the heartbeat that stamps its row in the registry of live server processes every 5 seconds (`processes.Register`). |
 | Listeners (`listenerConnections`) | 5 | What the process may hold at once, each on a connection of its own: the events outbox's `LISTEN` on `dispatch_events` and `dispatch_duty_holds`, the shared listener hub the document rooms' room sync and the woken background loops wait on, and the document rooms' NOTIFY sender, each held for the life of the process, and the delivery hub's and the event stream relay's, each held only while something subscribes to them. |
 
-Two processes at their ceiling hold 224, past a default Postgres's `max_connections` of 100, so size the database's limit for both, with whatever else uses that database counted in, before the second process starts.
+Two processes at their ceiling hold 226, past a default Postgres's `max_connections` of 100, so size the database's limit for both, with whatever else uses that database counted in, before the second process starts.
 
 **A connection is closed after its next response once it is 60 seconds old** (`maxConnAge`, `cmd/dispatch/conn_age.go`):
 the server stamps each connection's accept time and answers the first request it reads at that age or later with `Connection: close`, and a request carrying an `Upgrade` header, a websocket handshake, keeps its connection.
@@ -3015,7 +3019,7 @@ It is one `repeatable read, read only` transaction on a connection of its own, s
 
 For each projected kind it counts the nodes the store holds at any state but `gone` against the projection rows, in both directions, and reports each difference by its cause and by the row it was found at:
 a row naming no node, a row naming a node the store does not hold, a row naming one the store holds `gone` — which is the separate assertion that no gone node holds a projection row — a row whose shared fields disagree with its node's, and a node no row projects, named with the state it is at (`a live node no row projects`).
-A state a later release adds, such as INFRA-1950's `proposed`, is a node a row projects as one at `live` is, so a build of this release reads no difference for it during a roll or after a rollback.
+A state a later release adds, such as `proposed`, is a node a row projects as one at `live` is, so a build of this release reads no difference for it during a roll or after a rollback.
 The shared fields are digested rather than printed, and for the three projected kinds they include the tuples that answer the row, read as the store reads a current relation (the newest tuple per kind and far end, kept while it asserts), and not the node row alone:
 a row that names its node is answered from the tuples by `graph_edges`, `refs.Edges` and `refs.BacklinkCounts`, so a missing or retracted tuple takes a link out of every read while each node row still stands.
 A comment's `created_at`, `author`, the artifact its `anchor` names, the artifact its `artifact_id` names and the author `graphstore.AuthorOf` reads off `author` are held against its node's `made_at` and `made_by` and its current `anchored_to`, `owned_by` and `authored_by` tuples.
@@ -3062,31 +3066,31 @@ Two writes can state one fact twice by design and nothing reads wrong for it —
 
 `envoy-dispatch census --store --sizing` adds the growth pass after that census, each line a driver can look for by its leading fields:
 the write rate by kind over the last 28 days of `events`; the row count and total relation size of every table this branch's migrations touch; the tuples and nodes one write of each kind states, with how many such writes the window holds or, for a kind no table holds yet, is assumed to hold; the rows a day that puts in `graph_tuples` and in `graph_nodes`; the bytes a row each is measured at; and where each reaches in a year against `pgmigrate.CensusTableLimit`.
-The kinds are a term for each kind R20 gives the five children of dispatch://INFRA-1098, each printed on a `census: sizing tuples-a-write ` line and a `census: sizing share ` line that names the child that moves it, its writes inside the window and its share of the tuples a day.
+The kinds are a term for each kind R20 gives the five children of the parent change, each printed on a `census: sizing tuples-a-write ` line and a `census: sizing share ` line that names the child that moves it (`moved_by=`, one of the five names below), its writes inside the window and its share of the tuples a day.
 Where a write states facts beyond its node, each such fact is a term of its own, counted over the writes that state it:
 
-- dispatch://INFRA-1149's comment's node and its three base attributes (visibility, state, and project or parties), and its `authored_by`, `anchored_to`, `owned_by` and aliases where its row names each; the node and three base attributes of an issue, an artifact, an ask and a message, and the `gone` state a document's removal states of its node (`artifact_removed`); a comment delivery's `delivered_to`; a block a version inserts afresh, restores, drops (its `gone` state) or moves to another parent (the old parent's retraction and the new one's assertion); a block reference's assertion and the retraction that may end it; and a person, a session, a role and a role's page, each counted over the ones the window records for the first time.
+- `this-change`, this change itself: a comment's node and its three base attributes (visibility, state, and project or parties), and its `authored_by`, `anchored_to`, `owned_by` and aliases where its row names each; the node and three base attributes of an issue, an artifact, an ask and a message, and the `gone` state a document's removal states of its node (`artifact_removed`); a comment delivery's `delivered_to`; a block a version inserts afresh, restores, drops (its `gone` state) or moves to another parent (the old parent's retraction and the new one's assertion); a block reference's assertion and the retraction that may end it; and a person, a session, a role and a role's page, each counted over the ones the window records for the first time.
 
-- dispatch://INFRA-1152's message's `authored_by` and `part_of`, and the tuples its target and its broadcast become; a reply's meaning tuple and its `part_of`; a comment's mentions; a person's part in a thread; the `delivered_to` of each write to every other participant of its thread and of an ask to the person it waits on, and the move of that person; the body blocks of a comment, a message and an ask, their links and their removal; a delivery attempt's node; and the message deliveries, read marks, clears, dismissals and snoozes.
+- `inbox-child`, the child that moves the inbox, the messages and the read state: a message's `authored_by` and `part_of`, and the tuples its target and its broadcast become; a reply's meaning tuple and its `part_of`; a comment's mentions; a person's part in a thread; the `delivered_to` of each write to every other participant of its thread and of an ask to the person it waits on, and the move of that person; the body blocks of a comment, a message and an ask, their links and their removal; a delivery attempt's node; and the message deliveries, read marks, clears, dismissals and snoozes.
 
-- dispatch://INFRA-1253's text and rank values of each block whose text a version wrote; an issue's `child_of` and `needs`; an artifact's `part_of` its issue and a document version's node; a result's node with its values and tuples, its screenshots and its retraction; a component's node with its `part_of`, `depends_on` and `affects`; and a criterion's `authored_by`.
+- `blocks-child`, the child that moves issues, their documents, a block's text and rank, results and components: the text and rank values of each block whose text a version wrote; an issue's `child_of` and `needs`; an artifact's `part_of` its issue and a document version's node; a result's node with its values and tuples, its screenshots and its retraction; a component's node with its `part_of`, `depends_on` and `affects`; and a criterion's `authored_by`.
 
-- dispatch://INFRA-1150's ask's `answer_state`, question, options, `authored_by`, `anchored_to` and `owned_by` that `ask.opened` states, and what its other `ask.*` events state, an edit, an answer, a resolution and a follower; a Keep; and an agent's decision and its reading.
+- `asks-child`, the child that moves decisions, readings, asks and their answers: an ask's `answer_state`, question, options, `authored_by`, `anchored_to` and `owned_by` that `ask.opened` states, and what its other `ask.*` events state, an edit, an answer, a resolution and a follower; a Keep; and an agent's decision and its reading.
 
-- dispatch://INFRA-1950's interaction and its frames, a lens and its finding blocks, a lens kind, a constraint and a risk.
+- `lenses-child`, the child that moves interactions, lenses, lens kinds, constraints and risks: an interaction and its frames, a lens and its finding blocks, a lens kind, a constraint and a risk.
 
 Each term a table can count is read from tables that exist before this branch's first migration, so the growth pass runs on a database the store does not exist in yet, which is where R4 takes its readings; there the census prints `census: store absent` and the growth pass alone decides the exit.
 No such table holds a block's parent, so the moved parents are counted by parsing each version the block index indexed in the window beside the one it indexed before, placing the blocks as `refs.PlaceBlocks` places them, and matching the two versions' blocks by their text, since a version's markdown names no paragraph's id; blocks of one document with equal text are matched in document order, so that term is exact except there, and its share line carries `versions_read=` and `versions_unreadable=`.
-A kind production writes no row of before its child ships (a criterion, a decision, a reading, and every kind of dispatch://INFRA-1950) has no history to read, so its term carries an assumed rate instead of reading zero, its `driver=` states that rate and the reason for it, and its share line ends `rate=assumed`.
+A kind production writes no row of before its child ships (a criterion, a decision, a reading, and every kind of `lenses-child`) has no history to read, so its term carries an assumed rate instead of reading zero, its `driver=` states that rate and the reason for it, and its share line ends `rate=assumed`.
 A decision, a reading and a criterion are blocks of a document, whose node and placement the block terms count already, so each of those terms counts only the tuples it states beyond a block's.
 It last prints the block-index reconciliation's backlog on two `census: sizing backlog ` lines, because a loop that falls behind fails nothing and nobody would otherwise see it:
-`owed_documents=` is how many documents are owed a block index (`document_block_versions.version` null, or the backfill's mark `store_owed_at` set), and `oldest_owed_at=` is when the oldest of those debts was incurred, with `oldest_owed_age_seconds=` beside it and `against=` naming the time that age is measured to.
+`owed_documents=` is how many documents are owed a block index (`document_block_versions.version` null, or this build's mark `store_owed_at` set, by the backfill or by the block-index tick's marking of what another build wrote), and `oldest_owed_at=` is when the oldest of those debts was incurred, with `oldest_owed_age_seconds=` beside it and `against=` naming the time that age is measured to.
 No column dates a null version, so a debt is dated by the write that owed it — the `created_at` of the latest markdown version the document holds, or the document's own `created_at` where it holds no version — and a document holding the backfill's mark is dated the same way, and the line says so under `dated_by=`.
 The age is measured against the newest write the database recorded (the `created_at` of its highest `events` id) and not against `now()`, so two runs print one age; a database that recorded no event prints `none` and an age of zero.
 It exits non-zero when that projection puts either store table past the limit inside a year, and when a table this branch's migrations alter is already at or above it.
 A backlog refuses nothing: how large a backlog is too large depends on the write rate the lines above it carry, and the driver that watches it decides.
 Every figure comes from a count or from a timestamp the database already holds, so two runs over one unchanged database print the same output.
-A store table holding fewer than ten thousand rows is too small to measure a bytes-a-row from, and the projection uses 783 bytes a row instead, measured for dispatch://INFRA-1149 (1,050,010 tuples at a `pg_total_relation_size` of 822,673,408 bytes on PostgreSQL 18.6, table, seven indexes and TOAST);
+A store table holding fewer than ten thousand rows is too small to measure a bytes-a-row from, and the projection uses 783 bytes a row instead, measured when the store was built (1,050,010 tuples at a `pg_total_relation_size` of 822,673,408 bytes on PostgreSQL 18.6, table, seven indexes and TOAST);
 the output says so on the line that uses it.
 `--sizing` without `--store` is a usage error: it is that census's growth pass and not a census of its own.
 
@@ -3124,6 +3128,37 @@ It never reads or clears `store_owed_at`, so this release's reconciliation, whic
 The batch that names a document's block nodes writes the mark in its own transaction, so a run stopped after any batch leaves every document of its committed batches marked (`TestABackfillKilledAfterOneBatchLeavesThatBatchsDocumentsOwed`).
 So `census --store` reads a difference on every backfilled block until that reconciliation has drained the mark, at twenty documents a tick;
 `TestTheBlockParentCensusReachesZeroAfterTheBackfill` is that whole route end to end.
+
+A document that the release before this one edits during a roll, after this build's drain has cleared its mark, carries no mark, and neither does a document that release creates after the drain, the spec of an issue it creates included:
+that release writes the version's rows with no node, states nothing in the store and never sets `store_owed_at`.
+So while a server process of another build serves, each block-index tick marks owed every document that an `artifact.version` or `artifact.created` event after this build's cursor names, and every document of each issue an `issue.created` event after it names.
+A version event names its document in `payload->>'artifact_id'`, and the event that creates a document carries the whole artifact and names it in `payload->'artifact'->>'id'`.
+An issue's create records its spec's version 1 with the `issue.created` event alone, which names the issue in its `issue_key` and no document, so the tick marks every `doc` artifact of that issue, read from `artifacts` by issue key.
+The tick does so before it lists the owed documents, so the same tick drains a document it marks when its batch has room.
+Another build serves when a live process of the registry (`server_processes`) registered a commit other than this process's own (`main.buildCommit`, which `docs.Deps.BuildCommit` carries), and a fleet with no live process serves this build alone.
+Once the fleet serves this build alone, the first tick that finds it so marks once more what the tick before it left, and once the cursor has passed every event the other build can have written, the tick after it reads no event and moves the cursor to the event log's safe horizon.
+A rollback or a roll forward that stops one build before it starts the other never has two builds serving at once, so a process's first tick that reads a proven horizon also reads once, from the newest cursor any build left through the newest event.
+That start is the highest `event_id` of every row: this build's own where it ran last, and the cursor the build before it stopped reading at where this build holds no row yet.
+A process that boots while others of this build run reads only the few events since their last tick, and one that boots after an absence reads every event since, one page a tick.
+The cursor moves with each tick, so each tick reads only the events since the last one, and the marking scans no whole table.
+The cursor is one row per build commit of `block_index_event_cursors`, a table migration `20261118115645` creates and the previous release never reads.
+Its `event_id` is the highest event id the build's ticks have read or passed, `another_build_seen` says whether the last tick found another build, and `read_through` is the newest event id the log held when a tick found another build serving, found the fleet alone right after one that did, or was its process's first tick with a proven horizon.
+The ticks read on until `event_id` reaches `read_through`: a process leaves the registry only after every event it wrote has committed, so the last versions a departing process wrote are read even where the safe horizon lags the log for a tick or two.
+The build's first tick that reads a proven safe horizon inserts the row at the highest `event_id` any row holds, or at that horizon where no row exists, so the cursor never starts at the beginning of the log.
+A tick reads at most 1,000 events, in id order, after the cursor and at or below the safe horizon (`events.Horizon.Safe`), because event ids are not commit order and an uncapped read could pass an event that is still committing.
+A full page moves the cursor to the last event it read and brings the next tick 2 s later; otherwise the cursor moves to the horizon, and it never moves past it.
+The mark is the backfill's own, set in one statement that takes the documents' `document_block_versions` rows in ascending `artifact_id` order and no owner row, and the marks and the cursor's move commit together.
+The tick's `dispatch: block index` line carries `events=`, the events it read, `marked=`, the documents it marked, and `another_build=`, whether another build served (`TestAVersionThePreviousReleaseWritesAfterTheDrainReachesTheStore`, `TestAVersionThePreviousReleaseWritesWhileThisBuildIsStoppedReachesTheStore`, `TestAVersionThePreviousReleaseWritesBeforeTheNextBuildStartsReachesTheStore`).
+The migration's census answers `0`: the table is new and holds no row at deploy.
+
+That release also writes an issue, a document, an ask and a message with no node, a file it uploads to an agent's conversation appends no event at all, and its removal of a document states nothing, so the node this build wrote for it stands behind no row.
+So on the ticks the marking reads the log on - another build serves, the first tick that finds the fleet alone after one did, and each process's first tick with a proven horizon - the tick records that its build owes the object pass (`block_index_event_cursors.object_nodes_owed_at`, in the transaction that moves the cursor) and then runs it.
+The pass writes, through the backfill's own batch, the node of every row its marker does not mark (`graphcensus.WriteOwedObjectNodes`, which reads rows, not events), and states gone every document node the census reads as `orphaned` at an issue's address (`graphcensus.StateOrphanedGone`), as this build's own removal states it: the node as it stands, gone, under that release's own `artifact.removed` event, stated by the block-index tick, so the store keeps every statement it held and a removed document's history is the same whichever build served the removal.
+So a roll leaves no project-owned row without its node and no such node without its row, with no second `backfill-graph-store` and no erase by hand.
+No writer of this build commits a node before its row: each writes it in the transaction that writes its row, and the pass writes one only for a row that stands under the owner rows it takes; the sweep takes the issue's row, then the node's, and reads under that lock whether a row stands, so a create that commits a row meanwhile keeps its node.
+A tick writes at most 4 batches and states at most 20 nodes gone, and a kind that fails holds back neither the other kinds nor the sweep; a pass that fails or stops with work left keeps the debt, which only a pass that finishes clears, so whichever process of the build holds the lease next runs it again, and the tick's line carries `object_nodes=` and `orphans_gone=`.
+A row whose node the store holds in another project, which no writer makes since a node's project never moves, is left by the pass and the backfill alike while every other row is written; it holds back no debt, the tick logs it at error, and the census names the row for a person to read.
+The pass reads the four tables whole and the document nodes through `artifacts`' and `issues`' unique keys, so it runs while its build owes it alone: at production's row counts (2,000 issues, 4,000 documents, 8,000 asks and 6,000 messages, a tenth of `dispatch-seed --scale 1`'s) a write pass with nothing to write took 97 to 190 ms and the orphan read 7 to 8 ms, and at ten times them 0.9 to 1.8 s, with one run of seven at 8.6 s, and 30 to 35 ms.
 
 A row the release before this one deleted is nothing the run reads.
 That release, indexing a version of a document the store has stated, deletes the `document_blocks` row of each block the version drops and the `block_refs` row of each link a block stops holding, and it states no node `gone` and retracts no tuple.
@@ -3507,8 +3542,8 @@ when that row cannot be written, the create goes in unchecked and its `201` name
 the closest one at or above `duplicateNudgeScore` and below the refusal is named to the filer as `advice.suggestions.likely_duplicate`, which refuses nothing.
 Both bars are set by `TestNearCopyRefusalReplay` over a frozen export of a project's history (`scripts/near-copy-replay.sh`), and a change to the term picker or to the scoring statement invalidates that calibration.
 A candidate's snippet marks the words its title shares with the new one, and the `POSSIBLE_DUPLICATE` message quotes a candidate's whole title.
-The check runs once for every create, forced or not, in a read transaction of its own bounded by `duplicateGateTimeout` (500 ms) on the context and by `statement_timeout` inside it:
-one bound, because two would have a read of 700 ms refuse an unforced create while recording for a forced one that the check did not answer.
+The check runs once for every create, forced or not, in a read transaction of its own bounded by `duplicateGateTimeout` (2 s) on the context and by `statement_timeout` inside it:
+one bound, because with two, a read that ends between the two deadlines would refuse an unforced create while recording for a forced one that the check did not answer.
 A create whose check does not answer is written either way, forced or not, and the `201` says so in `advice.suggestions.near_copy_check`:
 the create went in without the near-copy check an unforced create otherwise meets.
 A forced one also records `forced` with an empty `past` on its `issue.created` event, which is how the weekly audit tells it from an override.
@@ -3697,7 +3732,7 @@ Each item below names a status and code, then its meaning.
 
   The write names its presser in `Dispatch-Login` (every write the page makes does, `POST`, `PATCH`, `PUT` and `DELETE` alike) and its caller is someone else, or no person at all (any bearer):
   nothing ran and the key was not read, so it is untouched.
-  A caller that resolves to nobody (a lapsed cookie) gets the route's own `401` instead, and a write without the header is not checked.
+  A caller that resolves to nobody (a lapsed cookie) gets the `401` written further in instead, the keyed layer's for a keyed write and the handler's for any other, and a write without the header is not checked.
   The page drops every write that login pressed.
 
 - `400 REQUEST_BODY_UNREADABLE`
@@ -3726,11 +3761,11 @@ a broadcast answers once its messages are committed, with its deliveries behind 
 
 The layer reads a keyed body before its handler runs, spooling at most the route's own limit:
 26 MiB for the three upload routes (`POST /api/v1/issues/{key}/artifacts`, `/projects/{key}/artifacts`, `/agents/{session_id}/artifacts`), 1,576,960 bytes for the handoff write (`POST /api/v1/issues/{key}/handoffs/{phase}`), 1 MiB for every other.
-A body past it runs unkeyed and its route refuses it.
+A body past it is answered its route's `413` by the layer itself, and the handler does not run.
 A body the client did not finish sending is `400 REQUEST_BODY_UNREADABLE`;
 one Dispatch cannot spool to its temporary directory is Dispatch's own failure, a 5xx with the key echoed, which the client asks again.
 
-Every answer the layer judged echoes the key back (`Idempotency-Key: <key>`) - not the `400 KEY_INVALID`, a request whose caller it could not resolve, or one whose body is past its route's limit, each of which runs unkeyed - and `/healthz` answers `idempotency_keys: true` on every build that judges the header - a fact of the binary, so it is true whatever the database or NATS answer, on a `503` too.
+Every answer the layer judged echoes the key back (`Idempotency-Key: <key>`) - not the `400 KEY_INVALID`, the refusal of a caller it could not resolve, or the `413` of a body past its route's limit, each of which it answers before it judges the key and none of which runs the handler - and `/healthz` answers `idempotency_keys: true` on every build that judges the header - a fact of the binary, so it is true whatever the database or NATS answer, on a `503` too.
 A client tells a Dispatch that runs this layer from one that ignores the header, and would run a retried write a second time, by one or the other:
 the agents' client resends a failed write only against a Dispatch whose answer carried the echo in the last five minutes, or whose `/healthz` said so in that time (`packages/envoy-client/README.md`).
 
@@ -4021,6 +4056,14 @@ Each item below names a path with its method and identity, then its purpose.
   A browser test reads the bar with a label and a session configured and then with the session cleared, which no deployment setting can change while the server runs.
   Not mounted otherwise.
 
+- `/api/v1/messages/_test/queued` (GET; cookie, trusted header, or bearer; `DISPATCH_TEST_HOOKS=1`)
+
+  List the targeted messages this process queued itself for a session that neither the listener's registry nor its known-session store held, oldest first, each as the envelope that session's own subject would hold:
+  `{"queued": [{subject, dedupe_key, event_id, source, payload_summary, payload, urgency}]}`.
+  A process with `DISPATCH_NATS_DISABLED=1` keeps them in its own memory, where this route reads them.
+  A process with NATS publishes them to the stream, and answers `404 QUEUED_ON_BUS` here.
+  Not mounted otherwise.
+
 - `/ws/live` (GET; cookie, trusted header, or bearer)
 
   One WebSocket per browser tab, serving delivery, events, and agent subscriptions.
@@ -4141,6 +4184,20 @@ Each item below names a path with its method and identity, then its purpose.
   absent or null leaves the stored pair as it is, `""` clears it, and a pair naming this repository itself, one naming a repository that is itself renamed, or one on a repository another mapping is already renamed to is `400 INVALID_REPO_PROJECT`.
   A mapping an issue names as its `repo` is deleted and moved like any other: an issue's own repository needs no mapping.
   `AGENTS.md` gives the rules and the `settings.repo_project.updated` events.
+
+- `/api/v1/projects/{key}/legion/daemon` (GET, PUT, DELETE; cookie, trusted header, or bearer)
+
+  The Legion daemon this project's state is read from: GET reads it, with the actor that first named it and when it was last written, or `null` when the project names none; PUT names it, `{state_url}`; DELETE stops reading it, what the sampler already recorded staying.
+  No route lists every project's daemon, since R26 of dispatch://INFRA-979's spec permits one cross-project read and this is not it: the Settings page's Legion section reads each project's.
+  A `state_url` that is not an absolute http(s) URL with a host and no path is `400 LEGION_SETTING_INPUT`, a DELETE for a project that names no daemon `404 NOT_FOUND`, a key that is not a project key `400 INVALID_PROJECT`, and a project that does not exist `404 PROJECT_NOT_FOUND`.
+  The daemon points Dispatch at a host, so it belongs to the deployment rather than to the project it is addressed under, and a project-scoped credential is refused the PUT and the DELETE as it is a repository mapping, the project this path names included.
+  `internal/dispatch/api/settings_legion.go` gives the rest, including why neither write emits an event.
+
+- `/api/v1/projects/{key}/legion/board` (GET; cookie, trusted header, or bearer)
+
+  The Legion board of the project its path names, from what the sampler recorded of that project's daemon; the `/ws/live` `legion` view carries the same body and pushes each change, and no page draws it.
+  Eleven columns (`queue`, `design`, `planning`, `implementing`, `testing`, `reviewing`, `accepting`, `retro`, `merging`, `awaiting_person`, `held`), each card naming its issue's key, title, priority, phase and when that phase began, the slot it holds, the roles in a turn now, the issues a blocker link holds it on, what it waits on from a person, its tree root and the children of its tree that have not started; and a header with the slots in use, the slot cap, the queue's length and the last read of the daemon with its failure.
+  `404 LEGION_NOT_CONFIGURED` when the project names no daemon, `400 INVALID_PROJECT` for a key that is not a project key, `404 PROJECT_NOT_FOUND` for a project that does not exist.
 
 - `/api/v1/github/app-installation/{owner}/{repo}` (GET; cookie, trusted header, or bearer)
 

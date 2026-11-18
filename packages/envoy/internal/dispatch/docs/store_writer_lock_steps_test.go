@@ -23,7 +23,7 @@ import (
 // run that passes either is the write waiting on something it should not, not a slow machine.
 const storeStepWait = 30 * time.Second
 
-// TestEveryDocsStoreWriterTakesTheStoreLockOrder is this package's half of dispatch://INFRA-1149's
+// TestEveryDocsStoreWriterTakesTheStoreLockOrder is this package's half of the check
 // c-lock-order. graphstore's TestEveryStoreWriteCallSiteIsListed lists every call site of the node
 // and tuple store's writers, beside the test that drives each site's lock steps. Three of the
 // sites listed beside this test live here, and the fourth, refs.IndexBlocks, runs inside the tick
@@ -69,6 +69,12 @@ const storeStepWait = 30 * time.Second
 // transaction holds, which have to include every earlier step's and none of a later step's
 // (requireEachDocsStepIsWaitedAtInTurn). These writers run on the service's own pool, so the
 // backend a run waits on is read from the holder: the one backend queued behind it.
+//
+// On a tick of a roll, the tick also runs the backfill's object pass, whose batch,
+// graphcensus's writeObjectBatch, is listed beside graphcensus's
+// TestEveryBackfillBatchTakesTheStoreLockOrder; that package cannot run a tick, so the pass is held
+// here too, at the tick's own call site, after the marking that runs before it
+// (requireTheRollTicksObjectPassLockOrder).
 func TestEveryDocsStoreWriterTakesTheStoreLockOrder(t *testing.T) {
 	ctx := context.Background()
 	rig := newDocsWriterRig(t)
@@ -78,6 +84,7 @@ func TestEveryDocsStoreWriterTakesTheStoreLockOrder(t *testing.T) {
 			requireEachDocsStepIsWaitedAtInTurn(t, ctx, rig, writer)
 		})
 	}
+	t.Run("the roll tick's object pass", requireTheRollTicksObjectPassLockOrder)
 }
 
 // --- the steps ----------------------------------------------------------------------------

@@ -17,8 +17,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest/lockstep"
 )
 
-// TestEveryBackfillBatchTakesTheStoreLockOrder is the backfill's half of dispatch://INFRA-1149's
-// c-lock-order for the batches backfill_fence_test.go and
+// TestEveryBackfillBatchTakesTheStoreLockOrder is the backfill's half of the check c-lock-order
+// for the batches backfill_fence_test.go and
 // TestTheBlockBatchTakesEveryOwnerRowBeforeAnyFenceRow do not prove: writeBlockRefBatch,
 // writeCommentBatch, writeRoleBatch and writeSessionBatch, and the two batches of the passes over
 // the project of every node, writeObjectBatch and writeScopeBatch (projects_lock_steps_test.go),

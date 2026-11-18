@@ -90,6 +90,11 @@ type Deps struct {
 	// EditNoticeQuiet is how long a document stays quiet after a person's last settled version
 	// before its edit notice goes (recordEditNotice, RunEditNotices); zero means 30 s.
 	EditNoticeQuiet time.Duration
+	// BuildCommit is the commit this process's binary was built from (cmd/dispatch's buildCommit),
+	// the empty string for an unstamped build. The block-index tick compares it with the commit of
+	// every live server process to tell whether another build serves beside this one
+	// (markVersionsAnotherBuildWrote).
+	BuildCommit string
 }
 
 // VersionedStore is Dispatch's transactional extension of ygo's durable room
@@ -150,6 +155,19 @@ type Service struct {
 	unrecordedMarkTTL time.Duration
 	// editNoticeQuiet is Deps.EditNoticeQuiet, with its default applied.
 	editNoticeQuiet time.Duration
+	// buildCommit is Deps.BuildCommit.
+	buildCommit string
+	// eventHorizon is the event log's safe horizon the block-index tick reads, which
+	// blockIndexHorizon builds under horizonOnce on the first tick that asks for it.
+	horizonOnce  sync.Once
+	eventHorizon *events.Horizon
+	// eventCursorJoined is whether a block-index tick of this process has read a proven horizon,
+	// found its build's row of block_index_event_cursors and committed. Until one has, the tick
+	// moves the cursor forward to the newest cursor any build left and records the newest event id
+	// as the row's read_through, so this process's ticks read every event since a build of this
+	// code last read, whatever the previous release wrote while none ran
+	// (markVersionsAnotherBuildWrote).
+	eventCursorJoined atomic.Bool
 	// maxPendingItems is the pending queue the service's rooms decode their stored state under
 	// (Server.MaxPendingItems, which New sets from it and ygo reads as each room loads) and the
 	// queue the check a room's load is compared with takes (validateUpdate). New sets it to
@@ -370,6 +388,23 @@ type Service struct {
 	// at 849c00dd - left a load counted for good, and the either-order test held here fails on
 	// that order.
 	beforeUnloadEndsLoad func(room string)
+	// retireEntered runs once a retirement of the room a late departure's settlement loaded is
+	// inside the room (its own Server.Apply), before it takes the room's close gate
+	// (retireSettlementRoom). Nil outside tests; tests use it to hold two retirements inside one
+	// room at once.
+	retireEntered func(room string)
+	// afterRetireReserved runs once a retirement of the room a late departure's settlement loaded
+	// has taken its reservation on the room's record (reserveRetirement), before ygo's close of the
+	// room. Nil outside tests; tests use it to open a write in that window.
+	afterRetireReserved func(room string)
+	// afterRetireLeft runs once a retirement that reserved the room's record has left the room
+	// (its Server.Apply returned), before it ends the reservation (endRetirement). Nil outside
+	// tests; tests use it to hold a second retirement against that reservation.
+	afterRetireLeft func(room string)
+	// awaitingRetirement runs as a writer, a settlement or another retirement finds a retirement's
+	// reservation on the room's record and is about to wait for it (awaitRetirement). Nil outside
+	// tests; tests use it to see the wait.
+	awaitingRetirement func(room string)
 	// bootstrapping runs as a room's load hook decodes state, the stored state its load read, into
 	// the room's document (bootstrapLoadedState). Nil outside tests; tests use it to count the
 	// decodes a room's load makes and to see which state each decodes.
@@ -860,6 +895,7 @@ func New(deps Deps) *Service {
 		timers:            make(map[uint64]*time.Timer),
 		unrecordedMarkTTL: unrecordedMarkTTL,
 		editNoticeQuiet:   editNoticeQuiet,
+		buildCommit:       deps.BuildCommit,
 		reads:             newDocumentReads(readBudget),
 		roomCap:           roomCap,
 		connectionCap:     connectionCap,
@@ -954,6 +990,8 @@ func New(deps Deps) *Service {
 	srv.OnInject = service.allowInject
 	srv.OnPeerUpdate = service.onPeerUpdate
 	srv.OnLoadDocument = service.onLoadDocument
+	// ygo calls it as a room's first browser joins it, after the browser is in the room.
+	srv.OnFirstPeer = service.takeUpSettlementRoom
 	srv.OnLastPeer = service.settleLastPeer
 	// ygo calls it once for every room it retires, whichever way: the idle sweep, CloseRoom.
 	srv.OnUnloadDocument = service.releaseUnloadedRoom
@@ -1412,10 +1450,12 @@ func (s *Service) scheduleSettleAfterLocked(room string, state *roomState, delay
 		}
 		defer s.settleWG.Done()
 		// An armed timer holds its state (unusedLocked), so the state can go only once the timer
-		// has left the register.
+		// has left the register, and so can a room a late departure's settlement loaded, which
+		// this settlement may be a retry of (retireSettlementRoom).
 		defer func() {
 			s.unregisterSettleTimer(timerID)
 			s.releaseIfUnused(room)
+			s.retireSettlementRoom(room)
 		}()
 		state := record.Value()
 		if current, _ := s.rooms.Load(room); state == nil || current != state {

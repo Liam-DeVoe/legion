@@ -656,6 +656,7 @@ func threeBadRequests(t *testing.T) {
 var routesNoSeedAnswers = map[string]string{
 	"GET /api/v1/github/app-installation/{owner}/{repo}":                 "a GitHub App private key",
 	"GET /api/v1/projects/{key}/architecture":                            "an architecture source configured for the project",
+	"GET /api/v1/projects/{key}/legion/board":                            "a Legion daemon configured for the project",
 	"GET /api/v1/delivery/timeline":                                      "delivery settings",
 	"GET /api/v1/delivery/measures":                                      "delivery settings",
 	"GET /api/v1/delivery/pipeline":                                      "delivery settings",
@@ -688,6 +689,7 @@ func routeProbeQueries(owned crossProject) map[string]string {
 		"GET /api/v1/search":               url.Values{"q": {"project"}}.Encode(),
 		"GET /api/v1/search/results":       url.Values{"q": {"project"}}.Encode(),
 		"GET /api/v1/references":           url.Values{"to": {"dispatch://" + owned.issue}}.Encode(),
+		"GET /api/v1/reference-targets":    url.Values{"ref": {"dispatch://" + owned.issue}}.Encode(),
 		"GET /api/v1/references/questions": url.Values{"kind": {"comment"}, "id": {owned.comment}}.Encode(),
 		"GET /api/v1/block-links":          url.Values{"from": {spec}, "to": {spec}}.Encode(),
 		"GET /api/v1/issues/resolve":       url.Values{"ref": {owned.issue}}.Encode(),

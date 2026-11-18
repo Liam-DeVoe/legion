@@ -84,6 +84,21 @@ type BlockIndexTick struct {
 	// latest version and differs from it, whatever their issue's status: owed a settlement that
 	// has not run.
 	LiveAhead int
+	// Events is how many events of the log after this build's cursor the tick read, Marked how
+	// many documents an artifact.version, artifact.created or issue.created event among them
+	// named that it marked owed a block index, and AnotherBuild whether a live server process of
+	// another build served (markVersionsAnotherBuildWrote). A tick that finds this build serving
+	// alone, after a tick that did too and once the cursor has passed every event another build
+	// can have written, reads no event.
+	Events       int
+	Marked       int
+	AnotherBuild bool
+	// ObjectNodes is how many issues, documents, asks and messages whose row named no node the
+	// tick wrote the node of, and OrphansGone how many document nodes whose row another build
+	// removed it stated gone, while this build owed the object pass
+	// (writeObjectNodesAnotherBuildWrote).
+	ObjectNodes int
+	OrphansGone int
 	// OwedDocuments, OwedTexts, OwedItems and OwedItemBlocks are what is still owed after the tick.
 	OwedDocuments  int
 	OwedTexts      int
@@ -114,8 +129,9 @@ type BlockIndexTick struct {
 	// batch was full, and the start again once a batch lists fewer.
 	Cursor BlockIndexCursors
 	// Full reports a batch of documents, of texts, of items, of item blocks or of owners with
-	// no window that was full, or a retirement pass that deleted a row, so more may be
-	// waiting. The retirement term counts rows deleted rather than a full batch because that
+	// no window that was full, a page of events after this build's cursor that was full, or a
+	// retirement pass that deleted a row, so more may be waiting. The retirement term counts
+	// rows deleted rather than a full batch because that
 	// arm reads window owners and retires only the few that still hold a whole-text row: a
 	// pass that read its whole slice and deleted twenty rows is not full by any count of its
 	// own, and the walk would then advance one slice every BlockIndexReconcileInterval instead
@@ -184,7 +200,8 @@ func (s *Service) blockIndexTick(ctx context.Context, cursors BlockIndexCursors,
 		slog.Error("dispatch: block index reconciliation", "error", err)
 	}
 	if tick.Documents > 0 || tick.Items > 0 || tick.ItemBlocks > 0 || tick.Texts > 0 ||
-		tick.Windows > 0 || tick.Retired > 0 || tick.LiveAhead != logged.LiveAhead ||
+		tick.Windows > 0 || tick.Retired > 0 || tick.Events > 0 || tick.Marked > 0 || tick.ObjectNodes > 0 || tick.OrphansGone > 0 ||
+		tick.AnotherBuild != logged.AnotherBuild || tick.LiveAhead != logged.LiveAhead ||
 		tick.OwedDocuments != logged.OwedDocuments || tick.OwedItems != logged.OwedItems ||
 		tick.OwedItemBlocks != logged.OwedItemBlocks || tick.OwedTexts != logged.OwedTexts ||
 		!tick.OldestOwedDocumentAt.Equal(logged.OldestOwedDocumentAt) {
@@ -195,7 +212,8 @@ func (s *Service) blockIndexTick(ctx context.Context, cursors BlockIndexCursors,
 		// changes - the drain reaching it, or a new backlog starting - and not as it ages.
 		slog.Info("dispatch: block index", "documents", tick.Documents, "items", tick.Items,
 			"item_blocks", tick.ItemBlocks, "texts", tick.Texts, "windows", tick.Windows,
-			"retired", tick.Retired, "owed_documents", tick.OwedDocuments,
+			"retired", tick.Retired, "events", tick.Events, "marked", tick.Marked,
+			"object_nodes", tick.ObjectNodes, "orphans_gone", tick.OrphansGone, "another_build", tick.AnotherBuild, "owed_documents", tick.OwedDocuments,
 			"owed_items", tick.OwedItems, "owed_item_blocks", tick.OwedItemBlocks,
 			"owed_texts", tick.OwedTexts, "live_ahead", tick.LiveAhead,
 			"oldest_owed_at", refs.OwedTimeText(tick.OldestOwedDocumentAt),
@@ -228,7 +246,12 @@ type owedDocument struct {
 // for), so a document is neither remembered nor taken from here while one is resident.
 type liveAheadDocuments map[string]owedDocument
 
-// ReconcileBlockIndex runs one tick: one batch of the documents owed a block index past
+// ReconcileBlockIndex runs one tick: first the marking of every document another build may have
+// versioned since the tick before it (markVersionsAnotherBuildWrote), then, on a tick of a roll,
+// the nodes of the issues, documents, asks and messages whose rows another build wrote with none
+// (writeObjectNodesAnotherBuildWrote), which reads those four tables whole where every other read
+// of the tick reads only what is owed; then one batch of the
+// documents owed a block index past
 // cursors.Documents (a document id; empty is the start), one batch of the items owed an index
 // with the block grammar, oldest first (refs.ReindexOwed), one batch of the comments, messages
 // and asks owed a block index of their own blocks, oldest owed_at first
@@ -261,6 +284,27 @@ func (s *Service) ReconcileBlockIndex(ctx context.Context, cursors BlockIndexCur
 	}
 	after := cursors.Documents
 	tick := BlockIndexTick{Cursor: BlockIndexCursors{Documents: after}}
+	// The marking runs first, so a document it marks is listed by this tick's batch below and
+	// drained by it when the batch has room. A marking that fails is logged and holds back
+	// nothing else of the tick: the cursor stays where it was, and the next tick reads the same
+	// events again. The object pass runs after it, so the node of a document the marking marks
+	// is there before the documents batch states its blocks; one that fails, or stops with work
+	// left, is logged and leaves this build's debt, so the next tick runs it again.
+	eventsFull, owedPass, err := s.markVersionsAnotherBuildWrote(ctx, &tick)
+	switch {
+	case ctx.Err() != nil:
+		return tick, ctx.Err()
+	case err != nil:
+		slog.Error("dispatch: block index could not mark the documents another build's versions name", "error", err)
+	}
+	objectsLeft, err := s.writeObjectNodesAnotherBuildWrote(ctx, &tick, owedPass)
+	switch {
+	case ctx.Err() != nil:
+		return tick, ctx.Err()
+	case err != nil:
+		slog.Error("dispatch: block index could not write the nodes of the rows another build wrote", "error", err)
+	}
+	eventsFull = eventsFull || objectsLeft
 	owed, err := s.owedDocuments(ctx, after)
 	if err != nil {
 		return tick, err
@@ -367,7 +411,7 @@ func (s *Service) ReconcileBlockIndex(ctx context.Context, cursors BlockIndexCur
 	}
 	tick.Full = documentsFull || len(items) == blockIndexItemBatch ||
 		len(itemBlocks) == blockIndexItemBatch || len(texts) == blockIndexItemBatch ||
-		windowsFull || tick.Retired > 0
+		windowsFull || tick.Retired > 0 || eventsFull
 
 	// What is owed after the tick, and how old the oldest document's debt is, in the one
 	// statement: a tick pays one round trip for the whole backlog. The owed documents come
@@ -803,11 +847,13 @@ func (liveAhead liveAheadDocuments) forgetUnlisted(after string, owed []owedDocu
 // order before the two are merged: its version is null (document_block_versions_owed), which every
 // release reads and sets; or it holds this build's own mark, store_owed_at
 // (document_block_versions_store_owed, migration 20261116221539), which the backfill sets and every
-// debt this build owes beside the null version (oweDocumentIndex, refs.RebuildAll). The second is
-// the one the release before this one cannot clear: it neither reads nor writes that column, so a
-// document it indexes after either was set stays listed here until a pass of this release states
-// its blocks and clears the mark (refs.IndexBlocks). A document holding both is listed by the
-// first alone.
+// debt this build owes beside the null version (oweDocumentIndex, refs.RebuildAll), and which each
+// tick sets on a document another build versioned or created while it served
+// (markVersionsAnotherBuildWrote).
+// The second is the one the release before this one cannot clear: it neither reads nor writes that
+// column, so a document it indexes after either was set stays listed here until a pass of this
+// release states its blocks and clears the mark (refs.IndexBlocks). A document holding both is
+// listed by the first alone.
 func (s *Service) owedDocuments(ctx context.Context, after string) ([]owedDocument, error) {
 	var cursor any
 	if after != "" {

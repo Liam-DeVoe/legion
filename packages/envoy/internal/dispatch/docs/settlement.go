@@ -199,6 +199,16 @@ func (s *Service) settleRoomWithin(parent context.Context, room string, generati
 		s.beforeSettleStart(room)
 	}
 	state := s.lockState(room)
+	// A retirement that has reserved the record (roomState.retiring) is closing a room no one
+	// holds: the settlement takes the room once that close has returned - the same room where ygo
+	// refused the close, a fresh load of it where it closed.
+	for retiring := state.retiring; retiring != nil; retiring = state.retiring {
+		s.unlockState(room, state)
+		if err := s.awaitRetirement(parent, room, retiring); err != nil {
+			return settle.stoppedShort(err)
+		}
+		state = s.lockState(room)
+	}
 	if s.stopping.Load() || state.failed != nil || state.roomGeneration != generation {
 		s.unlockState(room, state)
 		return settleOutcome{}
@@ -262,7 +272,7 @@ func (s *Service) settleRoomWithin(parent context.Context, room string, generati
 }
 
 // lockSettlementFence takes the document's document_block_versions row `for no key update`, the
-// revision fence's row (R23 of dispatch://INFRA-1149), right after the settlement's owner row and
+// revision fence's row (R23 of this change), right after the settlement's owner row and
 // before anything the settlement writes. Whether a settlement writes a version is decided only in
 // commitVersion, after reconcileAskBlocks has opened the asks of new ask blocks and followed each
 // one for a session author, which writes that session's node (asks.Follow); the version's own
@@ -300,7 +310,8 @@ func (st *settlement) take(parent context.Context, mayLoad bool) (settleStep, se
 		// The warm-up carries the service's own mark (withOwnerVerified), so allowInject does not
 		// read the issue for it: it applies nothing, and a closed issue's document settles as an
 		// open one's does, so the refusal a closed issue makes of a caller's injection is not
-		// this load's to meet.
+		// this load's to meet. A late departure's settlement hands it the settlement's mark too,
+		// through parent (settleLastPeer, withSettlementLoad).
 		warmCtx := withOwnerVerified(parent)
 		if shuttingDown {
 			warmCtx = withShutdownLoad(warmCtx)

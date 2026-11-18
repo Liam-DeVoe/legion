@@ -4,7 +4,7 @@
 
 package main
 
-// The two cost measurements of dispatch://INFRA-1149 share this file. c-write-cost is
+// The two cost measurements of this change share this file. c-write-cost is
 // TestNoWritePathThisChildChangesGetsSlower (write_cost_test.go) and c-read-cost is
 // TestNoReadThisChildChangesGetsSlowerAndNoEventOutrunsItsNode (read_cost_test.go). What they
 // share is the pair of arms they compare, the corpus writer that seeds each arm through that
@@ -337,11 +337,21 @@ func costShapeName(shape string) string {
 // store_census_test.go's waitForTheBlockIndex takes: a document is owed while its version is
 // null, and on this child's arm also while it holds the backfill's own mark (store_owed_at),
 // which only this child's schema has and only its reconciliation clears.
+//
+// On this child's arm the wait also holds until the tick's marking has read every event it owes
+// a read of: until its build's row of block_index_event_cursors exists and its event_id has
+// reached its read_through. A process's first tick reads the event log once through its newest
+// event, so a tick after the documents drain can still mark the corpus's own documents owed and
+// index them again, which would write a node inside a measured window, or after the run has
+// taken the store off the corpus.
 func costBlockIndexDrained(t *testing.T, arm *costArm, within time.Duration) {
 	t.Helper()
 	owedRead := `select count(*) from document_block_versions where version is null`
 	if arm.head {
-		owedRead += ` or store_owed_at is not null`
+		owedRead = `select (select count(*) from document_block_versions where version is null or store_owed_at is not null)
+			+ (select case when exists (select 1 from block_index_event_cursors where event_id >= read_through)
+			               and not exists (select 1 from block_index_event_cursors where event_id < read_through or another_build_seen)
+			          then 0 else 1 end)`
 	}
 	deadline := time.Now().Add(within)
 	for {

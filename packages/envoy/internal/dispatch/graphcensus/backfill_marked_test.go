@@ -79,7 +79,8 @@ func takeMarkedSnapshot(t *testing.T, database *store.Store) markedSnapshot {
 
 // D3's contract for the backfill: each pass walks only the rows its marker does not mark, names
 // their nodes in the transaction that writes their tuples, and reads no marked row. So the run can
-// be taken again at any time, as dispatch://INFRA-1253 takes it before it proves the old arms may
+// be taken again at any time, as the child that moves issues, their documents, a block's text
+// and rank, results and components takes it before it proves the old arms may
 // go, and it does only the rows still owed.
 //
 // The corpus is what a build before the store left: a document of three blocks, a mention and a

@@ -573,6 +573,14 @@ var indexPasses = map[string]string{
 	// project is read from.
 	"graphcensus/projects_backfill.go#writeObjectBatch": "the issue, document, ask and message rows their marker does not mark",
 	"graphcensus/projects_backfill.go#writeScopeBatch":  "the comment and block nodes that name no project, and the rows their project is read from",
+	// The block-index tick's sweep of a document the release before this one removed without
+	// stating its node gone. What decides is the store's own row of the node: a document node not
+	// gone at an issue's address that no artifacts row stands behind (graphcensus'
+	// OrphanedDocumentNodes), which it locks and reads again to find it still so under that lock.
+	// The artifact.removed event naming the address is only the cause it states the node gone
+	// under, and the sentinel where there is none, as this build's removal does. It reads no
+	// projected table, and the store only to state the store's own next fact, so it is no repair.
+	"graphcensus/orphans.go#StateOrphanedGone": "each document node not gone at an issue's address that no artifacts row stands behind, the store's row of that node, and the artifact.removed event naming the address as its cause",
 	// The erase (R5), the one statement of the tree that removes bytes. Its input is the node
 	// the operator named and what the store itself holds about it, which is neither side of a
 	// projection read to mend the other: it deletes both sides together, the store's through

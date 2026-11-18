@@ -102,6 +102,13 @@ type testServerOptions struct {
 	// agentStream is the live agent conversation relay; nil is the deployment with no NATS,
 	// where an agent view is refused STREAM_UNAVAILABLE.
 	agentStream agentstream.Source
+	// agentPublisher queues a targeted message for a session no store of the listener's holds
+	// (Deps.AgentPublisher). Nil is a recorder of the server's own, as a deployment with NATS
+	// queues every such message; a test reads it through the Deps newTestServer answers
+	// (publishedBy). noAgentPublisher is the deployment with neither NATS nor test hooks, which
+	// queues none.
+	agentPublisher   AgentPublisher
+	noAgentPublisher bool
 	// agentWatchInterval replaces how often an agent view re-arms its session (ten seconds), so a
 	// test of the re-arm need not wait one out.
 	agentWatchInterval time.Duration
@@ -144,7 +151,7 @@ type testServerOptions struct {
 	buildCommit string
 	// duplicateBound is the near-copy gate's bound (server.duplicateBound); zero keeps
 	// production's duplicateGateTimeout. A case that reads the gate's verdict passes
-	// nearCopyVerdictBound, so whether the machine met 500 ms is not what it measures.
+	// nearCopyVerdictBound, so whether the machine met duplicateGateTimeout is not what it measures.
 	duplicateBound time.Duration
 }
 
@@ -248,6 +255,13 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	if options.identity != nil {
 		people = options.identity
 	}
+	agentPublisher := options.agentPublisher
+	switch {
+	case options.noAgentPublisher:
+		agentPublisher = nil
+	case agentPublisher == nil:
+		agentPublisher = NewAgentPublishRecorder()
+	}
 	deps, err := NewDeps(DepsInput{
 		Store:                  database,
 		Identity:               people,
@@ -276,6 +290,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		AccessAccounts:    options.accessAccounts,
 		BrokerTokens:      brokerTokens,
 		AgentStream:       options.agentStream,
+		AgentPublisher:    agentPublisher,
 		Embedder:          options.embedder,
 		Answerer:          options.answerer,
 		Files:             options.files,

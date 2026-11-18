@@ -13,7 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// A node row is the projection of its own tuples (R1 of dispatch://INFRA-1149, and this
+// A node row is the projection of its own tuples (R1 of this change, and this
 // package's own doc): every fact is appended, an attribute that changes is a second tuple
 // carrying the new value, and a tuple holds the write that caused it. The two base attributes
 // every node carries, `visibility` and `state`, are attribute tuples under that rule (R8), so

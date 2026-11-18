@@ -13,13 +13,13 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// laterState is a state no writer of this release writes: dispatch://INFRA-1950's build marks a
+// laterState is a state no writer of this release writes: a later release's build marks a
 // node proposed. This release serves beside that build during a roll and alone after a rollback,
 // so its writers meet nodes that build marked.
 const laterState = "proposed"
 
 // TestARestatingWriteKeepsAStateItDoesNotOwn holds a write that restates a node (Node.Restates)
-// to the rule moveNodes writes it by (R8 of dispatch://INFRA-1149). The node is a comment's as
+// to the rule moveNodes writes it by (R8 of this change). The node is a comment's as
 // its one statement writes it (CommentFacts), which restates it. Marked at a later release's
 // state and reserved for its author by a plain write, it keeps both when that restating write
 // writes it live and project-visible again; a restating write that says gone writes it gone and

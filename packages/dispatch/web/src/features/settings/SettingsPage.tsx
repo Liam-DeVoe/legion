@@ -37,6 +37,7 @@ import {
   settingsTableWrapper,
 } from "./classes";
 import { GroupsSection } from "./GroupsSection";
+import { LegionDaemonsSection } from "./LegionDaemonsSection";
 import { ProjectSelect } from "./ProjectSelect";
 import { ProjectsSection } from "./ProjectsSection";
 
@@ -357,6 +358,7 @@ export function SettingsPage(): ReactNode {
           <DeliverySettingsForm />
         </section>
         <IssuePagePreference />
+        <LegionDaemonsSection />
       </div>
     </section>
   );

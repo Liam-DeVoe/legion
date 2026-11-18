@@ -34,7 +34,7 @@ const sizingYearDays = 365
 // and the figure that comes out of dividing its size by its rows is tens of times the real one.
 const measurableRows = 10_000
 
-// measuredBytesARow is the bytes a row measured for dispatch://INFRA-1149 on this pod's
+// measuredBytesARow is the bytes a row measured for this change on this pod's
 // PostgreSQL 18.6, used where a store table is too small to measure its own. measuredFrom is
 // where it came from, printed beside every figure that uses it so nobody reads it as this
 // database's own measurement.
@@ -112,11 +112,11 @@ func (b BlockIndexBacklog) Age() time.Duration {
 
 // branchTables are the tables the migrations of this branch touch, each with whether the
 // migration alters a relation that already held rows. graph_nodes, graph_tuples and
-// graph_erasures are created by 20261109013400 and written by 20261109051232, so no existing
-// row is rewritten for them; document_blocks, block_refs and comments are altered by
-// 20261109022248, server_build_announcements by 20261115051200 and document_block_versions by
-// 20261116221539, and a table that large is a migration that needs another shape, which is what
-// the limit refuses.
+// graph_erasures are created by 20261109013400 and written by 20261109051232, and
+// block_index_event_cursors is created by 20261118115645, so no existing row is rewritten for
+// them; document_blocks, block_refs and comments are altered by 20261109022248,
+// server_build_announcements by 20261115051200 and document_block_versions by 20261116221539, and
+// a table that large is a migration that needs another shape, which is what the limit refuses.
 var branchTables = []struct {
 	name    string
 	altered bool
@@ -124,6 +124,7 @@ var branchTables = []struct {
 	{"graph_nodes", false},
 	{"graph_tuples", false},
 	{"graph_erasures", false},
+	{"block_index_event_cursors", false},
 	{"block_refs", true},
 	{"comments", true},
 	{"document_block_versions", true},
@@ -131,21 +132,21 @@ var branchTables = []struct {
 	{"server_build_announcements", true},
 }
 
-// The five children of dispatch://INFRA-1098 whose writes the sizing sums (R4), each with the kinds
+// The five children of the parent change whose writes the sizing sums (R4), each with the kinds
 // R20 gives it: this one; the one that moves decisions, readings, asks and their answers; the one
 // that moves the inbox, the messages and the read state; the one that moves interactions, lenses,
 // lens kinds, constraints and risks; and the one that moves issues, their documents, a block's
 // text and rank, results and components.
 const (
-	movedHere       = "dispatch://INFRA-1149"
-	movedWithAsks   = "dispatch://INFRA-1150"
-	movedWithInbox  = "dispatch://INFRA-1152"
-	movedWithLenses = "dispatch://INFRA-1950"
-	movedWithBlocks = "dispatch://INFRA-1253"
+	movedHere       = "this-change"
+	movedWithAsks   = "asks-child"
+	movedWithInbox  = "inbox-child"
+	movedWithLenses = "lenses-child"
+	movedWithBlocks = "blocks-child"
 )
 
 // StoreKind is one term of the projection: one kind of write the five children of
-// dispatch://INFRA-1098 move, the child that moves it, how many nodes and how many tuples one such
+// the parent change move, the child that moves it, how many nodes and how many tuples one such
 // write appends, and how many such writes the database's own history holds inside the window.
 // Rows a day is the sum over the terms of writes a day times tuples a write (R4).
 //
@@ -160,8 +161,8 @@ const (
 // the ones the window records for the first time.
 //
 // A kind production writes no row of before its child ships - a decision and a reading of
-// dispatch://INFRA-1150, a criterion of dispatch://INFRA-1253 and every kind of
-// dispatch://INFRA-1950 - has no history to read, so its term carries an assumed rate (Assumed),
+// the asks child, a criterion of the blocks child and every kind of the lenses child - has no
+// history to read, so its term carries an assumed rate (Assumed),
 // which its Driver states with the reason for it and the report marks as assumed, rather than
 // reading zero and leaving the kind out of the sum. A decision, a reading and a criterion are
 // blocks of a document, whose node and placement the block terms count already, so each of their
@@ -210,8 +211,8 @@ const movedParents = "block_parent_moved"
 //   - the node and three base attributes of an issue, an artifact, an ask and a message, and the
 //     gone state a document's removal states of its node, each written by its own create or
 //     removal on this branch;
-//   - dispatch://INFRA-1253's text value and rank value of each block whose text a version wrote;
-//   - dispatch://INFRA-1152's delivered_to of a message, and one tuple for each read mark, clear,
+//   - the blocks child's text value and rank value of each block whose text a version wrote;
+//   - the inbox child's delivered_to of a message, and one tuple for each read mark, clear,
 //     dismissal and snooze. Each of the tables those four are written to keeps the newest mark of
 //     a key and no earlier one, so its term counts every key marked inside the window once;
 //   - the person, session, role and page nodes the first write that records each makes
@@ -219,22 +220,22 @@ const movedParents = "block_parent_moved"
 //     attributes: a page's part_of its role, and a session's part_of the role it claimed, with
 //     that role's held_by and the retraction that ends it, or else a page of its own with that
 //     page's base attributes and its part_of the session (R14);
-//   - dispatch://INFRA-1152's message's author and parent, and the tuples its target and its
+//   - the inbox child's message's author and parent, and the tuples its target and its
 //     broadcast become, a reply's meaning tuple and its part_of, a comment's mentions, a
 //     person's part in a thread, the delivered_to of each write to every other participant and of
 //     an ask to the person it waits on, the move of that person, the body blocks of a comment, a
 //     message and an ask with their links, and a delivery attempt's node (its spec's
 //     #b-r-kinds-move, #b-r-delivery-written, #b-r-participation and #b-r-mentions);
-//   - dispatch://INFRA-1253's document version node, an artifact's part_of its issue, an issue's
+//   - the blocks child's document version node, an artifact's part_of its issue, an issue's
 //     child_of and needs, a result's node with its values and tuples, its screenshots and its
 //     retraction, a component's node with its part_of, depends_on and affects, and a criterion's
 //     authored_by (#b-r-issue-relations, #b-r-result-node, #b-r-artifacts-in-tree,
 //     #b-r-reasoning-tree);
-//   - dispatch://INFRA-1150's ask's answer_state, question, options, authored_by, anchored_to and
+//   - the asks child's ask's answer_state, question, options, authored_by, anchored_to and
 //     owned_by, and what its other events state - an edit, an answer, a resolution, a follower - a
 //     Keep, and an agent's decision and its reading (#b-r-ask-node, #b-r-decision-node,
 //     #b-r-reading);
-//   - dispatch://INFRA-1950's interaction and its frames, a lens and its finding blocks, a lens
+//   - the lenses child's interaction and its frames, a lens and its finding blocks, a lens
 //     kind, a constraint and a risk (#b-r-interaction, #b-r-lens, #b-r-lens-catalogue,
 //     #b-r-constraint-risk), every one of them assumed.
 //
@@ -461,7 +462,7 @@ func storeKinds() []StoreKind {
 		count: `(select count(*) from artifact_versions where created_at > ` + sizingWindow + `)`,
 	}, {
 		Name: "criterion", MovedBy: movedWithBlocks, Tuples: 1, Assumed: 5 * sizingWindowDays,
-		Driver: "assumed at 5 a day, since the block schema holds no criterion type before dispatch://INFRA-1253 and no" +
+		Driver: "assumed at 5 a day, since the block schema holds no criterion type before the blocks child ships and no" +
 			" row holds one: its authored_by, its node and placement being a block's, which the block terms count",
 	}, {
 		Name: "result", MovedBy: movedWithBlocks, Nodes: 1, Tuples: 16,
@@ -525,17 +526,17 @@ func storeKinds() []StoreKind {
 		count:  `(select count(*) from decision_keeps where kept_at > ` + sizingWindow + `)`,
 	}, {
 		Name: "decision", MovedBy: movedWithAsks, Tuples: 5, Assumed: 10 * sizingWindowDays,
-		Driver: "assumed at 10 a day, since production writes no agent's decision before dispatch://INFRA-1150 and a" +
+		Driver: "assumed at 10 a day, since production writes no agent's decision before the asks child ships and a" +
 			" decisions.md section, today's form of one, is no row: its uncertainty and uncertainty_reason values, one" +
 			" shaped, its from_ask and its decided_by, its node and placement being a block's, which the block terms count",
 	}, {
 		Name: "reading", MovedBy: movedWithAsks, Tuples: 1, Assumed: 10 * sizingWindowDays,
 		Driver: "assumed at one under each assumed decision, 10 a day, since production writes no reading before" +
-			" dispatch://INFRA-1150: its authored_by, its node and its part_of its decision being a block's, which the" +
+			" the asks child ships: its authored_by, its node and its part_of its decision being a block's, which the" +
 			" block terms count",
 	}, {
 		Name: "interaction", MovedBy: movedWithLenses, Nodes: 1, Tuples: 4, Assumed: 10 * sizingWindowDays,
-		Driver: "assumed at 10 runs a day, since production writes no interaction before dispatch://INFRA-1950 and" +
+		Driver: "assumed at 10 runs a day, since production writes no interaction before the lenses child ships and" +
 			" going_requests keeps a run only for contracts.GoingRequestTTL, so no table holds the window's runs: its" +
 			" node, its visibility and state, its authored_by and one changed_by_run into it",
 	}, {
@@ -545,7 +546,7 @@ func storeKinds() []StoreKind {
 	}, {
 		Name: "lens", MovedBy: movedWithLenses, Nodes: 1, Tuples: 6, Assumed: 2 * sizingWindowDays,
 		Driver: "assumed at 2 a day, a pre-mortem and one other, since production writes no lens before" +
-			" dispatch://INFRA-1950: its node, its visibility and state, its has_kind, its part_of the node it analyses," +
+			" the lenses child ships: its node, its visibility and state, its has_kind, its part_of the node it analyses," +
 			" its authored_by and, at most, its triggered_by",
 	}, {
 		Name: "lens_finding", MovedBy: movedWithLenses, Nodes: 1, Tuples: 4, Assumed: 10 * sizingWindowDays,
@@ -558,13 +559,13 @@ func storeKinds() []StoreKind {
 			" constrained_by, and its source's constraint node with that node's visibility, state, source and reference",
 	}, {
 		Name: "constraint", MovedBy: movedWithLenses, Nodes: 1, Tuples: 5, Assumed: 1 * sizingWindowDays,
-		Driver: "assumed at 1 a day, since production writes no constraint before dispatch://INFRA-1950: its node, its" +
+		Driver: "assumed at 1 a day, since production writes no constraint before the lenses child ships: its node, its" +
 			" visibility and state, its two values, a standard and its reference or a measurement and where it was" +
 			" taken, and the constrained_by of the requirement it forced",
 	}, {
 		Name: "risk", MovedBy: movedWithLenses, Nodes: 1, Tuples: 4, Assumed: 11 * sizingWindowDays,
 		Driver: "assumed at 11 a day, one pre-mortem's risks a day as the one this tree holds has eleven, since" +
-			" production writes no risk before dispatch://INFRA-1950: its node, its visibility and state, its part_of" +
+			" production writes no risk before the lenses child ships: its node, its visibility and state, its part_of" +
 			" its lens and one prevented_by",
 	}}
 }
@@ -1098,7 +1099,7 @@ func bytesARow(size TableSize) (int64, string) {
 	if size.Held && size.Rows >= measurableRows {
 		return size.Bytes / size.Rows, "measured from this database"
 	}
-	return measuredBytesARow, "measured for dispatch://INFRA-1149 (" + measuredFrom +
+	return measuredBytesARow, "measured when the store was built (" + measuredFrom +
 		"), the table here holding too few rows to measure"
 }
 

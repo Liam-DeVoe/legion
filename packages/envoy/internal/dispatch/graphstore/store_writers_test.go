@@ -135,6 +135,10 @@ var storeWriteCallSites = map[string]string{
 	// block batch under the revision fence (lockBlockDocuments).
 	"graphcensus/projects_backfill.go#writeObjectBatch": "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
 	"graphcensus/projects_backfill.go#writeScopeBatch":  "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
+	// The block-index tick's sweep of the documents a build before this one removed, which states
+	// each orphaned node gone as this build's removal does: the issue's row, then the node's row,
+	// then the state tuple, under the removal's own event.
+	"graphcensus/orphans.go#StateOrphanedGone": "graphcensus#TestTheOrphanSweepTakesTheStoreLockOrder",
 	// The erase, the one writer that deletes from the store, through EraseNode: the tuples on both
 	// sides of the node, then the node's row. It takes the owner rows it writes under before that
 	// row, and its projection rows after it.

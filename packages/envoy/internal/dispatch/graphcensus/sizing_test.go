@@ -109,7 +109,7 @@ func TestTheSizingReportsTheOwedDocumentsAndTheAgeOfTheOldest(t *testing.T) {
 }
 
 // Two runs over one unchanged database print one report, which is what the growth check holds
-// the command to (dispatch://INFRA-1149's c-growth diffs the two). An age measured against
+// the command to (the check c-growth diffs the two). An age measured against
 // now() would move between the two runs, so the backlog lines carry the oldest debt's own
 // timestamp and an age measured against the newest write the database recorded.
 func TestTwoSizingRunsOverAnUnchangedDatabaseAgree(t *testing.T) {
@@ -633,9 +633,10 @@ var countedBy = map[writtenKind][]string{
 // append no kind these do not: the API's comment path states what the backfill's comment pass
 // states of a comment (graphstore.CommentFacts, graphstore.AuthorFacts), the creates of an issue,
 // a document, an ask and a message state what the backfill's object pass states of each, a
-// document's removal states the state that pass states, the settle of a delivery attempt, the
-// follow of an ask and the seed's followers each state a session's node, the sites that cause a
-// version's index append what the block index stated, and the erase appends nothing.
+// document's removal states the state that pass states, and so does the roll tick's sweep of a
+// document a build before this one removed (StateOrphanedGone), the settle of a delivery attempt,
+// the follow of an ask and the seed's followers each state a session's node, the sites that cause
+// a version's index append what the block index stated, and the erase appends nothing.
 func writeTheStore(t *testing.T, database *store.Store) map[writtenKind]int64 {
 	t.Helper()
 	ctx := context.Background()
@@ -827,7 +828,7 @@ func runTheOutbox(t *testing.T, database *store.Store, what, settled string) {
 // a version that drops a block, which the index states gone, moves a paragraph out of a callout,
 // which it states as the retraction of one parent and the assertion of the other, and brings the
 // dropped block back, beside the blocks each version writes afresh, a reference and the texts
-// INFRA-1253 states; a comment with each fact its write states, its mention's delivery, and the
+// the blocks child moves; a comment with each fact its write states, its mention's delivery and the
 // bus's and a fallback copy's delivery of it; the read marks that comment and a message move, a
 // clear, a dismissal and a snooze; a message with a reply and a delivery; the events of an ask;
 // and a row of each further table a term counts (seedSizedRelations). Every term is printed with
@@ -904,7 +905,7 @@ func TestTheSizingCountsEveryTupleTheWritersAppend(t *testing.T) {
 		"ask_resolved": {tuples: 1, writes: 1}, "ask_follower": {tuples: 1, writes: 1}, "keep": {tuples: 2, writes: 1},
 		"decision": {tuples: 5, writes: 10 * sizingWindowDays, assumed: true},
 		"reading":  {tuples: 1, writes: 10 * sizingWindowDays, assumed: true},
-		// No table holds a kind of dispatch://INFRA-1950's yet, so each term reads the writes it
+		// No table holds a kind of the lenses child's yet, so each term reads the writes it
 		// is assumed at.
 		"interaction":  {tuples: 4, writes: 10 * sizingWindowDays, assumed: true},
 		"frame":        {tuples: 1, writes: 500 * sizingWindowDays, assumed: true},
