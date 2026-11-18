@@ -23,6 +23,7 @@ import type {
   InboxRow,
   Issue,
   IssueDetails,
+  MyRepliesResponse,
 } from "../../api/types";
 import { QUIET_MS } from "../doc/refocus-when-settled";
 import { DocumentRuntime, type DocumentRuntimeValue } from "../doc/runtime";
@@ -2761,6 +2762,48 @@ test("?item= selects the row it names, and one the list does not hold falls back
   } finally {
     gone.unmount();
     narrow();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+  }
+});
+
+// The reader's threads are read apart from the asks, and the list draws the asks first: a link
+// or a reload naming a thread is answered once the threads have come, not with the first ask.
+test("?item= naming a thread selects it when the threads' read lands after the asks'", async () => {
+  const narrow = widenToReadingPane();
+  const rows = [inboxIssue("ask-a", "CORE-1", "Which approach?")];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const threads = Promise.withResolvers<MyRepliesResponse>();
+  const listMyReplies = spyOn(api, "listMyReplies").mockImplementation(() => threads.promise);
+  const listComments = spyOn(api, "listComments").mockResolvedValue([]);
+  const { unmount } = renderInbox("/?item=reply%3Athread-1");
+
+  try {
+    await waitFor(() => expect(listMyReplies).toHaveBeenCalled());
+    await waitFor(() => shortRow("ask-a"));
+    expect(selectedIds()).toEqual([]);
+    expect(address()).toBe("/?item=reply%3Athread-1");
+
+    await act(async () => {
+      threads.resolve({
+        as_of: "2026-10-12T00:00:00Z",
+        limit: 200,
+        offset: 0,
+        rows: [replyRow("thread-1")],
+        total: 1,
+      });
+      await threads.promise;
+    });
+    await waitFor(() => expect(selectedIds()).toEqual(["reply:thread-1"]));
+    expect(address()).toBe("/?item=reply%3Athread-1");
+  } finally {
+    unmount();
+    narrow();
+    listMyReplies.mockRestore();
+    listComments.mockRestore();
     getAsk.mockRestore();
     getInbox.mockRestore();
     getIssue.mockRestore();

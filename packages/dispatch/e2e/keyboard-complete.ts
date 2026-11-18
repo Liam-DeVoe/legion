@@ -10,7 +10,6 @@
  *  Every document, project, person and host here is made up: this repository is public, so
  *  nothing names a real one. */
 
-import { setTimeout as sleep } from "node:timers/promises";
 import {
   type InboxDismissRequest,
   type InboxDismissResponse,
@@ -301,26 +300,34 @@ export function dismissWrites(page: Page): KeyedWrite<unknown>[] {
   return watchWrites(page, "POST", DISMISS_PATH);
 }
 
-/** How long `holdWrites` keeps each write it catches out before letting it reach Dispatch. */
-export const HELD_WRITE_MS = 400;
+/** The writes `holdWrites` caught, and what lets them through. */
+export interface HeldWrites {
+  /** Each write's body, in the order sent. */
+  readonly bodies: readonly string[];
+  /** Sends every write held so far on to Dispatch, and lets each later one straight through. */
+  readonly release: () => void;
+}
 
-/** Every `method` request `page` sends from here on to a path `path` matches, each held
- *  `HELD_WRITE_MS` and then sent on to Dispatch unchanged, in the order sent: a control's write
- *  stays out long enough for a row to press the control again while it is. */
-export async function holdWrites(page: Page, method: string, path: RegExp): Promise<string[]> {
-  const held: string[] = [];
+/** Every `method` request `page` sends from here on to a path `path` matches, each held until
+ *  the row calls `release` and then sent on to Dispatch unchanged, in the order sent: a control's
+ *  write stays out for as long as the row takes to press the control again. A hold of a fixed
+ *  time is not enough: under load the row's own steps between the two presses outlast it, and
+ *  the second press then lands on a control whose write has already come back. */
+export async function holdWrites(page: Page, method: string, path: RegExp): Promise<HeldWrites> {
+  const bodies: string[] = [];
+  const released = Promise.withResolvers<void>();
   await page.route(
     (url) => path.test(url.pathname),
     async (route) => {
       if (route.request().method() !== method) return route.fallback();
-      held.push(route.request().postData() ?? "");
-      // The hold is the row's subject: the write stays out this long so the control is
-      // pressed again while it is in flight, then the write goes on to Dispatch as sent.
-      await sleep(HELD_WRITE_MS);
+      bodies.push(route.request().postData() ?? "");
+      // The hold is the row's subject: the write stays out until the row lets it go, then goes
+      // on to Dispatch as sent.
+      await released.promise;
       return route.continue();
     }
   );
-  return held;
+  return { bodies, release: () => released.resolve() };
 }
 
 // ---------------------------------------------------------------------------

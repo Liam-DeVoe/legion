@@ -1092,6 +1092,7 @@ export function Inbox({
     paneShown,
     presented,
     region: regionRef,
+    rowsPending: threads.pending,
   });
   // The refetch a recorded answer triggers returns the list the optimistic removal already
   // produced, so it re-renders nothing on its own; release explicitly. The reader's own answer -

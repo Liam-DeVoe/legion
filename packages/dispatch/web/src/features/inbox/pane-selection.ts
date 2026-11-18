@@ -106,6 +106,10 @@ export interface PaneSelectionOptions {
   /** This list's own part of the page - its rows, or its empty message - where a hand-off's
    *  target is looked up, so the drawer's list never reaches into the page under it. */
   region: RefObject<HTMLElement | null>;
+  /** Whether a part of the list is still to come: the reader's threads, read apart from the
+   *  asks, which the list draws first (`useInboxThreadRows`). An address naming a row the list
+   *  does not hold yet waits for that part rather than being answered with the first row. */
+  rowsPending: boolean;
 }
 
 export interface PaneSelection extends InboxHandOff {
@@ -151,6 +155,7 @@ export function usePaneSelection({
   paneShown,
   presented,
   region,
+  rowsPending,
 }: PaneSelectionOptions): PaneSelection {
   const [, goToRoute] = useInboxRoute();
   const [selectedId, setSelectedId] = useState<string | undefined>(undefined);
@@ -439,8 +444,8 @@ export function usePaneSelection({
   // reload - exactly while it says something this list has not already answered: a row it holds
   // is selected (its band opened first, if the reader linked into a folded one: following the
   // link is what they asked for), and one it does not hold leaves the first visible row
-  // selected and the address rewritten. Otherwise the selection is the reader's, and the address
-  // follows it.
+  // selected and the address rewritten, once every part of the list has come. Otherwise the
+  // selection is the reader's, and the address follows it.
   useEffect(() => {
     // A list that holds nothing - still loading, failed, or genuinely empty - answers no
     // address: `?item=` is left unread until there are rows to read it against.
@@ -449,8 +454,11 @@ export function usePaneSelection({
     }
     const visible = presented.current;
     if (filter.item !== shownItem.current) {
-      shownItem.current = filter.item;
       const wanted = listedRows.current.find((placed) => rowId(placed.row) === filter.item);
+      // A row the list does not hold yet may be in the part still to come - a link to a thread,
+      // whose read lands after the asks' - so the address waits for it, unanswered.
+      if (wanted === undefined && filter.item !== undefined && rowsPending) return;
+      shownItem.current = filter.item;
       if (wanted !== undefined) {
         const id = rowId(wanted.row);
         setSelectedId(id);

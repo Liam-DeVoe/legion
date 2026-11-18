@@ -64,6 +64,7 @@ import {
   contrastOf,
   dismissThread,
   dismissWrites,
+  type HeldWrites,
   handOnControl,
   handOnWrites,
   holdWrites,
@@ -1154,13 +1155,14 @@ function isActive(control: Locator): Promise<boolean> {
 
 /** Presses `control` by the keyboard with `key`, and again while the write it sent is held, and
  *  reads that the focus stays on it while the write is out and once it has landed, and that the
- *  two presses sent one write (`writes`, as `holdWrites` caught them). */
+ *  two presses sent one write (`writes`, as `holdWrites` caught them, let go after the second
+ *  press). */
 async function pressTwiceWhileHeld(
   page: Page,
   control: Locator,
   key: "Enter" | "Space",
   what: string,
-  writes: readonly string[]
+  writes: HeldWrites
 ): Promise<void> {
   await control.focus();
   expect(await isActive(control), `held-press: ${what} takes the focus`).toBe(true);
@@ -1178,6 +1180,7 @@ async function pressTwiceWhileHeld(
     await isActive(control),
     `held-press: ${what} keeps the focus after a second ${key} while held`
   ).toBe(true);
+  writes.release();
   await expect(control, `held-press: ${what} lets go once its write lands`).not.toHaveAttribute(
     "aria-disabled",
     "true"
@@ -1185,10 +1188,13 @@ async function pressTwiceWhileHeld(
   expect(await isActive(control), `held-press: ${what} keeps the focus once its write lands`).toBe(
     true
   );
-  expect(writes, `held-press: ${what} sent exactly one write for two presses`).toHaveLength(1);
+  expect(writes.bodies, `held-press: ${what} sent exactly one write for two presses`).toHaveLength(
+    1
+  );
 }
 
-// SLOW(>=2s): three writes each held 400 ms, on the issue page and on Settings.
+// SLOW(>=2s): three writes, each held until its control is pressed again, on the issue page and
+// on Settings.
 test("held-press: a button, a form's submit and a checkbox keep the keyboard's focus while their write is out, and two presses send one write", async ({
   page,
 }) => {
@@ -1221,7 +1227,7 @@ test("held-press: a button, a form's submit and a checkbox keep the keyboard's f
   await pressTwiceWhileHeld(page, approve, "Space", "the token's Approve checkbox", scopeWrites);
   await expect(approve, "held-press: the one write cleared Approve").not.toBeChecked();
   expect(
-    JSON.parse(scopeWrites[0] ?? "{}"),
+    JSON.parse(scopeWrites.bodies[0] ?? "{}"),
     "held-press: the write names Act as you alone"
   ).toEqual({ scopes: ["person"] });
 });
@@ -1557,7 +1563,8 @@ test("k-link-keys: in the past version and the reading pane, Tab reaches each li
   for (const view of ["the past version", "the reading pane"] as const) {
     let links = await openLinkView(page, seed, view);
     if (view === "the past version") {
-      await page.getByRole("button", { exact: true, name: "Version" }).focus();
+      // The Version picker is named by its list and then the version it shows.
+      await page.getByRole("button", { name: /^Version(?: |$)/ }).focus();
     } else {
       await page.keyboard.press("l");
       await expect(paneScroller(page), "k-link-keys: l puts the focus in the pane").toBeFocused();
@@ -3365,7 +3372,9 @@ const INBOX_ACTIONS: readonly (readonly [RegExp, InboxAction])[] = [
   [/^Show (\d+ earlier|fewer) repl/, { label: "Show earlier replies" }],
   // The asker's button, which names the session by the short form of its id.
   [new RegExp(`^session:${asker.actor.id.slice(0, 8)}`), { label: "Show the asker's handles" }],
-  [/^Hand this question to/, { label: "Hand on" }],
+  // The hand-on list's trigger, named by its list and then by the card's badge: whom the ask is
+  // asked of, nobody where the server names no person, or the hand-on while it is out.
+  [/^Hand this question to (Asked of \S+|Handing on…)$/, { label: "Hand on" }],
   [/^Referenced by/, { label: "Referenced by" }],
   [/^(Show|Hide) diff$/, { label: "Show the earlier approval's diff" }],
   // Answer is Ctrl+Enter in the answer box, and the note's disclosure is Enter's: both are the
@@ -3392,23 +3401,37 @@ const INBOX_ACTIONS: readonly (readonly [RegExp, InboxAction])[] = [
   [/^(Send|Cancel reply)$/, { key: "r", label: "Reply in the thread of the item in hand" }],
 ];
 
-/** The names of the buttons and menu triggers `scope` shows that take a press now: each one's
- *  `aria-label`, else its text without what it hides from assistive tech (the key a control
- *  draws beside its label in the pane's head). A disabled one - Ask back with nothing typed,
- *  Answer with nothing picked - is no action of the item in hand until it takes a press; the
- *  question the reader asks back on reads Ask back once it does. */
+/** The names of the buttons and menu triggers `scope` shows that take a press now, as assistive
+ *  tech reads them: the elements its `aria-labelledby` names (a single pick's trigger, named by
+ *  its list and then what it shows), else its `aria-label`, else its text - each text without
+ *  what it hides from assistive tech (the key a control draws beside its label in the pane's
+ *  head). A disabled one - Ask back with nothing typed, Answer with nothing picked - is no action
+ *  of the item in hand until it takes a press; the question the reader asks back on reads Ask
+ *  back once it does. */
 function controlNames(scope: Locator): Promise<string[]> {
-  return scope.locator('button, [role="button"]').evaluateAll((nodes) =>
-    nodes
+  return scope.locator('button, [role="button"]').evaluateAll((nodes) => {
+    const shown = (element: Element) => {
+      const named = element.cloneNode(true) as Element;
+      for (const hidden of named.querySelectorAll('[aria-hidden="true"]')) hidden.remove();
+      return named.textContent ?? "";
+    };
+    return nodes
       .filter((node) => node.getClientRects().length > 0 && !node.matches(":disabled"))
       .map((node) => {
-        const label = node.getAttribute("aria-label");
-        if (label !== null) return label.replace(/\s+/g, " ").trim();
-        const named = node.cloneNode(true) as Element;
-        for (const hidden of named.querySelectorAll('[aria-hidden="true"]')) hidden.remove();
-        return (named.textContent ?? "").replace(/\s+/g, " ").trim();
-      })
-  );
+        const namedBy = node.getAttribute("aria-labelledby");
+        const name =
+          namedBy === null
+            ? (node.getAttribute("aria-label") ?? shown(node))
+            : namedBy
+                .split(/\s+/)
+                .map((id) => {
+                  const part = document.getElementById(id);
+                  return part === null ? "" : shown(part);
+                })
+                .join(" ");
+        return name.replace(/\s+/g, " ").trim();
+      });
+  });
 }
 
 /** The labels of the `?` help's Inbox section, opened over the item in hand and closed again. */
@@ -4966,57 +4989,84 @@ test("k-threads: each comment, reply and message on the Conversation tab and in 
   await expectTabReaches(page, card, names.comment, "on the margin's open card");
 });
 
-// SLOW(>=2s): an issue with four conversations seeded, and the Inbox's reading pane, cards and
-// drawer each walked by Tab over its three threads.
-test("k-threads: each comment, reply and message of an issue in the Inbox's reading pane, cards and drawer has a Copy reference that Tab reaches", async ({
-  page,
-}) => {
+/** The Inbox's steps of k-threads where `place` draws it: beside the reading pane each thread is
+ *  selected, its fold opened and its column walked by Tab after `l`; in the cards below the
+ *  pane's width, and in the drawer over a project page, each thread's card has its fold opened
+ *  and is walked by Tab from its row. One row per place, as each walks the three threads. */
+async function inboxThreadCopySteps(page: Page, place: InboxPlace): Promise<void> {
   const seed = await seedThreads();
   const names = threadCopyNames(seed);
-  // Each thread, the fold its older replies are drawn behind, and its Copy reference names.
+  // Each thread's row, the fold its older replies are drawn behind, and its Copy reference names.
+  // The message and the comment are the reader's Reply rows. The question waits on the reader,
+  // the project's default assignee, so the Inbox lists it as their ask, whose card draws its
+  // thread, and not as a Reply row (`myRepliesOwner`, `api/replies.go`).
   const threads = [
-    [seed.message, undefined, names.message, "the message's thread"],
-    [seed.comment, "Show 1 earlier reply", names.comment, "the comment's thread"],
+    [replyRowId(seed.message), undefined, names.message, "the message's thread"],
+    [replyRowId(seed.comment), "Show 1 earlier reply", names.comment, "the comment's thread"],
     [seed.ask, "Show 2 earlier replies", names.ask, "the question's thread"],
   ] as const;
 
-  // The reading pane: each thread selected, its fold opened, and its column walked after `l`.
-  await page.setViewportSize(WIDE);
-  await page.goto("/");
-  for (const [thread, fold, expected, what] of threads) {
-    await selectRow(page, replyRowId(thread));
-    if (fold !== undefined) await paneScroller(page).getByRole("button", { name: fold }).click();
-    await inboxRow(page, replyRowId(thread)).locator("time").first().click();
-    await page.keyboard.press("l");
-    await expect(paneScroller(page), `k-threads: l puts the focus in ${what}`).toBeFocused();
-    await expectTabReaches(page, paneScroller(page), expected, `in the reading pane, in ${what}`);
+  if (place === "the reading pane") {
+    await page.setViewportSize(WIDE);
+    await page.goto("/");
+    for (const [id, fold, expected, what] of threads) {
+      await expect(inboxRow(page, id), `k-threads: the Inbox lists ${what}`).toBeVisible();
+      await selectRow(page, id);
+      if (fold !== undefined) await paneScroller(page).getByRole("button", { name: fold }).click();
+      await inboxRow(page, id).locator("time").first().click();
+      await page.keyboard.press("l");
+      await expect(paneScroller(page), `k-threads: l puts the focus in ${what}`).toBeFocused();
+      await expectTabReaches(page, paneScroller(page), expected, `in the reading pane, in ${what}`);
+    }
+    return;
   }
 
-  // The cards, below the reading pane's width, and the drawer over a project page: each thread's
-  // card, its fold opened, walked from the card's row.
-  for (const place of ["card mode", "the drawer"] as const) {
-    let scope: Locator;
-    if (place === "card mode") {
-      await page.setViewportSize(NARROW);
-      await page.goto("/");
-      scope = page.getByTestId("inbox-list");
-    } else {
-      await page.setViewportSize(WIDE);
-      await page.goto("/projects/CORE");
-      await expect(page.getByRole("button", { exact: true, name: "Board" })).toBeVisible();
-      await page.locator("body").focus();
-      await page.keyboard.press("i");
-      await expect(drawer(page), "k-threads: i opens the drawer").toBeVisible();
-      scope = drawer(page);
-    }
-    for (const [thread, fold, expected, what] of threads) {
-      const row = scope.locator(`[data-inbox-row="${replyRowId(thread)}"]`);
-      if (fold !== undefined) await row.getByRole("button", { name: fold }).click();
-      await row.focus();
-      await expect(row, `k-threads: in ${place}, ${what}'s row takes the focus`).toBeFocused();
-      await expectTabReaches(page, row, expected, `in ${place}, in ${what}`);
-    }
+  let scope: Locator;
+  if (place === "card mode") {
+    await page.setViewportSize(NARROW);
+    await page.goto("/");
+    scope = page.getByTestId("inbox-list");
+  } else {
+    await page.setViewportSize(WIDE);
+    await page.goto("/projects/CORE");
+    await expect(page.getByRole("button", { exact: true, name: "Board" })).toBeVisible();
+    await page.locator("body").focus();
+    await page.keyboard.press("i");
+    await expect(drawer(page), "k-threads: i opens the drawer").toBeVisible();
+    scope = drawer(page);
   }
+  for (const [id, fold, expected, what] of threads) {
+    const row = scope.locator(`[data-inbox-row="${id}"]`);
+    await expect(row, `k-threads: in ${place}, the Inbox lists ${what}`).toBeVisible();
+    if (fold !== undefined) await row.getByRole("button", { name: fold }).click();
+    await row.focus();
+    await expect(row, `k-threads: in ${place}, ${what}'s row takes the focus`).toBeFocused();
+    await expectTabReaches(page, row, expected, `in ${place}, in ${what}`);
+  }
+}
+
+// SLOW(>=2s): an issue with four conversations seeded, and the reading pane walked by Tab over
+// each of its three threads.
+test("k-threads: beside the Inbox's reading pane, each comment, reply and message of an issue has a Copy reference that Tab reaches", async ({
+  page,
+}) => {
+  await inboxThreadCopySteps(page, "the reading pane");
+});
+
+// SLOW(>=2s): an issue with four conversations seeded, and each of its three thread cards walked
+// by Tab below the reading pane's width.
+test("k-threads: in the Inbox's cards, each comment, reply and message of an issue has a Copy reference that Tab reaches", async ({
+  page,
+}) => {
+  await inboxThreadCopySteps(page, "card mode");
+});
+
+// SLOW(>=2s): an issue with four conversations seeded, and each of its three thread cards walked
+// by Tab in the drawer over a project page.
+test("k-threads: in the Inbox drawer, each comment, reply and message of an issue has a Copy reference that Tab reaches", async ({
+  page,
+}) => {
+  await inboxThreadCopySteps(page, "the drawer");
 });
 
 // ---------------------------------------------------------------------------
