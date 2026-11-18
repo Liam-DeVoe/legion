@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/experiment"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/notify"
@@ -35,6 +36,10 @@ type specs struct {
 	instructions string
 	secrets      map[string]string
 	prompts      *prompts.Composer
+	// roles are the roles the deployment defines (config.Config.Roles), in the file's order:
+	// each launches with its own prompt file (prompts.ComposeStep) and its model, and the owner's
+	// addressing lists them in this order. Nil is a deployment that defines none.
+	roles []config.Role
 	// variants is every arm of a declared experiment the claim's unit was drawn into, in the
 	// order the project's file declares the experiments, and the daemon's own copies of the
 	// instructions those arms name (launchVariants, over the daemon's own store). Boot always
@@ -223,6 +228,11 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 	// cooldowns are merged into whatever map the launch holds by then. The stall limits are
 	// merged after the fork, onto every launch (SpawnSpec).
 	passthrough(spec.Env, refusalCooldownVariables...)
+	// A role the deployment defines runs the model its settings give it; Legion's roles name none
+	// and run the profile's own (runtime.SpawnSpec.Model).
+	if role, defined := s.roleOf(c.Role); defined && !claim.IsBuiltin(c.Role) {
+		spec.Model = role.Model
+	}
 	return spec, nil
 }
 
@@ -369,7 +379,10 @@ func (s specs) controllerSpawnSpec() (runtime.SpawnSpec, error) {
 }
 
 // rolePromptPaths keeps an explicit operator prompt as a narrow test override. Every ordinary
-// claim uses the role prompts daemon boot snapshotted below its state directory (prompts.New).
+// claim uses the role prompts daemon boot snapshotted below its state directory (prompts.New):
+// Legion's roles their composed parts (prompts.Composer.Compose), a role the deployment defines
+// its own prompt file between the headless mechanics and Legion's worker part
+// (prompts.Composer.ComposeStep). A role neither names is refused, with no prompt.
 func (s specs) rolePromptPaths(c supervise.Claim) ([]string, error) {
 	override := rolePromptPath(s.stateDir, c.Token)
 	if _, err := os.Stat(override); err == nil {
@@ -380,11 +393,28 @@ func (s specs) rolePromptPaths(c supervise.Claim) ([]string, error) {
 	if s.prompts == nil {
 		return nil, errors.New("the daemon prompt bundle was not constructed at boot")
 	}
-	parts, err := s.prompts.Compose(c.Role, claim.IsTreeRoot(c.Issue, c.Tree))
-	if err != nil {
-		return nil, err
+	if claim.IsBuiltin(c.Role) {
+		parts, err := s.prompts.Compose(c.Role, claim.IsTreeRoot(c.Issue, c.Tree))
+		if err != nil {
+			return nil, err
+		}
+		return parts.RolePromptPaths, nil
 	}
-	return parts.RolePromptPaths, nil
+	role, defined := s.roleOf(c.Role)
+	if !defined {
+		return nil, fmt.Errorf("the role prompt of %s: the deployment defines no role %s", c.Token, c.Role)
+	}
+	return s.prompts.ComposeStep(role.PromptFile).RolePromptPaths, nil
+}
+
+// roleOf is the role of the deployment named name, and whether the deployment defines one.
+func (s specs) roleOf(name claim.Role) (config.Role, bool) {
+	for _, role := range s.roles {
+		if role.Name == name {
+			return role, true
+		}
+	}
+	return config.Role{}, false
 }
 
 // AddressingFragment is the sentence that tells an agent where it and its peers are reached: its

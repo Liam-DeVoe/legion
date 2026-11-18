@@ -24,20 +24,12 @@ const podWaitRigRole = claim.Role("checker")
 // defineChecker gives the rig's configuration the role checker and restarts the daemon on it, as a
 // deployment that adds a role to its settings restarts: the restarted daemon's runtime runs the
 // role in every issue pod it builds from then on (sandboxOptions' DeploymentApps), and none it
-// built before. The checker's role prompt is the claim's own prompt file (rolePromptPath), which
-// every launch of it reads.
+// built before. The checker launches with its own prompt file (prompt_file), as every role of the
+// deployment does (prompts.Composer.ComposeStep).
 func (r *idleWakeRig) defineChecker(issue idleRigIssue) {
 	r.t.Helper()
 	prompt := filepath.Join(r.t.TempDir(), "checker.md")
-	if err := os.WriteFile(prompt, []byte("You are the checker. Check the work, then report pass or fail.\n"), 0o600); err != nil {
-		r.t.Fatal(err)
-	}
-	token := r.roleToken(issue, podWaitRigRole)
-	override := rolePromptPath(r.cfg.StateDir, token)
-	if err := os.MkdirAll(filepath.Dir(override), 0o700); err != nil {
-		r.t.Fatal(err)
-	}
-	if err := os.WriteFile(override, []byte("You are the checker of "+issue.key+".\n"), 0o600); err != nil {
+	if err := os.WriteFile(prompt, []byte("You are the checker of "+issue.key+". Check the work, then report pass or fail.\n"), 0o600); err != nil {
 		r.t.Fatal(err)
 	}
 	r.cfg.Roles = append(r.cfg.Roles, config.Role{Name: podWaitRigRole, Type: "testing", PromptFile: prompt})
