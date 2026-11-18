@@ -4341,7 +4341,7 @@ Each item below names a path with its method and identity, then its purpose.
   - `check_words_moved` is whether the check's words changed after the result was recorded, which the digest the result kept decides against the block's digest now.
     It is a second fact and a second field: a result at a compared commit whose check has been reworded since is both, and one word for both would hide which.
 
-  - `pass_stands` is `{answer, roles, reason, subjects}` for the check as a whole: `yes`, with the roles of the passes that stand, while a result of it passed, stands at one of the compared commits, kept the check's words and carries no retraction;
+  - `pass_stands` is `{answer, roles, reason, subjects, results}` for the check as a whole: `yes`, with the roles of the passes that stand, while a result of it passed, stands at one of the compared commits, kept the check's words and carries no retraction;
     `unknown` where the repository is unreadable, for a check CI proves whose check runs GitHub could not be read (`ci.state` `unread`), or where such a pass is held up only by a commit Dispatch could not place;
     `no` otherwise, which a check compared with nothing for `no_pull_request_or_branch` answers, since there is nothing for a pass to stand at.
     A `before_merge` check compared with heads asks that of each of its `subjects`, and reads `yes` only where each subject reads `yes`.
@@ -4349,6 +4349,9 @@ Each item below names a path with its method and identity, then its purpose.
     The check's own `roles` then name a role only where each subject names it, in the order of the first subject.
     A pass and a fail that count at one commit of a `before_merge` check make that commit `unknown` with the reason `pass_and_fail`, from any role and in either order, with `results` naming the newest pass and the newest fail there, and no pass stands there; a read with `?at=` gives the same answer.
     A later pass at that commit does not end it. A retraction of the wrong one ends it, and so does a change of the check's words.
+    An `after_merge` or `default_branch` check takes its newest result that counts at one of its branches, or that Dispatch could not place on one, with and without `?at=`, and `results` names that result:
+    `yes` only where it is a pass, with the roles of each pass at a branch newer than the newest fail there; `no` where it is a fail, or where no result decides; `unknown` where Dispatch could not place it.
+    So a later fail cancels an earlier pass. A deploy after the newest result changes no state here.
 
   - `currency` is a compatibility field for `dispatch` clients older than pi-envoy 17.1.0, which print it beside each result and read none of the fields above (`api/results_currency.go`).
     It is `current` where `commit_stands` is `at_basis`, `check_words_moved` is false and no retraction stands, and `older` where `commit_stands` is `other_commit` or it is `at_basis` and `check_words_moved` is true.

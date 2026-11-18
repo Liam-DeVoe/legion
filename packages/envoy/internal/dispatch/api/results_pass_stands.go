@@ -9,8 +9,9 @@ import (
 
 // results_pass_stands.go answers the gate's question for each check of a results read: whether a
 // pass of it stands (passStandsOf), the state of each head a pass must stand at (eachSubjectStands,
-// subjectState), and the commits at which a pass and a fail of a `before_merge` check count
-// (passAndFailCommits). It is a calculation over what comparisonReader.answer has already placed,
+// subjectState), the commits at which a pass and a fail of a `before_merge` check count
+// (passAndFailCommits), and the newest result of a check compared with a branch
+// (newestResultStands). It is a calculation over what comparisonReader.answer has already placed,
 // and reads no database and no GitHub.
 
 // standingCommit is where a result's commit stands while the check's words have not moved
@@ -32,6 +33,11 @@ func standingCommit(result model.CheckResult) string {
 // with heads asks that of each head, its subjects (headBases), and a pass stands only where one
 // stands at each (eachSubjectStands): one head's fail is never hidden by a pass at another.
 //
+// R5: an `after_merge` or `default_branch` check, compared with a branch, takes its newest result
+// that counts at a branch, or that Dispatch could not place on one (newestResultStands): a pass
+// stands only when that result is a pass, and a result Dispatch could not place makes the answer
+// unknown. A deploy after the newest result changes no state here.
+//
 // R4: a commit cannot change, so it holds one answer. Where a `before_merge` check holds a pass
 // and a fail that count at one commit, in either order and from any role, no pass stands there,
 // and the state is unknown for model.PassStandsReasonPassAndFail (passAndFailCommits). A later
@@ -48,6 +54,9 @@ func passStandsOf(check model.CheckBlock, compared comparison) model.CheckPassSt
 	if compared.reason == model.ReasonRepositoryUnreadable ||
 		(check.CI != nil && check.CI.State == model.CIStateUnread) {
 		return model.CheckPassStands{Answer: model.PassStandsUnknown}
+	}
+	if check.When == checkWhenAfterMerge || check.When == checkWhenDefaultBranch {
+		return newestResultStands(check)
 	}
 	conflicted := passAndFailCommits(check)
 	if check.When == docs.CheckWhenBeforeMerge && len(compared.subjects) > 0 {
@@ -79,6 +88,42 @@ func passStandsOf(check model.CheckBlock, compared comparison) model.CheckPassSt
 		return model.CheckPassStands{Answer: model.PassStandsUnknown, Reason: model.PassStandsReasonPassAndFail}
 	case unknown:
 		return model.CheckPassStands{Answer: model.PassStandsUnknown}
+	}
+	return model.CheckPassStands{Answer: model.PassStandsNo}
+}
+
+// newestResultStands is passStandsOf for a check compared with a branch, an `after_merge` or a
+// `default_branch` check (R5): the newest result decides, with and without `?at=`. It walks the
+// results newest first, as the read lists them, and stops at the first that decides: one at a
+// basis decides by its verdict, a pass with the roles of each pass at a basis newer than the
+// newest fail at a basis; one Dispatch could not place decides unknown, since Dispatch cannot say
+// whether it counts; one at another commit, retracted, counted for nothing or under words that
+// moved since decides nothing. Results names the result that decided. No result that decides
+// answers no. A later fail so cancels an earlier pass, and a later read of production reads a
+// deploy that is at least as new; a deploy after the newest result changes no state here.
+func newestResultStands(check model.CheckBlock) model.CheckPassStands {
+	for index, result := range check.Results {
+		switch standingCommit(result) {
+		case model.CommitUnknown:
+			return model.CheckPassStands{Answer: model.PassStandsUnknown, Results: []string{result.ID}}
+		case model.CommitAtBasis:
+			if result.Verdict != "pass" {
+				return model.CheckPassStands{Answer: model.PassStandsNo, Results: []string{result.ID}}
+			}
+			var roles []string
+			for _, later := range check.Results[index:] {
+				if standingCommit(later) != model.CommitAtBasis {
+					continue
+				}
+				if later.Verdict != "pass" {
+					break
+				}
+				if !slices.Contains(roles, later.Role) {
+					roles = append(roles, later.Role)
+				}
+			}
+			return model.CheckPassStands{Answer: model.PassStandsYes, Roles: roles, Results: []string{result.ID}}
+		}
 	}
 	return model.CheckPassStands{Answer: model.PassStandsNo}
 }

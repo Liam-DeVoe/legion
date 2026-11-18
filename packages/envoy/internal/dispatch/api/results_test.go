@@ -1292,8 +1292,11 @@ func TestAfterMergeResultStandsAtAStoredBranchAnswerWhileTheAppCannotReadTheRepo
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
 	recordMerge(t, database, "acme/widgets", 51, issue.Key, "integration/x")
 
-	merge := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k2", "pass", baseMergeCommit, nil)))
+	// The stray pass is recorded first: the newest result decides an after-merge check (R5), so
+	// the pass at the merge commit is the newer one, and a newer result nothing can place would
+	// leave the check unknown.
 	stray := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k2", "pass", strayCommit, nil)))
+	merge := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k2", "pass", baseMergeCommit, nil)))
 
 	// The App loses the repository. delivery.Branches holds what it last read for
 	// delivery.BranchCommitStaleAfter, so the read past that span is made here with the clock
@@ -1361,8 +1364,9 @@ func TestAfterMergeResultStandsAtItsMergedBranchWithNoDefaultBranchNamed(t *test
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
 	recordMerge(t, database, "acme/hidden", 52, issue.Key, "integration/x")
 
-	merge := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k2", "pass", baseMergeCommit, nil)))
+	// The stray pass first, so the pass at the merge commit is the newest result (R5).
 	stray := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k2", "pass", strayCommit, nil)))
+	merge := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k2", "pass", baseMergeCommit, nil)))
 
 	read := readResults(t, handler, issue.Key)
 	if compared := checkOf(t, read, "k2").ComparedWith; len(compared) != 1 || compared[0].Branch != "integration/x" {
@@ -1408,8 +1412,9 @@ func TestAfterMergeResultStandsAtItsMergedBranchWithNoAppKey(t *testing.T) {
 	// the walk ends on it rather than on a read nobody can make (delivery.CommitOnBranch).
 	writeBranchAnswer(t, database, "acme/widgets", "integration/x", strayCommit, false)
 
-	merge := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k2", "pass", baseMergeCommit, nil)))
+	// The stray pass first, so the pass at the merge commit is the newest result (R5).
 	stray := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k2", "pass", strayCommit, nil)))
+	merge := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k2", "pass", baseMergeCommit, nil)))
 	read := readResults(t, handler, issue.Key)
 	if compared := checkOf(t, read, "k2").ComparedWith; len(compared) != 1 || compared[0].Branch != "integration/x" {
 		t.Fatalf("the after-merge check of a deployment with no App key compared with %+v, want the merged branch alone", compared)

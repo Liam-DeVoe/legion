@@ -1397,11 +1397,16 @@ type BasisLearnedAt struct {
 // each subject, and Subjects says the state of each. Reason is PassStandsReasonPassAndFail where
 // the answer is unknown because a pass and a fail that count at one commit of a `before_merge`
 // check, from any role, make that commit's state unknown (R4).
+//
+// For a check compared with a branch, an `after_merge` or `default_branch` check, Dispatch takes
+// the newest result that counts or that it could not place (R5), and Results names that result. A
+// pass stands only when it is a pass, and a result it could not place makes the answer unknown.
 type CheckPassStands struct {
 	Answer   string              `json:"answer" enum:"yes,no,unknown"`
 	Roles    []string            `json:"roles,omitempty"`
 	Reason   string              `json:"reason,omitempty" enum:"pass_and_fail"`
 	Subjects []PassStandsSubject `json:"subjects,omitempty"`
+	Results  []string            `json:"results,omitempty"`
 }
 
 // PassStandsSubject is one head a `before_merge` check's pass must stand at, and its state:
