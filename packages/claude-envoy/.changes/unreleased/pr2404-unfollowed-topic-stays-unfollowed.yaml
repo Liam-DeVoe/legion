@@ -1,0 +1,12 @@
+kind: Fixed
+body: |-
+  A topic that the session unfollows before the first successful read of its registered interests
+  now stays unfollowed. That first read follows each topic that the registry entry lists. When
+  the listener did not release such a topic, the entry still listed it, and the read followed it
+  again. The read now skips each topic that the session unfollowed before the read and did not
+  follow again. This is true for a topic that `envoy_unsubscribe` removes and for a topic that a
+  `subscription.removed` frame removes. The interest reconciliation of the next heartbeat then
+  removes the topic from the entry.
+time: 2026-11-18T02:29:16.000000000Z
+custom:
+    Issue: pr2404

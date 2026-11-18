@@ -920,14 +920,25 @@ test("a topic unfollowed before the first good read of the interests is not adop
   try {
     // The startup read and the read of the heartbeat the handoff pid requests both fail: no read
     // of the interests has succeeded yet.
-    await waitFor(async () => reads >= 2 && scheduled.length === 1, "two failed reads of the interests")
+    await waitFor(
+      async () => reads >= 2 && scheduled.length === 1,
+      "two failed reads of the interests",
+    )
     await session.follow([topic])
     expect(entry.has(topic)).toBe(true)
     releasing = false
-    const answer = await executeEnvoyTool(toolRuntime(identity, client, session), "envoy_unsubscribe", {
-      topics: [topic],
+    const answer = await executeEnvoyTool(
+      toolRuntime(identity, client, session),
+      "envoy_unsubscribe",
+      {
+        topics: [topic],
+      },
+    )
+    expect(answer).toEqual({
+      removed: [topic],
+      kept: [],
+      registrationError: "the listener is down",
     })
-    expect(answer).toEqual({ removed: [topic], kept: [], registrationError: "the listener is down" })
     expect(session.topics()).not.toContain(topic)
     // The release failed, so the entry still holds the topic when the listener answers again.
     expect(entry.has(topic)).toBe(true)

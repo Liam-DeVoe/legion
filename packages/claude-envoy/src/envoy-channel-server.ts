@@ -1049,12 +1049,15 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
    * stops taking them at once. Both callers here — `unfollowRemovedTopics`, a removal's
    * best-effort drop, and the public `unfollow` below — take these same two steps in this order;
    * only whether they wait for them differs, and which topics `unfollow` sends: no role's topic.
-   * No registry write is made when nothing is left to send.
+   * No registry write is made when nothing is left to send. Until a read of the entry has
+   * succeeded, the topics are also kept in `unfollowedBeforeRead`, so that read does not follow
+   * them again when the registry write fails.
    */
   function dropFromTopicsAndRegistry(
     topics: readonly string[],
     unregistered: readonly string[] = topics,
   ): Promise<void> {
+    if (!interestsRead) for (const topic of topics) unfollowedBeforeRead.add(topic)
     followedTopics.unfollow(topics)
     // The relay takes the topics the session follows now, before a registration carries them:
     // the same set the registration will carry (`registrationTopics`).
@@ -1462,10 +1465,19 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
   let interestsRead = false
 
   /**
+   * The topics this session stopped following while `interestsRead` was false and has not
+   * followed again since (`dropFromTopicsAndRegistry`, `follow`). The first read skips them: when
+   * their release at the listener failed, the entry still lists them, and adopting them would
+   * follow again a topic the session unfollowed. The reconciliation of the next heartbeat then
+   * releases them. Emptied by that read, and never filled after it.
+   */
+  const unfollowedBeforeRead = new Set<string>()
+
+  /**
    * Brings the registry entry and the topic set this session registers into line
-   * with each other. The first successful read adopts every topic the entry lists;
-   * every later read subtracts every topic the entry lists that
-   * `followedTopics.topics()` no longer names.
+   * with each other. The first successful read adopts every topic the entry lists
+   * except those in `unfollowedBeforeRead`; every later read subtracts every topic
+   * the entry lists that `followedTopics.topics()` no longer names.
    *
    * Subtracting is safe only while `followedTopics.topics()` is authoritative for
    * this session, so both windows where it is not are checked after the read,
@@ -1512,10 +1524,17 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     if (shuttingDown) return
     if (!interestsRead) {
       for (const topic of registry?.topics ?? []) {
-        if (topic === directSubject || topic.startsWith(ROLE_TOPIC_PREFIX)) continue
+        if (
+          topic === directSubject ||
+          topic.startsWith(ROLE_TOPIC_PREFIX) ||
+          unfollowedBeforeRead.has(topic)
+        ) {
+          continue
+        }
         userTopics.add(topic)
         followedTopics.follow(topic)
       }
+      unfollowedBeforeRead.clear()
       interestsRead = true
       return
     }
@@ -1775,6 +1794,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       for (const topic of expandSubscriptionTopics(topics)) {
         if (topic === directSubject || userTopics.has(topic)) continue
         userTopics.add(topic)
+        unfollowedBeforeRead.delete(topic)
         followedTopics.follow(topic)
         fresh.push(topic)
       }
