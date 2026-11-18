@@ -38,24 +38,13 @@ jobs:
     # it the pack step would recompile the set per architecture from nothing on every push, which
     # is the runner time this change exists to cut.
     #
-    # The job's bound follows the rule envoy-go's comment gives (dispatch://INFRA-1075, check
-    # 6224bb0e): its largest measured time of a green run, plus the largest -timeout of its go
-    # test calls, plus 6. The largest reading is 782 s (merge-group run 43590895696, job
-    # 132435226622, at main's 25f3e38a), 13.03 minutes, a run of the job as main has it, the
-    # architecture-note steps included; main's other run of those steps read 672 s (run
-    # 43584271399, job 132415365678). It reads above what this job's own steps take, since main's
-    # cluster.sh test took 351 s there against 143 s here (run 43519308059), but a bound follows
-    # the largest reading. This branch's own readings, before those steps joined the job, were
-    # 535 s (run 43138709383, job 130920278424; attempt 2 of run 43099751798, job 130805659926,
-    # read the same) and the pair at 84ca8f33, 432 s and 463 s (runs 43514262740 and
-    # 43519308059); with the spec-file action and its three packages in the job, run 43994173269
-    # (job 133746719840, at 8eb39c23) read 455 s, and the pair at 4f1f4436 read 610 s and 584 s
-    # (runs 44175873364 and 44195030350, jobs 134367428126 and 134434360370). The largest
-    # -timeout is 1m, the limit of both of its go test calls, the architecture-note tests and
-    # the display-tree fixture check: 13.03 + 1 + 6 = 20.03, so 21,
-    # where the merge base had 30 from no measurement. Its other go commands are builds and two
-    # `go run`s, which run no test binary and carry no -timeout.
-    timeout-minutes: 21
+    # R6 sizes the job's bound and each go test call's -timeout from one measurement pair alone,
+    # runs 44175873364 and 44195030350 at 4f1f4436, by the rule envoy-go's comment gives
+    # (dispatch://INFRA-1075, check 6224bb0e). The job's bound is its larger time in the pair,
+    # 610 s (run 44175873364, job 134367428126), 10.17 minutes, plus the largest -timeout of its
+    # go test calls, 1m, plus 6: 10.17 + 1 + 6 = 17.17, so 18. Its other go commands are builds
+    # and two `go run`s, which run no test binary and carry no -timeout.
+    timeout-minutes: 18
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -135,16 +124,9 @@ jobs:
       # run: envoy-go's unit step leaves them out, its `grep -Ev` and this step's package list
       # built from NOTE_AND_SPEC_PACKAGES in .github/scripts/ci_job_reads.py.
       #
-      # -timeout 1m, by the rule envoy-go's comment gives: the smallest whole minute at which the
-      # call's slowest package takes at most half of it. The step took 4 s and 6 s, compile
-      # included, in main's jobs 132435226622 and 132415365678 (merge-group runs 43590895696 and
-      # 43584271399, at 25f3e38a and b01d6e41), when it ran the first two of these packages. With
-      # all five, run 43994173269 (job 133746719840, at 8eb39c23) read cmd/architecture-check
-      # 0.858 s, cmd/spec-check 0.691 s, internal/dispatch/specgraph 0.157 s,
-      # internal/dispatch/architecture/notes 0.016 s and internal/runnerlog 0.010 s. The pair at
-      # 4f1f4436 (runs 44175873364 and 44195030350, jobs 134367428126 and 134434360370) read
-      # cmd/spec-check, the slowest package, at 20.769 s and 23.221 s, the larger 38.7 per cent
-      # of the limit, and every other package under 1 s, far under half of it.
+      # -timeout 1m, by R6 from the pair at 4f1f4436 (envoy-go's comment gives the rule): this
+      # call's slowest package on the slower run is cmd/spec-check, 23.2 s (run 44195030350, job
+      # 134434360370), and 23.2 / 30 = 0.77, so 1m, the smallest whole minute there is.
       # The `go test -json` stream goes to a file the upload step below publishes and is replayed
       # to the log, as the display-tree fixture check's is.
       - name: Test the architecture-note and spec-file rules and their commands
@@ -185,14 +167,13 @@ jobs:
       # envoy-go's unit step skips both by the same names, both texts built from
       # WEB_FIXTURE_TESTS in .github/scripts/ci_job_reads.py.
       #
-      # -timeout 1m, by the rule envoy-go's comment gives: the smallest whole minute at which the
-      # call's one package takes at most half of it. This step took 5 s and 7 s, compile
-      # included, in jobs 132192122676 and 132209371139 (runs 43514262740 and 43519308059, the
-      # pair at 84ca8f33), when it ran TestWebDisplayFixture alone, so the package's own time is
-      # at most that; the second test it runs now stats one file. The `go test -json` stream
-      # goes to a file the upload step below publishes and is replayed to the log, as the race
-      # lane's steps do, for the reason envoy-go's unit step gives: the log keeps the package line
-      # of a green run and the whole stream of a red one.
+      # -timeout 1m, by R6 from the pair at 4f1f4436 (envoy-go's comment gives the rule): this
+      # call's one package, internal/dispatch/pmdoc, read 0.033 s on both runs of the pair (runs
+      # 44175873364 and 44195030350, jobs 134367428126 and 134434360370), and 0.033 / 30 = 0.001,
+      # so 1m, the smallest whole minute there is. The `go test -json` stream goes to a file the
+      # upload step below publishes and is replayed to the log, as the race lane's steps do, for
+      # the reason envoy-go's unit step gives: the log keeps the package line of a green run and
+      # the whole stream of a red one.
       - name: Check the web app's display-tree fixture is up to date
         run: |
           mkdir -p "$RUNNER_TEMP/go-test-json"

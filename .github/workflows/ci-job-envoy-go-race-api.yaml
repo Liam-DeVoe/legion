@@ -32,19 +32,15 @@ env:
 jobs:
   envoy-go-race-api:
     runs-on: ubuntu-24.04
-    # Both numbers take the largest reading this branch has of them (dispatch://INFRA-1075,
-    # check 6224bb0e). The step's -timeout is the smallest whole minute at which its slowest
-    # package takes at most half of it: internal/dispatch/api, this job's one package, 972.742 s
-    # (run 44145475728, job 134259638461), 972.742 / 30 = 32.42, so 33m, which it fills to 49.1
-    # per cent (32m, the whole minute below it and the limit the reading itself ran under, it
-    # would fill to 50.7; 962.717 s in run 44033594451, job 133917636218, asks 33m too, and
-    # 959.308 s in run 44175873364, job 134367428185, 32m). The job's own bound follows its
-    # largest measured time of a green run, 1,176 s in that same run and job, 19.6 minutes, plus
-    # that -timeout plus 6: 19.6 + 33 + 6 = 58.6, so 59; the next largest, 1,158 s in run
-    # 44175873364 (job 134367428185) and 1,157 s in run 44033594451 (job 133917636218), ask the
-    # same. The limit must fire before the runner cancels the job, so a hung test prints the
-    # dump that names it.
-    timeout-minutes: 59
+    # R6 sizes both numbers from one measurement pair alone, runs 44175873364 and 44195030350 at
+    # 4f1f4436 (dispatch://INFRA-1075, check 6224bb0e). The step's -timeout is the smallest whole
+    # minute at which its slowest package, on the slower run of the pair, takes at most half of
+    # it: internal/dispatch/api, this job's one package, 959.3 s (run 44175873364, job
+    # 134367428185), 959.3 / 30 = 31.98, so 32m. The job's bound is its larger time in the pair,
+    # 1,158 s (run 44175873364, job 134367428185), 19.30 minutes, plus that -timeout plus 6:
+    # 19.30 + 32 + 6 = 57.30, so 58. The limit must fire before the runner cancels the job, so a
+    # hung test prints the dump that names it.
+    timeout-minutes: 58
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -91,7 +87,7 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/go-test-json"
           s=0
-          go test -json -race -count=1 -timeout 33m ./internal/dispatch/api/ > "$RUNNER_TEMP/go-test-json/race-api.json" || s=$?
+          go test -json -race -count=1 -timeout 32m ./internal/dispatch/api/ > "$RUNNER_TEMP/go-test-json/race-api.json" || s=$?
           if [ "$s" -eq 0 ]; then
             jq -rj 'select(.Action == "build-output" or (.Action == "output" and .Test == null)) | .Output' "$RUNNER_TEMP/go-test-json/race-api.json"
           else

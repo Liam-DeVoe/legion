@@ -46,20 +46,21 @@ env:
 jobs:
   dispatch-two-builds:
     runs-on: ubuntu-24.04
-    # Both numbers take the largest reading there is of them, by the rule envoy-go's comment
-    # gives (dispatch://INFRA-1075, check 6224bb0e). The readings are main's: this job's green
+    # Both numbers take the largest reading there is of them (dispatch://INFRA-1075, check
+    # 6224bb0e). The readings are main's: this job's green
     # runs in the merge groups of #2461, which added it, and of #3180, the change that landed
     # next, both of the job as #2461 wrote it. The step's -timeout is the smallest whole minute at
     # which its one package takes at most half of it: cmd/dispatch under the twobuild tag,
     # 526.292 s (merge-group run 43679411000, job 132706600704, at d7dce730; run 43677717022, job
     # 132701468085, at 76bff46e, read 489.363 s), 526.292 / 30 = 17.54, so 18m, which it fills to
     # 48.7 per cent (17m it would fill to 51.6), where main had 30m from no measurement. The floor
-    # above that rule is cmd/dispatch's eventsStartDrain, 30 s, which its event-feed waits keep
-    # below the test binary's deadline (live_events_wait_test.go), and 18m leaves 553.7 s above
-    # that reading. The job's own bound follows its largest measured time of a green run, 878 s
-    # in that same job, 14.63 minutes, plus that -timeout plus 6: 14.63 + 18 + 6 = 38.63, so 39,
-    # where main had 45 from no measurement; the other run took 781 s. The limit must fire before
-    # the runner cancels the job, so a hung test prints the dump that names it.
+    # above that rule is horizontest.Drain, 30 s (internal/dispatch/horizontest/horizontest.go:96),
+    # which cmd/dispatch's event-feed waits (waitEventsStart, live_events_wait_test.go) leave of
+    # the test binary's deadline, and 18m leaves 553.7 s above that reading. The job's own bound
+    # follows its largest measured time of a green run, 878 s in that same job, 14.63 minutes,
+    # plus that -timeout plus 6: 14.63 + 18 + 6 = 38.63, so 39, where main had 45 from no
+    # measurement; the other run took 781 s. The limit must fire before the runner cancels the
+    # job, so a hung test prints the dump that names it.
     timeout-minutes: 39
     services:
       postgres:
