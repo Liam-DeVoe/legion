@@ -25,25 +25,46 @@ const SHAPE_NAMES: Readonly<Record<string, readonly string[]>> = {
 
 const ranges = subsetRanges();
 
-/** Each string, template part and JSX text of `path`, with the line its text starts on. */
-function pageTexts(path: string): { line: number; text: string }[] {
-  const source = ts.createSourceFile(
+/** A character of the page's text that UNICODES does not keep, and where it stands. */
+interface Finding {
+  character: string;
+  line: number;
+  path: string;
+}
+
+/** Each character UNICODES does not keep in the strings, template parts and JSX text of
+ *  `source`, the text of the file at `path`, with the line its text starts on. The parser's tree
+ *  holds no comment - a line comment, a block comment, or JSX's braced one - so none is read,
+ *  and a regular expression is a node of another kind. */
+function charactersOutside(path: string, source: string): Finding[] {
+  const file = ts.createSourceFile(
     path,
-    readFileSync(join(import.meta.dir, path), "utf8"),
+    source,
     ts.ScriptTarget.Latest,
     true,
     path.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS
   );
-  const texts: { line: number; text: string }[] = [];
+  const found: Finding[] = [];
   const visit = (node: ts.Node): void => {
     if (ts.isStringLiteral(node) || ts.isTemplateLiteralToken(node) || ts.isJsxText(node)) {
-      const { line } = source.getLineAndCharacterOfPosition(node.getStart());
-      texts.push({ line: line + 1, text: node.text });
+      const line = file.getLineAndCharacterOfPosition(node.getStart()).line + 1;
+      for (const character of node.text) {
+        const point = character.codePointAt(0) ?? 0;
+        if (!ranges.some(([first, last]) => first <= point && point <= last)) {
+          found.push({ character, line, path });
+        }
+      }
     }
     ts.forEachChild(node, visit);
   };
-  visit(source);
-  return texts;
+  visit(file);
+  return found;
+}
+
+/** A finding as a failure lists it: its file and line, the character and its code point. */
+function reading({ character, line, path }: Finding): string {
+  const point = (character.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, "0");
+  return `${path}:${line}: ${character} (U+${point})`;
 }
 
 const pageFiles = readdirSync(import.meta.dir, { encoding: "utf8", recursive: true })
@@ -53,17 +74,12 @@ const pageFiles = readdirSync(import.meta.dir, { encoding: "utf8", recursive: tr
 const outside: string[] = [];
 const shapesNamed = new Set<string>();
 for (const path of pageFiles) {
-  for (const { line, text } of pageTexts(path)) {
-    for (const character of text) {
-      const point = character.codePointAt(0) ?? 0;
-      if (ranges.some(([first, last]) => first <= point && point <= last)) continue;
-      if (SHAPE_NAMES[character]?.includes(path)) {
-        shapesNamed.add(`${character} ${path}`);
-        continue;
-      }
-      outside.push(
-        `${path}:${line}: ${character} (U+${point.toString(16).toUpperCase().padStart(4, "0")})`
-      );
+  const source = readFileSync(join(import.meta.dir, path), "utf8");
+  for (const finding of charactersOutside(path, source)) {
+    if (SHAPE_NAMES[finding.character]?.includes(path)) {
+      shapesNamed.add(`${finding.character} ${path}`);
+    } else {
+      outside.push(reading(finding));
     }
   }
 }
@@ -79,4 +95,20 @@ test("each character SHAPE_NAMES lists still names a shape in each file it lists
       .flatMap(([character, paths]) => paths.map((path) => `${character} ${path}`))
       .sort()
   );
+});
+
+test("a character named only in a comment is not the page's text, and one in a string is", () => {
+  const source = [
+    "// ⋯ names the row's menu, which is drawn as an svg",
+    "/* ⋯ again, in a block comment */",
+    'export const MORE = "⋯";',
+    "export const Menu = () => (",
+    '  <button type="button">',
+    "    {/* ⋯ is drawn as an svg here too */}",
+    "  </button>",
+    ");",
+  ].join("\n");
+  expect(charactersOutside("inline.tsx", source).map(reading)).toEqual([
+    "inline.tsx:3: ⋯ (U+22EF)",
+  ]);
 });
