@@ -543,7 +543,7 @@ func (s *server) storeArtifact(
 			// No row stands at the address: the slug is free under the owner row this
 			// transaction holds. So a node there that is not gone stands behind no row - a
 			// document a build before this one removed, stating nothing, live or at a state a
-			// later release marked it with (R8 of dispatch://INFRA-1149) - and it is stated gone
+			// later release marked it with (graphstore.Node's Restates) - and it is stated gone
 			// before it is stated live, both under this upload's event, so the new document's
 			// node carries no statement of the removed one's as its own.
 			node := graphstore.ArtifactNode(refKey, deref(project), deref(session), actor, createdAt)

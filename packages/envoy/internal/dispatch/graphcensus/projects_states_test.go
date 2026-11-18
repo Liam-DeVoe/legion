@@ -185,13 +185,13 @@ func TestTheObjectBackfillWritesNoNodeForARowReplacedWhileItRead(t *testing.T) {
 	}
 }
 
-// laterObjectState is a state a later release marks a node with, such as dispatch://INFRA-1950's
-// proposed, which this build never writes.
+// laterObjectState is a state a later release marks a node with, such as a requirement's proposed,
+// which this build never writes.
 const laterObjectState = "proposed"
 
 // A later release can mark the node of an issue, a document, an ask or a message with a state this
 // build never writes, and this build serves beside that release during a roll and alone after a
-// rollback (R8 of dispatch://INFRA-1149). Every state but gone is a node there, as the store
+// rollback. Every state but gone is a node there, as the store
 // census reads a comment's and a block's (census.go's presentNodes): a row whose node is at such a
 // state is no gone row, and the node of one no row stands behind is orphaned all the same. The
 // backfill writes such a node again only for the project or parties it lacks, and keeps the state

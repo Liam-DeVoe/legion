@@ -244,8 +244,8 @@ func ownLiveStatement(node, rowID, ownerKey string) string {
 // rowClass is the class of one row of scopedRows against its node n, null for a complete one and
 // for a row whose address is past the store's bound, which no writer projects and the census
 // counts as a class of its own (ProjectKindReport.PastBound). A node at any state but gone is one
-// the row projects: a state a later release adds, such as dispatch://INFRA-1950's proposed, reads
-// here as live does (R8 of dispatch://INFRA-1149), as the store census reads it (presentNodes).
+// the row projects: a state a later release adds, such as a requirement's proposed, reads here as
+// live does, as the store census reads it (presentNodes).
 var rowClass = `case
 		when scoped.past_bound then null
 		when n.id is null then '` + classMissing + `'

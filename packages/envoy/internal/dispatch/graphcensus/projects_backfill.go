@@ -50,9 +50,9 @@ type objectKind struct {
 // no row of these kinds names its node in a column of its own; one not gone, since a row whose node
 // is gone is one a build before this one created at an address this build's removal stated gone,
 // and is owed a live node as much as a row with none (classGone), while a state a later release
-// adds, such as dispatch://INFRA-1950's proposed, is a node there as live is (R8 of
-// dispatch://INFRA-1149); and one naming a project or parties, since a node naming neither is the
-// census's unscoped class, which this pass cures by stating them.
+// adds, such as a requirement's proposed, is a node there as live is; and one naming a project or
+// parties, since a node naming neither is the census's unscoped class, which this pass cures by
+// stating them.
 func unmarked(kind, id string) string {
 	return `not exists (select 1 from graph_nodes n where n.kind = '` + kind + `' and n.id = ` + id +
 		` and n.state <> '` + graphstore.StateGone + `' and ` + scopedNode + `)`
@@ -326,7 +326,7 @@ func derefText(value *string) string {
 // (kind, id) and states each one's base attributes, and answers what it wrote. Every node it writes
 // restates its node (graphstore.Node's Restates), as the backfill's other passes do: the run owns
 // the row's project or parties, not the state or the visibility another write gave the node, so a
-// node at a state a later release adds keeps it (R8 of dispatch://INFRA-1149). A node a live writer
+// node at a state a later release adds keeps it. A node a live writer
 // wrote meanwhile is written again with nothing moved, and states nothing; a gone node is moved
 // live, which states its state alone; one in another project fails the batch
 // (graphstore.ErrProjectMoved), which is a difference for the census to report rather than for

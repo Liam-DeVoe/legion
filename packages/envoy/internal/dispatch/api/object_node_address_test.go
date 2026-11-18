@@ -24,7 +24,7 @@ import (
 // gone and then live, both under its own artifact.created event and dated at the new row's
 // created_at, and the new document's node carries no statement of the removed one's as its own.
 // The project census reads the new row as complete. The node can be live, or at a state a later
-// release marked it with while the document stood (laterNodeState, R8 of dispatch://INFRA-1149),
+// release marked it with while the document stood (laterNodeState),
 // which is no less the removed document's.
 //
 // Its controls are the create's gone step taken out: the node then states nothing for the new
@@ -78,8 +78,8 @@ func TestADocumentMadeWhereAnOrphanedNodeStandsStatesItGoneThenLive(t *testing.T
 	}
 }
 
-// laterNodeState is a state a later release marks a node with, such as dispatch://INFRA-1950's
-// proposed, which this build never writes.
+// laterNodeState is a state a later release marks a node with, such as a requirement's proposed,
+// which this build never writes.
 const laterNodeState = "proposed"
 
 // markNodeState writes the node kind/id at state, as a later release's build marks a node: the
