@@ -1,5 +1,5 @@
 kind: Fixed
-body: The legion-worker pr-body reference says a before_merge result proves its head only while Dispatch attributes the pull request to the check's issue and the check's block, attributes included, is unchanged, and tells a worker to name the pull request's own issue key before any other.
+body: The legion-worker pr-body reference says a before_merge result proves its head only while Dispatch attributes the pull request to the check's issue and the check's block, attributes included, is unchanged.
 time: 2026-11-15T05:30:00Z
 custom:
     Issue: pr3946
