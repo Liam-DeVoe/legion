@@ -37,20 +37,49 @@ var markdown = goldmark.New(
 )
 
 // cmarkGFMBlock opens an HTML block of the sixth kind where cmark-gfm opens one: at a line that
-// starts, after at most three spaces, with `<` or `</`, one of cmark-gfm's block tag names in any
-// case, then a space character (space, tab, vertical tab, form feed, carriage return or line feed)
-// or `>` or `/>` (src/scanners.re:187, with `blocktagname` at :40 and `spacechar` at :32).
-// goldmark's own start (parser/html_block.go:94 at v1.8.6) takes only a space, `>` or `/>` after
-// the name, and its list (:13) lacks `source`. Such a block ends at a blank line and may interrupt
-// a paragraph, as goldmark's own blocks of the kind do, so everything after the opening line is
-// goldmark's HTML block parser's. It runs at priority 899, before goldmark's (900).
+// starts, after at most three spaces, with `<` or `</`, one of cmark-gfm's block tag names in
+// ASCII letters of either case, then a space character (space, tab, vertical tab, form feed,
+// carriage return or line feed) or `>` or `/>` (src/scanners.re:187, with `blocktagname` at :40
+// and `spacechar` at :32). goldmark's own start (parser/html_block.go:94 at v1.8.6) takes only a
+// space, `>` or `/>` after the name, and its list (:13) lacks `source`. Such a block ends at a
+// blank line and may interrupt a paragraph, as goldmark's own blocks of the kind do, so everything
+// after the opening line is goldmark's HTML block parser's. It runs at priority 899, before
+// goldmark's (900).
 type cmarkGFMBlock struct{}
 
-var cmarkGFMBlockStart = regexp.MustCompile(`(?i)^ {0,3}</?(?:address|article|aside|base|basefont|` +
-	`blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|` +
-	`figure|footer|form|frame|frameset|h1|h2|h3|h4|h5|h6|head|header|hr|html|iframe|legend|li|link|` +
-	`main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|section|source|title|summary|table|` +
-	`tbody|td|tfoot|th|thead|tr|track|ul)(?:[ \t\v\f\r\n]|/?>)`)
+// cmarkGFMBlockTags are cmark-gfm's block tag names (src/scanners.re:40).
+var cmarkGFMBlockTags = []string{"address", "article", "aside", "base", "basefont", "blockquote",
+	"body", "caption", "center", "col", "colgroup", "dd", "details", "dialog", "dir", "div", "dl",
+	"dt", "fieldset", "figcaption", "figure", "footer", "form", "frame", "frameset", "h1", "h2",
+	"h3", "h4", "h5", "h6", "head", "header", "hr", "html", "iframe", "legend", "li", "link", "main",
+	"menu", "menuitem", "nav", "noframes", "ol", "optgroup", "option", "p", "param", "section",
+	"source", "title", "summary", "table", "tbody", "td", "tfoot", "th", "thead", "tr", "track", "ul"}
+
+// cmarkGFMBlockStart matches each name in ASCII letters of either case and in nothing else, as
+// cmark-gfm's scanner does: re2c's case-insensitive strings (the single-quoted names at
+// scanners.re:40) fold ASCII alone. Go's `(?i)` folds by Unicode, so `s` would match `ſ`
+// (U+017F) and `k` the Kelvin sign (U+212A), and `<ſection>` would open a block GitHub does not.
+var cmarkGFMBlockStart = regexp.MustCompile(`^ {0,3}</?(?:` + asciiCaseless(cmarkGFMBlockTags) +
+	`)(?:[ \t\v\f\r\n]|/?>)`)
+
+// asciiCaseless is names as one regexp alternation that matches each name in ASCII letters of
+// either case and in nothing else: each letter is a class of its two ASCII cases.
+func asciiCaseless(names []string) string {
+	var b strings.Builder
+	for i, name := range names {
+		if i > 0 {
+			b.WriteByte('|')
+		}
+		for _, c := range []byte(name) {
+			if 'a' <= c && c <= 'z' {
+				b.WriteString("[" + string(c) + string(c-'a'+'A') + "]")
+				continue
+			}
+			b.WriteString(regexp.QuoteMeta(string(c)))
+		}
+	}
+	return b.String()
+}
 
 func (cmarkGFMBlock) Trigger() []byte { return []byte{'<'} }
 
@@ -86,12 +115,17 @@ func (cmarkGFMBlock) CanAcceptIndentedLine() bool { return false }
 var cmarkGFMCommentEnd = regexp.MustCompile(`(?:^|[^-])(?:---)*-->`)
 
 // inlineScan is what cmark-gfm's inline scan of each block has read so far, as cmarkGFMRawHTML and
-// markTextOpener follow it: whether a `<!--` in the block's inline text found no end (noBang), and
-// the source offset that inline raw HTML ran on to (readTo), whose bytes cmark-gfm read as that raw
-// HTML and no further: goldmark's nodes that start before it are no nodes to cmark-gfm.
+// markTextOpener follow it: whether a `<!--` in the block's inline text found no end (noBang), the
+// source offset that inline raw HTML ran on to (readTo), whose bytes cmark-gfm read as that raw
+// HTML and no further, so that goldmark's nodes that start before it are no nodes to cmark-gfm, and
+// the source range of the block's latest run of text (text): goldmark's text nodes, joined where
+// one ends at the byte the next starts at. searched counts the bytes commentEndAfter reads, which
+// TestVisibleMarkdownReadsEachByteAFewTimes holds to a bound.
 type inlineScan struct {
-	noBang map[ast.Node]bool
-	readTo map[ast.Node]int
+	noBang   map[ast.Node]bool
+	readTo   map[ast.Node]int
+	text     map[ast.Node][2]int
+	searched *int
 }
 
 // cmarkGFMRawHTML is how GitHub writes n, an inline raw HTML node goldmark reads with text raw: as
@@ -124,31 +158,51 @@ func cmarkGFMRawHTML(n *ast.RawHTML, raw, source []byte, scan inlineScan) (ok bo
 		cmarkGFMCommentEnd.Match(inner) {
 		return true, stop
 	}
-	if end := commentEndAfter(block, stop, source); end >= 0 {
+	if end := scan.commentEndAfter(block, stop, source); end >= 0 {
 		return true, end
 	}
 	scan.noBang[block] = true
 	return false, 0
 }
 
-// markTextOpener records in scan.noBang the block of n, inline text, when n holds a `<!--` that
-// cmark-gfm's scan finds no end for: one that no backslash escapes, outside a code span, which
+// markTextOpener records in scan.noBang the block of n, inline text, when a `<!--` that cmark-gfm's
+// scan finds no end for has ended in n: one that no backslash escapes, outside a code span, which
 // cmark-gfm reads as a `<` to scan (inlines.c:913), and that neither opens `<!-->` or `<!--->` nor
-// has a cmarkGFMCommentEnd after it. Bytes before scan.readTo were raw HTML to cmark-gfm and are
-// not read. A code span goldmark opened among them is none to cmark-gfm, so its text after them is
-// scanned here for such a `<!--`; raw HTML in that text is not read (VisibleMarkdown's "Not
-// modelled").
+// has a cmarkGFMCommentEnd after it.
+//
+// It reads the opener from the source bytes of the block's run of text, not from n alone, since
+// goldmark cuts text into nodes where cmark-gfm reads one subject: each byte with an inline parser
+// of its own (`<`, `!`, `[`, a space, and others) may end a node (parser/parser.go:1208-1221 at
+// v1.8.6), and a line's last piece is a node of its own whatever stands before it (:1262-1271), so
+// `p <!--` at a line's end is the nodes `p <` and `!--`. The opener is found in the run joined so
+// far, from 3 bytes before n's first byte, where an opener ending in n can start.
+//
+// Bytes before scan.readTo were raw HTML to cmark-gfm and are not read. A code span goldmark opened
+// among them is none to cmark-gfm, so its text after them is scanned here for such a `<!--`; raw
+// HTML in that text is not read (VisibleMarkdown's "Not modelled"). Once noBang is set, no later
+// opener changes it, and the block is not read again.
 func markTextOpener(n *ast.Text, source []byte, scan inlineScan) {
 	parent := n.Parent()
 	if parent == nil {
 		return
 	}
 	block := inlineBlock(n)
-	readTo := scan.readTo[block]
-	if parent.Kind() == ast.KindCodeSpan && n.Segment.Start >= readTo {
+	if scan.noBang[block] {
 		return
 	}
-	for at, stop := max(n.Segment.Start, readTo), n.Segment.Stop; at < stop; {
+	readTo := scan.readTo[block]
+	segment := n.Segment
+	if parent.Kind() == ast.KindCodeSpan && segment.Start >= readTo {
+		delete(scan.text, block)
+		return
+	}
+	run, joined := scan.text[block]
+	if !joined || run[1] != segment.Start {
+		run = [2]int{segment.Start, segment.Start}
+	}
+	from := max(run[0], segment.Start-(len("<!--")-1), readTo)
+	scan.text[block] = [2]int{run[0], segment.Stop}
+	for at, stop := from, segment.Stop; at < stop; {
 		i := bytes.Index(source[at:stop], []byte("<!--"))
 		if i < 0 {
 			return
@@ -160,7 +214,7 @@ func markTextOpener(n *ast.Text, source []byte, scan inlineScan) {
 		}
 		next := source[opener+len("<!--"):]
 		if slashes%2 == 0 && !bytes.HasPrefix(next, []byte(">")) && !bytes.HasPrefix(next, []byte("->")) &&
-			commentEndAfter(block, opener+len("<!--"), source) < 0 {
+			scan.commentEndAfter(block, opener+len("<!--"), source) < 0 {
 			scan.noBang[block] = true
 			return
 		}
@@ -183,8 +237,8 @@ func inlineBlock(n ast.Node) ast.Node {
 // a list item puts before each. Each line is matched where it lies in source, with nothing copied:
 // a `-->` holds no line break, and what stands before a line's first byte in that subject is a line
 // break, never a `-`. The leftmost match ends at the first end, since a match spans one run of
-// dashes and the `>` after it.
-func commentEndAfter(block ast.Node, from int, source []byte) int {
+// dashes and the `>` after it. It adds to scan.searched the bytes it reads.
+func (scan inlineScan) commentEndAfter(block ast.Node, from int, source []byte) int {
 	if block == nil {
 		return -1
 	}
@@ -196,8 +250,10 @@ func commentEndAfter(block ast.Node, from int, source []byte) int {
 		}
 		start := max(line.Start, from)
 		if at := cmarkGFMCommentEnd.FindIndex(source[start:line.Stop]); at != nil {
+			*scan.searched += at[1]
 			return start + at[1]
 		}
+		*scan.searched += line.Stop - start
 	}
 	return -1
 }
@@ -281,6 +337,11 @@ func linesBetween(block ast.Node, from, to int) []text.Segment {
 //     GitHub shows;
 //   - a comment inside a `<noscript>` element: the tokenizer reads its content as raw text, and
 //     GitHub's tag filter does not cover `<noscript>`, so the comment stays;
+//   - goldmark's own HTML block of the first kind, whose start and end it matches with `(?i)`
+//     (parser/html_block.go:79-80 at v1.8.6), which folds by Unicode, so `<ſcript>` and `<ſtyle>`
+//     (U+017F) open such a block where cmark-gfm, folding ASCII alone, reads a paragraph: in
+//     `<ſcript> x <!-- y` and a blank line then `zs -->`, GitHub shows `<!-- y` and `zs`, and this
+//     takes them out. That takes out text the page shows, so a check fails rather than passes;
 //   - the documentation site's reading where it differs from GitHub's: it keeps the text of a
 //     `<script>`, `<style>` or `<textarea>`, and it ends a comment its block leaves open with that
 //     block. In both, this takes out text the site shows, so a check fails rather than passes.
@@ -319,7 +380,7 @@ type piece struct {
 // of a closed comment lies in its raw HTML node's own bytes, so no container's byte is in one; a
 // comment an HTML block leaves open runs on from the block's end to where a later node ends it.
 func commentRanges(source []byte) [][2]int {
-	pieces := rawHTML(source)
+	pieces, _ := rawHTML(source)
 	var hidden [][2]int
 	open := -1 // the source offset an open comment runs on from, or -1 when none is open
 	for _, p := range pieces {
@@ -348,9 +409,9 @@ func commentRanges(source []byte) [][2]int {
 }
 
 // rawHTML is every raw HTML node of source as goldmark parses it, in the order of the source:
-// goldmark moves footnote definitions to the end of its tree, so the walk's order is not it.
-func rawHTML(source []byte) []piece {
-	var pieces []piece
+// goldmark moves footnote definitions to the end of its tree, so the walk's order is not it. It
+// also answers how many bytes the search for cmark-gfm's comment ends read (inlineScan.searched).
+func rawHTML(source []byte) (pieces []piece, searched int) {
 	read := func(segments []text.Segment, block bool) {
 		p := piece{block: block}
 		for _, s := range segments {
@@ -365,7 +426,8 @@ func rawHTML(source []byte) []piece {
 		pieces = append(pieces, p)
 	}
 	root := markdown.Parser().Parse(text.NewReader(source))
-	scan := inlineScan{noBang: map[ast.Node]bool{}, readTo: map[ast.Node]int{}}
+	scan := inlineScan{noBang: map[ast.Node]bool{}, readTo: map[ast.Node]int{}, text: map[ast.Node][2]int{},
+		searched: &searched}
 	_ = ast.Walk(root, func(node ast.Node, entering bool) (ast.WalkStatus, error) {
 		if !entering {
 			return ast.WalkContinue, nil
@@ -414,7 +476,7 @@ func rawHTML(source []byte) []piece {
 	slices.SortStableFunc(pieces, func(a, b piece) int {
 		return cmp.Compare(a.offsets[0], b.offsets[0])
 	})
-	return pieces
+	return pieces, searched
 }
 
 // htmlComments are the source ranges of the comment and DOCTYPE tokens golang.org/x/net/html's
@@ -480,8 +542,8 @@ func sourceRanges(offsets []int) [][2]int {
 var filteredTags = []string{"title", "textarea", "style", "xmp", "iframe", "noembed", "noframes", "script", "plaintext"}
 
 // tagFilter turns the `<` of each start or end tag in raw that the tag filter disallows into a
-// byte that opens no tag, as the GFM spec matches one: `<`, an optional `/`, the tag's name in any
-// case, then whitespace, `>` or `/>`.
+// byte that opens no tag, as the GFM spec matches one: `<`, an optional `/`, the tag's name in
+// ASCII letters of either case, then whitespace, `>` or `/>`.
 func tagFilter(raw []byte) {
 	for i := range raw {
 		if raw[i] != '<' {
@@ -493,7 +555,7 @@ func tagFilter(raw []byte) {
 		}
 		for _, tag := range filteredTags {
 			after := name + len(tag)
-			if after >= len(raw) || !strings.EqualFold(string(raw[name:after]), tag) {
+			if after >= len(raw) || !asciiFoldEqual(raw[name:after], tag) {
 				continue
 			}
 			switch c := raw[after]; {
@@ -504,4 +566,24 @@ func tagFilter(raw []byte) {
 			break
 		}
 	}
+}
+
+// asciiFoldEqual is whether b is name, a lower-case ASCII word, in ASCII letters of either case,
+// as cmark-gfm's tag filter compares a tag's name: byte by byte through C's tolower in the "C"
+// locale, which folds ASCII alone (extensions/tagfilter.c:27). strings.EqualFold folds by Unicode,
+// though over a window of the name's length in bytes it can match ASCII alone, since every other
+// letter takes two bytes or more.
+func asciiFoldEqual(b []byte, name string) bool {
+	if len(b) != len(name) {
+		return false
+	}
+	for i, c := range b {
+		if 'A' <= c && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		if c != name[i] {
+			return false
+		}
+	}
+	return true
 }

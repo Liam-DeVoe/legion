@@ -1,5 +1,5 @@
 {
-  "read": "2026-11-18T00:05:36Z",
+  "read": "2026-11-18T15:07:49Z",
   "how": "gh api markdown -f text=<doc> -f mode=gfm (POST /markdown), GitHub's renderer and sanitizer",
   "rows": [
     {
@@ -223,6 +223,78 @@
       "doc": "Run `make` <!-- fix: zm45 --> then `<!-- footer: zm46 -->` is the footer zf45.\n",
       "markers": ["zm45", "zm46", "zf45"],
       "html": "<p>Run <code class=\"notranslate\">make</code>  then <code class=\"notranslate\">&lt;!-- footer: zm46 --&gt;</code> is the footer zf45.</p>"
+    },
+    {
+      "name": "an opener at a line's end, which goldmark cuts at its !, then a CDATA section",
+      "doc": "p <!--\nzm50 <![CDATA[ zc50 ]]> ze50\n",
+      "markers": ["zm50", "zc50", "ze50"],
+      "html": "<p>p &lt;!--<br>\nzm50 &lt;![CDATA[ zc50 ]]&gt; ze50</p>"
+    },
+    {
+      "name": "an opener after a code span, which goldmark cuts at its < and at its !",
+      "doc": "`x`<!--\nzm52 <![CDATA[ zc52 ]]> ze52\n",
+      "markers": ["zm52", "zc52", "ze52"],
+      "html": "<p><code class=\"notranslate\">x</code>&lt;!--<br>\nzm52 &lt;![CDATA[ zc52 ]]&gt; ze52</p>"
+    },
+    {
+      "name": "an opener at a line's end inside emphasis",
+      "doc": "*p <!--\nzm53* <![CDATA[ zc53 ]]> ze53\n",
+      "markers": ["zm53", "zc53", "ze53"],
+      "html": "<p><em>p &lt;!--<br>\nzm53</em> &lt;![CDATA[ zc53 ]]&gt; ze53</p>"
+    },
+    {
+      "name": "an opener at a line's end, then a declaration",
+      "doc": "p <!--\nzm54 <!ZD zd54> ze54\n",
+      "markers": ["zm54", "zd54", "ze54"],
+      "html": "<p>p &lt;!--<br>\nzm54 &lt;!ZD zd54&gt; ze54</p>"
+    },
+    {
+      "name": "an opener at a line's end in a list item",
+      "doc": "- p <!--\n  zm55 <![CDATA[ zc55 ]]> ze55\n",
+      "markers": ["zm55", "zc55", "ze55"],
+      "html": "<ul>\n<li>p &lt;!--<br>\nzm55 &lt;![CDATA[ zc55 ]]&gt; ze55</li>\n</ul>"
+    },
+    {
+      "name": "an opener at a line's end in a block quote",
+      "doc": "> p <!--\n> zm56 <![CDATA[ zc56 ]]> ze56\n",
+      "markers": ["zm56", "zc56", "ze56"],
+      "html": "<blockquote>\n<p>p &lt;!--<br>\nzm56 &lt;![CDATA[ zc56 ]]&gt; ze56</p>\n</blockquote>"
+    },
+    {
+      "name": "an opener at a line's end inside link text",
+      "doc": "[p <!--\nzm58](u) <![CDATA[ zc58 ]]> ze58\n",
+      "markers": ["zm58", "zc58", "ze58"],
+      "html": "<p><a href=\"u\">p &lt;!--<br>\nzm58</a> &lt;![CDATA[ zc58 ]]&gt; ze58</p>"
+    },
+    {
+      "name": "an opener before a hard line break",
+      "doc": "p <!--  \nzm59 <![CDATA[ zc59 ]]> ze59\n",
+      "markers": ["zm59", "zc59", "ze59"],
+      "html": "<p>p &lt;!--<br>\nzm59 &lt;![CDATA[ zc59 ]]&gt; ze59</p>"
+    },
+    {
+      "name": "a block tag spelt with the long s, U+017F, for s",
+      "doc": "<ſection><!--\n\nzh60\n",
+      "markers": ["zh60"],
+      "html": "<p>&lt;ſection&gt;&lt;!--</p>\n<p>zh60</p>"
+    },
+    {
+      "name": "a block tag spelt with the Kelvin sign, U+212A, for k",
+      "doc": "<linK><!--\n\nzh61\n",
+      "markers": ["zh61"],
+      "html": "<p>&lt;linK&gt;&lt;!--</p>\n<p>zh61</p>"
+    },
+    {
+      "name": "a block tag in ASCII capitals still opens a block",
+      "doc": "<SECTION><!--\n\nzh62\n",
+      "markers": ["zh62"],
+      "html": "<section></section>"
+    },
+    {
+      "name": "a comment across a line break inside a run-on comment's raw HTML",
+      "doc": "p <!-- zm63 --->\n`<!-- zx63\nzy63 -->` zf63\n",
+      "markers": ["zm63", "zx63", "zy63", "zf63"],
+      "html": "<p>p \n`` zf63</p>"
     }
   ]
 }

@@ -16,8 +16,8 @@ import (
 // manyComments is one paragraph of count pairs of inline comments, the second of each pair ending
 // in `--->` so that cmark-gfm's scan runs on to the next comment's end, and what VisibleMarkdown
 // makes of it: every comment gone, every word between them kept, as cmark-gfm 0.29.0.gfm.13 reads
-// it. Each `<!--` is checked against the rest of the paragraph, so the paragraph holds the cost of
-// that check as well as its result.
+// it. Its row in exactRows holds that result; TestVisibleMarkdownReadsEachByteAFewTimes holds what
+// finding the ends costs, with a count of the bytes the search reads.
 func manyComments(count int) (doc, want string) {
 	var d, w strings.Builder
 	d.WriteString("p")
@@ -32,6 +32,11 @@ func manyComments(count int) (doc, want string) {
 }
 
 var manyCommentsDoc, manyCommentsWant = manyComments(500)
+
+// manyOpenersDoc is one paragraph of a thousand lines, each ending in a `<!--` that no `-->` after
+// it ends: goldmark cuts each opener at its `!`, the first one sets the paragraph's flag, and every
+// opener stays, as on GitHub, where each is text.
+var manyOpenersDoc = strings.Repeat("p <!--\n", 1000)
 
 // exactRows are documents and what VisibleMarkdown makes of each, CommonMark's reading of it.
 var exactRows = []struct{ name, doc, want string }{
@@ -103,6 +108,7 @@ var exactRows = []struct{ name, doc, want string }{
 	// the block leaves open runs on over what follows.
 	{"a source block's open comment hides what follows", "<source><!--\n\nb\n", "<source>\n\n\n"},
 	{"a thousand inline comments in one paragraph, half ending in --->", manyCommentsDoc, manyCommentsWant},
+	{"a thousand lines each ending in an opener that finds no end", manyOpenersDoc, manyOpenersDoc},
 	{"no comment at all", "# Title\n\n- `x` — y\n", "# Title\n\n- `x` — y\n"},
 }
 
@@ -162,13 +168,9 @@ func pageText(t *testing.T, fragment string) string {
 	return text.String()
 }
 
-// Every marker word of each document is in VisibleMarkdown's result exactly when it is on the page
-// GitHub renders. The pages are GitHub's own, read once through its markdown API and kept in
-// testdata/github_render.json with the time they were read, so the test needs no network: each
-// row is an edge of how cmark-gfm reads an inline `<!`, a comment an HTML block leaves open, or
-// where cmark-gfm opens an HTML block (cmarkGFMRawHTML, cmarkGFMBlock). The test also fails when
-// the file names no marker the page hides or none it shows, since then it could not fail.
-func TestVisibleMarkdownKeepsWhatGitHubsPageShows(t *testing.T) {
+// readGitHubRender reads testdata/github_render.json.
+func readGitHubRender(t *testing.T) githubRender {
+	t.Helper()
 	body, err := os.ReadFile("testdata/github_render.json")
 	if err != nil {
 		t.Fatalf("read testdata/github_render.json: %v", err)
@@ -177,6 +179,18 @@ func TestVisibleMarkdownKeepsWhatGitHubsPageShows(t *testing.T) {
 	if err := json.Unmarshal(body, &render); err != nil {
 		t.Fatalf("parse testdata/github_render.json: %v", err)
 	}
+	return render
+}
+
+// Every marker word of each document is in VisibleMarkdown's result exactly when it is on the page
+// GitHub renders. The pages are GitHub's own, read through its markdown API and kept in
+// testdata/github_render.json with the time they were read, so the test needs no network: each
+// row is an edge of how cmark-gfm reads an inline `<!`, a comment an HTML block leaves open, or
+// where cmark-gfm opens an HTML block (cmarkGFMRawHTML, markTextOpener, cmarkGFMBlock). The test
+// also fails when the file names no marker the page hides or none it shows, since then it could not
+// fail.
+func TestVisibleMarkdownKeepsWhatGitHubsPageShows(t *testing.T) {
+	render := readGitHubRender(t)
 	shown, hidden := 0, 0
 	for _, row := range render.Rows {
 		t.Run(row.Name, func(t *testing.T) {
@@ -317,12 +331,15 @@ func TestVisibleMarkdownReadsFencesSpansAndCommentsAsCommonMarkDoes(t *testing.T
 }
 
 // removable is, for each byte of source, whether a comment may take it, read from the parse on its
-// own: each segment of inline raw HTML and each line of an HTML block, its closing line included,
-// and every byte after an HTML block whose text opens a `<!--` after its last `-->`, which may
-// leave a comment open to run on. A block quote's `> ` and a list item's indentation are in no
-// segment.
-func removable(source []byte) []bool {
-	allowed := make([]bool, len(source))
+// own: each segment of inline raw HTML and each line of an HTML block, its closing line included;
+// every byte after an HTML block whose text opens a `<!--` after its last `-->`, which may leave a
+// comment open to run on; and, for inline raw HTML that opens with `<!--` and holds no
+// cmarkGFMCommentEnd of its own, the block's lines from its `<!--` to the first cmarkGFMCommentEnd
+// after it, the piece GitHub writes as raw HTML when cmark-gfm's comment runs on past goldmark's
+// end. runOn is, for each byte, whether such a piece alone allows it. A block quote's `> ` and a list
+// item's indentation are in no segment and in no line.
+func removable(source []byte) (allowed, runOn []bool) {
+	allowed, runOn = make([]bool, len(source)), make([]bool, len(source))
 	allow := func(from, to int) {
 		for at := from; at < to; at++ {
 			allowed[at] = true
@@ -353,14 +370,43 @@ func removable(source []byte) []bool {
 				allow(end, len(source))
 			}
 		case *ast.RawHTML:
+			if n.Segments.Len() == 0 {
+				break
+			}
+			var raw []byte
 			for i := range n.Segments.Len() {
 				s := n.Segments.At(i)
 				allow(s.Start, s.Stop)
+				raw = append(raw, source[s.Start:s.Stop]...)
+			}
+			inner, opens := strings.CutPrefix(string(raw), "<!--")
+			if !opens || cmarkGFMCommentEnd.MatchString(inner) {
+				break
+			}
+			block := inlineBlock(n)
+			start, stop := n.Segments.At(0).Start, n.Segments.At(n.Segments.Len()-1).Stop
+			lines := block.Lines()
+			for i := range lines.Len() {
+				line := lines.At(i)
+				if line.Stop <= stop {
+					continue
+				}
+				from := max(line.Start, stop)
+				if at := cmarkGFMCommentEnd.FindIndex(source[from:line.Stop]); at != nil {
+					end := from + at[1]
+					for j := range lines.Len() {
+						for b := max(lines.At(j).Start, start); b < min(lines.At(j).Stop, end); b++ {
+							runOn[b] = runOn[b] || !allowed[b]
+							allowed[b] = true
+						}
+					}
+					break
+				}
 			}
 		}
 		return ast.WalkContinue, nil
 	})
-	return allowed
+	return allowed, runOn
 }
 
 // inContainers is doc as the text of a block quote and as the text of a list item: each line gets
@@ -382,11 +428,13 @@ func inContainers(doc string) map[string]string {
 }
 
 // Removing comments takes out no byte outside what a comment may take, whatever the shape: over
-// every row of both tables, as written and inside a block quote and a list item, each range
-// VisibleMarkdown takes out lies in a raw HTML node's segments or after an HTML block that may
-// leave a comment open (removable), the ranges do not overlap, and the result is the document
-// without exactly their bytes, newlines kept. A removal that took a container's prefix of a closed
-// comment, or any byte between two of its lines, fails here.
+// every row of both tables and every document of testdata/github_render.json, as written and inside
+// a block quote and a list item, each range VisibleMarkdown takes out lies in a raw HTML node's
+// segments, in the run-on piece of an inline comment, or after an HTML block that may leave a
+// comment open (removable), the ranges do not overlap, and the result is the document without
+// exactly their bytes, newlines kept. A removal that took a container's prefix, or any byte between
+// two of a comment's lines, fails here. The test also fails unless some document's removal reaches
+// a run-on piece past goldmark's own raw HTML, since then it would check none.
 func TestVisibleMarkdownRemovesOnlyCommentBytes(t *testing.T) {
 	docs := map[string]string{}
 	for _, row := range exactRows {
@@ -394,6 +442,9 @@ func TestVisibleMarkdownRemovesOnlyCommentBytes(t *testing.T) {
 	}
 	for _, row := range markerRows {
 		docs[row.name] = row.doc
+	}
+	for _, row := range readGitHubRender(t).Rows {
+		docs["GitHub: "+row.Name] = row.Doc
 	}
 	wrapped := map[string]string{}
 	for name, doc := range docs {
@@ -404,11 +455,12 @@ func TestVisibleMarkdownRemovesOnlyCommentBytes(t *testing.T) {
 	for name, doc := range wrapped {
 		docs[name] = doc
 	}
+	reached := 0
 	for name, doc := range docs {
 		t.Run(name, func(t *testing.T) {
 			source := []byte(doc)
-			allowed := removable(source)
-			removed, end := 0, 0
+			allowed, runOn := removable(source)
+			removed, end, intoRunOn := 0, 0, false
 			for _, r := range commentRanges(source) {
 				if r[0] < end {
 					t.Fatalf("ranges overlap at byte %d of %q", r[0], doc)
@@ -417,16 +469,45 @@ func TestVisibleMarkdownRemovesOnlyCommentBytes(t *testing.T) {
 					if !allowed[at] {
 						t.Fatalf("byte %d (%q) of %q is taken out, and it is in no comment's segment", at, doc[at], doc)
 					}
+					intoRunOn = intoRunOn || runOn[at]
 					if doc[at] != '\n' {
 						removed++
 					}
 				}
 				end = r[1]
 			}
+			if intoRunOn {
+				reached++
+			}
 			got := VisibleMarkdown(doc)
 			if len(got) != len(doc)-removed || strings.Count(got, "\n") != strings.Count(doc, "\n") {
 				t.Fatalf("VisibleMarkdown(%q) = %q, %d bytes; want %d bytes and the document's newlines", doc, got, len(got), len(doc)-removed)
 			}
 		})
+	}
+	t.Logf("%d documents, %d of them with a removal past goldmark's own raw HTML into a run-on piece", len(docs), reached)
+	if reached == 0 {
+		t.Fatalf("no document's removal reached a run-on piece, so the run-on allowance was checked on none")
+	}
+}
+
+// The search for cmark-gfm's comment ends reads each byte a few times at most, however many
+// comments or openers a paragraph holds: rawHTML counts the bytes it reads (inlineScan.searched),
+// so the bound is a count, not a clock. A search that read the rest of the paragraph for each
+// comment, as one that copied it did, reads the manyComments paragraph hundreds of times over, and
+// one that searched again after the paragraph's flag was set reads the manyOpeners paragraph so.
+func TestVisibleMarkdownReadsEachByteAFewTimes(t *testing.T) {
+	for _, row := range []struct{ name, doc string }{
+		{"manyComments", manyCommentsDoc},
+		{"manyOpeners", manyOpenersDoc},
+	} {
+		_, searched := rawHTML([]byte(row.doc))
+		t.Logf("%s: %d bytes, %d read by the search", row.name, len(row.doc), searched)
+		if searched == 0 {
+			t.Errorf("%s: the search read no byte, so this count could not fail", row.name)
+		}
+		if searched > 2*len(row.doc) {
+			t.Errorf("%s: the search read %d bytes of a %d-byte document, more than twice its length", row.name, searched, len(row.doc))
+		}
 	}
 }
