@@ -524,7 +524,8 @@ must start this job too (check-ci-filters.sh's rule 15).
 ## envoy_go_checks: envoy-go's fast half (envoy-go-checks): the format, generated-contract and pmdoc
 
 envoy-go's fast half (envoy-go-checks): the format, generated-contract and pmdoc
-checks, the seven shell-script tests, and the build and pack of the envoy commands,
+checks, the shell-script tests, the vet of the module as darwin compiles it,
+and the build and pack of the envoy commands,
 with the tests of internal/dispatch/architecture/notes, internal/runnerlog,
 internal/dispatch/specgraph, cmd/architecture-check and cmd/spec-check, whose one
 run this is (envoy-go's unit step leaves them out), the architecture-note check over
@@ -532,8 +533,8 @@ this repository's own notes through the composite action
 .github/actions/architecture-check, and the spec-file check over its .dispatch/spec
 through the composite action .github/actions/spec-check. gofmt -l . walks every .go
 file under packages/envoy, those tests and the scripts they drive live there, and
-`go build ./cmd/dispatch ./cmd/listener` compiles packages of that module alone, as
-the two actions' builds of their commands do.
+`go build ./cmd/dispatch ./cmd/listener` and the darwin vet compile packages of that
+module alone, as the two actions' builds of their commands do.
 
 ## envoy_go_checks: Those two steps judge the files at the actions' default paths,
 
@@ -742,14 +743,16 @@ ran and no row could move. check-image-trigger-paths.sh reads it as an input of
 this build for that reason, from the COMPUTED_BUILD_INPUTS entry that writes the
 argument down, and that entry is what refuses this filter if it stops naming it.
 
-## ci_filters: The directory rather than the four workflows the check
+## ci_filters: The directory rather than the workflows the check names one by one
 
-The directory rather than the four workflows the check names one by one (this
-file, docs-pages.yaml, docs-site.yaml and ci-caches.yaml): its rules read every
+The directory rather than the workflows the check names one by one in
+ci_job_reads.py's reads for this gate: its rules read every
 workflow of it - ci_workflow_rules.check_one_merge_group_workflow refuses any but
-this one that runs on merge_group - and a rule that refuses a new workflow has to
-run on the change that adds one, which a list of the names already there cannot
-select.
+this one that runs on merge_group, check_cache_round_trip holds every workflow's
+restore of a family ci-caches.yaml fills to the fill's key, and ci_only_documents
+reads them all to find the files only this one calls - and a rule that reads a
+workflow has to run on the change that adds or edits one, which a list of the
+names already there cannot select.
 
 ## tool_fallback: ci.yaml's tool-fallback and tool-fallback-arm jobs, the
 
@@ -990,7 +993,11 @@ go-docs stays with docs-pages.yaml, which saves it on that same push. Each famil
 entry, keyed on the Go version its job's setup-go installed, so it is
 refreshed only when Go is bumped. A go.sum change downloads only the changed modules, and Go's
 build cache is content-addressed, so a stale entry costs a run only what changed; a key on the
-go.sum files left a whole entry, up to a gigabyte, per change for seven days. The fallback by
+go.sum files left a whole entry, up to a gigabyte, per change for seven days. go-envoy-infra is
+the exception: what changed under it in eleven days cost its linux vet 83 to 85% of what the
+same vet for darwin took with nothing cached, so its key carries the hash of its module files
+too, and ci-caches.yaml deletes the entry each fill replaces (its envoy-infra job says how). The
+fallback by
 prefix, when the exact key misses, now applies on every run, a dispatched one on main
 included: it was held off main so that the entry a run saved after a Go bump held nothing the
 older Go built, and no step of this workflow saves a family any more (the two check actions
@@ -1544,10 +1551,11 @@ recheck a slow-suite failure on a pull request: the label picks the lane, while 
 
 ## envoy-go's fast half: the Go format check, the two generated-code checks, the
 
-envoy-go's fast half: the Go format check, the two generated-code checks, the seven
-shell-script tests and the build and pack of the envoy commands. It also runs the tests of
-internal/dispatch/architecture/notes, internal/runnerlog, internal/dispatch/specgraph,
-cmd/architecture-check and cmd/spec-check, whose one run this is (envoy-go's unit step leaves
+envoy-go's fast half: the Go format check, the two generated-code checks, the shell-script
+tests, the vet of the module as darwin compiles it, and the build and pack of
+the envoy commands. It also runs the tests of internal/dispatch/architecture/notes,
+internal/runnerlog, internal/dispatch/specgraph, cmd/architecture-check and cmd/spec-check,
+whose one run this is (envoy-go's unit step leaves
 them out), the architecture-note check over this repository's own .dispatch/architecture
 through the composite action .github/actions/architecture-check, and the spec-file check over
 its .dispatch/spec through the composite action .github/actions/spec-check, both of which
@@ -1570,8 +1578,9 @@ shell-script, build and pack steps are envoy-go-checks' above.
 The envoy-infra Pulumi plugin's module (packages/envoy/infra). It is not in the root go.work:
 its own go.work binds it and packages/envoy, so Pulumi's requirements never move the versions
 the Envoy binaries and the daemon build with, and every go command below runs in that
-workspace. Vet compiles the files behind the live-test tags (pulumilive, natslive) too. The unit
-tests start no container; the natslive files run in a step of their own against real
+workspace. Vet compiles the files behind the live-test tags (pulumilive, natslive) too, as
+linux and as darwin compile them. The unit tests start no container; the natslive files run
+in a step of their own against real
 nats-server and Postgres, on testnats.Image, testnats.HubImage and testpg.Image, pulled first
 for the reason .github/actions/pull-test-images gives. That step runs only the tests the tag
 adds, one call per package: the unit step above already ran every untagged test of core, seed

@@ -264,7 +264,7 @@ def bundle_files(entry: str) -> list | None:
 def read_workflow() -> tuple:
     """The lines of .github/ci-filters.yaml and the changes job's filters with their quantifiers,
     all from the one read of that file changes_filters makes, under the quantifier ci.yaml's one
-    paths-filter step names; whether a step may hand the action anything but that file is rule 20
+    paths-filter step names; whether a step may hand the action anything but that file is rule 21
     of check-ci-filters.sh, not this check's. Read again after the write mode writes. A file that
     is absent or refuses the open ends the run here, with the engine's annotation saying which."""
     try:

@@ -165,10 +165,12 @@
 #      same test written as a function call is the review's to catch, not this check's.
 #  11. a cache family .github/workflows/ci-caches.yaml saves whose `key:` or `path:` is not
 #      exactly that of the matching actions/cache/restore of ci.yaml or of a workflow ci.yaml
-#      calls - dispatch-browser.yaml holds the browser and apt archive restores of the
-#      dispatch-browser job - (the keys compared as text,
-#      trailing whitespace aside, the paths as ordered lists of stripped lines), naming the file
-#      the restore is in, or that none of those files
+#      calls - dispatch-browser.yaml's binaries, multiprocess, embedder and visual jobs restore
+#      go-envoy and go-envoy-test for the dispatch-browser job - or of any other workflow of
+#      .github/workflows that restores it (the release builds, the nightly browser re-record,
+#      ci-caches.yaml's own lookups), since a drift there misses as silently (the keys compared as
+#      text, trailing whitespace aside, the paths as ordered lists of stripped lines), naming the file
+#      the restore is in, or that none of ci.yaml's files
 #      restores, and an actions/cache/restore of ci-caches.yaml that is not
 #      `lookup-only: true` or that carries restore-keys. ci-caches.yaml fills the entries ci.yaml
 #      restores, and a key or a path that drifts apart makes every restore miss silently: nothing
@@ -297,7 +299,21 @@
 #      declares a name was the other half of this rule and has no subject left: the filters are
 #      one file, which the one step hands the action whole, so a name is a filter of the job
 #      exactly when that file holds it,
-#  20. a dorny/paths-filter step of any workflow of .github/workflows whose `filters` input is
+#  20. a step's vets for another platform - the Runs of mode vet whose env sets GOOS, one per
+#      tag set, today the three darwin vet steps ci_job_reads.py's darwin_vet pins - that
+#      between them pass over a file go builds for that platform under some tags, naming the
+#      file, the job, the step and the tags that build it. Such a step is its module's one
+#      compile for that platform, and a file outside every set is never read while the vet still
+#      passes: the miss a hand-kept tag list makes the day a tag lands, and the one a single set
+#      makes beside a `!tag` file. The files are those on disk under the Runs' patterns, so a
+#      package whose every file a missing tag excludes is among them; go list says which each
+#      Run compiles, and of the rest, each whose constraint names a tag (no platform or
+#      architecture feature name, none the toolchain sets) is listed under every choice of its
+#      own tags, and one go list then compiles is the miss. The steps read their sets off the
+#      module with .github/scripts/go_build_tags.py at run time and ci_job_reads.py gives their
+#      Runs what it prints now, so this rule fails when that script stops printing a set a
+#      file needs,
+#  21. a dorny/paths-filter step of any workflow of .github/workflows whose `filters` input is
 #      not exactly .github/ci-filters.yaml, naming the file, the job and the step. Every rule
 #      above reads that file, so a filter written into a workflow's own text instead is read by
 #      none of them: it would gate its job on patterns no coverage rule here has seen, and
