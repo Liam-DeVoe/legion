@@ -1633,20 +1633,26 @@ const (
 	// nothing is published and nothing is marked, since the work the round asks about went with
 	// that round's pod and no process the claim runs now holds any of it.
 	UpdateAskLeftPodRound
+	// UpdateAskClaimFailed is an ask of a round whose claim has failed: nothing is published and
+	// nothing is marked. A failed claim runs no turn, so the round asks it nothing and does not
+	// wait for it (internal/daemon's askedClaims). Its process can still hold the role's topic,
+	// because a claim fails even when the runtime refuses to suspend that process (fail). A retry
+	// starts the claim again, and the sweep asks it from the next tick.
+	UpdateAskClaimFailed
 )
 
 // OwesUpdateAsk is whether this claim's own record still owes it an ask of round, and, when it
 // owes none, the outcome that says why: the claim is not in round, an ask of round already
-// reached a session of its role, its role has answered round, or the claim has left round's pod.
-// Each of those makes an ask of round needless, because the round publishes once per claim and
-// an answer stands for its round.
+// reached a session of its role, its role has answered round, the claim has left round's pod, or
+// the claim has failed. Each of those makes an ask of round needless, because the round publishes
+// once per claim, an answer stands for its round, and a failed claim runs no turn.
 //
 // It is the one statement of whom a round asks. The sweep reads it where it enqueues an ask
 // (internal/daemon's unaskedClaims), and the outbox's row reads it again under this claim's lock
 // where it publishes that ask (PublishUpdateAsk), because the row runs after the enqueue and the
-// claim can move in between: its role can answer, or the daemon can start it again in another
-// pod. Two statements of the rule would drift apart, and the one at the publish is the one that
-// decides what reaches the role.
+// claim can move in between: its role can answer, the daemon can start it again in another pod,
+// or it can fail. Two statements of the rule would drift apart, and the one at the publish is the
+// one that decides what reaches the role.
 func (c Claim) OwesUpdateAsk(round string) (bool, UpdateAskOutcome) {
 	switch {
 	case c.UpdateRound != round:
@@ -1657,6 +1663,8 @@ func (c Claim) OwesUpdateAsk(round string) (bool, UpdateAskOutcome) {
 		return false, UpdateAskAnswered
 	case c.LeftPodRound(round):
 		return false, UpdateAskLeftPodRound
+	case c.State == StateFailed:
+		return false, UpdateAskClaimFailed
 	}
 	return true, 0
 }
@@ -1682,10 +1690,11 @@ func (c Claim) OwesUpdateAsk(round string) (bool, UpdateAskOutcome) {
 //     the first publish.
 //  2. The claim is read under the lock (OwesUpdateAsk): a claim no longer in round is published
 //     nothing, and so is one an earlier ask of round already reached, one whose role has answered
-//     round, and one that has left round's pod. Two rows of one round — a row left by an older
-//     daemon beside the sweep's own — therefore deliver one ask between them, whichever order
-//     they run in and whichever of them finds a holder, and a row that runs after the role
-//     answered, or after the claim left the round's pod, delivers none.
+//     round, one that has left round's pod, and one that has failed. Two rows of one round — a
+//     row left by an older daemon beside the sweep's own — therefore deliver one ask between
+//     them, whichever order they run in and whichever of them finds a holder, and a row that runs
+//     after the role answered, after the claim left the round's pod, or after the claim failed,
+//     delivers none.
 //  3. The publish runs under the lock, so nothing else of this claim reads or writes the mark
 //     between the publish and the mark. The section holds the lock for at most the owed write's
 //     repair, the publish and the mark's write: the claim-write deadline twice and notify's

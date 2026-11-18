@@ -1698,9 +1698,10 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 // decision. The row keeps its place, nothing was published, and its next attempt is the first
 // publish. A claim an earlier ask of the round already reached is published nothing, so a second
 // row of one round asks no role twice. Nor is a claim whose role answered the round while the row
-// waited, or one the daemon started again in another pod than the round's own: the answer stands
-// for its round, and the round asks a claim that left its pod nothing. Each of those rows ends on
-// a line of its own and marks nothing, because no ask reached the role.
+// waited, one the daemon started again in another pod than the round's own, or one that failed:
+// the answer stands for its round, the round asks a claim that left its pod nothing, and a failed
+// claim runs no turn, though its process can outlive a suspension the runtime refused. Each of
+// those rows ends on a line of its own and marks nothing, because no ask reached the role.
 //
 // A topic with no live holder (notify.ErrNoHolder) is logged on one line and ends the row with
 // nothing marked: the ask is lost, not given, and the sweep's next reading of the round asks the
@@ -1755,6 +1756,8 @@ func (r *outbox) updateAsk(ctx context.Context, row record.OutboxRow, payload re
 		r.log.Info("outbox update ask finished without a publish: the role answered its round", fields...)
 	case supervise.UpdateAskLeftPodRound:
 		r.log.Info("outbox update ask finished without a publish: the claim left its round's pod", fields...)
+	case supervise.UpdateAskClaimFailed:
+		r.log.Info("outbox update ask finished without a publish: the claim failed", fields...)
 	}
 	return nil
 }

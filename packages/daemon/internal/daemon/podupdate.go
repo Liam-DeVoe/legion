@@ -1256,13 +1256,15 @@ func (s *supervision) askRound(ctx context.Context, issue string, group []superv
 // unaskedClaims is every claim the round asks (askedClaims) whose own record still owes it an ask
 // of this round (supervise's Claim.OwesUpdateAsk): it records this round, no ask of the round has
 // reached its session yet (supervise.Claim.UpdateTaskedAt, marked by supervise's
-// Machine.PublishUpdateAsk), it has not answered the round, and it has not left the round's pod.
-// A claim that has not recorded the round yet is asked at the tick after its post lands, so the
-// ask and the round it names are one claim's record. A claim that left the round's pod is asked
-// nothing (supervise's Claim.LeftPodRound): the ask names work that died with that pod, and no
-// process the claim runs now holds any of it. The outbox's row asks the same predicate again
-// under the claim's lock before it publishes, because the claim can answer or leave the pod while
-// the row waits, so the sweep and the row cannot disagree about whom the round asks.
+// Machine.PublishUpdateAsk), it has not answered the round, it has not left the round's pod, and
+// it has not failed. A claim that has not recorded the round yet is asked at the tick after its
+// post lands, so the ask and the round it names are one claim's record. A claim that left the
+// round's pod is asked nothing (supervise's Claim.LeftPodRound): the ask names work that died with
+// that pod, and no process the claim runs now holds any of it. The outbox's row reads the same
+// rule again under the claim's lock before it publishes, because the claim can answer, leave the
+// pod or fail while the row waits, and because the sweep reads the claims through the deciding
+// mask (roundGroup), which can show an answered claim as unanswered; the row's reading is the one
+// that decides what reaches the role.
 func unaskedClaims(group []supervise.Claim, round string) []supervise.Claim {
 	var asking []supervise.Claim
 	for _, c := range askedClaims(group) {

@@ -29,6 +29,7 @@ const (
 	askLeftLine      = "outbox update ask finished without a publish: the claim no longer records its round"
 	askAnsweredLine  = "outbox update ask finished without a publish: the role answered its round"
 	askLeftPodLine   = "outbox update ask finished without a publish: the claim left its round's pod"
+	askFailedLine    = "outbox update ask finished without a publish: the claim failed"
 )
 
 // askRunner is an outbox runner as phase_ended_test.go's unit case builds one — a project, a
@@ -151,10 +152,13 @@ func TestPodUpdateAskForARoundTheClaimLeftPublishesNothing(t *testing.T) {
 }
 
 // A claim whose own record owes no ask of the round any more is published nothing, and its row
-// ends with a line of its own: its role answered the round while the row waited, or the daemon
-// started the claim again in another pod than the round's own. No delivery is recorded on the
-// claim and no published line is written, because no ask reached the role. The control is the
-// same claim with neither, which is asked once and marked.
+// ends with a line of its own: its role answered the round while the row waited, the daemon
+// started the claim again in another pod than the round's own, or the claim failed. A claim fails
+// even when the runtime refuses to suspend its process (supervise's fail), so that process can
+// still hold the role's topic: the publisher here takes every publish, as a topic with a live
+// holder does. No delivery is recorded on the claim and no published line is written, because no
+// ask reached the role. The control is the same claim with none of these, which is asked once and
+// marked.
 func TestPodUpdateAskToAClaimTheRoundNoLongerAsksPublishesNothing(t *testing.T) {
 	answeredAt := time.Date(2026, 11, 18, 9, 0, 0, 0, time.UTC)
 	for i, tc := range []struct {
@@ -162,11 +166,12 @@ func TestPodUpdateAskToAClaimTheRoundNoLongerAsksPublishesNothing(t *testing.T) 
 		set  func(*supervise.Claim)
 		line string
 	}{
-		{name: "the control: a claim that has neither answered nor left", set: func(*supervise.Claim) {}, line: askPublishedLine},
+		{name: "the control: a claim that has not answered, not left and not failed", set: func(*supervise.Claim) {}, line: askPublishedLine},
 		{name: "a claim whose role answered the round", set: func(c *supervise.Claim) {
 			c.UpdateSignalledAt, c.UpdateHead = &answeredAt, "c0ffee"
 		}, line: askAnsweredLine},
 		{name: "a claim that left the round's pod", set: func(c *supervise.Claim) { c.UpdateLeftRound = askedRound }, line: askLeftPodLine},
+		{name: "a claim that failed while the row waited", set: func(c *supervise.Claim) { c.State = supervise.StateFailed }, line: askFailedLine},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			publisher := &outboxPublisher{}
@@ -196,7 +201,7 @@ func TestPodUpdateAskToAClaimTheRoundNoLongerAsksPublishesNothing(t *testing.T) 
 				lines[0]["round"] != askedRound || lines[0]["claim"] != string(token) || lines[0]["role"] != string(claim.RoleTester) {
 				t.Fatalf("lines %q = %v in\n%s\nwant one Info line naming row %d, its round, the claim and the role", tc.line, lines, logs.String(), row.ID)
 			}
-			for _, other := range []string{askPublishedLine, askNoHolderLine, askLeftLine, askAnsweredLine, askLeftPodLine} {
+			for _, other := range []string{askPublishedLine, askNoHolderLine, askLeftLine, askAnsweredLine, askLeftPodLine, askFailedLine} {
 				if other == tc.line {
 					continue
 				}

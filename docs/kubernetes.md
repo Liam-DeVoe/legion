@@ -5819,7 +5819,7 @@ it names the drift, the round's own id and the moment the round ends, it says th
 The text is the one `supervise.UpdateTask` builds from the reasons and the opening the round recorded, so every role of one round reads one text.
 Each role that has not answered is asked once per round by an ask that reaches its session: the daemon marks the claim asked (the `update_tasked_at` column) when the publish reached a session, an ask that finds no live session on the role's topic marks nothing, the next sweep that finds the role ready asks it again, and no sweep asks a role while an ask of the round still waits for it in the outbox.
 The outbox's row reads the claim again under the claim's own lock before it publishes, by the one rule the sweep reads too (`supervise.Claim.OwesUpdateAsk`).
-So an ask that still waits in the outbox when its role answers the round, or when the daemon starts the claim again in another pod than the round's own, is published to nobody and marks nothing, and its row ends on the line `outbox update ask finished without a publish: the role answered its round` or `outbox update ask finished without a publish: the claim left its round's pod`.
+So an ask that still waits in the outbox when its role answers the round, when the daemon starts the claim again in another pod than the round's own, or when the claim fails, is published to nobody and marks nothing, and its row ends on the line `outbox update ask finished without a publish: the role answered its round`, `outbox update ask finished without a publish: the claim left its round's pod` or `outbox update ask finished without a publish: the claim failed`.
 The daemon asks a role only once its agent has said it is ready (`supervise.SaidReady`).
 A claim that is queued, launching, registered but not ready, or suspended has no live session on its role's topic, so the sweep asks it nothing and writes no mark on it.
 The first sweep after its agent is ready asks it.
@@ -5827,6 +5827,7 @@ The message can reach a role in the middle of a turn, and it tells the role to a
 A role that no live session holds — one whose pod an idle release took, or one a suspension let go — is not revived to read it, and the round does not wait for that role past its bound.
 A ready session claims its role's topic inside its first turn or at the first-turn bound, so a message published inside that window finishes undelivered, and the next sweep asks that role again.
 A `failed` claim is the exception: it runs no turn on the pod, so the round asks it nothing and does not wait for it (`askedClaims`); what it left unpushed goes with the disk, and a retry brings it back into the round as any other claim.
+A claim fails even when the runtime refuses to suspend its process, so that process can still hold the role's topic, and an ask of the round that waits in the outbox when the claim fails is published to nobody all the same.
 No claim is left out of a round for the contract its plugin records:
 a role whose `legion` tool has no `ready_for_update` operation is told to push its work and end its turn, since its round ends at the bound whatever it does.
 The end of a turn is no answer at any contract: only the `ready_for_update` call answers the round.

@@ -455,6 +455,47 @@ func TestPodUpdateAskQueuedBeforeTheClaimNeededNoneReachesNobody(t *testing.T) {
 	}
 }
 
+// The sweep asks no claim that left the round's pod, at any sweep after it left. Two roles stand
+// in the round's pod. The implementer is started again in another pod, which leaves the round
+// (supervise's leftPodRoundAt writes that once, and no later launch takes it back), and then
+// started again in the round's own pod, where the tester still holds the round open. While the
+// issue's claims record two pods the sweep asks nobody, as a replacement in flight, so only the
+// move back puts the left claim in front of the sweep's ask. Over three later sweeps, with the
+// lane run after each, the implementer's rows of the round stay at the one the sweep queued
+// before it left.
+//
+// The negative control is the sweep with its left-pod case taken out (unaskedClaims asking a
+// claim that OwesUpdateAsk refuses as left): it queues the implementer a row of the round at each
+// of the three sweeps. Without the move back, this case passes with that case taken out.
+func TestPodUpdateNoSweepAsksAClaimThatLeftTheRoundsPod(t *testing.T) {
+	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
+	rig.drifts(podUpdateDrift)
+	rig.tick()
+	rig.awaitRound(claim.RoleImplementer, podUpdateRound)
+	rig.awaitAskQueued(claim.RoleImplementer, podUpdateRound)
+	rig.settleAll()
+	rig.displacedInto(claim.RoleImplementer, podUpdateReplacementPod)
+	rig.runLane()
+	rig.displacedInto(claim.RoleImplementer, podUpdatePod)
+	for range 3 {
+		rig.clock.advance(time.Minute)
+		rig.tick()
+		rig.runLane()
+	}
+	if c := rig.claimOf(claim.RoleImplementer); c.UpdateRound != podUpdateRound || !c.LeftPodRound(podUpdateRound) {
+		t.Fatalf("the implementer at the end = round %q, left %q; want it still in round %s and left, or this case shows nothing", c.UpdateRound, c.UpdateLeftRound, podUpdateRound)
+	}
+	n := 0
+	for _, ask := range rig.asks() {
+		if ask.Role == claim.RoleImplementer && ask.Round == podUpdateRound {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("the sweep queued the implementer %d asks of round %s, want only the one before it left the pod", n, podUpdateRound)
+	}
+}
+
 // stoppingPublisher delivers through the listener and then cancels the context its row runs
 // under, as a daemon stop does while a row is in its publish.
 type stoppingPublisher struct {
