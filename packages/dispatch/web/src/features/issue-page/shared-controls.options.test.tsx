@@ -3749,7 +3749,8 @@ test("inside NoTooltips a repository row draws a long repository as text that wr
 // the line is as wide as the value, every element from the box up to the value is too, and none
 // keeps a width of its own or its line. The box draws no datalist arrow, which Chromium draws in a
 // box with a list and which takes some of a narrow row's room from the name, shrinks within its
-// place, and keeps its right padding, which holds the name clear of the clear control's ×.
+// place, and keeps no right padding for the clear control: the control is not laid over the box
+// but drawn after it in the box's place, which wraps, so it goes onto the line under the box.
 // Outside, the box is `main`'s 200 px box with its arrow, and the line as wide as what it holds.
 test("inside NoTooltips the repository box fills its row's value and keeps no room a name needs", async () => {
   const user = userEvent.setup();
@@ -3802,7 +3803,20 @@ test("inside NoTooltips the repository box fills its row's value and keeps no ro
       }
       expect(narrower).toEqual([]);
       expect(held).toEqual([]);
-      expect(classOf(box())).toEqual(expect.arrayContaining([noArrow, "min-w-0", "pr-8"]));
+      expect(classOf(box())).toEqual(expect.arrayContaining([noArrow, "min-w-0", "pr-1.5"]));
+      expect(classOf(box())).not.toContain("pr-8");
+      // The clear control follows the box inside the box's place, in its flow, and the place
+      // wraps, so the control goes onto the line under the box.
+      const place = box().parentElement;
+      if (place === null) throw new Error("the box has no place");
+      const clear = scope.getByRole("button", { name: "Clear the repository of CORE-1" });
+      const following: Element[] = [];
+      for (let next = box().nextElementSibling; next !== null; next = next.nextElementSibling) {
+        following.push(next);
+      }
+      expect(following).toContain(clear);
+      expect(classOf(clear)).not.toContain("absolute");
+      expect(classOf(place)).toEqual(expect.arrayContaining(["relative", "flex-wrap"]));
     } finally {
       undraw(view);
     }
