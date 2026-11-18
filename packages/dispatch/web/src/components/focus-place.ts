@@ -396,10 +396,10 @@ function spotsOf(element: Element, region: Element): Spot[] {
 /** A focus an element lost: the element, the region it was counted in, its place there among
  *  the controls the page draws, the path of the page it was focused on, whether the page took it
  *  from the reader (`taken`: the element was disabled, hidden or taken away) rather than the
- *  reader moving off it, and - in a dialog - the loss the dialog was opened from (`opener`):
- *  the place the focus left for it, or null for a dialog the focus entered from the body. A loss
- *  kept only as a dialog's opener holds no spots and no arrivals: the hand-off reads only its
- *  element, region, place, path and opener. */
+ *  reader moving off it, whether the reader left it (`left`), and - in a dialog - the loss the
+ *  dialog was opened from (`opener`): the place the focus left for it, or null for a dialog the
+ *  focus entered from the body. A loss kept only as a dialog's opener holds no spots and no
+ *  arrivals: the hand-off reads only its element, region, place, path and opener. */
 interface Loss {
   /** The elements the page added from the moment the element went until the loss is answered,
    *  noted into it while its check or its wait is out - none the page only moved, which stood in
@@ -408,6 +408,10 @@ interface Loss {
   readonly caused: boolean;
   readonly element: HTMLElement;
   readonly index: number;
+  /** Whether the reader left the element (`record`): the focus went to nothing from it while it
+   *  was enabled and drawn, and it still stood in the page so once the event that moved the focus
+   *  had run. Set in a microtask after the loss, long before its check, which then does nothing. */
+  left: boolean;
   readonly opener: Loss | null;
   readonly path: string;
   readonly region: Element;
@@ -705,7 +709,15 @@ function handOn(loss: Loss, main: HTMLElement | null, caused: boolean): void {
  * keyed node React moves with `insertBefore`, which one batch reports as its removal and its
  * addition, stood in the page before; for a loss read off a removal, the batch that took the
  * element counts from that last record on. The focus moving from one control to another in the
- * same region is no loss. A new loss cancels whatever is still out for the one before it.
+ * same region is no loss. Nor is the reader leaving a control: their Enter that commits a field
+ * with the page's own `blur()`, or their click on the page's text, sends the focus to nothing
+ * from a control still enabled and drawn, and the focus stays where that left it. Such a loss is
+ * marked left (`left`) when the control still stands so in a microtask queued from its
+ * `focusout`, once the event that moved the focus has run, and nothing answers it, even when a
+ * commit after that takes the control away - the issue title's editor, whose save draws the
+ * heading in its place. A control a commit takes away fires Chromium's `focusout` during the
+ * removal itself, while it is still in the page, so by that microtask it has gone, and its loss
+ * is answered. A new loss cancels whatever is still out for the one before it.
  *
  * The check runs a frame and a task after the loss, once React has committed and run its passive
  * effects, so every component's own hand-off has had its turn first: every `useFocusPlace`
@@ -713,10 +725,9 @@ function handOn(loss: Loss, main: HTMLElement | null, caused: boolean): void {
  * `returnFocus`, AskCard's, `useDialog`'s return to the opener, the Agents composer's take-back.
  * Each knows its own target better than a place counted in the page does - the row marked last,
  * the opener, the composer's box - so the rescue answers only a loss none of them answered, and
- * acts only while the focus is still lost. It leaves alone a loss on a page the reader has since
- * left, since the new page owns its focus, and a loss the reader made whose element is still in
- * the page, enabled and drawn - a click on the page itself, a deliberate `.blur()` such as the
- * Inbox's and the Board's Escape. A taken element that is back by then gets the focus back.
+ * acts only while the focus is still lost. It leaves alone a loss the reader left (above), and a
+ * loss on a page the reader has since left, since the new page owns its focus. A taken element
+ * that is back by then gets the focus back.
  *
  * An element that went - taken away, hidden, no longer drawn, or replaced under a new key - hands
  * the focus on (`handOn`) inside the region it was lost in. What a press drew where the element
@@ -746,11 +757,11 @@ function handOn(loss: Loss, main: HTMLElement | null, caused: boolean): void {
  * change first. A pointer press anywhere while a check or a wait is out is the reader moving on -
  * onto a control, or onto the page itself - and ends it, so a control enabled again later never
  * pulls back a focus the reader left on the page. So is the reader's Escape: a control it takes
- * away or leaves - the issue title's editor, whose heading would open it again if it took the
- * focus - is the reader leaving it, and the focus stays where Escape left it, as the Inbox's and
- * the Board's own Escape leave it on the page. The control a loss the reader caused walks back to
- * is scrolled into view (`land`); what stands where the element stood, and anything a loss they
- * did not cause lands on, is focused with no scroll.
+ * away or leaves - the issue title's editor, which it closes - is the reader leaving it, and the
+ * focus stays where Escape left it rather than going to what is drawn in its place, as the
+ * Inbox's and the Board's own Escape leave it on the page. The control a loss the reader caused
+ * walks back to is scrolled into view (`land`); what stands where the element stood, and anything
+ * a loss they did not cause lands on, is focused with no scroll.
  *
  * A loss the reader can no longer see is not answered: the element was scrolled out of their
  * sight - out of the viewport, or out of a scroll box around it - before it went, or before the
@@ -811,7 +822,8 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
      *  region still in the page. */
     const unseen = (loss: Loss) => outOfSight(loss.element) && present(loss.region);
 
-    /** Waits for `loss`'s element, which the press disabled, to be enabled again or to go. */
+    /** Waits for `loss`'s element, which the press disabled, to be enabled again or to go. Only
+     *  `check` begins it, so a loss the reader left (`left`) never has one. */
     const wait = (loss: Loss): (() => void) => {
       const { element } = loss;
       /** Cancels the settle once it is scheduled. */
@@ -860,9 +872,11 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
       };
     };
 
+    /** Answers `loss` a frame and a task after it, while the focus is still lost on the page it
+     *  was lost on; a loss the reader left (`left`) it leaves where the reader put the focus. */
     const check = (loss: Loss) => {
       pending = null;
-      if (window.location.pathname !== loss.path || !focusLost()) return;
+      if (loss.left || window.location.pathname !== loss.path || !focusLost()) return;
       const { element } = loss;
       if (unseen(loss)) {
         leaveUnseen(loss.region);
@@ -922,6 +936,7 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
         caused: causedByReader(element),
         element,
         index: countBefore(drawnIn(region, main.current), element),
+        left: false,
         opener: openedFrom.get(region) ?? null,
         path,
         region,
@@ -938,6 +953,16 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
       watcher.takeRecords();
       const loss: Loss = { ...fields, arrived: new Set<Node>(), spots: spotsOf(element, region) };
       pending = { arrived: loss.arrived, cancel: afterComponents(() => check(loss)) };
+      // The reader leaving the control - their Enter that commits it with the page's own
+      // `blur()`, their click on the page's text - is no loss: the control still stands in the
+      // page, enabled and drawn, once the event that moved the focus has run, and is marked left
+      // then. A control a commit takes away fires Chromium's `focusout` during the removal
+      // itself, so by this microtask it has gone, and its loss stays one to answer.
+      if (!loss.taken) {
+        queueMicrotask(() => {
+          loss.left = element.isConnected && !element.matches(":disabled") && rendered(element);
+        });
+      }
     };
 
     // A focused element taken away with no `focusout` - Firefox's and WebKit's way, for the
@@ -965,6 +990,7 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
         caused: causedByReader(held.element),
         ...held,
         index,
+        left: false,
         opener: openedFrom.get(held.region) ?? null,
         spots: removal === undefined ? held.spots : [removal.spot, ...held.spots],
         taken: true,

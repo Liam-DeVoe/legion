@@ -238,8 +238,8 @@ test("a loss is answered even while the page's animation frames are held back", 
 });
 
 // (q) A control the reader's own Escape takes away - an editor Escape closes - is the reader
-// leaving it: nothing moves, so a heading that opens the editor when it takes the focus is not
-// handed the focus and the editor stays closed.
+// leaving it: nothing moves, so the heading after it is not handed the focus, and the focus stays
+// where Escape left it.
 test("a control taken away by the reader's Escape moves nothing", async () => {
   await withRescue(async () => {
     const [, editor, heading] = mainOf("Before", "Editor", "Heading").buttons;
@@ -1158,4 +1158,94 @@ test("a control moved and then taken away in one batch hands the focus to the fo
     await settled();
     expect(first).toHaveFocus();
   });
+});
+
+/** The issue title's editor, put in `main` before `after`: its text box, the heading with a Tab
+ *  stop that a save draws in the box's place, and that save's commit (`replace`), which takes the
+ *  box away and draws the heading there. */
+function titleEditorIn(
+  main: HTMLElement,
+  after: HTMLElement
+): { field: HTMLInputElement; heading: HTMLHeadingElement; replace: () => void } {
+  const field = document.createElement("input");
+  field.setAttribute("aria-label", "Issue title");
+  main.insertBefore(field, after);
+  const heading = document.createElement("h1");
+  heading.tabIndex = 0;
+  heading.textContent = "Title";
+  const replace = () => {
+    field.remove();
+    main.insertBefore(heading, after);
+  };
+  return { field, heading, replace };
+}
+
+/** Saves `field` on its blur, the save's commit (`replace`) a microtask later, as React commits
+ *  the update an event makes. The save listens for the field's `focusout`, as React's `onBlur`
+ *  does at its root, so the rescue's own listener on the document's capture hears the blur first. */
+function saveOnBlur(field: HTMLInputElement, replace: () => void): void {
+  field.addEventListener("focusout", () => queueMicrotask(replace));
+}
+
+// (an) The reader's Enter that commits a field with the page's own `blur()` - the issue title's
+// editor saving - is the reader leaving the field. The blur sends the focus to the page while the
+// field still stands, and the save's commit takes the field away a microtask later, drawing the
+// heading in its place: nothing moves, so the heading is not handed the focus and the reader's
+// next key acts on the page.
+test("a field the page's own blur commits leaves the focus on the page when its commit takes it away", async () => {
+  await withRescue(async () => {
+    const { buttons, main } = mainOf("Before", "After");
+    const { field, heading, replace } = titleEditorIn(main, buttons[1] as HTMLButtonElement);
+    saveOnBlur(field, replace);
+    field.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") field.blur();
+    });
+    field.focus();
+    field.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
+    await settled();
+    expect(field.isConnected).toBe(false);
+    expect(heading.isConnected).toBe(true);
+    expect(document.activeElement).toBe(document.body);
+    expect(heading).not.toHaveFocus();
+  });
+});
+
+// (ao) So is the reader's click on the page's text while a field holds the focus: the press lands
+// on no control, so the engine moves the focus to the page, and the save that blur makes takes
+// the field away a microtask later. Nothing moves.
+test("a click on the page's text that ends a field's edit leaves the focus on the page", async () => {
+  await withRescue(async () => {
+    const { buttons, main } = mainOf("Before", "After");
+    const { field, heading, replace } = titleEditorIn(main, buttons[1] as HTMLButtonElement);
+    saveOnBlur(field, replace);
+    const text = document.createElement("p");
+    text.textContent = "The issue's description";
+    main.append(text);
+    field.focus();
+    text.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    // The engine's answer to a press on no control, which happy-dom leaves to the page.
+    field.blur();
+    await settled();
+    expect(field.isConnected).toBe(false);
+    expect(heading.isConnected).toBe(true);
+    expect(document.activeElement).toBe(document.body);
+    expect(heading).not.toHaveFocus();
+  });
+});
+
+// (ap) The same field taken away while it holds the focus is still a loss to answer, however late
+// its commit comes: Chromium fires the `focusout` during the removal itself, so the field has gone
+// by the rescue's microtask, and Firefox and WebKit fire none. The focus lands on the heading
+// drawn in the field's place.
+test("the same field taken away while focused, a microtask after the event, hands the focus to the heading", async () => {
+  for (const withFocusout of [true, false]) {
+    await withRescue(async () => {
+      const { buttons, main } = mainOf("Before", "After");
+      const { field, heading, replace } = titleEditorIn(main, buttons[1] as HTMLButtonElement);
+      field.focus();
+      queueMicrotask(() => (withFocusout ? lose(field, replace) : replace()));
+      await settled();
+      expect(heading).toHaveFocus();
+    });
+  }
 });

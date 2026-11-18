@@ -291,12 +291,13 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
       when: () => usableControl(LABELS_TRIGGER) !== null,
     },
     {
-      // The heading takes focus only while the issue is open: closed, its `tabIndex` is -1 and
-      // `onFocus` does not open the editor, so the key is offered exactly while it edits.
+      // The heading is a Tab stop only while the issue is open - closed, its `tabIndex` is -1
+      // and it opens no editor - so the key is offered exactly while it edits. The key clicks
+      // it, since the heading opens its editor when activated and not when it takes the focus.
       id: "title",
       keys: "e",
       label: "Edit the title",
-      run: () => usableControl(TITLE_HEADING)?.focus(),
+      run: () => usableControl(TITLE_HEADING)?.click(),
       when: () => usableControl(TITLE_HEADING) !== null,
     },
     {
