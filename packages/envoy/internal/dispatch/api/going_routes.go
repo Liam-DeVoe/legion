@@ -408,13 +408,19 @@ func writeGoingRequestNotFound(w http.ResponseWriter) {
 // test of a run's owner the stream and a write made for a run (withinGoingRun) both apply. It is
 // the whole credential, through model.Actor.SameCredential and never SameAs alone, which would
 // make any two personal tokens one writer: a run is read by the credential that asked it. A run
-// whose author names nobody is nobody's, and that is a test of its own - graphstore.ProvesAuthor
-// again, asked here of the author the row holds - because SameCredential calls two credentials
-// that name nobody the one credential: without it, such a row would be served to every holder of
-// the deployment's shared token, which resolves as {} exactly as that author does. The POST
-// refuses such an asker before anything is recorded, so no row this route writes carries one.
+// whose author names nobody is nobody's, and that is a test of its own -
+// graphstore.NamesCredential, asked here of the author the row holds, as
+// graphstore.AuthorCredentialIsSQL asks it in SQL -
+// because SameCredential calls two credentials that name nobody the one credential: without it,
+// such a row would be served to every holder of the deployment's shared token, which resolves as
+// {} exactly as that author does, and a write that token makes would count as made for that run.
+// The POST refuses such an asker before anything is recorded, so no row the POST writes carries
+// one. It asks the row no question of the author rule (graphstore.ProvesAuthor): a row recorded
+// before model.Actor's Proven existed, by a broker session that names no owner and no workload,
+// names that session, which the rule now counts as nobody, and the session that asked it still
+// presents the same credential.
 func goingRunIsTheCallers(author, caller model.Actor) bool {
-	return graphstore.ProvesAuthor(author) && author.SameCredential(caller)
+	return graphstore.NamesCredential(author) && author.SameCredential(caller)
 }
 
 // getGoingCapability answers whether this deployment has a model configured, and nothing else:

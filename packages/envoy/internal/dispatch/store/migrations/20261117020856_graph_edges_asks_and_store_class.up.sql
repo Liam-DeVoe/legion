@@ -1,47 +1,69 @@
--- 20261116091932_graph_edges_store_tuples.up.sql
+-- 20261117020856_graph_edges_asks_and_store_class.up.sql
 --
--- INFRA-1950: the tuple arm of `graph_edges` answers the relations the node and tuple store holds
--- with no projection row behind them. The kinds this child adds to the store - an interaction, a
--- lens, a risk and a constraint - are tied by tuples no table projects: a node a run changed
--- points at the run's interaction (`changed_by_run`), a lens at its lens kind (`has_kind`) and at
--- the lens that triggered it (`triggered_by`), a requirement block at a constraint it is held to
+-- INFRA-1950: graph_edges answers the relations the node and tuple store holds with no projection
+-- row behind them. The kinds this child adds to the store - an interaction, a lens, a risk and a
+-- constraint - are tied by tuples no table projects: a node a run changed points at the run's
+-- interaction (`changed_by_run`), a lens at its lens kind (`has_kind`) and at the lens that
+-- triggered it (`triggered_by`), a requirement block at a constraint it is held to
 -- (`constrained_by`), and a risk at each check block that covers it (`prevented_by`); and each of
 -- the four is placed by its `part_of` and names whoever wrote it by its `authored_by`. The tuple
--- arm classes each row by the projection row it consults (`projects`), and a row whose class is
--- null is dropped, so until now the view answered none of these.
+-- arm classes each row by the projection row it consults (`projects`) and drops a row whose class
+-- is null, so before this migration the view answers none of these.
 --
--- This re-states the view from the text of 20261109215947_graph_edges_tuples, the arm list a
--- later migration re-states from, with one change: the tuple arm gains the class `store`, which
--- consults no projection row. A tuple is of class `store` in two cases, and in no other:
+-- This is the one migration of this child that states graph_edges. It re-states the arm list of
+-- 20261116094101_graph_edges_asks (dispatch://INFRA-1150) - its `node_kind is null` tests on the
+-- two asks arms and the ask_followers arm, and the tuple arm's cases and joins for an ask's
+-- relations - with two changes:
 --
---   - its kind is `changed_by_run`, `has_kind`, `triggered_by`, `constrained_by` or
---     `prevented_by`, out of any node: a comment's `changed_by_run`, a requirement block's
---     `constrained_by`, a risk's `prevented_by` to a check block;
---   - its kind is `part_of` or `authored_by`, out of a node of kind `interaction`, `lens`, `risk`
---     or `constraint`.
+--   - The tuple arm gains the class `store`, which consults no projection row. A tuple is of the
+--     class when its kind is `changed_by_run`, `has_kind`, `triggered_by`, `constrained_by` or
+--     `prevented_by`, out of any node, or `part_of` or `authored_by`, out of a node of kind
+--     `interaction`, `lens`, `risk` or `constraint`, unless it is out of a finding of a lens,
+--     which the arm below answers. The class is tested before `block_ref`, so a requirement
+--     block's `constrained_by` is not read as a block reference, which would look for a
+--     `block_refs` row that no writer projects it into. An `authored_by` out of any other node -
+--     a comment's - stays out of the view, as it was, and so does a session's, a page's or a
+--     block's `part_of`. None of the kinds 20261116094101 cases out of an ask - `anchored_to`,
+--     `owned_by`, `followed_by` and `shaped` - is of the class, so the tuple arm classes each such
+--     tuple as 20261116094101 classed it.
 --
--- The class is tested before `block_ref`, so a tuple of these kinds out of a block - a
--- requirement's `constrained_by` - is not read as a block reference, which would look for a
--- `block_refs` row that no writer projects it into. Every other row keeps the class it has, and
--- its join to its projection row is unchanged. An `authored_by` out of any other node - a
--- comment's - stays out of the view, as it was, and so does a session's, a page's or a block's
--- `part_of`. The arm's other rules hold for the new class too: the row is the newest tuple of its
--- relation while that one asserts, and it answers nothing out of a node whose state is `gone`.
+--   - One arm more, over the store's current tuples, answers every relation of the class `store`
+--     out of a finding of a lens, with the literal from_kind `lens_block` at the finding's own id.
+--     A finding is a node of kind and supertag `block` whose id names its lens,
+--     `lens/<uuid>#<block id>`, and the graph addresses it as `lens_block`
+--     (`dispatch://lens/<uuid>#b-<id>`), the kind the read registry knows it by. The tuple arm
+--     writes each from_kind as the store keys it, which would name a finding `block`: a reader
+--     would look it up among a document's blocks and find nothing, and the read registry's
+--     census, which reads the node kinds the view names as literals, would read no `lens_block`
+--     at all. The arm's rules are the tuple arm's: the newest tuple of each relation while that
+--     one asserts, out of a node whose state is not `gone`, its to side and dates rendered as the
+--     tuple arm renders them. A tuple of those kinds out of a finding falls past the class `store`
+--     to the tuple arm's block-reference class, which answers a tuple only while a `block_refs`
+--     row of the pair carries the block's node, and no such row names a finding, so no relation
+--     is answered twice.
 --
--- A finding of a lens is a block node whose id names its lens, and its own `part_of` and
--- `authored_by` are of the second case too; they land with the `lens_block` entry of the read
--- registry, as a literal arm of their own that writes `'lens_block'::text AS from_kind`, so this
--- re-statement holds no such arm.
+-- The two changes are one migration because a migrate pass applies each file in a transaction of
+-- its own, in version order, and applies every file the database does not hold, one below a
+-- version it already holds too. A migration of this child that stated the view from an arm list
+-- without 20261116094101's, applied to a database that already holds 20261116094101, would leave
+-- the view without the ask arms a build of that release reads, from that migration's commit until
+-- a later one put them back. With this child's arms stated here alone, a pass re-states the view
+-- only to 20261116094101's arm list or to this one, which holds every arm of that one, so no pass
+-- leaves the view without an arm a live build reads.
 --
--- It drops no arm and changes no row an arm answered before: no tuple of these kinds exists until
--- this child writes one, and every row of every other class is answered as it was. So a build of
--- the release before, which reads the view this release states, reads the same rows it read, and
--- the kinds `refs.TupleKinds` lists grow by these seven. Re-stating the view holds `graph_edges`
--- ACCESS EXCLUSIVE for the migration's short transaction, so a reference read waits behind it.
--- Nothing here refuses or rewrites a row.
+-- It drops no arm of 20261116094101 and changes no row an arm answered before: the rows it adds
+-- are tuples of the class `store` and relations out of a finding, which only this child writes -
+-- its writers, the lens catalogue its migrations 20261116123354 and 20261116123355 seed, and the
+-- `authored_by` of each recorded run's interaction node 20261116205055 writes - and every other
+-- row of every arm is answered as it was. So a build of the release before, which reads the view
+-- this one states, reads every row it read, and the kinds `refs.TupleKinds` lists grow by the
+-- seven of the class. Re-stating the view holds graph_edges ACCESS EXCLUSIVE for this
+-- migration's short transaction, so a reference read waits behind it. It creates nothing, and
+-- refuses and rewrites no row.
 
--- graph_edges re-stated: every arm of 20261109215947, its tuple arm answering the store's own
--- relations as the class `store` beside the three classes that consult a projection row.
+-- graph_edges re-stated: every arm of 20261116094101, its tuple arm answering the store's own
+-- relations as the class `store`, and one arm after it answering those out of a finding of a lens
+-- as `lens_block`.
 create or replace view graph_edges (from_kind, from_id, kind, to_kind, to_id, created_at, source_seq) as
   select from_kind, from_id, kind, to_kind, to_id, created_at, source_seq from refs
   union all
@@ -56,6 +78,7 @@ create or replace view graph_edges (from_kind, from_id, kind, to_kind, to_id, cr
   union all
   select 'ask', k.id::text, 'anchored_to', 'artifact', a.ref_key, k.created_at, null
   from asks k join artifacts a on a.id = coalesce(k.block_artifact_id, (k.anchor->>'artifact_id')::uuid)
+  where k.node_kind is null
   union all
   select 'comment', c.id::text, 'anchored_to', 'artifact', a.ref_key, c.created_at, null
   from comments c join artifacts a on a.id = (c.anchor->>'artifact_id')::uuid
@@ -63,6 +86,7 @@ create or replace view graph_edges (from_kind, from_id, kind, to_kind, to_id, cr
   union all
   select 'ask', k.id::text, 'owned_by', 'artifact', a.ref_key, k.created_at, null
   from asks k join artifacts a on a.id = k.artifact_id
+  where k.node_kind is null
   union all
   select 'comment', c.id::text, 'owned_by', 'artifact', a.ref_key, c.created_at, null
   from comments c join artifacts a on a.id = c.artifact_id
@@ -82,6 +106,7 @@ create or replace view graph_edges (from_kind, from_id, kind, to_kind, to_id, cr
   union all
   select 'ask', ask_id::text, 'followed_by', 'session', session_id, since, null
   from ask_followers
+  where node_kind is null
   union all
   select 'component', c.project_key || '/' || c.id, 'part_of', 'component', c.project_key || '/' || c.parent, s.imported_at, null
   from components c join architecture_snapshots s on s.id = c.snapshot_id
@@ -151,11 +176,15 @@ create or replace view graph_edges (from_kind, from_id, kind, to_kind, to_id, cr
            tuple.asserted,
            case
              when tuple.from_kind = 'block' and tuple.kind = 'in_document' then 'block'
-             when tuple.kind in ('changed_by_run', 'has_kind', 'triggered_by', 'constrained_by', 'prevented_by')
-               or (tuple.kind in ('part_of', 'authored_by')
-                   and tuple.from_kind in ('interaction', 'lens', 'risk', 'constraint')) then 'store'
+             when not (tuple.from_kind = 'block' and tuple.from_id like 'lens/%')
+               and (tuple.kind in ('changed_by_run', 'has_kind', 'triggered_by', 'constrained_by', 'prevented_by')
+                    or (tuple.kind in ('part_of', 'authored_by')
+                        and tuple.from_kind in ('interaction', 'lens', 'risk', 'constraint'))) then 'store'
              when tuple.from_kind = 'block' and tuple.kind <> 'part_of' then 'block_ref'
              when tuple.from_kind = 'comment' and tuple.kind in ('anchored_to', 'owned_by') then 'comment'
+             when tuple.from_kind = 'ask' and tuple.kind in ('anchored_to', 'owned_by') then 'ask'
+             when tuple.from_kind = 'ask' and tuple.kind = 'followed_by' then 'ask_follower'
+             when tuple.from_kind = 'ask' and tuple.kind = 'shaped' then 'block_ref'
            end as projects
     from graph_tuples tuple
     where tuple.to_kind <> 'value'
@@ -181,4 +210,33 @@ create or replace view graph_edges (from_kind, from_id, kind, to_kind, to_id, cr
             select 1 from comments projected
             where projected.node_kind = edge.from_kind and projected.node_address = edge.from_id
             offset 0)
-        end;
+          when 'ask' then exists (
+            select 1 from asks projected
+            where projected.node_kind = edge.from_kind and projected.node_address = edge.from_id
+            offset 0)
+          when 'ask_follower' then exists (
+            select 1 from ask_followers projected
+            where projected.node_kind = edge.from_kind and projected.node_address = edge.from_id
+              and projected.session_id = edge.to_id
+            offset 0)
+        end
+  union all
+  select 'lens_block', finding.from_id, finding.kind, finding.to_kind, finding.to_id, finding.created_at, finding.source_seq
+  from (
+    select distinct on (tuple.to_kind, tuple.to_id, tuple.kind, tuple.from_kind, tuple.from_id)
+           tuple.from_kind,
+           tuple.from_id,
+           tuple.kind,
+           tuple.to_kind,
+           tuple.to_id,
+           tuple.at as created_at,
+           tuple.legacy_source_seq as source_seq,
+           tuple.asserted
+    from graph_tuples tuple
+    where tuple.from_kind = 'block' and tuple.from_id like 'lens/%'
+      and tuple.kind in ('part_of', 'authored_by', 'changed_by_run', 'has_kind', 'triggered_by', 'constrained_by', 'prevented_by')
+      and tuple.to_kind <> 'value'
+    order by tuple.to_kind, tuple.to_id, tuple.kind, tuple.from_kind, tuple.from_id, tuple.seq desc
+  ) finding
+  join graph_nodes node on node.kind = finding.from_kind and node.id = finding.from_id
+  where finding.asserted and node.state <> 'gone';

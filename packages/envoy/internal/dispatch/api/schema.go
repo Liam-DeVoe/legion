@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -70,7 +72,7 @@ func (installedSchemaElements) JSONSchemaBytes() ([]byte, error) {
 // block-schema types.
 func (installedSchemaElements) InlineJSONSchema() {}
 
-// storeTypeRead is one type of the store that declares no block type (schemanodes.StoreTypes).
+// storeTypeRead is one type of the store that declares no block type (schemanodes.StoreTypesIn).
 type storeTypeRead struct {
 	Name       string               `json:"name"`
 	Attributes []storeAttributeRead `json:"attributes"`
@@ -103,18 +105,28 @@ type lensKindSourceRead struct {
 }
 
 // getBlockSchema answers the installed block schema and, read from the store on this request, the
-// store's types that declare no block type and the lens catalogue. The catalogue is read through
-// the predicate with no credential, as the route takes none: a lens kind and its source are
-// project-visible and in no project, so every caller reads them. Nothing here is cached, so a type
-// or a kind a migration or `envoy-dispatch lens-kind-add` writes is answered by the next request of
-// every process.
+// store's types that declare no block type and the lens catalogue. Both are read in one read-only
+// transaction at repeatable read, so a migration or `envoy-dispatch lens-kind-add` that commits
+// between the reads is read whole or not at all, and the store's types in one round trip
+// (schemanodes.StoreTypesIn). The catalogue is read through the predicate with no credential, as
+// the route takes none: a lens kind and its source are project-visible and in no project, so every
+// caller reads them. Nothing here is cached, so a type or a kind a migration or
+// `envoy-dispatch lens-kind-add` writes is answered by the next request of every process.
 func (s *server) getBlockSchema(w http.ResponseWriter, r *http.Request) {
 	var answer blockSchemaRead
 	if err := json.Unmarshal(pmdoc.SchemaJSON(), &answer); err != nil {
 		s.writeHandlerError(w, fmt.Errorf("read the installed block schema: %w", err))
 		return
 	}
-	types, err := schemanodes.StoreTypes(r.Context(), s.deps.Store.Pool)
+	ctx := r.Context()
+	tx, err := s.deps.Store.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		s.writeHandlerError(w, fmt.Errorf("begin the read of the store's types and the lens catalogue: %w", err))
+		return
+	}
+	// The transaction reads only, so its end is a rollback whatever happened.
+	defer tx.Rollback(ctx)
+	types, err := schemanodes.StoreTypesIn(ctx, tx)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -127,7 +139,7 @@ func (s *server) getBlockSchema(w http.ResponseWriter, r *http.Request) {
 		}
 		answer.StoreTypes[index] = read
 	}
-	catalogue, err := refs.LensCatalogue(r.Context(), s.deps.Store.Pool, model.Actor{})
+	catalogue, err := refs.LensCatalogue(ctx, tx, model.Actor{})
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -135,12 +147,12 @@ func (s *server) getBlockSchema(w http.ResponseWriter, r *http.Request) {
 	answer.LensKinds = make([]lensKindRead, len(catalogue))
 	for index, kind := range catalogue {
 		read := lensKindRead{
-			ID: kind.ID, Ref: "dispatch://" + graphstore.KindLensKind + "/" + kind.ID, Words: kind.Words,
+			ID: kind.ID, Ref: refs.StoreRef(graphstore.KindLensKind, kind.ID), Words: kind.Words,
 			Sources: make([]lensKindSourceRead, len(kind.Sources)),
 		}
 		for at, source := range kind.Sources {
 			read.Sources[at] = lensKindSourceRead{
-				ID: source.ID, Ref: "dispatch://" + graphstore.KindConstraint + "/" + source.ID,
+				ID: source.ID, Ref: refs.StoreRef(graphstore.KindConstraint, source.ID),
 				Standard: source.Standard, Reference: source.Reference,
 			}
 		}

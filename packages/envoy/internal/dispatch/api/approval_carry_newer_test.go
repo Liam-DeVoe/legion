@@ -15,12 +15,12 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// newerAskAttribute is an attribute of the decision block that this build's manifest does not
+// newerAskAttribute is an attribute of the ask block that this build's manifest does not
 // declare and the newer build's manifest (useNewerAskManifest) does.
 const newerAskAttribute = "test_newer_attr"
 
 // useNewerAskManifest makes this process read and write by the embedded manifest with one more
-// attribute on the decision block, newerAskAttribute, as a newer build does, until the test ends.
+// attribute on the ask block, newerAskAttribute, as a newer build does, until the test ends.
 // The manifest is package-global, so no other build of this test may run pmdoc while it is
 // installed or restored.
 func useNewerAskManifest(t *testing.T) {
@@ -104,7 +104,7 @@ func newerBuildDocuments(t *testing.T, database *store.Store, settle time.Durati
 }
 
 // Two builds serve one database during a release, and the version a human approved can hold an
-// element only the newer one knows: here an attribute on the decision block, which the newer
+// element only the newer one knows: here an attribute on the ask block, which the newer
 // build's editor keeps on the block. While two builds serve, his answer is written into the block
 // for the release before's pages (docs' rollWindowAskAttributes), so settlement writes a version
 // of it, whose approval the attribute case would carry (dispatch://INFRA-1150 R10); but this build
@@ -126,7 +126,7 @@ func TestAVersionWhoseApprovedVersionHoldsNewerContentIsWrittenByABuildThatReads
 	approved := latestVersion(t, database, issue.PrimaryArtifactID).Number
 	approveVersion(t, handler, issue.PrimaryArtifactID, "alice", approved)
 
-	// The newer build's rendering of the approved version: its decision block holds the attribute.
+	// The newer build's rendering of the approved version: its ask block holds the attribute.
 	written, err := database.Pool.Exec(ctx, `
 		update artifact_versions set markdown = $3 where artifact_id = $1 and number = $2
 	`, issue.PrimaryArtifactID, approved, newerRendering(t, versionMarkdown(t, handler, issue.PrimaryArtifactID, approved), "region", "first"))

@@ -132,22 +132,6 @@ var decisionProjections = []projection{
 	},
 }
 
-// The tuple kinds out of a decision's block and out of an ask's node that a row of
-// dispatch://INFRA-1150 states, which DigestedTuple holds the erase to beside the kinds census.go
-// names: a decision's shaped, from_ask and decided_by, each a block_refs row (tieProjection); and
-// an ask's anchored_to, owned_by and part_of, which its asks row states, its followed_by, which its
-// ask_followers rows state, its shaped, which a block_refs row marked with its node states, and its
-// author and its answerer, whom its asks row names to the person and session row sides (asks.author,
-// asks.answer). A tuple of any other kind out of such a node - a changed_by_run a write made for a
-// run appended - is no row's to state.
-var (
-	decisionLinkKinds = []string{refs.TupleShaped, refs.TupleFromAsk, graphstore.TupleDecidedBy}
-	askLinkKinds      = []string{
-		graphstore.TupleAnchoredTo, graphstore.TupleOwnedBy, graphstore.TuplePartOf, graphstore.TupleFollowedBy,
-		refs.TupleShaped, graphstore.TupleAuthoredBy, graphstore.TupleAnsweredBy, graphstore.TupleDecidedBy,
-	}
-)
-
 // decisionBackfills are the backfill's passes over the asks and their followers
 // (dispatch://INFRA-1150, backfillPasses), after the object pass wrote the node of every ask
 // (backfillObjectNodes): the rest of the boot step's first phase (BackfillAsks), so a database the

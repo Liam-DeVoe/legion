@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
@@ -16,6 +17,10 @@ import (
 // queuedModes are the delivery modes the stopped session of these tests takes.
 var queuedModes = []string{"aside", "btw", "steer"}
 
+// heldSession is a second stopped session, whose sends the listener holds unanswered, so the
+// attempt carrying one stays pending while the test reads the store.
+const heldSession = "ses_held0a1b2c3d4"
+
 // A mention of a session the listener holds stopped settles `queued`, and a queued attempt is a
 // delivery (dispatch://INFRA-1149's R14 at version 37: "an attempt the listener took is one",
 // model.DeliveryTaken). So that settle makes the session a node of the store, the outbox's
@@ -24,15 +29,37 @@ var queuedModes = []string{"aside", "btw", "steer"}
 // the same send ended failed, no node was written and a fallback copy carried the comment to
 // the page; since it the attempt is queued, the mention counts as delivered and no fallback
 // copy is published, so this is the one write that puts the comment on that page.
+//
+// A pending attempt is no delivery ("a pending or failed one is not"), so it earns nothing: the
+// test first mentions a session whose send the listener holds, and while that attempt stands
+// pending, opened, claimed and pinned to the session as its sender leaves it before the settle,
+// it reads no node of the session, no tuple naming it and no receipt the outbox could state one
+// from.
 func TestAMentionQueuedForAStoppedSessionReachesItsPerson(t *testing.T) {
+	hold := newSendHold()
+	defer hold.free()
 	listener := newQueueingListener(t, map[string]fakeSession{
 		brokerTestSession: {title: "alice's agent", capabilities: queuedModes, stopped: true},
+		heldSession:       {title: "a session whose send is held", capabilities: queuedModes, stopped: true, hold: hold},
 	})
 	rig := newIdentityRigOn(t, listener.url)
 	caller := newBrokerCaller(t)
 	const token = "a-token-proving-alices-stopped-session"
 	rig.broker.Says(token, liveNamedToken(caller.jkt))
 	issue := rig.seedRoutedIssue(t)
+
+	held := decodeMentionedComment(t, dispatchRequest(t, rig.handler, http.MethodPost, "/api/v1/issues/"+issue+"/comments", map[string]any{
+		"body":     "For a session whose send is still on its way.",
+		"mentions": []map[string]any{{"target": "session:" + heldSession}},
+	}, "bob"))
+	select {
+	case <-hold.arrived:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("the mention of %s never reached the listener, so no attempt stood pending", heldSession)
+	}
+	requireAPendingAttemptEarnsNothing(t, rig.database, held.ID, heldSession)
+	hold.free()
+	settledCommentDeliveries(t, rig.database, held.ID)
 
 	mention := decodeMentionedComment(t, dispatchRequest(t, rig.handler, http.MethodPost, "/api/v1/issues/"+issue+"/comments", map[string]any{
 		"body":     "Pick this up when you are back.",
@@ -62,6 +89,43 @@ func TestAMentionQueuedForAStoppedSessionReachesItsPerson(t *testing.T) {
 			brokerTestPerson, page.Rows)
 	}
 	requireStoreCensusZero(t, rig.database, "after a mention queued for a stopped session")
+}
+
+// requireAPendingAttemptEarnsNothing reads the one attempt of comment while its send is held: it
+// stands pending and pinned to session, and the store holds no node of that session, no tuple
+// naming it and no comment.delivery receipt of the comment, which is what the outbox states a
+// delivered_to tuple from.
+func requireAPendingAttemptEarnsNothing(t *testing.T, database *store.Store, comment, session string) {
+	t.Helper()
+	ctx := context.Background()
+	attempts := waitForCommentDeliveries(t, database, comment, "the attempt of the held send",
+		func(attempts []model.CommentDelivery) bool { return len(attempts) > 0 })
+	if len(attempts) != 1 || attempts[0].State != model.DeliveryStatePending ||
+		attempts[0].SessionID == nil || *attempts[0].SessionID != session {
+		t.Fatalf("the held mention's attempts = %#v, want one pending attempt pinned to %s", attempts, session)
+	}
+	if _, found, err := graphstore.ReadNode(ctx, database.Pool, graphstore.KindSession, session); err != nil || found {
+		t.Errorf("the store holds the pending attempt's session %s as a node: %t (err %v), want none", session, found, err)
+	}
+	var naming, receipts int
+	if err := database.Pool.QueryRow(ctx, `
+		select count(*) from graph_tuples
+		where (from_kind = $1 and from_id = $2) or (to_kind = $1 and to_id = $2)
+	`, graphstore.KindSession, session).Scan(&naming); err != nil {
+		t.Fatalf("count the tuples naming %s: %v", session, err)
+	}
+	if naming != 0 {
+		t.Errorf("the store holds %d tuple(s) naming the pending attempt's session %s, want none: a pending attempt is no delivery", naming, session)
+	}
+	if err := database.Pool.QueryRow(ctx, `
+		select count(*) from events where type = 'comment.delivery' and payload->>'comment_id' = $1
+	`, comment).Scan(&receipts); err != nil {
+		t.Fatalf("count the receipts of %s: %v", comment, err)
+	}
+	if receipts != 0 {
+		t.Errorf("the log holds %d comment.delivery receipt(s) of the pending attempt, want none to state a delivered_to from", receipts)
+	}
+	t.Logf("the attempt of %s stands pending and pinned to %s, which the store holds no node and no tuple of", comment, session)
 }
 
 // A message queued for a stopped session and answered by that session when it runs again leaves

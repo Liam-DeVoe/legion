@@ -190,7 +190,10 @@ func TestIndexBlocksRecordsARoomBlockMovedIntoAnotherFragmentAtItsNewDocumentsVe
 // it is cited by are the spec's, whose fragment holds it, its last change is the spec's version 4
 // at that version's time and by that version's authors, and its node's own address stays the
 // tree's, which keys its row. A read that took the row's artifact as the block's document names
-// the tree and dates the change by a version the tree never had.
+// the tree and dates the change by a version the tree never had. The blocks a document's
+// references read takes as that document's - the set and the one array its "in" arm tests each
+// edge against - are the rows of its fragment of the room, so a citation of a converted
+// document's block is answered at that document.
 func TestARoomBlocksNodeReadsAsABlockOfItsOwnDocument(t *testing.T) {
 	ctx := context.Background()
 	tx := windowFixture(t)
@@ -229,8 +232,10 @@ func TestARoomBlocksNodeReadsAsABlockOfItsOwnDocument(t *testing.T) {
 	if len(node.ChangedBy) != 1 || node.ChangedBy[0].ID != "alice" {
 		t.Errorf("block x was last changed by %+v, want the authors of the spec's version 4, alice", node.ChangedBy)
 	}
-	// The blocks a read of each document's blocks' citers takes (documentBlockIDs): the spec's is
-	// x, the Verification document's y, and the tree's own fragment holds none.
+	// The blocks a read of each document's blocks' citers takes (documentBlockIDs), and the same
+	// set as the one array the "in" arm of a document's references read tests each edge against
+	// (documentBlockIDArray): the spec's is x, the Verification document's y, and the tree's own
+	// fragment holds none.
 	var verificationRef string
 	if err := tx.QueryRow(ctx, `select ref_key from artifacts where id = $1::uuid`, verification).Scan(&verificationRef); err != nil {
 		t.Fatalf("read the Verification document's ref_key: %v", err)
@@ -246,6 +251,13 @@ func TestARoomBlocksNodeReadsAsABlockOfItsOwnDocument(t *testing.T) {
 		}
 		if !slices.Equal(got, want) {
 			t.Errorf("the blocks of %s are %v, want %v", document, got, want)
+		}
+		var array []string
+		if err := tx.QueryRow(ctx, `select coalesce(array_agg(id order by id), '{}') from unnest(`+documentBlockIDArray("$1")+`) id`, document).Scan(&array); err != nil {
+			t.Fatalf("read the block array of %s: %v", document, err)
+		}
+		if !slices.Equal(array, want) && !(len(array) == 0 && len(want) == 0) {
+			t.Errorf("the block array of %s is %v, want %v", document, array, want)
 		}
 	}
 }

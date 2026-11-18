@@ -27,27 +27,26 @@ type StoreAttribute struct {
 	Kind pmdoc.BlockAttributeKind
 }
 
-// StoreTypes reads every supertag node the store holds at any state but gone that declares no
-// block type, by name, each with its attributes, in one read-only transaction at repeatable read
-// as Read reads the block types, so a migration that commits between its reads is read whole or
-// not at all. It is read from the store on each call, so a type written later is answered by the
-// next call of every process.
-func StoreTypes(ctx context.Context, db Beginner) ([]StoreType, error) {
-	tx, err := db.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
-	if err != nil {
-		return nil, fmt.Errorf("begin the read of the store's types: %w", err)
-	}
-	// The transaction reads only, so its end is a rollback whatever happened.
-	defer func() { _ = tx.Rollback(context.Background()) }()
-	attributes, err := readAttributeNodes(ctx, tx)
-	if err != nil {
+// StoreTypesIn reads every supertag node the store holds at any state but gone that declares no
+// block type, by name, each with its attributes, in the caller's transaction, tx, which the caller
+// opens read-only at repeatable read as Read opens its own, so a migration that commits between
+// its reads is read whole or not at all, and a read beside it - api's schema read of the lens
+// catalogue - reads the same snapshot. It is read from the store on each call, so a type written
+// later is answered by the next call of every process. Its three reads - the attribute nodes, the
+// supertag nodes and the `attribute_of` tuples tying the first to the second - go to the store as
+// one batch, in one round trip, and each attribute is placed as the block schema places a block
+// type's (orderedAttributes).
+func StoreTypesIn(ctx context.Context, tx pgx.Tx) ([]StoreType, error) {
+	var attributeNodes, supertags []graphstore.Node
+	var ties map[string][]string
+	batch := &pgx.Batch{}
+	graphstore.QueueNodesOfKind(batch, KindAttribute, &attributeNodes)
+	graphstore.QueueNodesOfKind(batch, KindSupertag, &supertags)
+	queueAttributeTies(batch, &ties)
+	if err := tx.SendBatch(ctx, batch).Close(); err != nil {
 		return nil, err
 	}
-	supertags, err := graphstore.NodesOfKind(ctx, tx, KindSupertag)
-	if err != nil {
-		return nil, err
-	}
-	ties, err := attributeTies(ctx, tx)
+	attributes, err := heldAttributes(attributeNodes)
 	if err != nil {
 		return nil, err
 	}
@@ -63,18 +62,7 @@ func StoreTypes(ctx context.Context, db Beginner) ([]StoreType, error) {
 		if carried.BlockType {
 			continue
 		}
-		held := make([]attributeAttributes, 0, len(ties[node.ID]))
-		for _, id := range ties[node.ID] {
-			if attribute, present := attributes[id]; present {
-				held = append(held, attribute)
-			}
-		}
-		sort.SliceStable(held, func(left, right int) bool {
-			if held[left].Position != held[right].Position {
-				return held[left].Position < held[right].Position
-			}
-			return held[left].Name < held[right].Name
-		})
+		held := orderedAttributes(ties[node.ID], attributes)
 		typ := StoreType{Name: node.ID, Attributes: make([]StoreAttribute, len(held))}
 		for index, attribute := range held {
 			typ.Attributes[index] = StoreAttribute{Name: attribute.Name, Kind: attribute.Kind}
@@ -85,29 +73,28 @@ func StoreTypes(ctx context.Context, db Beginner) ([]StoreType, error) {
 	return types, nil
 }
 
-// attributeTies is, for each supertag, the attribute nodes its current `attribute_of` tuples
-// come from, in one read over graph_tuples_inbound for every supertag at once.
-func attributeTies(ctx context.Context, q graphstore.Queryer) (map[string][]string, error) {
-	rows, err := q.Query(ctx, `
+// queueAttributeTies queues on batch the read of, for each supertag, the attribute nodes its
+// current `attribute_of` tuples come from, in one read over graph_tuples_inbound for every
+// supertag at once, and sets ties to it once the batch's results are read.
+func queueAttributeTies(batch *pgx.Batch, ties *map[string][]string) {
+	batch.Queue(`
 		select newest.to_id, newest.from_id from (
 			`+graphstore.CurrentTupleRead(`t.to_id, t.from_kind, t.from_id`, `t.to_id, t.from_id, t.asserted`,
 		`t.to_kind = $1 and t.kind = $2 and t.from_kind = $3 and t.to_kind <> '`+graphstore.KindValue+`'`)+`
 		) newest
-		where newest.asserted`, KindSupertag, TupleAttributeOf, KindAttribute)
-	if err != nil {
-		return nil, fmt.Errorf("read the attributes tied to each type: %w", err)
-	}
-	defer rows.Close()
-	ties := map[string][]string{}
-	for rows.Next() {
-		var supertag, attribute string
-		if err := rows.Scan(&supertag, &attribute); err != nil {
-			return nil, fmt.Errorf("read the attributes tied to each type: %w", err)
+		where newest.asserted`, KindSupertag, TupleAttributeOf, KindAttribute).Query(func(rows pgx.Rows) error {
+		read := map[string][]string{}
+		for rows.Next() {
+			var supertag, attribute string
+			if err := rows.Scan(&supertag, &attribute); err != nil {
+				return fmt.Errorf("read the attributes tied to each type: %w", err)
+			}
+			read[supertag] = append(read[supertag], attribute)
 		}
-		ties[supertag] = append(ties[supertag], attribute)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the attributes tied to each type: %w", err)
-	}
-	return ties, nil
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("read the attributes tied to each type: %w", err)
+		}
+		*ties = read
+		return nil
+	})
 }

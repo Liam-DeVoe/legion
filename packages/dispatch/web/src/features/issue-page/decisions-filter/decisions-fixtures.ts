@@ -254,6 +254,7 @@ export function decisionsRead(made: readonly Decision[]): IssueDecisions {
   return {
     decisions: [...made],
     document: `dispatch://${KEY}/artifact/${DECISIONS_SLUG}`,
+    entries: [],
     open_questions: [],
   };
 }

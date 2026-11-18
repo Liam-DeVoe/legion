@@ -1,50 +1,72 @@
--- 20261116160000_graph_edges_findings.up.sql
+-- 20261117140000_issue_tree_relations.up.sql
 --
--- INFRA-1950: graph_edges answers the relations out of a finding of a lens as edges of the node
--- kind `lens_block`. A finding is a node of kind and supertag `block` whose id names its lens,
--- `lens/<uuid>#<block id>`, and the graph addresses it as `lens_block` (`dispatch://lens/<uuid>#b-<id>`),
--- the kind the read registry knows it by. Its own `part_of`, to its lens, and its `authored_by`
--- are of the store class 20261116091932 gave the tuple arm, but that arm writes each tuple's
--- from_kind as the store keys it, which would name a finding `block`: a reader would look it up
--- among a document's blocks and find nothing, and the read registry's census, which reads the node
--- kinds the view names as literals, would read no `lens_block` at all.
+-- Every relation between issues is a tuple of the store from this release (dispatch://INFRA-1253
+-- R9, R10): an issue's child_of and its needs, which issues.parent_key and issue_links project,
+-- written by the transaction that appends each tuple, and its duplicate_of and filed_from, which
+-- no row projects. A document's part_of its issue is a tuple too, which artifacts.issue_key
+-- projects (R16). This re-states graph_edges so the arms over those three tables answer only the
+-- rows no writer of this release wrote, the ones that name no node, and the store answers the
+-- rest, while the projection row that names each edge carries its node: a row a process of the
+-- release before deletes takes its edge with it, and one it writes again, naming no node, is
+-- answered by its old arm alone. An issue's wait on an issue keeps the edge kind blocked_by in
+-- both arms through this release, the kind a process of the release before reads it by, though
+-- the store's tuple is needs. The release before's issue PATCH sets issues.parent_key in place and
+-- leaves the row's node columns as they were, so the child_of arm also answers a marked row while
+-- the newest child_of tuple of its node that names its parent_key does not assert it
+-- (store.IssueParentMoved, R9), until the backfill states the child_of that names it. A document's
+-- attached_to is answered from its node by an arm of its own over the artifacts that carry one,
+-- which names the artifact by its uuid and dates the edge at the row's created_at, as the arm over
+-- the rows that carry none does.
 --
--- This re-states the view from the text of 20261116091932_graph_edges_store_tuples, the arm list a
--- later migration re-states from, with two changes:
---
---   - one arm more, over the store's current tuples, that answers every relation of the store
---     class out of a block node whose id names a lens - `part_of` and `authored_by`, and
---     `changed_by_run`, `has_kind`, `triggered_by`, `constrained_by` and `prevented_by` - with the
---     literal from_kind `lens_block`, at the finding's own id. Its rules are the tuple arm's: the
---     newest tuple of each relation while that one asserts, out of a node whose state is not
---     `gone`, from_kind, to side and dates rendered as the tuple arm renders them;
---   - the tuple arm's store class leaves out a tuple out of such a block node, which the new arm
---     answers, so no relation is answered twice. A tuple of those kinds out of a finding then
---     falls to the tuple arm's block-reference class, which answers a tuple only while a
---     `block_refs` row of the pair carries the block's node, and no such row names a finding.
---
--- It drops no arm and changes no row an arm answered before: no finding exists until this child
--- writes one, and every other row of every arm is answered as it was. So a build of the release
--- before, which reads the view this release states, reads the same rows it read. Re-stating the
--- view holds `graph_edges` ACCESS EXCLUSIVE for the migration's short transaction, so a reference
--- read waits behind it. Nothing here refuses or rewrites a row.
-
--- graph_edges re-stated: every arm of 20261116091932, its tuple arm leaving the relations out of a
--- finding to the arm after it, which answers them as `lens_block`.
+-- The statement below is store.GraphEdgesView(store.GraphEdgesIssueRelations), the one source of
+-- the view's text from this migration on, held to it byte for byte by
+-- TestEveryGraphEdgesMigrationHoldsTheViewItsSourceGives. Each probe of a projection row under the
+-- tuple arm's CASE, and the child_of arm's probe of the newest tuple under its OR, ends in
+-- `offset 0`, so a graph_edges read of one issue probes issues, issue_links and graph_tuples
+-- through their own indexes and scans none of them. It drops no arm: the arms over issues,
+-- issue_links and artifacts are the root's to delete. Re-stating the view holds graph_edges ACCESS
+-- EXCLUSIVE for the migration's short transaction, so a reference read waits behind it. Nothing
+-- here refuses or rewrites a row.
 create or replace view graph_edges (from_kind, from_id, kind, to_kind, to_id, created_at, source_seq) as
   select from_kind, from_id, kind, to_kind, to_id, created_at, source_seq from refs
   union all
-  select 'issue', key, 'child_of', 'issue', parent_key, created_at, null
-  from issues where parent_key is not null
+  select 'issue', i.key, 'child_of', 'issue', i.parent_key, i.created_at, null
+  from issues i
+  where i.parent_key is not null
+    and (i.node_kind is null or not exists (
+      select 1 from (
+        select tuple.asserted from graph_tuples tuple
+        where tuple.from_kind = i.node_kind and tuple.from_id = i.node_address and tuple.kind = 'child_of'
+          and tuple.to_kind = 'issue' and tuple.to_id = i.parent_key
+        order by tuple.seq desc
+        limit 1
+      ) newest
+      where newest.asserted
+      offset 0))
   union all
   select 'issue', issue_key, 'blocked_by', 'issue', target_key, created_at, null
-  from issue_links where kind = 'blocked_by'
+  from issue_links where kind = 'blocked_by' and node_kind is null
   union all
   select 'artifact', id::text, 'attached_to', 'issue', issue_key, created_at, null
-  from artifacts where issue_key is not null
+  from artifacts where issue_key is not null and node_kind is null
+  union all
+  select 'artifact', a.id::text, 'attached_to', 'issue', a.issue_key, a.created_at, null
+  from artifacts a
+  join graph_nodes node on node.kind = a.node_kind and node.id = a.node_address
+  where a.issue_key is not null and node.state <> 'gone'
+    and exists (
+      select 1 from (
+        select tuple.asserted from graph_tuples tuple
+        where tuple.from_kind = a.node_kind and tuple.from_id = a.node_address and tuple.kind = 'part_of'
+          and tuple.to_kind = 'issue' and tuple.to_id = a.issue_key
+        order by tuple.seq desc
+        limit 1
+      ) newest
+      where newest.asserted)
   union all
   select 'ask', k.id::text, 'anchored_to', 'artifact', a.ref_key, k.created_at, null
   from asks k join artifacts a on a.id = coalesce(k.block_artifact_id, (k.anchor->>'artifact_id')::uuid)
+  where k.node_kind is null
   union all
   select 'comment', c.id::text, 'anchored_to', 'artifact', a.ref_key, c.created_at, null
   from comments c join artifacts a on a.id = (c.anchor->>'artifact_id')::uuid
@@ -52,6 +74,7 @@ create or replace view graph_edges (from_kind, from_id, kind, to_kind, to_id, cr
   union all
   select 'ask', k.id::text, 'owned_by', 'artifact', a.ref_key, k.created_at, null
   from asks k join artifacts a on a.id = k.artifact_id
+  where k.node_kind is null
   union all
   select 'comment', c.id::text, 'owned_by', 'artifact', a.ref_key, c.created_at, null
   from comments c join artifacts a on a.id = c.artifact_id
@@ -71,6 +94,7 @@ create or replace view graph_edges (from_kind, from_id, kind, to_kind, to_id, cr
   union all
   select 'ask', ask_id::text, 'followed_by', 'session', session_id, since, null
   from ask_followers
+  where node_kind is null
   union all
   select 'component', c.project_key || '/' || c.id, 'part_of', 'component', c.project_key || '/' || c.parent, s.imported_at, null
   from components c join architecture_snapshots s on s.id = c.snapshot_id
@@ -131,7 +155,11 @@ create or replace view graph_edges (from_kind, from_id, kind, to_kind, to_id, cr
     select distinct on (tuple.to_kind, tuple.to_id, tuple.kind, tuple.from_kind, tuple.from_id)
            tuple.from_kind,
            tuple.from_id,
-           case when tuple.kind = 'in_document' then 'part_of' else tuple.kind end as kind,
+           case
+             when tuple.kind = 'in_document' then 'part_of'
+             when tuple.from_kind = 'issue' and tuple.kind = 'needs' and tuple.to_kind = 'issue' then 'blocked_by'
+             else tuple.kind
+           end as kind,
            tuple.to_kind,
            tuple.to_id,
            tuple.at as created_at,
@@ -144,8 +172,14 @@ create or replace view graph_edges (from_kind, from_id, kind, to_kind, to_id, cr
                and (tuple.kind in ('changed_by_run', 'has_kind', 'triggered_by', 'constrained_by', 'prevented_by')
                     or (tuple.kind in ('part_of', 'authored_by')
                         and tuple.from_kind in ('interaction', 'lens', 'risk', 'constraint'))) then 'store'
+             when tuple.from_kind = 'issue' and tuple.kind in ('duplicate_of', 'filed_from') then 'store'
+             when tuple.from_kind = 'issue' and tuple.kind = 'child_of' and tuple.to_kind = 'issue' then 'issue_parent'
+             when tuple.from_kind = 'issue' and tuple.kind = 'needs' and tuple.to_kind = 'issue' then 'issue_link'
              when tuple.from_kind = 'block' and tuple.kind <> 'part_of' then 'block_ref'
              when tuple.from_kind = 'comment' and tuple.kind in ('anchored_to', 'owned_by') then 'comment'
+             when tuple.from_kind = 'ask' and tuple.kind in ('anchored_to', 'owned_by') then 'ask'
+             when tuple.from_kind = 'ask' and tuple.kind = 'followed_by' then 'ask_follower'
+             when tuple.from_kind = 'ask' and tuple.kind = 'shaped' then 'block_ref'
            end as projects
     from graph_tuples tuple
     where tuple.to_kind <> 'value'
@@ -161,6 +195,17 @@ create or replace view graph_edges (from_kind, from_id, kind, to_kind, to_id, cr
             select 1 from document_blocks projected
             where projected.node_kind = edge.from_kind and projected.node_address = edge.from_id
             offset 0)
+          when 'issue_parent' then exists (
+            select 1 from issues projected
+            where projected.key = edge.from_id and projected.node_kind = edge.from_kind
+              and projected.node_address = edge.from_id and projected.parent_key = edge.to_id
+            offset 0)
+          when 'issue_link' then exists (
+            select 1 from issue_links projected
+            where projected.issue_key = edge.from_id and projected.kind = 'blocked_by'
+              and projected.target_key = edge.to_id and projected.node_kind = edge.from_kind
+              and projected.node_address = edge.from_id
+            offset 0)
           when 'block_ref' then exists (
             select 1 from block_refs projected
             where projected.node_kind = edge.from_kind and projected.node_address = edge.from_id
@@ -170,6 +215,15 @@ create or replace view graph_edges (from_kind, from_id, kind, to_kind, to_id, cr
           when 'comment' then exists (
             select 1 from comments projected
             where projected.node_kind = edge.from_kind and projected.node_address = edge.from_id
+            offset 0)
+          when 'ask' then exists (
+            select 1 from asks projected
+            where projected.node_kind = edge.from_kind and projected.node_address = edge.from_id
+            offset 0)
+          when 'ask_follower' then exists (
+            select 1 from ask_followers projected
+            where projected.node_kind = edge.from_kind and projected.node_address = edge.from_id
+              and projected.session_id = edge.to_id
             offset 0)
         end
   union all

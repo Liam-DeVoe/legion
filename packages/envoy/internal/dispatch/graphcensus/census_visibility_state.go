@@ -18,18 +18,19 @@ var visibilityStateProjections = []projection{
 	baseAttributeCensus(graphstore.KindLensKind, graphstore.KindLensKind, nil, graphstore.VisibilityProject),
 }
 
-// baseAttributeCensus is the census of the visibility and the state each node of one kind
-// dispatch://INFRA-1950 adds carries, name the kind as the report names it and nodeKind the kind
-// the store keys its nodes by, narrowed by narrow over a node id where it is not nil (a finding is
-// a block node whose id names its lens). A node's row is the projection of its own base-attribute
-// tuples (dispatch://INFRA-1149's R8), and no table projects these kinds, so the store's own
-// record stands on the row side: for each node that states either attribute, the newest tuple of
-// each, read as graphstore.CurrentValue reads one, against the node row's visibility and state
-// columns. A column with no tuple behind it is a node no row projects, a tuple whose node has no
-// row is a row naming a node the store does not hold, and a column that differs from its newest
-// tuple is a row and a node that disagree; a node whose newest state is gone is held to a row at
-// gone as the other kinds are (presentNodes, rowDifferences). The digest names each attribute and
-// carries its value's md5, never a value of any other attribute.
+// baseAttributeCensus is the census of the visibility and the state each node of one kind - a
+// run, a lens, a finding, a risk, a constraint or a lens kind - carries, name the kind as the
+// report names it and nodeKind the kind the store keys its nodes by, narrowed by narrow over a
+// node id where it is not nil (a finding is a block node whose id names its lens). A node's row is
+// the projection of its own base-attribute tuples (dispatch://INFRA-1149's R8), and no table
+// projects these kinds, so the store's own record stands on the row side: for each node that
+// states either attribute, the newest tuple of each, read as graphstore.CurrentValue reads one,
+// against the node row's visibility and state columns. A column with no tuple behind it is a node
+// no row projects, a tuple whose node has no row is a row naming a node the store does not hold,
+// and a column that differs from its newest tuple is a row and a node that disagree; a node whose
+// newest state is gone is held to a row at gone as the other kinds are (presentNodes,
+// rowDifferences). The digest names each attribute and carries its value's md5, never a value of
+// any other attribute.
 //
 // fixed is the one visibility R1 gives every node of the kind - author for a run, project for a
 // lens kind - or empty for a kind whose nodes take either. The row side states it kept, and the

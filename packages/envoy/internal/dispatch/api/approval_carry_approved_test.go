@@ -39,14 +39,17 @@ func attributeRemovalSentence(from int) string {
 
 // Carried: the version he approved shows a server-owned attribute on the block he answered - a
 // selection, an answer, or a copy's provenance other than its row's (askServerAttributeNames) -
-// which a browser's socket edit put there and the agent named a version of. The human approved
-// that version inside the settle window; settlement then takes the attribute off the block, as it
-// takes each of the seven off a block once the fleet is one build, and the version it writes
-// differs from the one he approved by that attribute alone. The two are byte-equal once both have
-// had the eight attributes taken off every ask block, and the block agrees with its node, so his
-// approval is carried to it with the attribute case's reason (R10: "It carries the approval when
-// the new rendering equals the approved rendering after both have had those eight attributes
-// removed from every ask block").
+// which a browser's socket edit put there and the agent named a version of while a process of the
+// release before served, the one fleet whose version writes keep the seven attributes a version can
+// store: on a fleet of one build a version written before settlement takes them off
+// (docs' storableVersionTree). The human approved that version inside the settle window; the
+// release before's process then left, settlement takes the attribute off the block, as it takes
+// each of the seven off a block once the fleet is one build, and the version it writes differs
+// from the one he approved by that attribute alone. The two are byte-equal once both have had the
+// eight attributes taken off every ask block, and the block agrees with its node, so his approval
+// is carried to it with the attribute case's reason (R10: "It carries the approval when the new
+// rendering equals the approved rendering after both have had those eight attributes removed from
+// every ask block").
 func TestAnApprovedVersionShowingADecisionOtherThanItsRowsCarriesToTheVersionWithoutIt(t *testing.T) {
 	for _, tc := range []struct {
 		attribute string
@@ -59,16 +62,18 @@ func TestAnApprovedVersionShowingADecisionOtherThanItsRowsCarriesToTheVersionWit
 		{"copied_from_document", "dispatch://TEST/artifact/other", `copied_from_document="dispatch://TEST/artifact/other"`},
 	} {
 		t.Run(tc.attribute, func(t *testing.T) {
-			handler, _, documents := settlingCarryDocuments(t, 2*time.Second)
+			handler, database, documents := settlingCarryDocuments(t, 2*time.Second)
 			issue := createInteractionIssue(t, handler, "TEST", "Approved "+tc.attribute+" other than the row's", "Context\n\n"+regionAsk)
 			asks := settledDecisionBlocks(t, handler, documents, issue.Key, issue.PrimaryArtifactID, map[string]string{"region": "Which region goes first?"})
 			answerDecisionBlock(t, handler, asks["region"], "alice", []string{"East"}, "", nil)
 
 			setLiveBlockAttributes(t, documents, issue.PrimaryArtifactID, "region", map[string]any{tc.attribute: tc.shown})
-			named := sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/versions", map[string]any{"summary": "Name the " + tc.attribute + " other than the row's", "actor": sessionActor()})
-			if named.Code != http.StatusCreated {
-				t.Fatalf("name the version showing the %s other than the row's: status=%d body=%s", tc.attribute, named.Code, named.Body.String())
-			}
+			whileTheReleaseBeforeServes(t, database, func() {
+				named := sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/versions", map[string]any{"summary": "Name the " + tc.attribute + " other than the row's", "actor": sessionActor()})
+				if named.Code != http.StatusCreated {
+					t.Fatalf("name the version showing the %s other than the row's: status=%d body=%s", tc.attribute, named.Code, named.Body.String())
+				}
+			})
 			waitForArtifactVersion(t, handler, issue.PrimaryArtifactID, 2)
 			if shown := versionMarkdown(t, handler, issue.PrimaryArtifactID, 2); !strings.Contains(shown, tc.rendered) {
 				t.Fatalf("version 2 = %s, want it to show the %s other than the row's on the block alice answered", shown, tc.attribute)

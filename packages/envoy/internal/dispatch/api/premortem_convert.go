@@ -3,8 +3,8 @@ package api
 // premortem_convert.go is the pre-mortem conversion of dispatch://INFRA-1950 (spec
 // r-premortem-nodes): one function, ConvertPremortem, which turns a pre-mortem document of an
 // issue into one lens of kind pre-mortem under the issue and one risk under that lens for each
-// risk the document holds, and moves the document's address to the lens; and its route, POST
-// /api/v1/issues/{key}/artifacts/{slug}/premortem-convert. `envoy-dispatch premortem-convert`
+// risk the document holds, retires the document and moves its address to the lens; and its route,
+// POST /api/v1/issues/{key}/artifacts/{slug}/premortem-convert. `envoy-dispatch premortem-convert`
 // (cmd/dispatch/premortem_convert.go) is its other caller, and both answer the one report the
 // function answers.
 //
@@ -29,23 +29,18 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
-// tupleMovedTo is the tuple kind that points from the address a node was read at to the node that
-// stands there now, which the three resolvers of dispatch://INFRA-1150 follow. The merge of
-// dispatch://INFRA-1150 replaces this constant with graphstore.TupleMovedTo.
-const tupleMovedTo = "moved_to"
-
-// checkBlockType is the block type of a check, read off its document_blocks row, the one block a
-// risk's prevented_by may point at (graphstore's pointerRules).
-const checkBlockType = "check"
-
 // PremortemConverter is the actor `envoy-dispatch premortem-convert` writes as: the server's own
-// credential, which proves no author a node could be reserved for and names no person or session
-// an authored_by tuple could point at, as graphstore.LensKindWriter is the catalogue command's.
+// credential. It proves an author, itself, by the id it carries (graphstore.ProvesAuthor), so it
+// reads the checks it names as an author no node is reserved for; and it names no person or
+// session (graphstore.AuthorOf), so what it converts holds no authored_by tuple and the conversion
+// writes no author's node, as the catalogue command's writer (graphstore.AddLensKind) writes none.
+// The conversion asks for no visibility, so every node it writes is project-visible.
 var PremortemConverter = model.Actor{Kind: "system", ID: "premortem-convert"}
 
 // PremortemEntry is one entry of the map from each risk of a pre-mortem to the checks that prevent
@@ -213,28 +208,72 @@ type documentHeading struct {
 	text        string
 }
 
+// codeFence is the fence a line opens or closes a fenced code block with (three or more
+// backticks or tildes, at most three spaces in), else "". A heading inside such a block is the
+// code's own text.
+func codeFence(line string) string {
+	trimmed := strings.TrimLeft(line, " ")
+	if len(line)-len(trimmed) > 3 {
+		return ""
+	}
+	for _, marker := range []string{"```", "~~~"} {
+		if strings.HasPrefix(trimmed, marker) {
+			run := 0
+			for run < len(trimmed) && trimmed[run] == marker[0] {
+				run++
+			}
+			return trimmed[:run]
+		}
+	}
+	return ""
+}
+
+// fenceAfter is the fence a fenced code block stands open under once line is read, where fenced is
+// the one it stood open under before ("" for none), and whether line is a fence line, which is the
+// block's own and no text of the document's: a fence line opens a block where none is open, and
+// closes the open one where it is a fence of the same marker at least as long.
+func fenceAfter(fenced, line string) (string, bool) {
+	fence := codeFence(line)
+	switch {
+	case fence == "":
+		return fenced, false
+	case fenced == "":
+		return fence, true
+	case strings.HasPrefix(fence, fenced[:1]) && len(fence) >= len(fenced):
+		return "", true
+	}
+	return fenced, true
+}
+
+// markdownHeading is a line's ATX heading level and title, or level 0 for a line that is no
+// heading: one to six `#` and a space, the title being the rest of the line trimmed, closing
+// hashes and all.
+func markdownHeading(line string) (int, string) {
+	level := 0
+	for level < len(line) && line[level] == '#' {
+		level++
+	}
+	if level == 0 || level > 6 || level >= len(line) || line[level] != ' ' {
+		return 0, ""
+	}
+	return level, strings.TrimSpace(line[level:])
+}
+
 // parsePremortem reads a pre-mortem's markdown: the verdict, under the level-2 heading that opens
 // with "Verdict"; risk 0, under the level-2 heading "Risk 0, ..."; each numbered risk, under a
 // level-3 heading "<n>\. ..." beneath "The ten ways it goes wrong"; and the two closing sections,
 // each under its level-2 heading. A section runs to the next heading of its level or above, and its
 // text is its lines word for word, without the blank lines around them. Headings and fenced code
-// blocks are read as the decisions view reads them (markdownHeading, codeFence), so a heading
-// inside a fenced code block is the code's own text. A section missing, a risk numbered twice, and
-// a risk without its early warning or its prevention are refused, naming what is wrong.
+// blocks are read line by line (markdownHeading, fenceAfter), so a heading inside a fenced code
+// block is the code's own text. A section missing, a risk numbered twice, and a risk without its
+// early warning or its prevention are refused, naming what is wrong.
 func parsePremortem(markdown string) (premortem, error) {
 	lines := strings.Split(strings.ReplaceAll(markdown, "\r\n", "\n"), "\n")
 	var headings []documentHeading
 	fenced := ""
 	for index, line := range lines {
-		if fence := codeFence(line); fence != "" {
-			if fenced == "" {
-				fenced = fence
-			} else if strings.HasPrefix(fence, fenced[:1]) && len(fence) >= len(fenced) {
-				fenced = ""
-			}
-			continue
-		}
-		if fenced != "" {
+		var fenceLine bool
+		if fenced, fenceLine = fenceAfter(fenced, line); fenceLine || fenced != "" {
 			continue
 		}
 		if level, text := markdownHeading(line); level > 0 {
@@ -366,9 +405,11 @@ func listItemText(lines []string, label string) (string, bool) {
 }
 
 // premortemSource is the document a conversion reads: its id, its store address (the ref_key a
-// tuple names it by), its dispatch:// address, and its newest version's number and markdown.
+// tuple names it by), its dispatch:// address, whether it is retired, and its newest version's
+// number and markdown.
 type premortemSource struct {
 	id, refKey, address string
+	retired             bool
 	version             int
 	markdown            string
 }
@@ -380,11 +421,11 @@ func readPremortemSource(ctx context.Context, tx pgx.Tx, key, slug string) (prem
 	var kind string
 	var primary bool
 	err := tx.QueryRow(ctx, `
-		select a.id::text, a.kind, a.is_primary, v.number, v.markdown
+		select a.id::text, a.kind, a.is_primary, a.retired_at is not null, v.number, v.markdown
 		from artifacts a join artifact_versions v on v.artifact_id = a.id
 		where a.ref_key = $1 and a.issue_key = $2
 		order by v.number desc limit 1
-	`, source.refKey, key).Scan(&source.id, &kind, &primary, &source.version, &markdown)
+	`, source.refKey, key).Scan(&source.id, &kind, &primary, &source.retired, &source.version, &markdown)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return premortemSource{}, &PremortemDocumentError{Missing: true, Problem: fmt.Sprintf("%s holds no document %q", key, slug)}
 	}
@@ -400,20 +441,30 @@ func readPremortemSource(ctx context.Context, tx pgx.Tx, key, slug string) (prem
 	return source, nil
 }
 
-// premortemPrevention is the checks one entry of the map names, resolved: each check's node, and
-// the kind and the id a prevented_by tuple names it by.
+// premortemCheck is one check block an entry of the map names, resolved: its node, and the kind
+// and the id a prevented_by tuple names it by (farEndOf).
+type premortemCheck struct {
+	node model.GraphNode
+	end  storedEnd
+}
+
+// premortemPrevention is the checks one entry of the map names, resolved.
 type premortemPrevention struct {
 	entry  PremortemEntry
-	checks []model.GraphNode
-	ends   []storedEnd
+	checks []premortemCheck
 }
 
 // checkPremortemMap holds the map to the document and resolves the checks it names, read for who:
 // one entry for each risk the document holds, each naming a risk it holds, once, with a reason and
-// with check addresses each named once, each a check block that is not gone and that who may see.
-// The first entry that breaks one of those, in the map's order, is refused, and then the first risk
-// no entry names; each is a PremortemMapError. It answers each entry by its risk's number.
+// with check addresses each named once, each a check block that is not gone and that who may see
+// (premortemChecks). The first entry that breaks one of those, in the map's order, is refused, and
+// then the first risk no entry names; each is a PremortemMapError. It answers each entry by its
+// risk's number.
 func checkPremortemMap(ctx context.Context, q refs.Queryer, who model.Actor, document premortem, entries []PremortemEntry) (map[int]premortemPrevention, error) {
+	checks, err := premortemChecks(ctx, q, who, entries)
+	if err != nil {
+		return nil, err
+	}
 	resolved := make(map[int]premortemPrevention, len(entries))
 	positions := make(map[int]int, len(entries))
 	for index, entry := range entries {
@@ -440,15 +491,11 @@ func checkPremortemMap(ctx context.Context, q refs.Queryer, who model.Actor, doc
 		positions[entry.Risk] = index + 1
 		prevention := premortemPrevention{entry: entry}
 		for _, address := range entry.Checks {
-			check, end, found, err := checkNamed(ctx, q, who, address)
-			if err != nil {
-				return nil, err
-			}
+			check, found := checks[address]
 			if !found {
 				return nil, refused("%s names no check block that is not gone", address)
 			}
 			prevention.checks = append(prevention.checks, check)
-			prevention.ends = append(prevention.ends, end)
 		}
 		resolved[entry.Risk] = prevention
 	}
@@ -461,37 +508,60 @@ func checkPremortemMap(ctx context.Context, q refs.Queryer, who model.Actor, doc
 	return resolved, nil
 }
 
-// checkNamed is the check block address names, read through the read registry with who's
-// visibility (decodeNodeAddress, then refs.Node), as the lens read reads its node: a block of any
-// issue's document, since a risk of one issue may be prevented by a check of another. An address
-// that decodes to no document block, a block no current version holds, one who may not see, one
-// that is gone and one that is no check all answer false, alike, so the answer tells nothing of a
-// node who may not see. It answers the node and the kind and the id a prevented_by tuple names it
-// by (farEndOf).
-func checkNamed(ctx context.Context, q refs.Queryer, who model.Actor, address string) (model.GraphNode, storedEnd, bool, error) {
-	kind, id, ok := decodeNodeAddress(address)
-	if !ok || kind != refs.BlockNodeKind {
-		return model.GraphNode{}, storedEnd{}, false, nil
+// premortemChecks is each check block the addresses of entries name, by its address, read through
+// the read registry with who's visibility (decodeNodeAddress, then refs.Nodes), as the lens read
+// reads its node: a block of any issue's document, since a risk of one issue may be prevented by
+// a check of another. Every address is read at once, in one read of the registry and one read of
+// the blocks' types, however many entries name it. An address that decodes to no document block,
+// a block no current version holds, one who may not see, one that is gone and one that is no check
+// are all absent, alike, so the answer tells nothing of a node who may not see.
+func premortemChecks(ctx context.Context, q refs.Queryer, who model.Actor, entries []PremortemEntry) (map[string]premortemCheck, error) {
+	named := map[string]refs.Target{}
+	var targets []refs.Target
+	for _, entry := range entries {
+		for _, address := range entry.Checks {
+			if _, read := named[address]; read {
+				continue
+			}
+			kind, id, ok := decodeNodeAddress(address)
+			if !ok || kind != refs.BlockNodeKind {
+				continue
+			}
+			target := refs.Target{Kind: kind, ID: id}
+			named[address] = target
+			if !slices.Contains(targets, target) {
+				targets = append(targets, target)
+			}
+		}
 	}
-	node, found, err := refs.Node(ctx, q, who, kind, id, true)
+	checks := make(map[string]premortemCheck, len(named))
+	if len(targets) == 0 {
+		return checks, nil
+	}
+	nodes, err := refs.Nodes(ctx, q, who, true, targets)
 	if err != nil {
-		return model.GraphNode{}, storedEnd{}, false, err
+		return nil, err
 	}
-	if !found || node.State == graphstore.StateGone {
-		return model.GraphNode{}, storedEnd{}, false, nil
+	standing := make([]string, 0, len(nodes))
+	for _, node := range nodes {
+		if node.State != graphstore.StateGone {
+			standing = append(standing, node.ID)
+		}
 	}
-	var blockType string
-	err = q.QueryRow(ctx, `select type from document_blocks where node_id = $1`, node.ID).Scan(&blockType)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return model.GraphNode{}, storedEnd{}, false, nil
-	}
+	rows, err := q.Query(ctx, `select node_id from document_blocks where node_id = any($1) and type = $2`, standing, graphstore.BlockTypeCheck)
 	if err != nil {
-		return model.GraphNode{}, storedEnd{}, false, fmt.Errorf("read the type of the block %s: %w", address, err)
+		return nil, fmt.Errorf("read the types of the blocks the map names: %w", err)
 	}
-	if blockType != checkBlockType {
-		return model.GraphNode{}, storedEnd{}, false, nil
+	typed, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("read the types of the blocks the map names: %w", err)
 	}
-	return node, farEndOf(node, address), true, nil
+	for address, target := range named {
+		if node, found := nodes[target]; found && node.State != graphstore.StateGone && slices.Contains(typed, node.ID) {
+			checks[address] = premortemCheck{node: node, end: farEndOf(node, address)}
+		}
+	}
+	return checks, nil
 }
 
 // ConvertPremortem converts the pre-mortem document slug of the issue key into nodes, in the
@@ -509,26 +579,28 @@ func checkNamed(ctx context.Context, q refs.Queryer, who model.Actor, address st
 // whose verdict is the document's verdict followed by its two closing sections, and under it one
 // risk for each risk of the document in the order of their numbers, each with its heading, its
 // early warning and its prevention and a prevented_by tuple to each check its entry names. Then it
-// retires the document (retireConvertedDocument), which moves its address to the lens.
+// retires the document and moves its address to the lens (retireConvertedDocument). It answers the
+// report and the events the conversion appended - the document.retired of the retirement - which
+// the caller publishes once tx commits.
 //
 // With dryRun it runs every one of those writes in a savepoint of tx and rolls the savepoint back,
 // so the store's own rules hold the write as they would hold the real one and nothing of it
-// remains, and it answers the report without the addresses nothing holds.
+// remains, and it answers the report without the addresses nothing holds, and no event.
 //
-// A map the document refuses is a PremortemMapError, and a document that is none or no pre-mortem
-// a PremortemDocumentError; each is refused before anything is written.
-func ConvertPremortem(ctx context.Context, tx pgx.Tx, proving, recorded model.Actor, key, slug string, entries []PremortemEntry, dryRun bool) (PremortemReport, error) {
-	var held bool
-	err := tx.QueryRow(ctx, `select true from issues where key = $1`+ownerRowLock, key).Scan(&held)
+// A map the document refuses is a PremortemMapError, and a document that is none, no pre-mortem,
+// or retired by anything but a conversion a PremortemDocumentError; each is refused before
+// anything is written.
+func ConvertPremortem(ctx context.Context, tx pgx.Tx, proving, recorded model.Actor, key, slug string, entries []PremortemEntry, dryRun bool) (PremortemReport, []model.Event, error) {
+	_, _, err := issueStatus(ctx, tx, key, ownerRowLock)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return PremortemReport{}, &PremortemDocumentError{Missing: true, Problem: fmt.Sprintf("no issue %s holds a document %q", key, slug)}
+		return PremortemReport{}, nil, &PremortemDocumentError{Missing: true, Problem: fmt.Sprintf("no issue %s holds a document %q", key, slug)}
 	}
 	if err != nil {
-		return PremortemReport{}, fmt.Errorf("take the row of the issue %s: %w", key, err)
+		return PremortemReport{}, nil, fmt.Errorf("take the row of the issue %s: %w", key, err)
 	}
 	source, err := readPremortemSource(ctx, tx, key, slug)
 	if err != nil {
-		return PremortemReport{}, err
+		return PremortemReport{}, nil, err
 	}
 	report := PremortemReport{
 		Document: PremortemDocument{Address: source.address, ID: source.id, Version: source.version},
@@ -536,34 +608,38 @@ func ConvertPremortem(ctx context.Context, tx pgx.Tx, proving, recorded model.Ac
 		Lens:     PremortemLens{Kind: graphstore.LensKindPreMortem, On: "dispatch://" + key},
 		Risks:    []PremortemRisk{},
 	}
-	moved, err := graphstore.CurrentOut(ctx, tx, graphstore.KindArtifact, source.refKey, []string{tupleMovedTo})
+	moved, err := graphstore.CurrentOut(ctx, tx, graphstore.KindArtifact, source.refKey, []string{graphstore.TupleMovedTo})
 	if err != nil {
-		return PremortemReport{}, err
+		return PremortemReport{}, nil, err
 	}
 	if len(moved) > 0 {
 		lens := "dispatch://" + moved[0].ToKind + "/" + moved[0].ToID
 		report.AlreadyConverted, report.Lens.Address, report.Document.MovedTo = true, &lens, &lens
 		report.Summary = fmt.Sprintf("%s is already converted into the pre-mortem lens %s, so nothing was written; "+
 			"GET /api/v1/lenses?on=%s reads that lens with its risks.", source.address, lens, lens)
-		return report, nil
+		return report, nil, nil
+	}
+	if source.retired {
+		return PremortemReport{}, nil, &PremortemDocumentError{Problem: fmt.Sprintf(
+			"%s is retired, and no conversion moved its address to a lens: a retired document takes no conversion", source.address)}
 	}
 	document, err := parsePremortem(source.markdown)
 	if err != nil {
-		return PremortemReport{}, &PremortemDocumentError{Problem: fmt.Sprintf(
+		return PremortemReport{}, nil, &PremortemDocumentError{Problem: fmt.Sprintf(
 			"%s (version %d) is no pre-mortem this conversion reads: %v", source.address, source.version, err)}
 	}
 	reader := proving.Recorded()
 	preventions, err := checkPremortemMap(ctx, tx, reader, document, entries)
 	if err != nil {
-		return PremortemReport{}, err
+		return PremortemReport{}, nil, err
 	}
 	kind, err := lensKindNamed(ctx, tx, reader, graphstore.LensKindPreMortem)
 	if err != nil {
-		return PremortemReport{}, err
+		return PremortemReport{}, nil, err
 	}
 	at, err := transactionNow(ctx, tx)
 	if err != nil {
-		return PremortemReport{}, err
+		return PremortemReport{}, nil, err
 	}
 
 	lensID, verdict := uuid.NewString(), document.lensVerdict()
@@ -590,81 +666,77 @@ func ConvertPremortem(ctx context.Context, tx pgx.Tx, proving, recorded model.Ac
 			Number: risk.number, Heading: risk.heading, EarlyWarning: risk.earlyWarning, Prevention: risk.prevention,
 			PreventedBy: make([]string, 0, len(prevention.checks)), Reason: prevention.entry.Reason,
 		}
-		for index, end := range prevention.ends {
+		for _, check := range prevention.checks {
 			node.tuples = append(node.tuples, graphstore.Tuple{
-				FromKind: graphstore.KindRisk, FromID: id, Kind: graphstore.TuplePreventedBy, ToKind: end.kind, ToID: end.id,
+				FromKind: graphstore.KindRisk, FromID: id, Kind: graphstore.TuplePreventedBy, ToKind: check.end.kind, ToID: check.end.id,
 			})
-			written.PreventedBy = append(written.PreventedBy, prevention.checks[index].Ref)
+			written.PreventedBy = append(written.PreventedBy, check.node.Ref)
 		}
 		if !dryRun {
-			address := "dispatch://" + graphstore.KindRisk + "/" + id
+			address := refs.StoreRef(graphstore.KindRisk, id)
 			written.Address = &address
 		}
 		nodes = append(nodes, node)
 		report.Risks = append(report.Risks, written)
 	}
 
-	lens := lensAddress(lensID)
-	convert := func(q pgx.Tx) error {
+	lens := refs.StoreRef(graphstore.KindLens, lensID)
+	convert := func(q pgx.Tx) (model.Event, error) {
 		if _, err := writeReasoningNodes(ctx, q, reasoningWrite{
-			issue: key, proving: proving, recorded: recorded, at: at, nodes: nodes,
+			reasoningCaller: reasoningCaller{proving: proving, recorded: recorded}, issue: key, at: at, nodes: nodes,
 		}); err != nil {
-			return err
+			return model.Event{}, err
 		}
-		return retireConvertedDocument(ctx, q, source.id, lens, recorded)
+		return retireConvertedDocument(ctx, q, source, key, lensID, lens, at, recorded)
 	}
 	if dryRun {
 		savepoint, err := tx.Begin(ctx)
 		if err != nil {
-			return PremortemReport{}, fmt.Errorf("open the dry run's savepoint: %w", err)
+			return PremortemReport{}, nil, fmt.Errorf("open the dry run's savepoint: %w", err)
 		}
-		err = convert(savepoint)
+		_, err = convert(savepoint)
 		if rollback := savepoint.Rollback(ctx); err == nil && rollback != nil {
 			err = fmt.Errorf("roll the dry run back: %w", rollback)
 		}
 		if err != nil {
-			return PremortemReport{}, err
+			return PremortemReport{}, nil, err
 		}
 		report.Summary = fmt.Sprintf("Dry run, nothing written: converting %s (version %d) writes one pre-mortem lens "+
-			"under %s with %d risks and moves the document's address to that lens.",
+			"under %s with %d risks, retires the document and moves its address to that lens.",
 			source.address, source.version, key, len(report.Risks))
-		return report, nil
+		return report, nil, nil
 	}
-	if err := convert(tx); err != nil {
-		return PremortemReport{}, err
+	retired, err := convert(tx)
+	if err != nil {
+		return PremortemReport{}, nil, err
 	}
 	report.Lens.Address, report.Document.MovedTo = &lens, &lens
 	report.Summary = fmt.Sprintf("Converted %s (version %d) into the pre-mortem lens %s under %s, with %d risks; "+
-		"the document's address moves to the lens.", source.address, source.version, lens, key, len(report.Risks))
-	return report, nil
+		"the document is retired and its address moves to the lens.", source.address, source.version, lens, key, len(report.Risks))
+	return report, []model.Event{retired}, nil
 }
 
-// retireConvertedDocument retires the document artifactID names once the conversion wrote the lens
-// lensAddress names, as actor: it appends the moved_to tuple from the document's own address - the
-// store's form of `dispatch://<KEY>/artifact/<slug>`, kind artifact at its ref_key, as a tuple
-// names a document (farEndOf) - to the lens, through writeReasoningPointer, at the transaction's
-// own time and at graphstore.NoEvent, so the resolvers of dispatch://INFRA-1150 answer the
-// document's old address with the lens. Then it retires the document through
-// dispatch://INFRA-1150's retirement of a document, the one retire path, whose reason names the
-// lens: "converted into the pre-mortem lens <lensAddress>".
-func retireConvertedDocument(ctx context.Context, tx pgx.Tx, artifactID, lensAddress string, actor model.Actor) error {
-	var refKey, key string
-	var at time.Time
-	if err := tx.QueryRow(ctx, `select ref_key, issue_key, now() from artifacts where id = $1`, artifactID).Scan(&refKey, &key, &at); err != nil {
-		return fmt.Errorf("read the converted document %s: %w", artifactID, err)
-	}
-	kind, lensID, ok := decodeNodeAddress(lensAddress)
-	if !ok || kind != graphstore.KindLens {
-		return fmt.Errorf("%s is no lens's address", lensAddress)
-	}
+// retireConvertedDocument retires source, the document of the issue key the conversion wrote the
+// lens lensID, at lens, in the place of, as actor, at the transaction's own time at. It appends the
+// moved_to tuple from the document's own address - the store's form of
+// `dispatch://<KEY>/artifact/<slug>`, kind artifact at its ref_key, as a tuple names a document
+// (farEndOf) - to the lens, through writeReasoningPointer at graphstore.NoEvent, so the readers of
+// a move (graphstore.MovedTo: GET /api/v1/references?to= and refs.Closure) answer the document's
+// old address with the lens. Then it retires the document through docs.RetireDocument, the one
+// retire path, whose reason names the lens, "converted into the pre-mortem lens <lens>", and
+// answers the document.retired event that retirement appended.
+func retireConvertedDocument(ctx context.Context, tx pgx.Tx, source premortemSource, key, lensID, lens string, at time.Time, actor model.Actor) (model.Event, error) {
 	if err := writeReasoningPointer(ctx, tx, reasoningPointer{issue: key, action: pointerAppend, pointer: graphstore.Tuple{
-		FromKind: graphstore.KindArtifact, FromID: refKey, Kind: tupleMovedTo, ToKind: graphstore.KindLens, ToID: lensID,
+		FromKind: graphstore.KindArtifact, FromID: source.refKey, Kind: graphstore.TupleMovedTo, ToKind: graphstore.KindLens, ToID: lensID,
 		At: at.UTC(), Who: actor, SourceEvent: graphstore.NoEvent, Asserted: true,
 	}}); err != nil {
-		return err
+		return model.Event{}, err
 	}
-	// INFRA-1150 T11: docs.RetireDocument(ctx, tx, artifactID, actor, reason)
-	return nil
+	retirement, err := docs.RetireDocument(ctx, tx, source.id, actor, "converted into the pre-mortem lens "+lens)
+	if err != nil {
+		return model.Event{}, fmt.Errorf("retire %s: %w", source.address, err)
+	}
+	return retirement.Event, nil
 }
 
 // --- POST /api/v1/issues/{key}/artifacts/{slug}/premortem-convert ------------------------------
@@ -744,12 +816,14 @@ func decodePremortemEntries(raw json.RawMessage) ([]PremortemEntry, string) {
 
 // convertPremortemRoute is POST /api/v1/issues/{key}/artifacts/{slug}/premortem-convert: the
 // conversion of the issue's pre-mortem document {slug} (ConvertPremortem) in the request's one
-// transaction, as the credential that proved the caller, answering the report. A body that is not
-// JSON is decodeJSON's 400 INVALID_JSON; a map of any other shape, and a map the document refuses,
-// are 400 ARTIFACT_INPUT naming the entry by its position and its risk, or the risk no entry names;
-// no document {slug} of the issue is 404 ARTIFACT_NOT_FOUND, and a document that is no pre-mortem
-// 400 ARTIFACT_INPUT. Each writes nothing. A document converted already answers 200 naming its lens
-// and writes nothing, and so does a dry run, naming what it would write.
+// transaction, as the credential that proved the caller, answering the report and publishing the
+// document.retired event of the retirement once the transaction commits. A body that is not JSON
+// is decodeJSON's 400 INVALID_JSON; a map of any other shape, and a map the document refuses, are
+// 400 ARTIFACT_INPUT naming the entry by its position and its risk, or the risk no entry names; no
+// document {slug} of the issue is 404 ARTIFACT_NOT_FOUND, and a document that is no pre-mortem, or
+// that something other than a conversion retired, 400 ARTIFACT_INPUT. Each writes nothing. A
+// document converted already answers 200 naming its lens and writes nothing, and so does a dry
+// run, naming what it would write.
 func (s *server) convertPremortemRoute(w http.ResponseWriter, r *http.Request) {
 	var input premortemConvertInput
 	if err := decodeJSON(r, &input); err != nil {
@@ -772,7 +846,7 @@ func (s *server) convertPremortemRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(ctx)
-	report, err := ConvertPremortem(ctx, tx, caller.proving, caller.recorded, r.PathValue("key"), r.PathValue("slug"), entries, input.DryRun)
+	report, events, err := ConvertPremortem(ctx, tx, caller.proving, caller.recorded, r.PathValue("key"), r.PathValue("slug"), entries, input.DryRun)
 	var refusedMap *PremortemMapError
 	var refusedDocument *PremortemDocumentError
 	switch {
@@ -793,5 +867,6 @@ func (s *server) convertPremortemRoute(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	s.publish(ctx, events...)
 	WriteJSON(w, http.StatusOK, report)
 }

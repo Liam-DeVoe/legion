@@ -40,11 +40,11 @@ import (
 // and signed as a node's ChangedAt and ChangedBy say where it carries them, unless the node
 // already holds one to that run (changedByRun), read once the node rows are held.
 func Write(ctx context.Context, tx pgx.Tx, nodes []Node, tuples []Tuple) error {
-	base, err := writeNodes(ctx, tx, nodes, tuples)
+	base, made, err := writeNodes(ctx, tx, nodes, tuples)
 	if err != nil {
 		return err
 	}
-	if err := checkPointers(ctx, tx, nodes, tuples); err != nil {
+	if err := checkPointers(ctx, tx, nodes, made, tuples); err != nil {
 		return err
 	}
 	changed, err := changedByRun(ctx, tx, changedByRunMarks(ctx, nodes, tuples))
@@ -96,7 +96,7 @@ type UncausedTuple struct {
 // is what keeps a block a version stated gone carrying the event that deleted it. stated is read
 // for one more thing besides: a base attribute the caller states itself is not stated twice.
 func WriteUncaused(ctx context.Context, tx pgx.Tx, nodes []Node, stated []Tuple) (Uncaused, error) {
-	base, err := writeNodes(ctx, tx, nodes, stated)
+	base, _, err := writeNodes(ctx, tx, nodes, stated)
 	if err != nil {
 		return Uncaused{}, err
 	}
@@ -152,7 +152,7 @@ func Caused(ctx context.Context, tx pgx.Tx, write Uncaused, event int64) error {
 	if err := checkBaseValues(nil, tuples, nil); err != nil {
 		return err
 	}
-	if err := checkPointers(ctx, tx, write.Nodes, tuples); err != nil {
+	if err := checkPointers(ctx, tx, write.Nodes, nil, tuples); err != nil {
 		return err
 	}
 	if err := causeNodes(ctx, tx, write.Nodes, event); err != nil {
@@ -255,8 +255,8 @@ func CheckAttributeValue(attribute, value string) error {
 // refused write sends none and stores nothing: the state and the visibility of every node it
 // writes, and every value tuple and every claim it states itself, of which a state or a
 // visibility is all that can be refused. A node reserved for its author whose kind takes no such
-// node is refused here too, with a VisibilityNotAdmittedError naming the kind (checkAuthorOnly).
-// The first value refused is the answer.
+// node is refused here too, with a VisibilityNotAdmittedError naming the kind
+// (CheckVisibilityAdmitted). The first value refused is the answer.
 func checkBaseValues(nodes []Node, tuples []Tuple, claims []Claim) error {
 	for index := range nodes {
 		node := &nodes[index]
@@ -266,7 +266,7 @@ func checkBaseValues(nodes []Node, tuples []Tuple, claims []Claim) error {
 		if err := CheckAttributeValue(AttributeVisibility, node.Visibility); err != nil {
 			return err
 		}
-		if err := checkAuthorOnly(node); err != nil {
+		if err := CheckVisibilityAdmitted(node.Kind, node.ID, node.Visibility); err != nil {
 			return err
 		}
 	}
@@ -362,10 +362,12 @@ func checkSupertags(ctx context.Context, tx pgx.Tx, nodes []Node) error {
 // the writer says gone, and to the writer's state only from gone. A node the write keeps the
 // cause of (Node.KeepsCause) keeps its row's source_event, whatever else of the row moves.
 //
-// It answers the base attributes this write states as tuples, one attribute at a time. A node
-// the insert made is stated `visibility` and `state`, and `project` and `parties` where it
-// carries them, which is the node carrying each from its first write. A node that was already
-// there is stated each attribute this write moved on its row, each on its own: a write that
+// It answers the base attributes this write states as tuples, one attribute at a time, and which
+// of nodes, by position, its insert made (nil where it made none), whose pointers no tuple of the
+// store holds yet (checkPointers). A node the insert made is stated `visibility` and `state`, and
+// `project` and `parties` where it carries them, which is the node carrying each from its first
+// write. A node that was already there is stated each attribute this write moved on its row, each
+// on its own: a write that
 // moves one states that one, a write that gives a node an earlier build stored without a project
 // its project states `project` alone, and a node written again with nothing moved is stated
 // nothing, so a re-index of a document nothing moved appends nothing. An attribute a restating
@@ -416,19 +418,19 @@ func checkSupertags(ctx context.Context, tx pgx.Tx, nodes []Node) error {
 // case of the same: the second's insert waits on the first's, then finds the row there and locks
 // it, and its second statement compares against what the first committed. The pass that writes
 // a block's node holds its document's owner row before it reaches this.
-func writeNodes(ctx context.Context, tx pgx.Tx, nodes []Node, stated []Tuple) ([]Tuple, error) {
+func writeNodes(ctx context.Context, tx pgx.Tx, nodes []Node, stated []Tuple) ([]Tuple, []bool, error) {
 	if err := checkBaseValues(nodes, stated, nil); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if len(nodes) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if err := checkSupertags(ctx, tx, nodes); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	args, err := nodeParams(nodes)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	// Whether the write restates each node, and whether it keeps each node's cause, ride beside
 	// nodeParams' eleven arrays, where incomingNodes binds them. Only moveNodes reads them: a node
@@ -450,7 +452,12 @@ func writeNodes(ctx context.Context, tx pgx.Tx, nodes []Node, stated []Tuple) ([
 		}
 		marks[position-1] |= attributes
 	}
+	var inserted []bool
 	made, err := insertNodes(ctx, tx, args, func(position int64) {
+		if inserted == nil {
+			inserted = make([]bool, len(nodes))
+		}
+		inserted[position-1] = true
 		node := nodes[position-1]
 		attributes := markVisibility | markState
 		if node.Project != "" {
@@ -462,15 +469,15 @@ func writeNodes(ctx context.Context, tx pgx.Tx, nodes []Node, stated []Tuple) ([
 		mark(position, attributes)
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if made < len(nodes) {
 		if err := moveNodes(ctx, tx, args, nodes, mark); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 	if marks == nil {
-		return nil, nil
+		return nil, inserted, nil
 	}
 	own := statedAttributes(stated)
 	// Four attributes per node at most, so the slice made here at that size grows none.
@@ -490,7 +497,7 @@ func writeNodes(ctx context.Context, tx pgx.Tx, nodes []Node, stated []Tuple) ([
 			base = statesAttribute(base, own, node, AttributeParties, PartiesValue(node.Parties))
 		}
 	}
-	return base, nil
+	return base, inserted, nil
 }
 
 // The base attributes a node write states for one node, as writeNodes marks them.
@@ -684,17 +691,35 @@ func statesAttribute(base []Tuple, own map[baseAttribute]struct{}, node Node, at
 	if _, held := own[baseAttribute{node.Kind, node.ID, attribute}]; held {
 		return base
 	}
-	return append(base, baseAttributeTuple(node, attribute, value))
+	return append(base, valueTupleOf(node, attribute, value))
 }
 
-// baseAttributeTuple is one base attribute of a node as the write that made the node states it,
-// carrying that write's time, writer and cause.
-func baseAttributeTuple(node Node, attribute, value string) Tuple {
+// valueTupleOf is one value tuple of a node as the write that made the node states it, carrying
+// that write's time, writer and cause: a base attribute (statesAttribute, BaseAttributeFacts), or
+// an attribute its row carries (AttributeTuples).
+func valueTupleOf(node Node, attribute, value string) Tuple {
 	return Tuple{
 		FromKind: node.Kind, FromID: node.ID, Kind: attribute,
 		ToKind: KindValue, ToID: value,
 		At: node.MadeAt, Who: node.MadeBy, SourceEvent: node.SourceEvent, Asserted: true,
 	}
+}
+
+// AttributeTuples is one value tuple of each of attributes that node's row carries, in the order
+// named, as the write that makes the node states it (valueTupleOf). A row is the projection of its
+// own tuples (Node), so every writer that carries an attribute on a node's row states its value as
+// a tuple of the node in the same write, which the history and the as-of reads answer: the going
+// POST's run (InteractionFacts), the catalogue's kinds (AddLensKind) and the reasoning nodes a
+// request writes (api's writeReasoningNodes). An attribute the row does not carry states nothing.
+// Every such attribute is a string attribute of its type, so its value is the text itself.
+func AttributeTuples(node Node, attributes ...string) []Tuple {
+	tuples := make([]Tuple, 0, len(attributes))
+	for _, attribute := range attributes {
+		if value, carried := node.Attributes[attribute]; carried {
+			tuples = append(tuples, valueTupleOf(node, attribute, fmt.Sprint(value)))
+		}
+	}
+	return tuples
 }
 
 // BaseAttributeFacts is the base attributes of each node, as facts a writer holds for the event
@@ -725,7 +750,7 @@ func BaseAttributeFacts(nodes []Node) []UncausedTuple {
 			if value == "" {
 				continue
 			}
-			facts = append(facts, UncausedTuple{Tuple: baseAttributeTuple(node, attribute, value)})
+			facts = append(facts, UncausedTuple{Tuple: valueTupleOf(node, attribute, value)})
 		}
 	}
 	return facts

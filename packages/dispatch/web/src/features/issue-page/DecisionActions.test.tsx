@@ -69,6 +69,7 @@ const decision: Decision = {
 const read: IssueDecisions = {
   decisions: [decision],
   document: document_.id,
+  entries: [],
   open_questions: [],
 };
 

@@ -9,7 +9,7 @@ import (
 )
 
 // TestEveryObjectNodeWriterTakesTheStoreLockOrder holds the create sites that write an issue's, a
-// document's, an ask's and a message's node (dispatch://INFRA-3862) to the store's lock order, as
+// document's, an ask's and a message's node, in its project, to the store's lock order, as
 // TestEveryApiStoreWriterTakesTheStoreLockOrder holds the comment paths, with the same machinery:
 // each path lists its steps in the order it takes them, the list is checked against the written
 // order (requireTheWrittenOrderAdmits), and each step is held in turn while the path's own backend

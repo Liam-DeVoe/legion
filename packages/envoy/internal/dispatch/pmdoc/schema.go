@@ -33,7 +33,8 @@ var blockSchemaJSON []byte
 
 // LinkKinds is the edge kinds the manifest's `block[]` attributes make, sorted: each such
 // attribute's name, once however many types declare it. None is a structural edge kind
-// (model.GraphEdgeKinds).
+// (model.GraphEdgeKinds) but needs (model.EdgeKindNeeds), the one relation an issue and a plan
+// node both wait by (dispatch://INFRA-1253 R10).
 func LinkKinds() []string {
 	return slices.Clone(active.Load().linkKinds)
 }
@@ -233,8 +234,9 @@ func validateAttributeSchema(typeName, name string, attr BlockAttributeSchema) e
 		if !linkKindPattern.MatchString(name) {
 			return fmt.Errorf("type %q attribute %q is a block[] attribute, whose name is the kind of the links it makes and must match %s", typeName, name, linkKindPattern)
 		}
-		if slices.Contains(model.GraphEdgeKinds, name) {
-			return fmt.Errorf("type %q attribute %q is a block[] attribute named after a structural edge kind (%s)", typeName, name, strings.Join(model.GraphEdgeKinds, ", "))
+		if name != model.EdgeKindNeeds && slices.Contains(model.GraphEdgeKinds, name) {
+			return fmt.Errorf("type %q attribute %q is a block[] attribute named after a structural edge kind (%s; %s alone is both)",
+				typeName, name, strings.Join(model.GraphEdgeKinds, ", "), model.EdgeKindNeeds)
 		}
 	} else if attr.Targets != nil {
 		return fmt.Errorf("type %q attribute %q has targets, which only a block[] attribute may carry", typeName, name)
@@ -644,10 +646,27 @@ func defaultAttributes(typ BlockTypeSchema) Attrs {
 // rollWindowAskAttributes) - is read, taken at an agent's boundary (StripServerOwnedAttrs) and
 // rendered without it.
 func writtenDefault(typ BlockTypeSchema, attr BlockAttribute) (any, bool) {
-	if attr.Default == nil || attr.Server || !creatable(Element{Kind: AttributeElement, Block: typ.Name, Name: attr.Name}) {
+	if !hasWrittenDefault(typ, attr) {
 		return nil, false
 	}
 	return cloneSchemaValue(attr.Default), true
+}
+
+// hasWrittenDefault reports whether typ's attribute attr has a written default (writtenDefault).
+func hasWrittenDefault(typ BlockTypeSchema, attr BlockAttribute) bool {
+	return attr.Default != nil && !attr.Server && creatable(Element{Kind: AttributeElement, Block: typ.Name, Name: attr.Name})
+}
+
+// nullReadsAbsent reports whether value, what a block of typ holds for its attribute attr, is a
+// null that reads as the block not holding attr: a null where attr has no written default
+// (writtenDefault). The browser editor gives such an attribute no default either - a server
+// attribute, which the server writes into a block or nobody does, and one it may not create yet -
+// so its node holds it as undefined, which y-prosemirror writes into the live document whenever it
+// makes the node, as a paste does, and a read of the live document reads as null (readElement).
+// So an ask block a browser pasted holds `state` null, although the attribute's default is
+// `open`. A null where attr has a written default is no value of it, and is refused.
+func nullReadsAbsent(typ BlockTypeSchema, attr BlockAttribute, value any) bool {
+	return value == nil && !hasWrittenDefault(typ, attr)
 }
 
 // withWrittenDefaults is attrs, a typed block's attributes as a stored tree holds them, with the
@@ -705,7 +724,7 @@ func typedAttributeValues(n *Node, typ BlockTypeSchema) ([]model.BlockAttributeV
 		if !present {
 			value, present = writtenDefault(typ, attribute)
 		}
-		if !present || (value == nil && definition.Default == nil) {
+		if !present || nullReadsAbsent(typ, attribute, value) {
 			continue
 		}
 		encoded, err := encodeTypedAttribute(n.Type, name, definition, value)

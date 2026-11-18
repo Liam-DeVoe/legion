@@ -182,7 +182,14 @@ func skipUnreadableSettlement(room string, err error) bool {
 // reconciles the ask blocks (planRepairs), writes the repairs into the room and stores what it
 // wrote (commitRepairs), and commits, with the document's version when the document reads
 // differently from the latest one (commitVersion).
+//
+// A settlement is made for no run of the command bar (graphstore.WithRun): it saves what the
+// room's writers left in it, whoever they were, so it carries no run even when a request's context
+// starts it - an issue's close settles its documents first on the closer's (api's
+// settleIssueBeforeClose) - and none of its writes appends a changed_by_run tuple, as the room
+// timer's settlement on a background context appends none.
 func (s *Service) settleRoomWithin(parent context.Context, room string, generation uint64, mayLoad bool) settleOutcome {
+	parent = graphstore.WithRun(parent, "")
 	// A room entry point that takes a document's id resolves it first: a document converted into
 	// its issue's room settles as that room, whose settlement this one arms - outside a shutdown,
 	// which has stopped every timer and arms none (Shutdown) - and its own room's rows stay as they
@@ -544,6 +551,9 @@ func (st *settlement) planRepairs(ctx context.Context) (settleStep, settleOutcom
 	if err != nil {
 		return settleDone, st.abandon(err)
 	}
+	// What settlement writes of the answers it keeps in step while another build serves is weighed
+	// against the document as settlement read it, before any other repair is planned on it.
+	reconciliation.withholdAnswersWithoutRoom(st.room, st.reconciled, st.markdown)
 	if err := reconciliation.reconcileCICheckBlocks(ctx, st.tx, st.room, st.owner, st.reconciled, st.credit.actor); err != nil {
 		return settleDone, st.abandon(err)
 	}
@@ -739,6 +749,21 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 		return settleDone, st.abandon(err)
 	}
 	versioning := contentChanged && markdown != st.latest.markdown
+	// A retired document (RetireDocument) takes no new version: no list holds it and no reader
+	// looks for text in it. Typing a room took before the retirement closed it is still stored -
+	// this settlement commits the updates it read, as every settlement does - and logged, so it is
+	// kept rather than dropped, but no version of the retired document holds it.
+	if versioning {
+		retired, err := documentRetired(ctx, tx, room)
+		if err != nil {
+			return settleDone, st.abandon(err)
+		}
+		if retired {
+			slog.Warn("dispatch: settlement stores the updates of a retired document and writes no version of it",
+				"room", room, "latest_version", st.latest.Number)
+			versioning = false
+		}
+	}
 	settledVersion := st.latest.Number
 	// An issue room versions each of its documents on its own (roomFragments): a version of each
 	// document whose fragment reads differently from that document's latest version, the tree

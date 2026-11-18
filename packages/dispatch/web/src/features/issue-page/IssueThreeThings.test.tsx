@@ -640,6 +640,7 @@ function fullyReadIssue(): TreeNode {
     decisions: {
       decisions: [decision],
       document: decisionsDocument.id,
+      entries: [],
       open_questions: [],
     },
     tree: {

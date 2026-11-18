@@ -1,7 +1,11 @@
 package graphstore
 
 import (
+	"context"
+	"fmt"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -51,30 +55,40 @@ type Interaction struct {
 // Every fact is made by the author, at the moment the run was asked, and caused by no event: a
 // run appends none.
 func InteractionFacts(run Interaction) ([]Node, []Tuple) {
-	endsAt := run.EndsAt.UTC().Format(time.RFC3339Nano)
 	authors, authored, _ := AuthorFacts(KindInteraction, run.ID, run.Author, run.At, NoEvent)
-	nodes := make([]Node, 0, 1+len(authors))
-	nodes = append(nodes, Node{
+	node := Node{
 		Kind: KindInteraction, ID: run.ID, Supertag: KindInteraction,
 		Visibility: VisibilityAuthor, State: StateLive, Project: run.Project,
-		Attributes: map[string]any{AttributeWords: run.Words, AttributeEndsAt: endsAt},
+		Attributes: map[string]any{AttributeWords: run.Words, AttributeEndsAt: run.EndsAt.UTC().Format(time.RFC3339Nano)},
 		MadeAt:     run.At, MadeBy: run.Author, SourceEvent: NoEvent,
-	})
-	nodes = append(nodes, authors...)
-	tuples := make([]Tuple, 0, 2+len(authored))
-	for _, attribute := range [...]struct{ kind, value string }{{AttributeWords, run.Words}, {AttributeEndsAt, endsAt}} {
-		tuples = append(tuples, Tuple{
-			FromKind: KindInteraction, FromID: run.ID, Kind: attribute.kind, ToKind: KindValue, ToID: attribute.value,
-			At: run.At, Who: run.Author, SourceEvent: NoEvent, Asserted: true,
-		})
 	}
-	return nodes, append(tuples, authored...)
+	return append([]Node{node}, authors...), append(AttributeTuples(node, AttributeWords, AttributeEndsAt), authored...)
 }
 
 // FrameWriter is who every frame value tuple is stated by: the server answering the run - the
 // answer, a reader that ends the run at its deadline, or the sweep - which acts for no person, as
-// LensKindWriter does. The run's author asked the question; no frame is their writing.
+// the command that adds a lens kind does (lensKindWriter). The run's author asked the question;
+// no frame is their writing.
 var FrameWriter = model.Actor{Kind: "system", ID: "going"}
+
+// NodeRowLockSQL takes one node's graph_nodes row `for no key update`, $1 its kind and $2 its id:
+// the lock a writer takes of the one node whose own facts it reads and then appends to, so two
+// such writes of one node queue at its row and the second reads what the first appended. Every
+// frame of a run takes its interaction's row so first, as does every backfill pass that writes a
+// run's node (LockInteraction), and Retarget takes the row of the node whose pointer it moves.
+const NodeRowLockSQL = `select 1 from graph_nodes where kind = $1 and id = $2 for no key update`
+
+// LockInteraction takes the interaction node row of the run whose id is run (NodeRowLockSQL), and
+// answers whether the store held that row to take: the first lock of every frame's transaction
+// (api's lockGoingRun) and of every backfill pass that writes a run's node (graphcensus), so a
+// frame and a pass of one run queue there.
+func LockInteraction(ctx context.Context, tx pgx.Tx, run string) (bool, error) {
+	tag, err := tx.Exec(ctx, NodeRowLockSQL, KindInteraction, run)
+	if err != nil {
+		return false, fmt.Errorf("lock the interaction node of run %s: %w", run, err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
 
 // FrameValueSQL is the value of one frame tuple as SQL over the frame's sequence, name and data,
 // each an SQL expression: the JSON object {"sequence": <integer>, "name": <text>, "data": <the
@@ -97,4 +111,24 @@ func FrameTuple(run, value string, at time.Time) Tuple {
 		FromKind: KindInteraction, FromID: run, Kind: AttributeFrame, ToKind: KindValue, ToID: value,
 		At: at, Who: FrameWriter, SourceEvent: NoEvent, Asserted: true,
 	}
+}
+
+// QueueFrameTuple queues on batch the one statement Write sends for tuple, one frame value of a run
+// (FrameTuple): the append of value tuples under their repeat key (appendTuples). It is Write for
+// that one tuple, for the frame path, which sends it in one round trip beside a statement of its
+// own (api's appendGoingEvent): a frame value is no base attribute a value is refused for, no
+// pointer a type rule holds and no change of its node (Tuple.Changes), so Write reads nothing and
+// appends nothing else for it. Any other tuple is refused and nothing is queued: it goes through
+// Write, which holds it to whatever applies.
+func QueueFrameTuple(batch *pgx.Batch, tuple Tuple) error {
+	if tuple.FromKind != KindInteraction || tuple.Kind != AttributeFrame || tuple.ToKind != KindValue || tuple.Changes {
+		return fmt.Errorf("the %s tuple out of %s %s is no frame value of a run, which is all a queued append takes: append it through Write",
+			tuple.Kind, tuple.FromKind, tuple.FromID)
+	}
+	args, err := tupleParams([]Tuple{tuple})
+	if err != nil {
+		return err
+	}
+	batch.Queue(tupleInsert(1, "")+valueRepeatKey, args...)
+	return nil
 }

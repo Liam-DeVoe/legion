@@ -1017,6 +1017,11 @@ func (s *Postgres) UnclaimedKept(ctx context.Context, tx pgx.Tx, tree string) ([
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return nil, KeptApproval{}, fmt.Errorf("read the approval kept for %s: %w", tree, err)
 	}
+	// A pair an earlier release kept of its `decisions` step names a document no step of this
+	// release records, so no task names it; the row stays as GatesOf leaves that step's rows.
+	if err == nil && !approval.Step.Valid() {
+		approval = KeptApproval{} // kept for one release: design-gate-rows
+	}
 	return decisions, approval, nil
 }
 
@@ -1064,10 +1069,14 @@ func (s *Postgres) DropReadmittedApproval(ctx context.Context, tx pgx.Tx, root s
 	return nil
 }
 
-// TellChildrenFirst records that issue's architect has been told, for the run generation of tree,
-// that the issue waits for its own Dispatch children, and reports whether this call is the
-// telling: a second call for the same tree and generation changes nothing and answers false, so
-// the one row decides who tells. The tree is part of the key because the generation is the root's
+// TellChildrenFirst records that the architect that owns issue has been told, for the run
+// generation of tree, that the issue waits for its own Dispatch children, and reports whether
+// this call is the telling: a second call for the same tree and generation changes nothing and
+// answers false, so the one row decides who tells. That architect is the root's own for a root.
+// For a child it is the architect above it, since the child's own starts only with that first
+// phase, unless a person set the child back to todo while it ran or was held: that re-entry starts
+// and stops nothing (workflow's ReenterChild), so a child's own architect that held its role still
+// holds it and is the one told. The tree is part of the key because the generation is the root's
 // and only names a run within one tree: an issue handed over as a root of its own waits in a tree
 // of its own, at a generation of its own numbering (admit's readmit), and is told there again. at
 // is the moment the pass ran, kept for a reader of the table alone.
@@ -1652,6 +1661,12 @@ func scanGate(row scanner) (DesignGate, error) {
 }
 
 // GatesOf is every gate issue holds, by step. An issue with no gate gives an empty map.
+//
+// A row of a step that is not one of DesignSteps is left out here, and in Gates and
+// GatesForArtifact: the `decisions` rows an earlier release wrote stay in the table, which still
+// admits that step, and no reader of this release is handed one, so none acts on it, writes it
+// again or publishes it to Dispatch (GateDocuments). Nothing of this release deletes such a row
+// either, but for the clear of a re-admitted tree's whole generation (clearGates).
 func (s *Postgres) GatesOf(ctx context.Context, tx pgx.Tx, issue string) (map[DesignStep]DesignGate, error) {
 	rows, err := tx.Query(ctx, `select `+gateColumns+` from design_gates where issue = $1 order by step`, issue)
 	if err != nil {
@@ -1663,6 +1678,9 @@ func (s *Postgres) GatesOf(ctx context.Context, tx pgx.Tx, issue string) (map[De
 		gate, err := scanGate(rows)
 		if err != nil {
 			return nil, fmt.Errorf("read design gates for %s: %w", issue, err)
+		}
+		if !gate.Step.Valid() {
+			continue // kept for one release: design-gate-rows
 		}
 		gates[gate.Step] = gate
 	}
@@ -1688,6 +1706,9 @@ func (s *Postgres) Gates(ctx context.Context, tx pgx.Tx, issues []string) (map[s
 		gate, err := scanGate(rows)
 		if err != nil {
 			return nil, fmt.Errorf("read the design gates of %d issues: %w", len(issues), err)
+		}
+		if !gate.Step.Valid() {
+			continue // kept for one release: design-gate-rows
 		}
 		if gates[gate.Issue] == nil {
 			gates[gate.Issue] = map[DesignStep]DesignGate{}
@@ -1737,6 +1758,9 @@ func (s *Postgres) GatesForArtifact(ctx context.Context, tx pgx.Tx, artifactID s
 		gate, err := scanGate(rows)
 		if err != nil {
 			return nil, fmt.Errorf("scan design gate for artifact %s: %w", artifactID, err)
+		}
+		if !gate.Step.Valid() {
+			continue // kept for one release: design-gate-rows
 		}
 		gates = append(gates, gate)
 	}
@@ -2424,11 +2448,12 @@ func (s *Postgres) EnqueueID(ctx context.Context, tx pgx.Tx, row OutboxRow) (int
 // one of per wait, so it is what EnqueueStart takes out; the slot mark alone cannot do that work,
 // since a start of a phase past its review carries none (PhaseKeepsSlot).
 //
-// The issue's other supervise starts name no phase or carry no task — the tree architect's
-// (admit's promotion), the roles brought back beside a member's phase worker (admit's
-// startMidPhaseMembers), a production check's look, a pod wake and the resume of a cancelled
-// idle release — and each of them is a start of its own that must still run. None of them is
-// ever taken out here.
+// The issue's other supervise starts name no phase or carry no task — a root's architect's
+// (admit's promotion), a child's own architect's plain start (workflow's gateOpened and
+// reviveArchitect), the roles brought back beside a member's phase worker (admit's
+// startMidPhaseMembers), a production check's look, a pod wake and the resume of a cancelled idle
+// release — and each of them is a start of its own that must still run. None of them is ever
+// taken out here.
 const pendingPhaseStart = `issue = $1 and kind = 'supervise'
 				and payload->>'op' = 'start' and payload ? 'task' and payload ? 'phase'`
 
@@ -2788,6 +2813,20 @@ func (s *Postgres) NextDue(ctx context.Context, tx pgx.Tx, issue string, kinds [
 		return time.Time{}, false, nil
 	}
 	return *next, true, nil
+}
+
+// BranchQueued says whether the outbox still holds an issue_branch row of issue — due, running or
+// backing off — so the branch that row creates may not exist on GitHub yet. The ordering rule
+// (outboxInOrder) holds a start behind an older branch row of its issue; this is the read for a
+// start older than the branch row it must wait for (the outbox's first start of a child's own
+// architect, which can outlast a re-admission that queues the child's branch row again).
+func (s *Postgres) BranchQueued(ctx context.Context, tx pgx.Tx, issue string) (bool, error) {
+	var queued bool
+	if err := tx.QueryRow(ctx, `select exists (select 1 from outbox where issue = $1 and kind = $2)`,
+		issue, string(OutboxKindIssueBranch)).Scan(&queued); err != nil {
+		return false, fmt.Errorf("read whether %s's branch row is still queued: %w", issue, err)
+	}
+	return queued, nil
 }
 
 // UnfinishedLanes is every lane of project's issues with a row still in the outbox — due, running,

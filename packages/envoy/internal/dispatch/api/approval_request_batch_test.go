@@ -134,7 +134,8 @@ func countedApprovalRequest(t *testing.T, handler http.Handler, artifactID strin
 //  2. a batch of 3: that artifact's versions, its latest review and its open approval request
 //     (loadArtifactRow, queueArtifactDetails);
 //  3. the issue's spec and whether it has a plan (issueCoverage);
-//  4. the spec's settled version, to read its text at (docs.Text, through requirementBlocksIn);
+//  4. the room the spec is edited in and its stored state's stamp, one statement, to read its text
+//     at (docs.Text's documentReadRoom, through requirementBlocksIn);
 //  5. begin, that text read's read-only snapshot;
 //  6. the document's stored snapshot;
 //  7. the updates after it;

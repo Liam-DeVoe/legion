@@ -2,6 +2,8 @@ package graphcensus
 
 import (
 	"context"
+	"crypto/md5"
+	"encoding/hex"
 	"strings"
 	"testing"
 	"time"
@@ -12,15 +14,16 @@ import (
 )
 
 // TestTheCensusHoldsEachNodesVisibilityAndStateToItsNewestTuples is the census of the visibility
-// and the state each node of dispatch://INFRA-1950's kinds carries (baseAttributeCensus): a node's
-// row is the projection of its own base-attribute tuples, so the census holds the graph_nodes
-// columns to the newest tuple of each, both ways. A run and a lens written through the store's
-// writer agree. Then, one break at a time, the census reads: a column that differs from its newest
-// tuple (the lens moved to settled on its row alone), a run at a visibility other than author with
-// its tuple saying the same, a node whose columns no tuple stands behind (a risk row written with
-// no tuple), and a tuple whose node has no row (a constraint's state with no node). Each is named
-// with its kind and address, and the attribute, by the digest that names each attribute and
-// carries its value's md5.
+// and the state each run, lens, finding, risk, constraint and lens kind carries
+// (baseAttributeCensus): a node's row is the projection of its own base-attribute tuples, so the
+// census holds the graph_nodes columns to the newest tuple of each, both ways. A run and a lens
+// written through the store's writer agree. Then, one break at a time, the census reads: a column
+// that differs from its newest tuple (the lens moved to settled on its row alone, which the digest
+// names as the state alone, live on the row side and settled on the node's, the visibility the same
+// on both), a run at a visibility other than author with its tuple saying the same, a node whose
+// columns no tuple stands behind (a risk row written with no tuple), and a tuple whose node has no
+// row (a constraint's state with no node). Each is named with its kind and address, and the
+// attribute, by the digest that names each attribute and carries its value's md5.
 func TestTheCensusHoldsEachNodesVisibilityAndStateToItsNewestTuples(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -86,11 +89,17 @@ func TestTheCensusHoldsEachNodesVisibilityAndStateToItsNewestTuples(t *testing.T
 		graphstore.KindConstraint, constraint)
 
 	broken := storeCensusOf(t, database)
+	digestOf := func(attribute, value string) string {
+		sum := md5.Sum([]byte(value))
+		return attribute + ":" + hex.EncodeToString(sum[:])
+	}
+	stateAlone := digestOf(graphstore.AttributeState, graphstore.StateLive) + " and the node " +
+		digestOf(graphstore.AttributeVisibility, graphstore.VisibilityProject) + " " + digestOf(graphstore.AttributeState, "settled")
 	for _, want := range []struct {
 		kind, at, cause, carries string
 		row                      bool
 	}{
-		{"lens_visibility_state", "lens " + lens, "the row and its node disagree", graphstore.AttributeState + ":", true},
+		{"lens_visibility_state", "lens " + lens, "the row and its node disagree", stateAlone, true},
 		{"interaction_visibility_state", "interaction " + run, "the row and its node disagree", "visibility_fixed:broken", true},
 		{"risk_visibility_state", "risk " + risk, "a live node no row projects", "", false},
 		{"constraint_visibility_state", "constraint " + constraint, "the row names a node the store does not hold", "", true},

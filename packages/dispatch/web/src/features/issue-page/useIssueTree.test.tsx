@@ -261,7 +261,7 @@ function stubTreeReads(
     }),
     spyOn(api, "getIssueDecisions").mockImplementation(async () => {
       await answered("decisions");
-      return { decisions: [], document: null, open_questions: [] };
+      return { decisions: [], document: null, entries: [], open_questions: [] };
     }),
     spyOn(api, "getIssueResults").mockImplementation(async () => {
       await answered("results");
@@ -2875,7 +2875,12 @@ test("a refresh whose decisions read the scheduler holds back starts no further 
   let decisionReads = 0;
   (api.getIssueDecisions as Mock<typeof api.getIssueDecisions>).mockImplementation(async () => {
     decisionReads += 1;
-    return { decisions: [], document: `decisions read ${decisionReads}`, open_questions: [] };
+    return {
+      decisions: [],
+      document: `decisions read ${decisionReads}`,
+      entries: [],
+      open_questions: [],
+    };
   });
   const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
   try {
@@ -3089,6 +3094,7 @@ test("a Keep while the refresh's decisions read is held back reads the tree agai
   (api.getIssueDecisions as Mock<typeof api.getIssueDecisions>).mockImplementation(async () => ({
     decisions: [],
     document: kept ? "kept" : null,
+    entries: [],
     open_questions: [],
   }));
   const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -3323,6 +3329,7 @@ test("back on the issue, the decisions read made for an event while away reads t
   (api.getIssueDecisions as Mock<typeof api.getIssueDecisions>).mockImplementation(async () => ({
     decisions: [],
     document: changed ? "changed" : null,
+    entries: [],
     open_questions: [],
   }));
   const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });

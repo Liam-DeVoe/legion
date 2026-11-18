@@ -63,12 +63,17 @@ const STRUCTURAL_LABELS: Partial<Record<GraphEdge["kind"], string>> = {
   anchored_to: "Anchored item",
   answers: "Answer",
   attached_to: "Attached document",
+  // An issue's wait as a Dispatch of the release before names it; this Dispatch answers it as
+  // needs, below.
   blocked_by: "Blocked issue",
   child_of: "Child issue",
+  duplicate_of: "Duplicate issue",
+  filed_from: "Issue filed from it",
   followed_by: "Follower",
-  // The two kinds a typed block's `block[]` attributes make (`blocks.json`): a check or a plan
-  // task that names a requirement in `serves`, and a plan task that names another in `needs`.
-  // Read from the named block, the edge says what the citing block does for it.
+  // A wait, one relation however its ends are (dispatch://INFRA-1253 R10): an issue's on an issue,
+  // and the `needs` a plan task's `block[]` attribute makes on another (`blocks.json`), as a
+  // check's or a plan task's `serves` names a requirement. Read from the node waited on, the edge
+  // says what the citing node does for it.
   needs: "needed by",
   owned_by: "Owned item",
   replies_to: "Reply",
@@ -87,9 +92,12 @@ const RENDERED_EDGE_KINDS: Record<GraphEdge["kind"], true> = {
   child_of: true,
   constrained_by: true,
   depends_on: true,
+  duplicate_of: true,
+  filed_from: true,
   followed_by: true,
   has_kind: true,
   mentions: true,
+  needs: true,
   owned_by: true,
   part_of: true,
   prevented_by: true,

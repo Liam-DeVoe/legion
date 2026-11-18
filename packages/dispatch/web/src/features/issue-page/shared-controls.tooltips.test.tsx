@@ -69,7 +69,6 @@ import {
   architecture,
   CLAIMED_AT,
   classOf,
-  DECISIONS_ID,
   doc,
   draw,
   GONE_SESSION,
@@ -88,6 +87,7 @@ import {
   threadOf,
   tokens,
   undraw,
+  VERIFICATION_ID,
 } from "./shared-controls-fixture";
 
 /**
@@ -388,7 +388,12 @@ function answerDefaults(): void {
     read_at: null,
     version: null,
   }));
-  stubs.getIssueDecisions.mockResolvedValue({ decisions: [], document: null, open_questions: [] });
+  stubs.getIssueDecisions.mockResolvedValue({
+    decisions: [],
+    document: null,
+    entries: [],
+    open_questions: [],
+  });
   stubs.getIssueSubscribers.mockResolvedValue([]);
   stubs.getReferences.mockResolvedValue({
     edges: [],
@@ -445,16 +450,10 @@ function notesWith(approval: ArtifactApproval): Artifact {
   return { ...notes, approval };
 }
 
-/** The gate's steps as Details draws them: the spec waits on a request for its version 1, the
- *  decisions were sent back with a reason, and the verification has no document yet. `values`
- *  names the two documents and gives the reason, which the wrap case makes long. */
-function stepEntries(
-  values = {
-    decisions: "decisions.md",
-    reason: "The second decision cites no evidence.",
-    spec: "spec.md",
-  }
-): StepEntry[] {
+/** The gate's steps as Details draws them: the spec waits on a request for its version 1, and
+ *  the verification has no document yet. `values` names the spec's document, which the wrap case
+ *  makes long. */
+function stepEntries(values = { spec: "spec.md" }): StepEntry[] {
   return [
     {
       document: doc(SPEC_ID, values.spec, {
@@ -465,19 +464,24 @@ function stepEntries(
       label: "Spec",
       step: "spec",
     },
-    {
-      document: doc(DECISIONS_ID, values.decisions, {
-        by: { id: "bob", kind: "user" },
-        latest_version: 3,
-        reason: values.reason,
-        state: "changes_requested",
-        version: 3,
-      }),
-      label: "Decisions",
-      step: "decisions",
-    },
     { document: undefined, label: "Verification", step: "criteria" },
   ];
+}
+
+/** The verification sent back by bob at its version 3 with `reason`: the gate's two steps above
+ *  hold no step sent back, so the line a reason is drawn on is read from this one. */
+function sentBackVerification(reason = "The checks cite no evidence."): StepEntry {
+  return {
+    document: doc(VERIFICATION_ID, "verification.md", {
+      by: { id: "bob", kind: "user" },
+      latest_version: 3,
+      reason,
+      state: "changes_requested",
+      version: 3,
+    }),
+    label: "Verification",
+    step: "criteria",
+  };
 }
 
 /** An open approval request (`AskCard.test.tsx`'s `approvalAsk`, as `ask-2` at high urgency). */
@@ -1917,11 +1921,10 @@ const LONG_VALUES: ReadonlyMap<Mount, Mount> = new Map([
   withLongValues(mountNamed("ApprovalSteps, Details' size with versions and reasons"), {
     node: () => (
       <ApprovalSteps
-        entries={stepEntries({
-          decisions: `decisions-${LONG.document}`,
-          reason: LONG.reason,
-          spec: LONG.document,
-        })}
+        entries={[
+          ...stepEntries({ spec: LONG.document }).filter((entry) => entry.step === "spec"),
+          sentBackVerification(LONG.reason),
+        ]}
         primaryArtifactId={SPEC_ID}
         versions={{ asks: [specRequest], issueKey: "CORE-1" }}
       />
@@ -2802,24 +2805,36 @@ test("inside NoTooltips the words come from the page's word list and carry their
         [...root.querySelectorAll("[data-approval-artifact]")].map((chip) =>
           chip.getAttribute("data-approval-artifact")
         )
-      ).toEqual([SPEC_ID, DECISIONS_ID]);
-      expectMarks(root, [
-        [CONTROL_LABELS.not_requested, "page-chrome"],
-        // The line's own words, the step and the review, around the reviewer and the reason.
-        ["Decisions: requested changes on v3 ·", "page-chrome"],
-        ["bob", "author-text"],
-        ["The second decision cites no evidence.", "author-text"],
-      ]);
-      expect(
-        root
-          .querySelector("[data-approval-step-reason='decisions']")
-          ?.hasAttribute(PAGE_CHROME_ATTRIBUTE)
-      ).toBe(true);
+      ).toEqual([SPEC_ID]);
+      expectMarks(root, [[CONTROL_LABELS.not_requested, "page-chrome"]]);
       expectMarks(within(root).getByRole("link", { name: "spec.md, version 1" }), [
         ["spec.md,", "author-text"],
         [CONTROL_LABELS.version.toLowerCase(), "page-chrome"],
         ["1", "author-text"],
       ]);
+    }
+  );
+  // The gate's two steps above hold no step sent back, so the line a reason is drawn on is read
+  // from a list whose verification was sent back.
+  await readDrawn(
+    {
+      name: "ApprovalSteps, a step sent back with its reason",
+      node: () => <ApprovalSteps entries={[sentBackVerification()]} primaryArtifactId={SPEC_ID} />,
+    },
+    "inside",
+    (view) => {
+      const root = view.container;
+      expectMarks(root, [
+        // The line's own words, the step and the review, around the reviewer and the reason.
+        ["Verification: requested changes on v3 ·", "page-chrome"],
+        ["bob", "author-text"],
+        ["The checks cite no evidence.", "author-text"],
+      ]);
+      expect(
+        root
+          .querySelector("[data-approval-step-reason='criteria']")
+          ?.hasAttribute(PAGE_CHROME_ATTRIBUTE)
+      ).toBe(true);
     }
   );
   await readDrawn(mountNamed("ApprovalSteps, the header's compact size"), "inside", (view) => {

@@ -405,7 +405,7 @@ test("the whole tree is one tab stop, and the focused row's keys work its contro
   });
   const view = renderTree(root, {
     artifacts: [decisionsDocument],
-    decisions: { decisions: [decision], document: null, open_questions: [] },
+    decisions: { decisions: [decision], document: null, entries: [], open_questions: [] },
   });
   try {
     const [row] = rowsFor(view.container, "decisions#b-d1");
@@ -458,7 +458,7 @@ test("Enter sends the change the reader typed, instead of putting a caret in the
   });
   const view = renderTree(root, {
     artifacts: [decisionsDocument],
-    decisions: { decisions: [decision], document: null, open_questions: [] },
+    decisions: { decisions: [decision], document: null, entries: [], open_questions: [] },
   });
   try {
     const [row] = rowsFor(view.container, "decisions#b-d1");
@@ -514,7 +514,7 @@ test("Keep keeps the focus on its decision's row while its write is out, and aft
   const kept = spyOn(api, "keepDecision").mockReturnValue(answer.promise);
   const view = renderTree(decisionTree(), {
     artifacts: [decisionsDocument],
-    decisions: { decisions: [decision], document: null, open_questions: [] },
+    decisions: { decisions: [decision], document: null, entries: [], open_questions: [] },
   });
   try {
     const [row] = rowsFor(view.container, "decisions#b-d1");
@@ -546,7 +546,7 @@ test("Send change keeps the focus on its decision's row while the comment is out
   const read = readDecisionsText();
   const view = renderTree(decisionTree(), {
     artifacts: [decisionsDocument],
-    decisions: { decisions: [decision], document: null, open_questions: [] },
+    decisions: { decisions: [decision], document: null, entries: [], open_questions: [] },
   });
   try {
     const [row] = rowsFor(view.container, "decisions#b-d1");
@@ -591,7 +591,7 @@ test("a Change the reader typed in comes back with its decision's body", async (
   });
   const view = renderTree(root, {
     artifacts: [decisionsDocument],
-    decisions: { decisions: [decision], document: null, open_questions: [] },
+    decisions: { decisions: [decision], document: null, entries: [], open_questions: [] },
   });
   const [row] = rowsFor(view.container, "decisions#b-d1");
   if (row === undefined) throw new Error("the decision has no row");

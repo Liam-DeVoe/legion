@@ -259,7 +259,11 @@ jobs:
   # each one's `if:` says why).
   changes:
     if: ${{ !github.event.pull_request.draft && (github.event_name != 'merge_group' || github.run_attempt == '1') }}
-    runs-on: ubuntu-24.04
+    # changes, pr-title, cancel-started and ci-ok run on arm64: each runs JavaScript actions and
+    # shell scripts over the image's own gh, jq, git and coreutils, and builds or fetches no binary,
+    # so the architecture reaches nothing they compute; at busy hours the x64 pool queues a job for
+    # about 15 minutes where the arm64 pool starts one in seconds (INFRA-4222).
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     outputs:
       # Each output names the step its filter is declared in. There are three of them because
@@ -310,6 +314,7 @@ jobs:
       check_action_pins_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_action_pins_test }}
       check_private_names_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_private_names_test }}
       check_plugin_names_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_plugin_names_test }}
+      check_kept_for_one_release_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_kept_for_one_release_test }}
       check_fireevent_reasons_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_fireevent_reasons_test }}
       check_daemon_api_contract_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_daemon_api_contract_test }}
       check_release_credentials_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_release_credentials_test }}
@@ -678,6 +683,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/cireconcile/*'
               - 'packages/envoy/internal/dispatch/config/*'
               - 'packages/envoy/internal/dispatch/dashboard/*'
+              - 'packages/envoy/internal/dispatch/decisionread/*'
               - 'packages/envoy/internal/dispatch/delivery/**'
               - 'packages/envoy/internal/dispatch/docs/*'
               - 'packages/envoy/internal/dispatch/docs/crafted/*'
@@ -987,6 +993,7 @@ jobs:
               - '!packages/daemon/internal/daemon/provider_error_retry_live_test.go'
               - '!packages/daemon/internal/daemon/role_prompt_rule_live_test.go'
               - '!packages/daemon/internal/daemon/share_volumes_live_test.go'
+              - '!packages/daemon/internal/daemon/sub_architect_live_test.go'
               - '!packages/daemon/internal/runtime/sandbox/live_app_test.go'
               - '!packages/daemon/internal/runtime/sandbox/live_cache_test.go'
               - '!packages/daemon/internal/runtime/sandbox/live_displaced_test.go'
@@ -1081,6 +1088,7 @@ jobs:
               - '!packages/daemon/internal/daemon/provider_error_retry_live_test.go'
               - '!packages/daemon/internal/daemon/role_prompt_rule_live_test.go'
               - '!packages/daemon/internal/daemon/share_volumes_live_test.go'
+              - '!packages/daemon/internal/daemon/sub_architect_live_test.go'
               - '!packages/daemon/internal/dispatch/**/*_test.go'
               - '!packages/daemon/internal/experiment/**/*_test.go'
               - '!packages/daemon/internal/fixtureenv/**/*_test.go'
@@ -1417,6 +1425,12 @@ jobs:
               - '.github/scripts/test-lib.sh'
               - '.github/scripts/check-plugin-names.test.sh'
               - '.github/scripts/check-plugin-names.sh'
+            check_kept_for_one_release_test: &check_kept_for_one_release_test
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - '.github/scripts/test-lib.sh'
+              - '.github/scripts/check-kept-for-one-release.test.sh'
+              - '.github/scripts/check-kept-for-one-release.sh'
             check_fireevent_reasons_test: &check_fireevent_reasons_test
               - *ci_router
               - '.github/workflows/ci-job-test.yaml'
@@ -1645,6 +1659,7 @@ jobs:
               - *check_action_pins_test
               - *check_private_names_test
               - *check_plugin_names_test
+              - *check_kept_for_one_release_test
               - *check_fireevent_reasons_test
               - *check_daemon_api_contract_test
               - *check_release_credentials_test
@@ -1962,6 +1977,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/cireconcile/*'
               - 'packages/envoy/internal/dispatch/config/*'
               - 'packages/envoy/internal/dispatch/dashboard/*'
+              - 'packages/envoy/internal/dispatch/decisionread/*'
               - 'packages/envoy/internal/dispatch/delivery/**'
               - 'packages/envoy/internal/dispatch/docs/*'
               - 'packages/envoy/internal/dispatch/docs/crafted/*'
@@ -2109,6 +2125,9 @@ jobs:
               - 'packages/envoy/internal/serverwait/*'
               - 'packages/envoy/internal/session/*'
               - 'packages/envoy/internal/store/*'
+              # storetest's DatabaseURL makes a test's own database with internal/testpg/testdb, and
+              # cmd/dispatch's untagged tests read storetest in every tagged build.
+              - 'packages/envoy/internal/testpg/testdb/*'
               - 'packages/envoy/internal/testsocks5/*'
               - 'packages/envoy/listenfd/*'
               - 'packages/envoy/migrationid/*'
@@ -2212,15 +2231,15 @@ jobs:
               - 'packages/envoy-client/src/**'
               # And @legion/broker-client with it (ci_job_reads.py's envoy_client_dep).
               - 'packages/broker-client/**'
-              # extensions/envoy.test.ts:45-52 imports test/envoy-stack, stall-proxy and
-              # stall-scenario; extensions/askgate/decision-record.test.ts:9 its fake-dispatch.
+              # extensions/envoy.test.ts:57-65 imports test/envoy-stack, stall-proxy, stall-scenario
+              # and subscribe-answer; extensions/askgate/decision-record.test.ts:9 its fake-dispatch.
               - 'packages/envoy-client/test/**'
               - 'packages/envoy-client/bin/dispatch.ts'
               - 'packages/envoy-client/scripts/build-dispatch-cli.sh'
               - 'packages/contracts/src/**'
               # Its tests import @legion/test-fixtures.
               - 'packages/test-fixtures/src/**'
-              # extensions/envoy.test.ts:172-173.
+              # extensions/envoy.test.ts:300.
               - 'packages/contracts/fixtures/dispatch-targeted-delivery.json'
               - 'skills/**'
               - 'packages/daemon/internal/prompts/**'
@@ -2686,7 +2705,7 @@ jobs:
               - 'docs/site/src/content/docs/dispatch/running-dispatch.md'
               # Fixtures its Go tests read: internal/contracts/dedupe_test.go:14, golden_test.go:72,
               # internal/dispatch/docs/approval_carry_test.go:26,
-              # internal/cistore/settlement_fixture_test.go:56.
+              # internal/cistore/settlement_fixture_test.go:57.
               - 'packages/contracts/fixtures/dedupe-keys.json'
               - 'packages/contracts/fixtures/github-envelopes/**'
               - 'packages/contracts/fixtures/decision-blocks/**'
@@ -2850,7 +2869,7 @@ jobs:
               # internal/dispatch/api/delivery_live_diff_test.go:982,1011, which the guard step
               # compiles with the rest of that package.
               - 'packages/contracts/fixtures/live/**'
-              # internal/dispatch/api/openapi_test.go:189-190, whose
+              # internal/dispatch/api/openapi_test.go:199-200, whose
               # TestTheCommittedOpenAPIDocumentIsWhatTheEmitterWrites reads the committed document
               # at run time, through a path built relative to the test binary; the guard step
               # compiles it with the rest of that package.
@@ -2877,6 +2896,7 @@ jobs:
               - '!packages/envoy/cmd/dispatch/awareness_flood_multiprocess_test.go'
               - '!packages/envoy/cmd/dispatch/awareness_many_sockets_multiprocess_test.go'
               - '!packages/envoy/cmd/dispatch/awareness_simultaneous_multiprocess_test.go'
+              - '!packages/envoy/cmd/dispatch/document_gone_test.go'
               - '!packages/envoy/cmd/dispatch/graph_cost_test.go'
               - '!packages/envoy/cmd/dispatch/keyed_kill_multiprocess_test.go'
               - '!packages/envoy/cmd/dispatch/multiprocess_test.go'
@@ -2885,6 +2905,7 @@ jobs:
               - '!packages/envoy/cmd/dispatch/predicate_lens_read_cost_test.go'
               - '!packages/envoy/cmd/dispatch/previous_build_answer_test.go'
               - '!packages/envoy/cmd/dispatch/read_cost_test.go'
+              - '!packages/envoy/cmd/dispatch/restore_approvals_test.go'
               - '!packages/envoy/cmd/dispatch/store_census_test.go'
               - '!packages/envoy/cmd/dispatch/twobuild_cli_test.go'
               - '!packages/envoy/cmd/dispatch/twobuild_documents_test.go'
@@ -2915,6 +2936,7 @@ jobs:
               # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
               # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
               - '!packages/envoy/cmd/dispatch/attribute_removal_test.go'
+              - '!packages/envoy/cmd/dispatch/document_gone_test.go'
               - '!packages/envoy/cmd/dispatch/edit_memory_test.go'
               - '!packages/envoy/cmd/dispatch/graph_cost_test.go'
               - '!packages/envoy/cmd/dispatch/history_memory_test.go'
@@ -2927,6 +2949,7 @@ jobs:
               - '!packages/envoy/cmd/dispatch/predicate_lens_read_cost_test.go'
               - '!packages/envoy/cmd/dispatch/previous_build_answer_test.go'
               - '!packages/envoy/cmd/dispatch/read_cost_test.go'
+              - '!packages/envoy/cmd/dispatch/restore_approvals_test.go'
               - '!packages/envoy/cmd/dispatch/store_census_test.go'
               - '!packages/envoy/cmd/dispatch/twobuild_cli_test.go'
               - '!packages/envoy/cmd/dispatch/twobuild_documents_test.go'
@@ -3019,6 +3042,7 @@ jobs:
               - '!packages/envoy/cmd/dispatch/awareness_flood_multiprocess_test.go'
               - '!packages/envoy/cmd/dispatch/awareness_many_sockets_multiprocess_test.go'
               - '!packages/envoy/cmd/dispatch/awareness_simultaneous_multiprocess_test.go'
+              - '!packages/envoy/cmd/dispatch/document_gone_test.go'
               - '!packages/envoy/cmd/dispatch/edit_memory_test.go'
               - '!packages/envoy/cmd/dispatch/graph_cost_test.go'
               - '!packages/envoy/cmd/dispatch/history_memory_test.go'
@@ -3034,6 +3058,7 @@ jobs:
               - '!packages/envoy/cmd/dispatch/predicate_lens_read_cost_test.go'
               - '!packages/envoy/cmd/dispatch/previous_build_answer_test.go'
               - '!packages/envoy/cmd/dispatch/read_cost_test.go'
+              - '!packages/envoy/cmd/dispatch/restore_approvals_test.go'
               - '!packages/envoy/cmd/dispatch/store_census_test.go'
               - '!packages/envoy/cmd/dispatch/write_cost_test.go'
               - '!packages/envoy/going/**/*_test.go'
@@ -3125,6 +3150,7 @@ jobs:
               - '!packages/envoy/cmd/dispatch/awareness_flood_multiprocess_test.go'
               - '!packages/envoy/cmd/dispatch/awareness_many_sockets_multiprocess_test.go'
               - '!packages/envoy/cmd/dispatch/awareness_simultaneous_multiprocess_test.go'
+              - '!packages/envoy/cmd/dispatch/document_gone_test.go'
               - '!packages/envoy/cmd/dispatch/edit_memory_test.go'
               - '!packages/envoy/cmd/dispatch/graph_cost_test.go'
               - '!packages/envoy/cmd/dispatch/history_memory_test.go'
@@ -3140,6 +3166,7 @@ jobs:
               - '!packages/envoy/cmd/dispatch/predicate_lens_read_cost_test.go'
               - '!packages/envoy/cmd/dispatch/previous_build_answer_test.go'
               - '!packages/envoy/cmd/dispatch/read_cost_test.go'
+              - '!packages/envoy/cmd/dispatch/restore_approvals_test.go'
               - '!packages/envoy/cmd/dispatch/store_census_test.go'
               - '!packages/envoy/cmd/dispatch/write_cost_test.go'
               - '!packages/envoy/going/**/*_test.go'
@@ -3200,6 +3227,7 @@ jobs:
               # The API's CI-reconcile passes route reads cireconcile's own record, so the soak's
               # Dispatch server compiles that package too (go list -deps ./cmd/listener).
               - 'packages/envoy/internal/dispatch/cireconcile/*'
+              - 'packages/envoy/internal/dispatch/decisionread/*'
               - 'packages/envoy/internal/dispatch/delivery/**'
               - 'packages/envoy/internal/dispatch/docs/*'
               - 'packages/envoy/internal/dispatch/docs/crafted/*'
@@ -3248,8 +3276,10 @@ jobs:
               - 'packages/envoy/internal/testport/*'
               - 'packages/envoy/internal/testwait/*'
               - 'packages/envoy/migrationid/*'
-              # cmd/listener/api_test.go:191,436,480, which the soak's run compiles too.
+              # cmd/listener/api_test.go:176,421,465, which the soak's run compiles too.
               - 'packages/contracts/fixtures/dispatch-targeted-delivery.json'
+              # cmd/listener/api_test.go:4605, which the soak's run compiles too.
+              - 'packages/contracts/fixtures/envoy-session-no-interests.json'
               # The soak step takes the serverchange tag's test list from this script at run time.
               - '.github/scripts/go-tagged-tests.sh'
               # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
@@ -3461,9 +3491,12 @@ jobs:
               - 'packages/broker-client/src/**'
               # src/__tests__ import @legion/test-fixtures.
               - 'packages/test-fixtures/src/**'
-              # src/__tests__/delivery.test.ts:16-17 and dispatch-config.test.ts:5.
+              # src/__tests__/delivery.test.ts:17 and dispatch-text.test.ts:128 read the first,
+              # dispatch-config.test.ts:5 the second.
               - 'packages/contracts/fixtures/dispatch-targeted-delivery.json'
               - 'packages/contracts/fixtures/dispatch-public-url.json'
+              # src/__tests__/transport.test.ts:3.
+              - 'packages/contracts/fixtures/envoy-session-no-interests.json'
               # src/__tests__/dispatch-execute.test.ts holds goBlankPattern to this list, which
               # the Go test of packages/envoy/internal/dispatch/text holds unicode.IsSpace to:
               # an edit of the list alone must start both jobs, or the side it disagrees with
@@ -3520,8 +3553,10 @@ jobs:
               # (check-ci-filters.sh's rule 15).
               - '.github/scripts/go-tagged-tests.sh'
               - '.github/workflows/ci-job-listener-server-change.yaml'
-              # The fixture cmd/listener/api_test.go:191,436,480 reads.
+              # The fixture cmd/listener/api_test.go:176,421,465 reads.
               - 'packages/contracts/fixtures/dispatch-targeted-delivery.json'
+              # The fixture cmd/listener/api_test.go:4605 reads.
+              - 'packages/contracts/fixtures/envoy-session-no-interests.json'
               # The two documents outside this module that
               # internal/dispatch/store/counts_in_documents_test.go reads, this being the job
               # that runs internal/dispatch/store: it holds the connection counts those
@@ -3533,6 +3568,7 @@ jobs:
               # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
               # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
               - '!packages/envoy/agentloop/**/*_test.go'
+              - '!packages/envoy/clitest/**/*_test.go'
               - '!packages/envoy/cmd/agent-secrets/**/*_test.go'
               - '!packages/envoy/cmd/agent-secrets-devrelay/**/*_test.go'
               - '!packages/envoy/cmd/agent-secrets-helper/**/*_test.go'
@@ -3706,6 +3742,7 @@ jobs:
               # here, for the reason this filter's header gives: a dependency's testdata is read
               # by that package's own tests, which run in a job of their own.
               - 'packages/envoy/internal/dispatch/cireconcile/*'
+              - 'packages/envoy/internal/dispatch/decisionread/*'
               - 'packages/envoy/internal/dispatch/delivery/*'
               - 'packages/envoy/internal/dispatch/delivery/measures/*'
               # internal/dispatch/api/delivery_measures_test.go:82 and delivery_test.go:714 read
@@ -3894,6 +3931,8 @@ jobs:
               # docs/statement_timing_test.go measures this package's statements through it.
               - 'packages/envoy/internal/dispatch/benchtime/*'
               - 'packages/envoy/internal/dispatch/bytelru/*'
+              # internal/dispatch/docs restores an answered ask through it (decision_restore.go).
+              - 'packages/envoy/internal/dispatch/decisionread/*'
               - 'packages/envoy/internal/dispatch/docs/*'
               - 'packages/envoy/internal/dispatch/docs/crafted/*'
               - 'packages/envoy/internal/dispatch/docs/docstest/*'
@@ -4402,6 +4441,7 @@ jobs:
               - 'packages/envoy/agentloop/**'
               - 'packages/envoy/brokerclient/**'
               - 'packages/envoy/brokertest/**'
+              - 'packages/envoy/clitest/**'
               - 'packages/envoy/cmd/**'
               - 'packages/envoy/daemonpermissions/**'
               - 'packages/envoy/deploy/**'
@@ -4819,6 +4859,7 @@ jobs:
       check_action_pins_test: ${{ needs.changes.outputs.check_action_pins_test }}
       check_private_names_test: ${{ needs.changes.outputs.check_private_names_test }}
       check_plugin_names_test: ${{ needs.changes.outputs.check_plugin_names_test }}
+      check_kept_for_one_release_test: ${{ needs.changes.outputs.check_kept_for_one_release_test }}
       check_fireevent_reasons_test: ${{ needs.changes.outputs.check_fireevent_reasons_test }}
       check_daemon_api_contract_test: ${{ needs.changes.outputs.check_daemon_api_contract_test }}
       check_release_credentials_test: ${{ needs.changes.outputs.check_release_credentials_test }}
@@ -5641,7 +5682,8 @@ jobs:
   # two events this job runs on rather than excluding the draft alone.
   pr-title:
     if: ${{ !github.event.pull_request.draft && (github.event_name == 'pull_request' || github.event_name == 'merge_group') }}
-    runs-on: ubuntu-24.04
+    # arm64, as the comment on changes' runs-on says.
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     # What the two scripts below read through gh, and nothing else: the pull request's commits
     # from the compare route (`contents: read`), the pull request itself, its reviews and its
@@ -5733,7 +5775,8 @@ jobs:
   # the run it runs in.
   cancel-started:
     if: ${{ github.event_name == 'merge_group' && github.run_attempt == '1' }}
-    runs-on: ubuntu-24.04
+    # arm64, as the comment on changes' runs-on says.
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     permissions:
       actions: write
@@ -5855,7 +5898,8 @@ jobs:
       - worker-image
       - browser-image
     if: ${{ always() }}
-    runs-on: ubuntu-24.04
+    # arm64, as the comment on changes' runs-on says.
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     permissions:
       checks: write

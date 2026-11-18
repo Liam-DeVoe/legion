@@ -7,15 +7,13 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
-	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // premortemCapturePath is the capture of dispatch://INFRA-1098/artifact/graph-premortem-md, taken
@@ -38,12 +36,9 @@ type premortemCapture struct {
 
 func readPremortemCapture(t *testing.T) premortemCapture {
 	t.Helper()
-	raw, err := os.ReadFile(filepath.Join(repositoryRoot(t), filepath.FromSlash(premortemCapturePath)))
-	if err != nil {
-		t.Fatalf("read the capture: %v", err)
-	}
+	raw := readRepositoryFile(t, repositoryRoot(t), premortemCapturePath)
 	var capture premortemCapture
-	if err := json.Unmarshal(raw, &capture); err != nil {
+	if err := json.Unmarshal([]byte(raw), &capture); err != nil {
 		t.Fatalf("decode the capture: %v", err)
 	}
 	if capture.Document.Markdown == "" || len(capture.Risks) == 0 {
@@ -122,53 +117,44 @@ func TestTheParserReadsTheCapturedPremortem(t *testing.T) {
 	})
 }
 
-// premortemRig is two issues of one project, each with a Verification document, and a pre-mortem
-// document holding the capture's markdown on the first: what the conversion reads and points at.
+// premortemRig is the reasoning routes' issue (reasoningRig), its requirement r1 and its
+// Verification document's checks k1 and k2, with a second issue of its project holding a
+// Verification document of its own, and a pre-mortem document holding the capture's markdown on
+// the first: what the conversion reads and points at.
 type premortemRig struct {
-	t        *testing.T
-	handler  http.Handler
-	database *store.Store
-	capture  premortemCapture
-	issue    string
+	reasoningRig
+	capture premortemCapture
+	// otherIssue is the second issue's key.
+	otherIssue string
 	// slug is the pre-mortem's slug, refKey its store address and address its dispatch:// one.
 	slug, refKey, address string
-	// check and secondCheck are checks of the issue, otherIssueCheck a check of the second issue,
-	// and requirement a block of the issue's spec that is no check; each a dispatch:// address,
-	// and each node id the id a prevented_by tuple names it by.
-	check, secondCheck, otherIssueCheck, requirement string
-	checkNode, secondCheckNode, otherIssueCheckNode  string
+	// otherIssueCheck is a check of the second issue, a dispatch:// address, and each node id the
+	// id a prevented_by tuple names its check by.
+	otherIssueCheck                                 string
+	checkNode, secondCheckNode, otherIssueCheckNode string
 }
 
 func newPremortemRig(t *testing.T) premortemRig {
 	t.Helper()
-	handler, database := newTestHandlerWithStore(t)
-	rig := premortemRig{t: t, handler: handler, database: database, capture: readPremortemCapture(t)}
-	issue := createInteractionIssue(t, handler, "PMC", "Converted pre-mortem",
-		"An opening paragraph.\n\n:::requirement{#r1}\nEvery write is idempotent.\n:::\n")
-	rig.issue = issue.Key
-	other := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{
-		"project": "PMC", "title": "The issue whose check a risk names",
+	rig := premortemRig{reasoningRig: newReasoningRig(t), capture: readPremortemCapture(t)}
+	project := strings.Split(rig.issue, "-")[0]
+	other := dispatchRequest(t, rig.handler, http.MethodPost, "/api/v1/issues", map[string]string{
+		"project": project, "title": "The issue whose check a risk names",
 		"spec": ":::requirement{#r9}\nEvery node kind has a predicate.\n:::\n",
 	}, "alice")
 	if other.Code != http.StatusCreated {
 		t.Fatalf("create the second issue: status=%d body=%s", other.Code, other.Body.String())
 	}
-	otherIssue := decodeBody[struct {
+	rig.otherIssue = decodeBody[struct {
 		Key string `json:"key"`
 	}](t, other).Key
-	requirement := refs.BlockRef("dispatch://"+rig.issue+"/spec", "r1")
-	rig.requirement = requirement
-	verification := uploadDocument(t, handler, "/api/v1/issues/"+rig.issue, "verification.md",
-		checkServing("k1", requirement)+"\n"+checkServing("k2", requirement))
-	rig.check = refs.BlockRef("dispatch://"+rig.issue+"/artifact/"+verification.Artifact.Slug, "k1")
-	rig.secondCheck = refs.BlockRef("dispatch://"+rig.issue+"/artifact/"+verification.Artifact.Slug, "k2")
-	rig.checkNode = verification.Artifact.RefKey + "#k1"
-	rig.secondCheckNode = verification.Artifact.RefKey + "#k2"
-	otherVerification := uploadDocument(t, handler, "/api/v1/issues/"+otherIssue, "verification.md",
-		checkServing("k9", refs.BlockRef("dispatch://"+otherIssue+"/spec", "r9")))
-	rig.otherIssueCheck = refs.BlockRef("dispatch://"+otherIssue+"/artifact/"+otherVerification.Artifact.Slug, "k9")
+	_, rig.checkNode, _ = decodeNodeAddress(rig.check)
+	_, rig.secondCheckNode, _ = decodeNodeAddress(rig.secondCheck)
+	otherVerification := uploadDocument(t, rig.handler, "/api/v1/issues/"+rig.otherIssue, "verification.md",
+		checkServing("k9", refs.BlockRef("dispatch://"+rig.otherIssue+"/spec", "r9")))
+	rig.otherIssueCheck = refs.BlockRef("dispatch://"+rig.otherIssue+"/artifact/"+otherVerification.Artifact.Slug, "k9")
 	rig.otherIssueCheckNode = otherVerification.Artifact.RefKey + "#k9"
-	premortem := uploadDocument(t, handler, "/api/v1/issues/"+rig.issue, "graph-premortem.md", rig.capture.Document.Markdown)
+	premortem := uploadDocument(t, rig.handler, "/api/v1/issues/"+rig.issue, "graph-premortem.md", rig.capture.Document.Markdown)
 	rig.slug, rig.refKey = premortem.Artifact.Slug, premortem.Artifact.RefKey
 	rig.address = "dispatch://" + rig.issue + "/artifact/" + rig.slug
 	return rig
@@ -201,9 +187,14 @@ func (r premortemRig) convert(entries []PremortemEntry, dryRun bool) (PremortemR
 		r.t.Fatalf("begin the conversion: %v", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	report, err := ConvertPremortem(ctx, tx, PremortemConverter, PremortemConverter, r.issue, r.slug, entries, dryRun)
+	report, events, err := ConvertPremortem(ctx, tx, PremortemConverter, PremortemConverter, r.issue, r.slug, entries, dryRun)
 	if err != nil {
 		return PremortemReport{}, err
+	}
+	retired := report.Lens.Address != nil && !report.AlreadyConverted
+	if (!retired && len(events) != 0) || (retired && (len(events) != 1 || events[0].Type != model.DocumentRetiredEventType)) {
+		r.t.Fatalf("the conversion answers the events %+v beside %+v, want the one document.retired of its retirement, and none where it retired nothing",
+			events, report)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		r.t.Fatalf("commit the conversion: %v", err)
@@ -223,29 +214,30 @@ func (r premortemRig) storeCounts() [2]int {
 	return counts
 }
 
-// current is the far ends of the asserted tuples of kind out of the node the store keys by fromKind
-// and fromID, each as `<kind>/<id>`, sorted.
-func (r premortemRig) current(fromKind, fromID, kind string) []string {
+// retirements is the reason of each document.retired event of the document artifactID, in order.
+func (r premortemRig) retirements(artifactID string) []string {
 	r.t.Helper()
-	held, err := graphstore.CurrentOut(context.Background(), r.database.Pool, fromKind, fromID, []string{kind})
+	reasons, err := readStrings(context.Background(), r.database.Pool, `
+		select payload->>'reason' from events where type = $1 and payload->>'artifact_id' = $2 order by id
+	`, model.DocumentRetiredEventType, artifactID)
 	if err != nil {
-		r.t.Fatalf("read the %s tuples out of %s %s: %v", kind, fromKind, fromID, err)
+		r.t.Fatalf("read the document.retired events of %s: %v", artifactID, err)
 	}
-	ends := make([]string, 0, len(held))
-	for _, tuple := range held {
-		ends = append(ends, tuple.ToKind+"/"+tuple.ToID)
-	}
-	slices.Sort(ends)
-	return ends
+	return reasons
 }
 
 // TestConvertPremortemWritesTheLensItsRisksAndTheirChecksOnce converts the captured pre-mortem.
 // Every refusal of the map writes nothing; a dry run answers the lens, the eleven risks and their
-// checks and writes nothing; the conversion writes one lens of kind pre-mortem under the issue
-// carrying the verdict and both closing sections, eleven risks flat under it in the order of their
-// numbers with their headings, early warnings and preventions, the prevented_by tuples the map
-// names - a check of another issue among them, and none for risk 3 - and one moved_to tuple from
-// the document's address to the lens; a second call finds that lens and writes nothing.
+// checks and writes nothing, the retirement among it; the conversion writes one lens of kind
+// pre-mortem under the issue carrying the verdict and both closing sections, eleven risks flat
+// under it in the order of their numbers with their headings, early warnings and preventions, the
+// prevented_by tuples the map names - a check of another issue among them, and none for risk 3 -
+// and one moved_to tuple from the document's address to the lens, and retires the document: it
+// leaves the issue's document list, refuses new text 409 DOCUMENT_RETIRED, and holds one
+// document.retired event whose reason names the lens. Its old address then answers the lens
+// through GET /api/v1/references?to=, the closure of the issue whose comment cites that address
+// holds the lens as its member, and the store census reads no difference and no unresolved far
+// end. A second call finds that lens and writes nothing.
 func TestConvertPremortemWritesTheLensItsRisksAndTheirChecksOnce(t *testing.T) {
 	rig := newPremortemRig(t)
 	document, err := parsePremortem(rig.capture.Document.Markdown)
@@ -328,8 +320,14 @@ func TestConvertPremortemWritesTheLensItsRisksAndTheirChecksOnce(t *testing.T) {
 		if after := rig.storeCounts(); after != before {
 			t.Errorf("the dry run left %v nodes and tuples, want the %v it found", after, before)
 		}
+		if retirements := rig.retirements(report.Document.ID); len(retirements) != 0 ||
+			!slices.Contains(issueDocumentIDs(t, rig.handler, rig.issue), report.Document.ID) {
+			t.Errorf("after the dry run the document is listed %t and holds the document.retired events %v, want it listed and none",
+				slices.Contains(issueDocumentIDs(t, rig.handler, rig.issue), report.Document.ID), retirements)
+		}
 	})
 
+	createReferenceAPIComment(t, rig.handler, rig.otherIssue, "As "+rig.address+" warns.")
 	report, err := rig.convert(rig.premortemMap(), false)
 	if err != nil {
 		t.Fatalf("convert the pre-mortem: %v", err)
@@ -402,9 +400,36 @@ func TestConvertPremortemWritesTheLensItsRisksAndTheirChecksOnce(t *testing.T) {
 			t.Errorf("risk %d stands under %v, want the lens alone", index, got)
 		}
 	}
-	if got := rig.current(graphstore.KindArtifact, rig.refKey, tupleMovedTo); !slices.Equal(got, []string{"lens/" + lens}) {
+	if got := rig.current(graphstore.KindArtifact, rig.refKey, graphstore.TupleMovedTo); !slices.Equal(got, []string{"lens/" + lens}) {
 		t.Errorf("the document's address moved to %v, want the lens", got)
 	}
+
+	if ids := issueDocumentIDs(t, rig.handler, rig.issue); slices.Contains(ids, report.Document.ID) {
+		t.Errorf("the issue's document list is %v, which holds the converted document %s", ids, report.Document.ID)
+	}
+	ops := map[string]any{"ops": []map[string]any{{"op": "insert", "after": "end", "markdown": "More."}}, "summary": "edit"}
+	requireRefused(t, "an edit of the converted document", dispatchRequest(t, rig.handler, http.MethodPost,
+		"/api/v1/issues/"+rig.issue+"/artifacts/"+rig.slug+"/edits", ops, "alice"), http.StatusConflict, "DOCUMENT_RETIRED", "was retired")
+	if retirements, want := rig.retirements(report.Document.ID), "converted into the pre-mortem lens "+*report.Lens.Address; len(retirements) != 1 || retirements[0] != want {
+		t.Errorf("the converted document holds the document.retired events %q, want one whose reason is %q", retirements, want)
+	}
+	redirected := dispatchReferences(t, rig.handler, rig.address, "alice")
+	if redirected.Code != http.StatusOK {
+		t.Fatalf("GET /api/v1/references?to=%s: status=%d body=%s", rig.address, redirected.Code, redirected.Body.String())
+	}
+	if node := decodeBody[model.GraphReferences](t, redirected).Node; node.Kind != graphstore.KindLens || node.ID != lens || node.Ref != *report.Lens.Address {
+		t.Errorf("GET /api/v1/references?to=%s names %s %s (%s), want the lens %s", rig.address, node.Kind, node.ID, node.Ref, *report.Lens.Address)
+	}
+	closure := dispatchRequest(t, rig.handler, http.MethodGet, "/api/v1/issues/"+rig.otherIssue+"/references", nil, "alice")
+	if closure.Code != http.StatusOK {
+		t.Fatalf("GET the closure of %s: status=%d body=%s", rig.otherIssue, closure.Code, closure.Body.String())
+	}
+	if members := decodeBody[model.IssueReferences](t, closure).Members; len(members) != 1 || members[0].Kind != graphstore.KindLens ||
+		members[0].Address != *report.Lens.Address || members[0].Artifact.ID != report.Document.ID {
+		t.Errorf("the closure of %s, whose comment cites %s, holds %+v; want the lens %s, the retired document beside it",
+			rig.otherIssue, rig.address, members, *report.Lens.Address)
+	}
+	requireTheCensusAgreesOver(t, rig.database, "after the conversion")
 
 	converted := rig.storeCounts()
 	again, err := rig.convert(rig.premortemMap(), false)

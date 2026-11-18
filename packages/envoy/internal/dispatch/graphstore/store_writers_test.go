@@ -26,20 +26,27 @@ const graphstoreImportPath = "github.com/sjawhar/envoy/internal/dispatch/graphst
 // named without a package.
 const graphstoreDirectory = "internal/dispatch/graphstore"
 
+// graphstoretestDirectory is the one package besides the store's own whose statements write its
+// tables: graphstoretest, which seeds for other packages' tests the rows the store's writers
+// refuse to write, and which no deployment builds. Any other package under the store's directory
+// is held to the rule like every package outside it.
+const graphstoretestDirectory = graphstoreDirectory + "/graphstoretest"
+
 // storeWriteFunctions are the calls a write of graph_nodes and graph_tuples from outside this
-// package goes through, the same ones docs' register of the tree's passes scans for
-// (storeWriterCall), and the session writer beside them: Write, WriteUncaused and Caused in a
-// caller's transaction, WriteArms and WriteArmsUncaused spliced into a caller's statement,
-// Authored, Reached and SessionRecorded, which run those arms for the writers that record an
-// author, a reached session and a session an ask names, EraseNode, the erase's delete of a node
-// and its tuples, RedactValues, the erase's rewrite of the quote of an erased block in the text
-// values of the blocks holding it, FillScopes, the backfill's fill of the project of a node stored
-// with none, and Retarget, the move of one pointer tuple of a node from one far end to another.
-// Each is a function of the package, never a method, so a call of one is named by the package
-// and found here wherever it is made. A write that holds a statement of its own instead is found
-// by rawStoreWrite, and none outside this package may hold one.
+// package goes through, the same thirteen docs' register of the tree's passes scans for
+// (storeWriterCall): Write, WriteUncaused and Caused in a caller's transaction, WriteArms and
+// WriteArmsUncaused spliced into a caller's statement, Authored, Reached and SessionRecorded,
+// which run those arms for the writers that record an author, a reached session and a session
+// an ask names, EraseNode, the erase's delete of a node and its tuples, RedactValues, the erase's
+// rewrite of the quote of an erased block in the text values of the blocks holding it,
+// FillScopes, the backfill's fill of the project of a node stored with none, Retarget, the move
+// of one pointer tuple of a node from one far end to another, and QueueFrameTuple, Write's append
+// of one frame value of a run queued on a caller's batch. Each is a function of the package,
+// never a method, so a call of one is named by the package and found here wherever it is made. A
+// write that holds a statement of its own instead is found by rawStoreWrite, and none outside
+// this package may hold one.
 var storeWriteFunctions = []string{"Write", "WriteUncaused", "WriteArms", "WriteArmsUncaused", "Caused",
-	"Authored", "Reached", "SessionRecorded", "EraseNode", "RedactValues", "FillScopes", "Retarget"}
+	"Authored", "Reached", "SessionRecorded", "EraseNode", "RedactValues", "FillScopes", "Retarget", "QueueFrameTuple"}
 
 // rawStoreWrite matches a statement that writes graph_nodes or graph_tuples itself rather than
 // through one of storeWriteFunctions: an insert, an update or a delete, in any case, over any
@@ -92,7 +99,7 @@ var storeWriteCallSites = []string{
 	"api/comment_delivery.go#recordAnsweredDelivery",
 	"api/comment_delivery.go#replyComment",
 	"api/message_delivery.go#completeMessageDelivery",
-	// The nodes and tuples of dispatch://INFRA-1950's reasoning kinds - a lens, its findings, a
+	// The nodes and tuples of the reasoning kinds a request writes - a lens, its findings, a
 	// risk and a constraint - with the author's node where the credential proves one: the issue's
 	// owner row, then one Write of every node in ascending (kind, id) and every tuple at the
 	// sentinel, appending no event. Its order is the order TestEveryStoreWriteTakesOneLockOrder
@@ -110,12 +117,31 @@ var storeWriteCallSites = []string{
 	// TestEveryStoreWriteTakesOneLockOrder proves of Write, after the owner row writeReasoningNodes
 	// takes first too.
 	"api/reasoning_write.go#writeNodeState",
-	// An issue's own field write made for a run (api/issue_patch.go, D14 of dispatch://INFRA-1950):
+	// An issue's own field write made for a run (api/issue_patch.go), which names the issue changed:
 	// the issue's owner row (lockPatchRows), the issue's row, then, on a context that carries a
 	// run alone, the issue's node through WriteUncaused, the issue's own event, and what the node
 	// states with its changed_by_run under that event through Caused. api's
 	// TestEveryApiStoreWriterTakesTheStoreLockOrder holds it to those steps.
 	"api/issue_patch.go#patchIssue",
+	// An issue's relations (dispatch://INFRA-1253 R9, R10), which its create and its PATCH state:
+	// after the issue's owner row, its row and its issue_links rows, the node of the item its
+	// filed_from names where the store held none, through Write, with a comment's row named after
+	// it (stateFiledFromNode), then the issue's own node through WriteUncaused (createIssue's and
+	// patchIssue's), the issue's event, and last the relations that event causes, its child_of,
+	// needs, duplicate_of and filed_from and the part_of it no longer hangs from, in one statement
+	// of the store's arms (stateIssueRelations). api's TestEveryApiStoreWriterTakesTheStoreLockOrder
+	// holds a PATCH of its needs, and a PATCH of its filed_from at a comment with no node, to those
+	// steps.
+	"api/issue_relations.go#stateFiledFromNode",
+	"api/issue_relations.go#stateIssueRelations",
+	// An edit of an ask's or a comment's words made for a run (api/asks.go, api/comment_actions.go),
+	// which names the ask or the comment changed: the owner row of the ask or the comment, its row
+	// `for no key update` or `for update` and then its update, then, on a context that carries a
+	// run alone, its node through WriteUncaused, its own event, and what the node states with its
+	// changed_by_run under that event through Caused. api's
+	// TestEveryApiStoreWriterTakesTheStoreLockOrder holds each to those steps.
+	"api/asks.go#editAsk",
+	"api/comment_actions.go#editComment",
 	// A run of the command bar (api/going.go), which takes no owner row: its record writes the
 	// interaction node, its author's node and their tuples in one Write before the going_requests
 	// row, and each frame, in a transaction of its own, takes the run's interaction node row
@@ -137,7 +163,7 @@ var storeWriteCallSites = []string{
 	"graphcensus/backfill.go#writeGoneRun",
 	"graphcensus/backfill.go#writeRunFrames",
 	// The node of every issue, document, ask and message a request creates, in the project or
-	// between the parties it belongs to (dispatch://INFRA-3862): written before its row, and
+	// between the parties it belongs to: written before its row, and
 	// caused by the event the create appends after it. createIssue, storeArtifact and
 	// createAskFor are listed above for their block index and follow; these are the others. Their
 	// order - the owner row their path already takes, the node before the row, the event before
@@ -182,9 +208,23 @@ var storeWriteCallSites = []string{
 	"docs/mutation.go#WriteVersionNode",
 	// A document's retirement (dispatch://INFRA-1150 R11), in the same order under the document's
 	// owner row: its artifact node stated gone, then the artifacts row that retires it, then
-	// document.retired and the node's facts under it.
+	// document.retired and the node's facts under it. A removal of an untouched document states
+	// its node gone through the same writer (removedDocumentNodes, listed above, through
+	// docs.WriteRemovedNode), with each changed_by_run of the node retracted, under the owner row
+	// and the room, then deletes its rows, appends artifact.removed and the node's facts under it
+	// (api's TestEveryApiStoreWriterTakesTheStoreLockOrder holds it to those steps).
 	"docs/retire.go#RetireDocument",
 	"docs/retire.go#writeRetiredNode",
+	// A person's Keep of an agent's decision (dispatch://INFRA-1150 R2): under the issue's owner
+	// row, the person's node, then the decision_keeps row that projects the Keep, then
+	// decision.kept, and the kept_by tuple and the kept_text_sum value under it, through Caused.
+	"api/decisions.go#keepDecisionNode",
+	// The decisions step's restore and conversion of an issue (dispatch://INFRA-1150 R6 to R9),
+	// under the issue's owner row and its asks' rows: each document's version and its event, the
+	// index pass's facts under that event through Caused, then the moves, the restored asks'
+	// relations and the carried Keeps, with the person node a Keep names, under the spec's event.
+	"docs/decision_restore.go#writeVersion",
+	"docs/decision_restore.go#writeFacts",
 	// The seed's comments, with their author's person node and each comment's authored_by
 	// tuple, which its one batch write states as a seeded database's own writer, the session
 	// nodes of the followers its ask batch copies, and its issues', asks' and messages' nodes,
@@ -202,13 +242,14 @@ var storeWriteCallSites = []string{
 	"graphcensus/backfill.go#writeCommentBatch",
 	"graphcensus/backfill.go#writeRoleBatch",
 	"graphcensus/backfill.go#writeSessionBatch",
-	// The backfill's passes over the project of every node (dispatch://INFRA-3862): the nodes of
-	// the issues, documents, asks and messages written before their writers wrote one, and the
-	// project of the comment and block nodes written before a node named one
-	// (graphstore.FillScopes), the block batch under the revision fence (lockBlockDocuments).
-	// graphcensus' TestTheBackfillGivesEveryRowItsNodeAndProject runs both. An issue's or a
-	// document's batch takes the owner rows it stands under first, then its node rows, then names
-	// each node on its row (dispatch://INFRA-1253), which graphcensus'
+	// The backfill's passes over the project of every node: the nodes of the issues, documents,
+	// asks and messages written before their writers wrote one, and the project of the comment and
+	// block nodes written before a node named one (graphstore.FillScopes), the block batch under the
+	// revision fence (lockBlockDocuments). graphcensus' TestTheBackfillGivesEveryRowItsNodeAndProject
+	// runs both. An issue's or a document's batch takes the owner rows it stands under first, then
+	// its node rows, then, for an issue, the child_of claim of the parent its row names under that
+	// lock through WriteArms, which appends at the sentinel, outside every repeat key, and so waits
+	// on no row, then names each node on its row (dispatch://INFRA-1253), which graphcensus'
 	// TestTheObjectBatchTakesTheStoreLockOrder proves; an ask's or a message's takes no other row.
 	"graphcensus/projects.go#writeObjectBatch",
 	"graphcensus/projects.go#writeScopeBatch",
@@ -217,6 +258,11 @@ var storeWriteCallSites = []string{
 	// rows read again under them, then the version nodes and their facts, in one graphstore.Write
 	// per batch (graphcensus' TestTheVersionBatchTakesTheStoreLockOrder).
 	"graphcensus/census_versions.go#writeVersionBatch",
+	// The backfill's pass over the waits a process of the release before wrote with no node
+	// (dispatch://INFRA-1253): the issue rows the batch's links stand under first, then the links
+	// read again under them, then their needs tuples through Write, then the rows naming the issue's
+	// node (graphcensus' TestTheIssueLinkBatchTakesTheStoreLockOrder).
+	"graphcensus/census_issues.go#writeIssueLinkBatch",
 	// The erase, the one writer that deletes from the store, through EraseNode: the tuples on both
 	// sides of the node, then the node's row. It takes the owner rows it writes under before that
 	// row, and its projection rows after it (grapherase's TestTheEraseTakesTheStoreLockOrder).
@@ -268,8 +314,10 @@ var storeWriteCallSites = []string{
 	// its record of a fallback pass, which splices in what each published copy delivered.
 	"outbox/mentions.go#recordFallbackCopies",
 	"outbox/publisher.go#recordBatch",
-	// The block index: its nodes inside the revision fence, whose tuples and cause wait for the
-	// event that recorded the version (the sites of Caused above).
+	// The block index: its nodes inside the revision fence, with the person and session nodes of
+	// the authors of each block whose node records them (dispatch://INFRA-1253's T7) in the same
+	// node write, whose tuples and cause wait for the event that recorded the version (the sites
+	// of Caused above).
 	"refs/blocks.go#IndexBlocks",
 	// The typed-node pass (dispatch://INFRA-1150): the decision and reading nodes of a version and
 	// their authors' nodes, in the transaction that accepts it, under the document's owner row its
@@ -448,10 +496,11 @@ func storeWriteSitesIn(relative string, files *token.FileSet, file *ast.File) ma
 // rawStoreWritesIn is every site one file writes the store at with a statement of its own, each
 // with the statements it holds as "<statement> at <file>:<line>", read from the file's string
 // literals alone, so a statement a comment spells is none. The store's own package writes its
-// tables that way by design, through the writers storeWriteFunctions names, so its files are
-// not read here.
+// tables that way by design, through the writers storeWriteFunctions names, and graphstoretest
+// seeds what those writers refuse (graphstoretestDirectory), so the files of those two packages
+// alone are not read here.
 func rawStoreWritesIn(relative string, files *token.FileSet, file *ast.File) map[string][]string {
-	if strings.HasPrefix(relative, graphstoreDirectory+"/") {
+	if directory := filepath.ToSlash(filepath.Dir(relative)); directory == graphstoreDirectory || directory == graphstoretestDirectory {
 		return nil
 	}
 	sites := map[string][]string{}
