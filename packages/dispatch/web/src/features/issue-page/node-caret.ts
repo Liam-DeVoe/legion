@@ -332,14 +332,17 @@ export function tabStopsFrom(
 }
 
 /** Whether the browser stops at `element`, one of `TAB_STOPS`, for Tab: no negative `tabindex`,
- *  no content of an editable - whose links take no focus of their own there, while what the
- *  editor draws `contenteditable="false"` does - and able to take the focus (`canHoldFocus`). A
- *  stop the page draws nothing of - `display: none`, a closed `details` - is one the browser
- *  refuses the focus to, which `useNodeEditing.ts` steps past. */
+ *  nothing editable inside an editable - a link in the editor's text takes no focus of its own,
+ *  while the editable itself does, and so does a control the editor draws
+ *  `contenteditable="false"`, even one right in its text, as a mermaid block's "Mermaid source"
+ *  toggle stands in an editable `details` (`@legion/proof-editor`'s `mermaid-code-block-view.ts`)
+ *  and a callout may hold that block - and able to take the focus (`canHoldFocus`). A stop the
+ *  page draws nothing of - `display: none`, a closed `details` - is one the browser refuses the
+ *  focus to, which `useNodeEditing.ts` steps past. */
 function isTabStop(element: HTMLElement): boolean {
   return (
     (!element.hasAttribute("tabindex") || element.tabIndex >= 0) &&
-    element.parentElement?.isContentEditable !== true &&
+    !(element.isContentEditable && element.parentElement?.isContentEditable === true) &&
     canHoldFocus(element)
   );
 }
