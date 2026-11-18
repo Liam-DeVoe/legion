@@ -44,7 +44,9 @@ func (s *Store) Projects(ctx context.Context) ([]string, error) {
 }
 
 // Current reads one page of the evals of projects through evals_current, ordered by project in
-// projects' order and then by slug, with each eval's current series: every eval of those projects,
+// projects' order and then by slug byte by byte (`collate "C"`), so the order and each page of it
+// are the same whatever collation the database was made with (en_US or ICU puts production-deploy
+// before pr-open-to-merge), with each eval's current series: every eval of those projects,
 // or those of one kind where kind is not "". The page runs across the projects: Total is every
 // project's count, and offset counts from the first project's first eval. Its three statements
 // (the count, the page and the page's series) read one snapshot, in a read-only repeatable-read
@@ -72,7 +74,7 @@ func (s *Store) Current(ctx context.Context, projects []string, kind string, lim
 	limitAt, offsetAt := strconv.Itoa(len(args)+1), strconv.Itoa(len(args)+2)
 	rows, err := tx.Query(ctx, `
 		select `+definitionColumns+` from evals_current where `+filter+`
-		order by array_position($1::text[], project_key), slug limit $`+limitAt+` offset $`+offsetAt, append(args, limit, offset)...)
+		order by array_position($1::text[], project_key), slug collate "C" limit $`+limitAt+` offset $`+offsetAt, append(args, limit, offset)...)
 	if err != nil {
 		return Page[Entry]{}, fmt.Errorf("read the evals of %v: %w", projects, err)
 	}
