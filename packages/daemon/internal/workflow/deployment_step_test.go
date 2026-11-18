@@ -188,3 +188,77 @@ func TestADeploymentRoleBeforeTheImplementerNeedsNoPullRequest(t *testing.T) {
 		t.Fatalf("the implementer's starts = %+v, want one", starts)
 	}
 }
+
+// Each notice of a step of a role the deployment defines names that role: the failed claim of the
+// checker that runs the issue's step holds the issue from step, and the held notice names the
+// checker; the held notice of an issue held from step (HeldNotice) names its running role; and the
+// checker's pass writes one phase-finished notice, which names the checker.
+func TestAHeldStepOfTheDeploymentNamesItsRole(t *testing.T) {
+	t.Run("the checker's failed claim", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine := returnEngine()
+		root := stepRoot(t, pool, phase.Step)
+		seedStepsAt(t, pool, root.Key, root.Generation, 2, map[string]string{"checker": "testing"}, "implementer", "checker")
+
+		applyRefusingNothing(t, pool, engine, intake.ClaimFailed{Issue: root.Key, Role: "checker", Reason: "the pane died"})
+
+		if issue := issueOf(t, pool, engine, root.Key); issue.Phase != phase.Held || issue.Hold == nil || issue.Hold.From != phase.Step {
+			t.Fatalf("%s stands in %s with hold %+v, want held from step", root.Key, issue.Phase, issue.Hold)
+		}
+		if roles := rolesOf(noticesOf(t, pool, root.Key, "held")); len(roles) != 1 || roles[0] != "checker" {
+			t.Fatalf("the held notices name %v, want the checker once", roles)
+		}
+	})
+
+	t.Run("HeldNotice", func(t *testing.T) {
+		issue := record.Issue{Key: "LEGION-208", Phase: phase.Held, Hold: &record.Hold{From: phase.Step}, StepRole: "checker"}
+		if got := HeldNotice(issue); got.Role != "checker" || got.Phase != phase.Step {
+			t.Fatalf("HeldNotice of an issue held from step = %+v, want the checker's, of step", got)
+		}
+	})
+
+	t.Run("the checker's pass", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine := returnEngine()
+		root := stepRoot(t, pool, phase.Step)
+		seedStepsAt(t, pool, root.Key, root.Generation, 2, map[string]string{"checker": "testing"}, "implementer", "checker")
+
+		stepReports(t, pool, engine, root.Key, "checker", "pass", "Checked.", "", 0)
+
+		if roles := rolesOf(noticesOf(t, pool, root.Key, "phase-finished")); len(roles) != 1 || roles[0] != "checker" {
+			t.Fatalf("the phase-finished notices name %v, want the checker once", roles)
+		}
+	})
+}
+
+// A completion that arrives after an event moved the issue on to a step of a role the deployment
+// defines is a report of a step whose run ended, as before any other step: in `implementer reviewer
+// checker`, the approving review moves the task from the reviewer's step 2 to the checker's step 3
+// before the reviewer completes, and the reviewer's completion is answered that its step 2 ended
+// and Legion runs step 3 now, its handoff record kept on its row, and the task stays at step 3.
+func TestALateCompletionBeforeADeploymentStepIsAnsweredAsAnEndedStep(t *testing.T) {
+	pool := migratedPool(t)
+	engine := returnEngine()
+	root := stepRoot(t, pool, phase.Admitted)
+	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "reviewer", "checker")
+	if _, err := pool.Exec(t.Context(), "update plan_steps set type = 'testing' where issue = $1 and task = 'a' and role = 'checker'", root.Key); err != nil {
+		t.Fatalf("store the type of checker: %v", err)
+	}
+	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
+	reviewer := seedPhaseWorker(t, pool, root.Key, claim.RoleReviewer, "")
+	move(t, pool, engine, root.Key, TriggerReviewApproved, record.TaskPlace{}, record.PhaseRow{})
+	assertWalksAt(t, pool, engine, root.Key, phase.Step, stepPlace(3))
+
+	result := applyFacts(t, pool, engine)("reviewer-late", intake.HandoffComplete{Generation: 1, Issue: root.Key, Role: claim.RoleReviewer,
+		Claim: reviewer, Summary: "Approved.", Commit: stepHead, HandoffRecord: "review-1", HandoffVersion: 1})
+
+	const ended = "step 2 (reviewer) of task a of LEGION-208 has ended, and Legion runs step 3 (checker) now."
+	if result.Refusal == nil || result.Refusal.Code != "STEP_ENDED" || !strings.HasPrefix(result.Refusal.Message, ended) {
+		t.Fatalf("the reviewer's late completion = %+v, want STEP_ENDED beginning %q", result.Refusal, ended)
+	}
+	if row := roleRowOf(t, pool, engine, root.Key, claim.RoleReviewer); row.LastHandoff != "review-1" {
+		t.Fatalf("the reviewer's row keeps the handoff record %q, want review-1", row.LastHandoff)
+	}
+	assertWalksAt(t, pool, engine, root.Key, phase.Step, stepPlace(3))
+}

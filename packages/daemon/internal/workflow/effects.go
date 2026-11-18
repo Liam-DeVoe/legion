@@ -47,10 +47,11 @@ func PhaseFinished(ctx context.Context, store record.Store, tx pgx.Tx, issue rec
 // It goes once no checkout a comparison run can name predates dispatch://INFRA-2800: then
 // daemon-pane.go calls phase.RoleFor against every checkout it is built inside, and this module
 // holds one exported name for the rule again rather than two a new caller could pick between.
-// Until then this name has callers of its own inside this module, seven of them: readyWorkerTask
-// (catch_up.go), leftItsPhase and noticeFor's two reads (engine.go), tellGateMoved (gate.go),
-// tellChecks (review.go) and one test (checks_red_test.go). Each reads the same table as a
-// caller of phase.RoleFor, since that is the one definition and this forwards to it.
+// Until then this name has callers of its own: in this package one test (checks_red_test.go),
+// since every reader of the engine reads the role with the issue (record.Issue.RoleAt) or with
+// the walk (Walk.RoleAt); and outside it the stalled-tree notice (admit's stalled.go) and test
+// code. Each reads the same table as a caller of phase.RoleFor, since that is the one definition
+// and this forwards to it.
 func RoleFor(p phase.Phase) claim.Role {
 	return phase.RoleFor(p)
 }
@@ -1088,7 +1089,7 @@ func (e *Engine) resumeTask(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 // tells a carried root's own architect with it, since the hold's first notice went to the
 // architect of the tree the root was handed over from.
 func HeldNotice(issue record.Issue) record.Notice {
-	return record.Notice{Kind: "held", Role: phase.RoleFor(issue.Hold.From), Phase: issue.Hold.From, Reason: string(issue.Hold.Reason)}
+	return record.Notice{Kind: "held", Role: issue.RoleAt(issue.Hold.From), Phase: issue.Hold.From, Reason: string(issue.Hold.Reason)}
 }
 
 // ChildReenteredNotice is the notice a re-entered child's tree architect is told, whichever path

@@ -843,7 +843,7 @@ func (e *Engine) drawExperiments(ctx context.Context, tx pgx.Tx, issue string) e
 // task with plan rows, handoff refuses the completion this says to record, as the report of a step
 // whose run Legion ended (lateReport); the test of the run itself is ranUnreported.
 func (e *Engine) leftItsPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, token claim.Token) (bool, error) {
-	if issue.Phase == phase.Admitted || RoleFor(issue.Phase) == "" || phase.LeftBy(role, issue.Phase) == "" {
+	if issue.Phase == phase.Admitted || issue.RoleAt(issue.Phase) == "" || phase.LeftBy(role, issue.Phase) == "" {
 		return false, nil
 	}
 	return e.ranUnreported(ctx, tx, issue, role, token)
@@ -1115,7 +1115,7 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 	}
 	working := issue.WorkingPhase()
 	failure := noticeFailure(fact)
-	if phase.RoleFor(working) != fact.Role {
+	if issue.RoleAt(working) != fact.Role {
 		return intake.Result{}, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "worker-died", Role: fact.Role, Phase: issue.Phase, Failure: failure,
 			Reason: fmt.Sprintf("the %s does not work %s's phase %s; nothing is held", fact.Role, issue.Key, working)})
 	}
@@ -1626,6 +1626,13 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if err != nil {
 		return err
 	}
+	// ended is the role whose step this move ends, read once before the task moves: the role of
+	// the step at the task's place on a task with plan rows (Walk.RoleAt), which names a role the
+	// deployment defines at step, and the role of the phase on an issue with none.
+	ended := phase.RoleFor(issue.Phase)
+	if w.Stored {
+		ended = w.RoleAt(w.Place)
+	}
 	snapshot := Snapshot{Phase: issue.Phase, HasOpenOrMergedPR: record.LetsImplementationMove(pr)}
 	row, ok := w.row(issue.Phase, trigger, target, snapshot)
 	// A failed step of a task with plan rows that names no step to return to returns its work to
@@ -1815,7 +1822,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 			return err
 		}
 	}
-	if err := e.notice(ctx, tx, issue.Key, noticeFor(trigger, from, row.To, handoff, reason)); err != nil {
+	if err := e.notice(ctx, tx, issue.Key, noticeFor(trigger, from, row.To, handoff, reason, ended)); err != nil {
 		return err
 	}
 	if holds {
@@ -1851,19 +1858,21 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 // phase it moved the issue to, the role that moved it and the words that role gave. The handoff
 // row a move writes is empty, so without that reason the architect reads a completion with no
 // summary and no verdict and cannot tell it from a worker that finished its phase.
-func noticeFor(trigger TriggerKind, from, to phase.Phase, handoff record.PhaseRow, reason string) record.Notice {
+// ended is the role whose step the move ends (transition reads it from the task's place), so a
+// step of a role the deployment defines, which runs as step, is named by its own role.
+func noticeFor(trigger TriggerKind, from, to phase.Phase, handoff record.PhaseRow, reason string, ended claim.Role) record.Notice {
 	switch trigger {
 	case TriggerConflict:
 		return record.Notice{Kind: "checks-red", Role: claim.RoleArchitect, Phase: from, Reason: reason}
 	case TriggerGateOpened:
 		return record.Notice{Kind: "phase-finished", Phase: from, Summary: handoff.Summary, Verdict: handoff.Verdict}
 	case TriggerBackward:
-		return record.Notice{Kind: "phase-finished", Role: RoleFor(from), Phase: from,
-			Reason: fmt.Sprintf("moved back to %s by the %s: %s", to, RoleFor(from), reason)}
+		return record.Notice{Kind: "phase-finished", Role: ended, Phase: from,
+			Reason: fmt.Sprintf("moved back to %s by the %s: %s", to, ended, reason)}
 	case TriggerSignOff, TriggerPullRequestMerged:
 		return record.Notice{}
 	}
-	return record.Notice{Kind: "phase-finished", Role: phase.RoleFor(from), Phase: from, Summary: handoff.Summary, Verdict: handoff.Verdict}
+	return record.Notice{Kind: "phase-finished", Role: ended, Phase: from, Summary: handoff.Summary, Verdict: handoff.Verdict}
 }
 
 // phaseEnded tells the role a conflicting-head transition out of from leaves with no phase that
