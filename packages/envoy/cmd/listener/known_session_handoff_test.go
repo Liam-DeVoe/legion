@@ -160,7 +160,7 @@ func TestASendToAReleasedLegionAgentTheKnownStoreHoldsIsStoredForItsWake(t *test
 	if held := rig.storedOn(t, subject); held != 1 {
 		t.Fatalf("the stream holds %d messages on %s, want the one the send stored for the released agent", held, subject)
 	}
-	awaitAgentWake(t, wakes, agent)
+	awaitWake(t, wakes, wakeKindAgent, agent)
 	if count, data := handoffs(t, rig.harness.client, agent); count != 0 {
 		t.Fatalf("the stream holds %d hand-offs for the released agent %s, want none: its message is a wake for the worker; the last: %s",
 			count, agent, data)

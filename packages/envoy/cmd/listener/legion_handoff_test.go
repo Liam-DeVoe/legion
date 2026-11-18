@@ -443,7 +443,7 @@ func TestASendToAReleasedLegionAgentIsItsWakeAndNotAHandOff(t *testing.T) {
 		t.Fatalf("a send to the released session %s = %d %s, want the 404 naming it that a send to a stopped session got before the hand-off",
 			released, recorder.Code, recorder.Body.String())
 	}
-	awaitAgentWake(t, wakes, released)
+	awaitWake(t, wakes, wakeKindAgent, released)
 	if count, data := handoffs(t, rig.client, released); count != 0 {
 		t.Fatalf("the stream holds %d hand-offs for the released session %s, want none: its message is a wake for the worker, not a question for the daemon; the last: %s",
 			count, released, data)
@@ -513,7 +513,7 @@ func TestAGiveUpForAReleasedLegionAgentReachesItsWake(t *testing.T) {
 		return false
 	})
 	assertDeliveryException(t, run.exceptions, run.item, "no_holder")
-	awaitAgentWake(t, wakes, released)
+	awaitWake(t, wakes, wakeKindAgent, released)
 	if count, data := handoffs(t, harness.client, released); count != 0 {
 		t.Fatalf("the stream holds %d hand-offs for the released session %s, want none: its give-up is its wake; the last: %s", count, released, data)
 	}
