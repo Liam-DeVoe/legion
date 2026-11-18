@@ -76,8 +76,8 @@ const (
 	// Base is how long the wait gives a horizon that has said nothing. Three times the worst of U
 	// and W is 1.38 s, but the floor is the soonest a held horizon can have said so: its
 	// stallAfter (StallWarning) plus its warnEvery (StallWarning) plus horizonDiagnosisTimeout
-	// (2 s), the bound on the pg_stat_activity diagnosis warnStall runs before it logs, which is
-	// 2.5 s. Rounded up to a whole second.
+	// (2 s), the bound on the diagnosis warnStall runs before it logs (its read of the event
+	// writers, events.StallHolderSQL), which is 2.5 s. Rounded up to a whole second.
 	Base = 3 * time.Second
 	// Extension is how long the wait gives a horizon that has said it is held, since its newest
 	// warning. Three times G is 0.96 s, but G's own ceiling is higher than anything measured, so
@@ -85,7 +85,7 @@ const (
 	// after its diagnosis, on a goroutine of its own (the go h.warnStall(...) call in horizon.go's
 	// observation loop), and that diagnosis is bounded by horizonDiagnosisTimeout (2 s), so two
 	// logged warnings can stand warnEvery (StallWarning) plus horizonBackoffMax (250 ms) plus
-	// horizonDiagnosisTimeout apart - 2.5 s - on a server whose pg_stat_activity is slow, which
+	// horizonDiagnosisTimeout apart - 2.5 s - on a server whose lock table is slow to read, which
 	// is the server a test meets in CI. Rounded up to a whole second.
 	Extension = 3 * time.Second
 	// Poll is how often the wait reads the warnings. A sampling rate, not a bound: it is below a
@@ -492,8 +492,8 @@ func Wait[T any](t *testing.T, what string, arrived <-chan T, warnings func() []
 // horizon's that runs a diagnosis and then logs, and a loaded machine can put that goroutine off
 // past Base or Extension while a transaction holds the horizon as surely as before. So when the
 // horizon has said nothing for that long, the watch reads the holder itself, with the query the
-// diagnosis runs (events.StallHolderSQL), and fails only if no transaction holds an id on the
-// instance; a holder it finds counts as a warning, so the own-hold rule judges it too.
+// diagnosis runs (events.StallHolderSQL), and fails only if no event write of the database holds
+// the horizon back; a holder it finds counts as a warning, so the own-hold rule judges it too.
 type Watch struct {
 	warnings func() []Warning
 	probe    Querier

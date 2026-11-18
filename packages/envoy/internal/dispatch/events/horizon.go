@@ -15,12 +15,16 @@
 // no event writer was running as the statement ran (below), and X, the observer's own transaction
 // id, which pg_current_xact_id assigns while the statement runs, after S was taken.
 //
-// An event writer is a transaction that holds a write lock on events in this database. An insert
-// into events takes RowExclusiveLock on the table before nextval hands its row an id, and keeps
-// the lock until its transaction ends. Every transaction also holds an ExclusiveLock on its own
-// transaction id until it ends. Postgres releases a transaction's locks only after it has left the
-// proc array (CommitTransaction and AbortTransaction in xact.c), so once its locks are gone its
-// commit is visible to every later statement, or it has rolled back.
+// An event writer is a transaction that holds RowExclusiveLock on events in this database. An
+// insert into events takes that lock on the table when it is parsed (setTargetTable in
+// parse_clause.c), before nextval hands its row an id, and keeps it until its transaction ends,
+// even when the transaction also holds a stronger lock on events: pg_locks lists one row for each
+// mode a transaction holds. A lock of another mode alone (VACUUM's, ANALYZE's or CREATE INDEX
+// CONCURRENTLY's ShareUpdateExclusiveLock, ALTER TABLE's AccessExclusiveLock) draws no event id
+// and makes no writer. Every transaction also holds an ExclusiveLock on its own transaction id, and
+// one on each id its subtransactions took, until it ends. Postgres releases a transaction's locks
+// only after it has left the proc array (CommitTransaction and AbortTransaction in xact.c), so
+// once its locks are gone its commit is visible to every later statement, or it has rolled back.
 //
 // A is final once no event writer that holds a transaction id below X is still running. Take any
 // transaction T that owns an id g <= A and had not committed when S was taken. T is an event
@@ -44,14 +48,17 @@
 // the xmin of its snapshot S', the oldest transaction id still running on the whole instance when
 // S' was taken: no transaction below it was running at all. The other is read from the lock
 // table, once (pg_locks, in a materialized CTE, so every row comes from one call): the oldest
-// transaction id among the event writers it lists, each read from the ExclusiveLock that writer
-// holds on its own id (one transaction's locks share its virtualtransaction), or the observer's
-// own X' when it lists none. T's write lock and the lock on its own id are both granted from
-// before it drew g until it ends, so no event writer holding an id below that bound was running
-// when the lock table was read. Observations of one Horizon run one at a time, so X' is above the
-// X of every observation it checks. F' > X therefore means no event writer holding an id below X
-// was running, and proves the earlier observation safe. H is the A of the newest observation a
-// later one proved safe this way, and it only grows until Reset.
+// transaction id among the event writers it lists, or the observer's own X' when it lists none.
+// A writer's id is the least of the ids it holds an ExclusiveLock on under its own
+// virtualtransaction, which is its top transaction id: a subtransaction takes an id only after its
+// parent has one. Each is widened from the 32 bits pg_locks gives to the 64 bits of
+// pg_current_xact_id before the least is taken, since a subtransaction's id can lie past a
+// multiple of 2^32 that its top id lies below. T's write lock and the lock on its own id are both
+// granted from before it drew g until it ends, so no event writer holding an id below that bound
+// was running when the lock table was read. Observations of one Horizon run one at a time, so X'
+// is above the X of every observation it checks. F' > X therefore means no event writer holding an
+// id below X was running, and proves the earlier observation safe. H is the A of the newest
+// observation a later one proved safe this way, and it only grows until Reset.
 //
 // The statement reads the lock table only when it is needed: when the xmin of S' does not already
 // pass the X of the newest observation still pending. On a quiet instance the xmin proves every
@@ -59,10 +66,15 @@
 // transaction elsewhere, in this database or another, holds the xmin back.
 //
 // A write lock whose transaction id the read does not list makes the lock table's bound 0, which
-// proves nothing beyond the xmin. PREPARE TRANSACTION moves a transaction's locks to the prepared
-// transaction one lock partition at a time (PostPrepare_Locks in lock.c), so one read can list its
-// write lock and the lock on its id under two virtualtransactions; and a write lock held with no
-// transaction id is one the read cannot date.
+// proves nothing beyond the xmin. A transaction takes its RowExclusiveLock when its statement is
+// parsed (parse_clause.c, setTargetTable) and its transaction id only when it first writes a tuple
+// (heapam.c, heap_insert and heap_update call GetCurrentTransactionId), so a writer whose
+// transaction had no id yet holds the lock undated in between, and an UPDATE that matched no row
+// holds it undated until its transaction ends. Broker.Append takes its id before it inserts and is
+// never seen undated; the read cannot place any other such holder, so it proves nothing while one
+// stands. A prepared transaction is always dated: MarkAsPreparingGuts gives its dummy proc the
+// preparing backend's virtualtransaction (twophase.c), so its write lock and the lock on its id
+// carry one virtualtransaction while PostPrepare_Locks moves them and after.
 //
 // One observation never proves its own A: its F is at most its own X. Say T2 takes transaction id
 // 100, T takes 101 and inserts event 7, then T2 inserts event 8 and commits. An observation now
@@ -73,8 +85,8 @@
 //
 // # Costs
 //
-// H trails the longest event write open in this database: Dispatch's own appends, a migration that
-// locks events, an operator's insert. That delays live readers only; it blocks no writer. A
+// H trails the longest event write open in this database: Dispatch's own appends, an operator's
+// insert. That delays live readers only; it blocks no writer. A
 // pending observation older than five seconds logs a warning naming the oldest such writer, so a
 // stall can be found. An observation that fails logs its error, and an Await whose every
 // observation has failed for ten seconds returns that error to its caller rather than wait on.
@@ -170,42 +182,48 @@ const persistedHorizonSQL = `
 `
 
 // eventWritersCTE is the common table expressions every read of the event writers (the package
-// documentation's "Safe horizon") starts with. locks is one read of pg_locks, kept to the rows the
-// read needs. held has a row for each write lock on events in this database that a transaction
-// other than the reader's holds: RowExclusiveLock, an insert's, or any mode stronger, which a
-// transaction that also inserted can hold. Its xid32 is the oldest transaction id the lock table
-// lists for that transaction, read from the ExclusiveLocks it holds on its own ids under the same
-// virtualtransaction, or null when it lists none; pid is the backend's, null for a prepared
-// transaction. pg_locks gives 32-bit ids, and writers widens each to xid, the 64-bit id
-// pg_current_xact_id answers, against the reader's snapshot's xmax, which no running id is more
-// than 2^31 from. held is materialized so that its subquery runs once for each lock.
-const eventWritersCTE = `
-	locks as materialized (
-		select locktype, database, relation, transactionid::text::numeric as xid, virtualtransaction, pid, mode, granted
-		from pg_locks
-		where locktype = 'transactionid' or (locktype = 'relation' and relation = 'events'::regclass)
-	), next as (
-		select pg_snapshot_xmax(pg_current_snapshot())::text::numeric as nx
-	), held as materialized (
+// documentation's "Safe horizon") starts with, over pg_locks and the reader's snapshot's xmax.
+var eventWritersCTE = eventWritersFrom("pg_locks", "pg_snapshot_xmax(pg_current_snapshot())")
+
+// eventWritersFrom is eventWritersCTE over the lock rows of locks, a from-item with pg_locks's
+// columns, and the xmax xmax, an expression of type xid8; a test passes rows and an xmax of its
+// own, which no server it can run against has. locks is one read of the lock rows, kept to the
+// rows the read needs, each transactionid widened from the 32 bits the lock table gives to xid,
+// the 64-bit id pg_current_xact_id answers, against xmax, from which no running id is more than
+// 2^31. writers has a row for each RowExclusiveLock on events in this database that a transaction
+// other than the reader's holds: its pid, the backend's or null for a prepared transaction, and
+// its xid, the least of the widened ids it holds an ExclusiveLock on under its virtualtransaction,
+// or null when the lock table lists none. Each id is widened before the least is taken: a
+// subtransaction's id past a multiple of 2^32 has low bits below its top id's. writers is
+// materialized so that its subquery runs once for each lock.
+func eventWritersFrom(locks, xmax string) string {
+	return `
+	next as (
+		select ` + xmax + `::text::numeric as nx
+	), locks as materialized (
+		select l.locktype, l.database, l.relation, l.virtualtransaction, l.pid, l.mode, l.granted,
+			l.x32 + 4294967296 * (floor(next.nx / 4294967296)
+				+ case
+					when l.x32 - mod(next.nx, 4294967296) > 2147483648 then -1
+					when mod(next.nx, 4294967296) - l.x32 > 2147483648 then 1
+					else 0
+				end) as xid
+		from (
+			select *, transactionid::text::numeric as x32 from ` + locks + `
+			where locktype = 'transactionid' or (locktype = 'relation' and relation = 'events'::regclass)
+		) l, next
+	), writers as materialized (
 		select t.pid, (
 			select min(x.xid) from locks x
 			where x.virtualtransaction = t.virtualtransaction and x.locktype = 'transactionid'
 				and x.mode = 'ExclusiveLock' and x.granted
-		) as xid32
+		) as xid
 		from locks t
 		where t.locktype = 'relation' and t.granted and t.pid is distinct from pg_backend_pid()
 			and t.database = (select oid from pg_database where datname = current_database())
-			and t.relation = 'events'::regclass
-			and t.mode in ('RowExclusiveLock', 'ShareUpdateExclusiveLock', 'ShareLock', 'ShareRowExclusiveLock', 'ExclusiveLock', 'AccessExclusiveLock')
-	), writers as (
-		select pid, xid32, xid32 + 4294967296 * (floor(nx / 4294967296)
-			+ case
-				when xid32 - mod(nx, 4294967296) > 2147483648 then -1
-				when mod(nx, 4294967296) - xid32 > 2147483648 then 1
-				else 0
-			end) as xid
-		from held, next
+			and t.relation = 'events'::regclass and t.mode = 'RowExclusiveLock'
 	)`
+}
 
 // horizonObserveSQL is an observation (the package documentation's "Safe horizon"): A and the
 // created_at of its event, as the statement's snapshot S sees them; F; and X, which
@@ -214,7 +232,7 @@ const eventWritersCTE = `
 // $1, and the lock table goes unread; otherwise it is the greater of that xmin and the oldest
 // transaction id of an event writer, which is 0 when the read lists a writer it cannot date and X
 // when it lists none.
-const horizonObserveSQL = `
+var horizonObserveSQL = `
 	with` + eventWritersCTE + `
 	select m.id, e.created_at,
 		(select case when s.xmin > $1::bigint then s.xmin else greatest(s.xmin, (
@@ -229,7 +247,7 @@ const horizonObserveSQL = `
 // proven safe. A writer the read cannot date comes first, since it holds every observation back.
 // warnStall reads it, and a test's wait on the horizon reads it too (internal/dispatch/horizontest),
 // when the warning is late.
-const StallHolderSQL = `
+var StallHolderSQL = `
 	with` + eventWritersCTE + `
 	select kind, pid, started, state, application_name, database, query from (
 		select 'backend' as kind, a.pid, a.xact_start as started, coalesce(a.state, '') as state,
@@ -239,7 +257,7 @@ const StallHolderSQL = `
 		union all
 		select 'prepared', 0, p.prepared, 'prepared', '', p.database::text,
 			left('prepared transaction ' || p.gid || ' owned by ' || p.owner::text, 90), w.xid
-		from writers w join pg_prepared_xacts p on p.transaction::text::numeric = w.xid32
+		from writers w join pg_prepared_xacts p on p.transaction::text::numeric = mod(w.xid, 4294967296)
 		where w.pid is null
 	) holder
 	order by xid nulls first
@@ -550,19 +568,22 @@ func (h *Horizon) Mark(ctx context.Context) (Mark, error) {
 // session) holds no event id: any it draws later is drawn after this read's marks. WriterFloor
 // answers from it at once, from marks taken before the call; the horizon waits for an observation
 // taken after one it has made.
-const oldestEventWriterSQL = `
-	with` + eventWritersCTE + `
+var oldestEventWriterSQL = "with" + eventWritersCTE + oldestEventWriterSelect
+
+// oldestEventWriterSelect is oldestEventWriterSQL's answer over the writers eventWritersFrom reads.
+const oldestEventWriterSelect = `
 	select (case when bool_or(xid is null) then 0 else min(xid) end)::text from writers
 `
 
 // WriterFloor answers the highest id at or below which no event can still be open, read from the
 // marks given, the newest first, and from H: the Newest of the first mark older than every
-// transaction that holds a write lock on events in this database now (oldestEventWriterSQL), or H
-// when no mark is, so H is the floor too when no mark is given. A transaction holding an event id
-// that is not yet final drew it after it took its transaction id and holds its lock on events
-// until it ends. If it drew that id before a mark's snapshot, at or below the mark's Newest, it
-// took its transaction id before the mark, below the mark's Xid, and holds its lock now; so once
-// no such transaction is older than the mark, every id at or below the mark's Newest is final.
+// transaction that holds RowExclusiveLock on events in this database now (oldestEventWriterSQL),
+// or H when no mark is, so H is the floor too when no mark is given. A transaction holding an
+// event id that is not yet final drew it after it took its transaction id and holds its lock on
+// events until it ends. If it drew that id before a mark's snapshot, at or below the mark's
+// Newest, it took its transaction id before the mark, below the mark's Xid, and holds its lock
+// now; so once no such transaction is older than the mark, every id at or below the mark's
+// Newest is final.
 // ok is false when no mark qualified, so the floor is H alone.
 //
 // A mark counts only while the log it saw stands: the row at its Newest still carries its

@@ -1002,12 +1002,12 @@ func TestHorizonWaitsOnATransactionOnlyOnceItHasInsertedAnEvent(t *testing.T) {
 	}
 }
 
-// A write lock on events whose transaction id the lock table does not show holds H back, and keeps
-// every mark taken after it from counting. PREPARE TRANSACTION moves a transaction's locks to the
-// prepared transaction one lock partition at a time, so one read of the lock table can show its
-// write lock and the lock on its transaction id under two different transactions; a lock taken
-// with no transaction id is the case a test can hold. A transaction of another database holds the
-// snapshot's xmin back throughout, so the lock table is what each observation reads.
+// A RowExclusiveLock on events whose transaction id the lock table does not show holds H back,
+// and keeps every mark taken after it from counting: a transaction takes that lock when its
+// INSERT, UPDATE or DELETE is parsed and its transaction id only when it first writes a tuple, so
+// the read cannot tell such a holder from a writer about to draw an event id. A transaction of
+// another database holds the snapshot's xmin back throughout, so the lock table is what each
+// observation reads.
 func TestAWriteLockWithNoTransactionIDHoldsTheHorizonBack(t *testing.T) {
 	database := storetest.Open(t)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
@@ -1022,19 +1022,7 @@ func TestAWriteLockWithNoTransactionIDHoldsTheHorizonBack(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mark: %v", err)
 	}
-	locker, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the locker: %v", err)
-	}
-	t.Cleanup(func() { _ = locker.Rollback(context.Background()) })
-	if _, err := locker.Exec(ctx, `lock table events in row exclusive mode`); err != nil {
-		t.Fatalf("lock events: %v", err)
-	}
-	var xid *string
-	if err := locker.QueryRow(ctx, `select pg_current_xact_id_if_assigned()::text`).Scan(&xid); err != nil || xid != nil {
-		t.Fatalf("the locker's transaction id = %v, %v; want none, or this test proves nothing", xid, err)
-	}
-
+	locker := lockEventsWithNoTransactionID(ctx, t, database, "row exclusive")
 	id := commitHorizonEvent(ctx, t, database)
 	if safe := safeAfterTwoObservations(ctx, t, horizon); safe >= id {
 		t.Fatalf("Safe after two observations while a write lock on events with no transaction id is held = %d; want below %d", safe, id)
@@ -1047,6 +1035,142 @@ func TestAWriteLockWithNoTransactionIDHoldsTheHorizonBack(t *testing.T) {
 	}
 	if safe, err := horizon.Await(ctx); err != nil || safe < id {
 		t.Fatalf("Await once the locker ended = %d, %v; want at least %d", safe, err, id)
+	}
+}
+
+// A lock on events of another mode draws no event id: VACUUM, ANALYZE and CREATE INDEX
+// CONCURRENTLY of events hold ShareUpdateExclusiveLock, with no transaction id, for as long as
+// they run. So such a lock holds neither H nor WriterFloor's marks back. A transaction of another
+// database holds the snapshot's xmin back throughout, so the lock table is what each observation
+// reads.
+func TestALockOfAnotherModeHoldsNoEventID(t *testing.T) {
+	database := storetest.Open(t)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	horizon := NewHorizon(database.Pool)
+	if _, err := horizon.Await(ctx); err != nil {
+		t.Fatalf("await the empty log: %v", err)
+	}
+	holdTransactionIDInThePostgresDatabase(ctx, t)
+
+	lockEventsWithNoTransactionID(ctx, t, database, "share update exclusive")
+	id := commitHorizonEvent(ctx, t, database)
+	if safe := safeAfterTwoObservations(ctx, t, horizon); safe != id {
+		t.Fatalf("Safe after two observations while a lock on events in share update exclusive mode is held = %d; want %d, the event committed meanwhile", safe, id)
+	}
+	mark, err := horizon.Mark(ctx)
+	if err != nil {
+		t.Fatalf("mark: %v", err)
+	}
+	if floor, ok, err := horizon.WriterFloor(ctx, mark); err != nil || !ok || floor != id {
+		t.Fatalf("WriterFloor while a lock on events in share update exclusive mode is held = %d, %t, %v; want the mark's %d", floor, ok, err, id)
+	}
+}
+
+// An insert into events lists its RowExclusiveLock even when its transaction also holds a
+// stronger lock on events, which moves that lock out of the lock table's fast path: the lock table
+// gives a row for each mode a transaction holds. So such a writer still holds H below its event,
+// and keeps a mark taken while it is open from counting.
+func TestAnInsertUnderAStrongerLockIsStillAnEventWriter(t *testing.T) {
+	database := storetest.Open(t)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	horizon := NewHorizon(database.Pool)
+	if _, err := horizon.Await(ctx); err != nil {
+		t.Fatalf("await the empty log: %v", err)
+	}
+	holdTransactionIDInThePostgresDatabase(ctx, t)
+
+	committed := commitHorizonEvent(ctx, t, database)
+	writer, _ := openEventWriter(ctx, t, database)
+	if _, err := writer.Exec(ctx, `lock table events in share row exclusive mode`); err != nil {
+		t.Fatalf("lock events in share row exclusive mode: %v", err)
+	}
+	open := insertHorizonEvent(ctx, t, writer)
+	mark, err := horizon.Mark(ctx)
+	if err != nil {
+		t.Fatalf("mark: %v", err)
+	}
+	if safe := safeAfterTwoObservations(ctx, t, horizon); safe >= committed {
+		t.Fatalf("Safe after two observations while an insert of event %d under a share row exclusive lock is open = %d; want below %d, which the writer's older transaction id keeps unproven", open, safe, committed)
+	}
+	if floor, ok, err := horizon.WriterFloor(ctx, mark); err != nil || ok {
+		t.Fatalf("WriterFloor of a mark taken while an insert under a share row exclusive lock is open = %d, %t, %v; want no mark to count", floor, ok, err)
+	}
+	if err := writer.Commit(ctx); err != nil {
+		t.Fatalf("commit the writer: %v", err)
+	}
+	if safe, err := horizon.Await(ctx); err != nil || safe < open {
+		t.Fatalf("Await once the writer committed = %d, %v; want at least %d", safe, err, open)
+	}
+}
+
+// lockEventsWithNoTransactionID begins a transaction that locks events in mode and takes no
+// transaction id, as a statement that has locked its table and written no tuple yet, or a VACUUM,
+// does. It rolls back when the test ends.
+func lockEventsWithNoTransactionID(ctx context.Context, t *testing.T, database *store.Store, mode string) pgx.Tx {
+	t.Helper()
+	locker, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the locker: %v", err)
+	}
+	t.Cleanup(func() { _ = locker.Rollback(context.Background()) })
+	if _, err := locker.Exec(ctx, `lock table events in `+mode+` mode`); err != nil {
+		t.Fatalf("lock events in %s mode: %v", mode, err)
+	}
+	var xid *string
+	if err := locker.QueryRow(ctx, `select pg_current_xact_id_if_assigned()::text`).Scan(&xid); err != nil || xid != nil {
+		t.Fatalf("the locker's transaction id = %v, %v; want none, or this test proves nothing", xid, err)
+	}
+	return locker
+}
+
+// The lock table gives 32-bit transaction ids, and a writer's id is the least of the ids it holds
+// once each is widened to 64 bits against the reader's xmax. Run over lock rows of the test's own
+// (eventWritersFrom), since no server a test runs against stands at a multiple of 2^32: a writer
+// whose top id lies below 2^32 and whose subtransaction took an id past it is dated by its top id,
+// not by the subtransaction's, whose low 32 bits are the smaller.
+func TestTheOldestEventWriterIsDatedAcrossAnEpochBoundary(t *testing.T) {
+	database := storetest.Open(t)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	const epoch = 1 << 32
+	writeLock := func(vxid, mode string) string {
+		return fmt.Sprintf(`('relation', (select oid from pg_database where datname = current_database()), 'events'::regclass::oid, null::xid, '%s', -7, '%s', true)`, vxid, mode)
+	}
+	idLock := func(vxid string, xid uint64) string {
+		return fmt.Sprintf(`('transactionid', null::oid, null::oid, '%d'::xid, '%s', -7, 'ExclusiveLock', true)`, xid%epoch, vxid)
+	}
+	for _, row := range []struct {
+		name  string
+		xmax  uint64
+		locks []string
+		want  string
+	}{
+		{"a writer whose top id lies below 2^32 and whose subtransaction's lies past it", epoch + 150,
+			[]string{writeLock("9/1", "RowExclusiveLock"), idLock("9/1", epoch-96), idLock("9/1", epoch+100)}, strconv.FormatUint(epoch-96, 10)},
+		{"a writer above an xmax just below 2^32, whose id lies past it (the xmax hole)", epoch - 6,
+			[]string{writeLock("9/1", "RowExclusiveLock"), idLock("9/1", epoch+200)}, strconv.FormatUint(epoch+200, 10)},
+		{"two writers, the older in the epoch before the xmax's", 3*epoch + 10,
+			[]string{writeLock("9/1", "RowExclusiveLock"), idLock("9/1", 3*epoch+5), writeLock("9/2", "RowExclusiveLock"), idLock("9/2", 3*epoch-1000)}, strconv.FormatUint(3*epoch-1000, 10)},
+		{"a write lock whose transaction lists no id", epoch + 150,
+			[]string{writeLock("9/1", "RowExclusiveLock"), idLock("9/2", epoch+100)}, "0"},
+		{"a lock of another mode, with no id", epoch + 150,
+			[]string{writeLock("9/1", "ShareUpdateExclusiveLock")}, ""},
+	} {
+		locks := "(values " + strings.Join(row.locks, ", ") + ") as v(locktype, database, relation, transactionid, virtualtransaction, pid, mode, granted)"
+		sql := "with" + eventWritersFrom(locks, fmt.Sprintf("'%d'::xid8", row.xmax)) + oldestEventWriterSelect
+		var oldest *string
+		if err := database.Pool.QueryRow(ctx, sql).Scan(&oldest); err != nil {
+			t.Fatalf("%s: read the oldest event writer: %v", row.name, err)
+		}
+		got := ""
+		if oldest != nil {
+			got = *oldest
+		}
+		if got != row.want {
+			t.Errorf("%s: the oldest event writer = %q, want %q", row.name, got, row.want)
+		}
 	}
 }
 
