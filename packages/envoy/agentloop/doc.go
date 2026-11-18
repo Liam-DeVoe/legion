@@ -133,15 +133,30 @@
 // back as they came.
 //
 // An ask again is no new run. Bounds.Calls counts every model call of the run, and the last
-// allowed call offers no tool whichever ask it falls in; Bounds.Time is the one deadline of the
-// whole run, and no ask is made again once it has passed; Bounds.OutputTokens bounds each call.
-// Tool calls are numbered on across the asks, Result.Steps holds every call in order with the
-// sentence on the step it answered (Step.AskedAgain), and Result.Usage sums them all. The cache
-// marks are placed as for any call: the history keeps its own, and the newest message, the
-// check's sentence, takes the last of the four. Where the asks or the bounds are spent, the run
-// returns the last reply as it would with no check, its Value set and no fault: a check's
-// refusal is never a fault of this package, and refusing that value is the caller's to do. A
-// request with no Check sends exactly what it sent before Check existed.
+// allowed call offers no tool, and carries Request.LastCall, whichever ask it falls in;
+// Bounds.Time is the one deadline of the whole run, and no ask is made again once it has passed;
+// Bounds.OutputTokens bounds each call. Tool calls are numbered on across the asks, Result.Steps
+// holds every call in order with the sentence on the step it answered (Step.AskedAgain), and
+// Result.Usage sums them all. The cache marks are placed as for any call: the history keeps its
+// own, and the newest message, the check's sentence, takes the last of the four. Where the asks
+// or the bounds are spent, the run returns the last reply as it would with no check, its Value
+// set and no fault: a check's refusal is never a fault of this package, and refusing that value
+// is the caller's to do. A request with no Check sends exactly what it sent before Check
+// existed.
+//
+// # The last call
+//
+// The last call Bounds.Calls allows offers no tool, so the model must answer on it, and a model
+// that is not told so meets a call with no tool it can make. Request.LastCall is the caller's
+// sentence telling it, which the package sends on that call alone, as one user message after
+// everything else the call carries: after the tool results of the call before it, or, where the
+// last call is an ask again, after the check's sentence, which the model then reads first and
+// answers on the same call; and where Bounds.Calls is 1, after Input, on the run's one call. The
+// sentence is the caller's instruction to the run, as the system prompt is, and no turn of the
+// conversation: no earlier call carries it, no Step and nothing else of the Result holds it, and
+// on the Anthropic kinds it takes no cache mark, so the call's marks, four at most, are where
+// they would be without it. An empty LastCall sends nothing, and a run without it sends exactly
+// what it sent before the field existed.
 //
 // # Bounds
 //

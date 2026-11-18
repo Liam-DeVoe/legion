@@ -505,6 +505,108 @@ func TestRefusedFormsNeverRun(t *testing.T) {
 	}
 }
 
+// missingUsage are the words of agent's usage that output lacks: that gh runs with no checkout,
+// -R and the other ways a call names its repository, the agent's repository, its issue's pull
+// request where the record holds one, every command the tool takes and the example call as the
+// tool's input; and, where the record holds no pull request, any pull request named at all.
+func missingUsage(agent Agent, output string) []string {
+	example, err := json.Marshal(map[string][]string{"args": agent.Usage().Example()})
+	if err != nil {
+		panic(err)
+	}
+	var missing []string
+	for _, want := range []string{
+		"no checkout of any repository", "-R <owner>/<repo>", "a github.com URL", "repos/<owner>/<repo>/… endpoint",
+		"Your issue's repository is acme/widgets", allowedList, string(example),
+	} {
+		if !strings.Contains(output, want) {
+			missing = append(missing, want)
+		}
+	}
+	switch named := fmt.Sprintf("its pull request is #%d", agent.PullRequest); {
+	case agent.PullRequest > 0 && !strings.Contains(output, named):
+		missing = append(missing, named)
+	case agent.PullRequest == 0 && strings.Contains(output, "pull request"):
+		missing = append(missing, "no pull request named")
+	}
+	return missing
+}
+
+// A call naming no command the tool takes is refused with how the tool is called (Usage): a call
+// naming no command at all, which is what gh's own --help or -h alone reads as, gh's --version, a
+// command gh has and the tool does not, and one the allow list refuses. The refusal says gh runs
+// with no checkout, so a call names -R <owner>/<repo> or the other two forms, and names the
+// agent's repository, its issue's pull request where the record holds one and none where it holds
+// none, every command the tool takes, and an example call, which runs as written. A call gh ran
+// that failed for naming no repository carries gh's output and then the same usage, recorded as
+// the model reads it; one that failed for another reason carries gh's output alone, and a call
+// refused for another reason gives its own reason. The sentence the allow list refused with before,
+// which named the commands alone, is held to the same words first and fails them, so the words
+// are what the test reads and not that a refusal said something.
+func TestACallNamingNoCommandOrNoRepositoryIsToldHowToCallTheTool(t *testing.T) {
+	before := "refused: `gh --version` is not one of the gh tool's commands (\"--version\" is refused); the gh tool runs only " + allowedList
+	if missing := missingUsage(implementer, before); len(missing) == 0 {
+		t.Fatalf("the refusal before the usage, %q, carries every word of the usage", before)
+	}
+	withPullRequest := implementer
+	withPullRequest.PullRequest = 7
+	for _, agent := range []Agent{withPullRequest, implementer} {
+		t.Run(fmt.Sprintf("pull request %d", agent.PullRequest), func(t *testing.T) {
+			f := newFixture(t, agent, behaviour{Stdout: "ran\n"})
+			seq := 0
+			for _, argv := range [][]string{{}, {"--version"}, {"--help"}, {"-h"}, {"status"}, {"repo", "clone", "x"}} {
+				seq++
+				f.clearInvocations()
+				got := f.run(seq, argv...)
+				if got.Ran || !strings.HasPrefix(got.Output, "refused: ") {
+					t.Errorf("gh %q = %+v; want it refused", argv, got)
+				}
+				if missing := missingUsage(agent, got.Output); len(missing) > 0 {
+					t.Errorf("gh %q is refused with %q, which lacks %q", argv, got.Output, missing)
+				}
+				if ran := f.invocations(true); len(ran) != 0 {
+					t.Errorf("gh %q started gh: %+v", argv, ran)
+				}
+			}
+
+			seq++
+			f.clearInvocations()
+			example := agent.Usage().Example()
+			if got := f.run(seq, example...); !got.Ran || got.Exit != 0 || got.Output != "ran\n" {
+				t.Errorf("the example gh %q = %+v; want it run as written", example, got)
+			}
+			if ran := f.invocations(false); len(ran) != 1 || !slices.Equal(ran[0].Argv, example) {
+				t.Errorf("the example gh %q ran gh as %+v; want it once, as written", example, ran)
+			}
+
+			seq++
+			if got := f.run(seq, "pr", "view", "5", "-R", "acme/widgets", "--web"); !strings.Contains(got.Output, `"--web" opens a web browser`) {
+				t.Errorf("a call opening a browser is refused with %q; want its own reason", got.Output)
+			}
+
+			const noRepository = "failed to run git: fatal: not a git repository (or any of the parent directories): .git\n"
+			setBehaviour(t, f.stand, behaviour{Stderr: noRepository, Exit: 1})
+			seq++
+			got := f.run(seq, "issue", "list", "--limit", "1")
+			if !got.Ran || got.Exit != 1 || !strings.HasPrefix(got.Output, noRepository) {
+				t.Errorf("gh issue list naming no repository = %+v; want gh's failure first", got)
+			}
+			if missing := missingUsage(agent, strings.TrimPrefix(got.Output, noRepository)); len(missing) > 0 {
+				t.Errorf("gh issue list naming no repository gives %q, which lacks %q after gh's output", got.Output, missing)
+			}
+			if row, _ := f.calls.row(question, seq); row.Result == nil || *row.Result != got.Output || row.Exit == nil || *row.Exit != 1 {
+				t.Errorf("the failed call is recorded as %+v; want what the model read and exit 1", row)
+			}
+
+			setBehaviour(t, f.stand, behaviour{Stderr: "HTTP 404: Not Found\n", Exit: 1})
+			seq++
+			if got := f.run(seq, "pr", "view", "5", "-R", "acme/widgets"); got.Output != "HTTP 404: Not Found\n" {
+				t.Errorf("a call that failed for another reason gives %q; want gh's output alone", got.Output)
+			}
+		})
+	}
+}
+
 // Every allowed form runs once, with exactly its arguments, the gh directory of the owner it
 // names (the issue owner's for a command naming none), exactly the scrubbed environment, and the
 // answer's empty working directory, HOME and XDG directories. Its record starts before gh runs
@@ -1157,7 +1259,7 @@ func TestNoValueOfAnAllowedCommandIsReadAsAnOption(t *testing.T) {
 		{"pr", "view", "5", "-R", "acme/widgets", "--jq", "-1 + .number"},
 		{"run", "list", "-R", "acme/widgets", "-w", "ci.yml"},
 	} {
-		if why := refusal(argv, commandWords(argv)); why != "" {
+		if why := refusal(argv, commandWords(argv), ""); why != "" {
 			t.Errorf("gh %q is refused: %s; want it run, since the hyphen begins a value and no option", argv, why)
 		}
 	}
@@ -1181,7 +1283,7 @@ func TestNoValueOfAnAllowedCommandIsReadAsAnOption(t *testing.T) {
 		// lets a browser through.
 		{[]string{"pr", "create", "-R", "acme/widgets", "--brand-new", "x", "-w"}, "opens a web browser"},
 	} {
-		if why := refusal(tc.argv, commandWords(tc.argv)); !strings.Contains(why, tc.want) {
+		if why := refusal(tc.argv, commandWords(tc.argv), ""); !strings.Contains(why, tc.want) {
 			t.Errorf("gh %q is refused with %q; want a refusal containing %q", tc.argv, why, tc.want)
 		}
 	}
@@ -1278,7 +1380,7 @@ func TestEveryAllowedCommandsOptionsAreGhsOwn(t *testing.T) {
 	}
 	for name := range reference {
 		words := strings.Fields(name)
-		if len(words) != 2 || allowed(words) != "" {
+		if len(words) != 2 || allowed(words, "") != "" {
 			continue
 		}
 		if spec, _ := specOf(words); spec == nil {

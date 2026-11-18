@@ -712,6 +712,185 @@ func TestTheLastAllowedCallStillCallingAToolIsPastTheCallBound(t *testing.T) {
 	}
 }
 
+// lastCallSentence is the sentence the tests' requests tell the run's last call with
+// (Request.LastCall).
+const lastCallSentence = "This is your last call, and it offers no tool: answer now from what you know."
+
+// newestPart is what a request body ends with: on anthropic-messages the last block of its last
+// message, where the provider puts a user message after the tool results of the same turn, and
+// on openai-responses its last input item. A tool result reads "tool_result", a user text its
+// text, and on anthropic-messages a user text carrying a cache mark reads "marked: " and its text.
+func newestPart(t *testing.T, kind Kind, body map[string]any) string {
+	t.Helper()
+	if kind == OpenAIResponses {
+		items, _ := body["input"].([]any)
+		item, _ := items[len(items)-1].(map[string]any)
+		content, _ := item["content"].([]any)
+		switch {
+		case item["type"] == "function_call_output":
+			return "tool_result"
+		case item["role"] == "user" && len(content) == 1:
+			text, _ := content[0].(map[string]any)["text"].(string)
+			return text
+		}
+		t.Fatalf("the request ends with %v, neither a tool result nor a user text", item)
+	}
+	messages, _ := body["messages"].([]any)
+	message, _ := messages[len(messages)-1].(map[string]any)
+	content, _ := message["content"].([]any)
+	block, _ := content[len(content)-1].(map[string]any)
+	switch {
+	case block["type"] == "tool_result":
+		return "tool_result"
+	case message["role"] == "user" && block["type"] == "text" && block["cache_control"] != nil:
+		return "marked: " + block["text"].(string)
+	case message["role"] == "user" && block["type"] == "text":
+		return block["text"].(string)
+	}
+	t.Fatalf("the request ends with %v, neither a tool result nor a user text", block)
+	return ""
+}
+
+// withoutLastCall is a request body that ends with the last-call sentence as it would read
+// without it: the sentence's block taken off its message on anthropic-messages, the message with
+// it where the sentence was all it held, and its input item off openai-responses.
+func withoutLastCall(t *testing.T, kind Kind, body map[string]any) map[string]any {
+	t.Helper()
+	if newest := newestPart(t, kind, body); newest != lastCallSentence {
+		t.Fatalf("the request ends with %q, want the last-call sentence, unmarked", newest)
+	}
+	if kind == OpenAIResponses {
+		items := body["input"].([]any)
+		body["input"] = items[:len(items)-1]
+		return body
+	}
+	messages := body["messages"].([]any)
+	message := messages[len(messages)-1].(map[string]any)
+	content := message["content"].([]any)
+	if len(content) == 1 {
+		body["messages"] = messages[:len(messages)-1]
+	} else {
+		message["content"] = content[:len(content)-1]
+	}
+	return body
+}
+
+// The run's last allowed call alone carries Request.LastCall, as a user message after everything
+// else it carries, and offers no tool; with LastCall empty every request is the request the run
+// sent before the field existed. Each case is one script run twice, with the sentence and
+// without, on both protocols the Legion daemon calls: a run whose model calls the tool until the
+// bound, so its last call carries the sentence after the tool results; a run of one call, the
+// run's first and its last, which carries it after the question; and a run whose last call asks
+// again, which carries it after the check's sentence. Every request but the last is byte for byte
+// the run's without the sentence, which none of that run's requests holds; the last is that run's
+// request with the sentence after its end and nothing else changed, its cache marks included
+// (never more than four); and the Result is the same, no step holding the sentence.
+func TestOnlyTheLastCallCarriesTheLastCallSentence(t *testing.T) {
+	t.Parallel()
+	anthropicTools := func() []reply { return threeCallAnthropic() }
+	openaiTools := func() []reply {
+		return []reply{
+			openaiStream(openaiUsage{Input: 100, Output: 5}, "", openaiToolCall("fc_1", "call_1", toolName, map[string]any{"path": "note.txt"})),
+			openaiStream(openaiUsage{Input: 120, Cached: 100, Output: 5}, "", openaiToolCall("fc_2", "call_2", toolName, map[string]any{"path": "other.txt"})),
+			openaiStream(openaiUsage{Input: 140, Cached: 120, Output: 8}, "", openaiMessage("msg_3", "The note says plum.")),
+		}
+	}
+	for _, c := range []struct {
+		name    string
+		kind    Kind
+		calls   int
+		history func() []Message
+		replies func() []reply
+		check   bool
+		// after is what the last call's request ends with before the sentence (newestPart).
+		after string
+	}{
+		{name: "anthropic-messages calling the tool to the bound", kind: AnthropicMessages, calls: 3, history: anthropicHistory, replies: anthropicTools, after: "tool_result"},
+		{name: "anthropic-messages with one call", kind: AnthropicMessages, calls: 1, history: anthropicHistory,
+			replies: func() []reply {
+				return []reply{anthropicStream("end_turn", anthropicUsage{Input: 10, Output: 5}, anthropicText("The note says plum."))}
+			}, after: "marked: What does note.txt say?"},
+		{name: "anthropic-messages asking again on the last call", kind: AnthropicMessages, calls: 2, history: anthropicAnswered, check: true,
+			replies: func() []reply {
+				return []reply{
+					anthropicStream("end_turn", anthropicUsage{Input: 10, Output: 20, CacheWrite: 2200}, anthropicThinking("Weigh the note.", "sig-ask-1+/=="), anthropicText(refusedAnswer)),
+					anthropicStream("end_turn", anthropicUsage{Input: 30, Output: 5, CacheRead: 2200}, anthropicText(finalAnswer)),
+				}
+			}, after: "marked: " + askAgainSentence},
+		{name: "openai-responses calling the tool to the bound", kind: OpenAIResponses, calls: 3, history: openaiHistory, replies: openaiTools, after: "tool_result"},
+		{name: "openai-responses with one call", kind: OpenAIResponses, calls: 1, history: openaiHistory,
+			replies: func() []reply {
+				return []reply{openaiStream(openaiUsage{Input: 100, Output: 5}, "", openaiMessage("msg_1", "The note says plum."))}
+			}, after: "What does note.txt say?"},
+		{name: "openai-responses asking again on the last call", kind: OpenAIResponses, calls: 2, history: openaiHistory, check: true,
+			replies: func() []reply {
+				return []reply{
+					openaiStream(openaiUsage{Input: 1000, CacheWrite: 900, Output: 40}, "", openaiMessage("msg_a1", refusedAnswer)),
+					openaiStream(openaiUsage{Input: 1100, Cached: 900, Output: 10}, "", openaiMessage("msg_a2", finalAnswer)),
+				}
+			}, after: askAgainSentence},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			run := func(lastCall string) (Result, []recorded) {
+				t.Helper()
+				s := newStandIn(t, c.replies()...)
+				f := newFixture(t, s, c.kind, c.calls)
+				f.req.History = c.history()
+				f.req.LastCall = lastCall
+				if c.check {
+					f.req.Final, f.req.Check, f.req.AskAgain = json.RawMessage(finalSchema), refuseEmptyAnswer, 1
+				}
+				result, err := Run(context.Background(), f.req)
+				if err != nil {
+					t.Fatal(err)
+				}
+				got := s.requests()
+				if len(got) != c.calls {
+					t.Fatalf("%d model calls, want %d", len(got), c.calls)
+				}
+				return result, got
+			}
+			plain, plainSent := run("")
+			told, toldSent := run(lastCallSentence)
+			for i, r := range plainSent {
+				if bytes.Contains(r.body, []byte(lastCallSentence)) {
+					t.Errorf("call %d of the run with no LastCall carries the sentence", i+1)
+				}
+			}
+			last := c.calls - 1
+			for i := range last {
+				if !bytes.Equal(toldSent[i].body, plainSent[i].body) {
+					t.Errorf("call %d, not the last, is\n%s\nwant it byte for byte the run's with no LastCall\n%s", i+1, toldSent[i].body, plainSent[i].body)
+				}
+			}
+			body := toldSent[last].decoded(t)
+			if n := countKey(body, "cache_control"); n > 4 {
+				t.Errorf("the last call carries %d cache marks, more than the four Anthropic allows", n)
+			}
+			switch choice := body["tool_choice"]; {
+			case c.kind == OpenAIResponses && choice != "none":
+				t.Errorf("the last call's tool_choice %v, want none", choice)
+			case c.kind == AnthropicMessages && choice.(map[string]any)["type"] != "none":
+				t.Errorf("the last call's tool_choice %v, want none", choice)
+			}
+			stripped := withoutLastCall(t, c.kind, body)
+			if before := newestPart(t, c.kind, stripped); before != c.after {
+				t.Errorf("the last call carries the sentence after %q, want after %q", before, c.after)
+			}
+			if want := plainSent[last].decoded(t); !reflect.DeepEqual(stripped, want) {
+				t.Errorf("the last call less its sentence is\n%v\nwant the run's with no LastCall\n%v", stripped, want)
+			}
+			if !reflect.DeepEqual(told, plain) {
+				t.Errorf("the result %+v, want the run's with no LastCall %+v", told, plain)
+			}
+			if c.check && (len(told.Steps) != 2 || told.Steps[0].AskedAgain != askAgainSentence || string(told.Value) != finalAnswer) {
+				t.Errorf("steps %+v, value %s; want the refused reply asked again and the reply to it", told.Steps, told.Value)
+			}
+		})
+	}
+}
+
 // A run whose model call does not answer within the run's time is a time fault.
 func TestARunPastItsTimeBoundIsAFault(t *testing.T) {
 	t.Parallel()

@@ -1380,6 +1380,8 @@ answers:
 - `bounds.answer_seconds` (180): How long one answer may take, its model calls and `gh` calls together.
 
 - `bounds.model_calls` (8): Model calls per answer; the last one allowed offers no tool, so it must be the reply.
+  That call carries a short message after everything else it is sent: that it is the last call, that it offers no tool, and to reply now, in the reply form, from what the agent already knows.
+  The message is the loop's own instruction to that call, as its system prompt is, so the exchange written into the agent's conversation never holds it.
 
 - `bounds.output_tokens` (4000): Output tokens per model call.
 
@@ -1519,6 +1521,23 @@ Beside it: one `answers: question` line per change of a question's state, one `a
 ### The `gh` tool, a security decision
 
 `gh` is the loop's one tool: GitHub's own command line with the GitHub access the agent's pane has.
+
+- **What the model is told.**
+  The tool's description is built for each answer.
+  It says the tool is GitHub's own gh, which the daemon runs as the agent's role App in an empty directory with no checkout of any repository, so every call names its repository: `-R <owner>/<repo>`, a github.com URL, or, for `gh api`, a `repos/<owner>/<repo>/…` endpoint.
+  It names the repository the agent's issue works and, where the daemon's record holds one, the number of the issue's pull request, and says nothing of a pull request where the record holds none.
+  It lists the commands the tool takes, the allow list below in the tool's own words, and gives one call that runs as written against that repository, which the input schema gives as its example too:
+  `pr view <number> -R <owner>/<repo> --json state,headRefOid,reviews`, or `pr list -R <owner>/<repo> --limit 5` where the record holds no pull request.
+  It also says the tool writes when the message asks for it, and that every comment or review carries the footer the tool adds.
+  The system prompt's sentence on `gh` carries the same words on the checkout and the repository, from the one place they are written (`ghtool.Usage`).
+
+- **A refusal says how to call it.**
+  A call naming no command the tool takes is refused with its reason and then the same words:
+  a call naming no command at all, which is what gh's own `--help` or `-h` on its own reads as, gh's `--version`, a command gh has and the tool does not, and one the allow list refuses.
+  So is a call gh ran that failed for naming no repository, gh's own `not a git repository` failure, which carries gh's output and then those words, so the model names the repository rather than making the same call again;
+  that call is recorded in `answer_tool_calls` with what the model read.
+  Every other refusal, such as an option opening a browser, keeps its own reason alone.
+
 A pane is a sandbox; the daemon's host is not, holding the daemon's own credentials and disk.
 So the tool runs only what is safe there, and decides before anything runs:
 
@@ -1554,7 +1573,7 @@ So the tool runs only what is safe there, and decides before anything runs:
 
 - **A scrubbed environment.**
   `PATH` of gh's and git's directories, `HOME` and the XDG directories at the answer's empty ones, `GH_CONFIG_DIR` the routed owner's, `GH_PATH` a wrapper running this binary's `legion gh` (so the git gh runs itself authenticates as a pane's does), gh's prompts, update check, spinner and colour off, and nothing else of the daemon's environment;
-  the working directory is an empty one with no remotes.
+  the working directory is an empty one with no remotes, which is why every call names its repository (above).
   Each call is recorded in `answer_tool_calls` before it runs and finished after; a call whose start cannot be recorded does not run.
 
 - **The leak guard.**

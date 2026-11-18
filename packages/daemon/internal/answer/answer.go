@@ -6,12 +6,13 @@
 //
 // The model calls themselves are agentloop's (github.com/sjawhar/envoy/agentloop), the one model
 // loop the daemon and Dispatch share and the only import of Grafana's SDK: the providers, the
-// retry, the step bound with no tool on the last allowed call, the thinking and reasoning
-// options, the cache marks, the check of the reply against its schema and the one ask again for
-// a reply the form's own rules refuse are all its. This package is its caller: it builds the
-// request (the conversation as agentloop's messages, the system prompt, the reply form as the
-// request's Final schema, the form's own rules as its Check, the gh tool, the bounds and the
-// endpoint `answers.providers` names, whose key is read again for every call), decides the faults
+// retry, the step bound with no tool on the last allowed call and the message that call carries,
+// the thinking and reasoning options, the cache marks, the check of the reply against its schema
+// and the one ask again for a reply the form's own rules refuse are all its. This package is its
+// caller: it builds the request (the conversation as agentloop's messages, the system prompt, the
+// reply form as the request's Final schema, the form's own rules as its Check, the gh tool
+// described for the agent's repository, the last call's message, the bounds and the endpoint
+// `answers.providers` names, whose key is read again for every call), decides the faults
 // that need no model call (no_provider, no_price, unknown_format), refuses an answer whose calls
 // the provider metered nothing for (unmetered), maps agentloop's faults onto the daemon's own
 // reasons, and reads the run back as the agent's reply, the turns to append and what the answer
@@ -31,6 +32,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/conversation"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/ghtool"
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
@@ -123,12 +125,21 @@ type GH interface {
 }
 
 // Agent is the stopped agent that answers: its role, its issue, its session and the phase the
-// daemon has it in.
+// daemon has it in; and the repository its issue works and the number of the issue's pull request
+// the daemon's record holds, 0 for none, which the gh tool's description and the system prompt
+// name (usage), as the tool's own refusals do (ghtool.Agent, built from the same record).
 type Agent struct {
-	Role    claim.Role
-	Issue   string
-	Session string
-	Phase   string
+	Role        claim.Role
+	Issue       string
+	Session     string
+	Phase       string
+	Repository  ghrepo.Repository
+	PullRequest int
+}
+
+// usage is how the agent calls the gh tool, in the words the tool's refusals use.
+func (a Agent) usage() ghtool.Usage {
+	return ghtool.Usage{Repository: a.Repository, PullRequest: a.PullRequest}
 }
 
 // Question is what the agent is asked: its id (which the log line names and the append records),
@@ -181,7 +192,10 @@ type Reply struct {
 	// Append is the question and the model's turns (thinking with its signatures or OpenAI
 	// reasoning items, each tool call with its result, a reply the form refused with the
 	// sentence it was asked again with, the reply), for the conversation's appender; set when
-	// the model replied in the form.
+	// the model replied in the form. It holds nothing else the loop told the model: not the
+	// system prompt, and not the message the last model call carries (lastCall), which is the
+	// loop's own instruction to that call and no part of what the agent did, so the agent's
+	// conversation never holds it.
 	Append conversation.Append
 	// Calls is how many model calls the answer made; Usage their tokens and costs summed, cache
 	// writes and reads included, reasoning counted as output; CostUSD the sum of its costs.
@@ -199,8 +213,9 @@ const (
 
 // Answer answers req's question. Every outcome the question has is a Reply: an answer, the
 // agent's reply that it cannot answer, or no answer with its Fault. The error is for a request
-// the loop cannot run at all (no question, no gh tool, no bounds) and for ctx ending, when the
-// daemon itself stops; the Reply then still carries what the calls made so far cost.
+// the loop cannot run at all (no question, no gh tool, no repository, no bounds) and for ctx
+// ending, when the daemon itself stops; the Reply then still carries what the calls made so far
+// cost.
 func Answer(ctx context.Context, req Request) (Reply, error) {
 	if err := req.validate(); err != nil {
 		return Reply{}, err
@@ -233,6 +248,8 @@ func (req Request) validate() error {
 		return errors.New("answer: the request names no question")
 	case req.GH == nil:
 		return errors.New("answer: the request has no gh tool")
+	case req.Agent.Repository.IsZero():
+		return errors.New("answer: the request names no repository for the gh tool to call on")
 	case req.Bounds.Answer <= 0 || req.Bounds.ModelCalls <= 0 || req.Bounds.OutputTokens <= 0:
 		return errors.New("answer: the request has no answer_seconds, model_calls or output_tokens bound")
 	}
@@ -326,6 +343,9 @@ func answer(ctx context.Context, req Request) (Reply, error) {
 			return err
 		},
 		AskAgain: 1,
+		// The last call, which offers no tool, is told so (lastCall). agentloop puts the
+		// message on that call alone and in no step, so finish appends nothing of it.
+		LastCall: lastCall,
 	})
 	reply := Reply{Calls: len(result.Steps), Usage: usageOf(result.Usage, r.price), CostUSD: result.Usage.CostUSD}
 	switch {

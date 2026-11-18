@@ -85,7 +85,8 @@ type Gate interface {
 }
 
 // IssueFacts is what has changed on an agent's issue since it stopped, for the change note: the
-// status Dispatch shows, the daemon's phase, the repository the issue works, and its pull request.
+// status Dispatch shows, the daemon's phase, the repository the issue works, and its pull request,
+// whose repository and number the gh tool's description and its refusals name too (ghtool.Usage).
 // Recorded is false for an issue the daemon holds no record of. HandoffCommits is, by role, the
 // commit each role's phases row records it completed its round against
 // (record.PhaseRow.HandoffCommit), a role whose row records none absent: the head the agent's

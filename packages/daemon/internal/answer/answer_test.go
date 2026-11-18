@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"math"
 	"net/http"
@@ -18,6 +19,9 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/conversation"
+	"github.com/sjawhar/legion/daemon/internal/conversation/claude"
+	"github.com/sjawhar/legion/daemon/internal/conversation/omp"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/ghtool"
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
@@ -107,7 +111,7 @@ func anthropicRequest(t *testing.T, s *standIn, gh GH, modelCalls int) Request {
 	_, credential := keyFile(t, "sk-ant-standin")
 	return Request{
 		Conversation: anthropicConversation(),
-		Agent:        Agent{Role: "planner", Issue: "INFRA-1", Session: "s-planner", Phase: "implementing"},
+		Agent:        Agent{Role: "planner", Issue: "INFRA-1", Session: "s-planner", Phase: "implementing", Repository: ghrepo.MustParse("acme/widgets")},
 		ChangeNote:   "Dispatch status: in progress. PR #7: open, head abc123.",
 		Question:     Question{ID: "dispatch:m-1", Text: "Is PR 7 green?", Asker: "a person", Where: "the INFRA-1 thread"},
 		Providers:    map[config.AnswerProvider]config.AnswerEndpoint{config.AnswerAnthropic: {BaseURL: s.server.URL, Credential: credential}},
@@ -289,6 +293,231 @@ func TestTheLoopsToolListHoldsGh(t *testing.T) {
 	}
 }
 
+// ghOffer is what an Anthropic model call offered of the gh tool and said of it: the tool's
+// description, its args' description in the input schema, and the system prompt.
+func ghOffer(t *testing.T, r recorded) (description, args, system string) {
+	t.Helper()
+	var body struct {
+		System []struct {
+			Text string `json:"text"`
+		} `json:"system"`
+		Tools []struct {
+			Description string `json:"description"`
+			InputSchema struct {
+				Properties map[string]struct {
+					Description string `json:"description"`
+				} `json:"properties"`
+			} `json:"input_schema"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal(r.body, &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Tools) != 1 || len(body.System) == 0 {
+		t.Fatalf("the call offers tools %+v under the system prompt %+v, want gh alone", body.Tools, body.System)
+	}
+	return body.Tools[0].Description, body.Tools[0].InputSchema.Properties["args"].Description, body.System[0].Text
+}
+
+// ghOfferProblems are what the gh tool's offer to an agent of acme/widgets gets wrong, for the
+// issue's pull request pr (0 for none), whose example call is example: the description says what
+// gh is and how the daemon runs it, that it runs with no checkout so every call names its
+// repository, the repository, the pull request where there is one and none where there is none,
+// the commands the tool takes, the example call, what it writes and its footer, and never that it
+// only reads; the input schema gives the same example; and the system prompt's sentence on gh says
+// the same of the checkout and the repository.
+func ghOfferProblems(pr int, example, description, args, system string) []string {
+	var problems []string
+	for _, want := range []string{
+		"GitHub's own gh command line", "as your role's App", "no checkout of any repository", "-R <owner>/<repo>",
+		"a github.com URL", "repos/<owner>/<repo>/… endpoint", "Your issue's repository is acme/widgets",
+		"api, pr (not pr checkout), run (not run download), workflow, repo view", `{"args":` + example + `}`,
+		"comment, review", "Legion footer, which the tool adds",
+	} {
+		if !strings.Contains(description, want) {
+			problems = append(problems, "the description lacks "+want)
+		}
+	}
+	if strings.Contains(description, "read-only") {
+		problems = append(problems, "the description says the tool is read-only")
+	}
+	if !strings.Contains(args, "For example "+example) {
+		problems = append(problems, "the input schema gives no example "+example)
+	}
+	for _, want := range []string{"no checkout of any repository", "-R <owner>/<repo>", "Your issue's repository is acme/widgets"} {
+		if !strings.Contains(system, want) {
+			problems = append(problems, "the system prompt lacks "+want)
+		}
+	}
+	named := fmt.Sprintf("its pull request is #%d", pr)
+	for where, text := range map[string]string{"description": description, "system prompt": system} {
+		switch {
+		case pr > 0 && !strings.Contains(text, named):
+			problems = append(problems, "the "+where+" lacks "+named)
+		case pr == 0 && (strings.Contains(text, "its pull request") || strings.Contains(text, "#")):
+			problems = append(problems, "the "+where+" names a pull request the record does not hold")
+		}
+	}
+	return problems
+}
+
+// The gh tool the model is offered is described for the request, as its refusals describe it
+// (ghtool.Usage): GitHub's own gh, which the daemon runs as the agent's role App with no checkout,
+// so every call names its repository; the record's repository, and its pull request's number where
+// the request has one and no pull request at all where it has none; the commands the tool takes,
+// and an example call against that repository, which the input schema gives too; and the writes it
+// makes, each comment or review carrying the footer the tool adds. The system prompt's sentence on
+// gh says the same, in the same words. The description the tool had before, which named no command
+// and no repository, is read the same way first and fails, so the words are what the test reads.
+func TestTheGhToolIsDescribedForTheRecordsRepositoryAndPullRequest(t *testing.T) {
+	const before = "Run GitHub's own gh command line with your GitHub access: your role's App, with full access to " +
+		"your issue's repository owner and read access to the project's other owners, each call routed to the owner it " +
+		"names. Use it to read code at any commit, pull requests, reviews, checks and runs, and to comment, review, push " +
+		"or merge when the message asks for it and you judge you should. Every comment or review it posts carries your " +
+		"Legion footer, which the tool adds. Commands unsafe on the daemon's host are refused with the reason."
+	if problems := ghOfferProblems(0, `["pr","list","-R","acme/widgets","--limit","5"]`, before, before, before); len(problems) == 0 {
+		t.Fatal("the description the tool had before passes the reading below, which would then prove nothing")
+	}
+	for _, c := range []struct {
+		pr      int
+		example string
+	}{
+		{7, `["pr","view","7","-R","acme/widgets","--json","state,headRefOid,reviews"]`},
+		{0, `["pr","list","-R","acme/widgets","--limit","5"]`},
+	} {
+		t.Run(fmt.Sprintf("pull request %d", c.pr), func(t *testing.T) {
+			s := newStandIn(t, anthropicStream("end_turn", anthropicUsage{Input: 1, Output: 1}, anthropicText(`{"kind":"answered","text":"Yes.","needs":""}`)))
+			req := anthropicRequest(t, s, &stubGH{}, 1)
+			req.Agent.PullRequest = c.pr
+			if _, err := Answer(context.Background(), req); err != nil {
+				t.Fatal(err)
+			}
+			description, args, system := ghOffer(t, s.requests()[0])
+			for _, problem := range ghOfferProblems(c.pr, c.example, description, args, system) {
+				t.Error(problem)
+			}
+			usage := ghtool.Usage{Repository: req.Agent.Repository, PullRequest: c.pr}
+			if !strings.Contains(description, usage.String()) || !strings.Contains(system, usage.Checkout()) {
+				t.Errorf("the description %q and the system prompt %q do not carry the gh tool's own usage %q", description, system, usage)
+			}
+		})
+	}
+}
+
+// ompSession and claudeSession are the agent's conversation as each harness's own reader reads
+// it, a request and the agent's answer on the model anthropicConversation names, which the
+// exchange of an answer is appended after.
+func ompSession(t *testing.T) *omp.Session {
+	t.Helper()
+	content := `{"type":"session","version":3,"id":"s-planner","timestamp":"2026-10-26T00:00:00.000Z","cwd":"/work"}` + "\n" +
+		`{"id":"e0000001","parentId":null,"timestamp":"2026-10-26T00:00:00.000Z","type":"model_change","model":"anthropic/claude-standin"}` + "\n" +
+		`{"id":"e0000002","parentId":"e0000001","timestamp":"2026-10-26T00:00:00.000Z","type":"message","message":{"role":"user","content":[{"type":"text","text":"Write the plan for INFRA-1."}],"attribution":"user","timestamp":1}}` + "\n" +
+		`{"id":"e0000003","parentId":"e0000002","timestamp":"2026-10-26T00:00:00.000Z","type":"message","message":{"role":"assistant","content":[{"type":"text","text":"The plan is written."}],"api":"anthropic-messages","provider":"anthropic","model":"claude-standin","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":2}}` + "\n"
+	s, err := omp.Read([]byte(content), omp.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+func claudeSession(t *testing.T) *claude.Session {
+	t.Helper()
+	const tail = `"userType":"external","entrypoint":"sdk-cli","cwd":"/work","sessionId":"s-planner","version":"2.1.310","gitBranch":"main"}`
+	content := `{"parentUuid":null,"isSidechain":false,"type":"user","message":{"role":"user","content":"Write the plan for INFRA-1."},"uuid":"00000000-0000-4000-8000-000000000001","timestamp":"2026-10-26T00:00:01.000Z",` + tail + "\n" +
+		`{"parentUuid":"00000000-0000-4000-8000-000000000001","isSidechain":false,"message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-standin","content":[{"type":"text","text":"The plan is written."}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":1}},"type":"assistant","effort":"high","uuid":"00000000-0000-4000-8000-000000000002","timestamp":"2026-10-26T00:00:02.000Z",` + tail + "\n" +
+		`{"type":"last-prompt","lastPrompt":"Write the plan for INFRA-1.","leafUuid":"00000000-0000-4000-8000-000000000002","sessionId":"s-planner"}` + "\n"
+	s, err := claude.Read([]byte(content))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+// The answer's last model call, the one that offers no tool, is told it is the last (lastCall),
+// after everything else it carries and with no cache mark, and no earlier call is. The exchange
+// appended to the conversation holds no trace of that message: the question, the model's turns, a
+// reply the form refused with the sentence it was asked again with, the reply, and nothing else.
+// It validates, and Oh My Pi's appender and Claude Code's each encode it with none of that
+// message in what they write. Two runs reach their last call: one whose first call reads with gh,
+// so the message comes after the call's result, and one whose first reply the form refuses, so
+// the last call is the one asked again and the message comes after the form's sentence.
+func TestTheLastCallIsToldItIsTheLastAndTheAppendHoldsNoTraceOfIt(t *testing.T) {
+	const answered = `{"kind":"answered","text":"PR 7 is green.","needs":""}`
+	refused := `{"kind":"not_answered","text":"I cannot tell from here.","needs":""}`
+	_, refusal := parseReply(json.RawMessage(refused), false)
+	if refusal == nil {
+		t.Fatal("parseReply takes a not_answered reply naming no need")
+	}
+	for _, c := range []struct {
+		name  string
+		first reply
+		// after is the block the last call's message follows: a tool result, or a text.
+		after string
+	}{
+		{name: "after a gh call", first: anthropicStream("tool_use", anthropicUsage{Input: 2, Output: 3}, anthropicGH("toolu_1", "pr", "view", "7")), after: "tool_result"},
+		{name: "asked again on the last call", first: anthropicStream("end_turn", anthropicUsage{Input: 2, Output: 3}, anthropicText(refused)), after: refusal.Error()},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			s := newStandIn(t, c.first, anthropicStream("end_turn", anthropicUsage{Input: 3, Output: 4}, anthropicText(answered)))
+			reply, err := Answer(context.Background(), anthropicRequest(t, s, &stubGH{}, 2))
+			if err != nil || reply.Fault != "" || reply.Kind != Answered || reply.Text != "PR 7 is green." {
+				t.Fatalf("reply %+v, %v; want answered on the last call", reply, err)
+			}
+			got := s.requests()
+			if len(got) != 2 {
+				t.Fatalf("%d model calls, want 2", len(got))
+			}
+			if bytes.Contains(got[0].body, []byte(lastCall)) {
+				t.Error("the first call, not the last, carries the last call's message")
+			}
+			sent := messages(t, got[1])
+			newest := blocks(sent[len(sent)-1])
+			if sent[len(sent)-1]["role"] != "user" || len(newest) != 2 || newest[1]["text"] != lastCall || newest[1]["cache_control"] != nil {
+				t.Fatalf("the last call ends with %v, want the last call's message, unmarked, after one block", newest)
+			}
+			if before := newest[0]; before["type"] != c.after && before["text"] != c.after {
+				t.Errorf("the last call's message follows %v, want %s", before, c.after)
+			}
+
+			appended := reply.Append
+			if err := appended.Validate(); err != nil {
+				t.Fatalf("the append does not validate: %v", err)
+			}
+			if encoded, err := json.Marshal(appended); err != nil || bytes.Contains(encoded, []byte(lastCall)) {
+				t.Errorf("the append %s (%v) holds the last call's message", encoded, err)
+			}
+			if len(appended.Turns) != 2 || !strings.Contains(appended.Question, "Is PR 7 green?") {
+				t.Errorf("the append %+v, want the question and the two calls' turns", appended)
+			}
+			if asked := appended.Turns[0].AskedAgain; (c.after == refusal.Error()) != (asked == refusal.Error()) || appended.Turns[1].AskedAgain != "" {
+				t.Errorf("the turns were asked again with %q and %q, want the form's sentence on a refused first reply alone", asked, appended.Turns[1].AskedAgain)
+			}
+			for name, encode := range map[string]func(conversation.Append, time.Time) ([]byte, error){
+				"Oh My Pi": ompSession(t).Encode, "Claude Code": claudeSession(t).Encode,
+			} {
+				data, err := encode(appended, time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC))
+				if err != nil {
+					t.Fatalf("%s's appender refuses the append: %v", name, err)
+				}
+				if bytes.Contains(data, []byte(lastCall)) {
+					t.Errorf("%s's appender writes the last call's message:\n%s", name, data)
+				}
+				for _, want := range []string{"Is PR 7 green?", "PR 7 is green.", c.after} {
+					if want != "tool_result" && !bytes.Contains(data, []byte(jsonText(want))) {
+						t.Errorf("%s's appender writes no %q:\n%s", name, want, data)
+					}
+				}
+			}
+		})
+	}
+}
+
+// jsonText is text as a JSON string holds it, without its quotes.
+func jsonText(text string) string {
+	encoded, _ := json.Marshal(text)
+	return string(encoded[1 : len(encoded)-1])
+}
+
 const openaiHistoryOne = "gAAAAhist+/one=="
 const openaiHistoryTwo = "gAAAAhist+/two=="
 
@@ -328,7 +557,7 @@ func openaiRequest(t *testing.T, s *standIn, gh GH, modelCalls int) Request {
 	_, credential := keyFile(t, "sk-openai-standin")
 	return Request{
 		Conversation: openaiConversation(),
-		Agent:        Agent{Role: "implementer", Issue: "INFRA-2", Session: "s-impl", Phase: "testing"},
+		Agent:        Agent{Role: "implementer", Issue: "INFRA-2", Session: "s-impl", Phase: "testing", Repository: ghrepo.MustParse("acme/widgets")},
 		ChangeNote:   "Dispatch status: in review.",
 		Question:     Question{ID: "envoy:k-1", Text: "What did the note say?", Asker: "the tester", Where: "an Envoy message"},
 		Providers:    map[config.AnswerProvider]config.AnswerEndpoint{config.AnswerOpenAI: {BaseURL: s.server.URL + "/v1", Credential: credential}},
@@ -745,13 +974,15 @@ func TestARerunCarriesTheEarlierCallsAndNumbersNewCallsAfterThem(t *testing.T) {
 }
 
 // A gh call that failed or never ran goes back to the model as an error result, with gh's exit
-// status, and the append records it as the call's result.
+// status, and the append records it as the call's result. The bound leaves a call after the
+// second, so the second call's message holding the result holds nothing else (the last call
+// carries its own message after it: TestTheLastCallIsToldItIsTheLastAndTheAppendHoldsNoTraceOfIt).
 func TestAFailedGhCallGoesBackAsAnErrorResult(t *testing.T) {
 	s := newStandIn(t,
 		anthropicStream("tool_use", anthropicUsage{Output: 1}, anthropicGH("toolu_1", "pr", "view", "7")),
 		anthropicStream("end_turn", anthropicUsage{Output: 1}, anthropicText(`{"kind":"answered","text":"Done.","needs":""}`)),
 	)
-	req := anthropicRequest(t, s, failingGH{}, 2)
+	req := anthropicRequest(t, s, failingGH{}, 3)
 	got, err := Answer(context.Background(), req)
 	if err != nil || got.Kind != Answered {
 		t.Fatalf("reply %+v, %v", got, err)

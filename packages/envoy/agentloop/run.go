@@ -439,25 +439,35 @@ func (r *run) failure() error {
 // which keeps the history's mark for the whole run. An ask after Request.Check refused a reply
 // starts from the run's own messages, which carry the history's marks and no other, so its
 // newest message, the check's sentence, takes the fourth.
+//
+// The last allowed call also carries Request.LastCall, after every other message and after the
+// mark: that call is the run's last, so nothing re-sends the sentence, a mark on it would pay for
+// a cache write nothing reads, and without one the call's marks and its cached prefix are the
+// ones it would have without the sentence. No later step takes the override on, and no Step
+// holds it: the SDK builds a step's response messages from the step's own output.
 func (r *run) prepareStep(state aisdk.PrepareStepState) (*aisdk.PrepareStepResult, error) {
 	result := &aisdk.PrepareStepResult{}
-	if r.before+state.StepNumber == r.req.Bounds.Calls-1 {
+	last := r.before+state.StepNumber == r.req.Bounds.Calls-1
+	if last {
 		result.ToolChoice = &provider.ToolChoice{Type: provider.ToolChoiceNone}
 	}
-	if !anthropicKind(r.kind) || r.req.NoCache || len(state.Messages) == 0 {
-		return result, nil
-	}
-	messages := slices.Clone(state.Messages)
-	for i := afterHistory(messages, r.history); i < len(messages); i++ {
-		if _, marked := messages[i].ProviderOptions["anthropic"].(anthropic.AnthropicCacheControl); marked {
-			options := maps.Clone(messages[i].ProviderOptions)
-			delete(options, "anthropic")
-			messages[i].ProviderOptions = options
+	messages := state.Messages
+	if anthropicKind(r.kind) && !r.req.NoCache && len(messages) > 0 {
+		messages = slices.Clone(messages)
+		for i := afterHistory(messages, r.history); i < len(messages); i++ {
+			if _, marked := messages[i].ProviderOptions["anthropic"].(anthropic.AnthropicCacheControl); marked {
+				options := maps.Clone(messages[i].ProviderOptions)
+				delete(options, "anthropic")
+				messages[i].ProviderOptions = options
+			}
 		}
+		newest := len(messages) - 1
+		messages[newest].ProviderOptions = withOption(messages[newest].ProviderOptions, anthropic.CacheControl("ephemeral"))
+		result.Messages = messages
 	}
-	last := len(messages) - 1
-	messages[last].ProviderOptions = withOption(messages[last].ProviderOptions, anthropic.CacheControl("ephemeral"))
-	result.Messages = messages
+	if last && r.req.LastCall != "" {
+		result.Messages = slices.Concat(messages, []provider.Message{provider.UserText(r.req.LastCall)})
+	}
 	return result, nil
 }
 

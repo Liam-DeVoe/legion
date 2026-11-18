@@ -92,8 +92,15 @@ func (l *Loop) generate(ctx context.Context, q store.AnswerQuestion, origin Orig
 	if err != nil {
 		return fmt.Errorf("read what changed on %s: %w", conv.Issue, err)
 	}
+	// The answer's gh tool and the model's description of it name the issue's repository and,
+	// where the record holds one, its pull request, so a call names its repository rather than
+	// leaving gh to read one from a working directory that has none.
+	pullRequest := 0
+	if facts.PullRequest != nil {
+		pullRequest = facts.PullRequest.Number
+	}
 	agent := ghtool.Agent{Issue: conv.Issue, Role: conv.Role, Session: conv.Session, Phase: facts.Phase, Repository: facts.Repository,
-		Head: facts.HandoffCommits[conv.Role]}
+		Head: facts.HandoffCommits[conv.Role], PullRequest: pullRequest}
 	if l.cfg.AppID != nil {
 		agent.AppID = l.cfg.AppID(conv.Role)
 	}
@@ -111,8 +118,9 @@ func (l *Loop) generate(ctx context.Context, q store.AnswerQuestion, origin Orig
 		return err
 	}
 	reply, err := l.cfg.Answer(ctx, answer.Request{
-		Conversation:  session.Conversation(),
-		Agent:         answer.Agent{Role: conv.Role, Issue: conv.Issue, Session: conv.Session, Phase: facts.Phase},
+		Conversation: session.Conversation(),
+		Agent: answer.Agent{Role: conv.Role, Issue: conv.Issue, Session: conv.Session, Phase: facts.Phase,
+			Repository: facts.Repository, PullRequest: pullRequest},
 		ChangeNote:    changeNote(conv.Issue, facts),
 		Question:      answer.Question{ID: q.ID, Text: origin.Text, Asker: origin.Asker, Where: origin.Where},
 		MayAskNothing: q.MayAskNothing, Earlier: earlier,

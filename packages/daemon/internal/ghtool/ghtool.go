@@ -40,20 +40,26 @@ import (
 // and the configured id of that App (config.GitHubApps), which the log line names beside its role.
 // Head is the head its recorded round read: the commit its role's phases row records it completed
 // against (record.PhaseRow.HandoffCommit), "" when the row records none. A review's footer names
-// it, and a review runs only while it is the pull request's current head (Run).
+// it, and a review runs only while it is the pull request's current head (Run). PullRequest is the
+// number of the issue's pull request the daemon's record holds, 0 for none, which the tool's
+// usage names beside the repository (Usage).
 type Agent struct {
-	Issue      string
-	Role       claim.Role
-	Session    string
-	Phase      string
-	Repository ghrepo.Repository
-	AppID      string
-	Head       string
+	Issue       string
+	Role        claim.Role
+	Session     string
+	Phase       string
+	Repository  ghrepo.Repository
+	AppID       string
+	Head        string
+	PullRequest int
 }
 
 // App is the GitHub App the agent's role acts as: implement for an implementer or a merger, review
 // for every other role (appauth.AppRoleFor).
 func (a Agent) App() appauth.AppRole { return appauth.AppRoleFor(a.Role) }
+
+// Usage is how the agent calls the tool: on its issue's repository and pull request.
+func (a Agent) Usage() Usage { return Usage{Repository: a.Repository, PullRequest: a.PullRequest} }
 
 // Recorder is where every call is recorded (answer_tool_calls): started before it runs, finished
 // after, and read back for a restart's Lookup. *store.Store is the daemon's.
@@ -93,7 +99,8 @@ type Host struct {
 }
 
 // Answer is one answer's gh environment, Open's: the agent, the question, the agent's credential
-// bundle, the empty directories a call runs in, and the wrapper GH_PATH names. Close removes it.
+// bundle, the empty directories a call runs in, the wrapper GH_PATH names, and the agent's usage
+// as a refusal ends with it, rendered once. Close removes it.
 type Answer struct {
 	host     Host
 	agent    Agent
@@ -104,6 +111,7 @@ type Answer struct {
 	owners                                string
 	home, config, cache, data, state, cwd string
 	wrapper                               string
+	usage                                 string
 }
 
 // Open builds question's gh environment for agent once, before its first call: a fresh 0700
@@ -130,7 +138,7 @@ func Open(ctx context.Context, host Host, agent Agent, question string) (*Answer
 		return nil, fmt.Errorf("the gh tool: %q is no question id a directory can be named for", question)
 	}
 	answers := filepath.Join(host.StateDir, "answers")
-	a := &Answer{host: host, agent: agent, question: question, dir: filepath.Join(answers, name, "gh")}
+	a := &Answer{host: host, agent: agent, question: question, dir: filepath.Join(answers, name, "gh"), usage: agent.Usage().String()}
 	a.owners = filepath.Join(a.dir, "owners")
 	a.home, a.cwd = filepath.Join(a.dir, "home"), filepath.Join(a.dir, "work")
 	a.config, a.cache = filepath.Join(a.dir, "xdg", "config"), filepath.Join(a.dir, "xdg", "cache")
@@ -197,34 +205,44 @@ type Call struct {
 }
 
 // Result is what the model reads of a call: gh's output, stdout and stderr interleaved and cut to
-// the bound with a note saying how much was cut, or the refusal; gh's exit status, -1 when gh
-// never ran or was stopped by a signal; and whether gh ran.
+// the bound with a note saying how much was cut, with the agent's usage after it where the call
+// failed for naming no repository, or the refusal; gh's exit status, -1 when gh never ran or was
+// stopped by a signal; and whether gh ran.
 type Result struct {
 	Output string
 	Exit   int
 	Ran    bool
 }
 
+// noRepository is git's own words, which gh passes on, for a call that named no repository: gh
+// reads one from the working directory's git remotes, and the answer's working directory is
+// empty, so `gh issue list --limit 1` fails with `failed to run git: fatal: not a git repository
+// (or any of the parent directories): .git`. The model, told only that, makes the same call
+// again; told the usage after it, it names the repository.
+const noRepository = "not a git repository"
+
 // Run runs call. It is refused, with gh never started, when its arguments are no JSON array of
 // strings, its seq is past the answer's gh_calls bound, its command is none of the tool's (the
-// allow list), it submits a review the agent's recorded round cannot decide (reviewOf: the record
-// names no head, the review names no pull request by repository and number, or names another
-// commit_id), or it posts a comment or review in a form the agent's footer cannot be added to; a
-// review is refused after reading its pull request's head, with the review itself never run,
-// when that head is not the one the agent's recorded round read (Answer.headRefusal); a call is
-// refused after reading gh's help, with the command itself never run, when the owner it targets
-// cannot be read for certain or is none of the bundle's, or gh's help names its command
-// otherwise than its words do, and when the leak guard refuses it or could not be made to run
-// (Answer.leakGuard), which is checked last of all, once the call's repository and the files it
-// would send are known and before anything is recorded or started. Every other call runs with
-// the footer added to what it posts (a review's naming the head its round read), the routed
-// owner's gh directory, the scrubbed environment, the working directory the answer's empty one,
-// the gh_seconds bound and the gh_output_chars bound. It is routed by its arguments as the model
-// gave them (Answer.route), since the footer adds a body and names no repository; the call with
-// the footer is what the leak guard reads and what gh runs. Every call is recorded: an allowed
-// one before gh starts and finished after it ends, a refused one with its refusal; one whose
-// start cannot be recorded does not run. Each logs one `answers: gh` line, and a call the guard
-// refused one line of its own before it.
+// allow list, whose refusal says how the tool is called: Usage), it submits a review the agent's
+// recorded round cannot decide (reviewOf: the record names no head, the review names no pull
+// request by repository and number, or names another commit_id), or it posts a comment or review
+// in a form the agent's footer cannot be added to; a review is refused after reading its pull
+// request's head, with the review itself never run, when that head is not the one the agent's
+// recorded round read (Answer.headRefusal); a call is refused after reading gh's help, with the
+// command itself never run, when the owner it targets cannot be read for certain or is none of
+// the bundle's, or gh's help names its command otherwise than its words do, and when the leak
+// guard refuses it or could not be made to run (Answer.leakGuard), which is checked last of all,
+// once the call's repository and the files it would send are known and before anything is
+// recorded or started. Every other call runs with the footer added to what it posts (a review's
+// naming the head its round read), the routed owner's gh directory, the scrubbed environment,
+// the working directory the answer's empty one, the gh_seconds bound and the gh_output_chars
+// bound. It is routed by its arguments as the model gave them (Answer.route), since the footer
+// adds a body and names no repository; the call with the footer is what the leak guard reads and
+// what gh runs. A call that ran and failed for naming no repository (noRepository) has the
+// agent's usage after gh's output. Every call is recorded with what the model reads of it: an
+// allowed one before gh starts and finished after it ends, a refused one with its refusal; one
+// whose start cannot be recorded does not run. Each logs one `answers: gh` line, and a call the
+// guard refused one line of its own before it.
 func Run(ctx context.Context, call Call) Result {
 	a := call.Answer
 	started := a.host.Now()
@@ -241,7 +259,7 @@ func Run(ctx context.Context, call Call) Result {
 		return a.refuse(ctx, call.Seq, argv, started, fmt.Sprintf("this answer has made its %d gh calls (answers.bounds.gh_calls); answer with what the calls so far found", call.Bounds.GHCalls))
 	}
 	words := commandWords(argv)
-	if why := refusal(argv, words); why != "" {
+	if why := refusal(argv, words, a.usage); why != "" {
 		return a.refuse(ctx, call.Seq, argv, started, why)
 	}
 	pr, review, why := reviewOf(argv, words, a.agent.Head)
@@ -267,7 +285,7 @@ func Run(ctx context.Context, call Call) Result {
 	if err != nil {
 		return a.refuse(ctx, call.Seq, run, started, err.Error())
 	}
-	if why := canonicalRefusal(words, target.Command); why != "" {
+	if why := canonicalRefusal(words, target.Command, a.usage); why != "" {
 		return a.refuse(ctx, call.Seq, run, started, why)
 	}
 	if err := a.leakGuard(ctx, run, target, dir); err != nil {
@@ -281,6 +299,9 @@ func Run(ctx context.Context, call Call) Result {
 		return result
 	}
 	result := a.runGH(ctx, run, dir, call.Bounds)
+	if result.Ran && result.Exit != 0 && strings.Contains(result.Output, noRepository) {
+		result.Output += "\n" + a.usage
+	}
 	var exit *int
 	if result.Ran {
 		exit = &result.Exit

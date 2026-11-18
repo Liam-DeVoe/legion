@@ -8,8 +8,10 @@ import (
 )
 
 // systemPrompt is the short system prompt the agent's resumed conversation runs under: who it is
-// and that it answers while it is not running, its tools (the list, gh named), the Legion footer
-// the tool puts on what it posts, the work it declines, and the reply form.
+// and that it answers while it is not running, its tools (the list, gh named, and the sentence on
+// where gh runs and what every call names that the gh tool's description and its refusals carry
+// too: ghtool.Usage.Checkout), the Legion footer the tool puts on what it posts, the work it
+// declines, and the reply form.
 func systemPrompt(req Request) string {
 	names := make([]string, len(tools))
 	for i, t := range tools {
@@ -19,7 +21,7 @@ func systemPrompt(req Request) string {
 	fmt.Fprintf(&b, "You are the agent whose conversation follows: the %s of issue %s (session %s, phase %s).", req.Agent.Role, req.Agent.Issue, req.Agent.Session, req.Agent.Phase)
 	b.WriteString(" You are not running now, and Legion has resumed your conversation for one message to you. Answer it as yourself, from your conversation and from what your tools read.\n\n")
 	fmt.Fprintf(&b, "Your tools now: %s. ", strings.Join(names, ", "))
-	b.WriteString("The `gh` tool is GitHub's own command line with your GitHub access; give it gh's arguments without the leading gh. ")
+	fmt.Fprintf(&b, "The `gh` tool is GitHub's own command line with your GitHub access. %s Give it gh's arguments without the leading gh; its description lists the commands it takes and gives an example. ", req.Agent.usage().Checkout())
 	b.WriteString("Every comment or review you post with it carries your Legion footer, which the tool adds, so do not write one. ")
 	b.WriteString("The other tools your conversation used (reading and editing files, running commands, your Legion and Envoy tools) are not available now: do not call them. ")
 	fmt.Fprintf(&b, "This answer may make at most %d gh calls and %d model calls; your last model call offers no tool and must be your reply.\n\n", req.Bounds.GHCalls, req.Bounds.ModelCalls)
@@ -33,6 +35,13 @@ func systemPrompt(req Request) string {
 	}
 	return b.String()
 }
+
+// lastCall is the message the answer's last model call carries (agentloop.Request.LastCall).
+// That call offers no tool, which the system prompt says once, far above; a model not told so on
+// the call itself has spent it on one more tool call it could not make, or on a reply with nothing
+// in it. The message is the loop's own instruction, as the system prompt is, and the append holds
+// no trace of it (Reply.Append).
+const lastCall = "This is your last model call, and it offers no tool. Reply now, in the reply form, from what you already know."
 
 // userMessage is the one user message after the conversation: what has changed on the issue, the
 // question with who asked and where, and on a re-run the gh calls already made with their results.

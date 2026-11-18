@@ -109,7 +109,8 @@ type Bounds struct {
 	Time time.Duration
 	// Calls is the most model calls the run may make, and OutputTokens the most tokens one
 	// call may produce. The last allowed call is sent with the tool choice set to none, so
-	// that call must answer rather than ask for another tool.
+	// that call must answer rather than ask for another tool, and carries Request.LastCall
+	// where the caller set one.
 	Calls, OutputTokens int
 }
 
@@ -263,6 +264,18 @@ type Request struct {
 	// nothing the run sends. A Check without a Final is a request the loop cannot run.
 	Check    func(value json.RawMessage) error
 	AskAgain int
+	// LastCall is the caller's sentence for the run's last allowed call, the one that
+	// offers no tool (Bounds.Calls): that call alone carries it, as a user message after
+	// every message the call carries without it, so the model is told it is on its last
+	// call rather than left to find no tool offered. The call is the last whichever ask it
+	// falls in: one made after Check refused a reply carries it after the check's
+	// sentence, and with a Calls of 1 the run's one call carries it after Input. It is the
+	// caller's instruction to that call, as System is, and no part of the conversation:
+	// no Step and nothing else in the Result holds it, so a caller that writes the run's
+	// steps back into a conversation writes no trace of it, and it takes no cache mark,
+	// so the marks stay where they would be without it. An empty LastCall sends nothing,
+	// and the run sends exactly what it sent before the field existed.
+	LastCall string
 	// OnText is given the reply's prose as it streams, OnPartial the Final object as it is
 	// built, and OnStep every step as it finishes; a reply the run asked for again streams to
 	// them like any other. An error from any of them ends the run at that point and Run

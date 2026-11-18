@@ -37,8 +37,56 @@ var deniedSubcommands = map[string]map[string]bool{
 	"run": {"download": true},
 }
 
-// allowedList is the allow list as a refusal names it.
+// allowedList is the allow list as a refusal and the tool's usage name it.
 const allowedList = "api, pr (not pr checkout), run (not run download), workflow, repo view, release view|list, search, issue view|list|comment, label list, cache list"
+
+// Usage is how a call of the gh tool is made for one agent, in the words the tool's description,
+// the answer's system prompt and a refusal of a call naming no command of the tool's (allowed)
+// share, so the three never disagree: where gh runs and so what every call names, the agent's
+// repository and its issue's pull request, the commands the tool takes, and one call that runs
+// as written. A model told only that a call was refused, or what gh said of a call that named no
+// repository, calls again much the same way; told how to call the tool, it calls it right.
+type Usage struct {
+	// Repository is the repository the agent's issue works, and PullRequest the number of the
+	// issue's pull request the daemon's record holds, 0 where it holds none.
+	Repository  ghrepo.Repository
+	PullRequest int
+}
+
+// Checkout says where gh runs and so what every call names, then the agent's repository and,
+// where the record holds one, its issue's pull request. gh runs in the answer's empty working
+// directory, where no checkout has a git remote to read a repository from, so a call naming none
+// fails (noRepository).
+func (u Usage) Checkout() string {
+	var b strings.Builder
+	b.WriteString("gh runs in an empty directory with no checkout of any repository, so every call names its repository: " +
+		"-R <owner>/<repo>, a github.com URL, or, for gh api, a repos/<owner>/<repo>/… endpoint. ")
+	fmt.Fprintf(&b, "Your issue's repository is %s", u.Repository)
+	if u.PullRequest > 0 {
+		fmt.Fprintf(&b, ", and its pull request is #%d", u.PullRequest)
+	}
+	b.WriteString(".")
+	return b.String()
+}
+
+// Example is one call that runs as written against the repository, gh's arguments without gh:
+// a read of the issue's pull request where the record holds one, and otherwise of the
+// repository's newest pull requests.
+func (u Usage) Example() []string {
+	if u.PullRequest > 0 {
+		return []string{"pr", "view", strconv.Itoa(u.PullRequest), "-R", u.Repository.String(), "--json", "state,headRefOid,reviews"}
+	}
+	return []string{"pr", "list", "-R", u.Repository.String(), "--limit", "5"}
+}
+
+// String is the whole usage: Checkout, the commands the tool takes (allowedList) and Example as
+// the tool's input.
+func (u Usage) String() string {
+	input, _ := json.Marshal(struct {
+		Args []string `json:"args"`
+	}{u.Example()})
+	return fmt.Sprintf("%s The gh tool takes only these commands: %s. For example: %s.", u.Checkout(), allowedList, input)
+}
 
 // commandWords are the first two words of argv that name its command, as gh reads them: past the
 // -R/--repo and --help gh lets come before the command's name. It stops at any other option, which
@@ -64,11 +112,14 @@ func commandWords(argv []string) []string {
 	return words
 }
 
-// allowed refuses a command whose words are none of the tool's, naming the refused word and the
-// allowed set.
-func allowed(words []string) string {
+// allowed refuses a command whose words are none of the tool's, naming the refused word, and
+// ends the refusal with usage, the agent's Usage as the tool's description gives it: a call with
+// no command at all, which is what gh's own --help or -h alone reads as, and one naming gh's
+// --version, a command gh has and the tool does not, or one the allow list refuses, is a model
+// that does not know how the tool is called, and one told only what it did wrong guesses again.
+func allowed(words []string, usage string) string {
 	if len(words) == 0 {
-		return "a call names no gh command; the gh tool runs only " + allowedList
+		return "a call names no gh command. " + usage
 	}
 	subcommands, ok := allowedCommands[words[0]]
 	refused := ""
@@ -83,15 +134,15 @@ func allowed(words []string) string {
 	if refused == "" {
 		return ""
 	}
-	return fmt.Sprintf("`gh %s` is not one of the gh tool's commands (%q is refused); the gh tool runs only %s", strings.Join(words, " "), refused, allowedList)
+	return fmt.Sprintf("`gh %s` is not one of the gh tool's commands (%q is refused). %s", strings.Join(words, " "), refused, usage)
 }
 
 // refusal is the reason argv, whose command is words, is refused before anything runs, "" for
-// none: a command the allow list does not hold, an option opening a browser (--web or -w,
-// anywhere), `gh api --hostname`, which reaches another host, and an option reading a file or
-// standard input on the daemon's host (--body-file, a pr or issue command's -F, pr create's
-// --recover, a typed field's @<path> for workflow run) — gh api's own options are read with its
-// footer (withFooter).
+// none: a command the allow list does not hold (allowed, ending with usage), an option opening a
+// browser (--web or -w, anywhere), `gh api --hostname`, which reaches another host, and an option
+// reading a file or standard input on the daemon's host (--body-file, a pr or issue command's -F,
+// pr create's --recover, a typed field's @<path> for workflow run) — gh api's own options are
+// read with its footer (withFooter).
 //
 // A command whose options the tool holds (specOf: every command the allow list holds) is read
 // as pflag reads it (parseArgs) and refused by the long name of an option it gave, never by the
@@ -102,8 +153,8 @@ func allowed(words []string) string {
 // it cannot read, one a later gh's new option spells among them, falls back to reading every
 // argument, as a command the tool holds no options of does: without the command's options a
 // value cannot be told from an option, and a browser the model opens is never worth the doubt.
-func refusal(argv, words []string) string {
-	if why := allowed(words); why != "" {
+func refusal(argv, words []string, usage string) string {
+	if why := allowed(words, usage); why != "" {
 		return why
 	}
 	if spec, key := specOf(words); spec != nil {
@@ -200,12 +251,13 @@ func fieldReadsFile(field string) bool {
 
 // canonicalRefusal refuses a command gh's own help names otherwise than its words do, when that
 // changes what the tool allows or adds a footer to: a cobra alias of a refused command (`pr co`
-// for pr checkout), or of a command whose footer the tool adds by its words.
-func canonicalRefusal(words, command []string) string {
+// for pr checkout), refused as allowed refuses the command itself, usage and all, or an alias of
+// a command whose footer the tool adds by its words.
+func canonicalRefusal(words, command []string, usage string) string {
 	if command == nil {
 		return ""
 	}
-	if why := allowed(command[:min(2, len(command))]); why != "" {
+	if why := allowed(command[:min(2, len(command))], usage); why != "" {
 		return why
 	}
 	if spoken, read := writeOf(words), writeOf(command); spoken != read {
