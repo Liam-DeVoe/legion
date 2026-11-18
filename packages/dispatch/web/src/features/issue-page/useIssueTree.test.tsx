@@ -4082,7 +4082,8 @@ test("a refused tree read is read again when the live feed comes back while the 
 
 // With the live feed down, a window focus while a write is out waits until the write settles
 // before it reads a refused tree. The feed comes back before that, with its gap replayed whole,
-// and reads the refused tree itself. Once the write settles the feed is up, and a focus while
+// and asks for the refused tree, whose read waits for the write and is sent as it settles. Once
+// the write settles the feed is up, and a focus while
 // the feed is up reads no refused tree: the focus that waited reads nothing, so the tree is read
 // once, not twice.
 test("a focus held for a write reads no refused tree once the live feed came back and read it", async () => {
@@ -4139,10 +4140,6 @@ test("a focus held for a write reads no refused tree once the live feed came bac
       await settled;
       await Bun.sleep(1_500);
     });
-    expect(
-      treeReadsOf() - before,
-      "the refused tree the feed came back for is read once the write settles"
-    ).toBe(1);
     expect(
       treeReadsOf() - before,
       "the focus that waited for the write reads nothing once the feed is up"
@@ -4567,8 +4564,12 @@ async function writeSettles(
     settled = true;
   };
   void press().then(done, done);
+  let ran = false;
   for (let waited = 0; !settled && waited <= latency + 1_000; waited += 10) {
-    if (waited === latency / 2) await meanwhile?.();
+    if (!ran && waited >= latency / 2) {
+      ran = true;
+      await meanwhile?.();
+    }
     await tick(10, 10);
   }
   expect(settled, "Dispatch answered the write").toBe(true);
@@ -4672,6 +4673,15 @@ function refusedResolve(feed: "down" | "up", posted = false): RuleWay {
   };
 }
 
+/** A write of the issue's title put in the cache (`setQueryData`), as a Keep or a status pick
+ *  puts what Dispatch answered (`landIssueWrite`). */
+function renameIssue(client: QueryClient): void {
+  client.setQueryData<IssueDetails>(["issue", KEY], {
+    ...issue,
+    title: `${issue.title}, renamed`,
+  });
+}
+
 /** A write of the issue that Dispatch answers in 200 ms and the page puts in the cache by
  *  `setQueryData` (a Keep, a status pick: `landIssueWrite`), with no event. With the live feed
  *  down, nothing of the tree or its views is read while it is out. */
@@ -4688,10 +4698,7 @@ function issueWriteSet(feed: "down" | "up"): RuleWay {
           whileOut = treeAndViewReads() - before;
         },
         onSuccess: () => {
-          rig.client.setQueryData<IssueDetails>(["issue", KEY], {
-            ...issue,
-            title: `${issue.title}, renamed`,
-          });
+          renameIssue(rig.client);
         },
       });
       await writeSettles(() => write.mutate(), 200);
@@ -4700,6 +4707,18 @@ function issueWriteSet(feed: "down" | "up"): RuleWay {
       }
     },
   };
+}
+
+/** A write that Dispatch takes, resolving the comment, and whose answer is lost 200 ms on: the
+ *  write store refreshes every query the app holds inside the write (`answerlessLanding`). */
+function answerlessWrite(rig: Rig): MutationObserver<void, Error, void, void> {
+  return new MutationObserver<void, Error, void, void>(rig.client, {
+    mutationFn: async () => {
+      rig.held = { ...comment, resolved: true };
+      await Bun.sleep(200);
+      void rig.client.invalidateQueries();
+    },
+  });
 }
 
 /** A write that Dispatch took and whose answer was lost, so it lands with none (`keyed-write.ts`'
@@ -4711,13 +4730,7 @@ function answerlessLanding(feed: "down" | "up"): RuleWay {
     words: `a write that lands in 200 ms with no answer and a refresh of every query, with the live feed ${feed}`,
     does: async (rig) => {
       if (feed === "down") await feedDown(rig);
-      const write = new MutationObserver<void, Error, void, void>(rig.client, {
-        mutationFn: async () => {
-          rig.held = { ...comment, resolved: true };
-          await Bun.sleep(200);
-          void rig.client.invalidateQueries();
-        },
-      });
+      const write = answerlessWrite(rig);
       await writeSettles(() => write.mutate(), 200);
       if (feed === "up") {
         await tick(150, 10);
@@ -4728,43 +4741,47 @@ function answerlessLanding(feed: "down" | "up"): RuleWay {
   };
 }
 
+/** A write of the page that Dispatch holds until the row lets it go: pressed now, and settled, with
+ *  `onSuccess` then where given, by the function it returns. */
+function holdWrite(rig: Rig, onSuccess?: () => void): () => void {
+  const answer = Promise.withResolvers<void>();
+  const write = new MutationObserver<void, Error, void, void>(rig.client, {
+    mutationFn: () => answer.promise,
+    ...(onSuccess === undefined ? {} : { onSuccess }),
+  });
+  void write.mutate();
+  return answer.resolve;
+}
+
 /** A write that lands with no answer (`answerlessLanding`) while a second write of the page is
  *  still out: nothing of the tree or its views is read until the second write settles too, with
  *  the live feed up or down, and no event comes. The second reads and writes nothing of the issue
  *  (a pin, say), or, with `kept`, puts its answer in the cache as it settles (a Keep), which with
  *  the feed down is a change of the issue the refresh held for the writes then reads. With
  *  `feedBackPart`, the live feed, down, comes back with its gap replayed in part while the tree and
- *  the open view wait for the second write, and the event feed refreshes every query. */
+ *  the open view wait for the second write, and the event feed refreshes every query. With
+ *  `focus`, a window focus comes then, with the live feed down, whose ask the writes hold. */
 function answerlessBesideWrite(
   feed: "down" | "up",
-  { feedBackPart = false, kept = false }: { feedBackPart?: boolean; kept?: boolean } = {}
+  {
+    feedBackPart = false,
+    focus = false,
+    kept = false,
+  }: { feedBackPart?: boolean; focus?: boolean; kept?: boolean } = {}
 ): RuleWay {
   return {
-    words: `a write that lands in 200 ms with no answer and a refresh of every query while a second write is out, ${feedBackPart ? "the live feed then back with its gap replayed in part, " : ""}the second then settling${kept ? " and putting its answer in the cache" : ""}, with the live feed ${feed} and no event`,
+    words: `a write that lands in 200 ms with no answer and a refresh of every query while a second write is out, ${feedBackPart ? "the live feed then back with its gap replayed in part, " : ""}${focus ? "a window focus then, " : ""}the second then settling${kept ? " and putting its answer in the cache" : ""}, with the live feed ${feed} and no event`,
     does: async (rig) => {
       if (feed === "down") await feedDown(rig);
-      const second = Promise.withResolvers<void>();
-      const pin = new MutationObserver<void, Error, void, void>(rig.client, {
-        mutationFn: () => second.promise,
-        onSuccess: () => {
-          if (!kept) return;
-          rig.client.setQueryData<IssueDetails>(["issue", KEY], {
-            ...issue,
-            title: `${issue.title}, renamed`,
-          });
-        },
+      const settleSecond = holdWrite(rig, () => {
+        if (!kept) return;
+        renameIssue(rig.client);
       });
-      void pin.mutate();
       await tick(10, 10);
       const before = treeAndViewReads();
-      const write = new MutationObserver<void, Error, void, void>(rig.client, {
-        mutationFn: async () => {
-          rig.held = { ...comment, resolved: true };
-          await Bun.sleep(200);
-          void rig.client.invalidateQueries();
-        },
-      });
+      const write = answerlessWrite(rig);
       await writeSettles(() => write.mutate(), 200);
+      if (focus) act(() => focusWindow());
       await tick(300, 10);
       expect(
         treeAndViewReads() - before,
@@ -4777,7 +4794,7 @@ function answerlessBesideWrite(
           "the reads of the tree and its views while the second write is out, the feed back"
         ).toBe(0);
       }
-      act(() => second.resolve());
+      act(() => settleSecond());
       await tick(50, 10);
     },
     ends: treeHoldsComment("settled"),
@@ -4804,11 +4821,7 @@ function focusWhileWriting(words: string, meanwhile?: (rig: Rig) => Promise<void
     words,
     does: async (rig) => {
       await feedDown(rig);
-      const answer = Promise.withResolvers<void>();
-      const write = new MutationObserver<void, Error, void, void>(rig.client, {
-        mutationFn: () => answer.promise,
-      });
-      void write.mutate();
+      const settleWrite = holdWrite(rig);
       await tick(10, 10);
       const before = treeAndViewReads();
       act(() => focusWindow());
@@ -4818,7 +4831,7 @@ function focusWhileWriting(words: string, meanwhile?: (rig: Rig) => Promise<void
         "the reads of the tree and its views while the write is out"
       ).toBe(0);
       await meanwhile?.(rig);
-      act(() => answer.resolve());
+      act(() => settleWrite());
       await tick(50, 10);
     },
   };
@@ -4835,17 +4848,13 @@ const EVENT_AFTER_WAITED_READ: RuleWay = {
   words:
     "a write out for 1.5 s while the tree is read again, the comments read 200 ms after it settles and an event of the issue 200 ms later",
   does: async (rig) => {
-    const answer = Promise.withResolvers<void>();
-    const write = new MutationObserver<void, Error, void, void>(rig.client, {
-      mutationFn: () => answer.promise,
-    });
-    void write.mutate();
+    const settleWrite = holdWrite(rig);
     await tick(10, 10);
     act(() => {
       void rig.client.refetchQueries({ exact: true, queryKey: issueTreeKey(KEY) });
     });
     await tick(1_500, 10);
-    act(() => answer.resolve());
+    act(() => settleWrite());
     await tick(200, 10);
     act(() => {
       void rig.client.refetchQueries({ queryKey: ["comments", KEY] });
@@ -4972,6 +4981,7 @@ const WAYS = {
   landedBlankBesideDown: answerlessBesideWrite("down"),
   landedBlankBesideKeepDown: answerlessBesideWrite("down", { kept: true }),
   landedBlankBesideFeedPart: answerlessBesideWrite("down", { feedBackPart: true }),
+  landedBlankBesideFocus: answerlessBesideWrite("down", { focus: true }),
   eventAfterWaitedRead: EVENT_AFTER_WAITED_READ,
   focusDownWriting: focusWhileWriting(
     "a window focus with the live feed down while a write is out, the write then settling with the feed still down"
@@ -5584,6 +5594,10 @@ const READ_RULES: readonly ReadRule[] = [
   // The tree read an event asks for after a read that waited for a write keeps its second from
   // the moment that read sent.
   { read: "tree", state: "answered", observed: true, way: "eventAfterWaitedRead", now: 2 },
+  // A refused read that waits for the writes when a focus with the live feed down asks for every
+  // refused one: sent as they settle, after the ask, and refused, it is read no second time.
+  { read: "tree", state: "refused", observed: true, way: "landedBlankBesideFocus", now: 1 },
+  { read: "spec", state: "refused", observed: true, way: "landedBlankBesideFocus", now: 1 },
   // A write Dispatch refuses with the live feed up: its rollback is no change, and an event that
   // lands while it is out is read once it settles.
   { read: "tree", state: "answered", observed: true, way: "resolveRefusedUp", now: 0 },
