@@ -19,6 +19,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/workflowstore"
 )
 
 // defaultDeliveryWindow is the timeline's default when the caller passes neither from nor to: the
@@ -100,7 +101,8 @@ func parseRFC3339(name, text string) (time.Time, error) {
 
 // parseOptionalWindow is a record route's [from, to) window (parseWindow).
 func parseOptionalWindow(query url.Values) (from, to *time.Time, err error) {
-	return parseWindow(windowBound{"from", query.Get("from")}, windowBound{"to", query.Get("to")})
+	window, err := parseWindow(windowBound{name: "from", text: query.Get("from")}, windowBound{name: "to", text: query.Get("to")})
+	return window.Since, window.Until, err
 }
 
 // windowBound is one bound of a route's window: the name of its query parameter and the text the
@@ -108,20 +110,23 @@ func parseOptionalWindow(query url.Values) (from, to *time.Time, err error) {
 // (routes_query_keys_test.go) resolves.
 type windowBound struct{ name, text string }
 
-// parseWindow is a route's [start, end) window: each bound an RFC3339 time, nil where its text is
-// blank, and start before end where both are given, as the caller wrote them. Its error is the
-// text of the route's 400 INVALID_QUERY, naming the bound.
-func parseWindow(start, end windowBound) (from, to *time.Time, err error) {
-	if from, err = start.parsed(); err != nil {
-		return nil, nil, err
+// parseWindow is a route's window, [since, until): each bound an RFC3339 time, nil where its text
+// is blank, and since before until where both are given, as the caller wrote them. It answers one
+// value, so no caller takes the two bounds in the wrong order. Its error is the text of the route's
+// 400 INVALID_QUERY, naming the bound.
+func parseWindow(since, until windowBound) (workflowstore.Window, error) {
+	var window workflowstore.Window
+	var err error
+	if window.Since, err = since.parsed(); err != nil {
+		return workflowstore.Window{}, err
 	}
-	if to, err = end.parsed(); err != nil {
-		return nil, nil, err
+	if window.Until, err = until.parsed(); err != nil {
+		return workflowstore.Window{}, err
 	}
-	if from != nil && to != nil && !from.Before(*to) {
-		return nil, nil, fmt.Errorf("%s must be before %s", start.name, end.name)
+	if window.Since != nil && window.Until != nil && !window.Since.Before(*window.Until) {
+		return workflowstore.Window{}, fmt.Errorf("%s must be before %s", since.name, until.name)
 	}
-	return from, to, nil
+	return window, nil
 }
 
 // parsed is the bound as an RFC3339 time, nil where its text is blank.

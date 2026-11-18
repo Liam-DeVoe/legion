@@ -253,10 +253,11 @@ type Rating struct {
 	EndedAt *time.Time
 }
 
-// Window bounds the close of the issues a read of a project lists to [Since, Until), each nil for
-// no bound. It is one value so a read cannot take the two bounds in the wrong order. A bound need
-// not be a whole microsecond: the read rounds each up to the next one (store.MicrosecondCeiling),
-// which keeps its meaning against a close PostgreSQL holds to the microsecond.
+// Window is a span of time, [Since, Until), each nil for no bound: ProjectPlans bounds the close of
+// the issues it lists by it, and the API's window parser answers one for a route's two bounds. It
+// is one value so a reader cannot take the two bounds in the wrong order. A bound need not be a
+// whole microsecond: ProjectPlans rounds each up to the next one (store.MicrosecondCeiling), which
+// keeps its meaning against a close PostgreSQL holds to the microsecond.
 type Window struct {
 	Since, Until *time.Time
 }
