@@ -3240,16 +3240,12 @@ func (a *Admission) convergeEntries(ctx context.Context, tx pgx.Tx) error {
 // that could use it. Finishing the row deletes it, exactly as the outbox's own fence would.
 //
 // A row whose phase alone the issue has left — its issue still in the workflow, its tree
-// running, at the row's generation — is the one the outbox's phase fence does not simply finish:
-// where the row's role holds a claim stored suspended by the project release, the fence starts
-// that claim with no task instead (the daemon's releaseStoppedStart), since the daemon's boot
-// writes no start for a phase owner a queued start already covers (workflow's
-// startReleaseStopped) and the row may be that claim's one start. So this writes that same start
-// in the row's place: the issue's tree, the row's role and generation, resumed by rule
-// (record.SuperviseRequest.RuleResume), and no phase, task, entry or slot mark, so it is due at
-// once and stands in no part of the waiting line. A row of an issue out of the workflow, of a
-// tree that lingers or has left, or of another generation is finished alone, whatever its claim:
-// the boot leaves such a claim to the close, the re-admission or the promotion, and so does this.
+// running, at the row's generation — and whose role holds a claim stored suspended by the project
+// release is finished with that claim's start written in its place (record.ReleaseStoppedStart),
+// which is due at once and stands in no part of the waiting line. A row of an issue out of the
+// workflow, of a tree that lingers or has left, or of another generation is finished alone,
+// whatever its claim: the boot leaves such a claim to the close, the re-admission or the
+// promotion, and so does this.
 //
 // A tree that lingers is read by the absence of its root rather than by its root's deadline: a
 // lingering root is in phase done at a status that is not todo, which is exactly what the
@@ -3288,10 +3284,8 @@ func (a *Admission) finishFencedStarts(ctx context.Context, tx pgx.Tx, issues []
 		token claim.Token
 	}
 	finished := false
-	// finishPast finishes owed, a row the fences end, as the outbox's fence would: where
-	// startsReleased says the row's role holds a claim the project release stopped that the
-	// phase fence would start, it then writes that claim's start in the row's place.
-	finishPast := func(owed record.OwedStart, startsReleased bool) error {
+	// finishPast finishes owed, a row the fences end, as the outbox's fence would.
+	finishPast := func(owed record.OwedStart) error {
 		// No live lease holds the row (record.Store.OwedStarts), so the token it carries is
 		// either none at all or the one a dead lane left on it, and the delete names that token:
 		// a lane that took the row between this pass's read and this write keeps it, and the
@@ -3300,19 +3294,9 @@ func (a *Admission) finishFencedStarts(ctx context.Context, tx pgx.Tx, issues []
 			return fmt.Errorf("finish the start %s owed a worker it can no longer reach: %w", owed.Issue, err)
 		}
 		finished = true
-		if !startsReleased {
-			intake.OnCommit(ctx, func() {
-				a.log.Info("admission: finished a held start whose issue has moved past it", "issue", owed.Issue, "row", owed.ID,
-					"role", owed.Role, "phase", owed.Phase, "generation", owed.Generation)
-			})
-			return nil
-		}
-		if err := a.enqueue(ctx, tx, owed.Issue, record.ReleaseStoppedStart(byKey[owed.Issue].Tree, owed.Role, owed.Generation), a.now()); err != nil {
-			return err
-		}
 		intake.OnCommit(ctx, func() {
-			a.log.Info("admission: a held start whose issue has moved past it starts the claim the project release stopped with no task",
-				"issue", owed.Issue, "row", owed.ID, "role", owed.Role, "phase", owed.Phase, "generation", owed.Generation)
+			a.log.Info("admission: finished a held start whose issue has moved past it", "issue", owed.Issue, "row", owed.ID,
+				"role", owed.Role, "phase", owed.Phase, "generation", owed.Generation)
 		})
 		return nil
 	}
@@ -3337,9 +3321,9 @@ func (a *Admission) finishFencedStarts(ctx context.Context, tx pgx.Tx, issues []
 			continue
 		}
 		// The issue has left the row's phase alone: the row is finished below, once its role's
-		// claim is read, since the phase fence would start that claim if the project release
-		// stopped it. A row whose issue and role yield no claim token has no claim to read and
-		// is finished here with the rest.
+		// claim is read, which says whether that claim's start takes the row's place
+		// (record.ReleaseStoppedStart). A row whose issue and role yield no claim token has no
+		// claim to read and is finished here with the rest.
 		if runs && owed.Phase != "" {
 			if token, err := claim.NewToken(project, owed.Issue, owed.Role); err == nil {
 				moved = append(moved, owedRow{owed: owed, token: token})
@@ -3347,7 +3331,7 @@ func (a *Admission) finishFencedStarts(ctx context.Context, tx pgx.Tx, issues []
 				continue
 			}
 		}
-		if err := finishPast(owed, false); err != nil {
+		if err := finishPast(owed); err != nil {
 			return finished, err
 		}
 	}
@@ -3359,9 +3343,20 @@ func (a *Admission) finishFencedStarts(ctx context.Context, tx pgx.Tx, issues []
 		return finished, err
 	}
 	for _, movedRow := range moved {
-		if err := finishPast(movedRow.owed, held[movedRow.token].ProjectReleased()); err != nil {
+		owed := movedRow.owed
+		if err := finishPast(owed); err != nil {
 			return finished, err
 		}
+		if !held[movedRow.token].ProjectReleased() {
+			continue
+		}
+		if err := a.enqueue(ctx, tx, owed.Issue, record.ReleaseStoppedStart(byKey[owed.Issue].Tree, owed.Role, owed.Generation), a.now()); err != nil {
+			return finished, err
+		}
+		intake.OnCommit(ctx, func() {
+			a.log.Info("admission: a held start whose issue has moved past it starts the claim the project release stopped with no task",
+				"issue", owed.Issue, "row", owed.ID, "role", owed.Role, "phase", owed.Phase, "generation", owed.Generation)
+		})
 	}
 	for _, keptRow := range kept {
 		owed := keptRow.owed

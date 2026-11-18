@@ -2562,17 +2562,13 @@ const pendingPhaseStart = `issue = $1 and kind = 'supervise'
 // and the error it last recorded — so a row backing off keeps its backoff and carries the later
 // task into it.
 //
-// A row taken out of another role than row's may be the one start of a claim the project
-// release stopped: the daemon's boot writes none for a phase owner a queued start already covers
-// (workflow's startReleaseStopped), and the outbox's phase fence would start that claim with no
-// task rather than finish the row (the daemon's releaseStoppedStart). So where the row taken out
-// is of row's generation and the role it names holds a claim stored suspended by the project
-// release (claims.state `suspended`, claims.suspended_by `project_release`), the same statement
-// writes that role the start the outbox's fence makes in its place: the taken row's tree, role
-// and generation, resumed by rule (SuperviseRequest.RuleResume), and no phase, task, entry or
-// slot mark, so it is due at once and no phase or entry fence holds it. A row taken out of row's
-// own role leaves no such start, since row starts that claim itself, and neither does a row of
-// an earlier generation, which the outbox's generation fence would finish without acting.
+// A row taken out of another role than row's, of row's generation, whose role holds a claim
+// stored suspended by the project release (claims.state `suspended`, claims.suspended_by
+// `project_release`), leaves that role, in the same statement, the start of a claim the project
+// release stopped (ReleaseStoppedStart) with the taken row's tree, role and generation, due at
+// once. A row of row's own role leaves none, since row starts that claim itself, and neither
+// does a row of an earlier generation, which the outbox's generation fence would finish without
+// acting.
 //
 // A partial unique index on the pending start would be the other way to keep one row, and is not
 // available: Enqueue allows one `on conflict` target per statement and already spends it on
@@ -2584,9 +2580,8 @@ func (s *Postgres) EnqueueStart(ctx context.Context, tx pgx.Tx, row OutboxRow) e
 	// The row taken out is one that waits for what row waits for, read from the payload the
 	// caller hands over rather than asked of the caller again: a payload that names no mark
 	// carries the mark's zero (SuperviseRequest.NeedsSlot is omitempty), which is a start that
-	// waits for no slot. The insert named stopped writes the start of a claim the project
-	// release stopped in place of the row taken out (the doc above). Its jsonb_build_object
-	// builds the same payload ReleaseStoppedStart builds.
+	// waits for no slot. The insert named stopped writes, in place of the row taken out, the
+	// payload ReleaseStoppedStart builds (the doc above).
 	if _, err := tx.Exec(ctx, `with owed as (
 			delete from outbox where id = (select id from outbox
 				where `+pendingPhaseStart+`

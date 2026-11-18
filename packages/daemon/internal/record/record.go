@@ -823,13 +823,11 @@ type PullRequest struct {
 	// predates it; beside MergeState's "" the record holds no read of its head at all. Neither says
 	// when GitHub was last asked.
 	StateReadAt time.Time
-	// ConflictingHead is the head the daemon last judged conflicting with its base, written by
-	// whichever read made that judgement: the daemon's read of the pull request finding GitHub's
-	// CONFLICTING for this head (workflow's mergeability), and the merge queue reporting its entry
-	// for the head unmergeable on the base branch's own tip (workflow's mergeQueueConflict). A read
-	// that finds the same head mergeable clears it; a read of MergeabilityUnknown, GitHub's answer
-	// for a head sitting in the merge queue, neither writes nor clears it. "" means no head is held
-	// conflicting.
+	// ConflictingHead is the head the daemon last judged conflicting with its base, written by its
+	// read of the pull request finding GitHub's CONFLICTING for this head (workflow's
+	// mergeability). A read that finds the same head mergeable clears it; a read of
+	// MergeabilityUnknown, GitHub's answer for a head sitting in the merge queue, neither writes nor
+	// clears it. "" means no head is held conflicting.
 	//
 	// A backward move made while it is non-empty and equal to HeadSHA is a conflict round, which
 	// review_round_cap does not count (PhaseRow.ConflictRounds): the implementer answers such a
@@ -1915,9 +1913,9 @@ type Store interface {
 	// is what a claim's record of the rows it has taken a task from rests on. A row a lane holds
 	// now is not touched, including one it takes while the call waits on its row lock, and the
 	// caller's row is written beside it. A lapsed lease holds nothing and is taken out like any
-	// other. A row taken out of another role, of row's generation, whose role holds a claim stored
-	// suspended by the project release leaves that role a start in its place, resumed by rule with
-	// no phase, task, entry or slot mark, as the outbox's phase fence would start that claim.
+	// other. A row taken out of another role, of row's generation, whose role holds a claim the
+	// project release stopped leaves that role that claim's start in its place
+	// (ReleaseStoppedStart).
 	EnqueueStart(ctx context.Context, tx pgx.Tx, row OutboxRow) error
 	// OwedStarts is every pending worker start of the Dispatch project key project that waits for
 	// its issue's admission slot and that no live lease holds, a row whose lease has lapsed among

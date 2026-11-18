@@ -82,7 +82,7 @@ func TestEnqueueStartLeavesTheReleaseStoppedRoleOfTheRowItTakesOutAStart(t *test
 					}
 					return
 				}
-				want := SuperviseRequest{Op: "start", Tree: tc.key, Role: tc.role, Generation: 3, RuleResume: true}
+				want := ReleaseStoppedStart(tc.key, tc.role, 3)
 				if len(others) != 1 || !reflect.DeepEqual(others[0].request, want) {
 					t.Fatalf("the starts of %s beside the implementer's = %+v, want the one start %+v, resumed by rule and naming no phase, task, entry or slot mark: %s",
 						tc.key, others, want, tc.why)

@@ -138,7 +138,7 @@ func TestAHeldStartWhosePhaseTheIssueLeftStillStartsTheClaimTheProjectReleaseSto
 				}
 				return
 			}
-			want := record.SuperviseRequest{Op: "start", Tree: row.root, Role: claim.RoleTester, Generation: 1, RuleResume: true}
+			want := record.ReleaseStoppedStart(row.root, claim.RoleTester, 1)
 			if len(starts) != 1 || !reflect.DeepEqual(starts[0], want) {
 				t.Fatalf("the starts of %s after the pass = %+v, want the one start %+v, resumed by rule and naming no phase, task, entry or slot mark: %s",
 					row.key, starts, want, row.why)

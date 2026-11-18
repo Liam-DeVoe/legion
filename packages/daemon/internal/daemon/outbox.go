@@ -1930,7 +1930,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			return nil
 		}
 		// A start the phase or entry fence below would finish still starts a claim the project
-		// release stopped, with no task (releaseStoppedStart): nothing else starts that claim.
+		// release stopped, with no task (releaseStoppedStart).
 		if payload.Phase != "" && payload.Phase != issue.Phase {
 			started, run := r.releaseStoppedStart(row, payload, "serves a phase the issue has left",
 				"row", row.ID, "issue", issue.Key, "phase", payload.Phase, "current", issue.Phase, "role", payload.Role)
@@ -3064,19 +3064,10 @@ func (r *outbox) designGateClosed(ctx context.Context, issue record.Issue) (bool
 
 // releaseStoppedStart is what the phase or entry fence (supervise) does with a row it would
 // finish, a row that serves what serves names ("serves a phase the issue has left", "serves an
-// entry its role has left"): it answers the start the row runs instead and true for a start of a
-// claim stored suspended by the project release (supervise.Claim.ProjectReleased), and the row's
-// own payload and false for every other row, which the fence finishes without acting. It logs
-// which of the two it answered at Info, with fields.
-//
-// The daemon's boot gives each such claim one start, and none to a claim a queued start already
-// covers (workflow's startReleaseStopped), so the fenced start of a phase owner may be the one
-// start that claim has: finished, it would leave the claim suspended, and every delivery for it
-// waiting (awaitsBootStart). The row starts it instead as the boot starts a role of an earlier
-// phase: resumed by rule, with no task, and naming no phase or entry, so neither fence holds it.
-// record.Store.EnqueueStart, for a start of another role it takes out, and admission's
-// finishFencedStarts, for a start whose phase alone the issue has left, write this same start for
-// such a claim in place of the row they take out before a lane runs it.
+// entry its role has left"): for a start of a claim stored suspended by the project release
+// (supervise.Claim.ProjectReleased) it answers that claim's start (record.ReleaseStoppedStart)
+// and true, and for every other row the row's own payload and false, which the fence finishes
+// without acting. It logs which of the two it answered at Info, with fields.
 func (r *outbox) releaseStoppedStart(row record.OutboxRow, payload record.SuperviseRequest, serves string, fields ...any) (record.SuperviseRequest, bool) {
 	stopped := false
 	if payload.Op == "start" {
