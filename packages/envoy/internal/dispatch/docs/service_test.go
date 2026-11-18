@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"maps"
 	"reflect"
 	"regexp"
 	"runtime"
@@ -4071,14 +4070,14 @@ func pendingAuthors(t *testing.T, service *Service, artifactID string) []model.A
 	state := service.room(artifactID)
 	state.mu.Lock()
 	for _, record := range state.unconsumedInflightLocked(state.creditSeq.Load()) {
-		maps.Copy(owed, record.authors)
+		mergeAuthors(owed, record.authors)
 	}
 	state.mu.Unlock()
 	durable, err := readPendingAuthors(context.Background(), service.store.Pool, artifactID)
 	if err != nil {
 		t.Fatalf("read the document's pending authors: %v", err)
 	}
-	maps.Copy(owed, durable)
+	mergeAuthors(owed, durable)
 	return actorSlice(owed)
 }
 

@@ -616,7 +616,8 @@ func readPendingAuthors(ctx context.Context, q Queryer, room string) (map[string
 // artifact first (roomLayout.documents), by document and then by actorKey: the rows an update of
 // the room wrote under each document whose fragment it changed (pendingAuthorsIn), and the rows
 // keyed by the tree artifact. Read in one statement, in the version's transaction under the room's
-// advisory lock, as readPendingAuthors is.
+// advisory lock, as readPendingAuthors is, and merged as it merges them: an author a document holds
+// rows of from several updates is one author of it, Proven only when every row is (mergeAuthor).
 func readRoomPendingAuthors(ctx context.Context, q Queryer, documents []string) (map[string]map[string]model.Actor, error) {
 	rows, err := q.Query(ctx, `
 		select artifact_id::text, actor from doc_pending_authors where artifact_id = any($1::uuid[])
@@ -639,7 +640,7 @@ func readRoomPendingAuthors(ctx context.Context, q Queryer, documents []string) 
 		if owed[document] == nil {
 			owed[document] = make(map[string]model.Actor)
 		}
-		owed[document][actorKey(actor)] = actor
+		mergeAuthor(owed[document], actor)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("read the room's pending authors: %w", err)

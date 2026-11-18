@@ -1807,7 +1807,8 @@ func (s *Service) readSettlementTree(state *roomState, doc *crdt.Doc, room strin
 //
 // An issue room, whose layout is not empty, reads the pending authors of every document of the
 // room (readRoomPendingAuthors), and its credit lists each document's own beside the room's
-// (roomCredit).
+// (roomCredit). An author pending under several documents is one author of the room's, Proven
+// only when every row is (mergeAuthors).
 func settlementCredit(ctx context.Context, tx pgx.Tx, state *roomState, room string, layout roomLayout, read settlementRead) (settlementVersionCredit, error) {
 	var owed map[string]model.Actor
 	var perDocument map[string]map[string]model.Actor
@@ -1818,7 +1819,7 @@ func settlementCredit(ctx context.Context, tx pgx.Tx, state *roomState, room str
 		}
 		owed = make(map[string]model.Actor)
 		for _, authors := range perDocument {
-			maps.Copy(owed, authors)
+			mergeAuthors(owed, authors)
 		}
 	} else if owed, err = readPendingAuthors(ctx, tx, room); err != nil {
 		return settlementVersionCredit{}, err
@@ -1844,7 +1845,8 @@ func settlementCredit(ctx context.Context, tx pgx.Tx, state *roomState, room str
 // artifact: the pending authors read of that document (owed), which its version's commit deletes
 // (listed), and the authors of each in-flight credit the capture took (inflight) whose edit changed
 // that document's fragment (inflightCredit.documents), a credit naming no document being the room's
-// own. Each list is in actorSlice's order.
+// own. An author both read and credited is one author of the list, Proven only when every row
+// and credit merged into it is (mergeAuthors). Each list is in actorSlice's order.
 func roomCredit(room string, owed map[string]map[string]model.Actor, inflight []*inflightCredit) (documents, listed map[string][]model.Actor) {
 	authors := make(map[string]map[string]model.Actor, len(owed))
 	listed = make(map[string][]model.Actor, len(owed))
@@ -1856,7 +1858,7 @@ func roomCredit(room string, owed map[string]map[string]model.Actor, inflight []
 		if authors[document] == nil {
 			authors[document] = make(map[string]model.Actor, len(record.authors))
 		}
-		maps.Copy(authors[document], record.authors)
+		mergeAuthors(authors[document], record.authors)
 	}
 	for _, record := range inflight {
 		if len(record.documents) == 0 {
