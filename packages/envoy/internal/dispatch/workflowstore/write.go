@@ -19,15 +19,18 @@ import (
 )
 
 // The forms of a step's names. A task id is a plan's slug, `default` for an issue whose owner gave
-// no plan; a role and a type are a word of lowercase letters, digits and hyphens (roleRule), and so
-// is the role a plan's step names before its key.
+// no plan (taskRule); a role and a type are a word of lowercase letters, digits and hyphens
+// (roleRule), and so is the role a plan's step names before its key.
 var (
 	taskForm = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
 	roleForm = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
 )
 
-// roleRule is roleForm as a refusal states it.
-const roleRule = "a lowercase letter, then lowercase letters, digits and hyphens, at most 32"
+// taskRule and roleRule are taskForm and roleForm as a refusal states them.
+const (
+	taskRule = "lowercase letters, digits and hyphens, starting with a letter or a digit, at most 64"
+	roleRule = "a lowercase letter, then lowercase letters, digits and hyphens, at most 32"
+)
 
 var (
 	stepKinds   = []string{StepKindStep, StepKindRetro, StepKindMerge}
@@ -297,7 +300,7 @@ func (write StepWrite) attributes() (string, []attribute, error) {
 		number(AttributeGeneration, *write.Generation)
 	}
 	if task := text(AttributeTask, write.Task); task != "" && !taskForm.MatchString(task) {
-		return "", nil, refusal(ErrStepInput, "task %q is not a task id: lowercase letters, digits and hyphens, starting with a letter or a digit, at most 64", task)
+		return "", nil, refusal(ErrStepInput, "task %q is not a task id: %s", task, taskRule)
 	}
 	kind := text(AttributeKind, write.Kind)
 	if kind != "" && !slices.Contains(stepKinds, kind) {
@@ -372,15 +375,15 @@ func (write StepWrite) attributes() (string, []attribute, error) {
 
 // rating checks the rating a write states with its reason, the rating the agent that did a retro
 // gave the plan, and answers their two attributes, or none where the write states no rating. The
-// rating is 1 to 5, the reason is neither left out ("") nor blank and holds at most
-// RatingReasonMost code points, and kind, where the write names one, is a retro (ratingOfKind).
+// rating is RatingLeast to RatingMost, the reason is neither left out ("") nor blank and holds at
+// most RatingReasonMost code points, and kind, where the write names one, is a retro (ratingOfKind).
 func (write StepWrite) rating(id, kind string) ([]attribute, error) {
 	if write.Rating == nil {
 		return nil, nil
 	}
 	rating, reason := write.Rating.Rating, write.Rating.Reason
-	if rating < 1 || rating > 5 {
-		return nil, refusal(ErrStepInput, "rating %d is no rating: a plan is rated from 1 (the plan cost the work) to 5 (the plan fit the work)", rating)
+	if rating < RatingLeast || rating > RatingMost {
+		return nil, refusal(ErrStepInput, "rating %d is no rating: a plan is rated from %d (the plan cost the work) to %d (the plan fit the work)", rating, RatingLeast, RatingMost)
 	}
 	if strings.TrimSpace(reason) == "" {
 		return nil, refusal(ErrStepInput, "rating_reason is left out or blank: a rating carries one sentence of why")

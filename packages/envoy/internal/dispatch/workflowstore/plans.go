@@ -132,7 +132,7 @@ func (write PlanWrite) attributes() (string, []attribute, error) {
 	named := map[string]bool{}
 	for _, task := range write.Tasks {
 		if !taskForm.MatchString(task.ID) {
-			return "", nil, refusal(ErrPlanInput, "task %q is not a task id: lowercase letters, digits and hyphens, starting with a letter or a digit, at most 64", task.ID)
+			return "", nil, refusal(ErrPlanInput, "task %q is not a task id: %s", task.ID, taskRule)
 		}
 		if named[task.ID] {
 			return "", nil, refusal(ErrPlanInput, "task %s is named twice: a task's id is unique in its plan", task.ID)
