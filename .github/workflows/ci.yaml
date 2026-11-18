@@ -1058,7 +1058,6 @@ jobs:
               - '!packages/daemon/internal/runtime/sandbox/live_sessions_test.go'
               - '!packages/daemon/internal/runtime/sandbox/live_setup_test.go'
               - '!packages/daemon/internal/runtime/sandbox/live_test.go'
-              - '!packages/daemon/internal/textcheck/**/*_test.go'
               - '!packages/envoy/**/*_test.go'
               # END generated
 
@@ -1164,6 +1163,7 @@ jobs:
               - '!packages/daemon/internal/ompsessions/**/*_test.go'
               - '!packages/daemon/internal/phase/**/*_test.go'
               - '!packages/daemon/internal/podsafety/**/*_test.go'
+              - '!packages/daemon/internal/procaudit/**/*_test.go'
               - '!packages/daemon/internal/procgroup/**/*_test.go'
               - '!packages/daemon/internal/projection/**/*_test.go'
               - '!packages/daemon/internal/promptrefs/**/*_test.go'

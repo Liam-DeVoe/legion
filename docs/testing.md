@@ -520,6 +520,16 @@ A test that let git or jj inherit them read and pushed the pod's own work: the s
   A package whose code under test reads the process's home sets `fixtureenv.Home` on the process and gives its fixtures that same home (`packages/daemon/internal/workspace`'s `setupEnvironment`).
   Isolated keeps no test input either, so a fixture that needs one appends it after.
 
+## A test that lists the machine's /proc
+
+The machine's `/proc` lists every process of every user on it, so a test that judges by what it finds there passes or fails by what else runs on the machine.
+The launcher's git lock sweep keeps every lock while a git or jj runs whose open files it cannot read, and two of its tests failed on a dev box several users share while they passed in CI, until each test's sweep read a `/proc` of its own.
+
+- A test that lists a `/proc`, directly or through code under test whose `/proc` is the machine's unless something else is set, gives that listing a `/proc` of its own: a directory of links to the processes the test started (the launcher's `procRoot`), a directory the test wrote (`blindProc`), or a fake pod (`packages/daemon/internal/memoryguard`'s `fakePod`).
+- A test that needs the machine's own `/proc` says why in a `// host-proc: <why>` line on or above the listing, or in the doc of the test or of the helper that lists: it matches only a process it started, for example, or it runs only in a PID namespace of its own.
+- A function that lists the machine's `/proc` only where a package variable lets it carries a `// host-proc gate <variable>: <why>` line, and a test that sets that variable gives the listing a `/proc` of its own.
+- `packages/daemon/internal/procaudit` holds this rule for every test of `packages/daemon`, each subtest on its own, in the daemon-go job, and fails naming each test that lists the machine's `/proc` with neither a `/proc` of its own nor a reason.
+
 ## Containers a test starts
 
 Every container a test or a proof script starts carries a CPU limit and a memory limit sized to its
