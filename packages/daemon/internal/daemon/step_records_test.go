@@ -1342,8 +1342,10 @@ func newStepRecordsGitHub(t *testing.T) *stepRecordsGitHub {
 	g.url = githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
 		rest, isRepository := strings.CutPrefix(r.URL.Path, "/repos/"+liveRepo)
 		pull, reviews := strings.CutSuffix(strings.TrimPrefix(rest, "/pulls/"), "/reviews")
-		number, err := strconv.Atoi(pull)
-		known := err == nil && strings.HasPrefix(rest, "/pulls/") && g.opened(number)
+		answer, known := "", false
+		if number, err := strconv.Atoi(pull); err == nil && strings.HasPrefix(rest, "/pulls/") {
+			answer, known = g.pullRequest(number)
+		}
 		switch {
 		case r.Method == http.MethodPost && r.URL.Path == "/graphql":
 			_, _ = io.WriteString(w, `{"data":{"repository":{"pullRequest":null}}}`)
@@ -1358,7 +1360,7 @@ func newStepRecordsGitHub(t *testing.T) *stepRecordsGitHub {
 		case r.Method == http.MethodGet && isRepository && rest == "/pulls":
 			_, _ = fmt.Fprintf(w, "[%s]", strings.Join(g.pullRequests(), ","))
 		case r.Method == http.MethodGet && isRepository && known && !reviews:
-			_, _ = io.WriteString(w, g.pullRequest(number))
+			_, _ = io.WriteString(w, answer)
 		case r.Method == http.MethodGet && isRepository && known && reviews:
 			_, _ = io.WriteString(w, `[]`)
 		case r.Method == http.MethodGet && isRepository && rest == "/collaborators/"+stepRecordsPerson+"/permission":
@@ -1378,20 +1380,12 @@ func (g *stepRecordsGitHub) open(branch string, number int) {
 	g.pulls = append(g.pulls, stepRecordsPull{number: number, branch: branch})
 }
 
-// opened is whether pull request number was opened.
-func (g *stepRecordsGitHub) opened(number int) bool {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	return g.find(number) != nil
-}
-
-// merged is GitHub's merge of pull request number: every read from now on answers it merged.
+// merged is GitHub's merge of pull request number, which the walk opened: every read from now on
+// answers it merged.
 func (g *stepRecordsGitHub) merged(number int) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if pull := g.find(number); pull != nil {
-		pull.merged = true
-	}
+	g.find(number).merged = true
 }
 
 // find is the pull request number, nil where none was opened. Its caller holds g.mu.
@@ -1415,16 +1409,15 @@ func (g *stepRecordsGitHub) pullRequests() []string {
 	return answers
 }
 
-// pullRequest is pull request number as GitHub answers it now, the empty text where none was
-// opened, which the handler asks for none (opened).
-func (g *stepRecordsGitHub) pullRequest(number int) string {
+// pullRequest is pull request number as GitHub answers it now, and whether it was opened.
+func (g *stepRecordsGitHub) pullRequest(number int) (string, bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	pull := g.find(number)
 	if pull == nil {
-		return ""
+		return "", false
 	}
-	return pull.answer()
+	return pull.answer(), true
 }
 
 // answer is the pull request as GitHub's REST API answers it: open at stepRecordsHead and clean
