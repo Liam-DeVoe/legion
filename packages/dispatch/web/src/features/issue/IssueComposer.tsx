@@ -438,7 +438,6 @@ function AnswerLine({
             ) : null}
             <RefusableButton
               busy={mutation.isPending ? "Sending…" : undefined}
-              look="page-send-answer"
               refusal={refusal}
               type="submit"
             >

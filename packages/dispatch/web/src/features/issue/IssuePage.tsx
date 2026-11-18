@@ -16,7 +16,6 @@ import { ApiError, api } from "../../api/client";
 import { artifactBlocksQuery } from "../../api/queries";
 import type { Artifact, IssueDetails, UserIssueState, UserState } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
-import { NoTooltips } from "../../components/tooltips";
 import {
   dangerText,
   linkHoverText,
@@ -591,69 +590,62 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
   return (
     // A flex column, so the identity block's fourth row can be drawn at its end on a phone
     // (`IssueHeader`'s `order-last`); every other child keeps its document order.
-    //
-    // `NoTooltips`: nothing this page draws keeps meaning for a pointer alone, because a
-    // reader on a phone or on the keyboard never sees a tooltip (R2, R21). What a tooltip
-    // said is drawn instead - the claim's instant beside its age, a link's whole address -
-    // and the panel says the same for the margin's own cards (`IssueMargin.tsx`).
     // The writer is above the panel as well as the body: the history in the panel replies
     // through the one line at the outline's foot (`outline-writer.tsx`), and the panel is a
     // portal of this tree, which keeps its context.
-    <NoTooltips>
-      <OutlineWriterProvider issueKey={issueKey}>
-        <section className="flex min-w-0 flex-col">
-          <IssueProperties
-            documentArtifact={primaryArtifact}
-            isClosed={isClosed}
-            issue={issue.data}
-            panel={{
-              focused,
-              history: { item: historyItem, open: opensHistory },
-              openCollaborators: opensCollaborators,
-              state: state.data,
-            }}
-            panelStage={panelStage}
-            priorityWrite={priorityWrite}
-            restoringTo={restoringTo}
-            state={issueState}
-          />
-          {/* The preset row, then the Contents pane and the reading column: the one folded tree
-          the presets are queries over, or under a filter that filter's own body (R1, R2, R3, R5,
-          R8, R10, R14) - or the document the address opens, in their place. A row being edited
-          takes its own document's editor onto its stage (`document-stage.tsx`), and what the
-          page draws under the outline is in that column too. */}
-          <IssueBody
-            address={address}
-            below={
-              <IssuePresetPanels
-                editedDocument={edited}
-                isClosed={isClosed}
-                issueKey={issueKey}
-                onToolbarSink={toolbarSink}
-                onVersionChange={(artifact, version) =>
-                  openDocumentAt(artifact, version ?? undefined)
-                }
-              />
-            }
-            isClosed={isClosed}
-            issue={issue.data}
-            onEditing={setEditing}
-            onLeave={recordScroll}
-            openedDocument={openedDocument}
-            toolbar={outlineToolbar}
-          />
-          {/* Wherever the shell's margin draws no panel of its own - outside the shell, where no
-          drawer holds it - the panel's stage is held here, under the body. */}
-          {marginDrawsPanel ? null : (
-            <div
-              className={`mb-3 flex min-w-0 flex-col gap-3 ${PAGE_INSET}`}
-              data-testid="issue-margin"
-              ref={holdPanel}
+    <OutlineWriterProvider issueKey={issueKey}>
+      <section className="flex min-w-0 flex-col">
+        <IssueProperties
+          documentArtifact={primaryArtifact}
+          isClosed={isClosed}
+          issue={issue.data}
+          panel={{
+            focused,
+            history: { item: historyItem, open: opensHistory },
+            openCollaborators: opensCollaborators,
+            state: state.data,
+          }}
+          panelStage={panelStage}
+          priorityWrite={priorityWrite}
+          restoringTo={restoringTo}
+          state={issueState}
+        />
+        {/* The preset row, then the Contents pane and the reading column: the one folded tree
+        the presets are queries over, or under a filter that filter's own body (R1, R2, R3, R5,
+        R8, R10, R14) - or the document the address opens, in their place. A row being edited
+        takes its own document's editor onto its stage (`document-stage.tsx`), and what the
+        page draws under the outline is in that column too. */}
+        <IssueBody
+          address={address}
+          below={
+            <IssuePresetPanels
+              editedDocument={edited}
+              isClosed={isClosed}
+              issueKey={issueKey}
+              onToolbarSink={toolbarSink}
+              onVersionChange={(artifact, version) =>
+                openDocumentAt(artifact, version ?? undefined)
+              }
             />
-          )}
-        </section>
-      </OutlineWriterProvider>
-    </NoTooltips>
+          }
+          isClosed={isClosed}
+          issue={issue.data}
+          onEditing={setEditing}
+          onLeave={recordScroll}
+          openedDocument={openedDocument}
+          toolbar={outlineToolbar}
+        />
+        {/* Wherever the shell's margin draws no panel of its own - outside the shell, where no
+        drawer holds it - the panel's stage is held here, under the body. */}
+        {marginDrawsPanel ? null : (
+          <div
+            className={`mb-3 flex min-w-0 flex-col gap-3 ${PAGE_INSET}`}
+            data-testid="issue-margin"
+            ref={holdPanel}
+          />
+        )}
+      </section>
+    </OutlineWriterProvider>
   );
 }
 

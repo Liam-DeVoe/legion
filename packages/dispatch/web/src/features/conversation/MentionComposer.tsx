@@ -1520,7 +1520,6 @@ export function MentionComposer({
             ))}
             <RefusableButton
               busy={sending ? "Sending…" : upload.pending > 0 ? "Uploading file…" : undefined}
-              look="page-send"
               refusal={submitReason ?? null}
               type="submit"
             >

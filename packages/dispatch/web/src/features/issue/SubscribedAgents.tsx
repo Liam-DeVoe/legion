@@ -1,12 +1,18 @@
 import { type ReactNode, useState } from "react";
 
 import type { Subscriber } from "../../api/types";
-import { useTooltips } from "../../components/tooltips";
-import { textSecondaryOnSurface } from "../../theme/classes";
+import { usePageWords, useTooltips } from "../../components/tooltips";
+import { pageLabelChip, pageMutedText, textSecondaryOnSurface } from "../../theme/classes";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { sessionChipClassName, sessionRemoveButtonClassName } from "../refs/SessionChip";
 import { Timestamp } from "../refs/Timestamp";
 import { UnsubscribeDialog } from "./UnsubscribeDialog";
+
+/** A session's chip and its remove control inside `NoTooltips`, in the new issue page's colours,
+ *  on `SessionChip`'s shapes: the page's label chip, and muted words that turn the failed red
+ *  under the pointer, as `main`'s turn the danger red. */
+const PAGE_SESSION_CHIP = `flex items-center gap-2 rounded-full px-3 py-1 text-sm ${pageLabelChip}`;
+const PAGE_SESSION_REMOVE = `font-medium ${pageMutedText} hover:text-page-failed disabled:cursor-not-allowed disabled:opacity-50`;
 
 export interface SubscribedAgentsProps {
   onUnsubscribe: (sessionId: string) => void;
@@ -27,10 +33,9 @@ export interface SubscribedAgentsProps {
  * a second snapshot taken at another time, and it knows only two states where the registry
  * knows three, so it is deliberately ignored and one agent never shows two states on one page.
  *
- * The session's own id is a tooltip on the surfaces that raise one, and nothing on a surface
- * that does not (`components/tooltips.tsx`), as every other shared control here reads it: the
- * issue page draws this section inside `NoTooltips`, because a reader on a phone or on the
- * keyboard never sees a tooltip (dispatch://INFRA-1196 R21).
+ * Inside `NoTooltips` (`components/tooltips.tsx`, the new issue page) the session's own id is no
+ * tooltip, and a subscription wider than this owner says so in the page's words in place of
+ * "via" and its topic, because a disabled Unsubscribe raises no tooltip that could say why.
  */
 export function SubscribedAgents({
   onUnsubscribe,
@@ -40,8 +45,10 @@ export function SubscribedAgents({
   const [confirming, setConfirming] = useState<Subscriber | undefined>(undefined);
   const text = useAgentText();
   const tooltips = useTooltips();
+  const page = usePageWords();
+  // The question names the session as its chip above draws it on this surface.
   const confirmingLabel =
-    confirming === undefined ? "" : text.sessionText(confirming.session_id, confirming.title);
+    confirming === undefined ? "" : text.sessionShown(confirming.session_id, confirming.title);
 
   if (subscribers.length === 0) {
     return null;
@@ -49,30 +56,37 @@ export function SubscribedAgents({
 
   return (
     <section aria-label="Subscribed agents" className="mt-2">
-      <h2 className={`text-sm font-semibold ${textSecondaryOnSurface}`}>Subscribed agents</h2>
+      <h2
+        className={`text-sm font-semibold ${page === null ? textSecondaryOnSurface : pageMutedText}`}
+      >
+        Subscribed agents
+      </h2>
       <ul className="mt-2 flex flex-wrap gap-2">
         {subscribers.map((subscriber) => (
-          <li className={sessionChipClassName} key={subscriber.session_id}>
+          <li
+            className={page === null ? sessionChipClassName : PAGE_SESSION_CHIP}
+            key={subscriber.session_id}
+          >
             <span title={tooltips ? subscriber.session_id : undefined}>
               <AgentName sessionId={subscriber.session_id} storedTitle={subscriber.title} />
             </span>
             <Timestamp at={new Date(subscriber.last_seen).toISOString()} />
-            {/* Why Unsubscribe is refused, drawn rather than carried as the control's `title`:
-                a disabled control takes no focus and raises no tooltip on a phone, so the
-                reason reached nobody who could not already press it (R21, the panel draws this
-                section inside `NoTooltips`). The session's subscription is wider than this one
-                owner (`Subscriber.via`), and removing it would unsubscribe it from everything
-                that subscription covers; the line says that rather than drawing the topic. */}
-            {subscriber.removable ? null : (
-              <span className="text-xs italic">
-                Its subscription covers other issues and documents too, so it cannot be unsubscribed
-                from this one alone.
+            {subscriber.removable ? null : page === null ? (
+              <span className="text-xs italic">via {subscriber.via}</span>
+            ) : (
+              <span className="text-xs italic" {...page.pageChrome}>
+                {page.STATE_LINES.subscription_wider}
               </span>
             )}
             <button
-              className={sessionRemoveButtonClassName}
+              className={page === null ? sessionRemoveButtonClassName : PAGE_SESSION_REMOVE}
               disabled={!subscriber.removable}
               onClick={() => setConfirming(subscriber)}
+              title={
+                subscriber.removable || !tooltips
+                  ? undefined
+                  : `Subscribed only via ${subscriber.via}, which also covers other issues and documents — cannot unsubscribe just this one`
+              }
               type="button"
             >
               Unsubscribe

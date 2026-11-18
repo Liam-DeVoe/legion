@@ -6,10 +6,19 @@ import {
   calloutWarningBg,
   calloutWarningBorder,
   calloutWarningText,
+  pageStateText,
+  pageWaitingChip,
   textMutedOnSurface,
 } from "../../theme/classes";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { sessionOfAddress } from "../refs/routes";
+
+// Inside `NoTooltips` every marker here is the new issue page's warning, the waiting orange of
+// what needs a person's eye: a route that reaches nobody is the page's waiting chip, and a reach
+// nobody could judge or a holder that stopped answering is its words in that colour, as the
+// page's margin says such a state. There a route a marker names is a value, so it breaks
+// anywhere rather than ellipsize behind a tooltip that page does not draw; everywhere else it
+// ellipsizes, as on `main`.
 
 type RoutedIssue = Pick<
   IssueDetails,
@@ -29,13 +38,12 @@ export function RouteReachUnknownMarker({
   className?: string;
   testId?: string;
 }): ReactNode {
-  // The reason is a tooltip on a surface that offers one, and nowhere on the issue page, which
-  // offers none (`components/tooltips.tsx`): its own marker sits beside the route in the
-  // identity block, where the words are the whole reading (dispatch://INFRA-1196 R21).
+  // The reason is a tooltip on a surface that offers one, and nowhere inside `NoTooltips`
+  // (`components/tooltips.tsx`, the new issue page), where the words are the whole reading.
   const tooltips = useTooltips();
   return (
     <span
-      className={`${className === undefined ? "" : `${className} `}text-xs ${textMutedOnSurface}`}
+      className={`${className === undefined ? "" : `${className} `}text-xs ${tooltips ? textMutedOnSurface : pageStateText.waiting}`}
       data-testid={testId}
       title={
         tooltips
@@ -69,8 +77,8 @@ export function UnreachableRouteMarker({
 }: {
   issue: RoutedIssue;
   showRoute?: boolean;
-  /** The marker's test id: the header's is the one every check reads, and Details' reading of
-   *  the same route carries its own, so the two are never one ambiguous name. */
+  /** The marker's test id: the header's is the one every check reads, and a second reading of
+   *  the same route on a page carries its own, so the two are never one ambiguous name. */
   testId?: string;
 }): ReactNode {
   if (issue.route === null || issue.route_status !== "no_holder") {
@@ -101,17 +109,22 @@ export function UnresponsiveRouteMarker({
     return null;
   }
   const holder = issue.route_holder;
+  // The words name the session as `AgentName` draws it on this surface.
   const named =
-    holder === null || holder === undefined ? "That session" : text.sessionText(holder, undefined);
+    holder === null || holder === undefined ? "That session" : text.sessionShown(holder, undefined);
   const explanation = `${named} has missed its heartbeats without ending, so it still holds this route: what is sent to this issue is stored for it and waits until it answers. Nothing has to be done about it unless it stays this way - a session past the listener's gone horizon leaves the role unheld, and the route then reads as reaching nobody.`;
   return (
     <span
-      className={`inline-flex min-w-0 max-w-full items-center gap-1 text-xs ${textMutedOnSurface}`}
+      className={`inline-flex min-w-0 max-w-full items-center gap-1 text-xs ${tooltips ? textMutedOnSurface : pageStateText.waiting}`}
       data-testid="issue-route-unresponsive"
       style={{ flexShrink: showRoute ? 1 : 0 }}
       title={tooltips ? explanation : undefined}
     >
-      {showRoute ? <span className="min-w-0 truncate">{issue.route}:</span> : null}
+      {showRoute ? (
+        <span className={tooltips ? "min-w-0 truncate" : "min-w-0 [overflow-wrap:anywhere]"}>
+          {issue.route}:
+        </span>
+      ) : null}
       <span className="shrink-0">Unresponsive, still reached</span>
       <span className="sr-only">. {explanation}</span>
     </span>
@@ -128,20 +141,22 @@ function UnreachableRoute({
   testId: string;
 }): ReactNode {
   const text = useAgentText();
+  const tooltips = useTooltips();
   const sessionId = sessionOfAddress(route);
-  const explanation = `${sessionId === undefined ? `No running session holds ${route} right now` : `${text.sessionText(sessionId, undefined)} is not running right now`}, so this issue's messages reach nobody at the moment. A session that is restarting or moving between boxes drops out of the listener for minutes and comes back under the same id, so this is a vacancy only when it is still true on a read ten minutes later; then staff the role, re-route it to a live holder, or clear the route and assign it.`;
+  // The words name the session as `AgentName` draws it on this surface.
+  const explanation = `${sessionId === undefined ? `No running session holds ${route} right now` : `${text.sessionShown(sessionId, undefined)} is not running right now`}, so this issue's messages reach nobody at the moment. A session that is restarting or moving between boxes drops out of the listener for minutes and comes back under the same id, so this is a vacancy only when it is still true on a read ten minutes later; then staff the role, re-route it to a live holder, or clear the route and assign it.`;
   return (
     <span
-      className={`inline-flex min-w-0 max-w-full items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-semibold ${calloutWarningBorder} ${calloutWarningBg} ${calloutWarningText}`}
+      className={`inline-flex min-w-0 max-w-full items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-semibold ${tooltips ? `${calloutWarningBorder} ${calloutWarningBg} ${calloutWarningText}` : pageWaitingChip}`}
       data-testid={testId}
       style={{ flexShrink: showRoute ? 1 : 0 }}
-      title={useTooltips() ? explanation : undefined}
+      title={tooltips ? explanation : undefined}
     >
       <span aria-hidden="true" className="shrink-0">
         ⚠
       </span>
       {showRoute ? (
-        <span className="min-w-0 truncate">
+        <span className={tooltips ? "min-w-0 truncate" : "min-w-0 [overflow-wrap:anywhere]"}>
           {sessionId === undefined ? (
             route
           ) : (

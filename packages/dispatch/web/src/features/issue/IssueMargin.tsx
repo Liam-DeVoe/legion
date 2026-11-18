@@ -6,7 +6,6 @@ import { api } from "../../api/client";
 import { projectsQuery, referenceTargetsQuery, whoAmIQuery } from "../../api/queries";
 import type { Artifact, IssueDetails, UserState } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
-import { NoTooltips } from "../../components/tooltips";
 import {
   dangerText,
   linkHoverText,
@@ -90,28 +89,23 @@ export function IssueMarginCards({
 }): ReactNode {
   const drawsPanel = useMarginDrawsSlot();
   return (
-    // The panel is the page's, wherever the shell mounts it, and the page draws no tooltips
-    // (`components/tooltips.tsx`): the margin's own cards reach that reading through this
-    // wrapper, because they are rendered inside it (`features/margin/margin-slot.tsx`).
-    <NoTooltips>
-      <div
-        className={drawsPanel ? "flex min-w-0 flex-col gap-3" : "contents"}
-        data-testid={drawsPanel ? "issue-margin" : undefined}
-        ref={drawsPanel ? panelHost : undefined}
-      >
-        {/* The margin's own cards first, and the panel's own sections under them, because the
-            page's panel is appended to this wrapper (`features/margin/margin-slot.tsx`): the
-            issue's asks, comments, messages and decisions, in the margin's words and the
-            authors' own, and not the page's declared vocabulary (dispatch://INFRA-1196 R21,
-            `page-structure.ts`). They are first because the margin places an anchored card at
-            a `top` it measures down from the top of its own content (`margin/ThreadList.tsx`'s
-            `regionOrigin`), so anything drawn over them moves that anchor and a card can no
-            longer reach the line its mark is on. */}
-        <div className="contents" {...authorText}>
-          {conversation}
-        </div>
+    <div
+      className={drawsPanel ? "flex min-w-0 flex-col gap-3" : "contents"}
+      data-testid={drawsPanel ? "issue-margin" : undefined}
+      ref={drawsPanel ? panelHost : undefined}
+    >
+      {/* The margin's own cards first, and the panel's own sections under them, because the
+          page's panel is appended to this wrapper (`features/margin/margin-slot.tsx`): the
+          issue's asks, comments, messages and decisions, in the margin's words and the
+          authors' own, and not the page's declared vocabulary (dispatch://INFRA-1196 R21,
+          `page-structure.ts`). They are first because the margin places an anchored card at
+          a `top` it measures down from the top of its own content (`margin/ThreadList.tsx`'s
+          `regionOrigin`), so anything drawn over them moves that anchor and a card can no
+          longer reach the line its mark is on. */}
+      <div className="contents" {...authorText}>
+        {conversation}
       </div>
-    </NoTooltips>
+    </div>
   );
 }
 

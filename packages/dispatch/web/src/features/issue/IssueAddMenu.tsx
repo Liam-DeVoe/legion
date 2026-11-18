@@ -160,7 +160,7 @@ export function IssueAddMenu({
     if ((details.components.ids ?? []).length === 0) {
       fields.push({
         label: PROPERTY_LABELS.components,
-        ...atControl(componentsControlName(details.key)),
+        ...atControl(componentsControlName(details.key, null)),
       });
     }
     if ((details.advances ?? []).length === 0) {

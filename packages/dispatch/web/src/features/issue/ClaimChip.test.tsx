@@ -9,7 +9,7 @@ import { MemoryRouter } from "react-router-dom";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { api } from "../../api/client";
 import type { Agent, ClaimHolderLiveness, Issue, IssueClaim, IssueDetails } from "../../api/types";
-import { NoTooltips } from "../../components/tooltips";
+import { NoTooltips } from "../issue-page/NoTooltips";
 import { MarginProvider } from "../margin/margin-context";
 import { claimIsTakeable } from "./ClaimChip";
 import { IssueClaimControl } from "./IssueClaimControl";
