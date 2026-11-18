@@ -1012,6 +1012,8 @@ jobs:
               - 'scripts/e2e/stage1-skeleton.sh'
               - 'scripts/e2e/lib/rig.sh'
               - 'scripts/e2e/lib/loopback-dsn.sh'
+              - 'scripts/e2e/lib/loopback-dsn.py'
+              - 'scripts/e2e/lib/containers.sh'
               - 'scripts/e2e/lib/port-file.sh'
               - 'scripts/e2e/lib/held-port.py'
               - 'scripts/e2e/lib/built-from.sh'
@@ -1314,6 +1316,8 @@ jobs:
               # The two its first test names (:26-27).
               - 'packages/envoy/AGENTS.md'
               - 'packages/envoy/cmd/dispatch/README.md'
+              # The step preloads @legion/test-fixtures/row-deadline.
+              - 'packages/test-fixtures/src/**'
             # One filter per `*.test.sh` step of the test job: that harness and the script it
             # tests, so the step runs when either changes and skips when neither does. Each is
             # anchored and named again by the `test` filter below, which is what selects the job
@@ -2206,22 +2210,18 @@ jobs:
               - *bun_install
               - *biome
               - 'scripts/conflicts/**'
-            # The session message-wait suite's own job: the suite, the script it spawns, and the
-            # Bun that runs both. No install: the two import node: builtins and bun alone, so no
-            # lockfile and no workspace manifest is an input of this job. The lint and the
-            # typecheck of the same directory stay in the test job, which the `test` filter below
-            # names scripts/sessions for.
+            # The session message-wait suite's own job: the suite, the script it spawns, the shared
+            # test fixtures the suite imports and preloads, and the Bun install that resolves them.
+            # The lint and the typecheck of the same directory stay in the test job, which the
+            # `test` filter below names scripts/sessions for.
             sessions_script:
               - *ci_router
               - '.github/workflows/ci-job-sessions-script.yaml'
+              - *bun_install
               - 'scripts/sessions/**'
-              - '.bun-version'
-              - '.github/actions/setup-bun/**'
-              # setup-bun's third step reads this runner's bun row through that helper and
-              # fetches the npm copy when the release asset served no Bun of the pinned version,
-              # and its last step holds the bun on PATH to that row's digest.
-              - '.github/ci-tools.yaml'
-              - '.github/scripts/ci-tools.sh'
+              # scripts/sessions/__tests__/message-wait.test.ts:5-6 imports @legion/test-fixtures,
+              # and the step preloads its row-deadline module.
+              - 'packages/test-fixtures/src/**'
             # The secrets broker's TypeScript client: its own sources and tests, the one
             # first-party package its sources import, the fixtures its tests use, the Bun install
             # and the Bun it runs, and Biome.
@@ -2338,6 +2338,10 @@ jobs:
               # packages/pi-shared/test/omp-harness.ts:17 imports too, so the tsc program of this
               # package compiles that file and the tests read it.
               - 'packages/envoy-client/test/subscribe-answer.ts'
+              # src/capability-report-patterns.test.ts and scripts/analyze-patterns.ts read the
+              # pattern analyzer's rows from envoy-client's test helper, so the tsc program of
+              # this package compiles it too.
+              - 'packages/envoy-client/test/pattern-analysis.ts'
               # And @legion/broker-client with it (ci_job_reads.py's envoy_client_dep).
               - 'packages/broker-client/**'
               - 'packages/contracts/src/**'
@@ -2460,7 +2464,7 @@ jobs:
               - 'packages/contracts/src/trailing-slash.ts'
               # END listed
               # web/src/features/delivery/lib/applyDelta.test.ts:2-4,
-              # e2e/__tests__/delivery-live-probe.test.ts:8-12 and
+              # e2e/__tests__/delivery-live-probe.test.ts:12-16 and
               # web/src/features/doc/decision-blocks.test.ts:10.
               - 'packages/contracts/fixtures/live/**'
               - 'packages/contracts/fixtures/decision-blocks/**'
@@ -2479,8 +2483,8 @@ jobs:
               # The digest table holding e2e/heavy-bodies.ts's bodies to the Go shapes that spell the
               # same bytes, read by e2e/__tests__/heavy-bodies-digests.test.ts:44-50, which this job runs.
               - 'packages/envoy/internal/dispatch/pmdoc/heavybodies/testdata/shared-bodies.json'
-              # e2e/__tests__/local-instance-support.test.ts:158-160 reads this table (the new URL
-              # at :159) and holds shellQuote to it.
+              # e2e/__tests__/local-instance-support.test.ts:223-225 reads this table (the new URL
+              # at :224) and holds shellQuote to it.
               - 'packages/envoy/scripts/fixtures/shell-quote.json'
               # The generated API document, read at e2e/__tests__/stub-recordings.test.ts:36-39
               # (the new URL at :37), which holds every committed recording's body to the shape
@@ -2499,7 +2503,7 @@ jobs:
               # helpers' test/fake-dispatch with them, through the workspace's "bun" export
               # condition, so check-ts-filters.sh holds this filter to both. The two suites that
               # import it, e2e/__tests__/delivery-live-probe.test.ts:6-9 and
-              # local-instance-support.test.ts:2-5, run in this job's test step and in no other,
+              # local-instance-support.test.ts:3-6, run in this job's test step and in no other,
               # so that read is this gate's (ci_job_reads.py's dispatch_ui).
               - 'packages/envoy-client/src/**'
               # And @legion/broker-client with it (ci_job_reads.py's envoy_client_dep).
