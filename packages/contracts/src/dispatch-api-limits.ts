@@ -143,14 +143,16 @@ export const MAX_BROADCAST_RECIPIENTS = 100;
  * `IDEMPOTENCY_REPLAYED_HEADER` and the resource read afresh in the first answer's shape (a
  * broadcast with the first answer's `excluded`), so a recipient whose attempt a live sender holds
  * can still read `pending`, and a repeat after a lost answer is that replay, never
- * `409 IDEMPOTENCY_KEY_COMMITTED`. Eight routes answer a repeat with the comment or the issue
- * message their first answer was, read afresh, under the first answer's status: a comment's
- * edit, resolve, reopen, accept and reject, an issue message's edit, and a session's reply to a
- * comment or a message. No other stored answer is replayed once it names a comment or an issue
- * message that is deleted, or a document a deleted comment was anchored on: such a repeat is the
- * first answer's status with `IDEMPOTENCY_ANSWER_NOT_KEPT`, since that answer may hold text the
- * delete withdrew. A write without the header is run as it always was, with no replay (the IETF
- * `Idempotency-Key` draft; Google AIP-155).
+ * `409 IDEMPOTENCY_KEY_COMMITTED`. Where a first answer was a comment or an issue message, eight
+ * routes answer its repeat with that post read afresh, under the first answer's status: a
+ * comment's edit, resolve, reopen, accept and reject, an issue message's edit, and a session's
+ * reply to a comment or a message. Any other stored success is not replayed once it holds a
+ * comment or an issue message that is deleted (an object whose own id is the post, such as a
+ * related-item hit with its snippet) or a document version a delete renamed: such a repeat is the
+ * first answer's status with `IDEMPOTENCY_ANSWER_NOT_KEPT`. A post named only in a text, a
+ * citation, holds no part of it and ends nothing, and a stored refusal is replayed as it was. A
+ * write without the header is run as it always was, with no replay (the IETF `Idempotency-Key`
+ * draft; Google AIP-155).
  */
 export const IDEMPOTENCY_KEY_HEADER = "Idempotency-Key";
 
@@ -184,10 +186,11 @@ export const IDEMPOTENCY_KEY_COMMITTED = "KEY_COMMITTED";
 export const IDEMPOTENCY_KEY_INVALID = "KEY_INVALID";
 
 /** The code a replay's body carries when Dispatch gives no copy of the first answer: one larger
- *  than it keeps (1 MiB), or one that names a comment or an issue message that is deleted, or a
- *  document a deleted comment was anchored on. The replay has the first answer's status and this
- *  body instead of the first's. A 2xx with it means the write ran; the client reads the resource
- *  again rather than this body. */
+ *  than it keeps (1 MiB), or a success that holds a deleted post or a version a delete renamed
+ *  (`IDEMPOTENCY_KEY_HEADER`). The replay has the first answer's status and this body instead of
+ *  the first's, and its message says what the request did, as the key recorded it: a request that
+ *  wrote ran, and its caller reads what it wrote; a request that wrote nothing, such as the
+ *  markdown round trip or the related-item check, may be sent again under a new key. */
 export const IDEMPOTENCY_ANSWER_NOT_KEPT = "ANSWER_NOT_KEPT";
 
 /**
@@ -225,8 +228,9 @@ export const DISPATCH_SIGN_IN_REQUIRED = "SIGN_IN_REQUIRED";
  */
 export const DISPATCH_READ_ONLY_TOKEN = "READ_ONLY_TOKEN";
 
-/** The codes of a write Dispatch made and has no answer to give for: `409 KEY_COMMITTED`, or a
- *  replayed 2xx reading `ANSWER_NOT_KEPT`. A client treats either as landed. */
+/** The codes of a repeat Dispatch gives no copy of its first answer for: `409 KEY_COMMITTED`, a
+ *  write that landed, or a replayed 2xx reading `ANSWER_NOT_KEPT`. A client treats a write's as
+ *  landed; a call that writes nothing (`IDEMPOTENCY_ANSWER_NOT_KEPT`) asks again. */
 export type IdempotencyLandedCode =
   | typeof IDEMPOTENCY_KEY_COMMITTED
   | typeof IDEMPOTENCY_ANSWER_NOT_KEPT;
@@ -251,9 +255,9 @@ export function retriesUnderKey(status: number, code: string | undefined): boole
 /**
  * Whether an answer of `status`, `replayed` (it carried `IDEMPOTENCY_REPLAYED_HEADER`) and parsed
  * `body` is a replay whose first answer Dispatch did not keep: a replayed 2xx whose body is
- * `{ code: IDEMPOTENCY_ANSWER_NOT_KEPT }`. The write ran; the client reads the resource again
- * rather than taking this body for it. An answer that is not a replay is the resource itself,
- * whatever it holds.
+ * `{ code: IDEMPOTENCY_ANSWER_NOT_KEPT }`. Its caller takes no resource from this body: a write
+ * that ran reads what it wrote again, and a call that writes nothing asks again under a new key.
+ * An answer that is not a replay is the resource itself, whatever it holds.
  */
 export function answerNotKept(status: number, replayed: boolean, body: unknown): boolean {
   return (

@@ -1,24 +1,14 @@
 kind: Added
 body: |-
   New commands: dispatch edit-comment, dispatch delete-comment, dispatch edit-message and dispatch
-  delete-message. dispatch read --history prints each body an edit replaced, newest first, with the
-  actor and the time; of a deleted post it prints the deleted mark and each entry's time and actor,
-  and no body. A read of an edited post prints the time of its edit (above the body of the post
-  itself, and after the head of an event line), and a deleted post prints as deleted with no body.
-  The four corrections and the history read need a Dispatch of this release. Where an older server
-  answers with no route, or with the scope or the `actor` refusal its comment edit gives, each of
-  them says that this Dispatch predates post corrections and that a correction is one more post
-  until it is deployed. An older Dispatch that ignores the `actor` field answers a person's own
-  token as the person: it takes an edit of that person's own comment and keeps no earlier body,
-  refuses that edit on a closed issue with ISSUE_CLOSED, and refuses an edit of the comment of a
-  session the token names with NOT_AUTHOR; the command passes each of those answers on as it is. A
-  delete says that no read of the post gives its body again, that a reply's own events keep the
-  preview of it the reply froze, and, of a comment, that the document's events written before the
-  delete keep the name an accepted suggestion gave its version. A repeated write Dispatch answers
-  ANSWER_NOT_KEPT is reported as made, with no copy of its answer because that answer was too
-  large to keep or names a deleted comment or message, or the document one was anchored on. An edit an older server does take is reported as the
-  edit that landed and nothing more: what became of the body it replaced is the history read's to
-  answer.
+  delete-message, and dispatch read --history; each one's help states what it does. A read prints an
+  edited post's edit time and a deleted post as deleted, with no body. The four corrections and the
+  history read need a Dispatch of this release: where an older Dispatch has no route for one, or
+  refuses its call in a way only an older build does, the command says that this Dispatch predates
+  post corrections, and it passes on every other answer of an older Dispatch as it is. A repeated
+  call whose answer Dispatch kept no copy of says what the call did: a write says it was made and
+  how to read it back, and a call that writes nothing (dispatch related, the round trip an upload
+  runs) is asked once more under a new key, and says so if Dispatch keeps no answer again.
 time: 2026-11-11T07:23:34.685796308Z
 custom:
     Issue: pr3512

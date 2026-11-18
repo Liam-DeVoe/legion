@@ -3349,12 +3349,12 @@ Each item below names a status and code, then its meaning.
 
   A repeat under a key whose first request finished, with the same method, route, path values, query, media type and body:
   the stored status, every header the first answer set and its body, and nothing runs again.
-  On the eight routes whose answer is one comment or issue message (a comment's edit, resolve, reopen, accept and reject, an issue message's edit, and a session's reply to a comment or a message), the body is that post read afresh, so a repeat after its author edited or deleted it gives it as it stands now.
+  What a repeat answers on each route, and when a kept answer is not replayed, is `IDEMPOTENCY_KEY_HEADER`'s description in `packages/contracts/src/dispatch-api-limits.ts`.
 
 - The first status with `ANSWER_NOT_KEPT`
 
-  That repeat, when the first answer was larger than the 1 MiB a key keeps, or, on any route but the eight above and the four kinds of write that keep a recovery point (below), names a comment or an issue message that is deleted, or a document a deleted comment was anchored on, since such an answer may hold text the delete withdrew:
-  the write ran, and the caller reads what it wrote again.
+  A repeat whose first answer Dispatch gives no copy of: one larger than the 1 MiB a key keeps, or one a delete withdrew text from.
+  What a repeat answers on each route, and when a kept answer is not replayed, is `IDEMPOTENCY_KEY_HEADER`'s description in `packages/contracts/src/dispatch-api-limits.ts`.
 
 - `409 KEY_IN_FLIGHT`, `Retry-After: 1`
 
@@ -4239,8 +4239,7 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/comments/{id}` (PATCH; cookie, trusted header, or bearer)
 
   Edit a comment body, its author alone (`403 NOT_AUTHOR`).
-  A session names itself in `actor` where its credential proves none; a person's own credential, a browser cookie or a personal token holding the `person` scope, is that person and names nothing (`correctionActor`).
-  The body it replaces is kept and `GET /api/v1/comments/{id}/history` reads it; a comment of a closed issue is edited too, and a deleted one is `409 POST_DELETED`.
+  Its rules are its description in the route table (`internal/dispatch/api/routes_table.go`), which `GET /api/v1` serves and the docs site's API reference prints.
   An edit that would leave the comment's margin record or its document's margin past its bound (above) and bigger is `413 CAP_EXCEEDED`.
   `blocks` (`[{id, from}]`, each block id the editor carried and where its span starts in `body`, in UTF-16 code units, in body order) with `base_revision` (the revision `.../blocks` answered) keeps each id on the new block its span starts in;
   with a `base_revision` that is no longer the comment's, or without `blocks`, the new blocks take ids by their text.
@@ -4248,21 +4247,13 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/comments/{id}` (DELETE; cookie, trusted header, or bearer)
 
-  Delete a comment, its author alone (`403 NOT_AUTHOR`).
-  A session names itself in `actor` where its credential proves none; a person's own credential, a browser cookie or a personal token holding the `person` scope, is that person and names nothing (`correctionActor`).
-  The comment keeps its row and its place in its thread, and every read of it gives `deleted_at` and `deleted_by` and no body; the body it held is kept, and `GET /api/v1/comments/{id}/history` reads the mark in its place.
-  A suggestion of it still pending is rejected out of the document before the body goes, so an insert suggestion's text leaves the document with it.
-  The suggestion's replacement text goes from the comment with the body, and the document version an accepted suggestion made, which the accept named after the comment's body, is renamed to the change it made (its `artifact.version` event keeps the name it carried).
-  Each block is removed with its excerpt cleared and the text every revision recorded of it cleared too (`refs.TombstoneItem`), the margin mark is projected again with no text, and every mention attempt still pending is failed, `not sent: the post was deleted`.
-  A comment of a closed issue is deleted too; a second delete is `409 POST_DELETED`.
+  Delete a comment, its author alone (`403 NOT_AUTHOR`): the comment keeps its place, and no read of it gives its body again.
+  Its rules are its description in the route table (`internal/dispatch/api/routes_table.go`), which `GET /api/v1` serves and the docs site's API reference prints.
 
 - `/api/v1/comments/{id}/history?before=` (GET; cookie, trusted header, or bearer)
 
-  Every body an edit or a delete of this comment replaced, newest first, each with the actor that replaced it and the time:
-  `{deleted_at, deleted_by, entries: [{body, edited_by, edited_at}]}`.
-  Read by whoever reads the comment, which is any authenticated caller.
-  At most 200 rows in one answer; `?before=<RFC3339 time>` answers the page after, the rows written before it.
-  A comment nobody edited or deleted answers an empty list; a delete writes an entry of its own, so a comment deleted with no edit lists one, and a deleted comment answers the mark with every body empty, since no read of a deleted post gives its text.
+  The bodies an edit or a delete of this comment replaced, newest first.
+  Its rules are its description in the route table (`internal/dispatch/api/routes_table.go`), which `GET /api/v1` serves and the docs site's API reference prints.
 
 - `/api/v1/comments/{id}/resolve` (POST; cookie, trusted header, or bearer)
 
@@ -4308,28 +4299,17 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/messages/{id}` (PATCH; cookie, trusted header, or bearer)
 
   Edit an issue message's body, its author alone (`403 NOT_AUTHOR`).
-  A session names itself in `actor` where its credential proves none; a person's own credential, a browser cookie or a personal token holding the `person` scope, is that person and names nothing (`correctionActor`), as the comment edit reads it.
-  The body it replaces is kept and `GET /api/v1/messages/{id}/history` reads it; the block ids follow the text, since no editor carries them through the edit.
-  A message of a closed issue is edited too.
-  A message of a conversation with no issue is `409 NOT_AN_ISSUE_MESSAGE`, and a deleted message `409 POST_DELETED`.
+  Its rules are its description in the route table (`internal/dispatch/api/routes_table.go`), which `GET /api/v1` serves and the docs site's API reference prints.
 
 - `/api/v1/messages/{id}` (DELETE; cookie, trusted header, or bearer)
 
-  Delete an issue message, its author alone (`403 NOT_AUTHOR`).
-  A session names itself in `actor` where its credential proves none; a person's own credential, a browser cookie or a personal token holding the `person` scope, is that person and names nothing (`correctionActor`).
-  The message keeps its row and its place in its thread, and every read of it gives `deleted_at` and `deleted_by` and no body; the body it held is kept, and `GET /api/v1/messages/{id}/history` reads the mark in its place.
-  Each block is removed with its excerpt cleared (`refs.TombstoneItem`), and every send still pending is failed, `not sent: the post was deleted`.
-  A message of a closed issue is deleted too.
-  A message of a conversation with no issue is `409 NOT_AN_ISSUE_MESSAGE`, and a second delete is `409 POST_DELETED`.
+  Delete an issue message, its author alone (`403 NOT_AUTHOR`): the message keeps its place, and no read of it gives its body again.
+  Its rules are its description in the route table (`internal/dispatch/api/routes_table.go`), which `GET /api/v1` serves and the docs site's API reference prints.
 
 - `/api/v1/messages/{id}/history?before=&session=` (GET; cookie, trusted header, or bearer)
 
-  Every body an edit or a delete of this message replaced, newest first, each with the actor that replaced it and the time:
-  `{deleted_at, deleted_by, entries: [{body, edited_by, edited_at}]}`.
-  Read under `GET /api/v1/messages/{id}`'s rule:
-  a credential without the `person` scope reading a direct message names its session in `?session=` (`400 SESSION_REQUIRED`, `403 THREAD_FORBIDDEN`).
-  At most 200 rows in one answer; `?before=<RFC3339 time>` answers the page after, the rows written before it.
-  A message nobody edited or deleted answers an empty list; a delete writes an entry of its own, so a message deleted with no edit lists one, and a deleted message answers the mark with every body empty, since no read of a deleted post gives its text.
+  The bodies an edit or a delete of this message replaced, newest first.
+  Its rules are its description in the route table (`internal/dispatch/api/routes_table.go`), which `GET /api/v1` serves and the docs site's API reference prints.
 
 - `/api/v1/issues/{key}/results` (GET, POST; cookie, trusted header, or bearer)
 

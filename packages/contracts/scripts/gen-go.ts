@@ -574,8 +574,8 @@ const IdempotencyKeyPattern = ${JSON.stringify(IDEMPOTENCY_KEY_PATTERN.source)}
 
 // The codes of a keyed write's refusals and of a replay whose first answer was not kept: a key
 // used for another request (422), a key whose first request still runs (409), a key whose write
-// landed and whose answer was lost (409), a header that is not a key (400), and a first answer too
-// large to keep. Generated from IDEMPOTENCY_KEY_REUSED, IDEMPOTENCY_KEY_IN_FLIGHT,
+// landed and whose answer was lost (409), a header that is not a key (400), and a first answer
+// Dispatch gives no copy of (IDEMPOTENCY_ANSWER_NOT_KEPT names when). Generated from IDEMPOTENCY_KEY_REUSED, IDEMPOTENCY_KEY_IN_FLIGHT,
 // IDEMPOTENCY_KEY_COMMITTED, IDEMPOTENCY_KEY_INVALID and IDEMPOTENCY_ANSWER_NOT_KEPT in
 // packages/contracts so the server's codes and the clients' reading of them cannot drift apart.
 const IdempotencyKeyReused = ${JSON.stringify(IDEMPOTENCY_KEY_REUSED)}

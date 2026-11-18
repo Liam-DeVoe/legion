@@ -78,11 +78,8 @@ the Dispatch specs behind the `dispatch` command:
   comment or message whose `reply_block` (`ReplyBlock`) is set. `dispatch read --message` must be
   used alone (`readValidation`) and reads the conversation a message id belongs to, issue-less or not,
   as the host's session (`GET /api/v1/messages/{id}?session=`, whose read rule `packages/envoy/AGENTS.md` owns).
-  `dispatch read --history` goes with `--ref` naming one comment or issue message and with nothing else (`readValidation`):
-  it lists the bodies an edit or a delete of that post replaced, newest first, each with the actor and the time
-  (`GET /api/v1/comments/{id}/history`, `GET /api/v1/messages/{id}/history`, `PostHistoryRead`), and a deleted post is marked deleted and lists no body.
-  `dispatch edit-comment` and `dispatch edit-message` replace the body of a post their caller wrote, and `dispatch delete-comment` and `dispatch delete-message` withdraw one:
-  the author alone (`403 NOT_AUTHOR`), a message of a conversation with no issue is refused (`409 NOT_AN_ISSUE_MESSAGE`), and a deleted post takes no second correction (`409 POST_DELETED`).
+  `dispatch read --history` goes with `--ref` naming one comment or issue message and with nothing else (`readValidation`).
+  What it and the four correction commands (`dispatch edit-comment`, `dispatch delete-comment`, `dispatch edit-message`, `dispatch delete-message`) do is each spec's own description in `src/dispatch-tools.ts`, and what the routes behind them answer is each route's description in the route table (`packages/envoy/internal/dispatch/api/routes_table.go`).
   `dispatch-api.ts` carries `UserAgentState {cleared_before?, read_through?,
   unread_replies}`, `UserAgentStateInput`, and the `user_agent_state.updated` member of `DispatchEvent`
   (`UserAgentStateUpdatedEventPayload {login, session_id}`). `@legion/envoy-client` consumes `dispatchToolSpecs` directly (`dispatch-command.ts`, `dispatch-execute.ts`); no host plugin reads them.

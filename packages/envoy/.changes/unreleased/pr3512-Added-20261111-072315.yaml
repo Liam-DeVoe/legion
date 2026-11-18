@@ -1,28 +1,15 @@
 kind: Added
 body: |-
-  The author of a comment or of an issue message can replace its body or delete it: PATCH and
-  DELETE on /api/v1/comments/{id} and on /api/v1/messages/{id}. The comment PATCH, which before
-  took a person's edit alone and refused one on a closed issue, now takes its author's edit, an
-  agent's included, on an open or a closed issue. GET /api/v1/comments/{id}/history and GET
-  /api/v1/messages/{id}/history give each body an edit replaced, newest first, with the actor and
-  the time, at most 200 in one answer; a delete writes an entry of its own, and of a deleted post
-  they give the deleted mark and each entry's actor and time, with no body. A deleted post keeps
-  its place in its thread, and no read of it gives any part of its body, a read of its own events
-  included. Two kinds of event keep text of it, each written before the delete: every event of
-  a reply (its post, its edits and its own delete) keeps the preview of it the reply froze, and
-  the document's events keep the name an accepted suggestion gave the document version, which
-  was the comment's body: the accept's artifact.version, and an artifact.renamed, which carries
-  every version. The delete renames that version to the change the suggestion made, so the
-  document's versions no longer give the body. A write whose answer is the post (an edit, a
-  resolve, reopen, accept or reject, or a session's reply), repeated under its Idempotency-Key,
-  answers the post as it stands now, and a create's repeat answers what it made, read now. No
-  other kept answer is replayed once it names a deleted comment or issue message, or a document
-  a deleted comment was anchored on: its repeat is the first answer's status with
-  ANSWER_NOT_KEPT, as for an answer too large to keep. A create's repeat then keeps none of the
-  first answer's advice.
-  GET /api/v1/issues/{key}/references takes its ETag from a hash of its answer, so a cached
-  answer that held a version name the delete renamed, or a document's old name, is no longer
-  answered 304.
+  The author of a comment or of an issue message can replace its body or delete it: PATCH and DELETE
+  on /api/v1/comments/{id} and on /api/v1/messages/{id}, and GET /api/v1/comments/{id}/history and
+  GET /api/v1/messages/{id}/history give the bodies an edit or a delete replaced. A deleted post
+  keeps its place in its thread and gives its body to no read, while the events written before the
+  delete keep their payloads. The comment PATCH, which before took a person's edit alone and refused
+  one on a closed issue, now takes its author's edit, an agent's included, on an open or a closed
+  issue. Each route's own description, which GET /api/v1 serves, states its rules. A repeat under an
+  Idempotency-Key whose first answer holds text a delete withdrew answers ANSWER_NOT_KEPT instead of
+  that answer (IDEMPOTENCY_KEY_HEADER in @legion/contracts states when), and GET
+  /api/v1/issues/{key}/references takes its ETag from a hash of its answer.
 time: 2026-11-11T07:23:15.742008842Z
 custom:
     Issue: pr3512
