@@ -7,35 +7,38 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// TestEveryObjectNodeWriterTakesTheStoreLockOrder holds the create sites that write an issue's, a
-// document's, an ask's and a message's node, in its project or between its parties, to the
-// store's lock order, as TestEveryApiStoreWriterTakesTheStoreLockOrder holds the comment paths,
-// with the same machinery: each path lists its steps in the order it takes them, the list is
-// checked against the written order (requireTheWrittenOrderAdmits), and each step is held in turn
-// while the path's own backend is read at the statement it waits at and the table locks it holds
-// (requireEachStepIsWaitedAtInTurn). The paths are the issue create, a question, a message and a
-// document on an issue, an approval request (openApprovalAsk), the ask a settled document's new
-// ask block opens (createAskBlock), a broadcast's copy (writeBroadcast) and a session's reply to
-// a message (insertSessionReply).
+// TestEveryObjectNodeWriterTakesTheStoreLockOrder holds the create sites that write an ask's
+// and a message's node, in its project or between its parties, and the removal that states a
+// document's node gone, to the store's lock order, as TestEveryApiStoreWriterTakesTheStoreLockOrder
+// holds the comment paths, with the same machinery: each path lists its steps in the order it
+// takes them, the list is checked against the written order (requireTheWrittenOrderAdmits), and
+// each step is held in turn while the path's own backend is read at the statement it waits at and
+// the table locks it holds (requireEachStepIsWaitedAtInTurn). The paths are a question and a
+// message on an issue, an approval request (openApprovalAsk), the ask a settled document's new
+// ask block opens (createAskBlock), a broadcast's copy (writeBroadcast), a session's reply to a
+// message (insertSessionReply) and the removal of an untouched document (removeArtifact). The
+// issue create and a document's upload, which write their object's node before the block index
+// runs, are paths of TestEveryApiStoreWriterTakesTheStoreLockOrder, which holds that node step
+// with the block index's.
 //
-// What each path is held to is the order this slice adds: its owner rows first, then the
+// What each create is held to is the order this slice adds: its owner rows first, then the
 // object's node, written before the row that holds the object, the event, appended after that
 // row, and the facts the node write stated, appended after the event that causes them. The id of
 // each object is drawn inside its own transaction, so no other transaction can hold its node or
 // its row before they exist: those steps are held as the tables they are written to.
 //
 // Its controls are the ask create's node write skipped (api/asks.go): held at the ask's node, the
-// path then waits at the author follow's node write rather than its own, or at none; and the
-// session reply's node write moved after its row (api/message_delivery.go insertSessionReply):
-// held at the reply's node, the path then already holds the lock its row takes, and held at its
-// row, it holds no lock of its node.
+// path then waits at the author follow's node write rather than its own, or at none; the session
+// reply's node write moved after its row (api/message_delivery.go insertSessionReply): held at the
+// reply's node, the path then already holds the lock its row takes, and held at its row, it holds
+// no lock of its node; and the removal's gone statement moved after the row's delete
+// (api/artifact_removal.go), which fails the same two ways.
 func TestEveryObjectNodeWriterTakesTheStoreLockOrder(t *testing.T) {
 	ctx := context.Background()
 	rig := newStoreWriterRig(t)
@@ -45,13 +48,11 @@ func TestEveryObjectNodeWriterTakesTheStoreLockOrder(t *testing.T) {
 			"/api/v1/issues/"+rig.issue+"/asks", map[string]any{"question": "Does the lock order hold?"}),
 		rig.objectCreate("createStoredMessage on an issue", "the message", "messages", "insert into messages (",
 			nil, "/api/v1/issues/"+rig.issue+"/messages", map[string]any{"body": "A message the lock steps hold."}),
-		rig.objectCreate("storeArtifact on an issue", "the document", "artifacts", "insert into artifacts (",
-			nil, "/api/v1/issues/"+rig.issue+"/artifacts", nil),
-		rig.issueCreate(),
 		rig.approvalRequest(),
 		rig.askBlockSettle(t),
 		rig.broadcastCopy(),
 		rig.sessionReply(),
+		rig.documentRemoval(),
 	} {
 		t.Run(writer.name, func(t *testing.T) {
 			requireTheWrittenOrderAdmits(t, writer)
@@ -81,44 +82,14 @@ func objectNodeSteps(object, table, insert string) []storeStep {
 }
 
 // objectCreate is a create through route, which takes the owner steps it lists and then
-// objectNodeSteps. A nil body is a document upload, which each run names afresh, and whose row's
-// foreign key into projects takes that project's row in key share mode.
+// objectNodeSteps.
 func (r *storeWriterRig) objectCreate(name, object, table, insert string, owner []storeStep, route string, body map[string]any) storeWriter {
 	return storeWriter{
-		name:            name,
-		steps:           append(append([]storeStep(nil), owner...), objectNodeSteps(object, table, insert)...),
-		locksOwnProject: body == nil,
+		name:  name,
+		steps: append(append([]storeStep(nil), owner...), objectNodeSteps(object, table, insert)...),
 		ready: func(t *testing.T, _ context.Context) storeWriterRun {
-			sent := body
-			if sent == nil {
-				sent = map[string]any{"name": r.fresh("lock-notes") + ".md", "content": "# Notes\n\nThe lock steps hold.\n"}
-			}
 			return storeWriterRun{write: func() error {
-				return createdOrError(dispatchRequest(t, r.call, http.MethodPost, route, sent, "alice"))
-			}}
-		},
-	}
-}
-
-// issueCreate is the issue create: one node write of the issue's node and its spec's, then the
-// issue's row and the spec's row, the issue.created event and the facts it caused. It numbers the
-// issue under its project's row, which is not the project of its event. Each run's title and spec
-// share no word with another's, so the create's duplicate check lets it through.
-func (r *storeWriterRig) issueCreate() storeWriter {
-	steps := objectNodeSteps("the issue", "issues", "insert into issues (")
-	spec := storeStep{
-		name: "the spec's row", order: projectionStep, names: "the issue's node",
-		hold: holdTableWrites("artifacts"), at: "insert into artifacts (",
-		takes: []tableLock{{"artifacts", rowExclusiveMode}},
-	}
-	steps = append(steps[:2], append([]storeStep{spec}, steps[2:]...)...)
-	return storeWriter{
-		name: "createIssue", steps: steps, locksOwnProject: true,
-		ready: func(t *testing.T, _ context.Context) storeWriterRun {
-			title, spec := uuid.NewString(), uuid.NewString()+"\n"
-			return storeWriterRun{write: func() error {
-				return createdOrError(dispatchRequest(t, r.call, http.MethodPost, "/api/v1/issues",
-					map[string]any{"project": "LOCK", "title": title, "spec": spec}, "alice"))
+				return statusOrError(dispatchRequest(t, r.call, http.MethodPost, route, body, "alice"), http.StatusCreated)
 			}}
 		},
 	}
@@ -138,8 +109,8 @@ func (r *storeWriterRig) approvalRequest() storeWriter {
 			document := uploadDocument(t, r.handler, "/api/v1/issues/"+r.issue, r.fresh("approval")+".md",
 				"# Approval\n\nWhat the request asks about.\n").Artifact.ID
 			return storeWriterRun{write: func() error {
-				return createdOrError(bearerRequest(t, r.call, http.MethodPost, "/api/v1/artifacts/"+document+"/approval-requests",
-					map[string]any{"actor": map[string]any{"kind": "session", "id": "s1"}}))
+				return statusOrError(bearerRequest(t, r.call, http.MethodPost, "/api/v1/artifacts/"+document+"/approval-requests",
+					map[string]any{"actor": map[string]any{"kind": "session", "id": "s1"}}), http.StatusCreated)
 			}}
 		},
 	}
@@ -259,9 +230,32 @@ func (r *storeWriterRig) sessionReply() storeWriter {
 			}, "alice").ID
 			answered := parent
 			return storeWriterRun{write: func() error {
-				return createdOrError(bearerRequest(t, r.call, http.MethodPost, "/api/v1/messages/"+answered+"/reply", map[string]any{
+				return statusOrError(bearerRequest(t, r.call, http.MethodPost, "/api/v1/messages/"+answered+"/reply", map[string]any{
 					"actor": map[string]any{"kind": "session", "id": "s1"}, "attempt": 1, "body": "It does.",
-				}))
+				}), http.StatusCreated)
+			}}
+		},
+	}
+}
+
+// documentRemoval is the removal of an untouched document of the issue (removeArtifact), through
+// its route: it takes the issue's row (beginArtifactWrite) and the document's room, clears what the
+// document's own delete would leave behind, states the document's node gone (graphstore
+// WriteUncaused, an update of the node its create wrote), deletes the document's row, which names
+// that node, appends artifact.removed and appends the gone statement under it (graphstore.Caused).
+// Each run removes a document of its own, made just before it by typing a title (emptyDocument).
+// The gone statement is the removal's first write of graph_nodes and the delete its first write of
+// artifacts, so each is held as its table, and so are the event and the tuples it causes.
+func (r *storeWriterRig) documentRemoval() storeWriter {
+	return storeWriter{
+		name: "removeArtifact",
+		steps: append([]storeStep{r.issueOwnerStep(issueOwnerStatement)},
+			objectNodeSteps("the document", "artifacts", "delete from artifacts where id = $1")...),
+		ready: func(t *testing.T, _ context.Context) storeWriterRun {
+			document := emptyDocument(t, r.handler, r.issue, r.fresh("Lock steps removal")+".md")
+			return storeWriterRun{write: func() error {
+				return statusOrError(dispatchRequest(t, r.call, http.MethodDelete, "/api/v1/artifacts/"+document.ID, nil, "alice"),
+					http.StatusNoContent)
 			}}
 		},
 	}

@@ -18,10 +18,13 @@ import (
 )
 
 // TestEveryBackfillBatchTakesTheStoreLockOrder is the backfill's half of dispatch://INFRA-1149's
-// c-lock-order for the three batches backfill_fence_test.go does not prove: writeBlockRefBatch,
-// writeCommentBatch and writeRoleBatch, three of the store write call sites graphstore's
-// TestEveryStoreWriteCallSiteIsListed lists. graphstore's TestEveryStoreWriteTakesOneLockOrder
-// cannot run them, since this package imports graphstore.
+// c-lock-order for the batches backfill_fence_test.go and
+// TestTheBlockBatchTakesEveryOwnerRowBeforeAnyFenceRow do not prove: writeBlockRefBatch,
+// writeCommentBatch, writeRoleBatch and writeSessionBatch, and the two batches of the passes over
+// the project of every node, writeObjectBatch and writeScopeBatch (projects_lock_steps_test.go),
+// each a store write call site graphstore's TestEveryStoreWriteCallSiteIsListed lists.
+// graphstore's TestEveryStoreWriteTakesOneLockOrder cannot run them, since this package imports
+// graphstore.
 //
 // Each subtest seeds the rows one batch writes from, then holds, each in a transaction of its own,
 // a row of every step the batch takes and a row of every step it does not take, and runs the real
@@ -38,6 +41,9 @@ func TestEveryBackfillBatchTakesTheStoreLockOrder(t *testing.T) {
 	t.Run("writeCommentBatch takes its comments' owner rows, then every node row ascending, then the tuple append and the comments rows", requireTheCommentBatchLockOrder)
 	t.Run("writeRoleBatch takes no owner row, then its node rows ascending and the part_of tuple", requireTheRoleBatchLockOrder)
 	t.Run("writeSessionBatch takes no owner row, then its node rows ascending", requireTheSessionBatchLockOrder)
+	t.Run("writeObjectBatch takes its documents' owner rows in ascending owner key, then each run's node rows ascending and its tuples, and no event", requireTheObjectBatchLockOrder)
+	t.Run("writeScopeBatch over block nodes takes the owner row, the fence, then the node rows ascending and the project tuple, and no projection row", requireTheBlockScopeBatchLockOrder)
+	t.Run("writeScopeBatch over a comment node takes no owner row and no fence, then the node row and the project tuple", requireTheCommentScopeBatchLockOrder)
 }
 
 // requireTheBlockRefBatchLockOrder holds writeBlockRefBatch to its steps. The batch is one of the
