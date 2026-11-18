@@ -136,10 +136,10 @@ class Listener(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path.startswith("/v1/registry/"):
-            session = self.path.rsplit("/", 1)[-1]
+            session = self.path.split("?", 1)[0].rsplit("/", 1)[-1]
             record(session)
             self.answer({"session_id": session, "title": "census", "capabilities": ["btw", "aside", "steer"]})
-        elif self.path.startswith("/v1/sessions"):
+        elif self.path.split("?", 1)[0].startswith("/v1/sessions"):
             self.answer(SESSIONS)
         else:
             self.answer({})
@@ -170,9 +170,17 @@ git -C "$workspace" worktree add --detach "$worktree" "$baseline_sha" >/dev/null
 (cd "$worktree/packages/envoy" && GOFLAGS=-p=1 GOMAXPROCS=1 GOGC=20 GOMEMLIMIT=3500MiB \
   go build -ldflags "-X main.buildCommit=$baseline_sha" -o "$work/base-dispatch" ./cmd/dispatch)
 head_sha="$(git -C "$workspace" rev-parse HEAD)"
-(cd "$workspace/packages/envoy" && GOFLAGS=-p=1 GOMAXPROCS=1 GOGC=20 GOMEMLIMIT=3500MiB \
-  go build -ldflags "-X main.buildCommit=$head_sha" -o "$work/head-dispatch" ./cmd/dispatch)
-pass "built the release before ($baseline_sha) and this build ($head_sha)"
+# HEAD_BINARY names a build of this tree already made, which the negative control gives: the
+# control patches a scratch copy of the tree, builds it and runs this driver against that binary,
+# so the run is the same in every other way.
+if [[ -n "${HEAD_BINARY:-}" ]]; then
+  cp "$HEAD_BINARY" "$work/head-dispatch"
+  pass "built the release before ($baseline_sha) and took this build from HEAD_BINARY ($HEAD_BINARY)"
+else
+  (cd "$workspace/packages/envoy" && GOFLAGS=-p=1 GOMAXPROCS=1 GOGC=20 GOMEMLIMIT=3500MiB \
+    go build -ldflags "-X main.buildCommit=$head_sha" -o "$work/head-dispatch" ./cmd/dispatch)
+  pass "built the release before ($baseline_sha) and this build ($head_sha)"
+fi
 
 # boot BINARY LOG: starts a server on the shared database and the bus, and answers its base URL in
 # `base`; its pid is left in `boot_pid`.
@@ -292,14 +300,16 @@ seed_half() {
 
   # Four ask arms: an assigned open ask, an answered one, one on a closed issue, one on a document.
   ask="$(expect 201 POST "/api/v1/issues/$issue/asks" \
-    "{\"question\":\"Ship the $half half?\",\"asked_of\":\"alice\"}" "$half: the open ask" | jq -r .id)" || true
+    "{\"question\":\"Ship the $half half of dispatch://$issue?\",\"asked_of\":\"alice\"}" "$half: the open ask" | jq -r .id)" || true
   answered_ask="$(expect 201 POST "/api/v1/issues/$issue/asks" \
-    "{\"question\":\"Answered in the $half half?\",\"asked_of\":\"alice\"}" "$half: the answered ask")" || true
+    "{\"question\":\"Answered in the $half half of dispatch://$issue?\",\"asked_of\":\"alice\"}" "$half: the answered ask")" || true
   answer="$(jq -r '.id // empty' <<<"$answered_ask")"
   if [[ -n "${answer:-}" && "$answer" != null ]]; then
-    answer_at="$(request GET "/api/v1/asks/$answer" | jq -r '.ask.edited_at // .edited_at // .updated_at // .created_at')"
+    # The answer names the revision the person reviewed, which is the ask's edited_at exactly, and
+    # an ask nothing has edited holds none: the route compares the two as they are (answerTransition).
+    answer_at="$(request GET "/api/v1/asks/$answer" | jq '.edited_at')"
     expect 200 POST "/api/v1/asks/$answer/answer" \
-      "{\"text\":\"Yes, in the $half half.\",\"expected_edited_at\":\"$answer_at\"}" "$half: the answer" >/dev/null || true
+      "{\"text\":\"Yes, in the $half half.\",\"expected_edited_at\":$answer_at}" "$half: the answer" >/dev/null || true
   fi
   expect 201 POST "/api/v1/issues/$closed/asks" \
     "{\"question\":\"An ask on a closed issue ($half)?\",\"asked_of\":\"alice\"}" "$half: the ask on a closed issue" >/dev/null || true
@@ -307,19 +317,28 @@ seed_half() {
   # Thread arms: a comment thread with a session's reply, a thread read, a dismissed thread, a
   # snoozed ask.
   comment="$(expect 201 POST "/api/v1/issues/$issue/comments" \
-    "{\"body\":\"A $half comment thread, for @census-$half.\",\"mentions\":[{\"target\":\"session:census-$half\"}],\"delivery\":\"btw\"}" \
+    "{\"body\":\"A $half comment thread, for @census-$half, on dispatch://$issue.\",\"mentions\":[{\"target\":\"session:census-$half\"}],\"delivery\":\"btw\"}" \
     "$half: the comment thread" | jq -r .id)" || true
   if [[ -n "${comment:-}" && "$comment" != null ]]; then
     reply="$(expect_as "$census_other" 201 POST "/api/v1/issues/$issue/comments" \
-      "{\"body\":\"A reply by somebody else ($half).\",\"reply_to\":\"$comment\",\"answers\":\"$comment\"}" \
+      "{\"body\":\"A reply by somebody else ($half), on dispatch://$issue.\",\"reply_to\":\"$comment\",\"answers\":\"$comment\"}" \
       "$half: the reply in the comment thread" | jq -r .id)" || true
+    # The session may reply only to the delivery it took, so the run waits for the mention's
+    # attempt to settle against it before the session answers (model.DeliveryTaken).
+    if settled_attempt "comment_deliveries" "comment_id = '$comment'"; then
+      expect_agent 201 POST "/api/v1/comments/$comment/reply" \
+        "{\"actor\":{\"kind\":\"session\",\"id\":\"census-$half\"},\"attempt\":1,\"target\":\"session:census-$half\",\"body\":\"A session's reply ($half).\"}" \
+        "$half: the session's reply to its mention" >/dev/null || true
+    else
+      fail "$half: the mention's attempt never settled, so the session had no delivery of its own to answer"
+    fi
     expect 204 PUT "/api/v1/me/threads/$comment/read" \
       "{\"read_through\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}" "$half: the thread read" >/dev/null || true
   fi
 
   # Message arms: an issue message thread, a direct message with a session's reply, a broadcast.
   message="$(expect 201 POST "/api/v1/issues/$issue/messages" \
-    "{\"body\":\"A $half issue message.\"}" "$half: the issue message" | jq -r .id)" || true
+    "{\"body\":\"A $half issue message about dispatch://$issue.\"}" "$half: the issue message" | jq -r .id)" || true
   if [[ -n "${message:-}" && "$message" != null ]]; then
     expect_as "$census_other" 201 POST "/api/v1/issues/$issue/messages" \
       "{\"body\":\"A reply in the message thread ($half).\",\"in_reply_to\":\"$message\"}" \
@@ -329,9 +348,23 @@ seed_half() {
     "{\"body\":\"A $half direct message.\",\"delivery\":\"btw\"}" \
     "$half: the direct message" | jq -r .id)" || true
   if [[ -n "${dm:-}" && "$dm" != null ]]; then
-    expect 200 POST "/api/v1/me/inbox/dismiss" \
-      "{\"threads\":[\"agent:$dm\"],\"seen_replies\":{\"agent:$dm\":{\"newest_reply\":null,\"unread_replies\":[]}}}" \
-      "$half: the Agent thread's dismissal" >/dev/null || true
+    if settled_attempt "message_deliveries" "message_id = '$dm'"; then
+      agent_reply="$(expect_agent 201 POST "/api/v1/messages/$dm/reply" \
+        "{\"actor\":{\"kind\":\"session\",\"id\":\"census-$half\"},\"attempt\":1,\"body\":\"A session's direct reply ($half).\"}" \
+        "$half: the session's direct reply" | jq -r .id)" || true
+    else
+      agent_reply=""
+      fail "$half: the direct message's attempt never settled, so the session had no delivery of its own to answer"
+    fi
+    if [[ -n "${agent_reply:-}" && "$agent_reply" != null ]]; then
+      # The reply a person read by its id (user_agent_reply_read), and the dismissal of the Agent
+      # thread's root (user_agent_thread_dismissed), which carries what the page drew of that row.
+      expect 200 PUT "/api/v1/me/agents/census-$half/state" \
+        "{\"read_replies\":[\"$agent_reply\"]}" "$half: the reply read by its id" >/dev/null || true
+      expect 200 POST "/api/v1/me/inbox/dismiss" \
+        "{\"threads\":[\"agent:$dm\"],\"seen_replies\":{\"agent:$dm\":{\"newest_reply\":\"$agent_reply\",\"unread_replies\":[]}}}" \
+        "$half: the Agent thread's dismissal" >/dev/null || true
+    fi
   fi
   broadcast="$(request POST "/api/v1/broadcasts" \
     "{\"body\":\"A $half broadcast.\",\"delivery\":\"btw\",\"idempotency_key\":\"census-$half\"}")" || true
@@ -368,9 +401,32 @@ seed_half() {
       fail "$half: a comment that points at a person answered $status: the mention tuples are dispatch://INFRA-1152's T13, which waits on the person address of dispatch://INFRA-1702 ($(head -c 200 "$work/mention-$half.json"))"
     fi
   fi
+  # A document of the project's own, whose body cites the issue, so this run writes the blocks and
+  # the block links dispatch://INFRA-1149's census covers; and a role the issue is routed to, so
+  # its role and its page are nodes the publisher writes.
+  expect 201 POST "/api/v1/projects/$project/artifacts" \
+    "{\"name\":\"census-$half.md\",\"content\":\"# The $half half\\n\\nA passage citing dispatch://$issue.\\n\"}" \
+    "$half: the project document" >/dev/null || true
+  expect 200 PATCH "/api/v1/issues/$issue" \
+    "{\"route\":\"role:census-$half\"}" "$half: the role the issue is routed to" >/dev/null || true
+
   # One event the person wrote themselves, which draws no delivery to them.
   expect 201 POST "/api/v1/issues/$issue/comments" \
     "{\"body\":\"The person's own $half comment.\"}" "$half: the person's own comment" >/dev/null || true
+}
+
+# settled_attempt waits up to 30s for a row of TABLE that WHERE names to reach a state the listener
+# took it in, with the session it reached (model.DeliveryTakenStatesSQL), and answers whether one
+# did: the session may reply only to a delivery of its own, so a reply before the send settles is
+# refused.
+settled_attempt() {
+  local table="$1" where="$2" held
+  for _ in $(seq 1 30); do
+    held="$(psql "$database_url" -At -c "select count(*) from $table where $where and state in ('sent', 'queued') and coalesce(session_id, '') <> ''")"
+    [[ "$held" != "0" ]] && return 0
+    sleep 1
+  done
+  return 1
 }
 
 # The nine tables the census covers, as the capture reads them.
@@ -435,7 +491,7 @@ done < <(grep -E '^census: store kind=|^census: store rows_checked=' "$work/cens
 
 for kind in user_threads user_threads_version user_agent_read user_agent_state user_agent_reply_read \
   user_agent_thread_dismissed user_ask_snooze comment_deliveries message_deliveries \
-  published_destinations message comment_pointers; do
+  published_destinations message comment_pointers comment block block_ref role page; do
   line="$(grep -m1 -E "^census: store kind=$kind (nodes|tuples)=" "$work/census.log" || true)"
   if [[ -z "$line" ]]; then
     fail "the census printed no line for kind $kind"

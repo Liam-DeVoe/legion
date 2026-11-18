@@ -224,7 +224,11 @@ const movedParents = "block_parent_moved"
 //   - dispatch://INFRA-1950's interaction and its frames, a lens and its finding blocks, a lens
 //     kind, a constraint and a risk (#b-r-interaction, #b-r-lens, #b-r-lens-catalogue,
 //     #b-r-constraint-risk), every one of them assumed.
-func storeKinds() []StoreKind {
+// storeKinds is every term the sizing counts. messagesNamed is the predicate that says a messages
+// row names its node, which the session term reads through recordedSessions: `false` on a database
+// this branch's migrations have not reached, whose messages table holds no such column and whose
+// rows name no node (readStoreKinds).
+func storeKinds(messagesNamed string) []StoreKind {
 	return []StoreKind{{
 		Name: "comment", MovedBy: movedHere, Nodes: 1, Tuples: 2,
 		Driver: "comments.created_at: the comment's node and its visibility and state",
@@ -314,7 +318,7 @@ func storeKinds() []StoreKind {
 			" state, and either its part_of the role it claimed with that role's held_by and the retraction that ends it," +
 			" or a page of its own with that page's visibility, state and part_of - three tuples either way, and two" +
 			" nodes at most, since which one a session took is the role bucket's and no table's",
-		count: `(select count(*) from (` + recordedSessions(sizingAuthors) + `) recorded
+		count: `(select count(*) from (` + recordedSessions(sizingAuthors, messagesNamed) + `) recorded
 			where recorded.at > ` + sizingWindow + ` and octet_length(recorded.id) <= ` + addressBound + `)`,
 	}, {
 		Name: graphstore.KindRole, MovedBy: movedHere, Nodes: 1, Tuples: 2,
@@ -762,7 +766,19 @@ func readSizing(ctx context.Context, tx pgx.Tx) (*SizingReport, error) {
 // counts in one statement over sizingWritesWith, so each set of rows it names is read once, the
 // moved parents by replayParents, and an assumed term from the writes it is assumed at.
 func readStoreKinds(ctx context.Context, tx pgx.Tx) ([]StoreKind, error) {
-	kinds := storeKinds()
+	// The sizing is taken on a database this branch's migrations have not reached as well (R4),
+	// where messages holds no node column pair and no statement may name one.
+	var named bool
+	if err := tx.QueryRow(ctx, `select exists (
+		select 1 from pg_attribute
+		where attrelid = to_regclass('messages') and attname = 'node_kind' and not attisdropped)`).Scan(&named); err != nil {
+		return nil, fmt.Errorf("read whether messages names its node yet: %w", err)
+	}
+	messagesNamed := "false"
+	if named {
+		messagesNamed = MessagesNameTheirNode
+	}
+	kinds := storeKinds(messagesNamed)
 	counts := make([]string, 0, len(kinds))
 	targets := make([]any, 0, len(kinds))
 	for index := range kinds {

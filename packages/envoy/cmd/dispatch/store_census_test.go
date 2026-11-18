@@ -60,6 +60,22 @@ const censusSigningKey = "store-census-signing-key"
 // own, so a kind the census stops checking is read by a person before this test agrees with it.
 var censusKinds = []string{"comment", "block", "block_ref", "person", "session", "role", "page"}
 
+// inboxCensusKinds are the kinds of dispatch://INFRA-1152, which `census --store` prints a line
+// for beside the kinds above: the nine projections the one inbox read uses, the messages node, the
+// comment pointers and the item block and link tables (graphcensus's inboxProjections). This run's
+// corpus is dispatch://INFRA-1149's, so it writes rows of some of them and none of others; what
+// holds each of them to a population of both releases is c-census, whose corpus seeds every arm.
+// Here a difference in either direction fails, as it does for the kinds of dispatch://INFRA-1150.
+var inboxCensusKinds = []string{
+	"messages", "message", "comment_pointers",
+	"comment_block", "message_block", "ask_block",
+	"comment_block_ref", "message_block_ref", "ask_block_ref",
+	"comment_deliveries", "message_deliveries", "published_destinations",
+	"user_threads", "user_threads_version",
+	"user_agent_read", "user_agent_state", "user_agent_reply_read",
+	"user_agent_thread_dismissed", "user_ask_snooze",
+}
+
 // censusRole is the role this run addresses, and censusSession the session that writes one of
 // its comments. The role is addressed through this build alone: the older build records the
 // delivery its mention asks for and makes no node, and the node of a role is the publisher's to
@@ -1391,6 +1407,13 @@ func requireEveryKindCarriesAPopulation(t *testing.T, report []kindCensus) {
 	for _, kind := range report {
 		switch {
 		case slices.Contains(censusKinds, kind.kind):
+		case slices.Contains(inboxCensusKinds, kind.kind):
+			// dispatch://INFRA-1152's kinds: this run's corpus holds rows of some and none of
+			// others, and c-census is what holds each to a population; a difference fails here.
+			if kind.rowsWithoutANode != 0 || kind.nodesWithoutARow != 0 {
+				t.Errorf("kind %s reads %d row(s) without a tuple and %d tuple(s) without a row",
+					kind.kind, kind.rowsWithoutANode, kind.nodesWithoutARow)
+			}
 		case slices.Contains(decisionCensusKinds, kind.kind):
 			// dispatch://INFRA-1150's kinds, which this run writes no decision for and which a store
 			// may hold none of: no row and no node of one is no refusal, and a difference is.

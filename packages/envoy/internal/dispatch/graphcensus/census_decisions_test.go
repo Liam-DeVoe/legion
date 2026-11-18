@@ -218,7 +218,7 @@ func TestTheCensusReadsTheStoresLogThroughItsIndexes(t *testing.T) {
 		t.Errorf("the person row side reads graph_tuples through %d keyed scan(s), want the one of the owners' alias_of", keyed)
 	}
 	if keyed := requireKeyedTupleReads(t, keys, "the session row side",
-		planWithoutSeqScans(t, database, `select s.id from (`+recordedSessions(censusAuthors)+`) s`, bound...),
+		planWithoutSeqScans(t, database, `select s.id from (`+recordedSessions(censusAuthors, MessagesNameTheirNode)+`) s`, bound...),
 		"graph_tuples_current"); keyed != 0 {
 		t.Errorf("the session row side reads graph_tuples through %d scan(s), want none: the stored authors are bound", keyed)
 	}

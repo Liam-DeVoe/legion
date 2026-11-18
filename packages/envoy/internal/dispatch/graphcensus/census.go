@@ -471,7 +471,7 @@ var projections = append([]projection{{
 		" named as the asker, an ask.follower_added event named or a comment.delivery receipt says the listener" +
 		" took an attempt to, and the author of every comment the erase took, as the actor of the event that" +
 		" stored it names it",
-	names:    `select s.id from (` + recordedSessions(censusAuthors) + `) s`,
+	names:    `select s.id from (` + recordedSessions(censusAuthors, MessagesNameTheirNode) + `) s`,
 	authored: true,
 	rows: `
 		select 'session ' || s.id, '` + graphstore.KindSession + `', s.id, ''
@@ -1273,7 +1273,13 @@ func storedOwners(authors string) string {
 // census holds to one, as addressedRoles is for roles. authors is the relation storedAuthors is
 // read as: the census binds what it read once (censusAuthors), the backfill reads it in its own
 // statement (inlineAuthors).
-func recordedSessions(authors string) string {
+//
+// messagesNamed is the predicate that says a messages row names its node, which this release's
+// column pair holds (MessagesNameTheirNode). The sizing reads this on a database this branch's
+// migrations have not reached, where that column does not exist and no statement may name it, and
+// passes `false` there (readStoreKinds): a row of such a database names no node, so the arm
+// answers the same sessions either way.
+func recordedSessions(authors, messagesNamed string) string {
 	return `
 	select id, min(event) as event, min(at) as at from (
 		select written.actor->>'id' as id, written.event, written.at
@@ -1281,7 +1287,7 @@ func recordedSessions(authors string) string {
 		where written.actor->>'kind' = 'session' and coalesce(written.actor->>'id', '') <> ''
 		union all
 		select m.author->>'id', null, m.created_at from messages m
-		where m.node_kind is not null and m.author->>'kind' = 'session' and coalesce(m.author->>'id', '') <> ''
+		where ` + messagesNamed + ` and m.author->>'kind' = 'session' and coalesce(m.author->>'id', '') <> ''
 		union all
 		select d.session_id, null, d.created_at from comment_deliveries d
 		where coalesce(d.session_id, '') <> '' and d.state in ` + model.DeliveryTakenStatesSQL + `
@@ -1310,6 +1316,11 @@ func recordedSessions(authors string) string {
 	where id is not null and id <> ''
 	group by id`
 }
+
+// MessagesNameTheirNode is the predicate over a messages row m that says the row names its node,
+// the column pair migration 20261116114515 adds: what every reader of this release binds, and what
+// no reader of a database before that migration may name (recordedSessions).
+const MessagesNameTheirNode = `m.node_kind is not null`
 
 // addressedRoles are the roles a row of the store addresses now or an event of the log has ever
 // addressed (R19), each once, with the first event that named it, null for a role only a row
