@@ -636,7 +636,7 @@ const (
 	// DeathDiskLimit: the kubelet evicted the pod, with no DisruptionTarget condition, for passing
 	// a disk limit of its own: the pod's ephemeral-storage limit, a container's or an emptyDir's
 	// sizeLimit. DeathCause.Limit is that limit, from the kubelet's message or, where the message
-	// shows a disk end and gives no limit, from the pod's spec.
+	// holds one of the kubelet's limit sentences and its limit does not parse, from the pod's spec.
 	DeathDiskLimit DeathCauseKind = "disk_limit"
 	// DeathDiskRequest: the kubelet evicted the pod for node disk pressure, and its message named
 	// a container of the pod using more ephemeral storage than the container requested. What the

@@ -4,7 +4,6 @@ import (
 	"maps"
 	"regexp"
 	"slices"
-	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -73,8 +72,10 @@ const evictedReason = "Evicted"
 
 // evictedForItsOwnUse is the reading of a pod the kubelet evicted with no DisruptionTarget
 // condition: it went over its own ephemeral-storage limit, a container's limit or an emptyDir's
-// sizeLimit, or a node under pressure refused it at admission (clusterEndedReasons). Such an end
-// is read neither way and charged.
+// sizeLimit, a node under pressure refused it at admission (clusterEndedReasons), or it was
+// evicted for node memory or disk pressure by a kubelet that wrote no condition, whose message
+// may name a container of the pod over its request (selfEvictedCause). Such an end is read
+// neither way and charged.
 const evictedForItsOwnUse = "the kubelet evicted the pod with no DisruptionTarget condition: over a limit of its own, or refused at admission"
 
 // evictedOverRequest is the reading of a pod the kubelet evicted under node memory or disk
@@ -102,19 +103,27 @@ var containerOverRequest = regexp.MustCompile(`Container ([^ ]+) was using ([^ ,
 
 // overRequest is the cause of the end of pod where the kubelet evicted it for node memory or disk
 // pressure — its reason is evictedReason and its DisruptionTarget condition is true — and its
-// message names, in containerOverRequest's words, a container of the pod's own spec whose use and
-// request both parse and whose use is the larger: that container, its use and its request, as
-// runtime.DeathMemoryRequest for memory and runtime.DeathDiskRequest for ephemeral storage. A
-// message naming no such container, none over its request or only a name the pod's spec does not
-// hold, is a neighbour's pressure, and so is one whose disk use was in an emptyDir volume, which
-// the message names no container for: it answers the zero cause, so the end is read as one from
-// outside the pod (disruption). Each number is the quantity the message gives, parsed, and the
-// name is one the pod's spec holds, so no word of the message's own reaches a sentence built from
-// the cause.
+// message names a container of the pod's own spec over its request (namedOverRequest). Any other
+// pod answers the zero cause: an eviction whose message names no container of this pod over its
+// request is a neighbour's pressure, so the end is read as one from outside the pod (disruption).
 func overRequest(pod *corev1.Pod) runtime.DeathCause {
 	if c := podCondition(pod, corev1.DisruptionTarget); pod.Status.Reason != evictedReason || c == nil || c.Status != corev1.ConditionTrue {
 		return runtime.DeathCause{}
 	}
+	return namedOverRequest(pod)
+}
+
+// namedOverRequest is the cause pod's message names where it names, in containerOverRequest's
+// words, a container of the pod's own spec whose use and request both parse and whose use is the
+// larger: the first such container, its use and its request, as runtime.DeathMemoryRequest for
+// memory and runtime.DeathDiskRequest for ephemeral storage. A message naming no such container,
+// none over its request or only a name the pod's spec does not hold, answers the zero cause, and so
+// does one whose disk use was in an emptyDir volume, which the message names no container for. Each
+// number is the quantity the message gives, parsed, and the name is one the pod's spec holds, so no
+// word of the message's own reaches a sentence built from the cause. It reads the message alone, so
+// an eviction that carries the DisruptionTarget condition (overRequest) and one that carries none
+// (selfEvictedCause) are read by the one rule.
+func namedOverRequest(pod *corev1.Pod) runtime.DeathCause {
 	for _, named := range containerOverRequest.FindAllStringSubmatch(pod.Status.Message, -1) {
 		if !specContainer(pod, named[1]) {
 			continue
@@ -140,6 +149,24 @@ func specContainer(pod *corev1.Pod, name string) bool {
 	return slices.ContainsFunc(pod.Spec.Containers, named) || slices.ContainsFunc(pod.Spec.InitContainers, named)
 }
 
+// selfEvictedCause is the cause of the end of pod, a pod selfEvicted names, which the kubelet
+// evicted with no DisruptionTarget condition. Where its message names a container of the pod's own
+// spec over its memory or its ephemeral-storage request (namedOverRequest), the cause is that
+// container, its use and its request, as overRequest reads them where the condition is set: the
+// kubelet writes that sentence only on an eviction for node memory or disk pressure, and it evicts
+// the pods using more than their request before any other, so the pressure was the pod's own use
+// whether or not the kubelet also wrote the condition. The role is then told the resource, its use
+// and its request as the message gives them (dispatch://INFRA-1117 R9), and not a limit it never
+// reached. Any other message is read for a disk limit of the pod's own (diskEviction). The end is
+// read neither way and charged whatever this answers (capturePodEnd), so the cause decides only
+// what the role is told of its death.
+func selfEvictedCause(pod *corev1.Pod) runtime.DeathCause {
+	if cause := namedOverRequest(pod); cause.Kind != "" {
+		return cause
+	}
+	return diskEviction(pod)
+}
+
 // diskLimitSentences match the sentences the kubelet's eviction manager writes as the message of
 // a pod it evicts for passing a disk limit of its own, each with that limit (kubernetes
 // pkg/kubelet/eviction/helpers.go): podEphemeralStorageMessageFmt, "Pod ephemeral local storage
@@ -156,16 +183,20 @@ var diskLimitSentences = []*regexp.Regexp{
 
 // diskEviction is the cause of the end of pod, a pod selfEvicted names, where the kubelet evicted
 // it for passing a disk limit of its own (runtime.DeathDiskLimit): the limit its message gives in
-// one of diskLimitSentences, parsed, or, where the message shows a disk end and gives no limit
-// that parses — it holds one of those sentences, or names ephemeral storage — the limit the pod's
-// spec holds it to as a whole (specDiskLimit). A message that shows no disk end answers the zero
-// cause: a node-pressure eviction for memory whose kubelet wrote no DisruptionTarget condition,
-// and a pod a node under pressure refused at admission, which never ran and passed no disk limit
-// of its own (upstream's nodeConditionMessageFmt, "The node had condition: %v. ", names a node
-// condition and neither a limit nor the resource). So does a disk end of a pod whose spec sets no
-// limit either.
+// one of diskLimitSentences, parsed, or, where the message holds one of those sentences and its
+// limit does not parse, the limit the pod's spec holds it to as a whole (specDiskLimit). Only those
+// sentences show an end of the pod's own disk. The word ephemeral-storage in a message is no such
+// sign: the kubelet writes it in its node-pressure sentences ("The node was low on resource:
+// ephemeral-storage. "), never in a limit sentence, which says "ephemeral local storage", and a
+// node disk-pressure eviction told as the spec's limit would tell the role it passed a limit it
+// never reached. A message that holds none of those sentences answers the zero cause: a
+// node-pressure eviction whose message names no container of the pod over its request
+// (selfEvictedCause reads one that does), and a pod a node under pressure refused at admission,
+// which never ran and passed no disk limit of its own (upstream's nodeConditionMessageFmt, "The
+// node had condition: %v. ", names a node condition and neither a limit nor the resource). So does
+// a limit sentence whose limit does not parse, in a pod whose spec sets no limit either.
 func diskEviction(pod *corev1.Pod) runtime.DeathCause {
-	diskEnd := strings.Contains(pod.Status.Message, string(corev1.ResourceEphemeralStorage))
+	diskEnd := false
 	for _, sentence := range diskLimitSentences {
 		named := sentence.FindStringSubmatch(pod.Status.Message)
 		if named == nil {
@@ -252,7 +283,7 @@ type intendedEnd struct {
 // podEnd is what the daemon read about the cause of one pod's end: the reading the supervisor
 // decides on (runtime.PodEndReading), the words that reading was made from, the reason the cluster
 // gave where it gave one, the cause the daemon tells in plain words where the end is one of the
-// pod's own it names (runtime.DeathCause: overRequest, diskEviction), and the moment it was
+// pod's own it names (runtime.DeathCause: overRequest, selfEvictedCause), and the moment it was
 // read. The cause is kept here because the kubelet's message it is read from leaves with the pod.
 type podEnd struct {
 	reading runtime.PodEndReading
@@ -354,14 +385,18 @@ func (r *Runtime) prunePodEnds() {
 // kubelet sets on a pod it has ended (terminal) — is read from its status alone, and a deletion
 // timestamp counts only on a pod not yet terminal. A terminal pod is read neither way, whatever
 // its reason and whatever deletion timestamp it carries: `Evicted` with no DisruptionTarget
-// condition (selfEvicted), whose disk limit is kept as its cause where the kubelet evicted it for
-// passing one (diskEviction), a reason outside the cluster's own such as UnexpectedAdmissionError,
-// or no reason at all. The words of an end read neither way (evictedOverRequest,
-// evictedForItsOwnUse, terminalWithNoClusterEnd) and its reason are kept for the line
-// (logPodEnd), and no caller is answered with them (podEndOf). A pod not yet terminal that
-// carries a deletion timestamp no act of the daemon's accounts for is an end from outside it
-// (deletedByAnother). A pod the informer delivers as deleted is read by the same rule from the
-// last state it carries.
+// condition (selfEvicted), a reason outside the cluster's own such as UnexpectedAdmissionError,
+// or no reason at all. An `Evicted` end with no condition keeps the cause its message names
+// (selfEvictedCause): a container of the pod over its memory or its ephemeral-storage request, as
+// the eviction above that carries the condition does, since the kubelet evicted that pod for its
+// own use whatever condition it wrote, or else a disk limit of the pod's own that the kubelet
+// evicted it for passing. A message naming neither, a node's refusal at admission among them,
+// keeps no cause, so no role is told it passed a limit it never reached, and the end is charged
+// all the same. The words of an end read neither way (evictedOverRequest, evictedForItsOwnUse,
+// terminalWithNoClusterEnd) and its reason are kept for the line (logPodEnd), and no caller is
+// answered with them (podEndOf). A pod not yet terminal that carries a deletion timestamp no act
+// of the daemon's accounts for is an end from outside it (deletedByAnother). A pod the informer
+// delivers as deleted is read by the same rule from the last state it carries.
 //
 // The rule reads a pod's failure the same however the informer delivers its facts. The controller
 // deletes a pod the kubelet has failed, and the informer can deliver the terminal status and the
@@ -406,7 +441,7 @@ func (r *Runtime) capturePodEnd(pod *corev1.Pod, gone bool) {
 	case disrupted:
 		end.reading, end.cause, end.reason = runtime.PodEndNotOurs, cause, reason
 	case terminal(pod) && selfEvicted(pod):
-		end.cause, end.reason, end.death = evictedForItsOwnUse, pod.Status.Reason, diskEviction(pod)
+		end.cause, end.reason, end.death = evictedForItsOwnUse, pod.Status.Reason, selfEvictedCause(pod)
 	case terminal(pod):
 		end.cause, end.reason = terminalWithNoClusterEnd, pod.Status.Reason
 	case pod.DeletionTimestamp != nil:
