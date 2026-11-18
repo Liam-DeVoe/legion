@@ -11,6 +11,7 @@ import {
   spyOn,
   test,
 } from "bun:test";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import {
   chmodSync,
@@ -168,12 +169,24 @@ function relayCarries(subject: string): boolean {
  * Records every registration whatever `fetch` a row installs, so the followed topics are known
  * centrally. A row's own fetch is kept behind this one; reading `globalThis.fetch` answers this
  * wrapper, so a row that wraps the fetch it found takes it from `rowFetch()`, never from
- * `globalThis.fetch`, which would call the row's own wrapper forever.
+ * `globalThis.fetch`, which would call the row's own wrapper forever. That mistake fails at once,
+ * by name: a call nested past `MOST_NESTED_FETCHES` of this wrapper's own is refused. Made once,
+ * it grew one row's process to 118 GiB before anything stopped it.
  */
 let installedFetch: typeof globalThis.fetch = globalThis.fetch;
 /** The real fetch, as this file found it: what a row restores and what the live stack uses. */
 const nativeFetch: typeof globalThis.fetch = installedFetch;
+/** How deep the calls of `recordingFetch` are nested in the current call's async context. */
+const fetchDepth = new AsyncLocalStorage<number>();
+/** A row's fetch may hand a request on through `globalThis.fetch` this many times at most. */
+const MOST_NESTED_FETCHES = 8;
 const recordingFetch: typeof globalThis.fetch = async (input, init) => {
+  const depth = (fetchDepth.getStore() ?? 0) + 1;
+  if (depth > MOST_NESTED_FETCHES) {
+    throw new Error(
+      `a row's fetch handed its request on through globalThis.fetch ${MOST_NESTED_FETCHES} times: globalThis.fetch is this file's recording wrapper, which calls the row's fetch again, so take the fetch to hand on to from rowFetch()`
+    );
+  }
   try {
     if (new URL(input.toString()).pathname === "/v1/interests/subscribe") {
       const body = JSON.parse(init?.body?.toString() ?? "{}") as {
@@ -185,7 +198,7 @@ const recordingFetch: typeof globalThis.fetch = async (input, init) => {
   } catch {
     // A request that is not a registration, or a body that is not JSON, teaches nothing.
   }
-  return installedFetch(input, init);
+  return fetchDepth.run(depth, () => installedFetch(input, init));
 };
 /** The fetch a row installed, for a row that answers some requests itself and hands on the rest. */
 const rowFetch = (): typeof globalThis.fetch => installedFetch;
@@ -195,6 +208,22 @@ Object.defineProperty(globalThis, "fetch", {
   set: (next: typeof globalThis.fetch) => {
     if (next !== recordingFetch) installedFetch = next;
   },
+});
+
+test("a row's fetch that hands on through globalThis.fetch fails at once, naming rowFetch", async () => {
+  // The mistake that recursed without end: the row's wrapper takes `globalThis.fetch`, which is
+  // the recording wrapper, and so is handed its own request again on every call, each after an
+  // await, so no stack ever overflows to stop it.
+  const found = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    await Promise.resolve();
+    return found(input, init);
+  };
+  const failure = await fetch("http://broker.test/v1/oauth/token").then(
+    () => undefined,
+    (error: unknown) => error
+  );
+  expect(String(failure)).toContain("take the fetch to hand on to from rowFetch()");
 });
 
 /**
