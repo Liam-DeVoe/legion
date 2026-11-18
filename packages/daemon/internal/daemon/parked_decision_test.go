@@ -1078,3 +1078,27 @@ func owedDecisionsLogged(t *testing.T, logged []byte) []string {
 	}
 	return lines
 }
+
+// R1: above the bound a text carries "the first part, the count of the rest (or that more follows,
+// where the event did not carry the whole text)" (dispatch://INFRA-3686/spec). A person requests
+// changes with a reason of 5,000 UTF-16 units on a root whose tree nobody hears, so the
+// design-changes-requested notice is parked: the kept decision takes its words from the notice
+// (noticeWords), which is already cut to 4,000, and not from the review's event, which carried all
+// 5,000. The controller's parked-decision notice then says that more follows and gives no count
+// of the rest, though the event carried the whole reason and the count (1000) was known.
+func TestAParkedChangesRequestKeepsTheCountOfTheRest(t *testing.T) {
+	at := time.Date(2026, 11, 14, 22, 44, 10, 0, time.UTC)
+	reason := strings.Repeat("r", 5000)
+	notice, err := record.NoticeOf(workflow.ChangesRequestedNotice("LEGION-208", record.DesignStepSpec, 2, reason, "user:alice", at))
+	if err != nil {
+		t.Fatalf("build the changes-requested notice: %v", err)
+	}
+	parked := record.ParkedDecisionNoticeOf("LEGION-208", "LEGION-208",
+		record.ParkedDecision{Ref: notice.Ref, Decision: record.DecisionDesignChangesRequested, Actor: notice.Actor, At: at,
+			Words: noticeWords(notice)}, notice.Version)
+	meta := parked.Words["reason"]
+	if len(parked.Reason) != texts.OneAct || meta.Rest != 1000 || meta.More {
+		t.Errorf("the parked-decision notice carries %d units with rest %d and more %t, want the first 4000, rest 1000 and no mark that more follows",
+			len(parked.Reason), meta.Rest, meta.More)
+	}
+}
