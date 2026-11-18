@@ -79,13 +79,22 @@ func newLoggedRig(t *testing.T, statePath string, log *slog.Logger, tune ...func
 	t.Helper()
 	f := newFakeBroker(t)
 	of := operatorFile(t, "ada@example.com")
-	r := &rig{fake: f}
+	// The fake is set first, since a tune (startRig's) installs a login through it.
+	setFake := func(r *rig) { r.fake = f }
+	return serveBroker(t, &Broker{URL: brokeraddr.New(f.srv.URL), OperatorFile: of, MachineFile: machineFilePath(t), HTTP: f.srv.Client(), Log: log}, statePath, log, append([]func(*rig){setFake}, tune...)...)
+}
+
+// serveBroker serves a helper over broker, running each tune on the rig last before Recover and
+// Serve, for a setting of the rig's own or a credential it must hold before either runs.
+func serveBroker(t *testing.T, broker *Broker, statePath string, log *slog.Logger, tune ...func(*rig)) *rig {
+	t.Helper()
+	r := &rig{}
 	if statePath == "" {
 		statePath = filepath.Join(t.TempDir(), "sessions.json")
 	}
 	r.srv = &Server{
 		Registry:       NewRegistry(statePath),
-		Broker:         &Broker{URL: brokeraddr.New(f.srv.URL), OperatorFile: of, MachineFile: machineFilePath(t), HTTP: f.srv.Client(), Log: log},
+		Broker:         broker,
 		Hostname:       "testhost",
 		Log:            log,
 		MinRenew:       50 * time.Millisecond,

@@ -32,8 +32,16 @@ import (
 // serveTokenExchange adds the broker's token endpoint to f, minting a launcher credential of
 // its own for each trade, for the machine key the helper proves. The credential of an earlier
 // trade stays in f.credentials, so a proof signed with it still verifies and only the broker's
-// scripted refusal refuses it. It answers when each trade was answered, oldest first.
-func serveTokenExchange(t *testing.T, f *enrolBroker, mux *http.ServeMux, thumbprint string) func() []time.Time {
+// scripted refusal refuses it. It answers how many trades have been made.
+func serveTokenExchange(t *testing.T, f *enrolBroker, mux *http.ServeMux, thumbprint string) func() int {
+	t.Helper()
+	answered := serveTimedTokenExchange(t, f, mux, thumbprint)
+	return func() int { return len(answered()) }
+}
+
+// serveTimedTokenExchange is serveTokenExchange answering when each trade was answered, oldest
+// first, for a test whose failure says how long the helper's start waited for its first one.
+func serveTimedTokenExchange(t *testing.T, f *enrolBroker, mux *http.ServeMux, thumbprint string) func() []time.Time {
 	t.Helper()
 	var mu sync.Mutex
 	var answered []time.Time
@@ -73,7 +81,7 @@ func TestADroppedCredentialInIdentityModeIsTradedAgainAtOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	mux := http.NewServeMux()
-	trades := serveTokenExchange(t, f, mux, thumbprint)
+	trades := serveTimedTokenExchange(t, f, mux, thumbprint)
 	// The enrolment routes stay f's own; this mux only adds the token endpoint in front of them.
 	mux.Handle("/", f.srv.Config.Handler)
 	f.srv.Config.Handler = mux

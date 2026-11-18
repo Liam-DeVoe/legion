@@ -155,12 +155,12 @@ func TestSubjectIndexFollowsTheInterestBucket(t *testing.T) {
 	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	r, err := Open(conn, WithReplicas(1))
+	r, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the registry: %v", err)
 	}
 	defer r.StopWatch()
-	other, err := Open(conn, WithReplicas(1))
+	other, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the other listener's registry: %v", err)
 	}

@@ -174,7 +174,7 @@ func TestEnsureStreamWithConfig_updatesMaxAgeWhenExistingStreamDiffers(t *testin
 	desiredConfig.MaxAge = 72 * time.Hour
 
 	// When
-	if _, err := ensureStreamWithConfig(js, &desiredConfig, capsAnUnsetStream); err != nil {
+	if _, err := ensureStreamWithConfig(t.Context(), js, &desiredConfig, capsAnUnsetStream, atStart); err != nil {
 		t.Fatalf("ensure stream: %v", err)
 	}
 
@@ -219,7 +219,7 @@ func TestEnsureStreamWithConfigPurgesLegacyRoleMessages(t *testing.T) {
 	oldConfig.Subjects = []string{"notifications.>"}
 	js := &streamInfoJetStream{config: oldConfig}
 
-	if _, err := ensureStreamWithConfig(js, streamCfg, capsAnUnsetStream); err != nil {
+	if _, err := ensureStreamWithConfig(t.Context(), js, streamCfg, capsAnUnsetStream, atStart); err != nil {
 		t.Fatalf("ensure stream: %v", err)
 	}
 
@@ -243,7 +243,7 @@ func TestEnsureStreamWithConfigPurgesRoleMessagesPublishedDuringMigration(t *tes
 		injectRoleMessageOnUpdate: true,
 	}
 
-	if _, err := ensureStreamWithConfig(js, streamCfg, capsAnUnsetStream); err != nil {
+	if _, err := ensureStreamWithConfig(t.Context(), js, streamCfg, capsAnUnsetStream, atStart); err != nil {
 		t.Fatalf("ensure stream: %v", err)
 	}
 	if js.roleMessages != 0 {
@@ -527,7 +527,7 @@ func TestEnsureStreamWithConfigReplacesTheLegacyRoleLaneCatchAll(t *testing.T) {
 	desiredConfig := oldConfig
 	desiredConfig.Subjects = []string{"notifications.github.>"}
 
-	if _, err := ensureStreamWithConfig(js, &desiredConfig, capsAnUnsetStream); err != nil {
+	if _, err := ensureStreamWithConfig(t.Context(), js, &desiredConfig, capsAnUnsetStream, atStart); err != nil {
 		t.Fatalf("ensure stream: %v", err)
 	}
 	if !reflect.DeepEqual(js.config.Subjects, desiredConfig.Subjects) {
@@ -556,7 +556,7 @@ func TestConnectOwningStreamKeepsTheSubjectsAnotherDeploymentOfTheStreamNeeds(t 
 	if err != nil {
 		t.Fatalf("open the other deployment's JetStream: %v", err)
 	}
-	if _, err := ensureStreamWithConfig(otherJS, &other, capsAnUnsetStream); err != nil {
+	if _, err := ensureStreamWithConfig(t.Context(), otherJS, &other, capsAnUnsetStream, atStart); err != nil {
 		t.Fatalf("the other deployment creates the stream: %v", err)
 	}
 
@@ -568,7 +568,7 @@ func TestConnectOwningStreamKeepsTheSubjectsAnotherDeploymentOfTheStreamNeeds(t 
 	assertStreamSubjectsInclude(t, client.JS(), append([]string{"notifications.retired.>"}, streamCfg.Subjects...))
 
 	// The other deployment restarts while this binary is still live.
-	if _, err := ensureStreamWithConfig(otherJS, &other, capsAnUnsetStream); err != nil {
+	if _, err := ensureStreamWithConfig(t.Context(), otherJS, &other, capsAnUnsetStream, atStart); err != nil {
 		t.Fatalf("the other deployment restarts: %v", err)
 	}
 	assertStreamSubjectsInclude(t, client.JS(), append([]string{"notifications.retired.>"}, streamCfg.Subjects...))
@@ -644,7 +644,7 @@ func TestEnsureStreamWithConfigStartsWhenADeployedSubjectOverlapsItsOwn(t *testi
 			if err := js.DeleteStream(Stream); err != nil && !errors.Is(err, nats.ErrStreamNotFound) {
 				t.Fatalf("reset stream: %v", err)
 			}
-			if _, err := ensureStreamWithConfig(js, &tc.deployed, capsAnUnsetStream); err != nil {
+			if _, err := ensureStreamWithConfig(t.Context(), js, &tc.deployed, capsAnUnsetStream, atStart); err != nil {
 				t.Fatalf("the deployed binary creates the stream: %v", err)
 			}
 			for _, step := range []struct {
@@ -655,7 +655,7 @@ func TestEnsureStreamWithConfigStartsWhenADeployedSubjectOverlapsItsOwn(t *testi
 				{name: "the rollback starts", cfg: tc.deployed},
 				{name: "the new binary starts again", cfg: tc.start},
 			} {
-				if _, err := ensureStreamWithConfig(js, &step.cfg, capsAnUnsetStream); err != nil {
+				if _, err := ensureStreamWithConfig(t.Context(), js, &step.cfg, capsAnUnsetStream, atStart); err != nil {
 					t.Fatalf("%s: %v", step.name, err)
 				}
 				info, err := js.StreamInfo(Stream)
@@ -733,7 +733,7 @@ func TestEnsureStreamWithConfigDropsEveryRoleLaneSubject(t *testing.T) {
 			deployed := *streamCfg
 			deployed.Subjects = append(slices.Clone(streamCfg.Subjects), roleSubject)
 			js := &streamInfoJetStream{config: deployed}
-			if _, err := ensureStreamWithConfig(js, streamCfg, capsAnUnsetStream); err != nil {
+			if _, err := ensureStreamWithConfig(t.Context(), js, streamCfg, capsAnUnsetStream, atStart); err != nil {
 				t.Fatalf("ensure stream: %v", err)
 			}
 			if slices.Contains(js.config.Subjects, roleSubject) {
@@ -755,7 +755,7 @@ func TestEnsureStreamWithConfigNamesEverySubjectThatReplacedAnOverlappingOne(t *
 	own := *streamCfg
 	own.Subjects = []string{"notifications.agent.>", "notifications.legion.*", "notifications.legion.*.*"}
 	js := &streamInfoJetStream{config: deployed}
-	if _, err := ensureStreamWithConfig(js, &own, capsAnUnsetStream); err != nil {
+	if _, err := ensureStreamWithConfig(t.Context(), js, &own, capsAnUnsetStream, atStart); err != nil {
 		t.Fatalf("ensure stream: %v", err)
 	}
 	records := logs.recordsWithMsg(t, "envoy nats stream subject replaced by an overlapping one")
@@ -780,7 +780,7 @@ func TestEnsureStreamWithConfigNamesTheDeployedSubjectsItKeepsWithoutCompilingTh
 	deployed.Subjects = append(slices.Clone(streamCfg.Subjects), "notifications.retired.>")
 	js := &streamInfoJetStream{config: deployed}
 	for _, start := range []string{"the stream is already reconciled", "a second start"} {
-		if _, err := ensureStreamWithConfig(js, streamCfg, capsAnUnsetStream); err != nil {
+		if _, err := ensureStreamWithConfig(t.Context(), js, streamCfg, capsAnUnsetStream, atStart); err != nil {
 			t.Fatalf("%s: ensure stream: %v", start, err)
 		}
 	}
@@ -804,7 +804,7 @@ func TestEnsureStreamWithConfigLogsNoReconciliationWhenTheUpdateFails(t *testing
 	own := *streamCfg
 	own.Subjects = []string{"notifications.legion.*"}
 	js := &streamInfoJetStream{config: deployed, updateErr: errors.New("update refused")}
-	if _, err := ensureStreamWithConfig(js, &own, capsAnUnsetStream); err == nil {
+	if _, err := ensureStreamWithConfig(t.Context(), js, &own, capsAnUnsetStream, atStart); err == nil {
 		t.Fatal("ensure stream succeeded, want the update's error")
 	}
 	for _, message := range []string{
@@ -861,7 +861,7 @@ func TestEnsureStreamWithConfigCreatesTheStreamWithAFreshID(t *testing.T) {
 	for _, name := range []string{"first stream", "second stream"} {
 		t.Run(name, func(t *testing.T) {
 			js := streamTestJetStream(t)
-			if _, err := ensureStreamWithConfig(js, streamCfg, capsAnUnsetStream); err != nil {
+			if _, err := ensureStreamWithConfig(t.Context(), js, streamCfg, capsAnUnsetStream, atStart); err != nil {
 				t.Fatalf("create stream: %v", err)
 			}
 			id := deployedStream(t, js).Config.Metadata[StreamIDMetadataKey]
@@ -897,7 +897,7 @@ func TestEnsureStreamWithConfigGivesADeployedStreamWithoutAnIDOne(t *testing.T) 
 	}
 	before := deployedStream(t, js).Config
 
-	if _, err := ensureStreamWithConfig(js, streamCfg, capsAnUnsetStream); err != nil {
+	if _, err := ensureStreamWithConfig(t.Context(), js, streamCfg, capsAnUnsetStream, atStart); err != nil {
 		t.Fatalf("ensure stream: %v", err)
 	}
 
@@ -913,7 +913,7 @@ func TestEnsureStreamWithConfigGivesADeployedStreamWithoutAnIDOne(t *testing.T) 
 	if !reflect.DeepEqual(info.Config, want) {
 		t.Fatalf("stream config = %+v, want the deployed one with only the id and the generation added: %+v", info.Config, want)
 	}
-	if _, err := ensureStreamWithConfig(js, streamCfg, capsAnUnsetStream); err != nil {
+	if _, err := ensureStreamWithConfig(t.Context(), js, streamCfg, capsAnUnsetStream, atStart); err != nil {
 		t.Fatalf("second start: %v", err)
 	}
 	if again := deployedStream(t, js).Config.Metadata[StreamIDMetadataKey]; again != id {
@@ -937,7 +937,7 @@ func TestEnsureStreamWithConfigKeepsTheIDAndMetadataWhenItReconcilesTheStream(t 
 		t.Fatalf("create the deployed stream: %v", err)
 	}
 
-	if _, err := ensureStreamWithConfig(js, streamCfg, capsAnUnsetStream); err != nil {
+	if _, err := ensureStreamWithConfig(t.Context(), js, streamCfg, capsAnUnsetStream, atStart); err != nil {
 		t.Fatalf("ensure stream: %v", err)
 	}
 
@@ -974,7 +974,7 @@ func TestEnsureStreamWithConfigNeverReplacesTheStreamsID(t *testing.T) {
 	}
 	other := *streamCfg
 	other.Subjects = append(slices.Clone(streamCfg.Subjects), "notifications.retired.>")
-	if _, err := ensureStreamWithConfig(otherJS, &other, capsAnUnsetStream); err != nil {
+	if _, err := ensureStreamWithConfig(t.Context(), otherJS, &other, capsAnUnsetStream, atStart); err != nil {
 		t.Fatalf("the other deployment starts: %v", err)
 	}
 	if got := deployedStream(t, otherJS).Config.Metadata[StreamIDMetadataKey]; got != id {
@@ -990,7 +990,7 @@ func TestEnsureStreamWithConfigNeverReplacesTheStreamsID(t *testing.T) {
 		t.Fatalf("stream id = %q after a restart, want %q", got, id)
 	}
 
-	if _, err := ensureStreamWithConfig(&createdMeanwhileJetStream{JetStreamContext: otherJS}, streamCfg, capsAnUnsetStream); err != nil {
+	if _, err := ensureStreamWithConfig(t.Context(), &createdMeanwhileJetStream{JetStreamContext: otherJS}, streamCfg, capsAnUnsetStream, atStart); err != nil {
 		t.Fatalf("a start that found no stream before another created it: %v", err)
 	}
 	if got := deployedStream(t, otherJS).Config.Metadata[StreamIDMetadataKey]; got != id {
@@ -1040,7 +1040,7 @@ func TestEnsureStreamWithConfigRacingStartsWriteOneID(t *testing.T) {
 		Created: time.Date(2026, 10, 27, 9, 30, 0, 123456789, time.UTC),
 	}}
 	for _, start := range []string{"the listener", "Dispatch's server"} {
-		if _, err := ensureStreamWithConfig(js, streamCfg, capsAnUnsetStream); err != nil {
+		if _, err := ensureStreamWithConfig(t.Context(), js, streamCfg, capsAnUnsetStream, atStart); err != nil {
 			t.Fatalf("%s starts: %v", start, err)
 		}
 	}

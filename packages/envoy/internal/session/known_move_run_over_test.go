@@ -73,7 +73,7 @@ func TestAMoveWhoseRunIsOverArmsNoRetry(t *testing.T) {
 			// The store's own log is kept: an open that ran out of its wait is answered as a store
 			// that is not open and nothing else, and the WARN it writes carries the open's error.
 			logs := &lockedWriter{}
-			known, err := OpenKnownSessions(client.Conn,
+			known, err := OpenKnownSessions(t.Context(), client.Conn,
 				WithKnownSessionReplicas(1),
 				WithKnownSessionLogger(slog.New(slog.NewTextHandler(logs, nil))),
 				// A retry the move arms waits an hour before its first attempt, so nothing retires

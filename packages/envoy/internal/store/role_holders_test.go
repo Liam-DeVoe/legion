@@ -126,7 +126,7 @@ func TestRolesHeldByFollowsTheRoleClaims(t *testing.T) {
 	}
 	putRoleClaim(t, rawRoles, "restored", "ses_a")
 
-	reg, err := Open(conn, WithReplicas(1))
+	reg, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -212,7 +212,7 @@ func TestRolesHeldByRefusesWhenItsViewCannotAnswer(t *testing.T) {
 	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	reg, err := Open(conn, WithReplicas(1))
+	reg, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -316,7 +316,7 @@ func TestARoleViewWhoseFirstScanTimedOutAnswersOnlyOnceItsRescanCompletes(t *tes
 	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	reg, err := Open(conn, WithReplicas(1))
+	reg, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -365,7 +365,7 @@ func TestWaitForCacheReadyHoldsUntilTheRoleClaimViewAnswers(t *testing.T) {
 	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	reg, err := Open(conn, WithReplicas(1))
+	reg, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -414,7 +414,7 @@ func TestARecreatedRoleBucketsViewAnswersOnlyOnceItsRefillCompletes(t *testing.T
 	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	reg, err := Open(conn, WithReplicas(1))
+	reg, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -563,7 +563,7 @@ func TestAClaimWriteAnsweredAcrossARecreatedRoleBucketLeavesTheNewBucketsView(t 
 	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	reg, err := Open(conn, WithReplicas(1))
+	reg, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}

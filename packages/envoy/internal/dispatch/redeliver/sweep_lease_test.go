@@ -297,7 +297,7 @@ func TestTheRunningSweepSweepsAtStartThenWaitsBetweenOneAndOnePointOneIntervals(
 				logs := &lockedBuffer{}
 				lease := &sweepLease{}
 				sweeper := &redeliver.Sweeper{
-					Open:   func() (bus.KeyValue, error) { return bus.KeyValue{}, errNoStateInABubble },
+					Open:   func(context.Context) (bus.KeyValue, error) { return bus.KeyValue{}, errNoStateInABubble },
 					Logger: slog.New(slog.NewTextHandler(logs, nil)),
 				}
 				ctx, cancel := context.WithCancel(context.Background())
@@ -390,7 +390,7 @@ func TestNoSweepOfALoneProcessIsSkippedAsAPeriodAlreadyServed(t *testing.T) {
 	swept := &lockedBuffer{}
 	sweeper := &redeliver.Sweeper{
 		GitHub: recordingGitHub{events: events},
-		Open:   func() (bus.KeyValue, error) { return h.state, nil },
+		Open:   func(context.Context) (bus.KeyValue, error) { return h.state, nil },
 		Logger: slog.New(slog.NewTextHandler(io.MultiWriter(events, swept), nil)),
 	}
 	ctx, cancel := context.WithCancel(context.Background())

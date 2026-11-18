@@ -131,7 +131,7 @@ func wantDeliveryFailed(t *testing.T, route string, recorder *httptest.ResponseR
 // test's load would stretch the answer past the bound.
 func TestAGitHubCIDeliveryAnswersAFrozenBusInsideTheRecordWait(t *testing.T) {
 	frozen := newFrozenWebhookBus(t)
-	store, err := cistore.Open(frozen.client.Conn, logging.New("test"), cistore.WithReplicas(1))
+	store, err := cistore.Open(t.Context(), frozen.client.Conn, logging.New("test"), cistore.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the CI store: %v", err)
 	}

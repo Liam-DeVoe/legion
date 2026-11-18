@@ -137,12 +137,12 @@ func newRoleRigWith(t *testing.T, options ...session.SessionRegistryOption) *rol
 // the test's own connection, which the registries write through.
 func newRoleRigOn(t *testing.T, url string, client *bus.Client, conn *natsgo.Conn, options ...session.SessionRegistryOption) *roleRig {
 	t.Helper()
-	registry, err := envoystore.Open(conn)
+	registry, err := envoystore.Open(t.Context(), conn)
 	if err != nil {
 		t.Fatalf("open the role registry: %v", err)
 	}
 	t.Cleanup(registry.StopWatch)
-	sessions, err := session.OpenSessionRegistry(conn, append([]session.SessionRegistryOption{session.WithSessionTTL(rigRegistrationAge)}, options...)...)
+	sessions, err := session.OpenSessionRegistry(t.Context(), conn, append([]session.SessionRegistryOption{session.WithSessionTTL(rigRegistrationAge)}, options...)...)
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}
