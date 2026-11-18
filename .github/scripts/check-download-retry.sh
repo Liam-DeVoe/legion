@@ -56,10 +56,14 @@
 # holds, is refused by name, but that directory's top-level `.py` and `.jq` files and the
 # bytecode Python writes for them: a file there this check would not read is refused where it
 # stands rather than passed with its fetches unread and a step running it charged nothing for
-# it. So is a directory there the walk below does not enter, a symbolic link or one of the names
-# it skips, and a shell, `.` or `source` handed one of those `.py` or `.jq` files, which runs it
-# as shell text no rule reads (the reading set and data_operand below; dispatch://INFRA-1545,
-# round 37).
+# it. So is a top-level `.py` or `.jq` whose first line runs a shell, which is a shell program
+# this check does not read; a directory there the walk below does not enter, a symbolic link or
+# one of the names it skips; a shell, `.` or `source` handed any file there this check does not
+# read as a script, in a step, a script or the text of a shell's `-c`, which runs it as shell
+# text no rule reads, a direct `*.test.sh` harness excepted; and such a file with no `#!` line
+# run as a command word, which the shell runs as shell text when the kernel will not (the
+# reading set, unread_operand, text_operand and unread_command below; dispatch://INFRA-1545,
+# rounds 37 and 38).
 # Files are discovered by walking the tree, not by asking git, so an unsnapshotted change cannot
 # read green locally. Workflows and actions are parsed as YAML, never grepped, and only a step's
 # `run:` is read for its fetches. This check reads its own file like any other script, which is
@@ -123,9 +127,13 @@
 #      .github/scripts/ named otherwise is refused by name where it fetches, since no call of it
 #      is found (dispatch://INFRA-1545, round 37). Every other file under that directory, a
 #      `.sh` in a subdirectory or a file with no `.sh` suffix but a top-level `.py` or `.jq`, is
-#      refused by name whatever it holds, as WHAT IT READS says, so no run of one stands to be
-#      charged, and a shell, `.` or `source` handed one of those `.py` or `.jq` files is refused
-#      at that run (data_operand; dispatch://INFRA-1545, round 37).
+#      refused by name whatever it holds, as WHAT IT READS says, and so is a top-level `.py` or
+#      `.jq` whose first line runs a shell, so no run of one stands to be charged; and a shell,
+#      `.` or `source` handed any file there this check does not read as a script, a `.py`, a
+#      `.jq` or a `.pyc` among them, is refused at that run, in the text of a shell's `-c` too,
+#      and so is a command word naming such a file with no `#!` line, which the shell runs as
+#      shell text, where one whose `#!` line names python3 runs as Python and passes
+#      (unread_operand, text_operand, unread_command; dispatch://INFRA-1545, round 38).
 #      THE REACH OF THIS READING: rule 8 reads literal paths. It names a script by the path a run
 #      or a source writes, and refuses a run whose target is built from data as the step runs
 #      rather than guess what that data holds (unnamed_runs; dispatch://INFRA-1545, round 37).
@@ -302,6 +310,13 @@
 #   - a definition of a function named `retry_fetch` anywhere but in .github/scripts/ci-retry.sh,
 #     and a `retry_fetch` call outside its signature or behind a wrapper, wherever written
 #     (odd_command);
+#   - an option of a wrapper this check drops (PASSTHROUGH) other than those it reads, `env -i`,
+#     `env -u <name>`, `nice -n <n>`, `sudo -E` and `command -v` (WRAPPER_OPTIONS), `env -S`
+#     among them, and `busybox` as a command word with any program after it, wherever written,
+#     whatever the command holds, in a step, a script, the text of a shell's `-c` and a
+#     Dockerfile RUN: this check reads no fetch and no run of a script after either, and until
+#     round 38 it read the option, or `busybox`, as the program that runs and so the fetch behind
+#     it as none (odd_command; dispatch://INFRA-1545, round 38);
 #   - a `timeout-minutes` of a step or a job written as anything but a whole number with no
 #     leading zero or an expression, and a line of text below a pricing comment that reads as
 #     `timeout-minutes: <n>` and is no key, wherever written;
@@ -1069,10 +1084,17 @@ WORKFLOWS = Path(".github/workflows")
 ACTIONS = Path(".github/actions")
 SCRIPTS = Path(".github/scripts")
 # The files of .github/scripts/ that are no script, and that this check leaves unread where they
-# sit directly in that directory: its Python programs and its jq filter. A shell, `.` or `source`
-# handed one is refused (data_operand), and so is every other file there that it does not read
-# (the reading set; dispatch://INFRA-1545, round 37).
+# sit directly in that directory: its Python programs and its jq filter, but one whose first line
+# runs a shell (SHEBANG_SHELLS), which is refused as the shell program it is. A shell, `.` or
+# `source` handed one, or any other file under that directory this check does not read as a
+# script, is refused (unread_operand), and so is every other file there that it does not read
+# (the reading set; dispatch://INFRA-1545, round 38).
 SCRIPT_DATA = (".py", ".jq")
+# What a shell handed a file it does not read as a script may be handed through a name built from
+# data: a top-level `.py` or `.jq`, or the bytecode Python writes for one under __pycache__, the
+# unread files the reading set does not refuse where they stand (unread_operand;
+# dispatch://INFRA-1545, round 38).
+UNREAD_SUFFIXES = SCRIPT_DATA + (".pyc",)
 HELPER = ".github/scripts/ci-retry.sh"
 # This file, named by the problems it raises about its own lists.
 SELF = ".github/scripts/check-download-retry.sh"
@@ -1193,14 +1215,34 @@ VARIABLE_CALL = re.compile(r"\$(?:\{[^{}]*\}|[A-Za-z_]\w*|\d|[@*#?$!-])")
 # A word of a `for` list that is itself and nothing else: no expansion, no glob, no quoting. A
 # list of these is the one pass count rule 8 reads off a loop (passes_of below).
 LITERAL_WORD = re.compile(r"[A-Za-z0-9_@%+:,./=-]+")
-# Transparent in command position, taking no argument of their own.
+# Transparent in command position: the command after them is the one that runs.
 PASSTHROUGH = {"sudo", "exec", "command", "builtin", "nice", "ionice", "nohup", "time", "env",
                "stdbuf", "setsid", "doas", "xvfb-run"}
+# The options of a PASSTHROUGH wrapper this check reads, each with the number of words after it
+# that it takes, or RUNS_NOTHING where the wrapper then runs no command: `command -v curl` prints
+# where curl is found. These are the forms the tree writes behind a wrapper, `command -v` in its
+# actions, scripts and Dockerfiles and `env -u <name>` in worker.Dockerfile's two `go env` reads,
+# and the three a wrapper is most often written with, `env -i`, `nice -n <n>` and `sudo -E`. Any
+# other option after a wrapper, `env -S`, which splits a string this check does not read, `nice
+# --adjustment=5` or `sudo -u <user>` among them, is refused by name wherever it is written
+# (odd_command): until round 38 the word after a wrapper was read as the command, so `nice -n 10
+# curl …` was a run of a program named `-n`, and its fetch, or the script it ran, was read as
+# nothing (dispatch://INFRA-1545, round 38).
+RUNS_NOTHING = -1
+WRAPPER_OPTIONS = {
+    "command": {"-v": RUNS_NOTHING, "-V": RUNS_NOTHING},
+    "env": {"-i": 0, "-u": 1},
+    "nice": {"-n": 1},
+    "sudo": {"-E": 0},
+}
 # Transparent, but the command they run is inside the script string behind `-c`, which rule 8
 # reads in one form, `bash -c '<text>'` (sites_of_command). `ksh` is one of them since round 37,
-# so that a run of a file under .github/scripts/ by it is read as by the others (data_operand;
+# so that a run of a file under .github/scripts/ by it is read as by the others (unread_operand;
 # dispatch://INFRA-1545, round 37); the tree writes none.
 INTERPRETERS = {"bash", "sh", "dash", "zsh", "ksh"}
+# The shells a file's `#!` line may name, by any path or through `env` (shell_shebang): a `.py`
+# or a `.jq` whose first line names one is a shell program (dispatch://INFRA-1545, round 38).
+SHEBANG_SHELLS = INTERPRETERS | {"ash"}
 # Transparent, and the verb is what they run: a package runner resolves a binary the workspace's
 # own install already provides.
 RUNNERS = {"bunx", "npx", "pnpx", "pnpm-dlx"}
@@ -2081,6 +2123,22 @@ TIMEOUT_CLUSTER = (
     "its value, a form this check does not read: it takes that word for the duration and the "
     "duration for the command, so what `timeout` runs is read as no fetch. Write each option as "
     "a word of its own, such as `-v -k 5`")
+# An option of a wrapper this check does not read, and `busybox`, each refused by name whatever
+# the command holds (odd_command; dispatch://INFRA-1545, round 38): this check reads no command
+# after either, so a fetch or a run of a script written there would be held to no floor and
+# charged to no budget. The tree writes neither.
+WRAPPER_OPTION = (
+    "runs `{wrapper}` with `{option}`, an option of it this check does not read: it reads "
+    "`env -i`, `env -u <name>`, `nice -n <n>`, `sudo -E` and `command -v` alone, and after any "
+    "other option reads no command, so a fetch or a script run there is held to no floor and "
+    "charged to no budget. Write the wrapper with none of its options but those, and set a "
+    "variable the command needs as an assignment before it, `NAME=value curl …`, rather than "
+    "through `env -S` or another option")
+BUSYBOX_RUN = (
+    "runs `{program}`, a program named by an argument of `busybox`, a form this check does "
+    "not read: it reads no fetch and no run of a script there, so a `busybox wget` or a `busybox "
+    "sh` is held to no floor and charged to no budget. Run the program by its own name, "
+    "`wget …`, as a command of its own")
 HELPER_DEFINED = (
     "defines a function named `retry_fetch`, the helper's own name, so every call this check "
     "reads as the helper's runs this definition instead, and is read as retried at R1's floor "
@@ -2298,18 +2356,42 @@ def structure(commands: list[Command], text: str) -> Loops:
     return read
 
 
+def wrapper_option(wrapper: str, rest: list[str]) -> str | None:
+    """Takes off the front of `rest`, the words after the PASSTHROUGH `wrapper`, each option of it
+    WRAPPER_OPTIONS reads with the words that option takes, and returns the first option word it
+    does not read, left in place, or None (dispatch://INFRA-1545, round 38). A RUNS_NOTHING option
+    is left in place too, and None returned, so the words read as no command, as `command -v curl`
+    runs none; an option this check does not read is refused by name (odd_command)."""
+    read = WRAPPER_OPTIONS.get(wrapper, {})
+    while rest and rest[0].startswith("-"):
+        taken = read.get(rest[0])
+        if taken is None:
+            return rest[0]
+        if taken == RUNS_NOTHING:
+            return None
+        del rest[:1 + taken]
+    return None
+
+
 def reduce_words(words: list[str]) -> tuple[list[str], str | None, bool, int | None]:
     """The words of the command that actually runs, the retry wrapping it (`retry_fetch`, the one
     helper, or `retry`, a Dockerfile's inline definition), whether something bounds it, and the
-    seconds of that bound where it is written as a number — rule 8's `<bound>`."""
+    seconds of that bound where it is written as a number — rule 8's `<bound>`. A wrapper's
+    options are read as wrapper_option reads them, and the words from an option it does not read
+    are left as they stand, a command named `-S` that runs nothing this check reads, which
+    odd_command refuses by name (dispatch://INFRA-1545, round 38)."""
     retry = None
     bounded = False
     bound: int | None = None
     words = list(words)
     while words:
         first = words[0]
-        if ASSIGNMENT.match(first) or first in PASSTHROUGH or first in KEYWORDS:
+        if ASSIGNMENT.match(first) or first in KEYWORDS:
             words.pop(0)
+            continue
+        if first in PASSTHROUGH:
+            words.pop(0)
+            wrapper_option(first, words)
             continue
         if first == "timeout":
             # timeout(1)'s options, `-k <duration>` and `-s <signal>` taking the word after them,
@@ -2356,7 +2438,7 @@ def reduce_words(words: list[str]) -> tuple[list[str], str | None, bool, int | N
     return words, retry, bounded, bound
 
 
-def odd_command(words: list[str]) -> tuple[str, bool] | None:
+def odd_command(words: list[str]) -> tuple[str, bool, bool] | None:
     """What the refusal of this command says, where it writes `retry_fetch` or `timeout` in a
     form this check does not read, and whether that form is a call of the helper, which then
     fetches nothing; None where it writes neither (dispatch://INFRA-1545, round 37). The wrappers
@@ -2365,22 +2447,37 @@ def odd_command(words: list[str]) -> tuple[str, bool] | None:
     whose `--` is not its third word, or whose seconds are written as no whole number above 0
     and as no variable, is refused by the helper with no attempt made; and a `timeout` whose
     short options are a cluster ending in `-k` or `-s`, such as `-vk 5`, takes the next word as
-    that option's value, where reduce_words takes it for the duration."""
+    that option's value, where reduce_words takes it for the duration.
+
+    The third answer is whether the form is refused whatever the command holds: an option of a
+    PASSTHROUGH wrapper wrapper_option does not read, and `busybox`, whose first argument names
+    the program it runs. After either, reduce_words reads no command at all, so this check
+    cannot tell whether a fetch or a script runs there (dispatch://INFRA-1545, round 38)."""
     rest = list(words)
     wrapper: str | None = None
     while rest:
         first = rest[0]
-        if ASSIGNMENT.match(first) or first in KEYWORDS or first == "time":
+        if ASSIGNMENT.match(first) or first in KEYWORDS:
             rest.pop(0)
             continue
+        if first in PASSTHROUGH:
+            rest.pop(0)
+            option = wrapper_option(first, rest)
+            if option is not None:
+                return WRAPPER_OPTION.format(wrapper=first, option=option), False, True
+            if first != "time":
+                wrapper = first
+            continue
+        if PROGRAM.sub("", first).rsplit("/", 1)[-1] == "busybox":
+            return BUSYBOX_RUN.format(program=" ".join(rest[:2])), False, True
         if first == "retry_fetch":
             if wrapper is not None:
-                return RETRY_BEHIND.format(wrapper=wrapper), True
+                return RETRY_BEHIND.format(wrapper=wrapper), True, False
             bound = rest[2] if len(rest) > 2 else ""
             if len(rest) < 4 or rest[3] != "--" or not (
                     "$" in bound or "EXPR" in bound
                     or (re.fullmatch(r"\d+", bound) and int(bound) > 0)):
-                return RETRY_UNSIGNED, True
+                return RETRY_UNSIGNED, True, False
             wrapper = "retry_fetch"
             del rest[:4]
             continue
@@ -2389,7 +2486,7 @@ def odd_command(words: list[str]) -> tuple[str, bool] | None:
             while rest and rest[0].startswith("-") and rest[0] != "--":
                 option = rest.pop(0)
                 if re.fullmatch(r"-[vfp]+[ks]", option):
-                    return TIMEOUT_CLUSTER.format(option=option), False
+                    return TIMEOUT_CLUSTER.format(option=option), False, False
                 if option in ("-k", "-s", "--kill-after", "--signal") and rest:
                     rest.pop(0)
             if rest and rest[0] == "--":
@@ -2400,10 +2497,6 @@ def odd_command(words: list[str]) -> tuple[str, bool] | None:
         if first == "retry" and len(rest) > 2 and re.fullmatch(r"\d+", rest[1]):
             wrapper = "retry"
             del rest[:3]
-            continue
-        if first in PASSTHROUGH:
-            wrapper = first
-            rest.pop(0)
             continue
         return None
     return None
@@ -3357,7 +3450,10 @@ def sites_of(path: str, body: str, first_line: int, step: str,
     failure of every command in it and rule 9 has nothing to refuse. That is the default,
     because a *.sh and a Dockerfile RUN are read with no step's `shell:` to ask about and each
     sets its own flags. A command odd_command names is kept for its refusal, and one that calls
-    the helper in a form that fetches nothing holds no site (dispatch://INFRA-1545, round 37)."""
+    the helper in a form that fetches nothing holds no site (dispatch://INFRA-1545, round 37). A
+    form odd_command refuses whatever the command holds, an option of a wrapper it does not read
+    or `busybox`, is kept as one that waits, so it is refused wherever it is written
+    (dispatch://INFRA-1545, round 38)."""
     commands, loops, probes = commands_of(body, first_line)
     found: list[Site] = []
     for command in commands:
@@ -3365,9 +3461,9 @@ def sites_of(path: str, body: str, first_line: int, step: str,
             continue
         odd = odd_command(command.words)
         if odd is not None:
-            sentence, helper = odd
-            loops.odd_commands.append((command.line, sentence,
-                                       helper or verb_in(command.words) is not None, helper))
+            sentence, helper, always = odd
+            loops.odd_commands.append((command.line, sentence, always or helper
+                                       or verb_in(command.words) is not None, helper))
             if helper:
                 continue
         held = sites_of_command(path, command, loops, step)
@@ -3505,6 +3601,12 @@ def sites_of_command(path: str, command: Command, loops: Loops,
             # A `bash -c '…' | tar` pipes the interpreter, so a fetch inside it loses its own
             # status the same way a fetch written in the pipeline would.
             sub.piped = sub.piped or command.piped
+            # A wrapper's option this check does not read, or `busybox`, hides the command in the
+            # text as it would in the step, so it is refused there too (odd_command;
+            # dispatch://INFRA-1545, round 38).
+            odd = odd_command(sub.words)
+            if odd is not None and odd[2]:
+                loops.odd_commands.append((command.line, odd[0], True, False))
             found += sites_of_command(path, sub, loops, step, retry, bounded, depth + 1,
                                       bound)
         return found
@@ -3955,17 +4057,60 @@ scripts = [
 # AGENTS.md lists, run as `python3 .github/scripts/go-test-step-expansion.py`, sets none, and
 # its import of ci_filter_coverage.py and workflow_paths.py leaves two such files there; a
 # documented run must not turn a dev box red. Any other file under a `__pycache__` is refused
-# like any file. A top-level `.py` or `.jq` left alone here and handed to a shell, `.` or
-# `source`, which run it as shell text, is refused at that run (data_operand). At 9a181791 the
-# tree holds no file this refuses: of its 101 files under .github/scripts/, 89 are top-level
-# `.sh`, 11 are `.py` and one is `.jq`.
+# like any file. A top-level `.py` or `.jq` whose first line runs a shell (shell_shebang) is a
+# shell program this check does not read, whatever runs it, and is refused by name at its line 1
+# too: until round 38 one run as a command word ran its shell's text with none of it read
+# (dispatch://INFRA-1545, round 38). A file of that directory this check does not read as a
+# script, handed to a shell, `.` or `source`, which run it as shell text, is refused at that run,
+# and so is one with no `#!` line run as a command word (unread_operand, unread_command;
+# dispatch://INFRA-1545, round 38). At 172e244f the tree holds no file this refuses: of its 101
+# files under .github/scripts/, 89 are top-level `.sh`, 11 are `.py`, four of them opening
+# `#!/usr/bin/env python3` and seven with no `#!` line, and one is `.jq`. Eight steps run a `.py`
+# as a command word, disk_watch.py six times, ci-fault-proxy.py and race_memory.py once each,
+# all three of them opening `#!/usr/bin/env python3`.
+
+
+def shell_shebang(path: str) -> str | None:
+    """The first line of the file at `path` where it is a `#!` line naming one of SHEBANG_SHELLS,
+    by any path or through `env` with or without options, `#!/bin/sh` and `#!/usr/bin/env -S
+    bash -e` alike, or None (dispatch://INFRA-1545, round 38)."""
+    with open(path, "rb") as handle:
+        first = handle.readline(4096).decode("utf-8", "replace").strip()
+    if not first.startswith("#!"):
+        return None
+    words = first[2:].split()
+    if words and words[0].rsplit("/", 1)[-1] == "env":
+        words.pop(0)
+        while words and (words[0].startswith("-") or ASSIGNMENT.match(words[0])):
+            option = words.pop(0)
+            if option in ("-u", "--unset", "-C", "--chdir") and words:
+                words.pop(0)
+            elif option.startswith("-S") and len(option) > 2:
+                words.insert(0, option[2:])
+            elif option.startswith("--split-string="):
+                words.insert(0, option.partition("=")[2])
+    return first if words and words[0].rsplit("/", 1)[-1] in SHEBANG_SHELLS else None
+
+
 script_data = {path for path in files
                if Path(path).parent == SCRIPTS and Path(path).suffix in SCRIPT_DATA}
 for path in files:
     if (SCRIPTS not in Path(path).parents
             # A top-level `.sh` is a script `scripts` holds or a harness.
-            or Path(path).parent == SCRIPTS and path.endswith(".sh") or path in script_data
+            or Path(path).parent == SCRIPTS and path.endswith(".sh")
             or Path(path).parent == SCRIPTS / "__pycache__" and path.endswith(".pyc")):
+        continue
+    if path in script_data:
+        shebang = shell_shebang(path)
+        if shebang is not None:
+            problem(path, 1,
+                    f"{path} is a `{Path(path).suffix}` directly in .github/scripts/ whose first "
+                    f"line, `{shebang}`, runs a shell: it is a shell program, and this check reads "
+                    "no `.py` or `.jq` as one, whatever runs it, so none of its fetches is held to "
+                    "the floor and a step that runs it is charged nothing for it. Move a shell "
+                    "program to .github/scripts/<name>.sh, its name lowercase letters, digits and "
+                    "`-`, and keep a Python program or a jq filter under the first line of its own "
+                    "interpreter (dispatch://INFRA-1545, round 38).")
         continue
     problem(path, 1,
             f"{path} is a file under .github/scripts/ this check does not read, whatever it "
@@ -3976,6 +4121,15 @@ for path in files:
             "name lowercase letters, digits and `-` (a `*.test.sh` harness directly into "
             ".github/scripts/), and anything else out of .github/scripts/ "
             "(dispatch://INFRA-1545, round 37).")
+# The files under .github/scripts/ a shell, `.` or `source` is refused for running, by a literal
+# path or by a name a variable or a missing directory leaves (unread_operand): every file there
+# that `scripts` does not hold, at any depth, but a `*.test.sh` harness directly in that
+# directory. A harness is not read, as TEST_HARNESS says, and a run of one by a shell is left as
+# that reading leaves it (dispatch://INFRA-1545, round 38).
+unread_files = {path for path in set(files) - set(scripts)
+                if SCRIPTS in Path(path).parents
+                and not (Path(path).parent == SCRIPTS and path.endswith(TEST_HARNESS))}
+unread_names = {Path(path).name for path in unread_files}
 # A directory under .github/scripts/ whose files `files` does not hold: walk() enters no symbolic
 # link to a directory and no directory SKIP_DIRS names, such as `vendor` or `node_modules`, so no
 # file in one is read, held to the floor or refused by the rule above. This check looks for them
@@ -4500,7 +4654,14 @@ for path in DOCKERFILES:
             continue
         while match := re.match(r"\s*--(mount|network|security)=\S+", rest):
             rest = rest[match.end():]
-        found, _ = sites_of(path, rest, line, "-")
+        found, run_loops = sites_of(path, rest, line, "-")
+        # A form odd_command names hides a fetch from every rule here as it does in a step: an
+        # option of a wrapper this check does not read, `busybox`, a `timeout` option cluster
+        # around a fetch. Until round 38 a Dockerfile's were read and dropped
+        # (dispatch://INFRA-1545, round 38). The four Dockerfiles write none.
+        for _at, sentence, waits, _helper in run_loops.odd_commands:
+            if waits:
+                problem(path, line, f"this RUN {sentence} (dispatch://INFRA-1545, round 38).")
         if not found:
             continue
         sites += found
@@ -5355,11 +5516,25 @@ UNNAMED_CALL_CURE = ("Hand `{name}` the script or the command it runs by its lit
 # gets the rewrite that passes (dispatch://INFRA-1545, round 37).
 HANDED_ON_RUN = ("which runs words its callers hand it or that it sets itself, and this check "
                  "follows neither to the program they name")
-# The fifth is a shell, `.` or `source` handed a top-level `.py` or `.jq` of .github/scripts/,
-# which runs that file as shell text: the reading set leaves those files unread, so the text a
-# shell runs there would be read by no rule (data_operand; dispatch://INFRA-1545, round 37).
-DATA_RUN = ("which is or may be a `.py` or a `.jq` directly in .github/scripts/, a file this "
-            "check does not read as shell text")
+# The fifth is a shell, `.` or `source` handed a file under .github/scripts/ this check does not
+# read as a script, which runs that file as shell text no rule reads: a top-level `.py` or `.jq`,
+# a `.pyc` under __pycache__, a file the reading set refuses where it stands, and the text of a
+# shell's `-c` that hands one to a shell, `.` or `source` (unread_operand, text_operand;
+# dispatch://INFRA-1545, round 38).
+UNREAD_RUN = ("which is or may be a file under .github/scripts/ that this check does not read "
+              "as a script")
+# The sixth is such a file run as a command word with no `#!` line: the kernel will not execute
+# it, and the shell that asked runs it as shell text instead, as bash and dash do with a file
+# the kernel refuses as no executable format. A file whose `#!` line names another interpreter,
+# python3, runs under that interpreter, and passes (unread_command; dispatch://INFRA-1545, round
+# 38).
+UNREAD_COMMAND = ("which is a file under .github/scripts/ that this check does not read as a "
+                  "script, and has no `#!` line, so the shell running it as a command runs it as "
+                  "shell text when the kernel will not execute it")
+UNREAD_CURE = ("Run a Python program with `python3 .github/scripts/<name>.py …` and read a jq "
+               "filter with `jq -f .github/scripts/<name>.jq …`; a shell script goes in "
+               ".github/scripts/<name>.sh, its name lowercase letters, digits and `-`, and runs "
+               "by that path")
 # unseen()'s three reasons, each written once, so that the reason a run is refused with and the
 # key its cure is found under cannot drift apart. A script named with no directory is found by
 # the shell that runs it: `sh x.sh` (dash) through the working directory alone, `bash x.sh`
@@ -5385,11 +5560,8 @@ REASON_CURES = {
         "Name the command this text runs literally, `.github/scripts/<name>.sh …` or `grep …`, "
         "with what varies as its arguments; a wrapper that runs the words it is handed is read "
         "only as a function this text defines and calls with literal words, `run grep …`"),
-    DATA_RUN: (
-        "Run a Python program with `python3 .github/scripts/<name>.py …` and read a jq filter "
-        "with `jq -f .github/scripts/<name>.jq …`; a shell script goes in "
-        ".github/scripts/<name>.sh, its name lowercase letters, digits and `-`, and runs by "
-        "that path"),
+    UNREAD_RUN: UNREAD_CURE,
+    UNREAD_COMMAND: UNREAD_CURE,
 }
 
 
@@ -5546,7 +5718,7 @@ def unnamed_target(word: str, action: str | None) -> str | None:
 
 
 def target_parts(word: str, action: str | None) -> tuple[str, list[tuple[int, int]], int]:
-    """A run's target as unnamed_target and data_operand read it: the word with
+    """A run's target as unnamed_target and unread_operand read it: the word with
     `$GITHUB_WORKSPACE/` written as the repository's root and, in a composite action,
     `$GITHUB_ACTION_PATH/` as the action's own directory, `action`; its expansions; and where its
     last `/` outside them is, -1 where it has none."""
@@ -5559,28 +5731,73 @@ def target_parts(word: str, action: str | None) -> tuple[str, list[tuple[int, in
     return word, spans, cut
 
 
-def data_operand(word: str, action: str | None) -> str | None:
-    """DATA_RUN where `word`, what a shell, `.` or `source` runs, is or may be a `.py` or a `.jq`
-    directly in .github/scripts/, which that shell runs as shell text this check does not read,
-    or None (dispatch://INFRA-1545, round 37). A word whose last path element is literal names
-    one where its directory is literal and, normalised, ends in .github/scripts/, as
-    `../../.github/scripts/x.py` from a step's working directory does, and where its directory
-    holds an expansion, `"$script_dir/x.py"`, or it has none, which bash finds through the
-    working directory or PATH, and that element is the name of such a file of the tree, read by
-    its name as SCRIPT_CALL reads a script's. One whose last element holds an expansion and ends
-    in `.py` or `.jq` may be one. `python3 .github/scripts/x.py` and `jq -f
-    .github/scripts/x.jq` hand the file to no shell, and are not read here."""
+def unread_operand(word: str, action: str | None) -> str | None:
+    """UNREAD_RUN where `word`, what a shell, `.` or `source` runs, is or may be one of
+    unread_files, a file under .github/scripts/ this check does not read as a script, which that
+    shell runs as shell text, or None (dispatch://INFRA-1545, round 38). A word whose path is
+    literal names one where, normalised, it reaches such a file through .github/scripts/, as
+    `../../.github/scripts/x.py` does from a step's working directory; one whose directory holds
+    an expansion, `"$script_dir/x.py"`, or that has none, which the shell finds through the
+    working directory or PATH, where its last element is the name of such a file, read by its
+    name as SCRIPT_CALL reads a script's; and one whose last element holds an expansion may be
+    one where it ends as such a file the reading set leaves standing does, UNREAD_SUFFIXES.
+    `python3 .github/scripts/x.py` and `jq -f .github/scripts/x.jq` hand the file to no shell,
+    and are not read here. Until round 38 only a top-level `.py` or `.jq` was refused here, and
+    `bash .github/scripts/__pycache__/x.pyc` ran shell text no rule read."""
     word, spans, cut = target_parts(word, action)
     last = word[cut + 1:]
-    if not last.endswith(SCRIPT_DATA):
-        return None
     if expansions_in(last):
-        return DATA_RUN
+        return UNREAD_RUN if last.endswith(UNREAD_SUFFIXES) else None
     if cut >= 0 and not spans:
-        inside = f"/{os.path.normpath(word[:cut] or '/')}/".endswith(f"/{SCRIPTS}/")
-    else:
-        inside = str(SCRIPTS / last) in script_data
-    return DATA_RUN if inside else None
+        return UNREAD_RUN if unread_file(word) else None
+    return UNREAD_RUN if last in unread_names else None
+
+
+def unread_file(word: str) -> str | None:
+    """The one of unread_files a literal path, `word`, reaches through .github/scripts/ once
+    normalised, `../../.github/scripts/x.py` from a step's working directory among them, or
+    None."""
+    named = f"/{os.path.normpath(word)}"
+    at = named.find(f"/{SCRIPTS}/")
+    return named[at + 1:] if at >= 0 and named[at + 1:] in unread_files else None
+
+
+def unread_command(word: str, action: str | None) -> str | None:
+    """UNREAD_COMMAND where `word`, a command word, is a literal path to one of unread_files
+    whose first line is no `#!` line, or None (dispatch://INFRA-1545, round 38). The shell runs
+    such a file as shell text, which no rule reads: until round 38 `.github/scripts/x.py`, a
+    `.py` of shell commands with no `#!` line, ran them unread. One whose `#!` line names
+    python3 runs as Python, and one naming a shell is refused where it stands (shell_shebang).
+    A word holding an expansion, or no `/`, is read as unnamed_target and unseen read it."""
+    word, spans, cut = target_parts(word, action)
+    path = unread_file(word) if cut >= 0 and not spans else None
+    if path is None:
+        return None
+    with open(path, "rb") as handle:
+        return None if handle.read(2) == b"#!" else UNREAD_COMMAND
+
+
+def text_operand(text: str, action: str | None, depth: int = 0) -> tuple[str, str] | None:
+    """The shell, `.` or `source` the text of a shell's `-c` runs, and the file it hands it,
+    where unread_operand refuses that file, read through the `-c` text of a shell the text runs
+    in turn, or None (dispatch://INFRA-1545, round 38). The text is read as sites_of_command
+    reads it for its fetches, a command at a time: until round 38 `bash -c '.
+    .github/scripts/x.py'` ran a file no rule read and was refused by none."""
+    for command in Scanner(1).scan(text):
+        reduced = reduce_words(command.words)[0]
+        if not reduced or expansions_in(reduced[0]):
+            continue
+        head = PROGRAM.sub("", reduced[0]).rsplit("/", 1)[-1]
+        if head not in INTERPRETERS | {".", "source"}:
+            continue
+        kind, target = shell_operand(reduced)
+        if kind == "script" and unread_operand(target, action):
+            return head, target
+        if kind == "text" and depth < 3:
+            inner = text_operand(target, action, depth + 1)
+            if inner is not None:
+                return inner
+    return None
 
 
 def written_files(scanner: CallScanner, commands: list[Command],
@@ -5674,9 +5891,12 @@ def unnamed_runs(path: str, loops: Loops, sees_fetching: bool,
         file this body writes (written_files), by any name, compared by its path and, where the
         body holds a `cd` or a `pushd`, by its name alone, since this reading does not follow
         the directory. A command word holding no `/` is a name PATH finds, and no such file. The
-        operand of a shell, `.` or `source` is refused too where it is or may be a `.py` or a
-        `.jq` directly in .github/scripts/ (data_operand), files this check leaves unread, which
-        the shell would run as shell text;
+        operand of a shell, `.` or `source` is refused too where it is or may be a file under
+        .github/scripts/ this check does not read as a script (unread_operand), which the shell
+        would run as shell text, and so is the text of a shell's `-c`, single-quoted or not,
+        where a shell, `.` or `source` in it is handed one (text_operand), and a command word
+        that is a literal path to such a file with no `#!` line (unread_command), which the shell
+        runs as shell text when the kernel will not execute it (dispatch://INFRA-1545, round 38);
       - a shell reading its program from its standard input, a here-string, a file redirected
         into it or a process substitution, and a `.` or `source` of a process substitution; a
         heredoc's body is read by unread_heredocs, and a shell a pipe feeds is refused at the
@@ -5822,21 +6042,27 @@ def unnamed_runs(path: str, loops: Loops, sees_fetching: bool,
                 # substitution it runs what that prints.
                 does = f"runs `{head}`"
                 why = f"which reads the program it runs from {STDIN_PROGRAM[command.input]}"
-            elif kind == "text" and span and text[span[0] - 1:span[0]] != "'":
-                does = f"runs `{head} -c` on `{target}`"
-                why = unnamed_target(target, action) and "text built from data"
+            elif kind == "text" and target:
+                inner = text_operand(target, action)
+                if inner is not None:
+                    does = f"runs `{head} -c` on text that hands `{inner[1]}` to `{inner[0]}`"
+                    why = UNREAD_RUN
+                elif span and text[span[0] - 1:span[0]] != "'":
+                    does = f"runs `{head} -c` on `{target}`"
+                    why = unnamed_target(target, action) and "text built from data"
             elif kind == "script":
                 does = (f"sources `{target}`" if head in (".", "source")
                         else f"runs `{target}` with `{head}`")
                 why = (unnamed_target(target, action) or unseen(target, True)
-                       or data_operand(target, action))
+                       or unread_operand(target, action))
         elif not (VARIABLE_CALL.fullmatch(reduced[0])
                   and (sees_fetching or handed_in(command, reduced[0]))):
             target = reduced[0]
             does = f"runs `{target}` as a command"
             why = (HANDED_ON_RUN if (HANDED_ON.fullmatch(target) or POSITIONAL.fullmatch(target))
                    and loops.function_of(command.line) is None
-                   else unnamed_target(target, action) or unseen(target, False))
+                   else unnamed_target(target, action) or unseen(target, False)
+                   or unread_command(target, action))
         ends = [span[1] for span in command.spans if span]
         last = loops.first_line + text.count("\n", 0, max(ends)) if ends else command.line
         if why:

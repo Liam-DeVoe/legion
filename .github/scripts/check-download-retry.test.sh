@@ -12466,10 +12466,10 @@ for refusal in \
   "19	Run the Python program from a working directory	runs .\.\./\.\./\.github/scripts/r37-tool.py. with .bash."; do
   IFS=$'\t' read -r line step says <<<"$refusal"
   check "refuses '$step' by name at its run" \
-    "$(contains "$out" "::error file=.github/workflows/case.yaml,line=$line::step '$step' of job 'build' $says, which is or may be a .\.py. or a .\.jq. directly in .github/scripts/, a file this check does not read as shell text, so this check cannot name the script that runs there")"
+    "$(contains "$out" "::error file=.github/workflows/case.yaml,line=$line::step '$step' of job 'build' $says, which is or may be a file under .github/scripts/ that this check does not read as a script, so this check cannot name the script that runs there")"
 done
 check "tells each of the six to run the program with python3 or read the filter with jq -f" \
-  "$(is "$(printf '%s\n' "$out" | grep -c "a file this check does not read as shell text, so .*Run a Python program with .python3 .github/scripts/<name>.py .*. and read a jq filter with .jq -f .github/scripts/<name>.jq .*.; a shell script goes in .github/scripts/<name>.sh")" 6)"
+  "$(is "$(printf '%s\n' "$out" | grep -c "that this check does not read as a script, so .*Run a Python program with .python3 .github/scripts/<name>.py .*. and read a jq filter with .jq -f .github/scripts/<name>.jq .*.; a shell script goes in .github/scripts/<name>.sh")" 6)"
 check "passes python3 and jq -f given the same files, and a shell given a .py elsewhere" \
   "$(is "$(contains "$out" "step 'Run the Python program and read the jq filter as they are run'")" false)"
 for directory in "r37-linked	it is a symbolic link" "lib/r37-deep	it is a symbolic link" \
@@ -12478,6 +12478,149 @@ for directory in "r37-linked	it is a symbolic link" "lib/r37-deep	it is a symbol
   check "refuses .github/scripts/$name by name, since $why" \
     "$(contains "$out" "::error file=.github/scripts/$name,line=1::.github/scripts/$name is a directory at or under .github/scripts/ that this check's walk of the tree does not enter, since $why, so no file in it is read for its fetches.*Replace it with the files it holds")"
 done
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 9)"
+
+# W13 and W14. Six routes round 38's class search drove past the gate at 172e244f, each passing a
+# 1050 s script under a one-minute key (dispatch://INFRA-1545, round 38). W13 is the shell text
+# under .github/scripts/ the gate reads nothing of: a top-level `.py` or `.jq` whose first line
+# runs a shell, run as a command word (P7, P8), refused by name at its line 1 whatever runs it,
+# by any path or through `env` with its options; a `.pyc` handed to bash (P9) and a `bash -c`
+# text sourcing a `.py` (P15), each refused at the run; and a `.py` of shell commands with no
+# `#!` line run as a command word, which the shell runs as shell text when the kernel will not
+# execute it, refused at the run. A `python3` run of a `.py` and a run of a `.py` whose first
+# line names python3, as a command word, pass beside them.
+echo "case: r37 W13 a shell program among the top-level .py and .jq files, a .pyc and a bash -c text, each run by a shell, are refused by name"
+root=$(fixture r37-w13-shell-programs)
+mkdir -p "$root/.github/scripts/__pycache__"
+for program in "r37-shell.py	#!/bin/sh" "r37-shell.jq	#!/usr/bin/env -S bash -e" \
+  "r37-env.py	#!/usr/bin/env -u HOME zsh"; do
+  IFS=$'\t' read -r name shebang <<<"$program"
+  printf '%s\n. .github/scripts/ci-retry.sh\nretry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b\n' \
+    "$shebang" > "$root/.github/scripts/$name"
+  chmod +x "$root/.github/scripts/$name"
+done
+printf '#!/usr/bin/env python3\nprint("quiet")\n' > "$root/.github/scripts/r37-tool.py"
+chmod +x "$root/.github/scripts/r37-tool.py"
+printf '. .github/scripts/ci-retry.sh\nretry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b\n' \
+  > "$root/.github/scripts/__pycache__/r37-tool.cpython-313.pyc"
+cp "$root/.github/scripts/__pycache__/r37-tool.cpython-313.pyc" "$root/.github/scripts/r37-plain.py"
+chmod +x "$root/.github/scripts/r37-plain.py"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Run the shell program written as a .py
+        timeout-minutes: 1
+        run: .github/scripts/r37-shell.py
+      - name: Run the shell program written as a .jq
+        timeout-minutes: 1
+        run: .github/scripts/r37-shell.jq
+      - name: Run the bytecode with bash
+        timeout-minutes: 1
+        run: bash .github/scripts/__pycache__/r37-tool.cpython-313.pyc
+      - name: Source the Python program in a bash -c text
+        timeout-minutes: 1
+        run: bash -c '. .github/scripts/r37-tool.py'
+      - name: Run the plain Python file as a command
+        timeout-minutes: 1
+        run: .github/scripts/r37-plain.py
+      - name: Run the Python program as Python
+        run: |
+          python3 .github/scripts/r37-tool.py
+          .github/scripts/r37-tool.py
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+for program in "r37-shell.py	#!/bin/sh" "r37-shell.jq	#!/usr/bin/env -S bash -e" \
+  "r37-env.py	#!/usr/bin/env -u HOME zsh"; do
+  IFS=$'\t' read -r name shebang <<<"$program"
+  check "refuses .github/scripts/$name by name at its line 1, as the shell program its first line makes it" \
+    "$(contains "$out" "::error file=.github/scripts/$name,line=1::.github/scripts/$name is a .\.${name##*.}. directly in .github/scripts/ whose first line, .$shebang., runs a shell: it is a shell program.*Move a shell program to .github/scripts/<name>.sh")"
+done
+check "refuses the bytecode handed to bash at the run" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=15::step 'Run the bytecode with bash' of job 'build' runs ..github/scripts/__pycache__/r37-tool.cpython-313.pyc. with .bash., which is or may be a file under .github/scripts/ that this check does not read as a script")"
+check "refuses the bash -c text that sources the Python program, at the run" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=18::step 'Source the Python program in a bash -c text' of job 'build' runs .bash -c. on text that hands ..github/scripts/r37-tool.py. to .\.., which is or may be a file under .github/scripts/ that this check does not read as a script")"
+check "tells both runs to run the program with python3 or put a shell script in a .sh" \
+  "$(is "$(printf '%s\n' "$out" | grep -c "that this check does not read as a script, so .*Run a Python program with .python3 .github/scripts/<name>.py .*.; a shell script goes in .github/scripts/<name>.sh")" 2)"
+check "refuses the plain Python file run as a command at the run, with the same cure" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=21::step 'Run the plain Python file as a command' of job 'build' runs ..github/scripts/r37-plain.py. as a command, which is a file under .github/scripts/ that this check does not read as a script, and has no .#!. line, so the shell running it as a command runs it as shell text when the kernel will not execute it, so this check cannot name the script that runs there.*Run a Python program with .python3 .github/scripts/<name>.py .*.; a shell script goes in .github/scripts/<name>.sh")"
+check "passes python3 given the Python program, and the program run by its python3 first line" \
+  "$(is "$(contains "$out" "step 'Run the Python program as Python'\|r37-tool.py,line=1")" false)"
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 6)"
+
+# W14 is the verb reader's wrappers (P11, P12): the words after a wrapper the gate drops were read
+# as the command, so `nice -n 10 curl` ran a command named `-n`, and `busybox wget` a command
+# named busybox, and neither fetch was read. The options the gate reads, `env -i`, `env -u
+# <name>`, `nice -n <n>` and `sudo -E`, pass through to the command, so a bare fetch behind one is
+# refused at the floor, a `retry_fetch` behind `env -i` is the helper behind a wrapper, which
+# fetches nothing, and `env -i` inside the helper is a retried fetch that passes. Any other option
+# of a wrapper, `env -S` and `nice --adjustment=5` here, and `busybox`, are refused by name in a
+# step, in a `bash -c` text and in a Dockerfile RUN, and worker.Dockerfile's `env -u CGO_ENABLED
+# go env CGO_ENABLED` reads as `go env`, which fetches nothing.
+echo "case: r37 W14 a wrapper option this check does not read, and busybox, are refused by name, and the options it reads pass through to the command"
+root=$(fixture r37-w14-wrappers)
+printf '%s\n' 'RUN nice --adjustment=5 curl -fsSL -o b https://example.com/b' \
+  'RUN test "$(env -u CGO_ENABLED go env CGO_ENABLED)" = 0' >> "$root/packages/daemon/docker/worker.Dockerfile"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Run a bare curl under nice -n
+        run: nice -n 10 curl -fsSL -o b https://example.com/releases/download/v1/b
+      - name: Run a bare curl under env -u
+        run: env -u HTTPS_PROXY curl -fsSL -o b https://example.com/releases/download/v1/b
+      - name: Run a bare apt-get update under sudo -E
+        run: sudo -E apt-get update -o APT::Update::Error-Mode=any
+      - name: Run curl through env -S
+        run: env -S 'curl -fsSL -o b https://example.com/releases/download/v1/b'
+      - name: Run curl under nice --adjustment
+        run: nice --adjustment=5 curl -fsSL -o b https://example.com/releases/download/v1/b
+      - name: Run wget through busybox
+        run: busybox wget -O b https://example.com/releases/download/v1/b
+      - name: Run curl under an unread option in a bash -c text
+        run: bash -c 'nice --adjustment=5 curl -fsSL -o b https://example.com/releases/download/v1/b'
+      - name: Call the helper behind env -i
+        run: env -i PATH=/x retry_fetch "the asset" 30 -- curl -fsSL --max-time 30 -o b https://example.com/b
+      - name: Run env -i inside the helper
+        timeout-minutes: 6
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the asset" 30 -- env -i PATH=/x curl -fsSL --max-time 30 -o b https://example.com/b
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+for floor in "8	curl	Run a bare curl under nice -n	fetches without the floor" \
+  "10	curl	Run a bare curl under env -u	fetches without the floor" \
+  "12	apt-get update	Run a bare apt-get update under sudo -E	fetches with no retry"; do
+  IFS=$'\t' read -r line verb step says <<<"$floor"
+  check "reads '$step' through to its $verb, and refuses it at the floor" \
+    "$(contains "$out" "::error file=.github/workflows/case.yaml,line=$line::.$verb. in step .$step. $says")"
+done
+for refusal in "14	Run curl through env -S	runs .env. with .-S., an option of it this check does not read" \
+  "16	Run curl under nice --adjustment	runs .nice. with .--adjustment=5., an option of it this check does not read" \
+  "18	Run wget through busybox	runs .busybox wget., a program named by an argument of .busybox." \
+  "20	Run curl under an unread option in a bash -c text	runs .nice. with .--adjustment=5., an option of it this check does not read"; do
+  IFS=$'\t' read -r line step says <<<"$refusal"
+  check "refuses '$step' by name" \
+    "$(contains "$out" "::error file=.github/workflows/case.yaml,line=$line::step '$step' of job 'build' $says")"
+done
+check "reads through env -i to the helper, which a wrapper cannot run" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=22::step 'Call the helper behind env -i' of job 'build' runs .retry_fetch. behind .env.")"
+check "refuses the Dockerfile RUN's unread option by name" \
+  "$(contains "$out" "::error file=packages/daemon/docker/worker.Dockerfile,line=3::this RUN runs .nice. with .--adjustment=5., an option of it this check does not read")"
+check "passes env -i inside the helper, a retried fetch under its key" \
+  "$(is "$(contains "$out" "Run env -i inside the helper")" false)"
+check "passes the RUN that reads go env behind env -u" \
+  "$(is "$(contains "$out" "worker.Dockerfile,line=4")" false)"
 check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 9)"
 
 # F2. A heredoc line reading `timeout-minutes: 20` is text, no key: it took the block's one key,
