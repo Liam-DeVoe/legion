@@ -1630,7 +1630,7 @@ prepare_env() {
 #   form                            rows  what it is
 #   &&                               177  runs the next pipeline when this one exits 0
 #   ||                                 6  runs the next pipeline when this one fails
-#   |                                413  joins the commands of a pipeline
+#   |                                414  joins the commands of a pipeline
 #   ;                                 53  ends a pipeline
 #   newline                            3  an unquoted newline, ending a pipeline as ; does
 #   >                                  8  writes the output to a file
@@ -1644,8 +1644,8 @@ prepare_env() {
 #   in                                17  comes before a for loop's words
 #   do                                17  comes before a for loop's body
 #   done                              17  closes a for loop
-#   simple command                   594  a command word and its arguments
-#   pipeline                         413  two or more commands joined by |
+#   simple command                   596  a command word and its arguments
+#   pipeline                         414  two or more commands joined by |
 #   list                             202  two or more pipelines joined by ;, &&, || or newline
 #   group                             25  { list; }, whose status is its last command's
 #   subshell                           2  ( list ), whose status is its last command's
@@ -1674,19 +1674,19 @@ prepare_env() {
 #   program cp                         1  wrapped in a function that records its status
 #   program curl                      27  wrapped in a function that records its status
 #   program cut                        5  wrapped in a function that records its status
-#   program dispatch                  74  wrapped in a function that records its status
+#   program dispatch                  75  wrapped in a function that records its status
 #   program echo                      10  wrapped in a function that records its status
 #   program gh                         2  wrapped in a function that records its status
-#   program git                      330  wrapped in a function that records its status
+#   program git                      331  wrapped in a function that records its status
 #   program go                         2  wrapped in a function that records its status
-#   program grep                     207  wrapped in a function that records its status
+#   program grep                     208  wrapped in a function that records its status
 #   program jq                        59  wrapped in a function that records its status
 #   program mkdir                      1  wrapped in a function that records its status
 #   program mktemp                     1  wrapped in a function that records its status
 #   program printf                    12  wrapped in a function that records its status
 #   program python3                   35  wrapped in a function that records its status
 #   program rm                         2  wrapped in a function that records its status
-#   program sed                      272  wrapped in a function that records its status
+#   program sed                      273  wrapped in a function that records its status
 #   program sh                         1  wrapped in a function that records its status
 #   program sha256sum                  7  wrapped in a function that records its status
 #   program sort                      29  wrapped in a function that records its status

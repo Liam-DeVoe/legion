@@ -8,7 +8,7 @@ Each line names the evidence that drops it, and each id is a row of `claims.json
 
 - **The negotiation protocol itself**, its two-anchor calibrated scale and its repair operator.
   Our one instance of its problem is the reviewer's pair, where both halves report a binary verdict pinned to a commit and there is no scale to calibrate [d-28].
-  Its own evaluation settles most runs in the first round, so the repair operator — the novel part — runs in a minority of them [d-46, d-47].
+  Its own evaluation settles most runs in the first round, so the repair operator — the novel part — runs in a minority of them [d-45].
 
 - **The reference library**, `packages/ioc-concord`.
   The library and the specification in the same repository are two different protocols: three of the library's five request tags have no counterpart in the specification, and six of its reply tags have none [tc-voc-2].
@@ -30,7 +30,7 @@ Each line names the evidence that drops it, and each id is a row of `claims.json
 
 - **The session-end trigger.** Its pipeline starts on a `session.end` span, polled every three seconds, and our role sessions are suspended, resumed and retired by rule rather than announcing an end [d-97].
 
-- **The ninety-odd v1 API routes** and its trimmed copy of a price table [d-112].
+- **The eighty-nine v1 API routes** and its trimmed copy of a price table [d-112].
 
 - **`enabledEvidence`**, which records how we know a protocol was enabled and qualifies a regular expression over a markdown bullet, so a change of renderer changes its report while the world is unchanged [d-109].
 
@@ -49,6 +49,6 @@ What is kept from SCOPE is on the judgement's execution-record page, and it is O
 
 ## From the organisation's other two repositories
 
-- **`ioc-project.github.io`** is the documentation site: prose, quoted where a claim cites it, copied nowhere else [t-site-licence].
+- **`ioc-project.github.io`** is the documentation site: prose, read over GitHub's REST API for the triage and cited by no claim; its licence is the one file of it kept, with its checksum [t-site-identity, t-site-licence].
 
 - **The `.github` repository** holds the organisation profile page and no licence, so its prose may be quoted and nothing of it may be copied [t-dg-no-licence].
