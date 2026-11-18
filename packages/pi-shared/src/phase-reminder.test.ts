@@ -256,26 +256,32 @@ test("a daemon that answers 200 that the claim owes nothing is reminded of nothi
 test("a read that times out produces a nudge that names no phase and produces no claim about what is owed", async () => {
   // A real daemon over HTTP that answers, saying the claim owes WORK, but only once the test
   // releases it, which it does after both reminders were decided: every answer arrives later
-  // than the bound.
+  // than the bound. The reads are counted where the reminder makes them, since a read the bound
+  // aborts on a loaded machine can end before the server sees its request.
   const release = Promise.withResolvers<void>();
-  const bothAnswered = Promise.withResolvers<void>();
+  // Each request the server took, answered once the test releases it.
+  const taken: Promise<void>[] = [];
   let asked = 0;
   let answered = 0;
   const daemon = Bun.serve({
     port: 0,
-    fetch: async (request) => {
+    fetch: (request) => {
       expect(new URL(request.url).pathname).toBe("/legion/v1/claims/owed");
-      asked += 1;
-      await release.promise;
-      answered += 1;
-      if (answered === 2) bothAnswered.resolve();
-      return Response.json(OWES);
+      const answer = release.promise.then(() => {
+        answered += 1;
+        return Response.json(OWES);
+      });
+      taken.push(answer.then(() => undefined));
+      return answer;
     },
   });
   try {
     const client = createLegionDaemonClient(daemon.url.href);
     const { reminder, timers, sent, published } = rig({
-      owed: (input, signal) => client.owed(input, { signal }),
+      owed: (input, signal) => {
+        asked += 1;
+        return client.owed(input, { signal });
+      },
       owedBoundMs: 30,
     });
 
@@ -290,9 +296,11 @@ test("a read that times out produces a nudge that names no phase and produces no
     expect(asked).toBe(2);
     expect(answered).toBe(0);
 
-    // The daemon answers now, past the bound: the answers naming the work change nothing.
+    // The daemon answers now, past the bound: an answer naming the work changes nothing. A read
+    // the bound aborted before its request reached the server is never answered, so this waits
+    // for the requests the server took.
     release.resolve();
-    await bothAnswered.promise;
+    await Promise.all(taken);
     expect(sent).toEqual([UNREAD_REMINDER]);
     expect(published).toHaveLength(1);
 
