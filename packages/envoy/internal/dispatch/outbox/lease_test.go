@@ -563,8 +563,8 @@ func TestAStoppedOutboxHandsThePublisherToTheOtherAtOnce(t *testing.T) {
 // The row waits on the release itself - the line publish writes as the cut process's turn ends -
 // and reads from that line why the turn ended and when. The reason must be NATS lost, which here
 // only the grace's timer can give: the cut closes the connection, so the loss is reported by the
-// client's own connection event (bus.Client.Connected reads the connection's status,
-// internal/bus/nats.go:770-774), the holder reads its client disconnected and arms one timer of
+// client's own connection event (bus.Client.Connected, internal/bus/nats.go, reads the
+// connection's status), the holder reads its client disconnected and arms one timer of
 // that grace without scanning (lease.go:500-503), and only that timer firing with the client still
 // down ends the turn as NATS lost (lease.go:551-557). The line's stopped attribute, at or before
 // the moment the process stopped publishing, must be natsLossGrace or more past the cut, so a

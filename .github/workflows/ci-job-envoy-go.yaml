@@ -66,7 +66,7 @@ jobs:
     # the documents package's 413.9 s in the race-impossible call, against the 30 s of its
     # roomWaitMargin (internal/dispatch/docs/settlement_credit_test.go:546); and 3m leaves 101.2 s
     # over cmd/dispatch's 78.8 s in the shutdown call, against the 30 s of horizontest.Drain
-    # (internal/dispatch/horizontest/horizontest.go:96), which the shutdown test's wait for its
+    # (internal/dispatch/horizontest/horizontest.go, Drain), which the shutdown test's wait for its
     # event feed (waitEventsStart) leaves of the deadline so that its failure prints rather than
     # being cut off by the package timeout. At 4 minutes the race-impossible call failed that
     # floor and said so itself, in both arms of run 42577832967: "the test binary's deadline
