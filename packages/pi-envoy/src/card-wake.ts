@@ -84,30 +84,34 @@ import type {
  *
  * The startup phase. Oh My Pi starts the sends an extension makes from `session_start` and
  * startup discovery only once that discovery is done (`runtime-init.ts` `initializeExtensions`
- * runs both inside `runner.sends.withHeld`, ~547-555). Print and JSON mode then await every send
- * it tracks before it returns (`runner.sends.drain()`, ~560; `send-queue.ts` `drain`). RPC mode
- * does not (`drainSends: false`, `rpc-mode.ts` ~3040-3043): its startup ends once the startup
- * handlers ran, without waiting for a turn one of them started. Until then it holds the commands
- * `waitsForStartup` names, every command that starts a turn or changes the session and a few
- * more, and answers the rest, `get_state` among them; a command it held then runs during a turn a
- * startup send started, as during any other turn. A held command also waits for startup's later
- * awaits (`goalController.reconcile()` and `settled()`, ~3046-3055), so a wake sent after the
- * held sends can still start before the daemon's task. So what the phase does on this pin is fold
- * the cards that reach pi-envoy in that window, as it opens its agent subject in `session_start`,
- * into one wake turn after the held sends, where each would otherwise start or join a turn as the
- * hold settles, and, while the start-turn mark holds, keep that wake behind the start turn. The
- * host gives extensions no event once its startup is over. Without the start-turn mark (below)
- * the phase needs `ctx.mode` "rpc". ACP initialises extensions with "rpc" too (`acp-agent.ts`
- * ~3425), so the phase holds there as well, at no cost: ACP's bridge defers a turn the agent
- * starts (`agent-session.ts` ~11680-11682), so the wake becomes hidden next-turn context there, as
- * an idle card's turn did. Print and JSON mode prompt right after their own awaits that follow it
- * (`print-mode.ts`, MCP readiness and a tool refresh, ~426-430; `session.prompt`, ~496), and
- * that prompt throws `AgentBusyError` (`agent-session.ts` ~9483-9490) if a wake started a turn
- * first. A terminal holds every send until its init has subscribed to the agent and applied its
- * plan-mode default, and waits for no turn they start (`interactive-mode.ts` `init`, ~2472-2474;
- * `#init`, ~2866-2928), so a turn there starts after both and blocks nothing. In those modes, and
- * on a context with no `mode`, an idle card is an aside with `triggerTurn` from the start unless
- * the start-turn mark holds.
+ * runs both inside `runner.sends.withHeld`, ~535-545), then, unless its caller passes `drainSends:
+ * false`, awaits every send it tracks, those started while it waits included
+ * (`runner.sends.drain()`, ~548; `send-queue.ts` `drain`), before it returns. An idle card sent
+ * with `triggerTurn` is a send that lasts as long as the run it starts. On 18.12.2, the pin this
+ * phase was written against (#2278), RPC mode drained and read no input until
+ * `initializeExtensions` had returned, so a card that reached pi-envoy in that window, as it opens
+ * its agent subject in `session_start`, ran a whole turn inside the drain, and the host answered
+ * no RPC command (`get_state`, `prompt`) until it ended. 18.16.0 passed `drainSends: false`, and
+ * held every RPC frame but an extension dialog's answer and `set_ask_dialog` until its startup
+ * was over. The pinned build (18.18.6-sami.20261117-013345, `rpc-mode.ts` `runRpcMode`) passes
+ * `drainSends: false` too and reads input while its startup runs: it answers `get_state` and every
+ * other command that starts no turn at once, and holds one that starts a turn or changes the
+ * session (`waitsForStartup`, `STARTUP_HELD_TYPES`: `prompt`, `steer`, `follow_up`,
+ * `abort_and_prompt`, the session changes, `compact`, `handoff`, the live types, and every `goal`
+ * op but `get`) until `initializeExtensions` has returned, after `session_start` and startup
+ * discovery, and its goal controller has reconciled (`startupSettled`). The host gives extensions
+ * no event once the drain is over. Without the start-turn mark (below) the phase needs `ctx.mode`
+ * "rpc", the mode that on 18.12.2 read nothing until the drain returned. ACP initialises
+ * extensions with "rpc" too (`acp-agent.ts` ~2732), so the phase holds there as well,
+ * at no cost: ACP's bridge defers a turn the agent starts (`agent-session.ts` ~9301-9303), so the
+ * wake becomes hidden next-turn context there, as an idle card's turn did. Print and JSON mode
+ * prompt right after their own awaits that follow it (`print-mode.ts`, MCP readiness and a tool
+ * refresh, ~250-254; `session.prompt`, ~286), and that prompt throws `AgentBusyError`
+ * (`agent-session.ts` ~7710-7717) if a wake started a turn first. A terminal applies its
+ * plan-mode default and subscribes to the agent only after the drain (`interactive-mode.ts`
+ * ~2458-2498), so a wake's turn could start ahead of both. In those modes, and on a context with
+ * no `mode`, an idle card is an aside with `triggerTurn` from the start unless the start-turn mark
+ * holds.
  *
  * So with mode "rpc", or in any mode while the start-turn mark holds, a card that finds the host
  * idle while the phase holds goes as a `followUp` with no `triggerTurn`: on an idle host that

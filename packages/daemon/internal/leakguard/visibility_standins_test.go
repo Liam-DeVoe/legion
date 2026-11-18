@@ -33,16 +33,15 @@ func stopBound(t *testing.T, err error) int64 {
 const (
 	theRepo   = "invented-org/invented-repo"
 	theURL    = githubOrigin + "/" + theRepo + ".git"
-	theResets = "-c credential.helper= -c http.extraHeader= -c http." + theURL + ".extraHeader= -c http." + theURL + "//.extraHeader= " +
+	theResets = "-c credential.helper= -c core.askPass= -c http.extraHeader= -c http." + theURL + ".extraHeader= -c http." + theURL + "//.extraHeader= " +
 		"-c http.proactiveAuth=none -c http." + theURL + "//.proactiveAuth=none"
 )
 
-// githubAsksForACredential is what git 2.47.3 printed, exit 128, for an anonymous ls-remote of a
-// private repository on github.com, with the guard's askpass and terminal prompt settings: the
-// askpass answers nothing, and the terminal prompt is off. GitHub's 401 for a public repository
-// under unusual traffic makes git print the same.
+// githubAsksForACredential is what git prints, exit 128, for an anonymous ls-remote of a private
+// repository on github.com with no askpass and its terminal prompt off, as the read with no
+// credential runs it: GitHub answers 401, and git has nothing to ask a credential of. GitHub's 401
+// for a public repository under unusual traffic makes git print the same.
 var githubAsksForACredential = []string{
-	"error: unable to read askpass response from '/usr/bin/false'",
 	"fatal: could not read Username for 'https://github.com': terminal prompts disabled",
 }
 
@@ -160,9 +159,9 @@ func graphQLNotFound(record string) string {
 // what its HOME holds, and the directory it runs in, each as key=value and separated by tabs
 // (readCalls).
 func recordsItsCall(record string) string {
-	return `printf 'argv=%s\tprompt=%s\taskpass=%s\tnosystem=%s\tglobal=%s\tcount=%s\tkey0=%s\tparameters=%s\tgitdir=%s\tprotocol=%s\tcainfo=%s\tcapath=%s\tproxy=%s\tlang=%s\thome=%s\tnetrc=%s\thomeholds=%s\tdir=%s\n' ` +
-		`"$*" "${GIT_TERMINAL_PROMPT-unset}" "${GIT_ASKPASS-unset}" "${GIT_CONFIG_NOSYSTEM-unset}" ` +
-		`"${GIT_CONFIG_GLOBAL-unset}" "${GIT_CONFIG_COUNT-unset}" "${GIT_CONFIG_KEY_0-unset}" ` +
+	return `printf 'argv=%s\tprompt=%s\taskpass=%s\tsshaskpass=%s\trequire=%s\tnosystem=%s\tglobal=%s\tcount=%s\tkey0=%s\tparameters=%s\tgitdir=%s\tprotocol=%s\tcainfo=%s\tcapath=%s\tproxy=%s\tlang=%s\thome=%s\tnetrc=%s\thomeholds=%s\tdir=%s\n' ` +
+		`"$*" "${GIT_TERMINAL_PROMPT-unset}" "${GIT_ASKPASS-unset}" "${SSH_ASKPASS-unset}" "${SSH_ASKPASS_REQUIRE-unset}" ` +
+		`"${GIT_CONFIG_NOSYSTEM-unset}" "${GIT_CONFIG_GLOBAL-unset}" "${GIT_CONFIG_COUNT-unset}" "${GIT_CONFIG_KEY_0-unset}" ` +
 		`"${GIT_CONFIG_PARAMETERS-unset}" "${GIT_DIR-unset}" "${GIT_ALLOW_PROTOCOL-unset}" ` +
 		`"${GIT_SSL_CAINFO-unset}" "${GIT_SSL_CAPATH-unset}" "${HTTPS_PROXY-unset}" ` +
 		`"${LC_ALL-unset}" "${HOME-unset}" "${NETRC-unset}" "$(ls -A "${HOME-/nonexistent}" 2>&1 | tr '\n' ' ')" ` +

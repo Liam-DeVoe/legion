@@ -11,6 +11,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"io"
 	"math/big"
 	"net"
@@ -46,13 +47,18 @@ type capturedRequest struct {
 // runs before gh reads the destination repository's visibility first, through a gh of its own,
 // and a visibility it cannot read refuses the call. That read is the first repository read a
 // command makes, so the first `GET /repos/<owner>/<name>` after each take is answered with a
-// visibility, private but for the repository public names, and every later one is refused as
-// before — the command's own read of the same path included, which is what keeps each case's
-// exit status what it was.
+// visibility and every later one is refused as before — the command's own read of the same path
+// included, which is what keeps each case's exit status what it was.
+//
+// It also answers the anonymous `git ls-remote` of one repository, public, as GitHub answers a
+// public repository's: its refs. That is the read with no credential `legion gh` makes of a
+// repository of an owner the bundle does not hold (ghConfigDir), which reads public only for a
+// ref listed; the same read of any other repository gets the 401 every unauthenticated git
+// request gets, as GitHub answers a private repository's.
 type captureProxy struct {
 	url, caFile string
-	// public is the path of the one repository, `/repos/<owner>/<name>`, whose visibility the
-	// proxy answers public.
+	// public is the one repository, `<owner>/<name>`, whose anonymous ls-remote the proxy
+	// answers with its refs.
 	public   string
 	mu       sync.Mutex
 	requests []capturedRequest
@@ -64,7 +70,8 @@ var capturedRESTOwner = regexp.MustCompile(`^/repos/([^/]+)/`)
 var capturedGitOwner = regexp.MustCompile(`^/([^/]+)/[^/]+/info/refs$`)
 var capturedRepository = regexp.MustCompile(`^/repos/[^/]+/[^/]+$`)
 
-// startCaptureProxy starts a captureProxy answering public for the one repository public, `<owner>/<name>`.
+// startCaptureProxy starts a captureProxy answering the anonymous ls-remote of the one repository
+// public, `<owner>/<name>`.
 func startCaptureProxy(t *testing.T, public string) *captureProxy {
 	t.Helper()
 	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -84,7 +91,7 @@ func startCaptureProxy(t *testing.T, public string) *captureProxy {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := &captureProxy{caFile: filepath.Join(t.TempDir(), "ca.pem"), public: "/repos/" + public}
+	p := &captureProxy{caFile: filepath.Join(t.TempDir(), "ca.pem"), public: public}
 	if err := os.WriteFile(p.caFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER}), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -177,20 +184,28 @@ func (p *captureProxy) serve(w http.ResponseWriter, r *http.Request) {
 	p.requests = append(p.requests, request)
 	// The guard's visibility read, answered once per command (captureProxy's doc).
 	guardsRead := p.visibility && r.Method == http.MethodGet && r.Host == "api.github.com" && capturedRepository.MatchString(r.URL.Path)
-	visibility := "private"
 	if guardsRead {
 		p.visibility = false
-		if r.URL.Path == p.public {
-			visibility = "public"
-		}
 	}
 	p.mu.Unlock()
 	if guardsRead {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"visibility":"`+visibility+`"}`)
+		_, _ = io.WriteString(w, `{"visibility":"private"}`)
 		return
 	}
 	switch {
+	case r.Host == "github.com" && request.auth == "" && r.Method == http.MethodGet && r.URL.Path == "/"+p.public+".git/info/refs":
+		// The refs advertisement of a public repository: git's pkt-lines, each its length in four
+		// hex digits and then its payload, a flush after the service line and after the refs.
+		head := strings.Repeat("1", 40)
+		w.Header().Set("Content-Type", "application/x-git-upload-pack-advertisement")
+		for _, payload := range []string{"# service=git-upload-pack\n", "", head + " HEAD\x00agent=capture\n", head + " refs/heads/main\n", ""} {
+			if payload == "" {
+				_, _ = io.WriteString(w, "0000")
+				continue
+			}
+			_, _ = fmt.Fprintf(w, "%04x%s", len(payload)+4, payload)
+		}
 	case r.Host == "github.com" && request.auth == "":
 		w.Header().Set("WWW-Authenticate", `Basic realm="GitHub"`)
 		w.WriteHeader(http.StatusUnauthorized)
@@ -247,19 +262,44 @@ type bufferedConn struct {
 
 func (c *bufferedConn) Read(b []byte) (int, error) { return c.reader.Read(b) }
 
-// realGHForCapture is the real gh the capture test drives: LEGION_GH_PATH when the test runs in a
-// Legion pane or pod, whose `gh` on PATH is the wrapper, else the gh on PATH; a machine with
+// realGHForCapture is the real gh a test that drives one runs: LEGION_GH_PATH when the test runs
+// in a Legion pane or pod, whose `gh` on PATH is the wrapper, else the gh on PATH; a machine with
 // neither skips, as the other gh-backed tests do.
+//
+// It also puts this test binary's own `legion gh` first on the test's PATH
+// (ghWrapperFirstOnPath), because a test that runs `gh` by name must reach the wrapper it is
+// testing: Go resolves a command's name against the PATH of the process making the call and
+// never against the one the test sets on the child's environment (os/exec LookPath, read when
+// exec.Command is built), so on a machine that has a `gh` of its own — a Legion pod's
+// /opt/legion/bin/gh, which runs the image's legion and not this build, among them — that gh
+// would answer the call and the test would measure it. Every caller runs `gh` that way.
 func realGHForCapture(t *testing.T) string {
 	t.Helper()
-	if path := os.Getenv("LEGION_GH_PATH"); path != "" {
-		return path
+	path := os.Getenv("LEGION_GH_PATH")
+	if path == "" {
+		found, err := exec.LookPath("gh")
+		if err != nil {
+			t.Skip("no real gh on this machine: the capture test drives one")
+		}
+		path = found
 	}
-	if path, err := exec.LookPath("gh"); err == nil {
-		return path
+	ghWrapperFirstOnPath(t)
+	return path
+}
+
+// ghWrapperFirstOnPath puts a `gh` that runs this test binary's `legion gh` first on the test's
+// PATH for the rest of the test, as a pane's and a pod's PATH carries the wrapper the runtimes
+// install. The wrapper runs the binary under test, so a call a test makes by the name `gh`
+// reaches the code of this package; t.Setenv puts the PATH back when the test ends, and the
+// directory goes with the test's own temporary one.
+func ghWrapperFirstOnPath(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	wrapper := "#!/bin/sh\n" + testMainEnv + "=1 exec '" + os.Args[0] + "' gh \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "gh"), []byte(wrapper), 0o700); err != nil {
+		t.Fatal(err)
 	}
-	t.Skip("no real gh on this machine: the capture test drives one")
-	return ""
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
 // Through the real gh and the real git, against a capture proxy standing in for GitHub: every
@@ -269,8 +309,8 @@ func realGHForCapture(t *testing.T) string {
 // explicit endpoint, -R under GH_REPO, --help=false, a name in --repos under --org, -R after an
 // optional-value shorthand, every argument of a plural slot, a placeholder gh fills from GH_REPO,
 // the working directory's own repository as gh reads its remotes whatever their scheme — the issue
-// owner's write token only for the issue owner's repository and for a command naming none run
-// where only that owner's remotes are, another owner's read-only token for that owner's, and the
+// owner's token only for the issue owner's repository and for a command naming none run
+// where only that owner's remotes are, each other owner's own token for that owner's, and the
 // git gh runs itself asking the wrapper for the owner in its path. A command the wrapper cannot
 // read for certain (a gh alias or an extension, run, as `gh help`'s target or after --version, a
 // command gh's own help does not list, `gh extension exec`, a search qualifier it cannot read,
@@ -278,10 +318,12 @@ func realGHForCapture(t *testing.T) string {
 // owners — an option or another repository naming one owner while gh takes the command's own from
 // the working directory or GH_REPO, or a workspace whose remotes name two — and any command but a
 // read naming an owner the bundle does not hold are refused with exit 2 and send nothing. A read
-// of one such owner's repository first asks GitHub its visibility, with the issue owner's token:
-// answered private, it is refused after that one request; answered public, it carries the issue
-// owner's token on every request, and a write naming that same repository still sends nothing. No
-// alias or extension runs, none is installed, and gh's own help and version answer.
+// of one such owner's repository first asks GitHub whether anyone may read it, with an anonymous
+// `git ls-remote` that carries no credential at all: refused, as GitHub refuses a private
+// repository's, it is refused after that one request; answered with the repository's refs, it
+// carries the issue owner's token on every request of its own, and a write naming that same
+// repository still sends nothing. No alias or extension runs, none is installed, and gh's own
+// help and version answer.
 func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 	gh := realGHForCapture(t)
 	git, err := exec.LookPath("git")
@@ -291,7 +333,7 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 	proxy := startCaptureProxy(t, "octocat/spoon-knife")
 	root := filepath.Join(t.TempDir(), "gh")
 	expires := time.Now().Add(time.Hour)
-	tokens := map[string]string{"acme": "ghs_acme_write", "sjawhar": "ghs_sjawhar_read"}
+	tokens := map[string]string{"acme": "ghs_acme_write", "sjawhar": "ghs_sjawhar_write"}
 	if _, err := ghconfig.WriteBundle(root, ghconfig.Bundle{Default: "acme", Dirs: map[string]ghconfig.Rendered{
 		"acme":    ghconfig.Render(tokens["acme"], "implement", expires),
 		"sjawhar": ghconfig.Render(tokens["sjawhar"], "implement", expires),
@@ -400,11 +442,14 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		t.Fatal(err)
 	}
 	ghEnv := []string{testMainEnv + "=1"}
-	// check runs `legion gh args…` in dir: refused with exit 2 and refuse's text, sending nothing,
-	// or sending GitHub alone owner's token on every request. A refusal of an option a gh version
-	// lacks names both texts, joined by "||", either of which passes. A refusal naming owner is a
-	// read of a repository of an owner the bundle does not hold, refused after its one request,
-	// the read of that repository's visibility, which carries owner's token.
+	// anonymousRead, as a refused row's owner, is a read of a repository of an owner the bundle
+	// does not hold, refused after its one request: the anonymous git ls-remote of that
+	// repository, which carries no credential.
+	const anonymousRead = "anonymous git ls-remote"
+	// check runs `legion gh args…` in dir: refused with exit 2 and refuse's text, sending nothing
+	// or, where owner is anonymousRead, the one anonymous ls-remote; or sending GitHub alone
+	// owner's token on every request. A refusal of an option a gh version lacks names both texts,
+	// joined by "||", either of which passes.
 	check := func(dir string, env, args []string, owner, refuse string) {
 		t.Helper()
 		what := "legion gh " + strings.Join(args, " ")
@@ -417,8 +462,8 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 			switch {
 			case owner == "" && len(sent) != 0:
 				t.Errorf("%s sent %+v, want nothing", what, sent)
-			case owner != "" && (len(sent) != 1 || sent[0].host != "api.github.com" || !capturedRepository.MatchString(sent[0].path) || sent[0].auth != "token "+tokens[owner]):
-				t.Errorf("%s sent %+v, want only the read of its repository's visibility, with %s's %q", what, sent, owner, "token "+tokens[owner])
+			case owner == anonymousRead && (len(sent) != 1 || sent[0].host != "github.com" || !capturedGitOwner.MatchString(sent[0].path) || sent[0].auth != ""):
+				t.Errorf("%s sent %+v, want only the anonymous git ls-remote of its repository, with no credential", what, sent)
 			}
 			return
 		}
@@ -431,7 +476,7 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		env    []string
 		args   []string
 		owner  string // the owner whose token every request carries; "" when refused with no request
-		refuse string // the refusal's text, exit 2 and no request but owner's visibility read
+		refuse string // the refusal's text, exit 2 and no request but an anonymousRead
 	}{
 		// The first re-review's reproductions.
 		{nil, []string{"-R", "sjawhar/legion", "pr", "view", "1", "--json", "title"}, "sjawhar", ""},
@@ -491,35 +536,40 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		{nil, []string{"pr", "view", "--json", "title", "https://github.com/sjawhar/legion/pull/2"}, "sjawhar", ""},
 		{nil, []string{"api", "repos/acme/widgets"}, "acme", ""},
 		{nil, []string{"api", "graphql", "-f", "query={viewer{login}}"}, "acme", ""},
-		{nil, []string{"api", "repos/other/thing"}, "acme", `"other" is not an owner of this project`},
+		{nil, []string{"api", "repos/other/thing"}, anonymousRead, `the role's GitHub App is not installed on "other"`},
 		{nil, []string{"pr", "view", "1", "-R", "sjawhar/legion", "--bogus"}, "", `"--bogus" is no option`},
 	} {
 		check(home, tc.env, tc.args, tc.owner, tc.refuse)
 	}
 
-	// A read of octocat/spoon-knife, which the proxy answers public, of an owner the bundle does
-	// not hold, carries acme's token, GH_CONFIG_DIR's, on every request it sends: the visibility
-	// read and the command's own. A write naming it sends nothing.
+	// A read of octocat/spoon-knife, whose anonymous ls-remote the proxy answers with its refs, of
+	// an owner the bundle does not hold, sends that ls-remote first, with no credential, and then
+	// carries acme's token, GH_CONFIG_DIR's, on every request of its own. A write naming it sends
+	// nothing.
 	for _, args := range [][]string{
 		{"repo", "view", "octocat/spoon-knife", "--json", "nameWithOwner"},
 		{"api", "repos/octocat/spoon-knife/pulls/1", "--jq", ".state"},
 	} {
 		what := "legion gh " + strings.Join(args, " ")
 		code, out := runIn(home, ghEnv, os.Args[0], append([]string{"gh"}, args...)...)
-		if code == 0 || strings.Contains(out, "is not an owner of this project") {
+		if code == 0 || strings.Contains(out, "is not installed on") {
 			t.Errorf("%s = exit %d, %q; want it run, and the capture proxy's refusal", what, code, out)
 		}
 		sent := proxy.take()
-		if len(sent) == 0 {
-			t.Errorf("%s sent GitHub nothing", what)
+		if len(sent) < 2 {
+			t.Errorf("%s sent %+v, want the anonymous ls-remote of the repository and then the command's own requests", what, sent)
+			continue
 		}
-		for _, r := range sent {
+		if r := sent[0]; r.host != "github.com" || r.path != "/octocat/spoon-knife.git/info/refs" || r.auth != "" {
+			t.Errorf("%s sent first %s%s with %q, want the anonymous ls-remote of github.com/octocat/spoon-knife.git with no credential", what, r.host, r.path, r.auth)
+		}
+		for _, r := range sent[1:] {
 			if r.host != "api.github.com" || r.auth != "token "+tokens["acme"] {
 				t.Errorf("%s sent %s%s with %q, want api.github.com with acme's %q", what, r.host, r.path, r.auth, "token "+tokens["acme"])
 			}
 		}
 	}
-	check(home, nil, []string{"pr", "comment", "1", "-R", "octocat/spoon-knife", "--body", "x"}, "", `"octocat" is not an owner of this project`)
+	check(home, nil, []string{"pr", "comment", "1", "-R", "octocat/spoon-knife", "--body", "x"}, "", `the role's GitHub App is not installed on "octocat"`)
 
 	// A command naming no repository, or naming another while gh takes the command's own from the
 	// working directory, acts on the repository gh reads from the working directory's git remotes,
@@ -557,7 +607,7 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		{otherClone, nil, []string{"repo", "view", "--json", "nameWithOwner"}, "sjawhar", ""},
 		{otherClone, nil, []string{"api", "repos/{owner}/{repo}"}, "sjawhar", ""},
 		{otherClone, nil, []string{"-R", "acme/widgets", "pr", "view", "1", "--json", "title"}, "acme", ""},
-		{outsideClone, nil, []string{"pr", "list", "--json", "title"}, "acme", `"octocat" is not an owner of this project`},
+		{outsideClone, nil, []string{"pr", "list", "--json", "title"}, anonymousRead, `the role's GitHub App is not installed on "octocat"`},
 		{upstream, nil, []string{"pr", "list", "--json", "title"}, "", `remote "upstream" (git@github.com:sjawhar/legion.git)`},
 		{setDefault, nil, []string{"pr", "list", "--json", "title"}, "", "remote.origin.gh-resolved sjawhar/legion"},
 		// Round 4's: remote spellings gh reads as github.com's (deep 2, quality A, final B1).
@@ -572,7 +622,7 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		{otherClone, nil, []string{"issue", "close", "3", "--duplicate-of", "https://github.com/acme/widgets/issues/1"}, "", "more than one owner||is no option"},
 		{otherClone, nil, []string{"repo", "sync", "--source", "acme/widgets"}, "", "more than one owner"},
 		{otherClone, nil, []string{"issue", "develop", "3", "--branch-repo", "acme/widgets", "--name", "x"}, "", "more than one owner"},
-		{outsideClone, nil, []string{"pr", "comment", "1", "--body", "https://github.com/sjawhar/legion/pull/2"}, "", `"octocat" is not an owner of this project`},
+		{outsideClone, nil, []string{"pr", "comment", "1", "--body", "https://github.com/sjawhar/legion/pull/2"}, "", `the role's GitHub App is not installed on "octocat"`},
 		{home, []string{"GH_REPO=acme/widgets"}, []string{"issue", "close", "3", "--duplicate-of", "https://github.com/sjawhar/legion/issues/5"}, "", "more than one owner||is no option"},
 		{issueWorkspace, []string{"GH_REPO=sjawhar/legion"}, []string{"project", "link", "1", "--owner", "acme"}, "", "more than one owner"},
 		// Round 5's: a passthrough leaf's repository after `--` (deep 1); repo set-default's
@@ -582,7 +632,7 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		{issueWorkspace, nil, []string{"repo", "fork", "--org", "acme", "--", "sjawhar/legion"}, "", "more than one owner"},
 		{issueWorkspace, nil, []string{"repo", "clone", "--", "sjawhar/legion"}, "sjawhar", ""},
 		{issueWorkspace, nil, []string{"repo", "set-default", "sjawhar/legion"}, "", "more than one owner"},
-		{outsideClone, nil, []string{"pr", "comment", "sjawhar/legion#2", "--body", "hi"}, "", `"octocat" is not an owner of this project`},
+		{outsideClone, nil, []string{"pr", "comment", "sjawhar/legion#2", "--body", "hi"}, "", `the role's GitHub App is not installed on "octocat"`},
 		{issueWorkspace, nil, []string{"pr", "view", "sjawhar/legion#2", "--json", "title"}, "acme", ""},
 		{issueWorkspace, nil, []string{"pr", "view", "https://github.com/sjawhar/legion/issues/5", "--json", "title"}, "", "more than one owner"},
 		{otherClone, nil, []string{"pr", "view", "https://github.com/acme/widgets/tree/x", "--json", "title"}, "", "more than one owner"},

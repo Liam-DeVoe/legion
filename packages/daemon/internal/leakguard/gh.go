@@ -27,6 +27,13 @@ type GhRequest struct {
 	// Repo is the destination repository, as "owner/name". Empty where the caller knows no
 	// destination, which the guard reads as public (Guard.scanThrough).
 	Repo string
+	// Public is a Repo its caller has already read public with no credential
+	// (Guard.VisibilityWithoutCredential): the guard reads no visibility of it and goes on as for
+	// any public destination, so a call it guards whole gets the private-name pass. A caller that
+	// sets it wrongly only makes the guard scan what it would have skipped. `legion gh` sets it
+	// for a read of a repository of an owner its bundle holds no gh directory for, whose REST and
+	// GraphQL visibility reads it refuses (cmd/legion's ghConfigDir).
+	Public bool
 	// Files are the files this call would send to GitHub as content, read by a caller that
 	// parses the argv as gh does. `legion gh` is that caller: it reads the command's own help
 	// for every option's arity before it reaches the guard (cmd/legion's ghTargetOf), so it
@@ -143,9 +150,11 @@ func (g *Guard) ghCall(ctx context.Context, req GhRequest) ([]byte, bool, error)
 		// proven against, the check may read the call as a write, so the guard goes on whole.
 		return buffered, true, nil
 	}
-	public, err := g.scanThrough(ctx, whatGhCall, req.Repo)
-	if err != nil {
-		return buffered, false, err
+	public := req.Public
+	if !public {
+		if public, err = g.scanThrough(ctx, whatGhCall, req.Repo); err != nil {
+			return buffered, false, err
+		}
 	}
 	if !public {
 		return buffered, false, nil

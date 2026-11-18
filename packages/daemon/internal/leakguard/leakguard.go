@@ -68,7 +68,8 @@ type Options struct {
 	// reads, and the git commands a push's records and the refs of its destination are read with.
 	// Nil means this process's own (os.Environ()). Every child keeps all of it but the read with
 	// no credential (Guard.lsRemote), which keeps only the names lsRemoteInherits allows. The guard
-	// adds to it the names that make a credential prompt fail closed (promptsNothing), and each
+	// adds to it the names that make a credential prompt fail closed (promptsNothing), of which
+	// the read with no credential takes the terminal prompt's alone and no askpass, and each
 	// child's own names on top of those.
 	Env []string
 }
@@ -102,24 +103,29 @@ func (g *Guard) base() []string {
 	return os.Environ()
 }
 
-// env is the environment a child of this guard starts from: base, the names that make a
-// credential prompt fail closed, and extra on top, which wins over both because exec takes the
-// last value of a name. inherit, where it is not nil, keeps only the names of base it answers
-// true for (child.inherit). The base is the caller's rather than read here, so that a child costs
-// one copy of the process environment and not two (Guard.run).
-func (g *Guard) env(base []string, inherit func(name string) bool, extra ...string) []string {
-	out := make([]string, 0, len(base)+4+len(extra))
-	if inherit == nil {
+// env is the environment child c starts from: base, the names that make a credential prompt fail
+// closed, and c's own names on top, which win over both because exec takes the last value of a
+// name. c.inherit, where it is not nil, keeps only the names of base it answers true for, and
+// c.noAskpass takes of the prompt names the terminal prompt's alone. The base is the caller's
+// rather than read here, so that a child costs one copy of the process environment and not two
+// (Guard.run).
+func (g *Guard) env(base []string, c child) []string {
+	out := make([]string, 0, len(base)+4+len(c.env))
+	if c.inherit == nil {
 		out = append(out, base...)
 	} else {
 		for _, entry := range base {
-			if name, _, _ := strings.Cut(entry, "="); inherit(name) {
+			if name, _, _ := strings.Cut(entry, "="); c.inherit(name) {
 				out = append(out, entry)
 			}
 		}
 	}
-	out = append(out, promptsNothing(g.noAnswer)...)
-	return append(out, extra...)
+	if c.noAskpass {
+		out = append(out, noTerminalPrompt)
+	} else {
+		out = append(out, promptsNothing(g.noAnswer)...)
+	}
+	return append(out, c.env...)
 }
 
 // Record is one piece of a write the rules read: Label is what the report calls it, and Text is

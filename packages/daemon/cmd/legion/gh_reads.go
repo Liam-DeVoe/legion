@@ -227,10 +227,11 @@ const knivesFactsTail = " } } fragment facts on PullRequest { number state revie
 
 // knivesAuditRead is the name of the repository a `gh api graphql` call reads when it is one of
 // those two reads exactly as knives makes it, `-f owner=<owner> -f name=<name> -f query=<query>`
-// with no other option taking a value, lowercased as the bundle names a repository's directory
+// with no other option taking a value, keyed as every selector keys a repository's name
 // (ghconfig.RepositoryName), and "" for any other GraphQL call, which may write or read whatever
 // its query names. owner is the call's one owner, the one its owner variable names
-// (selectors.fromAPI), so the call reads owner's repository of that name (ghTarget).
+// (selectors.fromAPI), so the call reads owner's repository of that name, which ghTargetOf routes
+// it by.
 func knivesAuditRead(parsed ghArgs, owner string) string {
 	fields := parsed.values["raw-field"]
 	if len(parsed.values) != 1 || len(fields) != 3 {

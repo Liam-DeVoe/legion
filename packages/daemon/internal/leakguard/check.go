@@ -104,18 +104,23 @@ func found(path, source string) (string, error) {
 // promptsNothing is the part of a child's environment that makes a credential prompt fail closed.
 // The shared check runs git against the destination remote, and a git that cannot find a
 // credential asks for one: on a pod there is no terminal to ask, and the check would stall until
-// its bound ran out instead of answering. GIT_TERMINAL_PROMPT=0 refuses git's own prompt, and the
-// two askpass programs point at one that exits without an answer, which both git and ssh read as
-// "no credential". SSH_ASKPASS_REQUIRE=force is what makes ssh use its askpass where it has a
-// terminal of its own.
+// its bound ran out instead of answering. GIT_TERMINAL_PROMPT=0 refuses git's own prompt
+// (noTerminalPrompt), and the two askpass programs point at one that exits without an answer,
+// which both git and ssh read as "no credential". SSH_ASKPASS_REQUIRE=force is what makes ssh use
+// its askpass where it has a terminal of its own. The read with no credential takes the first of
+// these alone and runs with no askpass at all (child.noAskpass).
 func promptsNothing(noAnswer string) []string {
 	return []string{
-		"GIT_TERMINAL_PROMPT=0",
+		noTerminalPrompt,
 		"GIT_ASKPASS=" + noAnswer,
 		"SSH_ASKPASS=" + noAnswer,
 		"SSH_ASKPASS_REQUIRE=force",
 	}
 }
+
+// noTerminalPrompt refuses git's own terminal prompt for a credential: git then dies with "could
+// not read Username" where nothing else answered it.
+const noTerminalPrompt = "GIT_TERMINAL_PROMPT=0"
 
 // noAnswer is the askpass program a child is pointed at: `false`, resolved on the base
 // environment's PATH, and /bin/false where that PATH holds none. Either way it is a program that
@@ -143,6 +148,12 @@ type child struct {
 	// the guard's own names and env go on top either way. Nil keeps the whole base, which is
 	// what every child keeps but the visibility read made with no credential (Guard.lsRemote).
 	inherit func(name string) bool
+	// noAskpass, where it is true, leaves the child no askpass program at all: of the prompt
+	// settings (promptsNothing) it gets noTerminalPrompt alone, so GIT_ASKPASS, SSH_ASKPASS and
+	// SSH_ASKPASS_REQUIRE are unset unless the base environment's names that inherit keeps set
+	// them. The read with no credential runs so (Guard.lsRemote), with an inherit that keeps none
+	// of them (lsRemoteInherits).
+	noAskpass bool
 	// stdin is the child's standard input, nil for none.
 	stdin io.Reader
 	// files are the child's descriptors from 3 up, as exec.Cmd.ExtraFiles takes them.
@@ -182,7 +193,7 @@ func (g *Guard) run(ctx context.Context, c child) (int, string, error) {
 	base := g.base()
 	cmd := exec.CommandContext(ctx, program(base, c.argv[0]), c.argv[1:]...)
 	cmd.Dir = c.dir
-	cmd.Env = g.env(base, c.inherit, c.env...)
+	cmd.Env = g.env(base, c)
 	cmd.Stdin = c.stdin
 	cmd.ExtraFiles = c.files
 	// procgroup before any other SysProcAttr field, as its doc requires: it replaces the whole

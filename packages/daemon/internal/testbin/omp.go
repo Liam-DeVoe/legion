@@ -119,7 +119,8 @@ func SessionFiles(t *testing.T, sessions string) []string {
 	return files
 }
 
-// ModelChanges returns the models in the session file's model-change records, in file order.
+// ModelChanges are the models a session file's model-change records name, in the order the
+// session wrote them.
 func ModelChanges(t *testing.T, sessionFile string) []string {
 	t.Helper()
 	contents, err := os.ReadFile(sessionFile)

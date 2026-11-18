@@ -26,9 +26,16 @@ import (
 // out is the control, and reports the saved model instead.
 //
 // **The control runs first, and it must.** A resume carrying a role alias writes a
-// `model_change` of its own naming what the role resolved to (upstream oh-my-pi #18534), so a
-// control run after the flagged arm would read `operator/configured` back. The resumes leave the
-// session's earlier bytes alone and add no second file.
+// `model_change` of its own into the session it resumed, naming what the role resolved to
+// (upstream oh-my-pi #18534, in the fork from 18.18.6; through 18.16.0 it wrote nothing). So the
+// flagged arm leaves the session pinned to `operator/configured`, and a control run after it
+// would read that back and measure nothing but the arm before it. Run before the flagged arm,
+// the control reads the pin the saving turn wrote, which is the only thing it was ever asking
+// about, and it reads the same on either build.
+//
+// The resumes leave the session's earlier bytes alone and add no second file. That is worth
+// checking but explains nothing about role resolution: the flag rides every launch because the
+// operator's current role is resolved per launch (TestInnerCommand).
 func TestTheResumedPaneRunsTheConfiguredModel(t *testing.T) {
 	omp := testbin.OMP(t)
 	dir := t.TempDir()
