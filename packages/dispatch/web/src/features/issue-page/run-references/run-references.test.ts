@@ -29,7 +29,7 @@ function treeNode(
 ): TreeAnswerNode {
   return {
     attributes: {},
-    author: { id: "alice", kind: "user" },
+    author: [{ id: "alice", kind: "user" }],
     made_at: "2026-11-16T08:00:00Z",
     parent: KEY,
     rank: null,

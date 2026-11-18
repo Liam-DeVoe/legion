@@ -916,7 +916,7 @@ test("Referenced by counts the reader's runs once both reads answer, and is a co
         nodes: [
           {
             attributes: {},
-            author: { id: "alice", kind: "user" },
+            author: [{ id: "alice", kind: "user" }],
             id: run,
             made_at: "2026-11-17T09:00:00Z",
             parent: issue.key,
@@ -1014,7 +1014,7 @@ test("Referenced by counts the reader's runs once both reads answer, and is a co
         nodes: [
           {
             attributes: {},
-            author: { id: "alice", kind: "user" },
+            author: [{ id: "alice", kind: "user" }],
             id: run,
             made_at: "2026-11-17T09:00:00Z",
             parent: issue.key,
@@ -1111,7 +1111,7 @@ test("the tree read's Retry gives the focus back to its line when the read fails
         nodes: [
           {
             attributes: {},
-            author: { id: "alice", kind: "user" },
+            author: [{ id: "alice", kind: "user" }],
             id: run,
             made_at: "2026-11-17T09:00:00Z",
             parent: issue.key,
