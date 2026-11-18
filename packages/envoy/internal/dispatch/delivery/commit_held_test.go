@@ -1,10 +1,6 @@
 package delivery
 
 import (
-	"crypto/rand"
-	"crypto/rsa"
-	"crypto/x509"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"net/http"
@@ -13,8 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/dispatch/auth"
-	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/githubtest"
 )
@@ -74,19 +68,10 @@ func TestAStoredNameGitHubDoesNotAllowMakesNoGitHubRequest(t *testing.T) {
 	const sha = "6767676767676767676767676767676767676767"
 	pool, ctx := deliveryTestPool(t)
 	var requests atomic.Int32
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatalf("generate fixture key: %v", err)
-	}
-	pemText := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
-	base := githubtest.Server(t, githubtest.Spec{
+	client := newAppClient(t, githubtest.Spec{
 		Record: func(*http.Request) { requests.Add(1) },
 		Handle: func(w http.ResponseWriter, r *http.Request) { githubtest.Unexpected(t, w, r) },
 	})
-	client, err := githubapp.New(&auth.AppConfig{ClientID: "Iv1.testclient", PEM: pemText}, base)
-	if err != nil || client == nil {
-		t.Fatalf("new client: %v, %v", client, err)
-	}
 
 	refused := func(read, name string, err error) {
 		t.Helper()

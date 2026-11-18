@@ -133,19 +133,17 @@ function Basis({ basis }: { basis: CheckBasis }): ReactNode {
   );
 }
 
-/** Why one result's commit could not be placed, naming `repo`, the repository the server says the
- *  answer is about, where it names one: a result whose commit is taken to be of a repository the
- *  issue links a pull request in is decided by that repository, and "the repository" would read
- *  as the issue's own. */
-function standsReasonWords(
-  reason: NonNullable<ResultCommitStands["reason"]>,
-  repo: string | undefined
-): string {
-  if (repo === undefined) return REASON_WORDS[reason];
-  return reason === "repository_unreadable"
-    ? `Dispatch cannot read ${repo}.`
-    : `A read Dispatch made of ${repo} did not answer.`;
-}
+/** Why one result's commit could not be placed where the server names `repo`, the repository the
+ *  answer is about: a result whose commit is taken to be of a repository the issue links a pull
+ *  request in is decided by that repository, and "the repository" would read as the issue's own.
+ *  Keyed by the reason, so a reason the server adds is a type error until it has words here. */
+const REPO_REASON_WORDS: Record<
+  NonNullable<ResultCommitStands["reason"]>,
+  (repo: string) => string
+> = {
+  read_failed: (repo) => `A read Dispatch made of ${repo} did not answer.`,
+  repository_unreadable: (repo) => `Dispatch cannot read ${repo}.`,
+};
 
 /** The first fact of each result: where its commit stands against what its check compared
  *  with. At one of those commits, naming which; at another commit; or not known, with the
@@ -171,7 +169,11 @@ function CommitStands({ stands }: { stands: ResultCommitStands | undefined }): R
   if (stands.reason === undefined) {
     return stands.repo === undefined ? "Not known." : `Not known in ${stands.repo}.`;
   }
-  return `Not known. ${standsReasonWords(stands.reason, stands.repo)}`;
+  const reason =
+    stands.repo === undefined
+      ? REASON_WORDS[stands.reason]
+      : REPO_REASON_WORDS[stands.reason](stands.repo);
+  return `Not known. ${reason}`;
 }
 
 /** The second fact of each result: whether the check's words moved after the result was

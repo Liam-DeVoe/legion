@@ -148,7 +148,7 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 	// reads the links of the check's issue too: the results read resolves check_issue_key, and a
 	// refusal keyed on the recording issue would disagree with the read about which repository
 	// the commit belongs to. It is resolved through the one helper the results read resolves
-	// through (results_comparison.go, server.checkIssueRepository), under the canonical name the
+	// through (issue_repo.go, server.checkIssueRepository), under the canonical name the
 	// repository is called today: a refusal asking under a name the repository was renamed away
 	// from reads the 404 GitHub answers for that name's installation, where the read reads the
 	// commit — so it would store every result of such an issue.

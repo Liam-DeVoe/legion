@@ -10,7 +10,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // results_comparison.go says what each check compares its results with, where each result's
@@ -896,67 +895,6 @@ func (c *comparisonReader) headStoredAt(ctx context.Context, repo, sha string) b
 	}
 	c.storedHeads[memo] = stored
 	return stored
-}
-
-// checkIssueRepository is the repository a check's issue resolves to: its own, the nearest one
-// above it, or its project's default (refs.IssueRepository), under the canonical name that
-// repository is called today (refs.CanonicalRepo). It answers three states, and every caller
-// says which it has: a repository; nil answered, the issue that resolves to none; and nil
-// unanswered, either read having failed, where Dispatch cannot say which of the two the issue
-// is. q is the pool or transaction the two reads are made on.
-//
-// The three were two before dispatch://INFRA-1522, one nil standing for both nothings, and
-// every caller of this read had to guess which of them it held. They part here, where the
-// reads are made and the error is in hand, because the guess has one right answer and it is
-// not the same one at each call site: an issue that resolves to no repository is a fact about
-// the work, and no pass of such a check stands, while a read of Dispatch's own that did not
-// answer is model.ReasonReadFailed, and a database hiccup must not make a reviewer refuse an
-// approval.
-//
-// The canonical name is taken here, before anything asks GitHub, because everything downstream
-// takes this answer: the results read's default branch and onBranch, and the record route's
-// refusal of a commit the repository does not hold and its read-through of the pull requests
-// GitHub names for that commit (results_linked.go's refuseUnknownCommit, results.go's
-// readThroughPullRequests).
-// An issue recorded under a name that was renamed away would otherwise have the App asked
-// about that name, which GitHub answers 404 for, and every result of that issue would read
-// unknown. A repository with no rename is its own canonical name, so this costs one read and
-// changes no answer for it.
-//
-// Both routes resolve through this one function: two hand-kept copies of this resolve are how
-// a refusal and a result's answer come to name different repositories.
-//
-// It answers a repository whether or not Dispatch can read it — the deployment holding no App
-// key, the App having lost the repository — because the results read needs it for an answer
-// that asks GitHub nothing: onBranch answers from the branch_commits row Dispatch already
-// holds while that row stands, with no call at all (delivery.Branches.CommitOnBranch), and a
-// nil here would turn every such answer unknown. branchBases walks the branches for that row
-// whenever Dispatch can name one with no read of GitHub, readable just now or not: an
-// `after_merge` check whose issue merged asks the merge's own branch first, and every check
-// compared with a default branch asks the name this process has already resolved once, which
-// delivery keeps for the purpose. A repository no read of this process ever named a default
-// branch for has that one name fewer to ask the stored answer about, since a row is keyed by
-// a branch: an `after_merge` check whose issue merged asks the branch of the merge there all
-// the same, and a check with no branch left to name is the one that compares nothing. The
-// record route makes the no-App-key check at its own call site, where every use of the answer
-// is a GitHub round trip, and takes the repository alone: a resolve that did not answer stores
-// the result there exactly as an issue with no repository does, since neither is GitHub's
-// proof that the repository holds no such commit (results_linked.go, refuseUnknownCommit).
-func (s *server) checkIssueRepository(ctx context.Context, q refs.Queryer, issueKey string) (*string, bool) {
-	repo, err := refs.IssueRepository(ctx, q, issueKey)
-	if err != nil {
-		slog.Warn("dispatch: resolve the repository of a check's issue", "issue", issueKey, "error", err)
-		return nil, false
-	}
-	if repo == nil {
-		return nil, true
-	}
-	canonical, err := refs.CanonicalRepo(ctx, q, *repo)
-	if err != nil {
-		slog.Warn("dispatch: canonical name of a check's repository", "issue", issueKey, "repo", *repo, "error", err)
-		return nil, false
-	}
-	return &canonical, true
 }
 
 // repositoryOf is checkIssueRepository read once per read of the results: the repository the

@@ -1181,7 +1181,7 @@ func RepositoryUnreadable(err error) bool {
 // canonicalised before anything is asked of GitHub or written (refs.CanonicalRepo), and no row
 // is ever written under a name a repository was renamed away from. The read-time caller has
 // canonicalised that name already, and so has the record-time caller, which resolves through
-// the same helper (api/results_comparison.go, server.checkIssueRepository); the rule reaches the
+// the same helper (api/issue_repo.go, server.checkIssueRepository); the rule reaches the
 // canonical name in one step, so this read changes nothing for either. It is here because this
 // function's key is its argument's, not its caller's, and a caller that hands over a name it
 // has not canonicalised must still write no row under a name a repository was renamed away

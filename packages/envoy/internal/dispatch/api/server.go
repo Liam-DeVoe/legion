@@ -955,8 +955,9 @@ type apiError struct {
 	code    string
 	message string
 	// retryAfter is the Retry-After the answer carries, in whole seconds, and 0 for an answer
-	// that carries none. Only a refusal that knows when the caller may come back sets it
-	// (brokerTokenActor's 429); writeHandlerError writes the header.
+	// that carries none. Only a refusal that knows when the caller may come back sets it:
+	// brokerTokenActor's 429, and linkedReadRefusal's 502 for a linked repository's read GitHub
+	// rate-limited with a wait. writeHandlerError writes the header.
 	retryAfter int
 	// scope is the OAuth scope a missing-scope refusal names, and is empty for every other
 	// refusal. Only missingScopeError sets it; writeHandlerError writes the challenge header

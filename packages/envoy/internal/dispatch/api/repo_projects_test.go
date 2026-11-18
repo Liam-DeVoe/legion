@@ -439,6 +439,10 @@ func TestRepoProjectRenamedToIsSetKeptClearedAndHeldToOneStep(t *testing.T) {
 		{"a name of ..", "oldco/gadgets", map[string]any{"project": "CORE", "renamed_to": "acme/.."}},
 		{"a name of .", "oldco/gadgets", map[string]any{"project": "CORE", "renamed_to": "acme/."}},
 		{"a name that is .. once .git is trimmed", "oldco/gadgets", map[string]any{"project": "CORE", "renamed_to": "acme/...git"}},
+		// The pair is held to the rule as it is stored: canonicalising trims one `.git`, and
+		// every later read trims another.
+		{"a name that is empty once .git is trimmed twice", "oldco/gadgets", map[string]any{"project": "CORE", "renamed_to": "acme/.git.git"}},
+		{"a name that is .. once .git is trimmed twice", "oldco/gadgets", map[string]any{"project": "CORE", "renamed_to": "acme/...git.git"}},
 		{"an owner of ..", "oldco/gadgets", map[string]any{"project": "CORE", "renamed_to": "../gadgets"}},
 		{"a name holding a character GitHub does not allow", "oldco/gadgets", map[string]any{"project": "CORE", "renamed_to": "acme/gad?gets"}},
 	} {
@@ -481,6 +485,10 @@ func TestRepoProjectMappingPathIsHeldToTheNamesGitHubAllows(t *testing.T) {
 	}{
 		{"a name that is .. once .git is trimmed", "acme/...git"},
 		{"a name that is empty once .git is trimmed", "acme/.git"},
+		// The path is held to the rule as it is stored: canonicalising trims one `.git`, and
+		// every later read trims another.
+		{"a name that is empty once .git is trimmed twice", "acme/.git.git"},
+		{"a name that is .. once .git is trimmed twice", "acme/...git.git"},
 	} {
 		response := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/"+refused.path,
 			map[string]any{"project": "CORE", "default": true}, "alice")
@@ -493,7 +501,7 @@ func TestRepoProjectMappingPathIsHeldToTheNamesGitHubAllows(t *testing.T) {
 		t.Fatalf("list the mappings: status=%d body=%s", listed.Code, listed.Body.String())
 	}
 	for _, mapping := range decodeBody[[]repoProjectResponse](t, listed) {
-		if mapping.Repo == "acme/.." || mapping.Repo == "acme/" {
+		if mapping.Repo == "acme/.." || mapping.Repo == "acme/" || mapping.Repo == "acme/.git" || mapping.Repo == "acme/...git" {
 			t.Fatalf("a refused write stored a mapping of %q", mapping.Repo)
 		}
 	}

@@ -17,7 +17,7 @@ import (
 // sites must come to the same answer or the rename is only half known: delivery's attributionHeld
 // puts both the issue's resolved repository and the pull request's own through it, the results
 // route canonicalises the repository of a check's issue before it asks GitHub anything, in the
-// one helper its results read and its record route share (api/results_comparison.go,
+// one helper its results read and its record route share (api/issue_repo.go,
 // server.checkIssueRepository), the three writers of a pull_request_heads row key the row by it
 // (delivery/pull_request_heads.go: RefreshPullRequestHead, ReadThroughCommitPulls and
 // Intake.recordPullRequestHead), the settings route reads it to decide whether a rename's
@@ -85,20 +85,20 @@ func CanonicalRepo(ctx context.Context, q Queryer, repo string) (string, error) 
 // rule, so the rule is written out here with its source named, once for every package of the
 // server that reads a repository name: the API routes that take one (api's parseSourceRepo and
 // githubCouldHoldRepo), and the three that put a stored name's halves into GitHub paths
-// (delivery's, cireconcile's and architecture's splitRepo). An owner is a letter or digit and
-// then up to 38 letters, digits, hyphens and underscores, which is looser than GitHub's sign-up
-// form on purpose: that form's rule, single hyphens with none leading or trailing, binds new
-// accounts alone, and GitHub still serves a login with a doubled hyphen (`hello--world`, the
-// organisation `foo--bar`), one ending in a hyphen (`ArtOfCode-`) and a managed user's
-// `_<shortcode>` (`mona-cat_octo`), whose repositories an issue has to be able to name. A
-// repository's own name is letters, digits, `.`, `-` and `_`. Both cases are written out because
-// the grammar is the grammar whatever the case, so a name GitHub holds is taken however it was
-// typed. The two names `.` and `..`, which no working copy could hold and which a GitHub path
-// reads as a dot segment, are refused beside the patterns, where a pattern would state them
-// worse.
+// (delivery's and cireconcile's splitRepo, and the architecture importer's resolve). An owner is
+// a letter or digit and then up to 38 letters, digits, hyphens and underscores, which is looser
+// than GitHub's sign-up form on purpose: that form's rule, single hyphens with none leading or
+// trailing, binds new accounts alone, and GitHub still serves a login with a doubled hyphen
+// (`hello--world`, the organisation `foo--bar`), one ending in a hyphen (`ArtOfCode-`) and a
+// managed user's `_<shortcode>` (`mona-cat_octo`), whose repositories an issue has to be able to
+// name. A repository's own name is 1 to 100 letters, digits, `.`, `-` and `_`, the most GitHub
+// allows. Both cases are written out because the grammar is the grammar whatever the case, so a
+// name GitHub holds is taken however it was typed. The two names `.` and `..`, which no working
+// copy could hold and which a GitHub path reads as a dot segment, are refused beside the
+// patterns, where a pattern would state them worse.
 var (
 	repoOwnerPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,38}$`)
-	repoNamePattern  = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+	repoNamePattern  = regexp.MustCompile(`^[A-Za-z0-9._-]{1,100}$`)
 )
 
 // GitHubOwner answers whether owner is a login GitHub serves, by the grammar above.
@@ -107,7 +107,7 @@ func GitHubOwner(owner string) bool {
 }
 
 // GitHubName answers whether name is a repository name GitHub allows, by the grammar above:
-// letters, digits, `.`, `-` and `_`, and neither `.` nor `..`.
+// 1 to 100 letters, digits, `.`, `-` and `_`, and neither `.` nor `..`.
 func GitHubName(name string) bool {
 	return name != "." && name != ".." && repoNamePattern.MatchString(name)
 }
@@ -123,16 +123,17 @@ var ErrNotGitHubRepo = errors.New("not an owner/name GitHub allows")
 // `acme/.git` is `acme/`. The halves come back as full spells them, so a caller keeps its own
 // case and its own suffix; the refusal is ErrNotGitHubRepo, naming full.
 //
-// It is the one rule every end reads: the API routes that take a repository from a person refuse
-// a name it refuses before they store it (api's parseSourceRepo), and each place that turns a
-// stored name into a GitHub path refuses one there (delivery's, cireconcile's and
-// architecture's splitRepo), so a name stored before the routes held it to the rule, or by
-// direct SQL, never reaches GitHub either.
+// It is the one rule every end reads: the API routes that take a repository from a person put the
+// canonical form they store to it and refuse a name it refuses (api's parseSourceRepo and
+// githubCouldHoldRepo), and each place that turns a stored name into a GitHub path refuses one
+// there (delivery's and cireconcile's splitRepo, and the architecture importer's resolve), so a
+// name stored before the routes held it to the rule, or by direct SQL, never reaches GitHub
+// either.
 func SplitGitHubRepo(full string) (owner, name string, err error) {
 	owner, name, found := strings.Cut(full, "/")
 	trimmed := strings.TrimSuffix(strings.ToLower(name), ".git")
 	if !found || !GitHubOwner(owner) || !GitHubName(name) || !GitHubName(trimmed) {
-		return "", "", fmt.Errorf("repository %q is %w: an owner of letters, digits, - and _, and a name of letters, digits, ., - and _ that is not empty, . or .., before or after a trailing .git is trimmed", full, ErrNotGitHubRepo)
+		return "", "", fmt.Errorf("repository %q is %w: an owner of letters, digits, - and _, and a name of at most 100 letters, digits, ., - and _ that is not empty, . or .., before or after a trailing .git is trimmed", full, ErrNotGitHubRepo)
 	}
 	return owner, name, nil
 }

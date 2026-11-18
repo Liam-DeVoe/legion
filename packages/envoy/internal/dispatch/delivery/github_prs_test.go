@@ -144,14 +144,20 @@ func (f *fakeGitHub) handle(pattern string, handler http.HandlerFunc) {
 }
 
 func (f *fakeGitHub) newTestClient() *githubapp.Client {
-	t := f.t
+	f.t.Helper()
+	return newAppClient(f.t, githubtest.Spec{Handle: f.mux.ServeHTTP})
+}
+
+// newAppClient is a GitHub App client, signed with a key made for the test, of the GitHub
+// stand-in spec describes.
+func newAppClient(t *testing.T, spec githubtest.Spec) *githubapp.Client {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("generate fixture key: %v", err)
 	}
 	pemText := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
-	base := githubtest.Server(t, githubtest.Spec{Handle: f.mux.ServeHTTP})
+	base := githubtest.Server(t, spec)
 	client, err := githubapp.New(&auth.AppConfig{ClientID: "Iv1.testclient", PEM: pemText}, base)
 	if err != nil {
 		t.Fatalf("new client: %v", err)

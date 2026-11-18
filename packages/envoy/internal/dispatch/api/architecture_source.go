@@ -378,22 +378,28 @@ func sourcePathRepo(r *http.Request) (owner, name string, err error) {
 }
 
 // parseSourceRepo validates and canonicalizes an owner/name repository input
-// the same way repository mappings are stored (lowercase, .git trimmed). The
-// rule is refs.SplitGitHubRepo's, the one delivery holds a stored name to
-// before it builds a GitHub path from it: an owner read by the grammar an
-// issue's own repository is (the daemon's ghrepo ownerName), a login as GitHub
-// serves it, which is wider than GitHub's sign-up charset, since a managed
-// user's login ends in `_<shortcode>` (`mona-cat_octo`) and a source in such an
-// account is one a project can hold; and a name of letters, digits, `.`, `-`
-// and `_` that is not empty, `.` or `..` before or after a trailing ".git" is
-// trimmed ("legion/...git" canonicalizes to ".."), so a stored repo can never
-// smuggle path segments into an outbound API URL (".." would traverse); an
-// underscore traverses nothing, in either segment.
+// the same way repository mappings are stored (lowercase, .git trimmed), and
+// answers the canonical halves. The rule is refs.SplitGitHubRepo's, the one
+// delivery holds a stored name to before it builds a GitHub path from it: an
+// owner read by the grammar an issue's own repository is (the daemon's ghrepo
+// ownerName), a login as GitHub serves it, which is wider than GitHub's sign-up
+// charset, since a managed user's login ends in `_<shortcode>` (`mona-cat_octo`)
+// and a source in such an account is one a project can hold; and a name of
+// letters, digits, `.`, `-` and `_` that is not empty, `.` or `..` before or
+// after a trailing ".git" is trimmed ("legion/...git" canonicalizes to ".."),
+// so a stored repo can never smuggle path segments into an outbound API URL
+// (".." would traverse); an underscore traverses nothing, in either segment.
+// The rule is put to the input and then to the canonical form, which is what is
+// stored and what every later read splits: canonicalizing trims one ".git" and
+// that read trims another, so "acme/.git.git", a name the input passes, is
+// "acme/.git" stored, which no later read accepts.
 func parseSourceRepo(raw string) (owner, name string, err error) {
 	owner, name, err = refs.SplitGitHubRepo(strings.TrimSpace(raw))
+	if err == nil {
+		owner, name, err = refs.SplitGitHubRepo(canonicalRepo(owner, name))
+	}
 	if err != nil {
 		return "", "", errorf(http.StatusBadRequest, "SOURCE_INPUT", "repository must be owner/name, got %q", raw)
 	}
-	canonical := strings.SplitN(canonicalRepo(owner, name), "/", 2)
-	return canonical[0], canonical[1], nil
+	return owner, name, nil
 }

@@ -709,19 +709,16 @@ function basisPlace(basis: CheckBasis): string {
   return "the commit you named";
 }
 
-/** Why a result's commit could not be placed, naming `repo`, the repository the server says the
- *  answer is about, where it names one: a result whose commit is taken to be of a repository the
- *  issue links a pull request in is decided by that repository, and "the repository" would read
- *  as the issue's own. */
-function standsReasonText(
-  reason: NonNullable<NonNullable<CheckResult["commit_stands"]>["reason"]>,
-  repo: string | undefined
-): string {
-  if (repo === undefined) return COMPARISON_REASONS[reason];
-  return reason === "repository_unreadable"
-    ? `Dispatch cannot read ${repo}`
-    : `a read Dispatch made of ${repo} did not answer`;
-}
+/** Why a result's commit could not be placed where the server names `repo`, the repository the
+ *  answer is about: a result whose commit is taken to be of a repository the issue links a pull
+ *  request in is decided by that repository, and "the repository" would read as the issue's own.
+ *  Keyed by the reason, so a reason the server adds is a type error until it has words here. */
+const REPO_REASONS: Readonly<
+  Record<NonNullable<NonNullable<CheckResult["commit_stands"]>["reason"]>, (repo: string) => string>
+> = {
+  repository_unreadable: (repo) => `Dispatch cannot read ${repo}`,
+  read_failed: (repo) => `a read Dispatch made of ${repo} did not answer`,
+};
 
 /** The first of R4's two facts: where one result's commit stands against what its check compared
  *  with. A Dispatch server that does not answer it says so rather than reading as another
@@ -747,7 +744,11 @@ function commitStandsText(stands: CheckResult["commit_stands"]): string {
       ? "Where that commit stands is not known"
       : `Where that commit of ${stands.repo} stands is not known`;
   }
-  return `Where that commit stands is not known: ${standsReasonText(stands.reason, stands.repo)}`;
+  const reason =
+    stands.repo === undefined
+      ? COMPARISON_REASONS[stands.reason]
+      : REPO_REASONS[stands.reason](stands.repo);
+  return `Where that commit stands is not known: ${reason}`;
 }
 
 /** R4's other fact: whether the check's words moved after the result was recorded. Both versions

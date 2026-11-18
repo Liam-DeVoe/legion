@@ -159,20 +159,14 @@ func (s *server) refuseUnknownCommit(ctx context.Context, q refs.Queryer, issueK
 // Dispatch answers a GitHub read that failed with (getAppInstallation), naming the repository,
 // the commit and GitHub's error, and telling the caller to record the result again. Nothing is
 // stored, so the record is made again whole. GitHub's error is worded as a check CI proves words
-// one (ciUnreadDetail): where GitHub refused the read (githubapp.StatusError) or rate-limited it
+// one (gitHubErrorText): where GitHub refused the read (githubapp.StatusError) or rate-limited it
 // (githubapp.RateLimitError), the body the error's text ends with is replaced by the `message`
 // GitHub wrote, and left out where it wrote none. A rate limit names GitHub's wait, in the
 // sentence and in Retry-After, rounded up to whole seconds as every Retry-After Dispatch writes
 // is (ratelimit.RetryAfterSeconds); any other failed read names none, since GitHub gave none.
 func linkedReadRefusal(repo, sha string, err error) error {
-	reason := err.Error()
+	reason := gitHubErrorText(err)
 	limited, rateLimited := githubapp.AsRateLimit(err)
-	var refused *githubapp.StatusError
-	if errors.As(err, &refused) {
-		reason = withGitHubMessage(reason, refused.Body, refused.Message())
-	} else if rateLimited {
-		reason = withGitHubMessage(reason, limited.Body, limited.Message())
-	}
 	again := "record the result again"
 	retryAfter := 0
 	if rateLimited && limited.Wait > 0 {
@@ -260,8 +254,7 @@ func linkedRepositories(ctx context.Context, q refs.Queryer, issueKey string) ([
 // linkCannotCount names is the same answer about every pull request of it, so none of them is
 // read further and its commits are not asked about: no read of that repository can work, and a
 // result kept under it would read unknown for good. Read as a failure, any of these would refuse
-// every record of the issue until someone removed the link, or, as these reads were once read,
-// store a result at a commit no readable repository holds.
+// every record of the issue until someone removed the link.
 //
 // The error is a read that did not answer — a rate limit, a 5xx, a transport failure — about the
 // commit, or about a pull request's state where no other pull request of the repository is open

@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 )
@@ -27,18 +26,17 @@ func (s *server) getAppInstallation(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	repo, err := repoProjectPath(r)
+	owner, name, err := repoProjectPath(r)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	owner, name, _ := strings.Cut(repo, "/")
 	installed, err := s.deps.GitHub.Installed(r.Context(), owner, name)
 	switch {
 	case errors.Is(err, githubapp.ErrNoAppKey):
 		writeError(w, "GITHUB_APP_UNCONFIGURED", http.StatusServiceUnavailable, err.Error())
 	case err != nil:
-		writeError(w, "GITHUB_UNREADABLE", http.StatusBadGateway, fmt.Sprintf("read the GitHub App's installation on %s: %v", repo, err))
+		writeError(w, "GITHUB_UNREADABLE", http.StatusBadGateway, fmt.Sprintf("read the GitHub App's installation on %s/%s: %v", owner, name, err))
 	default:
 		WriteJSON(w, http.StatusOK, appInstallationResponse{Installed: installed})
 	}

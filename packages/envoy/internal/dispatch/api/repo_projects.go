@@ -81,11 +81,12 @@ type putRepoProjectInput struct {
 // mapping is already renamed to are each refused (400 INVALID_REPO_PROJECT), so the canonical
 // name of a repository is reached in one step and no cycle exists (refs.CanonicalRepo).
 func (s *server) putRepoProject(w http.ResponseWriter, r *http.Request) {
-	repo, err := repoProjectPath(r)
+	owner, name, err := repoProjectPath(r)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
+	repo := owner + "/" + name
 	var input putRepoProjectInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)
@@ -396,18 +397,19 @@ func (s *server) repoProject(ctx context.Context, repo string) (string, error) {
 // repoProjectPath reads the {owner}/{repo} path of a mapping write, and of the App's installation
 // read (getAppInstallation), as parseSourceRepo reads a repository (sourcePathRepo): an owner and
 // a name of the characters GitHub allows, and never a name of `.` or `..`, before or after a
-// trailing `.git` is trimmed, canonicalised. A path the rule refuses is 400 INVALID_REPO_PROJECT.
-// The mapping's repository becomes the repository of every issue of its project that names none,
-// whose halves delivery puts into GitHub paths, and the installation read puts its halves into
-// one at once; `...git` and `.git` are no dot segments, so the mux does not clean them, and the
-// trailing `.git` canonicalRepo trims would leave `..` or an empty name behind.
-func repoProjectPath(r *http.Request) (string, error) {
-	owner, name, err := sourcePathRepo(r)
+// trailing `.git` is trimmed, canonicalised, held to that rule as it is stored, and answered as
+// its two halves. A path the rule refuses is 400 INVALID_REPO_PROJECT. The mapping's repository
+// becomes the repository of every issue of its project that names none, whose halves delivery
+// puts into GitHub paths, and the installation read puts its halves into one at once; `...git`
+// and `.git` are no dot segments, so the mux does not clean them, and the trailing `.git`
+// canonicalRepo trims would leave `..` or an empty name behind.
+func repoProjectPath(r *http.Request) (owner, name string, err error) {
+	owner, name, err = sourcePathRepo(r)
 	if err != nil {
-		return "", errorf(http.StatusBadRequest, "INVALID_REPO_PROJECT", `the path must name a repository "owner/name" (got %q)`,
+		return "", "", errorf(http.StatusBadRequest, "INVALID_REPO_PROJECT", `the path must name a repository "owner/name" (got %q)`,
 			r.PathValue("owner")+"/"+r.PathValue("repo"))
 	}
-	return owner + "/" + name, nil
+	return owner, name, nil
 }
 
 // storedRepoProjectPath reads the {owner}/{repo} path of a mapping removal as every mapping's path
@@ -423,12 +425,12 @@ func storedRepoProjectPath(r *http.Request) (string, error) {
 // which leaves the stored pair alone, nil for `""`, which clears it, and otherwise the
 // canonical `owner/name` the value names. The value is held to the rule a source repository is
 // (parseSourceRepo): an owner and a name of the characters GitHub allows, and never a name of
-// `.` or `..`, before or after a trailing `.git` is trimmed. The pair becomes the name every
-// comparison of the repository asks GitHub about, and delivery puts its two halves into GitHub
-// paths as they are (delivery's splitRepo), so `acme/..` would ask about a path above the
-// repository's. A pair naming the mapping's own repository is refused here, where the one
-// cycle a single row can hold is cheapest to see; the database refuses it too, so direct SQL is
-// held to it (migration 20261105075455_repo_projects_renamed_to).
+// `.` or `..`, before or after a trailing `.git` is trimmed, in the form it is stored. The pair
+// becomes the name every comparison of the repository asks GitHub about, and delivery puts its
+// two halves into GitHub paths as they are (delivery's splitRepo), so `acme/..` would ask about
+// a path above the repository's. A pair naming the mapping's own repository is refused here,
+// where the one cycle a single row can hold is cheapest to see; the database refuses it too, so
+// direct SQL is held to it (migration 20261105075455_repo_projects_renamed_to).
 func parseRepoRename(repo string, raw *string) (*string, error) {
 	if raw == nil || strings.TrimSpace(*raw) == "" {
 		return nil, nil
