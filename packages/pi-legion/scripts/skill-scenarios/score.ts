@@ -417,8 +417,8 @@ const GateEntry = z.looseObject({
 type GateEntry = z.infer<typeof GateEntry>;
 /** How a refused call's error result starts when a model's revise in block mode stopped it. */
 const NOT_SENT = "AskGate did not send this call.";
-/** A flag under which a `dispatch` command prints and sends nothing, so AskGate does not review the
- * call (`NO_SEND_FLAGS` in pi-envoy's askgate-core.ts). */
+/** A flag under which a `dispatch` command stores nothing, so AskGate does not review the call
+ * (`NO_STORE_FLAGS` in pi-envoy's askgate-core.ts). */
 const NO_SEND = /(?:^|\s)--(?:help|dry-run)(?=\s|$)/;
 /** Every case rig.sh's run_askgate has a prompt for. */
 const ASKGATE_CASES = [

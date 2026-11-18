@@ -325,15 +325,17 @@ func (s *server) readDecisions(
 // renderer's spelling of the document, so a decision kept before the change sums otherwise in this
 // build's spelling though nobody changed it. Such a decision is kept when another renderer
 // version stored the version its keep names, or none stamped it (pmdoc.OtherRenderer), that
-// version's text of the decision (decisionSums, named by its sectionKey) has the keep's sum,
+// version's text of the decision (decisionCuts, named by its sectionKey) has the keep's sum,
 // which makes it the text the keep agreed with, and this build reads that text as the decision's
 // text now (pmdoc.ReadsAs). The decision waits for review otherwise: a version that holds no such
 // text - the decision's heading changed since, or a block left the decision after that version -
 // and kept text that reads otherwise alone, as text citing a footnote another section defines
 // does, leave it waiting, as a version this renderer version stored does.
 //
-// Every version the keeps name is read in one query, and only a keep whose version another
-// renderer version stored pays a parse and a render.
+// The versions the keeps name that another renderer version stored, or none stamped, are read in
+// one query (otherRendererDecisionsAt), and a version this renderer version stored is not read,
+// so a decisions view pays nothing for a keep whose version this renderer version wrote; only
+// such a keep whose version holds the keep's sum pays a parse and a render.
 func (s *server) markKeptAcrossRenderers(
 	ctx context.Context, artifactID string, decisions []model.Decision, keys []sectionKey,
 ) error {
@@ -346,7 +348,7 @@ func (s *server) markKeptAcrossRenderers(
 	if len(numbers) == 0 {
 		return nil
 	}
-	versions, err := s.decisionSumsAt(ctx, artifactID, sortedNumbers(numbers))
+	versions, err := s.otherRendererDecisionsAt(ctx, artifactID, sortedNumbers(numbers))
 	if err != nil {
 		return err
 	}
@@ -356,7 +358,7 @@ func (s *server) markKeptAcrossRenderers(
 			continue
 		}
 		version, read := versions[decision.Kept.ChangedVersion]
-		if !read || !version.otherRenderer {
+		if !read {
 			continue
 		}
 		kept, held := version.decisions[keys[i]]
@@ -408,11 +410,11 @@ func (s *server) markStaleLinks(
 	for _, number := range atTime {
 		numbers[number] = true
 	}
-	versions, err := s.decisionSumsAt(ctx, artifactID, sortedNumbers(numbers))
+	versions, err := s.storedDecisionsAt(ctx, artifactID, sortedNumbers(numbers))
 	if err != nil {
 		return err
 	}
-	current := decisionSums(markdown)
+	current := decisionCuts(markdown)
 	for i := range decisions {
 		decision := &decisions[i]
 		now, ok := current[keys[i]]
@@ -512,7 +514,7 @@ func (s *server) versionsAtTimes(
 	return at, rows.Err()
 }
 
-// storedDecisions is one stored version's decisions, cut from its markdown (decisionSums), and
+// storedDecisions is one stored version's decisions, cut from its markdown (decisionCuts), and
 // whether another renderer version stored that markdown or none stamped it (pmdoc.OtherRenderer):
 // such a version may spell a decision otherwise than this build does though its tree is the same.
 type storedDecisions struct {
@@ -530,15 +532,14 @@ func (v storedDecisions) holds(key sectionKey, now decisionCut) bool {
 	return ok && (stored.sum == now.sum || v.otherRenderer && pmdoc.ReadsAs(stored.text, now.text))
 }
 
-// decisionSumsAt is each named version's decisions, each one's text and its sum: the version's
+// storedDecisionsAt is each named version's decisions, each one's text and its sum: the version's
 // own stored markdown, cut by the same rule as the document as it stands, read beside the
 // renderer version that stored it.
-func (s *server) decisionSumsAt(
+func (s *server) storedDecisionsAt(
 	ctx context.Context, artifactID string, numbers []int,
 ) (map[int]storedDecisions, error) {
-	versions := map[int]storedDecisions{}
 	if len(numbers) == 0 {
-		return versions, nil
+		return map[int]storedDecisions{}, nil
 	}
 	rows, err := s.deps.Store.Pool.Query(ctx, `
 		select number, renderer_version, coalesce(markdown, '') from artifact_versions
@@ -547,7 +548,30 @@ func (s *server) decisionSumsAt(
 	if err != nil {
 		return nil, err
 	}
+	return scanStoredDecisions(rows)
+}
+
+// otherRendererDecisionsAt is storedDecisionsAt for those of the named versions another renderer
+// version stored or none stamped (pmdoc.OtherRenderer), the only versions that may spell a
+// decision otherwise than this build does: a version this renderer version stored is not read.
+func (s *server) otherRendererDecisionsAt(
+	ctx context.Context, artifactID string, numbers []int,
+) (map[int]storedDecisions, error) {
+	rows, err := s.deps.Store.Pool.Query(ctx, `
+		select number, renderer_version, coalesce(markdown, '') from artifact_versions
+		where artifact_id = $1::uuid and number = any($2::int[]) and renderer_version is distinct from $3
+	`, artifactID, numbers, pmdoc.RendererVersion)
+	if err != nil {
+		return nil, err
+	}
+	return scanStoredDecisions(rows)
+}
+
+// scanStoredDecisions reads rows of versions' number, renderer_version and markdown into each
+// version's decisions, its markdown cut by decisionCuts, and closes them.
+func scanStoredDecisions(rows pgx.Rows) (map[int]storedDecisions, error) {
 	defer rows.Close()
+	versions := map[int]storedDecisions{}
 	for rows.Next() {
 		var number int
 		var stamp *int
@@ -557,7 +581,7 @@ func (s *server) decisionSumsAt(
 		}
 		versions[number] = storedDecisions{
 			otherRenderer: pmdoc.OtherRenderer(stamp),
-			decisions:     decisionSums(markdown),
+			decisions:     decisionCuts(markdown),
 		}
 	}
 	return versions, rows.Err()
@@ -570,8 +594,8 @@ type decisionCut struct {
 	sum  string
 }
 
-// decisionSums cuts a document's markdown into its decisions and gives each one's text and the
-// sum of that text. It cuts by the rule the block walk cuts the document that stands by
+// decisionCuts is a document's markdown cut into its decisions, each one's text and the sum of
+// that text. It cuts by the rule the block walk cuts the document that stands by
 // (decisionSections): a `##` heading outside `## Replaced` and a `###` heading under it opens a
 // decision, a heading of its own level or higher closes it - `#` included, which opens none - and
 // a deeper heading is text of the decision it stands in.
@@ -582,7 +606,7 @@ type decisionCut struct {
 // rather than one the sum cannot name. Its text is the section's with the blank lines at its end
 // removed, so the same section of two versions sums alike whatever follows it; the text is a
 // slice of markdown, so the cut copies nothing.
-func decisionSums(markdown string) map[sectionKey]decisionCut {
+func decisionCuts(markdown string) map[sectionKey]decisionCut {
 	cuts := map[sectionKey]decisionCut{}
 	seen := map[string]int{}
 	type section struct {

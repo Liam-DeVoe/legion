@@ -11233,9 +11233,9 @@ describe("executeDispatchTool", () => {
   // Refusing it here would answer it with --force, which changes nothing for it.
   //
   // R11: that `blank` is Go's `unicode.IsSpace`, which JavaScript's `trim` is not
-  // (goBlankPattern's comment in ../dispatch-execute.ts names the two characters they differ
-  // on). The server empties U+0085, so this create writes no version, and reading `trim` here
-  // would refuse it and name --force instead.
+  // (goBlankPattern's comment in ../dispatch-commands/stored-text.ts names the two characters
+  // they differ on). The server empties U+0085, so this create writes no version, and reading
+  // `trim` here would refuse it and name --force instead.
   test.each([
     ["empty", ""],
     ["spaces alone", "   "],

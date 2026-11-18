@@ -110,7 +110,8 @@ export interface DryRunContext {
    * `deadline` and asks no request again that Dispatch answered with no route. It prints each
    * warning of the session's configuration on stderr, and throws, naming why, when the session
    * has no Dispatch. A step calls it only for arguments it asks Dispatch about, so every other dry
-   * run resolves no Dispatch.
+   * run builds no client and prints no configuration warning, and no dry run but a step's sends a
+   * request.
    */
   readonly client: () => DispatchClient;
   /** Aborts once `deadlineMs` have passed, so a failure after it is the deadline's. */

@@ -8,6 +8,36 @@ import { ToolInputError } from "../tool-input-errors";
 import { dispatchAnswered } from "./failures";
 
 /**
+ * Text Go's `strings.TrimSpace` empties: no characters at all, or only characters Go's
+ * `unicode.IsSpace` reports - `\t`, `\n`, `\v`, `\f`, `\r`, a space, U+0085 and U+00A0, and the
+ * Unicode `White_Space` property above Latin-1, which is U+1680, U+2000 to U+200A, U+2028,
+ * U+2029, U+202F, U+205F and U+3000 (`IsSpace` in Go's `unicode/graphic.go`, reading the
+ * `_White_Space` table of its `unicode/tables.go`).
+ *
+ * The set is written out because it is Go's and not JavaScript's: walked over every Unicode
+ * scalar, `String.prototype.trim` and `strings.TrimSpace` differ on exactly two characters.
+ * `trim` removes U+FEFF, which Go keeps, so `trim` calls U+FEFF blank where the server reads
+ * content; Go removes U+0085, which `trim` keeps, so `trim` calls U+0085 content where the
+ * server reads blank. This is the one place that pair is written out, and the lines that turn
+ * on it cite this comment rather than repeating it.
+ *
+ * `packages/envoy/internal/dispatch/text/refs.go` records a split of the same class in another
+ * pair of sets ("The whitespace is spelled out rather than written `\s`, which means another
+ * set in each language: JavaScript's also matches a vertical tab and U+FEFF"). That pair is the
+ * two languages' `\s`, and it differs in a vertical tab and U+FEFF, not in the two characters
+ * above.
+ *
+ * `packages/contracts/fixtures/go-unicode-isspace.json` holds the 25 scalars `unicode.IsSpace`
+ * reports. This pattern is held to that list over every scalar by `goBlankPattern` > `calls
+ * blank exactly the scalars the committed list holds`, and Go's own predicate by
+ * TestUnicodeIsSpaceReportsTheCommittedScalars in
+ * `packages/envoy/internal/dispatch/text/whitespace_fixture_test.go`: a character either side
+ * gains or loses reddens its test, and the list and this pattern are corrected together.
+ */
+export const goBlankPattern =
+  /^[\t\n\v\f\r \u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000]*$/u;
+
+/**
  * How much of one line a refusal quotes whole. A line of a document is bounded by the document
  * itself, so one differing line can be as long as the whole text, and a quote nobody can read
  * to the end is one nobody acts on — the same reason STORED_TEXT_PRINTED bounds the stored
@@ -90,6 +120,11 @@ function storedTextProblem(given: string, stored: string, name: string): string 
   ].join("");
 }
 
+/** What a refusal or a warning says of a round trip that failed with `error`. */
+export function roundTripFailure(error: unknown): string {
+  return `POST /api/v1/markdown/round-trip failed with ${messageFor(error)}`;
+}
+
 /**
  * The refusal of an upload whose stored-text check could not run. The check is the one thing that
  * says whether the store would write this text under another spelling, so a failure that is not
@@ -102,7 +137,7 @@ function storedTextProblem(given: string, stored: string, name: string): string 
  * which stores the file and asks this route nothing.
  */
 export function storedTextCheckFailed(error: unknown, name: string): string {
-  const failure = `Dispatch could not say how it would store this text, so nothing was uploaded: POST /api/v1/markdown/round-trip failed with ${messageFor(error)}.`;
+  const failure = `Dispatch could not say how it would store this text, so nothing was uploaded: ${roundTripFailure(error)}.`;
   if (!dispatchAnswered(error, 413)) {
     return `${failure} Send the upload again once that call is answered.`;
   }
@@ -140,7 +175,8 @@ function withoutFinalLineFeed(text: string): string {
 
 /**
  * What Dispatch says of the inline text an upload would store (`storedTextCheck`):
- * - `kept`: the store writes the text as given, but for one final line feed;
+ * - `kept`: the store writes the text as given, but for one final line feed, or the text is
+ *   blank, which goes to the server unchecked;
  * - `respelled`: the store writes it under another spelling, and `refusal` is what the call
  *   throws for it;
  * - `no-route`: this Dispatch holds no round-trip route (`roundTripRouteAbsent`), so the upload
@@ -159,18 +195,29 @@ export type StoredTextCheck =
  * Markdown: Dispatch parses it and stores its rendering, so a text it would write under another
  * spelling is refused rather than stored changed. The round trip is the store's own parse and
  * render (POST /api/v1/markdown/round-trip), which writes nothing. Every failure of the round
- * trip is returned, never thrown. Its callers ask it only for text that is not blank
- * (`goBlankPattern` in documents.ts, whose comment on `artifactCommand`'s check says why).
+ * trip is returned, never thrown; `client` is called once, for the client the round trip goes
+ * through, and what it throws is thrown.
+ *
+ * Blank text (`goBlankPattern`) is `kept` without calling `client`, so nothing is asked for it,
+ * and a dry run of it builds no client: the round trip answers the empty string for
+ * every text that pattern calls blank, since storedMarkdown returns "" for whatever
+ * `strings.TrimSpace` empties before it parses anything (that package's
+ * markdown_round_trip.go), and the empty document is what such a create asks for. That short
+ * answer is not what the store writes for each of them: the parse and render a seed runs keep
+ * every character of this set but a tab, a line feed, a carriage return and a space, each of the
+ * rest rendering to itself. So blank text goes to the server unchecked.
  */
 export async function storedTextCheck(
-  client: DispatchClient,
+  client: () => DispatchClient,
   tool: string,
   name: string,
   content: string
 ): Promise<StoredTextCheck> {
+  if (goBlankPattern.test(content)) return { kind: "kept" };
+  const dispatch = client();
   let stored: string;
   try {
-    stored = await client.markdownRoundTrip(content);
+    stored = await dispatch.markdownRoundTrip(content);
   } catch (error) {
     return roundTripRouteAbsent(error) ? { kind: "no-route", error } : { kind: "failed", error };
   }

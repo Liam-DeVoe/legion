@@ -626,8 +626,8 @@ type respelledVersion struct {
 
 // judgeRespelledVersions reads the markdown of each version in respelled, and of no other, and
 // takes out of the report the mismatch of each whose markdown reads as the fold's render it was
-// compared with (pmdoc.ReadsAs): its renderer's spelling of the fold's tree. Every other mismatch
-// keeps its place.
+// compared with (readsAs, pmdoc.ReadsAs's rule): its renderer's spelling of the fold's tree. Every
+// other mismatch keeps its place.
 func judgeRespelledVersions(ctx context.Context, tx pgx.Tx, artifactID string, respelled []respelledVersion, report *StoredOrderReport) error {
 	if len(respelled) == 0 {
 		return nil
@@ -652,7 +652,7 @@ func judgeRespelledVersions(ctx context.Context, tx pgx.Tx, artifactID string, r
 		if err := rows.Scan(&number, &markdown); err != nil {
 			return fmt.Errorf("scan a document version's markdown: %w", err)
 		}
-		if version := byNumber[number]; pmdoc.ReadsAs(markdown, version.fold) {
+		if version := byNumber[number]; readsAs(markdown, version.fold) {
 			readsAsFold[version.at] = true
 		}
 	}

@@ -398,41 +398,33 @@ func writeCarriedReview(ctx context.Context, tx pgx.Tx, broker *events.Broker, a
 // holds the stored text of its version earlier: byte for byte, or, where another renderer version
 // stored that text or none stamped it (pmdoc.OtherRenderer), as stored text this build reads and
 // renders again as markdown (readsAs), so a renderer change between the two versions leaves the
-// text held. A version that stores no markdown, a file's, holds no text and compares false. The
-// first read takes the stored text's stamp, and the text itself only where its size is
-// markdown's (octet_length, which reads a stored text's size without decompressing it): a version
-// this renderer version wrote is read only for a text of its size, so the write of any other text
-// reads no document, and the version of another renderer version is read whole, parsed and
-// rendered only once its bytes are not markdown's.
+// text held. A version that stores no markdown, a file's, holds no text and compares false. One
+// read takes the stored text's stamp, and the text itself only where its size is markdown's
+// (octet_length, which reads a stored text's size without decompressing it) or another renderer
+// version stored it or none stamped it: a version this renderer version wrote is read only for a
+// text of its size, so the write of any other text reads no document, and the version of another
+// renderer version is parsed and rendered only once its bytes are not markdown's.
 func restoresVersionText(ctx context.Context, tx pgx.Tx, artifactID string, earlier int, markdown string) (bool, error) {
-	var sized *string
+	var stored *string
 	var stamp *int
 	err := tx.QueryRow(ctx, `
-		select case when octet_length(markdown) = $3 then markdown end, renderer_version
+		select case when octet_length(markdown) = $3 or renderer_version is distinct from $4 then markdown end, renderer_version
 		from artifact_versions
 		where artifact_id = $1 and number = $2 and markdown is not null
-	`, artifactID, earlier, len(markdown)).Scan(&sized, &stamp)
+	`, artifactID, earlier, len(markdown), pmdoc.RendererVersion).Scan(&stored, &stamp)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
 	if err != nil {
 		return false, fmt.Errorf("read document version %d: %w", earlier, err)
 	}
-	if sized != nil && *sized == markdown {
+	if stored != nil && *stored == markdown {
 		return true, nil
 	}
-	if !pmdoc.OtherRenderer(stamp) {
+	if stored == nil || !pmdoc.OtherRenderer(stamp) {
 		return false, nil
 	}
-	var stored string
-	if sized != nil {
-		stored = *sized
-	} else if err := tx.QueryRow(ctx, `
-		select markdown from artifact_versions where artifact_id = $1 and number = $2
-	`, artifactID, earlier).Scan(&stored); err != nil {
-		return false, fmt.Errorf("read document version %d: %w", earlier, err)
-	}
-	return readsAs(stored, markdown), nil
+	return readsAs(*stored, markdown), nil
 }
 
 // carriedAtNamedVersion reports whether the version this carry approves is the version the open

@@ -166,7 +166,7 @@ function surfaceFor(tool: string): CommandSurface {
     spec,
     command: commandName(spec.name),
     fields,
-    flags: flagTable(spec.name, fields, spec.dryRun),
+    flags: flagTable(spec, fields),
   };
   surfaces.set(tool, surface);
   return surface;
@@ -297,16 +297,15 @@ function placeholder(info: FieldInfo): string {
   return "<text>";
 }
 
-/** The command's flags, each with its help text. `dryRun` is the spec's own sentence for
+/** The command's flags, each with its help text. `spec.dryRun` is the spec's own sentence for
  *  `--dry-run`, for a command whose dry run asks Dispatch something past the argument check. */
 function flagTable(
-  tool: string,
-  fields: ReadonlyMap<string, FieldInfo>,
-  dryRun: string | undefined
+  spec: DispatchToolSpec,
+  fields: ReadonlyMap<string, FieldInfo>
 ): Map<string, FlagEntry> {
   const flags = new Map<string, FlagEntry>();
   const add = (flag: string, entry: FlagEntry): void => {
-    if (flags.has(flag)) throw new Error(`${tool}: two fields claim the flag ${flag}`);
+    if (flags.has(flag)) throw new Error(`${spec.name}: two fields claim the flag ${flag}`);
     flags.set(flag, entry);
   };
   for (const [field, info] of fields) {
@@ -377,7 +376,7 @@ function flagTable(
   add("--dry-run", {
     action: "dry-run",
     text:
-      dryRun ??
+      spec.dryRun ??
       "Checks the arguments as the call would, then prints them as JSON and sends nothing.",
   });
   return flags;

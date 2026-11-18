@@ -51,7 +51,13 @@ import {
   resolvedTopic,
   writeResultDetails,
 } from "./results";
-import { storedTextCheck, storedTextCheckFailed } from "./stored-text";
+import {
+  goBlankPattern,
+  roundTripFailure,
+  type StoredTextCheck,
+  storedTextCheck,
+  storedTextCheckFailed,
+} from "./stored-text";
 
 /** The asks of the document's `ask` blocks. An issue lists them under the issue, since the artifact
  * route refuses an issue document; an unlinked document lists its own. */
@@ -699,36 +705,6 @@ function artifactNameExistsProblem(held: Artifact, owner: string): string {
   return `${owner} already holds ${held.name} (slug ${held.slug}, kind ${held.kind}) at version ${newest.number}, which ${wroteIt} wrote. ${ARTIFACT_NAME_EXISTS_RULE}`;
 }
 
-/**
- * Text Go's `strings.TrimSpace` empties: no characters at all, or only characters Go's
- * `unicode.IsSpace` reports - `\t`, `\n`, `\v`, `\f`, `\r`, a space, U+0085 and U+00A0, and the
- * Unicode `White_Space` property above Latin-1, which is U+1680, U+2000 to U+200A, U+2028,
- * U+2029, U+202F, U+205F and U+3000 (`IsSpace` in Go's `unicode/graphic.go`, reading the
- * `_White_Space` table of its `unicode/tables.go`).
- *
- * The set is written out because it is Go's and not JavaScript's: walked over every Unicode
- * scalar, `String.prototype.trim` and `strings.TrimSpace` differ on exactly two characters.
- * `trim` removes U+FEFF, which Go keeps, so `trim` calls U+FEFF blank where the server reads
- * content; Go removes U+0085, which `trim` keeps, so `trim` calls U+0085 content where the
- * server reads blank. This is the one place that pair is written out, and the lines that turn
- * on it cite this comment rather than repeating it.
- *
- * `packages/envoy/internal/dispatch/text/refs.go` records a split of the same class in another
- * pair of sets ("The whitespace is spelled out rather than written `\s`, which means another
- * set in each language: JavaScript's also matches a vertical tab and U+FEFF"). That pair is the
- * two languages' `\s`, and it differs in a vertical tab and U+FEFF, not in the two characters
- * above.
- *
- * `packages/contracts/fixtures/go-unicode-isspace.json` holds the 25 scalars `unicode.IsSpace`
- * reports. This pattern is held to that list over every scalar by `goBlankPattern` > `calls
- * blank exactly the scalars the committed list holds`, and Go's own predicate by
- * TestUnicodeIsSpaceReportsTheCommittedScalars in
- * `packages/envoy/internal/dispatch/text/whitespace_fixture_test.go`: a character either side
- * gains or loses reddens its test, and the list and this pattern are corrected together.
- */
-export const goBlankPattern =
-  /^[\t\n\v\f\r \u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000]*$/u;
-
 /** `dispatch artifact`: upload a document, a picture or a file to an issue or a project. */
 export async function artifactCommand(context: CommandContext): Promise<DispatchToolResult> {
   const { args, client, actor, input, documentOwner, issue } = context;
@@ -743,8 +719,9 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
   // `strings.TrimSpace` empties - the `blank :=` line of jsonArtifactUpload in
   // packages/envoy/internal/dispatch/api/artifacts.go, whose set is goBlankPattern's.
   // JavaScript's `trim` is another set, so it is not read here: goBlankPattern's own comment
-  // says which two characters the two sets differ on. The held-name check and the stored-text
-  // check below both read this one predicate, and so does the dry run (artifactDryRun).
+  // says which two characters the two sets differ on. The held-name check reads this
+  // predicate, and the stored-text check below reads the same pattern, for the call and its dry
+  // run alike (storedTextCheck).
   const blank = content === undefined || goBlankPattern.test(content);
   // An upload under a name the owner already holds writes that document's next version, over
   // the text it holds, so the command reads what the owner holds and refuses it. --force is
@@ -777,14 +754,9 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
   // Only a Dispatch that holds no such route leaves the upload to make its own refusal, as
   // it did before this check: every other failure refuses the upload, since a check that did
   // not run says nothing about what the store would write. Blank text goes to the server
-  // unchecked: the round trip answers the empty string for every text this predicate calls
-  // blank, since storedMarkdown returns "" for whatever `strings.TrimSpace` empties before
-  // it parses anything (that package's markdown_round_trip.go), and the empty document is
-  // what such a create asks for. That short answer is not what the store writes for each of
-  // them: the parse and render a seed runs keep every character of this set but a tab, a
-  // line feed, a carriage return and a space, each of the rest rendering to itself.
-  if (!blank) {
-    const stored = await storedTextCheck(client, input.tool, name, content);
+  // unchecked (storedTextCheck says why).
+  if (content !== undefined) {
+    const stored = await storedTextCheck(() => client, input.tool, name, content);
     if (stored.kind === "respelled") throw stored.refusal;
     if (stored.kind === "failed") {
       throw new Error(storedTextCheckFailed(stored.error, name), { cause: stored.error });
@@ -861,20 +833,22 @@ function endedSentence(text: string): string {
 export async function artifactDryRun(context: DryRunContext): Promise<DryRunVerdict> {
   const { tool, args, deadline, deadlineMs } = context;
   const content = optionalString(args, "content");
-  // The call asks nothing for blank text, and nothing for a file or a name alone.
-  if (content === undefined || goBlankPattern.test(content)) return { kind: "passed" };
+  // The call asks nothing for a file or a name alone, and nothing for blank text
+  // (storedTextCheck, which then builds no client).
+  if (content === undefined) return { kind: "passed" };
+  const name = stringArg(args, "name");
   const unasked = (why: string): DryRunVerdict => ({
     kind: "passed",
     warning: `dispatch: warning: the dry run could not ask Dispatch how it would store the text: ${endedSentence(why)} The call refuses the upload until Dispatch answers.`,
   });
-  let client: DispatchClient;
+  let stored: StoredTextCheck;
   try {
-    client = context.client();
+    stored = await storedTextCheck(() => context.client(), tool, name, content);
   } catch (error) {
-    // A session with no Dispatch, which the call refuses in the same words.
+    // A session with no Dispatch, which the call refuses in the same words: the check throws
+    // only what building the client throws.
     return unasked(messageFor(error));
   }
-  const stored = await storedTextCheck(client, tool, stringArg(args, "name"), content);
   switch (stored.kind) {
     case "kept":
       return { kind: "passed" };
@@ -883,7 +857,7 @@ export async function artifactDryRun(context: DryRunContext): Promise<DryRunVerd
     case "no-route":
       return {
         kind: "passed",
-        warning: `dispatch: warning: this Dispatch cannot say how it would store the text: ${endedSentence(`POST /api/v1/markdown/round-trip failed with ${messageFor(stored.error)}`)} The dry run did not check the spelling. The call uploads the text unchecked.`,
+        warning: `dispatch: warning: this Dispatch cannot say how it would store the text: ${endedSentence(roundTripFailure(stored.error))} The dry run did not check the spelling. The call uploads the text unchecked.`,
       };
     case "failed":
       // The deadline's end reads as what it is: the client's own words for it are a write's,
@@ -891,7 +865,7 @@ export async function artifactDryRun(context: DryRunContext): Promise<DryRunVerd
       return unasked(
         deadline.aborted
           ? `Dispatch gave no answer within ${deadlineMs / 1000} s`
-          : `POST /api/v1/markdown/round-trip failed with ${messageFor(stored.error)}`
+          : roundTripFailure(stored.error)
       );
   }
 }
