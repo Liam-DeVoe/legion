@@ -769,10 +769,11 @@ func TestASessionGroupEditThatChangesNothingWritesNothing(t *testing.T) {
 	})(); err != nil {
 		t.Fatalf("create the group: %v", err)
 	}
-	seq, err := LatestChangeSeq(ctx, pool)
+	head, err := ChangesHead(ctx, pool)
 	if err != nil {
 		t.Fatalf("read the change log's head: %v", err)
 	}
+	seq := head.Seq
 
 	gate := takeChangeLock(t, ctx, pool)
 	name := crew.Name

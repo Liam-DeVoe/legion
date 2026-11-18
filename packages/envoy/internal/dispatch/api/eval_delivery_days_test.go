@@ -189,7 +189,7 @@ func jobParts(project string, stored []evals.DayRow, repo string, from, to time.
 	var parts []measures.DayPart
 	for _, row := range stored {
 		if row.EvalID == evals.EvalID(project, evals.SlugPRCI) && !row.Listed && row.Repo == repo && !row.Day.Before(from) && row.Day.Before(to) {
-			parts = append(parts, row.Part())
+			parts = append(parts, row.DayPart)
 		}
 	}
 	return parts

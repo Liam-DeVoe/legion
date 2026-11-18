@@ -770,7 +770,7 @@ func (s *server) jobItemRows(ctx context.Context, read evalItemsRead) ([]evalIte
 		if !job {
 			continue
 		}
-		parts = append(parts, day.Part())
+		parts = append(parts, day.DayPart)
 		if day.Day.After(newest[name]) {
 			newest[name] = day.Day
 		}

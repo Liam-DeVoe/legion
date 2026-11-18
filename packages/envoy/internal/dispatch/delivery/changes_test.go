@@ -21,11 +21,11 @@ import (
 // assertions see only what it did.
 func latestChange(t *testing.T, ctx context.Context, pool *store.Pool) int64 {
 	t.Helper()
-	seq, err := LatestChangeSeq(ctx, pool)
+	head, err := ChangesHead(ctx, pool)
 	if err != nil {
-		t.Fatalf("LatestChangeSeq: %v", err)
+		t.Fatalf("ChangesHead: %v", err)
 	}
-	return seq
+	return head.Seq
 }
 
 func changesAfter(t *testing.T, ctx context.Context, pool *store.Pool, seq int64) []Change {

@@ -236,33 +236,12 @@ func ChangesSince(ctx context.Context, q Querier, seq int64, limit int) ([]Chang
 	return changes, rows.Err()
 }
 
-// LatestChangeSeq is the newest change's seq, or 0 when the log is empty.
-func LatestChangeSeq(ctx context.Context, q Querier) (int64, error) {
-	var seq int64
-	err := q.QueryRow(ctx, `select coalesce(max(seq), 0) from delivery_changes`).Scan(&seq)
-	return seq, err
-}
-
 // OldestChangeSeq is the oldest kept change's seq, or 0 when the log is empty: a reader whose
 // cursor is below it has missed changes PruneChanges removed.
 func OldestChangeSeq(ctx context.Context, q Querier) (int64, error) {
 	var seq int64
 	err := q.QueryRow(ctx, `select coalesce(min(seq), 0) from delivery_changes`).Scan(&seq)
 	return seq, err
-}
-
-// ChangeAt is when the change at seq was recorded, or nil when no row holds seq (pruned, or the log
-// was reset): a reader compares it with the time it read for its cursor to tell a reset log.
-func ChangeAt(ctx context.Context, q Querier, seq int64) (*time.Time, error) {
-	var at time.Time
-	err := q.QueryRow(ctx, `select at from delivery_changes where seq = $1`, seq).Scan(&at)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	return &at, nil
 }
 
 // ChangeCursor is where one reader of the change log stands: the seq of the last change it read

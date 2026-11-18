@@ -394,10 +394,11 @@ func TestACorrectionCommitsWhileTheChangeLogLockIsHeldElsewhere(t *testing.T) {
 	r := newRig(t)
 	ctx := t.Context()
 	readings := readingIDs(r.write(t, "build-minutes", alice, readingsOverDays(t, correctionSize, nil)...))
-	before, err := delivery.LatestChangeSeq(ctx, r.database.Pool)
+	head, err := delivery.ChangesHead(ctx, r.database.Pool)
 	if err != nil {
 		t.Fatal(err)
 	}
+	before := head.Seq
 
 	gate, err := r.database.Pool.Begin(ctx)
 	if err != nil {
@@ -478,10 +479,11 @@ func TestAReadingsWriteDrainsOneBatchOfAnotherWritersBacklog(t *testing.T) {
 	`, r.project, backlog); err != nil {
 		t.Fatalf("record %d pending changes of another writer: %v", backlog, err)
 	}
-	before, err := delivery.LatestChangeSeq(ctx, r.database.Pool)
+	head, err := delivery.ChangesHead(ctx, r.database.Pool)
 	if err != nil {
 		t.Fatal(err)
 	}
+	before := head.Seq
 	r.write(t, "build-minutes", alice, minutes("b", 5))
 	moved := r.count(t, `select count(*) from delivery_changes where seq > $1`, before)
 	pending := r.count(t, `select count(*) from delivery_changes_pending`)

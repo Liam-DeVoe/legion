@@ -249,9 +249,8 @@ func (d LegionDay) build(repo string, input legionInput, since LegionSince) []Da
 // legionRows is parts as project's rows of slug in the cut repo, every one listed.
 func legionRows(project, repo, slug string, parts []measures.DayPart) []DayRow {
 	rows := make([]DayRow, len(parts))
-	key := DayRow{ProjectKey: project, EvalID: EvalID(project, slug), Repo: repo, Listed: true}
 	for i, part := range parts {
-		rows[i] = key.WithPart(part)
+		rows[i] = DayRow{ProjectKey: project, EvalID: EvalID(project, slug), Repo: repo, Listed: true, DayPart: part}
 	}
 	return rows
 }

@@ -235,10 +235,11 @@ func (r *hubRig) changeCursor() int64 {
 // below the setup's events for a while, so either catch-up can land after the test's snapshots.
 func (r *hubRig) settle(t *testing.T) {
 	t.Helper()
-	latest, err := delivery.LatestChangeSeq(t.Context(), r.database.Pool)
+	head, err := delivery.ChangesHead(t.Context(), r.database.Pool)
 	if err != nil {
 		t.Fatalf("read the newest delivery change: %v", err)
 	}
+	latest := head.Seq
 	if !testwait.Holds(eventFeedWait, 10*time.Millisecond, func() bool { return r.changeCursor() >= latest }) {
 		t.Fatalf("the hub's change cursor did not reach %d within %s", latest, eventFeedWait)
 	}
@@ -737,11 +738,11 @@ func latestChange(t *testing.T, database *store.Store) int64 {
 	if _, err := delivery.DrainPending(context.Background(), database.Pool); err != nil {
 		t.Fatalf("drain the change log's outbox: %v", err)
 	}
-	seq, err := delivery.LatestChangeSeq(context.Background(), database.Pool)
+	head, err := delivery.ChangesHead(context.Background(), database.Pool)
 	if err != nil {
 		t.Fatalf("read the newest change: %v", err)
 	}
-	return seq
+	return head.Seq
 }
 
 func TestAProductionJobFlipsTheWaitingPullRequestsItShips(t *testing.T) {

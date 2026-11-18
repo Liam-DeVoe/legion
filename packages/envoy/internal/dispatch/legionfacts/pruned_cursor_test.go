@@ -46,11 +46,11 @@ func TestAPrunedCursorChangeComputesNothingWholeAndAVanishedYoungOneDoes(t *test
 	}
 	gone := func(seq int64) {
 		t.Helper()
-		at, err := delivery.ChangeAt(t.Context(), run.database.Pool, seq)
-		if err != nil {
+		var held bool
+		if err := run.database.Pool.QueryRow(t.Context(), `select exists (select from delivery_changes where seq = $1)`, seq).Scan(&held); err != nil {
 			t.Fatalf("read the change at %d: %v", seq, err)
 		}
-		if at != nil {
+		if held {
 			t.Fatalf("the change at %d, which the cursor rests on, is still in the log, so this test examined nothing", seq)
 		}
 	}
@@ -121,8 +121,8 @@ func TestAPrunedCursorChangeComputesNothingWholeAndAVanishedYoungOneDoes(t *test
 
 	emptied := restsOn("emptied", 25*time.Hour)
 	prunedThrough(emptied)
-	if latest, err := delivery.LatestChangeSeq(t.Context(), run.database.Pool); err != nil || latest != 0 {
-		t.Fatalf("the change log's newest seq after the prune is %d (%v), want 0, an empty log, so this case examined nothing", latest, err)
+	if head, err := delivery.ChangesHead(t.Context(), run.database.Pool); err != nil || head.Seq != 0 {
+		t.Fatalf("the change log's newest seq after the prune is %d (%v), want 0, an empty log, so this case examined nothing", head.Seq, err)
 	}
 	run.at = run.at.Add(time.Minute)
 	emptiedWhole := wholeAfter()

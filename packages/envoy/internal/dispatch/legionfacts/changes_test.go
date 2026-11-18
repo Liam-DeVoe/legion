@@ -45,11 +45,11 @@ func changeLogHead(t *testing.T, pool *store.Pool) int64 {
 	if _, err := delivery.DrainPending(t.Context(), pool); err != nil {
 		t.Fatalf("drain the change log's outbox: %v", err)
 	}
-	seq, err := delivery.LatestChangeSeq(t.Context(), pool)
+	head, err := delivery.ChangesHead(t.Context(), pool)
 	if err != nil {
 		t.Fatalf("read the change log's head: %v", err)
 	}
-	return seq
+	return head.Seq
 }
 
 // changesLogged is every change after seq, oldest first. The facts' triggers record their changes

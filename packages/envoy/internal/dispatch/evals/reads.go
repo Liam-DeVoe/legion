@@ -321,7 +321,10 @@ func (s *Store) CountedIn(ctx context.Context, project, family string, repos []s
 // A row answers what the folds and the answer read and nothing more (WindowRow), since what the
 // read costs is the bytes it sends: no project, repository, listing or build, and a sample list
 // only for a series whose fold reads one (readsSamples), so a logged series folded by anything but
-// a quantile, whose rows keep every value of their day, sends none.
+// a quantile, whose rows keep every value of their day, sends none. Its last value comes with the
+// write that stored it (last_recorded_at, last_reading), which the `last` fold breaks a tie of two
+// rows' last_at by (aggStatistics): the read sets no order, and a read of several repositories
+// folds rows of one day that can tie.
 func (s *Store) DayWindow(ctx context.Context, projects []string, entries []Entry, repos []string, window Range, compare *Range) ([]WindowRow, error) {
 	if len(repos) == 0 {
 		repos = []string{""}
@@ -342,7 +345,7 @@ func (s *Store) DayWindow(ctx context.Context, projects []string, entries []Entr
 	ranged := func(inWindow string, from, to int) string {
 		return `select ` + inWindow + `, eval_id, series, day, n, sum, num, den, max,
 				case when (eval_id, series) in (select * from unnest($4::text[], $5::text[])) then samples end,
-				last_value, last_at, nullif(counts, '{}'), via_repository, updated_at
+				last_value, last_at, last_recorded_at, coalesce(last_reading::text, ''), nullif(counts, '{}'), via_repository, updated_at
 			from eval_days
 			where project_key = any($1::text[]) and repo = any($2) and listed and eval_id = any($3)
 			  and writer = case when eval_id = any($6::text[]) then '` + writerComputation + `' else '` + writerReadings + `' end

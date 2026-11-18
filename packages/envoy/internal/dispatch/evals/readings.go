@@ -63,10 +63,9 @@ type Written struct {
 // A correction (replaces) supersedes the reading it names in the same transaction. A logged
 // eval's day rows of every day the batch touches are kept in the same transaction (writeDays):
 // appended to where the batch replaces no reading of their day, and folded again from the
-// readings that stand where it does or where a reading of the batch is measured at the moment of
-// the row's last value, so the write reads no stored reading but the readings it replaces and the
-// standing readings of the days it corrects or ties. A batch that would leave a day row holding a
-// value past what a float holds is refused (CodeReadingDayOverflow).
+// readings that stand where it does, so the write reads no stored reading but the readings it
+// replaces and the standing readings of the days it corrects. A batch that would leave a day row
+// holding a value past what a float holds is refused (CodeReadingDayOverflow).
 func (s *Store) WriteReadings(ctx context.Context, batch Batch) (Written, error) {
 	if !slugPattern.MatchString(batch.Slug) {
 		return Written{}, refusal(CodeSlugInvalid, "slug %q is not lower-case letters, digits and hyphens starting with a letter or a digit", batch.Slug)

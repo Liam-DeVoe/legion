@@ -589,7 +589,13 @@ func readsSamples(definition Definition, series Series) bool {
 //   - quantile: n, sum, median, p90 and max, over the merge of the days' samples
 //     (measures.Quantile);
 //   - max: max, n;
-//   - last: value, the last value of the part measured last, n.
+//   - last: value, the last value of the part measured last, n. Of parts whose last values were
+//     measured at one moment (two repositories' rows of one day, in a read of repositories) it is
+//     the one written later (lastBefore: the write that began later, then the later reading of
+//     one write), the order a logged eval's row of the whole project breaks the same tie by
+//     (addParts), whatever order the parts come in. A computed eval's `last` series, unowned-p0's,
+//     records the moment of the write that stored its count, which is its last_at, so the later
+//     write of the value is the later moment there too.
 func aggStatistics(agg string, parts []measures.DayPart, series string) Statistics {
 	var stats Statistics
 	switch agg {
@@ -611,8 +617,10 @@ func aggStatistics(agg string, parts []measures.DayPart, series string) Statisti
 		return stats
 	}
 	var n int
-	var largest, last *float64
-	var lastAt *time.Time
+	var largest *float64
+	// last is the part of the reading that holds the last value, held once a part holds one.
+	var last dayPart
+	held := false
 	for _, part := range parts {
 		if part.Series != series {
 			continue
@@ -621,8 +629,8 @@ func aggStatistics(agg string, parts []measures.DayPart, series string) Statisti
 		if part.Max != nil && (largest == nil || *part.Max > *largest) {
 			largest = part.Max
 		}
-		if part.LastValue != nil && part.LastAt != nil && (lastAt == nil || !part.LastAt.Before(*lastAt)) {
-			last, lastAt = part.LastValue, part.LastAt
+		if candidate, ok := lastOf(part); ok && (!held || last.lastBefore(candidate)) {
+			last, held = candidate, true
 		}
 	}
 	stats["n"] = new(float64(n))
@@ -645,7 +653,9 @@ func aggStatistics(agg string, parts []measures.DayPart, series string) Statisti
 	case AggMax:
 		stats["max"] = largest
 	default:
-		stats["value"] = last
+		if held {
+			stats["value"] = new(last.value)
+		}
 	}
 	return stats
 }
