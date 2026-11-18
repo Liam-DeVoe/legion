@@ -117,10 +117,12 @@ export function repoControlName(issueKey: string): string {
  * inherits (its placeholder) in the quiet grey; the clear control is the muted grey that turns
  * ink under the pointer; a refusal is the failed red; and the line is the ink in a row of Details
  * and the muted grey elsewhere. Nothing there keeps its width: the line wraps, the box, at most
- * `main`'s 200 px, narrows to its line and is the full width of a row of Details, and the text a
- * row draws in its place breaks anywhere. Escape in the box is the box's alone there: marked
- * `defaultPrevented`, it passes by the dialog binding of a sheet around the box, as Details is on
- * a phone, which a second Escape, pressed outside the box, closes.
+ * `main`'s 200 px, narrows to its line, and the text a row draws in its place breaks anywhere. In
+ * a row of Details the box fills the row's value at every width and draws no datalist arrow, so a
+ * name that fits the value shows whole, and a longer one scrolls in the box as any one-line box
+ * does. Escape in the box is the box's alone there: marked `defaultPrevented`, it passes by the
+ * dialog binding of a sheet around the box, as Details is on a phone, which a second Escape,
+ * pressed outside the box, closes.
  *
  * There a row of Details draws its value as text rather than in the box, as the other rows of
  * Details do: a text box holds its value on one line and cuts a long one at its width, while the
@@ -281,10 +283,34 @@ export function RepoControl({
         : inDetails
           ? "w-full min-w-0 max-w-full"
           : "w-[200px] min-w-0 max-w-full";
+  // The line's layout: `main`'s keeps its width; inside `NoTooltips` it narrows to its row and
+  // wraps, and in a row of Details it is as wide as the row's value as well. That value is a flex
+  // row, in which a line of no width of its own is only as wide as what it holds, so the place's
+  // `w-full` and the box's would fill no more than that, and the box would fall back to a text
+  // box's own width, which cuts a name the value has room for.
+  const lineLayout =
+    page === null
+      ? "shrink-0"
+      : inDetails
+        ? "w-full min-w-0 max-w-full flex-wrap"
+        : "min-w-0 max-w-full flex-wrap";
+  // The box's width, and in a row of Details the room it gives a name: `main`'s 200 px, and
+  // inside `NoTooltips` its place's width. In a row of Details the box draws no datalist arrow
+  // (Chromium's `::-webkit-calendar-picker-indicator`, some 22 px of a narrow row's box), so a
+  // name that fits the row's value shows whole; the list stays bound, and Chromium still opens
+  // its suggestions on a click in the box, on ArrowDown and as the reader types. Its padding
+  // stays `pl-1.5`, and `pr-8` beside the clear control: below 1280 px `styles.css` gives every
+  // button a 44 px minimum width, so the control is 44 px wide over the box's right end with its
+  // × centred there, and `pr-8` keeps the name clear of the ×, which a narrower padding would
+  // draw the name under.
+  const boxWidth =
+    page === null
+      ? "w-[200px]"
+      : inDetails
+        ? "w-full min-w-0 [&::-webkit-calendar-picker-indicator]:hidden"
+        : "w-full min-w-0";
   return (
-    <div
-      className={`flex ${page === null ? "shrink-0" : "min-w-0 max-w-full flex-wrap"} items-center gap-2 text-sm ${lineText}`}
-    >
+    <div className={`flex ${lineLayout} items-center gap-2 text-sm ${lineText}`}>
       {inDetails ? null : (
         <span className="font-medium" {...page?.pageChrome}>
           {`${page?.PROPERTY_LABELS.repository ?? "Repository"}:`}
@@ -329,7 +355,7 @@ export function RepoControl({
                 aria-invalid={refused || undefined}
                 aria-label={repoControlName(issueKey)}
                 autoComplete="off"
-                className={`min-h-11 ${page === null ? "w-[200px]" : "w-full min-w-0"} rounded-sm border py-0.5 pl-1.5 font-mono text-xs outline-none focus-visible:ring-2 disabled:opacity-50 md:min-h-7 ${repo === null ? "pr-1.5" : "pr-8"} ${page === null ? inputClasses(false) : ON_PAGE.box} ${focusVisibleRing}`}
+                className={`min-h-11 ${boxWidth} rounded-sm border py-0.5 pl-1.5 font-mono text-xs outline-none focus-visible:ring-2 disabled:opacity-50 md:min-h-7 ${repo === null ? "pr-1.5" : "pr-8"} ${page === null ? inputClasses(false) : ON_PAGE.box} ${focusVisibleRing}`}
                 disabled={disabled}
                 list={suggestionsId}
                 onBlur={(event) => {

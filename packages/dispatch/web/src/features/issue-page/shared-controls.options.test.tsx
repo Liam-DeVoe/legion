@@ -3729,6 +3729,73 @@ test("inside NoTooltips a repository row draws a long repository as text that wr
   }
 });
 
+// Inside `NoTooltips` the box a repository row opens fills the row's value at every width. Details
+// draws the value as a flex row, in which the control's line is only as wide as what it holds
+// unless it is as wide as the value, and the box's own `w-full` then fills no more than that,
+// which cuts a name the value has room for. Read by classes, since happy-dom lays nothing out:
+// the line is as wide as the value, every element from the box up to the value is too, and none
+// keeps a width of its own or its line. The box draws no datalist arrow, which Chromium draws in a
+// box with a list and which takes some of a narrow row's room from the name, shrinks within its
+// place, and keeps its right padding, which holds the name clear of the clear control's ×.
+// Outside, the box is `main`'s 200 px box with its arrow, and the line as wide as what it holds.
+test("inside NoTooltips the repository box fills its row's value and keeps no room a name needs", async () => {
+  const user = userEvent.setup();
+  const noArrow = "[&::-webkit-calendar-picker-indicator]:hidden";
+  for (const surface of ["inside", "outside"] as const) {
+    const view = draw(
+      <div className="flex min-w-0 flex-wrap items-center" data-case="value">
+        <RepoControl
+          inRow
+          issueKey="CORE-1"
+          project="CORE"
+          repo="cybermonklabs/legion"
+          resolvedRepo="cybermonklabs/legion"
+        />
+      </div>,
+      surface
+    );
+    try {
+      const scope = within(view.container);
+      const value = caseOf(view, "value");
+      const line = value.firstElementChild;
+      if (line === null) throw new Error("the value holds no control");
+      const box = () => scope.getByRole("combobox", { name: "Repository of CORE-1" });
+      if (surface === "outside") {
+        await settleReads();
+        expect(classOf(box())).toContain("w-[200px]");
+        expect(classOf(box())).not.toContain(noArrow);
+        expect(classOf(box())).not.toContain("w-full");
+        expect(classOf(line)).not.toContain("w-full");
+        continue;
+      }
+      // The press of the repository's text draws the box in its place; the focus in the box
+      // starts the mappings' read, which lands before the box is read.
+      await user.click(
+        scope.getByRole("button", { name: "cybermonklabs/legion, Repository of CORE-1" })
+      );
+      await settleReads();
+      expect(document.activeElement).toBe(box());
+      expect(classOf(line)).toContain("w-full");
+      const narrower: string[] = [];
+      const held: string[] = [];
+      for (let outer: Element | null = box(); outer !== null && outer !== value; ) {
+        if (!classOf(outer).includes("w-full")) narrower.push(outer.tagName);
+        held.push(
+          ...classOf(outer).filter((token) =>
+            ["shrink-0", "w-[200px]", "whitespace-nowrap"].includes(token)
+          )
+        );
+        outer = outer.parentElement;
+      }
+      expect(narrower).toEqual([]);
+      expect(held).toEqual([]);
+      expect(classOf(box())).toEqual(expect.arrayContaining([noArrow, "min-w-0", "pr-8"]));
+    } finally {
+      undraw(view);
+    }
+  }
+});
+
 /** A repository row's two texts in Details, each by the name its button answers to and the
  *  repository the issue holds and resolves to: "None", and the repository. */
 const ROW_TEXTS = [
