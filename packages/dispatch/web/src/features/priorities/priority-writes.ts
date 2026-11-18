@@ -1,9 +1,10 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { useCallback, useRef } from "react";
+import { useCallback, useRef, useState } from "react";
 import { api, priorityPatchRequest } from "../../api/client";
 import type { CreatePriorityInput, PatchPriorityInput } from "../../api/types";
 import { useIsHuman } from "../../hooks/useIsHuman";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { NOTHING_KEPT } from "./field-arrival";
 
 /** One write of an existing priority: its id, what it changes, and the words the shell's
  *  pending-writes indicator names the write by while it is out. */
@@ -11,11 +12,14 @@ export interface PriorityPatch {
   readonly id: string;
   readonly input: PatchPriorityInput;
   readonly label: string;
+  /** For a title or a description, the chain of this page's writes of it the write goes on
+   *  (`TextChain.id`): what it settles is that chain's, and nothing of a chain that replaced it. */
+  readonly chain?: number;
 }
 
 /** The attributes a write names the text its edit started from for (`expected`). The owner and
  *  the order take none. */
-type EditedText = "description" | "title";
+export type EditedText = "description" | "title";
 
 const EDITED_TEXTS: readonly EditedText[] = ["description", "title"];
 
@@ -26,6 +30,9 @@ const EDITED_TEXTS: readonly EditedText[] = ["description", "title"];
  * by the time the next goes, and once it lands it holds it until somebody else writes.
  */
 export interface TextChain {
+  /** Which chain it is: a write carries it (`PriorityPatch.chain`), so one still out on a chain
+   *  that was replaced settles nothing of the chain that replaced it. */
+  readonly id: number;
   /** The writes pressed here that have not settled. */
   readonly out: number;
   /** Whether one of them was refused: the server holds none of their texts then. */
@@ -38,14 +45,12 @@ export interface TextChain {
   readonly known: readonly string[];
 }
 
-/** Whether a write pressed now goes after the writes of `chain`: one of them is still out, or the
- *  last landed and the page's read has not moved to a text they did not write. Not once a refused
- *  one has settled with none out, and not once the read holds the last text written, which ends
- *  the chain. */
+/** Whether a write pressed now goes after the writes of `chain`: none of them was refused, and
+ *  the page's read shows a text they know, so it has not moved to another person's. Not once
+ *  the read shows the last text written with none out, which ends the chain. */
 function continues(chain: TextChain | undefined, held: string): chain is TextChain {
-  if (chain === undefined) return false;
-  if (chain.out > 0) return true;
-  return !chain.refused && chain.last !== held && chain.known.includes(held);
+  if (chain === undefined || chain.refused || !chain.known.includes(held)) return false;
+  return chain.out > 0 || chain.last !== held;
 }
 
 /** What a write pressed now names as `expected`, where the page reads `held`: the text of the last
@@ -54,12 +59,18 @@ export function expectedText(chain: TextChain | undefined, held: string): string
   return continues(chain, held) ? chain.last : held;
 }
 
-/** The chain once a write of `text` is pressed where the page reads `held`. */
-export function pressedText(chain: TextChain | undefined, text: string, held: string): TextChain {
+/** The chain once a write of `text` is pressed where the page reads `held`: `chain` gone on, or
+ *  a new one, `fresh` its id. */
+export function pressedText(
+  chain: TextChain | undefined,
+  text: string,
+  held: string,
+  fresh: number
+): TextChain {
   if (continues(chain, held)) {
     return { ...chain, known: [...chain.known, text], last: text, out: chain.out + 1 };
   }
-  return { known: [held, text], last: text, out: 1, refused: false };
+  return { id: fresh, known: [held, text], last: text, out: 1, refused: false };
 }
 
 /** The chain once one of its writes settled, `refused` or landed; none once a refusal leaves no
@@ -80,7 +91,15 @@ export function settledText(chain: TextChain, refused: boolean): TextChain | und
  * A title or a description is written through `rename` and `describe`, which name the text the
  * reader's edit started from (`expected`, `expectedText`): where somebody else wrote the text
  * meanwhile the server refuses the write `409 PRIORITY_CHANGED` and writes nothing, so nobody's
- * text is written over unseen. A write that would change nothing is not sent.
+ * text is written over unseen. A write that would change nothing is not sent. A chain of writes
+ * that all landed ends once the refresh the last of them started has answered: the page reads
+ * what they wrote then, and a text of theirs it reads again later is somebody else's.
+ *
+ * The reader's own texts a title or a description keeps beside itself while it shows another
+ * person's (`ChangedMeanwhile`) are held here, by priority and attribute (`kept`, `keep`), and
+ * not in the field: closing the description's disclosure, or a row of the table scrolling away,
+ * takes the field with it, and the field drawn again shows them again. Leaving the page lets
+ * them go.
  *
  * Whether the reader may write at all is `useIsHuman`: every priority write is classed as the
  * deployment's (`internal/dispatch/api/priorities.go`), which a credential scoped to a project
@@ -91,13 +110,15 @@ export function usePriorityWrites() {
   const queryClient = useQueryClient();
   const canWrite = useIsHuman();
   const chains = useRef(new Map<string, TextChain>());
-  const refresh = () => {
-    void queryClient.invalidateQueries({ queryKey: ["priorities"] });
-  };
+  const made = useRef(0);
+  const [keptTexts, setKeptTexts] = useState<ReadonlyMap<string, readonly string[]>>(
+    () => new Map()
+  );
+  const refresh = () => queryClient.invalidateQueries({ queryKey: ["priorities"] });
   const add = useKeyedWrite({
     label: (input: CreatePriorityInput) => `New priority “${input.title}”`,
     write: (input, bounds) => api.createPriority(input, bounds),
-    onSettled: refresh,
+    onSettled: () => void refresh(),
   });
   const patch = useKeyedWrite({
     label: (patch_: PriorityPatch) => patch_.label,
@@ -106,16 +127,24 @@ export function usePriorityWrites() {
     // Counted here, on every write, rather than in the press's own callbacks, which TanStack
     // calls for the last press alone.
     onSettled: (_data, error, patch_) => {
+      const landed: [string, TextChain][] = [];
       for (const attribute of EDITED_TEXTS) {
         if (patch_.input.expected?.[attribute] == null) continue;
         const key = `${attribute}:${patch_.id}`;
         const chain = chains.current.get(key);
-        if (chain === undefined) continue;
+        if (chain === undefined || chain.id !== patch_.chain) continue;
         const next = settledText(chain, error !== null);
         if (next === undefined) chains.current.delete(key);
         else chains.current.set(key, next);
+        if (next?.out === 0) landed.push([key, next]);
       }
-      refresh();
+      const refreshed = refresh();
+      if (landed.length === 0) return;
+      void refreshed.then(() => {
+        for (const [key, chain] of landed) {
+          if (chains.current.get(key) === chain) chains.current.delete(key);
+        }
+      });
     },
   });
   const { mutate } = patch;
@@ -125,12 +154,14 @@ export function usePriorityWrites() {
       const chain = chains.current.get(key);
       const expected = expectedText(chain, held);
       if (text === expected) return;
-      chains.current.set(key, pressedText(chain, text, held));
+      made.current += 1;
+      const next = pressedText(chain, text, held, made.current);
+      chains.current.set(key, next);
       const input: PatchPriorityInput =
         attribute === "title"
           ? { expected: { title: expected }, title: text }
           : { description: text, expected: { description: expected } };
-      mutate({ id, input, label });
+      mutate({ chain: next.id, id, input, label });
     },
     [mutate]
   );
@@ -148,5 +179,20 @@ export function usePriorityWrites() {
       writeText(id, "description", description, held, label),
     [writeText]
   );
-  return { add, canWrite, describe, patch, rename };
+  /** The reader's texts kept beside priority `id`'s `attribute`, newest first. */
+  const kept = useCallback(
+    (id: string, attribute: EditedText) => keptTexts.get(`${attribute}:${id}`) ?? NOTHING_KEPT,
+    [keptTexts]
+  );
+  /** Keeps `texts` beside priority `id`'s `attribute`, in place of what was kept there. */
+  const keep = useCallback((id: string, attribute: EditedText, texts: readonly string[]) => {
+    setKeptTexts((current) => {
+      const key = `${attribute}:${id}`;
+      const next = new Map(current);
+      if (texts.length === 0) next.delete(key);
+      else next.set(key, texts);
+      return next;
+    });
+  }, []);
+  return { add, canWrite, describe, keep, kept, patch, rename };
 }

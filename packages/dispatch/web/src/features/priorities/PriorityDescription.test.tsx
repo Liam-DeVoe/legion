@@ -253,3 +253,19 @@ test("an empty description says none is written: above the empty editor for a wr
   expect(await reader.scope.findByText("No description is written.")).toBeDefined();
   expect(reader.scope.queryByRole("textbox")).toBeNull();
 });
+
+test("the server's text in the editor's own reading of the text the edit started from is no change, and leaves the reader's typing", async () => {
+  const { editor, onSave, rerender, scope } = described(OUTLINE);
+  const { box, handle } = await editor();
+  handle.view.focus();
+  writeAtEnd(handle, " Mine.");
+  // Another writer's editor wrote back the text it read, in the editor's own form: no change of
+  // the text, so nothing of the reader's is taken from the editor and kept beside it.
+  rerender(OUTLINE_READ_BACK);
+  expect(scope.queryByRole("alert", { name: /changed by another person/ })).toBeNull();
+  expect(box.textContent).toContain("old build Mine.");
+  act(() => handle.view.dom.blur());
+  expect(onSave.mock.calls).toEqual([
+    ["# Why\n\n* Every machine runs the daemon\n* Nothing waits on the old build Mine.\n"],
+  ]);
+});

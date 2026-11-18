@@ -44,7 +44,7 @@ export function PriorityPage(): ReactNode {
   const priorities = useQuery(prioritiesQuery());
   const work = useQuery({ ...advancesIssuesQuery({ advances: id }, true), enabled: id !== "" });
   const [open, setOpen] = useState(true);
-  const { canWrite, describe, patch, rename } = usePriorityWrites();
+  const { canWrite, describe, keep, kept, patch, rename } = usePriorityWrites();
   // The way out of this scope, in the issue table's own shape: the issues advancing this
   // priority, project by project, each as that project's table narrowed to them. The chip the
   // address raises there names this priority and gives the whole table back when it is removed.
@@ -105,12 +105,14 @@ export function PriorityPage(): ReactNode {
                 // Keyed by the priority, as each field below is: the page stays mounted from one
                 // priority to the next, and a field holds what its priority's edit started from.
                 <InPlaceField
+                  kept={kept(id, "title")}
                   key={id}
                   label="Title"
-                  onSave={(next) => {
-                    const named = next.trim();
-                    rename(id, named, title, `Rename the priority “${title}” to “${named}”`);
-                  }}
+                  onKeptChange={(texts) => keep(id, "title", texts)}
+                  onSave={(next) =>
+                    rename(id, next, title, `Rename the priority “${title}” to “${next}”`)
+                  }
+                  required
                   value={title}
                 />
               ) : (
@@ -164,8 +166,10 @@ export function PriorityPage(): ReactNode {
             <PriorityDescription
               canWrite={canWrite}
               description={description}
+              kept={kept(id, "description")}
               key={id}
               label={`Description of ${item.order}`}
+              onKeptChange={(texts) => keep(id, "description", texts)}
               onSave={(next) =>
                 describe(id, next, description, `Description of the priority “${title}”`)
               }

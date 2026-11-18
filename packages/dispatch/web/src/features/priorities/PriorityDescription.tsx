@@ -14,28 +14,30 @@ import { createDoc, type EditorHandle } from "../doc/editor";
 import { DocumentRuntime } from "../doc/runtime";
 import { compiledBlockSchema } from "../doc/schema";
 import { watchPicturePath } from "../refs/reference-target";
+import { arrival, NOTHING_KEPT } from "./field-arrival";
 import { ChangedMeanwhile, SAVE_AFTER_MS } from "./InPlaceField";
 
 const NONE_WRITTEN = "No description is written.";
 
-/** The editor a description is drawn in, and where it stands against the server's text. */
+/** The editor a description is drawn in, and where it stands against the server's text
+ *  (`FieldStand`). */
 interface Held {
   readonly handle: EditorHandle;
   /** The markdown the editor held when it last matched the server's text: after it took that
    *  text in, and after each write it sent. Only a text that differs from it is written, since
    *  the editor reads a text back in its own form (`* ` for `- `, a soft break as a space, a
    *  closing newline), and that is no change the reader made. */
-  saved: string;
+  base: string;
   /** The texts written that the server has not answered with yet, oldest first: its answer
    *  with one of them is the reader's own write coming back, not another person's text. */
-  sent: string[];
+  sent: readonly string[];
   /** The write waiting for the typing to rest. */
   timer: number | undefined;
 }
 
 /** Stops the write waiting for the typing to rest, if one waits. */
 function stop(held: Held): void {
-  if (held.timer !== undefined) window.clearTimeout(held.timer);
+  window.clearTimeout(held.timer);
   held.timer = undefined;
 }
 
@@ -43,18 +45,18 @@ function stop(held: Held): void {
 function save(held: Held, onSave: (next: string) => void): void {
   stop(held);
   const markdown = held.handle.getMarkdown();
-  if (markdown === held.saved) return;
-  held.saved = markdown;
-  held.sent.push(markdown);
+  if (markdown === held.base) return;
+  held.base = markdown;
+  held.sent = [...held.sent, markdown];
   onSave(markdown);
 }
 
-/** Puts the server's text into the editor, unless the editor holds it already: the round trip
- *  of the reader's own write answers with exactly what the editor wrote. Throws, as
- *  `setMarkdown` does, for a text holding what this editor may not create. */
+/** Puts the server's text into the editor as it opens, unless the editor holds it already: an
+ *  empty description is the empty editor. Throws, as `setMarkdown` does, for a text holding what
+ *  this editor may not create. */
 function take(held: Held, markdown: string): void {
   if (held.handle.getMarkdown() !== markdown) held.handle.setMarkdown(markdown);
-  held.saved = held.handle.getMarkdown();
+  held.base = held.handle.getMarkdown();
 }
 
 /**
@@ -68,13 +70,16 @@ function take(held: Held, markdown: string): void {
  * every field of a priority is (`InPlaceField`). The priority's own page and the open row of the
  * priorities table draw it alike, so what a description does does not depend on where it is read.
  *
- * A change of the server's text that answers one of the reader's own writes changes nothing they
- * see. Another person's text is taken in at once - with the reader in the editor or not - while
- * the reader holds no unwritten change and no write of theirs is out, so leaving the editor never
- * writes the old text back over it. Else it is taken in all the same, the waiting write is
- * stopped, and the reader's text is kept beside the editor (`ChangedMeanwhile`) until they use
- * it again or let it go. A reader who may not write reads it in the same editor, read-only; with
- * none written, they read that none is, and a writer reads it above the empty editor.
+ * A change of the server's text is read as a one-line field reads one (`arrival`): one that
+ * answers one of the reader's own writes changes nothing they see. Another person's text is taken
+ * in at once - with the reader in the editor or not - while the reader holds no unwritten change
+ * and no write of theirs is out, so leaving the editor never writes the old text back over it.
+ * Else it is taken in all the same, the waiting write is stopped, and the reader's text is kept
+ * beside the editor (`ChangedMeanwhile`) until they use it again or let it go. Where the page
+ * holds those texts (`kept`, `onKeptChange`) they outlive the editor - a disclosure closed, a row
+ * of the table scrolled away - and an editor drawn again shows them again; else they go with it.
+ * A reader who may not write reads it in the same editor, read-only; with none written, they
+ * read that none is, and a writer reads it above the empty editor.
  *
  * The editor is the one control here, a textbox named by `label`, which the keyboard reaches
  * as it reaches any field; the box around it shows the focus ring while the editor holds it.
@@ -82,24 +87,33 @@ function take(held: Held, markdown: string): void {
 export function PriorityDescription({
   canWrite,
   description,
+  kept: keptByPage,
   label,
+  onKeptChange,
   onSave,
 }: {
   canWrite: boolean;
   description: string;
+  /** The reader's texts kept beside the editor, where the page holds them rather than the
+   *  editor: `onKeptChange` hears each change of them. */
+  kept?: readonly string[];
   /** What the description is called, which names the priority it belongs to: "Description of
    *  P3". The editor carries it as its accessible name. */
   label: string;
+  onKeptChange?: (kept: readonly string[]) => void;
   onSave: (next: string) => void;
 }): ReactNode {
   const root = useRef<HTMLDivElement>(null);
   const held = useRef<Held | undefined>(undefined);
   // The server's text the editor last took in, or saw arrive.
   const seen = useRef(description);
-  // The reader's own text, kept beside the editor while it shows another person's.
-  const [kept, setKept] = useState<string>();
-  const latest = useRef({ canWrite, description, kept, onSave });
-  latest.current = { canWrite, description, kept, onSave };
+  // The reader's own texts, kept beside the editor while it shows another person's, where the
+  // page does not hold them.
+  const [ownKept, setOwnKept] = useState(NOTHING_KEPT);
+  const kept = keptByPage ?? ownKept;
+  const setKept = onKeptChange ?? setOwnKept;
+  const latest = useRef({ canWrite, description, kept, onSave, setKept });
+  latest.current = { canWrite, description, kept, onSave, setKept };
   // The handle once the editor holds the description: its name, its access and the references
   // drawn over its text follow it.
   const [editor, setEditor] = useState<EditorHandle | undefined>(undefined);
@@ -153,7 +167,7 @@ export function PriorityDescription({
         void created.destroy();
         return;
       }
-      const current: Held = { handle: created, saved: "", sent: [], timer: undefined };
+      const current: Held = { base: "", handle: created, sent: [], timer: undefined };
       take(current, latest.current.description);
       seen.current = latest.current.description;
       held.current = current;
@@ -185,43 +199,36 @@ export function PriorityDescription({
     };
   }, [createEditor, drawn, login, queryClient]);
 
-  // The server's text, as it changes under the editor (the component's own doc says what each
-  // change does).
+  // The server's text, as it changes under the editor (`arrival`, and the component's own doc).
   useEffect(() => {
     const current = held.current;
     if (current === undefined || description === seen.current) return;
     seen.current = description;
     const markdown = current.handle.getMarkdown();
-    // The server holds what the editor holds: nothing is left to write.
-    if (description === markdown) {
-      current.saved = markdown;
-      current.sent = [];
-      if (latest.current.kept === description) setKept(undefined);
-      return;
-    }
-    // The answer to one of the reader's own writes, and to each one sent before it.
-    const own = current.sent.indexOf(description);
-    if (own !== -1) {
-      current.sent.splice(0, own + 1);
-      return;
-    }
-    // Another person's text. The reader's own, where they hold one, goes beside the editor.
-    const holding = markdown !== current.saved || current.sent.length > 0;
-    const beside = holding ? markdown : latest.current.kept;
-    setKept(beside === description ? undefined : beside);
-    stop(current);
-    current.sent = [];
-    // A text the editor cannot take in leaves the reader's in it, kept beside it too: it is not
-    // written over the text it could not draw as the editor closes.
-    current.saved = markdown;
+    const { kept: mine, setKept: keep } = latest.current;
+    const next = arrival(description, markdown, {
+      base: current.base,
+      kept: mine,
+      sent: current.sent,
+    });
+    current.sent = next.sent;
+    current.base = next.base;
+    if (next.kept !== mine) keep(next.kept);
+    if (!next.take) return;
+    // A text the editor cannot take in leaves the reader's in it: it is not written over the
+    // text it could not draw as the editor closes. One it takes in is held in its own reading.
+    current.base = markdown;
     try {
-      take(current, description);
+      current.handle.setMarkdown(description);
+      current.base = current.handle.getMarkdown();
     } catch (error) {
       setFailure({
         reason: error instanceof Error ? error.message : String(error),
         text: description,
       });
     }
+    // Stops the reader's write waiting for the typing to rest, which would write over the other
+    // person's text, and the save the take's own Yjs update scheduled.
     stop(current);
   }, [description]);
 
@@ -235,17 +242,16 @@ export function PriorityDescription({
     return () => window.removeEventListener("pagehide", leave);
   }, []);
 
-  // The reader's kept text, put back in the editor and written at once. With no editor drawn
-  // - another person's text it could not draw - it is written as it is.
-  const takeMine = () => {
-    if (kept === undefined) return;
-    setKept(undefined);
+  // One of the reader's kept texts, put back in the editor and written at once. With no editor
+  // drawn - another person's text it could not draw - it is written as it is.
+  const putBack = (text: string) => {
+    setKept(NOTHING_KEPT);
     const current = held.current;
     if (current === undefined) {
-      onSave(kept);
+      onSave(text);
       return;
     }
-    current.handle.setMarkdown(kept);
+    current.handle.setMarkdown(text);
     save(current, onSave);
   };
 
@@ -290,12 +296,12 @@ export function PriorityDescription({
           <DocumentReferences editor={editor} source={undefined} />
         </div>
       ) : null}
-      {kept === undefined ? null : (
+      {kept.length === 0 ? null : (
         <ChangedMeanwhile
           label={label}
           mine={kept}
-          onKeepTheirs={() => setKept(undefined)}
-          onUseMine={takeMine}
+          onKeepTheirs={() => setKept(NOTHING_KEPT)}
+          onUse={putBack}
         />
       )}
     </>

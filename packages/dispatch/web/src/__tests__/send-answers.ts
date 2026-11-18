@@ -10,6 +10,8 @@ import type {
   InboxReadResponse,
   Issue,
   Message,
+  PatchPriorityInput,
+  Priority,
   UpdateIssueInput,
   UserAgentState,
   UserAgentStateInput,
@@ -127,6 +129,14 @@ export const answerIssuePatches = () =>
   answerRoute<(key: string, input: UpdateIssueInput, bounds: WriteBounds) => Promise<Issue>>(
     "PATCH",
     "/api/v1/issues/*"
+  );
+
+/** `PATCH /api/v1/priorities/{id}` (`priorityPatchRequest`): a change of a priority, called with
+ *  its id, the change and the bounds. */
+export const answerPriorityPatches = () =>
+  answerRoute<(id: string, input: PatchPriorityInput, bounds: WriteBounds) => Promise<Priority>>(
+    "PATCH",
+    "/api/v1/priorities/*"
   );
 
 /** `PUT /api/v1/me/issues/{key}/state` (`issueStateRequest`). */

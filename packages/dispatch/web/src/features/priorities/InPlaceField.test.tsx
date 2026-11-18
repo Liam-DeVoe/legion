@@ -61,14 +61,23 @@ test("a text written elsewhere replaces what a field the reader is not holding s
  *  field, as a refresh of the row does, without taking the focus from it. */
 function HeldField({
   land,
+  required,
   writes,
 }: {
   land: { write?: (text: string) => void };
+  required?: boolean;
   writes: string[];
 }): ReactNode {
   const [value, setValue] = useState("Old name");
   land.write = setValue;
-  return <InPlaceField label="Title" onSave={(next) => writes.push(next)} value={value} />;
+  return (
+    <InPlaceField
+      label="Title"
+      onSave={(next) => writes.push(next)}
+      required={required}
+      value={value}
+    />
+  );
 }
 
 test("leaving a held field with nothing typed writes nothing, and shows what was written meanwhile", async () => {
@@ -90,10 +99,10 @@ test("leaving a held field with nothing typed writes nothing, and shows what was
 });
 
 /** The field as `HeldField` draws it, with what a test reads of it and the notice beside it. */
-function heldField() {
+function heldField(required = false) {
   const writes: string[] = [];
   const land: { write?: (text: string) => void } = {};
-  const view = render(<HeldField land={land} writes={writes} />);
+  const view = render(<HeldField land={land} required={required} writes={writes} />);
   const page = within(view.container);
   return {
     field: page.getByRole("textbox", { name: "Title" }) as HTMLInputElement,
@@ -199,4 +208,143 @@ test("the page going while the typing waits writes it, once", async () => {
   expect(writes).toEqual(["Old name now"]);
   view.unmount();
   expect(writes).toEqual(["Old name now"]);
+});
+
+test("the answer to an earlier write the reader typed back to leaves the later write out, and writes the reader's text again", async () => {
+  const user = userEvent.setup({ delay: null });
+  const { field, land, notice, view, writes } = heldField();
+  await onFakeClock(async () => {
+    await user.type(field, " A");
+    await jump(SAVE_AFTER_MS);
+    await user.type(field, "B");
+    await jump(SAVE_AFTER_MS);
+    expect(writes).toEqual(["Old name A", "Old name AB"]);
+    // The reader takes the B back, and the first write's answer arrives while that typing rests.
+    await user.type(field, "{Backspace}");
+    land("Old name A");
+    await jump(SAVE_AFTER_MS);
+  });
+  // "Old name AB" is still out, and lands after "Old name A": the reader's text goes again.
+  expect(writes).toEqual(["Old name A", "Old name AB", "Old name A"]);
+  // That later answer is the reader's own write coming back, and is not taken in over theirs.
+  land("Old name AB");
+  expect(field.value).toBe("Old name A");
+  expect(notice()).toBeNull();
+  view.unmount();
+  expect(writes).toEqual(["Old name A", "Old name AB", "Old name A"]);
+});
+
+test("a second change while the notice shows keeps both of the reader's texts, and the one they use is written", async () => {
+  const user = userEvent.setup({ delay: null });
+  const { field, land, notice, view, writes } = heldField();
+  await onFakeClock(async () => {
+    await user.type(field, ", mine");
+    land("Written elsewhere");
+    // The reader types over the other person's text without choosing, and a second change lands.
+    await user.type(field, ", mine again");
+    land("Written elsewhere twice");
+    await jump(SAVE_AFTER_MS);
+  });
+  expect(writes).toEqual([]);
+  expect(field.value).toBe("Written elsewhere twice");
+  const kept = notice();
+  if (kept === null) throw new Error("no notice beside the field");
+  expect(kept.textContent).toContain(
+    "Another person changed this while you wrote. Your texts, newest first:"
+  );
+  expect(
+    within(kept)
+      .getAllByText(/mine/)
+      .map((text) => text.textContent)
+  ).toEqual(["Written elsewhere, mine again", "Old name, mine"]);
+  expect(within(kept).getAllByRole("button", { name: "Keep their text" })).toHaveLength(1);
+  const uses = within(kept).getAllByRole("button", { name: "Use this text" });
+  expect(uses).toHaveLength(2);
+  // The older one, put back and written at once; the other goes with the notice.
+  await user.click(uses[1]);
+  expect(writes).toEqual(["Old name, mine"]);
+  expect(field.value).toBe("Old name, mine");
+  expect(notice()).toBeNull();
+  view.unmount();
+  expect(writes).toEqual(["Old name, mine"]);
+});
+
+/** The field as a page draws it that holds the reader's kept texts itself, as
+ *  `usePriorityWrites` does, and takes the field off the page and draws it again, as a closed
+ *  disclosure or a table row scrolled away does. */
+function PageHeldField({
+  land,
+  writes,
+}: {
+  land: { write?: (text: string) => void };
+  writes: string[];
+}): ReactNode {
+  const [value, setValue] = useState("Old name");
+  const [kept, setKept] = useState<readonly string[]>([]);
+  const [drawn, setDrawn] = useState(true);
+  land.write = setValue;
+  return (
+    <>
+      {drawn ? (
+        <InPlaceField
+          kept={kept}
+          label="Title"
+          onKeptChange={setKept}
+          onSave={(next) => writes.push(next)}
+          value={value}
+        />
+      ) : null}
+      <button onClick={() => setDrawn((was) => !was)} type="button">
+        {drawn ? "Take it off" : "Draw it again"}
+      </button>
+    </>
+  );
+}
+
+test("the reader's texts the page keeps outlive the field: drawn again, it shows them again", async () => {
+  const user = userEvent.setup({ delay: null });
+  const writes: string[] = [];
+  const land: { write?: (text: string) => void } = {};
+  const view = render(<PageHeldField land={land} writes={writes} />);
+  const page = within(view.container);
+  const notice = () => page.queryByRole("alert", { name: "Title, changed by another person" });
+  await onFakeClock(async () => {
+    await user.type(page.getByRole("textbox", { name: "Title" }), ", mine");
+    act(() => land.write?.("Written elsewhere"));
+  });
+  expect(notice()).not.toBeNull();
+  await user.click(page.getByRole("button", { name: "Take it off" }));
+  expect(notice()).toBeNull();
+  await user.click(page.getByRole("button", { name: "Draw it again" }));
+  const kept = notice();
+  if (kept === null) throw new Error("no notice beside the field drawn again");
+  expect(within(kept).getByText("Old name, mine")).toBeDefined();
+  await user.click(within(kept).getByRole("button", { name: "Use my text" }));
+  expect(writes).toEqual(["Old name, mine"]);
+  expect((page.getByRole("textbox", { name: "Title" }) as HTMLInputElement).value).toBe(
+    "Old name, mine"
+  );
+  expect(notice()).toBeNull();
+  view.unmount();
+  expect(writes).toEqual(["Old name, mine"]);
+});
+
+test("a required field the reader empties writes nothing, and left, shows the text it started from again", async () => {
+  const user = userEvent.setup({ delay: null });
+  const { field, land, notice, view, writes } = heldField(true);
+  await onFakeClock(async () => {
+    await user.clear(field);
+    await jump(SAVE_AFTER_MS);
+    // Nothing went, so nothing of the reader's stands when another person's text lands.
+    land("Written elsewhere");
+  });
+  expect(writes).toEqual([]);
+  expect(notice()).toBeNull();
+  expect(field.value).toBe("Written elsewhere");
+  await user.clear(field);
+  await user.tab();
+  expect(writes).toEqual([]);
+  expect(field.value).toBe("Written elsewhere");
+  view.unmount();
+  expect(writes).toEqual([]);
 });

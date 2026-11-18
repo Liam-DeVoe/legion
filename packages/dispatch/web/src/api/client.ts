@@ -472,8 +472,11 @@ export function issuePatchRequest(key: string, input: Body<"/api/v1/issues/{key}
   return writeRequest("patch", "/api/v1/issues/{key}", { key }, input);
 }
 
-/** `PATCH /api/v1/priorities/{id}`: one change of a priority's fields or its place in the order
- *  (`patchPriority`). */
+/** `PATCH /api/v1/priorities/{id}`: the priority's title, description or owner, and its place in
+ *  the one order (`rank: {before, after}`, the priorities it lands between, as the issue board's
+ *  own drag names them). Each field left out is left alone. `expected` names the title or
+ *  description the writer's edit started from; one the priority no longer stores refuses the
+ *  write `409 PRIORITY_CHANGED`, and nothing is written. */
 export function priorityPatchRequest(id: string, input: Body<"/api/v1/priorities/{id}", "patch">) {
   return writeRequest("patch", "/api/v1/priorities/{id}", { id }, input);
 }
@@ -1205,19 +1208,6 @@ export class DispatchApiClient {
    *  a word when it is longer, so a long title is written whole under a cut id. */
   createPriority(input: Body<"/api/v1/priorities", "post">, bounds: WriteBounds) {
     return this.post("/api/v1/priorities", {}, input, bounds);
-  }
-
-  /** `PATCH /api/v1/priorities/{id}`: the priority's title, description or owner, and its place
-   *  in the one order (`rank: {before, after}`, the priorities it lands between, as the issue
-   *  board's own drag names them). Each field left out is left alone. `expected` names the title
-   *  or description the writer's edit started from; one the priority no longer stores refuses the
-   *  write `409 PRIORITY_CHANGED`, and nothing is written. */
-  async patchPriority(
-    id: string,
-    input: Body<"/api/v1/priorities/{id}", "patch">,
-    bounds: WriteBounds
-  ) {
-    return this.send(priorityPatchRequest(id, input), bounds);
   }
 
   /** `GET /api/v1/priorities/{id}/history`: the priority's own history, newest first - each

@@ -1,19 +1,14 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the drag of a row onto another below is a drag and a drop, which user-event has no form for
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { recordedEditors, writeAtEnd } from "../../__tests__/recorded-editors";
-import { answerRoute } from "../../__tests__/send-answers";
-import { api, type WriteBounds } from "../../api/client";
-import type {
-  IssueSummary,
-  PatchPriorityInput,
-  Priorities,
-  Priority,
-  PriorityRow,
-} from "../../api/types";
+import { answerPriorityPatches } from "../../__tests__/send-answers";
+import { api } from "../../api/client";
+import { prioritiesQuery } from "../../api/queries";
+import type { IssueSummary, Priorities, Priority, PriorityRow } from "../../api/types";
 import { DocumentRuntime } from "../doc/runtime";
 import { PrioritiesPage } from "./PrioritiesPage";
 
@@ -145,9 +140,7 @@ function page(answer: Priorities, issues: IssueSummary[] = [], writer = true) {
   const create = spyOn(api, "createPriority").mockResolvedValue(saved("new"));
   // A change of a priority goes on its priority's line, made from its request alone
   // (`priorityPatchRequest`), so it is answered on its route.
-  const patch = answerRoute<
-    (id: string, input: PatchPriorityInput, bounds: WriteBounds) => Promise<Priority>
-  >("PATCH", "/api/v1/priorities/*").mockImplementation(async (id) => saved(id));
+  const patch = answerPriorityPatches().mockImplementation(async (id) => saved(id));
   // The unit DOM lays nothing out: give every table's box the height a window would.
   const descriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
   Object.defineProperty(HTMLElement.prototype, "clientHeight", {
@@ -177,7 +170,18 @@ function page(answer: Priorities, issues: IssueSummary[] = [], writer = true) {
     if (descriptor) Object.defineProperty(HTMLElement.prototype, "clientHeight", descriptor);
     else Reflect.deleteProperty(HTMLElement.prototype, "clientHeight");
   });
-  return { create, editors, listing, patch, view };
+  /** Another person's write of priority `id` reaching the page, as a refresh of its read does. */
+  const writtenElsewhere = (id: string, overrides: Partial<PriorityRow>) => {
+    const written = {
+      ...answer,
+      priorities: (answer.priorities ?? []).map((row) =>
+        row.id === id ? { ...row, ...overrides } : row
+      ),
+    };
+    priorities.mockResolvedValue(written);
+    act(() => client.setQueryData(prioritiesQuery().queryKey, written));
+  };
+  return { create, editors, listing, patch, view, writtenElsewhere };
 }
 
 const FIFTEEN = body({
@@ -461,6 +465,35 @@ test("a title is renamed where it is read, with no edit mode and no Save button"
     { expected: { title: "Linkage closure eval" }, title: "Linkage closure, restarted" },
   ]);
   expect(screen.queryByRole("button", { name: /^Save/ })).toBeNull();
+});
+
+test("the reader's title kept beside a row outlives the row leaving the table, and is written when they use it", async () => {
+  const user = userEvent.setup();
+  const { patch, writtenElsewhere } = page(FIFTEEN);
+  const field = await screen.findByRole("textbox", { name: "Title of P2" });
+  await user.type(field, ", mine");
+  // Another person's rename reaches the page before the typing rests.
+  writtenElsewhere("linkage-closure", { title: "Linkage closure, theirs" });
+  const notice = () =>
+    screen.queryByRole("alert", { name: "Title of P2, changed by another person" });
+  expect(notice()).not.toBeNull();
+  // A search the row does not match takes it off the table, as scrolling it away does; cleared,
+  // the row is drawn again.
+  const search = screen.getByRole("searchbox", { name: "Search priorities" });
+  await user.type(search, "OSS");
+  await waitFor(() => expect(screen.queryByRole("textbox", { name: "Title of P2" })).toBeNull());
+  expect(notice()).toBeNull();
+  await user.clear(search);
+  await screen.findByRole("textbox", { name: "Title of P2" });
+  const kept = notice();
+  if (kept === null) throw new Error("no notice beside the title drawn again");
+  expect(within(kept).getByText("Linkage closure eval, mine")).toBeDefined();
+  await user.click(within(kept).getByRole("button", { name: "Use my text" }));
+  await waitFor(() => expect(patch).toHaveBeenCalledTimes(1));
+  expect(patch.mock.calls[0]?.slice(0, 2)).toEqual([
+    "linkage-closure",
+    { expected: { title: "Linkage closure, theirs" }, title: "Linkage closure eval, mine" },
+  ]);
 });
 
 test("a description is written on the open row: the empty editor under the prompt that says none is", async () => {

@@ -10,7 +10,7 @@ import { textMutedOnSurfaceMuted, textSecondaryOnCanvas } from "../../theme/clas
 import { IssuesTable } from "../project/IssuesTable";
 import { useTableLayout } from "../project/issues-table-layout";
 import { NewPriority } from "./NewPriority";
-import { usePriorityColumns } from "./priorities-columns";
+import { PRIORITY_COLUMN_DEFS, PriorityRowActionsContext } from "./priorities-columns";
 import {
   buildPriorityItems,
   matchesPrioritySearch,
@@ -59,7 +59,7 @@ export function PrioritiesTable({
   const [openId, setOpenId] = useState<string>();
   const [dragging, setDragging] = useState<string>();
   const [openFilter, setOpenFilter] = useState<string>();
-  const { canWrite, describe, patch, rename } = usePriorityWrites();
+  const { canWrite, describe, keep, kept, patch, rename } = usePriorityWrites();
 
   const items = useMemo(() => buildPriorityItems(rows), [rows]);
   const order = useMemo(() => items.map((item) => item.priority.id), [items]);
@@ -122,38 +122,49 @@ export function PrioritiesTable({
     [openId, params, setParams]
   );
   const onRename = useCallback(
-    (item: PriorityItem, title: string) => {
-      const next = title.trim();
+    (item: PriorityItem, title: string) =>
       rename(
         item.priority.id,
-        next,
+        title,
         item.priority.title,
-        `Rename the priority “${item.priority.title}” to “${next}”`
-      );
-    },
+        `Rename the priority “${item.priority.title}” to “${title}”`
+      ),
     [rename]
   );
-  // One object while nothing a row can do changes, since the column declarations are built
-  // over it (`usePriorityColumns`) and the table is built over those.
+  // One object while nothing a row can do changes: every cell reads it
+  // (`PriorityRowActionsContext`), and is drawn again when it changes.
   const actions = useMemo(
     () => ({
       canReorder,
       canWrite,
       dragging,
+      kept,
       onDragEnd,
       onDragStart: setDragging,
       onDescribe,
+      onKeep: keep,
       onMove,
       onOpen,
       onRename,
       openId,
     }),
-    [canReorder, canWrite, dragging, onDescribe, onDragEnd, onMove, onOpen, onRename, openId]
+    [
+      canReorder,
+      canWrite,
+      dragging,
+      keep,
+      kept,
+      onDescribe,
+      onDragEnd,
+      onMove,
+      onOpen,
+      onRename,
+      openId,
+    ]
   );
-  const columns = usePriorityColumns(actions);
   const model = useDataTable<PriorityItem>({
     rows: items,
-    columns,
+    columns: PRIORITY_COLUMN_DEFS,
     getRowId: (item) => item.priority.id,
     layout,
     state: {
@@ -207,58 +218,60 @@ export function PrioritiesTable({
         </TableToolbar>
       </div>
 
-      <DataTable
-        empty="No priorities match these filters."
-        filterCounts={facets}
-        label="Priorities table"
-        model={model}
-        noun={NOUN}
-        onOpenFilterChange={setOpenFilter}
-        openFilter={openFilter}
-        renderGroup={({ entry: { continued, row, shown }, index, measure }) => {
-          const heading = String(row.groupingValue ?? "");
-          const leaves = row.getLeafRows().filter((leaf) => !leaf.getIsGrouped()).length;
-          const counted = `${leaves} ${leaves === 1 ? NOUN.one : NOUN.many}`;
-          // What the reader can see under this heading, which a page boundary can make fewer
-          // than the group holds: "1 of 2 priorities" rather than a count of rows not here.
-          const count = (shown ?? leaves) === leaves ? counted : `${shown} of ${counted}`;
-          return (
-            <DataTableGroupRow
-              columns={visibleColumns}
-              expanded={row.getIsExpanded()}
-              heading={
-                <>
-                  {heading}
-                  {continued ? (
-                    <span className={`font-normal ${textMutedOnSurfaceMuted}`}>(continued)</span>
-                  ) : null}
-                  <span className={`font-normal ${textMutedOnSurfaceMuted}`}>{count}</span>
-                </>
-              }
+      <PriorityRowActionsContext.Provider value={actions}>
+        <DataTable
+          empty="No priorities match these filters."
+          filterCounts={facets}
+          label="Priorities table"
+          model={model}
+          noun={NOUN}
+          onOpenFilterChange={setOpenFilter}
+          openFilter={openFilter}
+          renderGroup={({ entry: { continued, row, shown }, index, measure }) => {
+            const heading = String(row.groupingValue ?? "");
+            const leaves = row.getLeafRows().filter((leaf) => !leaf.getIsGrouped()).length;
+            const counted = `${leaves} ${leaves === 1 ? NOUN.one : NOUN.many}`;
+            // What the reader can see under this heading, which a page boundary can make fewer
+            // than the group holds: "1 of 2 priorities" rather than a count of rows not here.
+            const count = (shown ?? leaves) === leaves ? counted : `${shown} of ${counted}`;
+            return (
+              <DataTableGroupRow
+                columns={visibleColumns}
+                expanded={row.getIsExpanded()}
+                heading={
+                  <>
+                    {heading}
+                    {continued ? (
+                      <span className={`font-normal ${textMutedOnSurfaceMuted}`}>(continued)</span>
+                    ) : null}
+                    <span className={`font-normal ${textMutedOnSurfaceMuted}`}>{count}</span>
+                  </>
+                }
+                index={index}
+                label={`${row.getIsExpanded() ? "Collapse" : "Expand"} ${heading}, ${count}${continued ? ", continued" : ""}`}
+                measure={measure}
+                onToggle={row.getToggleExpandedHandler()}
+                width={Math.max(180, boxWidth - 20)}
+              />
+            );
+          }}
+          renderRow={({ row, index, measure }) => (
+            <TableBodyRow
+              dragging={dragging}
               index={index}
-              label={`${row.getIsExpanded() ? "Collapse" : "Expand"} ${heading}, ${count}${continued ? ", continued" : ""}`}
               measure={measure}
-              onToggle={row.getToggleExpandedHandler()}
-              width={Math.max(180, boxWidth - 20)}
+              onDrop={(onto) => {
+                const item = items.find((candidate) => candidate.priority.id === dragging);
+                setDragging(undefined);
+                if (item !== undefined) move(item, onto);
+              }}
+              label={`${row.original.order} ${row.original.priority.title}`}
+              row={row}
             />
-          );
-        }}
-        renderRow={({ row, index, measure }) => (
-          <TableBodyRow
-            dragging={dragging}
-            index={index}
-            measure={measure}
-            onDrop={(onto) => {
-              const item = items.find((candidate) => candidate.priority.id === dragging);
-              setDragging(undefined);
-              if (item !== undefined) move(item, onto);
-            }}
-            label={`${row.original.order} ${row.original.priority.title}`}
-            row={row}
-          />
-        )}
-        scrollTestId="priorities-table-scroll"
-      />
+          )}
+          scrollTestId="priorities-table-scroll"
+        />
+      </PriorityRowActionsContext.Provider>
 
       {open === undefined ? null : (
         <section aria-label={`Work advancing ${open.priority.title}`} className="space-y-2">

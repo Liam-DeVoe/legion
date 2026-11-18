@@ -1,18 +1,13 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { recordedEditors, selectText, writeAtEnd } from "../../__tests__/recorded-editors";
-import { answerRoute } from "../../__tests__/send-answers";
-import { api, type WriteBounds } from "../../api/client";
-import type {
-  IssueSummary,
-  PatchPriorityInput,
-  Priorities,
-  Priority,
-  PriorityRow,
-} from "../../api/types";
+import { answerPriorityPatches } from "../../__tests__/send-answers";
+import { api } from "../../api/client";
+import { prioritiesQuery } from "../../api/queries";
+import type { IssueSummary, Priorities, Priority, PriorityRow } from "../../api/types";
 import { DocumentRuntime } from "../doc/runtime";
 import { PriorityPage } from "./PriorityPage";
 
@@ -130,9 +125,7 @@ function page(id = "rocq-lean", issues: IssueSummary[] = [], writer = true) {
   const viewer = spyOn(api, "whoAmI").mockResolvedValue(whoami);
   // A change of a priority goes on its priority's line, made from its request alone
   // (`priorityPatchRequest`), so it is answered on its route.
-  const patch = answerRoute<
-    (id: string, input: PatchPriorityInput, bounds: WriteBounds) => Promise<Priority>
-  >("PATCH", "/api/v1/priorities/*").mockImplementation(async (id) => saved(id));
+  const patch = answerPriorityPatches().mockImplementation(async (id) => saved(id));
   // The margin reads the priority's own history as soon as the page opens.
   const history = spyOn(api, "getPriorityHistory").mockResolvedValue([]);
   const descriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
@@ -165,7 +158,17 @@ function page(id = "rocq-lean", issues: IssueSummary[] = [], writer = true) {
     if (descriptor) Object.defineProperty(HTMLElement.prototype, "clientHeight", descriptor);
     else Reflect.deleteProperty(HTMLElement.prototype, "clientHeight");
   });
-  return { editors, listing, patch, view };
+  /** Another person's write of the priority on the page reaching it, as a refresh of its read
+   *  does. */
+  const writtenElsewhere = (overrides: Partial<PriorityRow>) => {
+    const written = {
+      ...BODY,
+      priorities: ROWS.map((row) => (row.id === id ? { ...row, ...overrides } : row)),
+    };
+    priorities.mockResolvedValue(written);
+    act(() => client.setQueryData(prioritiesQuery().queryKey, written));
+  };
+  return { editors, listing, patch, view, writtenElsewhere };
 }
 
 test("the header carries the order, the title in place, the owner and the three counts", async () => {
@@ -231,6 +234,46 @@ test("the description is the documents' editor, with no action on a selection, a
   await user.tab();
   expect(document.activeElement).not.toBe(box);
   expect(patch).toHaveBeenCalledTimes(1);
+});
+
+test("the reader's description kept beside the editor outlives the disclosure closing, and is written when they use it", async () => {
+  const user = userEvent.setup();
+  const { editors, patch, writtenElsewhere } = page();
+  const { handle } = await editors.named("Description of P2");
+  handle.view.focus();
+  writeAtEnd(handle, " Mine.");
+  // Another person's description reaches the page before the typing rests.
+  writtenElsewhere({ description: "Written elsewhere." });
+  const notice = () =>
+    screen.queryByRole("alert", { name: "Description of P2, changed by another person" });
+  expect(notice()).not.toBeNull();
+  await user.click(screen.getByRole("button", { name: "Description" }));
+  await waitFor(() =>
+    expect(screen.queryByRole("textbox", { name: "Description of P2" })).toBeNull()
+  );
+  expect(notice()).toBeNull();
+  await user.click(screen.getByRole("button", { name: "Description, closed" }));
+  await editors.named("Description of P2");
+  const kept = notice();
+  if (kept === null) throw new Error("no notice beside the description opened again");
+  expect(within(kept).getByText(/Speedruns run again\. Mine\./)).toBeDefined();
+  expect(patch).not.toHaveBeenCalled();
+  await user.click(within(kept).getByRole("button", { name: "Use my text" }));
+  await waitFor(() => expect(patch).toHaveBeenCalledTimes(1));
+  expect(patch.mock.calls[0]?.[1]).toEqual({
+    description: "# Rocq and Lean speed work restarted\n\nSpeedruns run again. Mine.\n",
+    expected: { description: "Written elsewhere." },
+  });
+});
+
+test("a title the reader empties writes nothing, and left, shows the title again", async () => {
+  const user = userEvent.setup();
+  const { patch } = page();
+  const title = (await screen.findByRole("textbox", { name: "Title" })) as HTMLInputElement;
+  await user.clear(title);
+  await user.tab();
+  expect(title.value).toBe("Rocq and Lean speed work restarted");
+  expect(patch).not.toHaveBeenCalled();
 });
 
 test("the keyboard reaches the description's editor from the disclosure above it", async () => {
