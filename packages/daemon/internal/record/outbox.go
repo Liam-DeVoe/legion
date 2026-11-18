@@ -1952,11 +1952,13 @@ func validateOutboxPayload(payload OutboxPayload) error {
 // holds an architect placed over claims of the round: those are told in a notice row (Notice) to
 // the architect that owns the held claim, which can resume them, and to the controller only where
 // no architect can act on one: that architect's claim has failed or retired or is one the daemon
-// does not supervise, whether at the sweep or before the notice row is delivered, or the hold is
-// over the tree root's own architect (internal/daemon's tellUpdateStalled, architectHears and
-// relayUpdateStalled). A hold over a child's own architect claim is told to the architect above
-// that child (NoticeStartsAtParent). A row of either kind carries the round's account
-// (validateNoticeUpdate), so a controller's row an older daemon queued decodes as it did.
+// does not supervise, whether at the sweep or before the notice row is delivered, there is no
+// owning architect, the hold is over the tree root's own architect, or the notice row to the
+// architect finishes undelivered because the listener refuses it on every attempt
+// (internal/daemon's tellUpdateStalled, architectHears and relayUpdateStalled). A hold over a
+// child's own architect claim is told to the architect above that child (NoticeStartsAtParent).
+// A row of either kind carries the round's account (validateNoticeUpdate), so a controller's row
+// an older daemon queued decodes as it did.
 var validNoticeKinds = []NoticeKind{
 	"phase-finished", "worker-died", "worker-stalled", "worker-silent", "worker-background-stalled", "held",
 	"pr-blocked", "pr-merged", "pr-closed-unmerged", "pull-request-missing", "message-refused",
@@ -1975,7 +1977,8 @@ func validNoticeKind(kind NoticeKind) bool {
 // that carries one, and requires that kind to carry one naming its round and the claims it asked.
 // Both arms of the switch above call it, because a round is told in rows of this one kind, to the
 // architect that owns the held claim for a hold an architect placed and to the controller for the
-// rest (internal/daemon's tellUpdateStalled), and a rule written in one arm alone would take the
+// rest, and for such a hold where no architect can act on it (internal/daemon's
+// tellUpdateStalled and relayUpdateStalled), and a rule written in one arm alone would take the
 // row the other refused.
 func validateNoticeUpdate(kind NoticeKind, update *UpdateStalled) error {
 	if (kind == UpdateStalledNotice) != (update != nil) {

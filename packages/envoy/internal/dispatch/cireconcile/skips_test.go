@@ -272,3 +272,47 @@ func TestNoBucketYetNoPass(t *testing.T) {
 		t.Fatalf("Open was called %d times over three passes, want once a pass: a pass that kept the writer it bound would write through a connection the client may have replaced", binds)
 	}
 }
+
+// A mapped name no repository GitHub could hold is skipped and named at WARN with the request
+// that mends it, which differs by the kind of row the name is. A mapping stored under `acme/..`
+// is removed, by a DELETE that writes the dots percent-encoded. A renamed_to stored as
+// `acme/...git` is no mapping's own name, so a DELETE of it removes nothing: it is mended by the
+// PUT of the mapping it belongs to, `oldco/tools`.
+//
+// The negative control is the DELETE of the name named for every row, which names a removal for
+// the renamed_to that removes nothing and no PUT.
+func TestARefusedMappedNameIsNamedWithTheRequestThatMendsIt(t *testing.T) {
+	h := newHarness(t, reviewerAppID)
+	h.mapRepository("acme/..")
+	h.mapRenamedRepository("oldco/tools", "acme/...git")
+
+	h.pass()
+
+	skipped := map[string]map[string]any{}
+	for _, line := range h.lines("ci reconcile skipped a repository whose name is not an owner/name GitHub allows") {
+		skipped[fmt.Sprint(line["repository"])] = line
+	}
+	if len(skipped) != 2 {
+		t.Fatalf("the pass named %d refused names, want acme/.. and acme/...git:\n%s", len(skipped), h.logs.String())
+	}
+	for _, want := range []struct {
+		row, removedBy, mendedBy string
+	}{
+		{row: "acme/..", removedBy: "DELETE /api/v1/settings/repo-projects/acme/%2E%2E"},
+		{row: "acme/...git", mendedBy: `PUT /api/v1/settings/repo-projects/oldco/tools with its project and a renamed_to GitHub allows, or "" to clear it`},
+	} {
+		line := skipped[want.row]
+		for field, value := range map[string]string{"removed_by": want.removedBy, "mended_by": want.mendedBy} {
+			got, named := line[field]
+			if value == "" && named {
+				t.Errorf("the WARN for %s names %s %v, want none: %v", want.row, field, got, line)
+			}
+			if value != "" && got != value {
+				t.Errorf("the WARN for %s names %s %v, want %q: %v", want.row, field, got, value, line)
+			}
+		}
+	}
+	if got := number(t, h.passLine(), "mappings_skipped"); got != 2 {
+		t.Errorf("the pass line reports %d mappings skipped, want 2", got)
+	}
+}

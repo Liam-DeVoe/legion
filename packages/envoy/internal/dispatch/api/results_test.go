@@ -865,10 +865,11 @@ func TestResultOfAnIssueUnderARepositorysOldNameIsRefusedAtTheCanonicalName(t *t
 // the read-through of a commit names the pull request heads says that commit is the head of,
 // each repository's compare read answers from the commits each of its branches carries, and
 // each read of a pull request's state, each ask of the read-through and each compare read is
-// counted by repository. Seven lists take a repository out of the App's reach: one the App is not
+// counted by repository. Eight lists take a repository out of the App's reach: one the App is not
 // installed on, one whose installation token GitHub will not mint, one whose commit reads GitHub
-// fails, one whose pull requests the App's token is refused, one whose pull requests GitHub
-// rate-limits, one whose pull request reads answer a 500, and one whose own read GitHub hides.
+// fails, one whose commits the App's token is refused, one whose pull requests the App's token is
+// refused, one whose pull requests GitHub rate-limits, one whose pull request reads answer a 500,
+// and one whose own read GitHub hides.
 type linkedGitHub struct {
 	mu sync.Mutex
 	// held is the commits each repository holds: GET /repos/{owner}/{repo}/commits/{sha}
@@ -900,6 +901,10 @@ type linkedGitHub struct {
 	// failing is the repositories whose GET /repos/{owner}/{repo}/commits/{sha} answers a 503,
 	// a read of GitHub's that did not answer, for every commit.
 	failing []string
+	// sealed is the repositories whose GET /repos/{owner}/{repo}/commits/{sha} answers the 403
+	// GitHub refuses an installation token a resource with, which is no rate limit, for every
+	// commit: the App reads that repository's pull requests and cannot read its commits.
+	sealed []string
 	// refusing is the repositories whose GET /repos/{owner}/{repo}/pulls/{number} answers the 403
 	// GitHub refuses an installation token a resource with, which is no rate limit: the App
 	// cannot read that repository's pull requests.
@@ -988,6 +993,11 @@ func linkedRepositoriesGitHub(t *testing.T, linked *linkedGitHub) (http.Handler,
 		if slices.Contains(linked.failing, repo) {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			fmt.Fprint(w, `{"message":"Service Unavailable"}`)
+			return
+		}
+		if slices.Contains(linked.sealed, repo) {
+			w.WriteHeader(http.StatusForbidden)
+			fmt.Fprint(w, `{"message":"Resource not accessible by integration"}`)
 			return
 		}
 		if !slices.Contains(linked.held[repo], sha) {
@@ -1095,10 +1105,11 @@ func TestResultAtACommitOfARepositoryTheIssueLinksAPullRequestIn(t *testing.T) {
 	linked := &linkedGitHub{
 		held: map[string][]string{"acme/widgets": {headCommit}, "acme/tools": {linkedCommit}},
 		pulls: map[string]string{
-			"acme/tools#7": "open", "acme/tools#8": "closed", "acme/tools#9": "merged",
+			"acme/tools#7": "open", "acme/tools#8": "closed", "acme/tools#9": "merged", "acme/sealed#5": "open",
 		},
 		heads:       map[string]int{"acme/tools@" + linkedCommit: 7},
 		uninstalled: []string{"acme/elsewhere"},
+		sealed:      []string{"acme/sealed"},
 	}
 	handler, database := linkedRepositoriesGitHub(t, linked)
 	issue := issueInRepository(t, handler, "RELK", "acme/widgets", "Work in two repositories")
@@ -1109,11 +1120,13 @@ func TestResultAtACommitOfARepositoryTheIssueLinksAPullRequestIn(t *testing.T) {
 		links  []string
 		commit string
 		// refused is whether the result is refused 400 RESULT_COMMIT_UNKNOWN, named and unnamed
-		// the repositories the refusal's first clause names as asked and does not, and unreadable
-		// the linked pull requests its clause on what Dispatch could not read names.
+		// the repositories the refusal's first clause names as asked and does not, unreadable
+		// the linked pull requests its clause on what Dispatch could not read names, and
+		// unreadCommit the linked pull requests in whose repository that clause names the commit.
 		refused        bool
 		named, unnamed []string
 		unreadable     []string
+		unreadCommit   []string
 		// readThrough is the repository the read-through after the write asks, and every other
 		// repository is asked nothing; a refusal reads nothing through.
 		readThrough string
@@ -1169,6 +1182,15 @@ func TestResultAtACommitOfARepositoryTheIssueLinksAPullRequestIn(t *testing.T) {
 			links: []string{"https://github.com/acme/elsewhere/pull/3"}, commit: nearHeadCommit, refused: true,
 			named: []string{"acme/widgets"}, unnamed: []string{"acme/elsewhere"}, unreadable: []string{"acme/elsewhere#3"},
 		},
+		{
+			// A link to an open pull request of a repository whose pull requests the App reads
+			// and whose commits it cannot: the repository does not count, and the refusal names
+			// the commit in that repository as what Dispatch could not read, not the pull
+			// request, which it read.
+			name:  "a link to a pull request of a repository whose commits the App cannot read lets no unheld commit through",
+			links: []string{"https://github.com/acme/sealed/pull/5"}, commit: nearHeadCommit, refused: true,
+			named: []string{"acme/widgets"}, unnamed: []string{"acme/sealed"}, unreadCommit: []string{"acme/sealed#5"},
+		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			linkPullRequests(t, handler, issue.Key, row.links...)
@@ -1205,6 +1227,14 @@ func TestResultAtACommitOfARepositoryTheIssueLinksAPullRequestIn(t *testing.T) {
 				for _, pull := range row.unreadable {
 					if !strings.Contains(text, "Dispatch could not read the linked pull request "+pull) {
 						t.Errorf("the refusal reads %q, want %s named as a linked pull request Dispatch could not read", text, pull)
+					}
+				}
+				for _, pull := range row.unreadCommit {
+					if !strings.Contains(text, "Dispatch could not read the commit in the repository of the linked pull request "+pull) {
+						t.Errorf("the refusal reads %q, want the commit in the repository of %s named as what Dispatch could not read", text, pull)
+					}
+					if strings.Contains(text, "could not read the linked pull request "+pull) {
+						t.Errorf("the refusal reads %q, want %s, which Dispatch read, not named as a pull request it could not read", text, pull)
 					}
 				}
 				if stored != 0 {

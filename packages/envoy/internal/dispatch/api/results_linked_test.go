@@ -254,3 +254,56 @@ func TestARecordReadsAtMostTheBoundOfLinkedPullRequests(t *testing.T) {
 		t.Errorf("the record read the state of %d linked pull requests, want %d", read, linkedPullRequestReads)
 	}
 }
+
+// A refusal names at most linkedPullRequestReads of the linked pull requests Dispatch could not
+// read, and counts the rest, so the number of links a person writes does not set the size of the
+// refusal's text. An issue linking twelve pull requests of one repository the App is not
+// installed on reads none of them, since GitHub's answer about the first is its answer about every
+// pull request of that repository, and the refusal names the first ten in the order the record
+// meets the links and says two more. The pull requests are numbered from 101, so that order,
+// which the links' text sets, is their numbers' too.
+//
+// The negative control is the list left uncut, which names all twelve.
+func TestARefusalNamesAtMostTheBoundOfLinkedPullRequestsDispatchCannotRead(t *testing.T) {
+	const (
+		commit = "9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e"
+		links  = linkedPullRequestReads + 2
+	)
+	linked := &linkedGitHub{
+		held:        map[string][]string{"acme/widgets": {headCommit}},
+		pulls:       map[string]string{},
+		uninstalled: []string{"acme/elsewhere"},
+	}
+	var urls, named []string
+	for number := 101; number < 101+links; number++ {
+		urls = append(urls, fmt.Sprintf("https://github.com/acme/elsewhere/pull/%d", number))
+		if number < 101+linkedPullRequestReads {
+			named = append(named, fmt.Sprintf("acme/elsewhere#%d (%s)", number, model.ReasonRepositoryUnreadable))
+		}
+	}
+	handler, database := linkedRepositoriesGitHub(t, linked)
+	issue := issueInRepository(t, handler, "RELC", "acme/widgets", "Many links of one repository the App cannot read").Key
+	uploadDocument(t, handler, "/api/v1/issues/"+issue, "verification.md", twoChecks)
+	linkPullRequests(t, handler, issue, urls...)
+	eventsBefore := resultEventsOn(t, database, issue)
+
+	recorded := recordResult(t, handler, issue, resultBody("k1", "pass", commit, nil))
+
+	code, text := refusalOf(t, recorded)
+	if recorded.Code != http.StatusBadRequest || code != "RESULT_COMMIT_UNKNOWN" {
+		t.Fatalf("status=%d body=%s, want 400 RESULT_COMMIT_UNKNOWN", recorded.Code, recorded.Body.String())
+	}
+	want := "; Dispatch could not read the linked pull requests " + strings.Join(named, ", ") +
+		" and 2 more: grant Dispatch's GitHub App acme/elsewhere, or link a readable pull request"
+	if !strings.Contains(text, want) {
+		t.Errorf("the refusal reads %q, want it to say %q", text, want)
+	}
+	for _, past := range []string{"acme/elsewhere#111", "acme/elsewhere#112"} {
+		if strings.Contains(text, past) {
+			t.Errorf("the refusal reads %q, want %s, past the bound, counted and not named", text, past)
+		}
+	}
+	if stored := resultEventsOn(t, database, issue) - eventsBefore; stored != 0 {
+		t.Errorf("the refused result appended %d result.recorded events, want none", stored)
+	}
+}

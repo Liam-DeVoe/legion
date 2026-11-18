@@ -7,6 +7,7 @@ package daemon
 // what each test reads is the topic each notice was published on.
 
 import (
+	"context"
 	"maps"
 	"slices"
 	"strings"
@@ -58,7 +59,19 @@ func (r *podUpdateRig) stallDelivery(absent ...string) map[string][]record.Notic
 	r.t.Helper()
 	publisher := &holderPublisher{}
 	publisher.setAbsent(absent...)
-	runner := &outbox{log: quietLogger(), pool: r.pool, records: r.records, notices: publisher, supervisor: r.sup,
+	return r.stallDeliveryThrough(publisher)
+}
+
+// stallListener is the listener stallDeliveryThrough publishes through, and what it delivered.
+type stallListener interface {
+	notify.Publisher
+	snapshot() (int, []outboxPublish)
+}
+
+// stallDeliveryThrough is stallDelivery through listener.
+func (r *podUpdateRig) stallDeliveryThrough(listener stallListener) map[string][]record.Notice {
+	r.t.Helper()
+	runner := &outbox{log: quietLogger(), pool: r.pool, records: r.records, notices: listener, supervisor: r.sup,
 		project: podUpdateProject, dispatchProject: "LEGION", now: time.Now}
 	for _, kind := range []record.OutboxKind{record.OutboxKindNotice, record.OutboxKindControllerNotice} {
 		for _, row := range r.rows(kind) {
@@ -68,7 +81,7 @@ func (r *podUpdateRig) stallDelivery(absent ...string) map[string][]record.Notic
 			}
 		}
 	}
-	_, delivered := publisher.snapshot()
+	_, delivered := listener.snapshot()
 	byTopic := map[string][]record.Notice{}
 	for _, published := range delivered {
 		if notice, ok := published.payload.(record.Notice); ok && notice.Kind == record.UpdateStalledNotice {
@@ -76,6 +89,29 @@ func (r *podUpdateRig) stallDelivery(absent ...string) map[string][]record.Notic
 		}
 	}
 	return byTopic
+}
+
+// refusingListener is holderPublisher where every publish to a topic in refused is answered that
+// topic's refusal, as the listener refuses a holder that does not advertise the delivery mode
+// (notify.ErrRefusedByHolder) or a forward its own NATS grant denies (notify.ErrPublishDenied),
+// on every attempt.
+type refusingListener struct {
+	*holderPublisher
+	refused map[string]error
+}
+
+func (p refusingListener) Publish(ctx context.Context, topic, message string, payload any, key string) error {
+	if refusal, ok := p.refused[topic]; ok {
+		return refusal
+	}
+	return p.holderPublisher.Publish(ctx, topic, message, payload, key)
+}
+
+func (p refusingListener) PublishKept(ctx context.Context, topic, message string, payload any, key string) (bool, error) {
+	if refusal, ok := p.refused[topic]; ok {
+		return false, refusal
+	}
+	return p.holderPublisher.PublishKept(ctx, topic, message, payload, key)
 }
 
 // toldOn holds told to one update-stalled notice, published on topic and on no other, and answers
@@ -178,10 +214,13 @@ func TestPodUpdateTellsTheControllerOfAnArchitectsHoldWhenTheOwningArchitectFail
 // held claim, and where that architect's claim fails after the sweep queued its notice and before
 // the outbox runs it, the row finishes undelivered (noticeAnswered's architectEnded) and the
 // controller is told the round in its place, with the architect's hold named: the sweep marked the
-// round told when it queued the row, so no later sweep would tell anyone.
+// round told when it queued the row, so no later sweep would tell anyone. The relayed notice does
+// not list the failed architect as a claim the round waits on: a failed claim runs no turn on the
+// pod, so the round does not wait for it.
 //
-// The negative control is the relay undone (relayUpdateStalled), which publishes no update-stalled
-// notice at all.
+// The negative controls are the relay undone (relayUpdateStalled), which publishes no
+// update-stalled notice at all, and the relayed waiting list left as the sweep wrote it, which
+// lists the failed architect in the state it was in before it failed.
 func TestPodUpdateTellsTheControllerOfAnArchitectsHoldWhoseArchitectFailedBeforeItsNotice(t *testing.T) {
 	rig := heldRoundRig(t, supervise.SuspendedByArchitect, supervise.StateReady)
 	if rows, notices := rig.rows(record.OutboxKindNotice), rig.notices(); len(rows) != 1 || len(notices) != 0 {
@@ -208,6 +247,50 @@ func TestPodUpdateTellsTheControllerOfAnArchitectsHoldWhoseArchitectFailedBefore
 	if want := "An architect suspended implementer (suspended). An architect that owns the issue, or the controller, can resume it."; !strings.Contains(notice.Reason, want) {
 		t.Errorf("the controller's notice says %q, want it to say %q", notice.Reason, want)
 	}
-	wantWaiting(t, record.ControllerNotice(notice),
-		map[claim.Role]bool{claim.RoleArchitect: false, claim.RoleImplementer: false, claim.RoleTester: true})
+	wantWaiting(t, record.ControllerNotice(notice), map[claim.Role]bool{claim.RoleImplementer: false, claim.RoleTester: true})
+}
+
+// A round held past its bound by an architect's suspension is told to the architect that owns the
+// held claim, and where the listener refuses that notice on every attempt — the architect's
+// session does not advertise the delivery mode, or the listener's own NATS grant denies the
+// forward — the row finishes undelivered (noticeAnswered) and the controller is told the round in
+// its place, once, with the architect's hold named: the sweep marked the round told when it
+// queued the row, so no later sweep would tell anyone. The architect's claim still answers, so
+// the relayed notice lists it as the sweep did. The architect's row run again tells the
+// controller nothing more.
+//
+// The negative control is the relay undone in those two answers (relayUpdateStalled), which
+// publishes no update-stalled notice at all.
+func TestPodUpdateTellsTheControllerOfAnArchitectsHoldWhoseNoticeTheListenerRefuses(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		refusal error
+	}{
+		{name: "a holder that does not advertise the delivery mode", refusal: notify.ErrRefusedByHolder{Holder: "ses_architect"}},
+		{name: "a forward the listener's grant denies", refusal: notify.ErrPublishDenied{Message: "permissions violation for publish"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := heldRoundRig(t, supervise.SuspendedByArchitect, supervise.StateReady)
+			if rows, notices := rig.rows(record.OutboxKindNotice), rig.notices(); len(rows) != 1 || len(notices) != 0 {
+				t.Fatalf("the sweep wrote %d architect notices and %d controller notices, want the one architect notice", len(rows), len(notices))
+			}
+			listener := refusingListener{holderPublisher: &holderPublisher{},
+				refused: map[string]error{rig.roleTopic(claim.RoleArchitect): tc.refusal}}
+
+			notice := toldOn(t, rig.stallDeliveryThrough(listener), notify.ControllerTopic(podUpdateProject))
+			if notice.Update == nil || notice.Update.Round != podUpdateRound || notice.Update.Pod != podUpdatePod {
+				t.Fatalf("the controller's notice carries %+v, want round %q of pod %q", notice.Update, podUpdateRound, podUpdatePod)
+			}
+			if want := "An architect suspended implementer (suspended). An architect that owns the issue, or the controller, can resume it."; !strings.Contains(notice.Reason, want) {
+				t.Errorf("the controller's notice says %q, want it to say %q", notice.Reason, want)
+			}
+			wantWaiting(t, record.ControllerNotice(notice),
+				map[claim.Role]bool{claim.RoleArchitect: false, claim.RoleImplementer: false, claim.RoleTester: true})
+
+			rig.stallDeliveryThrough(listener)
+			if notices := rig.notices(); len(notices) != 1 {
+				t.Fatalf("the outbox holds %d controller notices after the architect's row ran again, want the one it was told", len(notices))
+			}
+		})
+	}
 }
