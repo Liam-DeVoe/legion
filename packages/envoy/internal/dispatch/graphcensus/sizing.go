@@ -334,9 +334,13 @@ func storeKinds() []StoreKind {
 		count: `(select count(*) from sized_roles
 			where octet_length('` + graphstore.KindRole + `/' || name) <= ` + addressBound + `)`,
 	}, {
-		Name: "message", MovedBy: movedWithInbox, Nodes: 1, Tuples: 5,
-		Driver: "messages.created_at: the message's node, its visibility, state and project or parties, its authored_by" +
-			" and its part_of the issue it is posted on or the page of the agent it is addressed to",
+		Name: "message", MovedBy: movedHere, Nodes: 1, Tuples: 3,
+		Driver: "messages.created_at: the message's node and its visibility, state and project or parties",
+		count:  `(select count(*) from sized_messages)`,
+	}, {
+		Name: "message_relation", MovedBy: movedWithInbox, Tuples: 2,
+		Driver: "messages.created_at: the message's authored_by and its part_of the issue it is posted on or the page" +
+			" of the agent it is addressed to",
 		count: `(select count(*) from sized_messages)`,
 	}, {
 		Name: "message_pointer", MovedBy: movedWithInbox, Tuples: 1,
@@ -404,7 +408,7 @@ func storeKinds() []StoreKind {
 		count: `((select count(*) from comment_deliveries where created_at > ` + sizingWindow + `)
 			+ (select count(*) from message_deliveries where created_at > ` + sizingWindow + `))`,
 	}, {
-		Name: "issue", MovedBy: movedWithBlocks, Nodes: 1, Tuples: 3,
+		Name: "issue", MovedBy: movedHere, Nodes: 1, Tuples: 3,
 		Driver: "issues.created_at: the issue's node and its visibility, state and project",
 		count:  `(select count(*) from issues where created_at > ` + sizingWindow + `)`,
 	}, {
@@ -413,12 +417,15 @@ func storeKinds() []StoreKind {
 		count: `((select count(*) from issues where created_at > ` + sizingWindow + ` and parent_key is not null)
 			+ (select count(*) from issue_links where created_at > ` + sizingWindow + `))`,
 	}, {
-		Name: "artifact", MovedBy: movedWithBlocks, Nodes: 1, Tuples: 4,
-		Driver: "artifacts.created_at: the artifact's node, its visibility, state and project or parties, and its part_of" +
-			" its issue",
-		count: `(select count(*) from artifacts where created_at > ` + sizingWindow + `)`,
+		Name: "artifact", MovedBy: movedHere, Nodes: 1, Tuples: 3,
+		Driver: "artifacts.created_at: the artifact's node and its visibility, state and project or parties",
+		count:  `(select count(*) from artifacts where created_at > ` + sizingWindow + `)`,
 	}, {
-		Name: "artifact_removed", MovedBy: movedWithBlocks, Tuples: 1,
+		Name: "artifact_part_of", MovedBy: movedWithBlocks, Tuples: 1,
+		Driver: "artifacts.created_at: the artifact's part_of its issue",
+		count:  `(select count(*) from artifacts where created_at > ` + sizingWindow + `)`,
+	}, {
+		Name: "artifact_removed", MovedBy: movedHere, Tuples: 1,
 		Driver: "artifact.removed events in the window: the removed document's node stated gone (api's removeArtifact)",
 		count:  `(select count(*) from events where type = 'artifact.removed' and created_at > ` + sizingWindow + `)`,
 	}, {
@@ -460,9 +467,13 @@ func storeKinds() []StoreKind {
 			+ (select count(*) from issue_component_members m join issue_components i on i.issue_key = m.issue_key
 			   where i.updated_at > ` + sizingWindow + `))`,
 	}, {
-		Name: "ask", MovedBy: movedWithAsks, Nodes: 1, Tuples: 9,
-		Driver: "ask.opened events in the window: the ask's node, its visibility, state and project or parties, its" +
-			" answer_state, question and options values, its authored_by and, at most, its anchored_to and owned_by",
+		Name: "ask", MovedBy: movedHere, Nodes: 1, Tuples: 3,
+		Driver: "ask.opened events in the window: the ask's node and its visibility, state and project or parties",
+		count:  `(select count(*) from sized_ask_events where type = 'ask.opened')`,
+	}, {
+		Name: "ask_opened", MovedBy: movedWithAsks, Tuples: 6,
+		Driver: "ask.opened events in the window: the ask's answer_state, question and options values, its authored_by" +
+			" and, at most, its anchored_to and owned_by",
 		count: `(select count(*) from sized_ask_events where type = 'ask.opened')`,
 	}, {
 		Name: "ask_edit", MovedBy: movedWithAsks, Tuples: 2,

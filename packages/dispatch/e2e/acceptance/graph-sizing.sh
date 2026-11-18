@@ -364,7 +364,7 @@ SQL
   printf 'graph-sizing.sh: removed the corpus it wrote under %s: %s document(s), %s block(s), %s node(s) and %s tuple(s), with every row that references those documents\n' \
     "$key" "${counted%%|*}" "${counted##*|}" \
     "$(echo "$removed" | cut -d'|' -f2)" "$(echo "$removed" | cut -d'|' -f3)"
-  printf 'graph-sizing.sh: it leaves %s itself, closed and routed to its role, and the one comment C2 wrote with that comment'"'"'s own node and tuples, which no run of this driver grows; the spec and the citing document this run wrote with the issue went with the corpus, as documents of that issue\n' "$key"
+  printf 'graph-sizing.sh: it leaves %s itself, closed and routed to its role, and the two comments C2 wrote with those comments'"'"' own nodes and tuples, which no run of this driver grows; the spec and the citing document this run wrote with the issue went with the corpus, as documents of that issue\n' "$key"
 }
 
 # want_line SECTION WHAT PATTERN: the report holds a line matching the extended regex PATTERN.

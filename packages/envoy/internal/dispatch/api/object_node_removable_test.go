@@ -72,7 +72,7 @@ func TestEveryDocumentARemovalCanTakeIsReadByItsCreateEvent(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			named := slices.Contains(incomplete, "artifact "+ref+": gone")
+			named := slices.Contains(incomplete, "artifact "+ref+": gone; run envoy-dispatch backfill-graph-store")
 			takes := artifactRowIsUntouched(artifact) == nil
 			held++
 			if takes {

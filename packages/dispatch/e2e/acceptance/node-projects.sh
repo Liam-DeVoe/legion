@@ -14,7 +14,7 @@
 # `envoy-dispatch backfill-graph-store` and `envoy-dispatch census --store` and holds the census to
 # `missing=0 gone=0 differs=0 unscoped=0 orphaned=0` for every project-owned kind. Then the control:
 # it takes the ask's node away and holds the census to naming exactly that ask, `missing=1` on the
-# ask kind and `census: project incomplete ask <id>: missing`, so the zeros before are read from an
+# ask kind and `census: project incomplete ask <id>: missing; run envoy-dispatch backfill-graph-store`, so the zeros before are read from an
 # instrument that sees a missing node; then the backfill writes the node again and the census reads
 # zeros. Last, the writes of a build before this one, which writes no node, during a roll: it
 # creates a document's row at the removed document's address, which the census names `gone` and
@@ -324,7 +324,7 @@ envoy-dispatch census --store >"$work/census" 2>&1 && fail "$section" "the censu
 line="$(census_line ask)"
 [[ "$line" =~ missing=1\ gone=0\ differs=0\ unscoped=0\ orphaned=0$ ]] || fail "$section" "the ask census reads one missing node" "${line:-no line for ask}"
 pass "$section" "the ask census reads one missing node"
-grep -qxF "census: project incomplete ask $ask: missing" "$work/census" ||
+grep -qxF "census: project incomplete ask $ask: missing; run envoy-dispatch backfill-graph-store" "$work/census" ||
   fail "$section" "the census names the ask" "$(grep '^census: project incomplete' "$work/census" | head -n 5)"
 pass "$section" "the census names ask $ask"
 
@@ -347,7 +347,7 @@ envoy-dispatch census --store >"$work/census" 2>&1 || true
 line="$(census_line artifact)"
 [[ "$line" =~ missing=0\ gone=1\ differs=0\ unscoped=0\ orphaned=0$ ]] ||
   fail "$section" "the artifact census reads one row whose node is gone" "${line:-no line for artifact}"
-grep -qxF "census: project incomplete artifact $scratch_ref: gone" "$work/census" ||
+grep -qxF "census: project incomplete artifact $scratch_ref: gone; run envoy-dispatch backfill-graph-store" "$work/census" ||
   fail "$section" "the census names $scratch_ref gone" "$(grep '^census: project incomplete' "$work/census" | head -n 5)"
 pass "$section" "the census names the row an earlier build made at $scratch_ref gone"
 envoy-dispatch backfill-graph-store >"$work/backfill" 2>&1 ||

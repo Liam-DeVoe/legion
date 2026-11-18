@@ -65,7 +65,7 @@ func TestTwoBuildsLeaveADocumentsNodeTheCensusNamesAndItsCureClears(t *testing.T
 		}
 		census := runStoreCensus(t, builds)
 		requireProjectLine(t, census, "artifact", "gone=1", "orphaned=0")
-		requireIncompleteLines(t, census, "artifact "+again.ref+": gone")
+		requireIncompleteLines(t, census, "artifact "+again.ref+": gone; run envoy-dispatch backfill-graph-store")
 		runCurrentCommand(t, builds, []int{0}, "backfill-graph-store")
 		requireDocumentNodeState(t, builds, again.ref, "live")
 		requireIncompleteLines(t, runStoreCensus(t, builds))
@@ -119,7 +119,7 @@ func TestTwoBuildsLeaveADocumentsNodeTheCensusNamesAndItsCureClears(t *testing.T
 		}
 		census := runStoreCensus(t, builds)
 		requireProjectLine(t, census, "artifact", "gone=1", "orphaned=0")
-		requireIncompleteLines(t, census, "artifact "+again.ref+": gone")
+		requireIncompleteLines(t, census, "artifact "+again.ref+": gone; run envoy-dispatch backfill-graph-store")
 		runCurrentCommand(t, builds, []int{0}, "backfill-graph-store")
 		requireDocumentNodeState(t, builds, again.ref, "live")
 		requireIncompleteLines(t, runStoreCensus(t, builds))

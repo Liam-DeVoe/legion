@@ -51,7 +51,7 @@ func TestARowWhoseNodeIsGoneIsNamedAndTheBackfillMakesItLive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the incomplete rows: %v", err)
 	}
-	if want := []string{"artifact GONE-1/notes-md: gone"}; !slices.Equal(incomplete, want) {
+	if want := []string{"artifact GONE-1/notes-md: gone" + backfillCure}; !slices.Equal(incomplete, want) {
 		t.Errorf("ProjectComplete answers %v, want %v", incomplete, want)
 	}
 

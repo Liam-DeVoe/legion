@@ -7,10 +7,69 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
+
+// Each line ProjectComplete answers ends with its class's cure. Here an issue's node names neither
+// a project nor parties (unscoped), whose cure is the backfill, and another issue's node names a
+// project other than its row's (differs), which no command cures, since a node's project never
+// moves. The backfill then gives the first node its project, as its line says, and leaves the
+// second, which its line says it would.
+//
+// Its control is the backfill's marker read as any live node, a node naming neither included: the
+// backfill then leaves the unscoped node as it is, and its line stays.
+func TestEachIncompleteLineNamesItsCureAndTheBackfillCuresAnUnscopedNode(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	at := time.Date(2026, 11, 18, 9, 0, 0, 0, time.UTC)
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	if _, err := database.Pool.Exec(ctx, `
+		insert into projects (key, name, default_assignee) values ('CURE', 'Cures', 'alice'), ('OTHR', 'Other', 'alice')
+	`); err != nil {
+		t.Fatalf("seed the projects: %v", err)
+	}
+	if _, err := database.Pool.Exec(ctx, `
+		insert into issues (key, project_key, number, title, created_by, rank, created_at)
+		values ('CURE-1', 'CURE', 1, 'Unscoped', '{"kind":"user","id":"alice"}', 'U', $1),
+		       ('CURE-2', 'CURE', 2, 'Differs', '{"kind":"user","id":"alice"}', 'V', $1)
+	`, at); err != nil {
+		t.Fatalf("seed the issues: %v", err)
+	}
+	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+		return graphstore.Write(ctx, tx, []graphstore.Node{
+			graphstore.IssueNode("CURE-1", "", alice, at),
+			graphstore.IssueNode("CURE-2", "OTHR", alice, at),
+		}, nil)
+	}); err != nil {
+		t.Fatalf("write the two issues' nodes: %v", err)
+	}
+	unscoped := "issue CURE-1: unscoped" + backfillCure
+	differs := "issue CURE-2: differs" + differsCure
+	incomplete, err := ProjectComplete(ctx, database.Pool)
+	if err != nil {
+		t.Fatalf("read the incomplete rows: %v", err)
+	}
+	if want := []string{unscoped, differs}; !slices.Equal(incomplete, want) {
+		t.Fatalf("ProjectComplete answers %q, want %q", incomplete, want)
+	}
+	if _, err := Backfill(ctx, database, &bytes.Buffer{}); err != nil {
+		t.Fatalf("run the backfill: %v", err)
+	}
+	if incomplete, err = ProjectComplete(ctx, database.Pool); err != nil {
+		t.Fatalf("read the incomplete rows after the backfill: %v", err)
+	}
+	if want := []string{differs}; !slices.Equal(incomplete, want) {
+		t.Errorf("after the backfill ProjectComplete answers %q, want %q: the unscoped node given its project, the differing one left", incomplete, want)
+	}
+	node, held, err := graphstore.ReadNode(ctx, database.Pool, graphstore.KindIssue, "CURE-1")
+	if err != nil || !held || node.Project != "CURE" {
+		t.Errorf("after the backfill the node of CURE-1 is %+v (held %t, %v), want it in project CURE", node, held, err)
+	}
+}
 
 // A removal of this build takes the document's issue row, states its node gone and deletes the
 // row, and commits. A batch of the backfill that read the row before then takes the same issue row
@@ -122,7 +181,7 @@ func TestTheBackfillSkipsARowBetweenARefusedPartyAndWritesTheRest(t *testing.T) 
 	if err != nil {
 		t.Fatalf("read the incomplete rows: %v", err)
 	}
-	if !slices.Contains(incomplete, "artifact "+badRef+": missing") {
+	if !slices.Contains(incomplete, "artifact "+badRef+": missing"+backfillCure) {
 		t.Errorf("ProjectComplete answers %q, want it to name the skipped file missing", incomplete)
 	}
 }

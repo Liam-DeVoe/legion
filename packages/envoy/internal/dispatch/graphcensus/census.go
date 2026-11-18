@@ -665,11 +665,10 @@ func storeCensus(ctx context.Context, databaseURL string, sizing bool, afterKind
 			return nil, err
 		}
 		if report.ProjectFindings() > 0 {
-			incomplete, err := ProjectComplete(ctx, tx)
-			if err != nil {
+			limit := reportedDifferences
+			if report.ProjectIncomplete, err = projectIncomplete(ctx, tx, &limit); err != nil {
 				return nil, err
 			}
-			report.ProjectIncomplete = incomplete[:min(len(incomplete), reportedDifferences)]
 		}
 	}
 	if sizing {
@@ -859,7 +858,9 @@ func (r *StoreReport) Write(w io.Writer) {
 	case r.Differences() > 0:
 		fmt.Fprintf(w, "census: store REFUSED (%s difference(s))\n", pgmigrate.Thousands(r.Differences()))
 	case r.ProjectFindings() > 0:
-		fmt.Fprintf(w, "census: store REFUSED (%s row(s) whose node names no project or the wrong one, or live node(s) no row stands behind)\n",
+		fmt.Fprintf(w, "census: store REFUSED (%s row(s) whose node names no project or the wrong one, or live node(s) no row stands behind;"+
+			" run envoy-dispatch backfill-graph-store for the missing, gone and unscoped ones, run the erase each orphaned"+
+			" line names, and compare each differs row with its node)\n",
 			pgmigrate.Thousands(r.ProjectFindings()))
 	case len(empty) > 0:
 		fmt.Fprintf(w, "census: store REFUSED (kind(s) %s checked no row, so the census proves nothing of them)\n",

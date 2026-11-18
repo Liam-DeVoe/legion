@@ -80,7 +80,7 @@ func TestADocumentAtAnOrphanedNodesAddressIsNamedGoneWhateverItsTime(t *testing.
 			if err != nil {
 				t.Fatalf("read the incomplete rows: %v", err)
 			}
-			if want := []string{"artifact " + ref + ": gone"}; !slices.Equal(incomplete, want) {
+			if want := []string{"artifact " + ref + ": gone" + backfillCure}; !slices.Equal(incomplete, want) {
 				t.Fatalf("ProjectComplete answers %q, want %q: the node's live statement is the first row's", incomplete, want)
 			}
 

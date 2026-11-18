@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math"
 	"regexp"
 	"strconv"
 	"strings"
@@ -327,17 +326,35 @@ func writeProjectCensus(w io.Writer, kinds []ProjectKindReport) {
 
 // ProjectComplete answers every project-owned row whose node is not complete, and every live node
 // of an orphan kind no row stands behind, as `<kind> <id>: <class>` (missing, gone, unscoped,
-// differs or orphaned), in one read: the rows and the nodes a read limited by a node's project
-// would answer wrongly. An empty answer is every row and every node of every kind complete. An
-// orphaned node's line ends with the command that removes it, `; remove it with: ` and
-// eraseCommand's line, since no backfill reads a node no row stands behind.
+// differs or orphaned) and the class's cure, in one read: the rows and the nodes a read limited by
+// a node's project would answer wrongly. An empty answer is every row and every node of every kind
+// complete. The cure is the backfill for a row with no node, a node that is not the row's, or a
+// node naming neither a project nor parties (backfillCure); the erase that removes it for an
+// orphaned node, since no backfill reads a node no row stands behind (`; remove it with: ` and
+// eraseCommand's line); and none for a node that names another project or other parties than its
+// row, since a node's project never moves and only a person can tell which of the two is wrong
+// (differsCure).
 func ProjectComplete(ctx context.Context, q graphstore.Queryer) ([]string, error) {
+	return projectIncomplete(ctx, q, nil)
+}
+
+// The cures ProjectComplete ends its lines with, but an orphaned node's, which names its node.
+const (
+	backfillCure = "; run envoy-dispatch backfill-graph-store"
+	differsCure  = "; no command cures it: compare the row with its node, whose project never moves"
+)
+
+// projectIncomplete is ProjectComplete's read, of at most limit lines in its order when limit is
+// not nil: the store census prints only its first lines (reportedDifferences), and a database an
+// earlier release left without nodes holds every row of it.
+func projectIncomplete(ctx context.Context, q graphstore.Queryer, limit *int) ([]string, error) {
 	rows, err := q.Query(ctx, scopedRowsSQL+classedRows+`
 		select kind, id, class
 		from classed
 		where class is not null
 		order by kind, id
-	`)
+		limit $1
+	`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("read the rows whose node names no project: %w", err)
 	}
@@ -345,8 +362,13 @@ func ProjectComplete(ctx context.Context, q graphstore.Queryer) ([]string, error
 	var kind, id, class string
 	if _, err := pgx.ForEachRow(rows, []any{&kind, &id, &class}, func() error {
 		line := kind + " " + id + ": " + class
-		if class == classOrphaned {
+		switch class {
+		case classOrphaned:
 			line += "; remove it with: " + eraseCommand(kind, id)
+		case classDiffers:
+			line += differsCure
+		default:
+			line += backfillCure
 		}
 		incomplete = append(incomplete, line)
 		return nil
@@ -395,25 +417,29 @@ type objectKind struct {
 }
 
 // unmarked is the backfill's marker for these kinds, unset: the store holds no live node of kind
-// at the address id. The node is the marker, since no row of these kinds names its node in a
-// column of its own, and a live one, since a row whose node is gone is one a build before this
-// one created at an address this build's removal stated gone, and is owed a live node as much as a
-// row with none (classGone).
+// at the address id that names a project or parties. The node is the marker, since no row of these
+// kinds names its node in a column of its own; a live one, since a row whose node is gone is one a
+// build before this one created at an address this build's removal stated gone, and is owed a
+// live node as much as a row with none (classGone); and one naming a project or parties, since a
+// node naming neither is the census's unscoped class, which this pass cures by stating them.
 func unmarked(kind, id string) string {
 	return `not exists (select 1 from graph_nodes n where n.kind = '` + kind + `' and n.id = ` + id +
-		` and n.state = '` + graphstore.StateLive + `')`
+		` and n.state = '` + graphstore.StateLive + `' and ` + scopedNode + `)`
 }
 
+// scopedNode is, for the node n, whether it names a project or parties.
+const scopedNode = `(n.project_key is not null or n.parties is not null)`
+
 // unmarkedDocument is unmarked for a document, whose address a later row takes again where a
-// removal can take the row away: the store holds no live node at the row a's address that is
-// that row's own - any live one, for a row no removal takes, and for one a removal can take, a
-// live one whose live statement was made for it (ownLiveStatement). A live node whose live
-// statement is not the row's is a document a build before this one removed and then made again
-// at the address before the node was erased, and that row is owed its own live statement as much
-// as a row with none (classGone).
+// removal can take the row away: the store holds no live node naming a project or parties at the
+// row a's address that is that row's own - any such node, for a row no removal takes, and for one
+// a removal can take, one whose live statement was made for it (ownLiveStatement). A live node
+// whose live statement is not the row's is a document a build before this one removed and then
+// made again at the address before the node was erased, and that row is owed its own live
+// statement as much as a row with none (classGone).
 func unmarkedDocument(a string) string {
 	return `not exists (select 1 from graph_nodes n where n.kind = '` + graphstore.KindArtifact + `' and n.id = ` + a + `.ref_key` +
-		` and n.state = '` + graphstore.StateLive + `' and (not ` + removableDocument(a) + ` or ` +
+		` and n.state = '` + graphstore.StateLive + `' and ` + scopedNode + ` and (not ` + removableDocument(a) + ` or ` +
 		ownLiveStatement("n", a+".id::text", a+".issue_key") + `))`
 }
 
@@ -481,20 +507,20 @@ var objectKinds = []objectKind{
 }
 
 // ObjectRowStands answers whether a row of kind stands at id, for a kind the backfill writes a
-// node for from its rows (objectKinds), and object false for any other kind. The erase reads it to
-// refuse a node of these kinds while its row holds its text (grapherase's Erasure.read).
-func ObjectRowStands(ctx context.Context, q graphstore.Queryer, kind, id string) (stands, object bool, err error) {
+// node for from its rows (objectKinds), and false for any other kind. The erase reads it to refuse
+// a node of these kinds while its row holds its text (grapherase's Erasure.read).
+func ObjectRowStands(ctx context.Context, q graphstore.Queryer, kind, id string) (bool, error) {
 	for _, known := range objectKinds {
 		if known.kind != kind {
 			continue
 		}
 		standing, err := readStanding(ctx, q, known, []string{id})
 		if err != nil {
-			return false, true, fmt.Errorf("read the %s row of %s: %w", kind, id, err)
+			return false, fmt.Errorf("read the %s row of %s: %w", kind, id, err)
 		}
-		return len(standing) > 0, true, nil
+		return len(standing) > 0, nil
 	}
-	return false, false, nil
+	return false, nil
 }
 
 // readStanding reads, of ids, each row of kind that stands, with its created_at (objectKind.rows).
@@ -525,11 +551,13 @@ const zeroUUID = "00000000-0000-0000-0000-000000000000"
 // document a removal can take a live node whose live statement is the row's own (unmarkedDocument)
 // - and writes the marker in the transaction that writes the node, so a second run reads no row the
 // first one wrote. Its input is the row's own content: a node it makes is made by the row's author
-// at the row's created_at, and a node the store holds keeps the made_at and made_by it has. What it
-// states is stated by the row's author, at the row's created_at or one microsecond past the newest
-// statement about the node where that is later, so a read as of a time reads the order the store
-// appended in; it is caused by the row's own create event where the row has one, which is what
-// names the row (ownLiveStatement), and at the sentinel otherwise. It appends no event.
+// at the row's created_at, and a node the store holds keeps the made_at and made_by it has. The
+// row's author states the node live, and the backfill itself states gone a document's node that
+// stood live for an earlier row; each is dated at the row's created_at or one microsecond past the
+// newest statement about the node where that is later, so a read as of a time reads the order the
+// store appended in. A document's statements are caused by its own create event where the read
+// finds one, which is what names the row (ownLiveStatement); an issue's, an ask's and a message's,
+// and a document's with no such event, are at the sentinel. It appends no event.
 func backfillObjectNodes(ctx context.Context, database *store.Store) ([]KindBackfill, error) {
 	var done []KindBackfill
 	for _, kind := range objectKinds {
@@ -556,11 +584,11 @@ func backfillObjectNodes(ctx context.Context, database *store.Store) ([]KindBack
 				break
 			}
 		}
-		left, err := readObjectNodes(ctx, database, kind.kind, kind.read, kind.start, math.MaxInt32)
-		if err != nil {
-			return done, err
+		var remaining int64
+		if err := database.Pool.QueryRow(ctx, `select count(*) from (`+kind.read+`) as remaining`, kind.start, nil).Scan(&remaining); err != nil {
+			return done, fmt.Errorf("count the %s rows no live node marks: %w", kind.kind, err)
 		}
-		report.Remaining = int64(len(left))
+		report.Remaining = remaining
 		report.Complete = report.Remaining == 0
 		done = append(done, report)
 	}
@@ -616,13 +644,9 @@ func readObjectNodes(ctx context.Context, database *store.Store, kind, read, aft
 			nodes = append(nodes, graphstore.AskNode(id, derefText(project), parties, author, createdAt))
 		case graphstore.KindMessage:
 			if project == nil {
-				var root model.Actor
-				if len(rootAuthorJSON) > 0 {
-					if err := json.Unmarshal(rootAuthorJSON, &root); err != nil {
-						return nil, fmt.Errorf("read the thread root's author of message %s: %w", id, err)
-					}
+				if parties, err = threadParties(id, rootAuthorJSON, rootTarget); err != nil {
+					return nil, err
 				}
-				parties = graphstore.ThreadParties(root, rootTarget)
 			}
 			nodes = append(nodes, graphstore.MessageNode(id, derefText(project), parties, author, createdAt))
 		}
@@ -631,6 +655,19 @@ func readObjectNodes(ctx context.Context, database *store.Store, kind, read, aft
 		}
 	}
 	return nodes, rows.Err()
+}
+
+// threadParties is the parties of message id on no issue: those of its thread's root, whose author
+// and target the read answers (graphstore.ThreadParties). A root author the read did not find is
+// the zero actor.
+func threadParties(id string, rootAuthorJSON []byte, rootTarget *string) ([]string, error) {
+	var root model.Actor
+	if len(rootAuthorJSON) > 0 {
+		if err := json.Unmarshal(rootAuthorJSON, &root); err != nil {
+			return nil, fmt.Errorf("read the thread root's author of message %s: %w", id, err)
+		}
+	}
+	return graphstore.ThreadParties(root, rootTarget), nil
 }
 
 func derefText(value *string) string {
@@ -712,13 +749,13 @@ func writeObjectBatch(ctx context.Context, database *store.Store, kind objectKin
 				continue
 			}
 			stored, found := held[node.ID]
-			if found && stored.live && stored.own {
+			if found && stored.live && stored.own && stored.scoped {
 				continue
 			}
 			if found && !stored.newest.Before(node.MadeAt) {
 				node.MadeAt = stored.newest.Add(time.Microsecond)
 			}
-			if found && stored.live {
+			if found && stored.live && !stored.own {
 				gone := node
 				gone.State, gone.MadeBy = graphstore.StateGone, backfillActor
 				taken[node.ID] = gone
@@ -763,21 +800,23 @@ func writeObjectBatch(ctx context.Context, database *store.Store, kind objectKin
 }
 
 // storedNode is what the store holds of one node of a batch: whether it is live, whether its live
-// statement is its row's own, and when its newest statement is dated.
+// statement is its row's own, whether it names a project or parties, and when its newest statement
+// is dated.
 type storedNode struct {
-	live, own bool
-	newest    time.Time
+	live, own, scoped bool
+	newest            time.Time
 }
 
 // heldNodes answers, of the batch's ids, each node the store holds (storedNode). A node is its
-// row's own when it is live and, for a document a removal can take, its live statement was made
-// for that row (ownLiveStatement); any live node of the other kinds, and of a document no removal
-// takes, is its row's own, since no later row takes its address.
+// row's own when, for a document a removal can take, its live statement was made for that row
+// (ownLiveStatement); any node of the other kinds, and of a document no removal takes, is its
+// row's own, since no later row takes its address.
 func heldNodes(ctx context.Context, tx pgx.Tx, kind string, ids []string) (map[string]storedNode, error) {
 	rows, err := tx.Query(ctx, `
 		select n.id, n.state = '`+graphstore.StateLive+`',
 		       coalesce((select not `+removableDocument("a")+` or `+ownLiveStatement("n", "a.id::text", "a.issue_key")+`
 		                 from artifacts a where n.kind = '`+graphstore.KindArtifact+`' and a.ref_key = n.id), true),
+		       `+scopedNode+`,
 		       (select max(t.at) from graph_tuples t where t.from_kind = n.kind and t.from_id = n.id)
 		from graph_nodes n where n.kind = $1 and n.id = any($2::text[])
 	`, kind, ids)
@@ -788,7 +827,7 @@ func heldNodes(ctx context.Context, tx pgx.Tx, kind string, ids []string) (map[s
 	var id string
 	var stored storedNode
 	var newest *time.Time
-	if _, err := pgx.ForEachRow(rows, []any{&id, &stored.live, &stored.own, &newest}, func() error {
+	if _, err := pgx.ForEachRow(rows, []any{&id, &stored.live, &stored.own, &stored.scoped, &newest}, func() error {
 		stored.newest = time.Time{}
 		if newest != nil {
 			stored.newest = *newest
@@ -891,11 +930,11 @@ func backfillScopes(ctx context.Context, database *store.Store) ([]KindBackfill,
 				break
 			}
 		}
-		left, err := readScopes(ctx, database, kind.kind, kind.read, "", math.MaxInt32)
-		if err != nil {
-			return done, err
+		var remaining int64
+		if err := database.Pool.QueryRow(ctx, `select count(*) from (`+kind.read+`) as remaining`, "", nil).Scan(&remaining); err != nil {
+			return done, fmt.Errorf("count the %s nodes naming no project: %w", kind.kind, err)
 		}
-		report.Remaining = int64(len(left))
+		report.Remaining = remaining
 		report.Complete = report.Remaining == 0
 		done = append(done, report)
 	}

@@ -101,7 +101,7 @@ func (e *Erasure) read(ctx context.Context, tx pgx.Tx) (erasedRead, error) {
 	// commits: a create that got there first has committed its row when this read runs, and one
 	// that comes after waits for the erase. The run without --confirm reads it in its snapshot and
 	// locks nothing, and the confirmed run reads it again.
-	if stands, _, err := graphcensus.ObjectRowStands(ctx, tx, e.Kind, e.ID); err != nil {
+	if stands, err := graphcensus.ObjectRowStands(ctx, tx, e.Kind, e.ID); err != nil {
 		return erasedRead{}, err
 	} else if stands {
 		return erasedRead{}, fmt.Errorf("the erase refuses %s:%s: its row stands and holds the node's text, which the erase "+
