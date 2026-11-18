@@ -3035,9 +3035,11 @@ func TestApplyOperationQuoteOpeningWithAListMarkerSelectsTheItem(t *testing.T) {
 			op:   model.EditOp{Op: "replace", Find: "- bullet two", With: "- bullet 2"},
 			want: "- bullet 2\n",
 		},
+		// The selected item is the parent of the paragraph the anchor names, so the insert lands in
+		// that item, beside its text (pmdoc.ValidDocument.BlockBoundary).
 		"an insert anchor": {
 			op:   model.EditOp{Op: "insert", Markdown: "Done.", After: "3. A fresh reviewer checks points 1 to 4."},
-			want: "\n\nDone.\n",
+			want: "3. A fresh reviewer checks points 1 to 4.\n\n   Done.\n",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {

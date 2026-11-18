@@ -221,11 +221,6 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 		writeError(w, "FIND_CROSSES_SPAN", http.StatusBadRequest, crossed.Error())
 		return
 	}
-	var replaceFields *docs.ErrReplaceFields
-	if errors.As(err, &replaceFields) {
-		writeError(w, "REPLACE_FIELDS", http.StatusBadRequest, replaceFields.Error())
-		return
-	}
 	var doesNotFit *docs.ErrInsertDoesNotFit
 	if errors.As(err, &doesNotFit) {
 		writeError(w, "INSERT_DOES_NOT_FIT", http.StatusBadRequest, doesNotFit.Error())

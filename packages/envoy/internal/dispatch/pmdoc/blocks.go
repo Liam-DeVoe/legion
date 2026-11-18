@@ -638,14 +638,16 @@ func listItemRemoval(parent *Node, textblockPath []int) (removePath []int, hoist
 	}
 }
 
-// MoveBlock returns a copy of doc with the block carrying blockID relocated to
-// the document-level boundary before or after the top-level block containing
-// target, the boundary a block insert uses. A list item is relocated inside the
-// list holding target instead, the boundary an insert of list content takes
-// there (ListBoundary, moveListItem). An empty target at the document
-// start or end selects that edge. A target inside the moved block is
-// ErrMoveInsideItself; a block that cannot stand at document level is ErrSchema.
-// It validates doc first (ValidateDocument).
+// MoveBlock returns a copy of doc with the block carrying blockID relocated to the
+// document-level boundary before or after the top-level block containing target. That is not
+// where an insert anchored there lands: an insert goes beside the anchor's block inside that
+// block's own parent, a typed block, list item or blockquote (BlockBoundary), where a move goes
+// among the document's own blocks. A list item is relocated inside the innermost list holding
+// target instead (moveListItem), the list an insert of list content anchored there joins
+// (ListBoundary) unless a typed block or a quote between that list and target holds the content.
+// An empty target at the document start or end selects that edge. A target inside the moved
+// block is ErrMoveInsideItself; a block that cannot stand at document level is ErrSchema. It
+// validates doc first (ValidateDocument).
 func MoveBlock(doc *Node, blockID string, target Range, after bool) (*Node, error) {
 	valid, err := ValidateDocument(doc, "MoveBlock")
 	if err != nil {
@@ -718,12 +720,14 @@ func (d ValidDocument) MoveBlock(blockID string, target Range, after bool) (*Nod
 	return out, nil
 }
 
-// moveListItem relocates a list item to the boundary inside the list holding target, the boundary
-// an insert of list content takes there (ListBoundary): the item becomes a sibling of the item
-// holding target, or, where target is a list's own block, that list's first or last item. It
-// reports relocated=false for a block that is no list item, for a target in no list, and for an
-// empty target, which names a document edge rather than a block: each of those takes the
-// document-level move instead.
+// moveListItem relocates a list item to the boundary inside the innermost list holding target
+// (listAnchor): the item becomes a sibling of the item holding target, or, where target is a
+// list's own block, that list's first or last item. Where no typed block or quote lies between
+// that list and target, that is the boundary an insert of list content takes there
+// (ListBoundary); where one does, such an insert stays in that block, and the moved item still
+// joins the list, since a list item stands in a list alone. It reports relocated=false for a
+// block that is no list item, for a target in no list, and for an empty target, which names a
+// document edge rather than a block: each of those takes the document-level move instead.
 //
 // The block a caller names is the one a listing shows it (documentBlocks), and a list's items are
 // listed by the paragraph each holds rather than by the item itself, so a move of an item is

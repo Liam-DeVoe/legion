@@ -1608,7 +1608,8 @@ func decodeJSONWithin(r *http.Request, value any, limit int64, tooLarge *apiErro
 }
 
 // decodeJSONBody is decodeJSON for a route that reads its body's bytes again for what the decoded
-// value cannot say, such as whether a member was there at all (markOmittedWith); it answers them.
+// value cannot say, such as whether a member was there at all (replaceFieldsRefusal); it answers
+// them.
 func decodeJSONBody(r *http.Request, value any) ([]byte, error) {
 	body, err := readJSONBody(r, value, maxJSONRequestBytes, errJSONTooLarge)
 	if err != nil {

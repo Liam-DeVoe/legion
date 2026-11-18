@@ -113,9 +113,10 @@ func TestAnInsertAnchoredInsideATypedBlockLandsInsideIt(t *testing.T) {
 // An insert anchored inside a typed block whose content rule cannot hold its markdown there is
 // refused 400 INSERT_DOES_NOT_FIT, naming the block, its rule and what breaks it, and the
 // document keeps its text and its versions: a requirement holds paragraphs alone, and an ask
-// holds no paragraph after its options. Each was written after the typed block at the
-// document's own level. Nothing settles the spec while the row runs, so its versions are the
-// ones the row read.
+// holds no paragraph after its options, which an insert anchored on the options list's own block
+// writes (one anchored on an option's text lands in that option's item, beside its text). Each
+// was written after the typed block at the document's own level. Nothing settles the spec while
+// the row runs, so its versions are the ones the row read.
 func TestAnInsertATypedBlockCannotHoldIsRefused(t *testing.T) {
 	for _, test := range []struct {
 		name, anchor, markdown string
@@ -129,7 +130,7 @@ func TestAnInsertATypedBlockCannotHoldIsRefused(t *testing.T) {
 		},
 		{
 			name:     "a paragraph after an ask's options",
-			anchor:   "HTTP",
+			anchor:   "- NATS\n- HTTP",
 			markdown: "Pick one by Friday.",
 			wants:    []string{"operation 0", `ask block "a1"`, "paragraph+ bullet_list?", "a paragraph after its options", `after: "block:a1"`},
 		},

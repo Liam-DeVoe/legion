@@ -305,110 +305,66 @@ func (e *ErrFindCrossesSpan) Error() string {
 	return fmt.Sprintf("%s, or write the whole %s with its markup in find%s, which then replaces the markup too, so with decides that formatting", refusal, noun, spelled)
 }
 
-// ErrReplaceFields names a replace whose fields do not say what it writes: it names no with
-// (model.EditOp.WithOmitted), or it carries a field replace does not take, another operation's,
-// where its new text may stand instead (markdown). Read as an empty with, such a replace deleted
-// the text its find matched: a caller that sent markdown in place of with lost that text
-// (dispatch://INFRA-1946). An explicit with "" is no such replace: it deletes the match on
-// purpose.
-type ErrReplaceFields struct {
-	opIndex
-	// Omitted says the replace named no with, and Foreign is each field it carries that replace
-	// does not take, by its JSON name.
-	Omitted bool
-	Foreign []string
-}
-
-func (e *ErrReplaceFields) Error() string {
-	var problems []string
-	if e.Omitted {
-		problems = append(problems, "names no with, which would delete the text find matches")
-	}
-	if len(e.Foreign) > 0 {
-		problems = append(problems, fmt.Sprintf("carries %s, which replace does not take", strings.Join(e.Foreign, " and ")))
-	}
-	return fmt.Sprintf(
-		`%sreplace %s; a replace takes find, with and occurrence alone: write the new text in with, or with "" to delete the match on purpose`,
-		e.prefix(), strings.Join(problems, ", and "),
-	)
-}
-
-// replaceFieldsRefusal is the refusal of a replace op that names no with or carries a field
-// replace does not take, and nil for one that names with and carries replace's fields alone.
-func replaceFieldsRefusal(op model.EditOp) error {
-	var foreign []string
-	for _, field := range [...]struct {
-		name    string
-		carried bool
-	}{
-		{"markdown", op.Markdown != ""},
-		{"after", op.After != ""},
-		{"before", op.Before != ""},
-		{"block", op.Block != ""},
-		{"index", len(op.Index) > 0},
-		{"type", op.Type != ""},
-		{"attributes", op.Attributes != nil},
-	} {
-		if field.carried {
-			foreign = append(foreign, field.name)
-		}
-	}
-	if !op.WithOmitted && len(foreign) == 0 {
-		return nil
-	}
-	return &ErrReplaceFields{Omitted: op.WithOmitted, Foreign: foreign}
-}
-
-// ErrInsertDoesNotFit names an insert whose markdown the typed block holding its anchor cannot
-// hold where the anchor puts it. An insert anchored on a block inside a typed block lands inside
-// that typed block, beside the block it names (pmdoc.ValidDocument.BlockBoundary), so the typed
-// block's content rule decides what it may write there: a requirement holds paragraphs alone, and
-// an ask no paragraph after its options. Such an insert was written after the typed block, at the
-// document's own level, and refused nothing, which left a requirement's words outside every
+// ErrInsertDoesNotFit names an insert whose markdown the block it lands in cannot hold where the
+// anchor puts it. An insert anchored on a block lands beside that block, inside its own parent:
+// the innermost typed block, list item or blockquote holding it (pmdoc.ValidDocument.BlockBoundary).
+// That parent's content rule decides what the insert may write there: a requirement holds
+// paragraphs alone, an ask no paragraph after its options, and a list item no block before its
+// text. Such an insert was written after the typed block, at the document's own level, or beside
+// the whole list, and refused nothing, which left a requirement's words outside every
 // requirement, where no check's serves reached them (dispatch://INFRA-3142). The fix is to write
-// what the rule holds there, or to anchor the insert on the typed block itself, which writes the
-// markdown beside it.
+// what the rule holds there, or to anchor the insert on that parent itself, which writes the
+// markdown outside it.
 type ErrInsertDoesNotFit struct {
 	opIndex
 	// Field is the anchor's field, "after" or "before", and Anchor the anchor it names.
 	Field, Anchor string
-	// HolderType and HolderID are the typed block's type and id, Rule its content rule, and
-	// Broken what of the markdown breaks that rule there (pmdoc.TypedContentBreak).
+	// HolderType and HolderID are the type and id of the block the insert lands in, Rule its
+	// content rule, and Broken what of the markdown breaks that rule there (pmdoc.ContentBreak).
 	HolderType, HolderID string
 	Rule                 pmdoc.BlockContentRule
 	Broken               string
 }
 
 func (e *ErrInsertDoesNotFit) Error() string {
-	holder := strings.ReplaceAll(e.HolderType, "_", " ")
-	beside := "anchor the insert on the " + holder + " block itself"
+	holder, outside := strings.ReplaceAll(e.HolderType, "_", " ")+" block", "beside it"
+	switch e.HolderType {
+	case "list_item":
+		// A list holds items alone, so markdown anchored on the item's own block lands beside the
+		// list holding it.
+		holder, outside = "list item", e.Field+" the list holding it"
+	case "blockquote":
+		holder = "blockquote"
+	}
+	beside := "anchor the insert on the " + holder + " itself"
 	if e.HolderID != "" {
 		beside += fmt.Sprintf(" (%s: %q)", e.Field, "block:"+e.HolderID)
 	}
 	return fmt.Sprintf(
-		"%sinsert %s %q lands inside the %s block %q, whose content rule, %s, cannot hold %s there; write what that rule holds there, or %s to write the markdown beside it",
-		e.prefix(), e.Field, e.Anchor, holder, e.HolderID, e.Rule, e.Broken, beside,
+		"%sinsert %s %q lands inside the %s %q, whose content rule, %s, cannot hold %s there; write what that rule holds there, or %s to write the markdown %s",
+		e.prefix(), e.Field, e.Anchor, holder, e.HolderID, e.Rule, e.Broken, beside, outside,
 	)
 }
 
 // insertDoesNotFit is the refusal of an insert of fragment's blocks at boundary, among the
-// children of the typed block holding the insert's anchor, whose content rule cannot hold them
-// there, and nil where the rule holds them or the boundary is the document's. A typed block that
-// already breaks its rule, an ask a browser edit left so, is no reason to refuse this insert: the
-// batch's ask check weighs the ask it leaves (validateEditedAskBlocks).
+// children of the block the insert lands in, whose content rule cannot hold them there, and nil
+// where the rule holds them or the block holds the insert by no rule: the document, or a list
+// that list content joins (pmdoc.ValidDocument.ListBoundary). A block that already breaks its
+// rule, an ask a browser edit left so, is no reason to refuse this insert: the batch's ask check
+// weighs the ask it leaves (validateEditedAskBlocks).
 func insertDoesNotFit(boundary pmdoc.Boundary, fragment *pmdoc.Node, field, anchor string) error {
 	holder := boundary.Holder
 	if holder == nil {
 		return nil
 	}
-	if _, broken := pmdoc.TypedContentBreak(holder, holder.Children); broken != "" {
+	if rule, broken := pmdoc.ContentBreak(holder, holder.Children); rule == "" || broken != "" {
 		return nil
 	}
 	children := make([]*pmdoc.Node, 0, len(holder.Children)+len(fragment.Children))
 	children = append(children, holder.Children[:boundary.Index]...)
 	children = append(children, fragment.Children...)
 	children = append(children, holder.Children[boundary.Index:]...)
-	rule, broken := pmdoc.TypedContentBreak(holder, children)
+	rule, broken := pmdoc.ContentBreak(holder, children)
 	if broken == "" {
 		return nil
 	}
@@ -438,7 +394,6 @@ func isEditRefusal(err error) bool {
 	var ambiguous *ErrAnchorAmbiguous
 	var ciCheck *ErrInvalidCICheck
 	var crossed *ErrFindCrossesSpan
-	var replaceFields *ErrReplaceFields
 	var doesNotFit *ErrInsertDoesNotFit
 	return errors.Is(err, pmdoc.ErrTargetNotFound) ||
 		errors.Is(err, pmdoc.ErrTargetSpansBlocks) ||
@@ -448,7 +403,6 @@ func isEditRefusal(err error) bool {
 		errors.As(err, &ambiguous) ||
 		errors.As(err, &ciCheck) ||
 		errors.As(err, &crossed) ||
-		errors.As(err, &replaceFields) ||
 		errors.As(err, &doesNotFit)
 }
 
@@ -1679,10 +1633,11 @@ func applyOperation(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget)
 		if after {
 			position = target.To
 		}
-		// An anchor on a block lands the insert beside that block among the children of the
-		// innermost typed block holding it, or of the document where none does
-		// (pmdoc.ValidDocument.BlockBoundary), so markdown anchored on a requirement's paragraph
-		// is that requirement's, where it was written after the requirement (dispatch://INFRA-3142).
+		// An anchor on a block lands the insert beside that block among the children of its own
+		// parent - the innermost typed block, list item or blockquote holding it - or of the
+		// document where none does (pmdoc.ValidDocument.BlockBoundary), so markdown anchored on a
+		// requirement's paragraph is that requirement's, where it was written after the requirement
+		// (dispatch://INFRA-3142), and markdown anchored on a list item's text is that item's.
 		var boundary pmdoc.Boundary
 		if anchor != "start" && anchor != "end" {
 			if boundary, err = valid.BlockBoundary(target, after); err != nil {
@@ -1692,8 +1647,9 @@ func applyOperation(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget)
 		}
 		// A document with nothing in it holds one empty paragraph, which the insert takes the place
 		// of rather than leaving an empty line beside what it writes, so it lands at the start.
+		empty := pmdoc.EmptyDocument(tree.node)
 		at := pmdoc.Range{From: position, To: position}
-		if pmdoc.EmptyDocument(tree.node) {
+		if empty {
 			at = pmdoc.Range{From: 0, To: pmdoc.Size(tree.node)}
 		}
 		// Front matter opens only the document's start, so only there does the insert read it.
@@ -1701,31 +1657,37 @@ func applyOperation(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget)
 		if err != nil {
 			return nil, invalidMarkdownOp("markdown", err)
 		}
-		// List content anchored inside a list joins that list: beside the item the anchor stands
-		// in, or as the last item of the list whose own block it is (pmdoc.ListBoundary), where
-		// that list lies inside the typed block holding the anchor; a list holding that typed
-		// block is outside it. Every other content keeps the boundary read above, so a paragraph
-		// anchored on a block of a list lands after the whole list, and one on a block of a
-		// decision in the decision, beside that block. A fragment that is list content holds no
-		// front matter, so the reading above is the same wherever it lands.
-		inList := false
+		// List content anchored inside a list joins that list instead: beside the item the anchor
+		// stands in, or as the first or last item of the list whose own block it is
+		// (pmdoc.ValidDocument.ListBoundary), unless a typed block or a quote between the list and
+		// the anchor holds it, as it holds a paragraph. A fragment that is list content holds no
+		// front matter, so the reading above is the same wherever it lands, and an empty document
+		// holds no list for it to join.
 		if anchor != "start" && anchor != "end" && pmdoc.ListContent(with) {
-			inside, found, err := valid.ListBoundary(target, after)
-			if err != nil {
+			if boundary, err = valid.ListBoundary(target, after); err != nil {
 				return nil, err
 			}
-			if found && (boundary.Holder == nil || boundary.Content.From <= inside && inside <= boundary.Content.To) {
-				at, inList = pmdoc.Range{From: inside, To: inside}, true
+			if !empty {
+				at = pmdoc.Range{From: boundary.Position, To: boundary.Position}
 			}
 		}
-		if !inList {
-			if err := insertDoesNotFit(boundary, with, anchorField(after), anchor); err != nil {
-				return nil, err
-			}
+		if err := insertDoesNotFit(boundary, with, anchorField(after), anchor); err != nil {
+			return nil, err
 		}
 		out, err := valid.Splice(at, with)
 		if err != nil {
 			return nil, invalidSchemaOp("markdown", err)
+		}
+		// A list item that takes a block beside its text is written with a blank line between the
+		// two, which reads back as a spread item in a spread list, so the lists and items of the
+		// document-level block the insert landed in take the spread their markdown reads back with
+		// (pmdoc.AgreeWithReadBack), as the blocks a block replacement writes do (settleAccepted).
+		if boundary.Holder != nil && boundary.Holder.Type == "list_item" {
+			index, _, err := valid.BlockIndexes(at)
+			if err != nil {
+				return nil, err
+			}
+			out = pmdoc.AgreeWithReadBack(tree.node, out, index, index, false)
 		}
 		if err := pmdoc.RepeatedBlockID(tree.node, out, with); err != nil {
 			return nil, &ErrInvalidOp{Field: "markdown", Reason: err.Error()}
@@ -1980,19 +1942,19 @@ func invalidMarkdownOp(field string, err error) error {
 }
 
 // findEditQuote resolves the quote field names, so a miss reports the field the caller wrote. It
-// resolves through the batch's one quote finder over that tree (batchTree.finder). step is the
-// step of the matcher cascade the quote matched at, so a replace reads its find as markup only
-// where the finder did (pmdoc.QuoteMarkdown), and byMarker reports that the quote's leading list
-// marker selected the item it matched (resolveEditQuote).
-func findEditQuote(tree *batchTree, field, quote string, occurrence *int) (r pmdoc.Range, step pmdoc.QuoteStep, byMarker bool, err error) {
-	r, step, byMarker, err = resolveEditQuote(tree, field, quote, occurrence)
+// resolves through the batch's one quote finder over that tree (batchTree.finder). spelled is the
+// markup the quote spells over its match, so a replace reads its find as markup only where the
+// finder did (pmdoc.Spelling), and byMarker reports that the quote's leading list marker selected
+// the item it matched (resolveEditQuote).
+func findEditQuote(tree *batchTree, field, quote string, occurrence *int) (r pmdoc.Range, spelled pmdoc.Spelling, byMarker bool, err error) {
+	r, spelled, byMarker, err = resolveEditQuote(tree, field, quote, occurrence)
 	if err != nil {
-		return pmdoc.Range{}, step, false, err
+		return pmdoc.Range{}, pmdoc.Spelling{}, false, err
 	}
 	if pmdoc.TargetSpansBlocks(tree.node, r) {
-		return pmdoc.Range{}, step, false, quoteSpansBlocks(tree, field, quote, r)
+		return pmdoc.Range{}, pmdoc.Spelling{}, false, quoteSpansBlocks(tree, field, quote, r)
 	}
-	return r, step, byMarker, nil
+	return r, spelled, byMarker, nil
 }
 
 // quoteSpansBlocks is the refusal of quote, written in field, whose match r reaches past one
@@ -2009,23 +1971,23 @@ func quoteSpansBlocks(tree *batchTree, field, quote string, r pmdoc.Range) error
 
 // resolveEditQuote resolves quote as text the document holds and, when it matches none and opens
 // with a list item's marker, as the list items the marker selects (pmdoc.QuoteFinder.FindListItem),
-// reporting that in byMarker, and the step of the matcher cascade it matched at in step. The
+// reporting that in byMarker, and the markup the quote spells over its match in spelled. The
 // selection is a document edit's alone: a comment's or an ask's quote is text the document held,
 // so its marker is text.
-func resolveEditQuote(tree *batchTree, field, quote string, occurrence *int) (r pmdoc.Range, step pmdoc.QuoteStep, byMarker bool, err error) {
+func resolveEditQuote(tree *batchTree, field, quote string, occurrence *int) (r pmdoc.Range, spelled pmdoc.Spelling, byMarker bool, err error) {
 	finder, err := tree.finder()
 	if err != nil {
-		return pmdoc.Range{}, step, false, err
+		return pmdoc.Range{}, pmdoc.Spelling{}, false, err
 	}
-	r, step, err = finder.FindStep(quote, occurrence, nil)
+	r, spelled, err = finder.FindSpelling(quote, occurrence, nil)
 	if err == nil {
-		return r, step, false, nil
+		return r, spelled, false, nil
 	}
 	var missing *pmdoc.ErrQuoteNotFound
 	if errors.As(err, &missing) && missing.Matches == 0 && pmdoc.ParseListItemQuote(quote).Text != "" {
-		selected, selectedStep, selectErr := finder.FindListItem(quote, occurrence)
+		selected, selectedSpelling, selectErr := finder.FindListItem(quote, occurrence)
 		if selectErr == nil {
-			return selected, selectedStep, true, nil
+			return selected, selectedSpelling, true, nil
 		}
 		// A selection the occurrence overshoots, or that several items answer, is the quote's
 		// answer; a selection of nothing leaves the miss as text.
@@ -2034,7 +1996,7 @@ func resolveEditQuote(tree *batchTree, field, quote string, occurrence *int) (r 
 			err = selectErr
 		}
 	}
-	return pmdoc.Range{}, step, false, describeQuoteError(tree, field, quote, err)
+	return pmdoc.Range{}, pmdoc.Spelling{}, false, describeQuoteError(tree, field, quote, err)
 }
 
 // describeQuoteError dresses a quote finder's refusal of quote, written in field, for the caller.
@@ -2364,12 +2326,10 @@ func applyReplace(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget) (
 	if op.Find == "" {
 		return nil, invalidOp("find")
 	}
-	// A replace that names no with, or whose new text stands under another operation's field,
-	// would be read as an empty with and delete its match; it is refused before anything is read.
-	if err := replaceFieldsRefusal(op); err != nil {
-		return nil, err
-	}
-	r, step, byMarker, err := findEditQuote(tree, "find", op.Find, op.Occurrence)
+	// A replace that names no with, or carries a member replace does not take, is refused by
+	// the edit route before the batch reaches here (api.replaceFieldsRefusal), since only the
+	// request body says which members a replace named.
+	r, spelled, byMarker, err := findEditQuote(tree, "find", op.Find, op.Occurrence)
 	if err != nil {
 		return nil, err
 	}
@@ -2378,7 +2338,7 @@ func applyReplace(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget) (
 	// written over it would land outside the span, so a link it covered would go with its URL,
 	// and a span it cut to end on a space would be written with character references
 	// (`**Sami said&#32;**loud`). A find that spells the whole span's markup replaces it instead.
-	if span, crossed := at.CrossedSpan(r, op.Find, step); crossed {
+	if span, crossed := at.CrossedSpan(r, spelled); crossed {
 		return nil, &ErrFindCrossesSpan{Find: op.Find, Span: span}
 	}
 	code := at.Node.Type == "code_block"
@@ -2473,10 +2433,11 @@ func applyReplace(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget) (
 	// `**Sami said bold**` reads `**Sami answered bold**`, where text without the span's mark split
 	// it and the split's edges were written as character references, `**Sami&#32;**&#97;nswered`.
 	// Text that writes a mark of the span's type itself keeps its own (pmdoc.AddSpanMarks), and a
-	// find that spells a span's markup (`**Sami bold**`) leaves that mark to the with
-	// (pmdoc.WithoutQuotedMarkup), which keeps it by writing it or drops it by leaving it off. Only
-	// a find the finder read as markdown spells markup: one it matched as written is text, so
-	// `2*3*4` in `*a 2\*3\*4 b*` keeps the italic.
+	// find that spells a span's markup over the whole match (`**Sami bold**`) leaves that mark to
+	// the with (pmdoc.WithoutQuotedMarkup), which keeps it by writing it or drops it by leaving it
+	// off; one that spells it over part of the match alone (`a **b** c` over `**a b c**`) keeps
+	// the span. Only a find the finder read as markdown spells markup: one it matched as written
+	// is text, so `2*3*4` in `*a 2\*3\*4 b*` keeps the italic.
 	anchors, spans := pmdoc.MarksCovering(tree.node, r)
 	if blocks {
 		if err := markBlockReplacement(with, anchors, op.With); err != nil {
@@ -2484,10 +2445,7 @@ func applyReplace(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget) (
 		}
 	} else {
 		pmdoc.AddMarks(with, anchors)
-		if step == pmdoc.QuoteMarkdown {
-			spans = pmdoc.WithoutQuotedMarkup(spans, op.Find)
-		}
-		pmdoc.AddSpanMarks(with, spans)
+		pmdoc.AddSpanMarks(with, pmdoc.WithoutQuotedMarkup(spans, spelled))
 	}
 	valid, err := tree.validated("Splice")
 	if err != nil {

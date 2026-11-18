@@ -58,11 +58,12 @@ var ErrReplacementDoesNotFit = errors.New("replacement does not fit document")
 // repaired.
 var ErrJoinEmptiesTypedBlock = errors.New("the range runs into a typed block from the text before it, and joining them would leave that block empty")
 
-// Boundary is where an insert anchored on a block lands (ValidDocument.BlockBoundary): Position,
-// between two children of Holder, the innermost typed block whose content holds the anchor, or
-// of the document where no typed block holds it (Holder nil); Index, the place among those
-// children the inserted blocks take; and Content, the range Holder's children span, which is
-// the zero Range for the document, whose children span it whole.
+// Boundary is where an insert anchored on a block lands (ValidDocument.BlockBoundary,
+// ValidDocument.ListBoundary): Position, between two children of Holder, the block whose children
+// the insert joins - the innermost typed block, list item or blockquote holding the anchor, a
+// list for list content, or the document (Holder nil); Index, the place among those children the
+// inserted blocks take; and Content, the range Holder's children span, which is the zero Range
+// for the document, whose children span it whole.
 type Boundary struct {
 	Position int
 	Index    int
@@ -71,36 +72,81 @@ type Boundary struct {
 }
 
 // BlockBoundary is the boundary before or after the block containing target among the children
-// of the innermost typed block whose content holds target, or among the document's where none
-// does, over the tree d validated: an insert anchored on a paragraph of a requirement, an ask or
-// a callout lands in that typed block, beside the paragraph, and one anchored on a typed block's
-// own range lands beside that block, among its parent's children. Inside the typed block, or
-// the document, the block is its child holding target, so a paragraph anchored on a block of a
-// list or a table lands after the whole list or table. The zero ValidDocument wants a document.
+// of that block's own parent, over the tree d validated: the innermost typed block, list item or
+// blockquote whose content holds target, or the document where none does. An insert anchored on a
+// paragraph of a requirement, an ask or a callout lands in that typed block, beside the
+// paragraph; one anchored on a list item's text lands in the item, beside its text; and one
+// anchored on a quote's paragraph lands in the quote. One anchored on such a block's own range
+// lands beside that block, among its parent's children - a list item's beside its list, since a
+// list holds items alone - and one anchored in a table lands after the whole table, whose cells
+// hold one paragraph each. The zero ValidDocument wants a document.
 func (d ValidDocument) BlockBoundary(target Range, after bool) (Boundary, error) {
+	return d.boundary("BlockBoundary", target, after, false)
+}
+
+// ListBoundary is BlockBoundary for list content (ListContent), which joins the list its anchor
+// stands in: the boundary before or after the item holding target, among the children of that
+// item's list, so the content becomes a sibling of the item, or, where target is a list's own
+// block, the boundary inside that list before its first item or past its last, rather than beside
+// the list, where markdown would write a second list that reads back as one with it. It is the
+// same descent as BlockBoundary's, with a list as the parent where BlockBoundary takes the item,
+// so a typed block or a quote between the list and target holds the content, as it holds a
+// paragraph: list content anchored on a requirement's paragraph inside a list item stays in the
+// requirement, and one anchored on a quote's paragraph lands in the quote. Where no list holds
+// target inside its parent, ListBoundary is BlockBoundary. The zero ValidDocument wants a
+// document.
+func (d ValidDocument) ListBoundary(target Range, after bool) (Boundary, error) {
+	return d.boundary("ListBoundary", target, after, true)
+}
+
+// boundary is BlockBoundary, or ListBoundary where list is true. It goes down the blocks holding
+// target, each the first of its parent's children whose range holds it (childBlock), until no
+// child of the block holds it or the block holds no children: each parent on the way whose
+// children hold target moves the boundary in among them (holdsInsert), so the last is the
+// innermost's. For list content, a list the descent stops at, target being that list's own block,
+// takes the content as its first or last item.
+func (d ValidDocument) boundary(method string, target Range, after, list bool) (Boundary, error) {
 	if d.doc == nil {
-		return Boundary{}, wantsDocument("BlockBoundary")
+		return Boundary{}, wantsDocument(method)
 	}
 	index, start, end, err := childBlock(d.doc, 0, target)
 	if err != nil {
 		return Boundary{}, err
 	}
 	boundary := besideChild(nil, Range{}, index, start, end, after)
-	// Down the blocks holding target, each the first of its parent's children whose range holds
-	// it (childBlock), until no child of the block holds it or the block holds no children: each
-	// typed block on the way whose children hold target moves the boundary in among them, so the
-	// last is the innermost's.
 	for node, from, to := d.doc.Children[index], start, end; !isOpaqueNodeType(node.Type); {
 		content := Range{From: from + 1, To: to - 1}
 		if index, start, end, err = childBlock(node, content.From, target); err != nil {
+			if list && isList(node) {
+				boundary = Boundary{Position: content.From, Holder: node, Content: content}
+				if after {
+					boundary.Position, boundary.Index = content.To, len(node.Children)
+				}
+			}
 			break
 		}
-		if _, typed := typedBlock(node.Type); typed {
+		if holdsInsert(node, list) {
 			boundary = besideChild(node, content, index, start, end, after)
 		}
 		node, from, to = node.Children[index], start, end
 	}
 	return boundary, nil
+}
+
+// holdsInsert reports whether node is a parent an insert anchored on one of its children joins:
+// a typed block or a blockquote, and a list item for blocks or a list for list content, which
+// joins the list rather than the item.
+func holdsInsert(node *Node, list bool) bool {
+	switch {
+	case node.Type == "blockquote":
+		return true
+	case node.Type == "list_item":
+		return !list
+	case isList(node):
+		return list
+	}
+	_, typed := typedBlock(node.Type)
+	return typed
 }
 
 // besideChild is the boundary before or after the child at index of holder, whose range is start
@@ -127,38 +173,6 @@ func childBlock(parent *Node, from int, target Range) (index, start, end int, er
 	return 0, 0, 0, ErrTargetNotFound
 }
 
-// ListBoundary is the boundary inside a list where list content anchored on target belongs: the
-// boundary before or after the item holding target, so the content becomes a sibling of that item,
-// or, where target is a list's own block, the boundary inside that list before its first item or
-// past its last. inList is false where target lies in no list, and the caller takes the boundary
-// BlockBoundary answers there, as it does for content that is no list content (ListContent): an
-// insert of a paragraph on a block inside a list still lands after the whole list, and one on a
-// block of a decision in the decision, beside that block. The list found is the innermost holding
-// target, which can hold the typed block target lies in; the caller keeps the content in that
-// typed block (Boundary.Content). The zero ValidDocument wants a document.
-func (d ValidDocument) ListBoundary(target Range, after bool) (position int, inList bool, err error) {
-	if d.doc == nil {
-		return 0, false, wantsDocument("ListBoundary")
-	}
-	found, ok := listAnchor(d.doc, target)
-	if !ok {
-		return 0, false, nil
-	}
-	if found.node.Type == "list_item" {
-		// An item's own edges are positions of its list, between two of its items.
-		if after {
-			return found.end, true, nil
-		}
-		return found.start, true, nil
-	}
-	// The list's own block: inside it, past its last item or before its first, rather than beside
-	// the list, where markdown would write a second list that reads back as one with it.
-	if after {
-		return found.end - 1, true, nil
-	}
-	return found.start + 1, true, nil
-}
-
 // listAnchorFound is where a list anchor stands: the node, its path and its ProseMirror range.
 type listAnchorFound struct {
 	node  *Node
@@ -167,11 +181,12 @@ type listAnchorFound struct {
 	end   int
 }
 
-// listAnchor is the innermost list item or list holding target: the item a sibling item stands
-// beside, or the list an item joins where target is that list's own block. The innermost wins, so
-// a block of a nested item answers that item rather than the one holding its list, and a nested
-// list's own block answers the nested list. Containers of target are visited from the outermost in
-// (walk), so the last of them seen is the innermost. A target in no list has none.
+// listAnchor is the innermost list item or list holding target: the item a moved item stands
+// beside, or the list it joins where target is that list's own block (moveListItem). The
+// innermost wins, so a block of a nested item answers that item rather than the one holding its
+// list, and a nested list's own block answers the nested list. Containers of target are visited
+// from the outermost in (walk), so the last of them seen is the innermost. A target in no list
+// has none.
 func listAnchor(doc *Node, target Range) (listAnchorFound, bool) {
 	var found listAnchorFound
 	ok := false

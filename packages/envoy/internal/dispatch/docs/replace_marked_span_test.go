@@ -18,11 +18,13 @@ import (
 // are the same fault at a span's start and end, in a link, italic, strikethrough and code, and
 // the bounds of the rule: a with that writes the span's mark itself, and a find that spells the
 // span's markup, over its whole text or across its edge, which leaves the mark to the with. A
-// find that runs past a span's edge without spelling its markup is refused
-// (TestReplaceAcrossAMarkedSpansEdgeIsRefused). Then a find that matched the text as written,
-// whose `*`, `_` or backtick is text the span holds and no markup: `*`, `_` and a backtick inside
-// a bold, an italic and a code span, the review's two finds (`2*3*4` in italic, `2**3**4` in bold),
-// and `snake_case_name`, whose underscores no reading takes for markup.
+// find that spells the span's markup over part of the text it covers (`a **b** c` over
+// `**a b c**`) spells it over that part alone, so the span keeps its mark, where the with was
+// written without the bold. A find that runs past a span's edge without spelling its markup is
+// refused (TestReplaceAcrossAMarkedSpansEdgeIsRefused). Then a find that matched the text as
+// written, whose `*`, `_` or backtick is text the span holds and no markup: `*`, `_` and a
+// backtick inside a bold, an italic and a code span, the review's two finds (`2*3*4` in italic,
+// `2**3**4` in bold), and `snake_case_name`, whose underscores no reading takes for markup.
 // Each row writes one replace and reads it back three ways: the markdown the version stored, the
 // document a caller reads, and the text of the paragraph the replace wrote in.
 func TestReplaceInsideAMarkedSpanKeepsTheSpanWhole(t *testing.T) {
@@ -122,6 +124,14 @@ func TestReplaceInsideAMarkedSpanKeepsTheSpanWhole(t *testing.T) {
 			with:     "wrote that",
 			want:     "Sami wrote that today.\n",
 			text:     "Sami wrote that today.",
+		},
+		{
+			name:     "a find that spells a span's markup over part of the text it covers keeps the span",
+			markdown: "**a b c** now.\n",
+			find:     "a **b** c",
+			with:     "x",
+			want:     "**x** now.\n",
+			text:     "x now.",
 		},
 		{
 			name:     "a literal * inside a bold span",
@@ -252,6 +262,9 @@ func TestReplaceInsideAMarkedSpanKeepsTheSpanWhole(t *testing.T) {
 // strikethrough's and a code span's, a find that spells only the part of a bold span's markup it
 // covers, and the find past a bold span's end (`'s bold` in `**Sami's** bold`) that
 // TestReplaceInsideAMarkedSpanKeepsTheSpanWhole once wrote outside the span, as `**Sami**'s loud`.
+// The last two are a find that spells one span's markup and covers a second span of that kind
+// whose markup it does not spell: the second link lost its URL, and the second bold its bold,
+// since the find was read as spelling every span of the kind once it spelled one.
 func TestReplaceAcrossAMarkedSpansEdgeIsRefused(t *testing.T) {
 	for _, test := range []struct{ name, markdown, find, with, kind, span string }{
 		{
@@ -309,6 +322,22 @@ func TestReplaceAcrossAMarkedSpansEdgeIsRefused(t *testing.T) {
 			with:     "'s loud",
 			kind:     "bold",
 			span:     "Sami's",
+		},
+		{
+			name:     "a find that spells one link's markup and covers a second link",
+			markdown: "I wrote [this](https://a.example/1) and [that](https://b.example/2) today.\n",
+			find:     "wrote [this](https://a.example/1) and that",
+			with:     "wrote it",
+			kind:     "link",
+			span:     "that",
+		},
+		{
+			name:     "a find that spells one bold span's markup and covers a second",
+			markdown: "**a** and **b** now.\n",
+			find:     "**a** and b",
+			with:     "x",
+			kind:     "bold",
+			span:     "b",
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {

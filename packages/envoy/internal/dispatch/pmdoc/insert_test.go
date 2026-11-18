@@ -258,12 +258,9 @@ func TestListBoundaryPlacesContentBesideTheAnchoredItem(t *testing.T) {
 		{after: true, want: "- a\n  - x\n  - z\n  - y\n- b\n"},
 		{after: false, want: "- a\n  - z\n  - x\n  - y\n- b\n"},
 	} {
-		position, inList, err := listBoundary(doc, anchor, test.after)
+		position, err := listBoundary(doc, anchor, test.after)
 		if err != nil {
 			t.Fatal(err)
-		}
-		if !inList {
-			t.Fatalf("after=%v: the anchor reads as outside every list", test.after)
 		}
 		out, err := splice(doc, Range{From: position, To: position}, with)
 		if err != nil {
@@ -294,12 +291,9 @@ func TestListBoundaryOnTheListsOwnBlockTakesTheContentAsAnItem(t *testing.T) {
 		{after: true, want: "- a\n- b\n- c\n"},
 		{after: false, want: "- c\n- a\n- b\n"},
 	} {
-		position, inList, err := listBoundary(doc, target, test.after)
+		position, err := listBoundary(doc, target, test.after)
 		if err != nil {
 			t.Fatal(err)
-		}
-		if !inList {
-			t.Fatalf("after=%v: the list's own block reads as outside every list", test.after)
 		}
 		out, err := splice(doc, Range{From: position, To: position}, with)
 		if err != nil {
@@ -309,8 +303,9 @@ func TestListBoundaryOnTheListsOwnBlockTakesTheContentAsAnItem(t *testing.T) {
 	}
 }
 
-// A target in no list has no boundary inside one, and its caller takes the document-level boundary.
-func TestListBoundaryAnswersNothingForATargetInNoList(t *testing.T) {
+// A target in no list takes the boundary BlockBoundary answers: no list holds it for list content
+// to join, so the content lands beside the anchor's block as any other content does.
+func TestListBoundaryOfATargetInNoListIsBlockBoundary(t *testing.T) {
 	doc, err := Parse("Intro.\n\n- a\n")
 	if err != nil {
 		t.Fatal(err)
@@ -319,8 +314,10 @@ func TestListBoundaryAnswersNothingForATargetInNoList(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, inList, err := listBoundary(doc, anchor, true); err != nil || inList {
-		t.Fatalf("list boundary of a paragraph anchor = inList %v, %v; want none", inList, err)
+	listed, listErr := listBoundary(doc, anchor, true)
+	block, blockErr := blockBoundary(doc, anchor, true)
+	if listErr != nil || blockErr != nil || listed != block {
+		t.Fatalf("list boundary of a paragraph anchor = %d, %v; want the block boundary %d, %v", listed, listErr, block, blockErr)
 	}
 }
 

@@ -4753,10 +4753,11 @@ Each item below names an operation and its required fields, then its behavior.
 - `replace` (`find`, `with`)
 
   Replace one plain-text target.
-  Every `replace` names `with`, and `with: ""` deletes the target on purpose: a `replace` with no `with`, or carrying a field `replace` does not take (`markdown`, `after`, `before`, `block`, `index`, `type`, `attributes`), is `400 REPLACE_FIELDS` naming the operation and the field, with nothing written, where it was read as an empty `with` and deleted the target.
-  Text that stays in the matched block keeps every bold, italic, strikethrough, link or code span the target lies wholly inside (replacing `said` in `**Sami said bold**` gives `**Sami answered bold**`), and a `find` that spells a span's own markup (`**Sami bold**`) lets `with` decide that span's formatting.
+  Every `replace` names `with`, and `with: ""` deletes the target on purpose: a `replace` takes `op`, `find`, `with` and `occurrence` alone, and one with no `with`, or carrying any other member whatever it holds (`markdown`, `markdown: ""`, `text`, `replacement`), is `400 REPLACE_FIELDS` naming the operation and the member, with nothing written, where it was read as an empty `with` and deleted the target, or applied beside a member it never read.
+  Text that stays in the matched block keeps every bold, italic, strikethrough, link or code span the target lies wholly inside (replacing `said` in `**Sami said bold**` gives `**Sami answered bold**`), and a `find` that spells a span's markup over all of the span's text it covers (`**Sami bold**`) lets `with` decide that span's formatting; one that spells it over part of that text (`a **b** c` over `**a b c**`) keeps the span.
   A `find` matched as the text is written spells no markup: `2*3*4` inside `*a 2\*3\*4 b*` is the span's own text, so the replacement stays in the italic.
   A `find` that crosses a span's edge, covering text inside it and text outside it (`wrote this`, where only `this` is a link), is `400 FIND_CROSSES_SPAN` with nothing written: narrow it to the span's inside, or spell the whole span's markup in it (`wrote [this](https://example.com/Sami)`), which then replaces the markup too.
+  Each span is weighed alone: `wrote [this](https://a.example/1) and that`, where `that` is a second link, spells the first link and crosses the second's edge, so it is refused naming `that`.
 
 - `delete` (`find`)
 
@@ -4764,9 +4765,9 @@ Each item below names an operation and its required fields, then its behavior.
 
 - `insert` (`markdown`, exactly one of `after` or `before`)
 
-  Insert blocks before or after the block an anchor names - a quote's or a heading's block, or `block:<id>` - beside it among the children of the innermost typed block holding it (`requirement`, `check`, `plan_task`, `ask`, `callout`), or of the document where none does: markdown anchored on a paragraph of a requirement is that requirement's, and markdown anchored on a typed block's own block lands beside that block.
-  Inside the typed block or the document, the block is its child holding the anchor, so a paragraph anchored on an item of a list lands after the whole list, while list content anchored inside a list joins that list.
-  Markdown the typed block's content rule cannot hold there - a heading in a requirement, a paragraph after an ask's options - is `400 INSERT_DOES_NOT_FIT` with nothing written, where it was written after the typed block, at the document's level, and nothing said so.
+  Insert blocks before or after the block an anchor names - a quote's or a heading's block, or `block:<id>` - beside it among the children of that block's own parent: the innermost typed block (`requirement`, `check`, `plan_task`, `ask`, `callout`), list item or blockquote holding it, or the document where none does.
+  Markdown anchored on a paragraph of a requirement is that requirement's, markdown anchored on a list item's text lands in that item, after or before its text, and markdown anchored on a quote's paragraph lands in the quote; markdown anchored on a typed block's or a quote's own block lands beside that block, one anchored on a list item's own block beside its list, and one anchored in a table after the whole table, while list content anchored inside a list joins that list.
+  Markdown that parent's content rule cannot hold there - a heading in a requirement, a paragraph after an ask's options, a heading before a list item's text - is `400 INSERT_DOES_NOT_FIT` with nothing written, where it was written after the typed block, at the document's level, or before the whole list, and nothing said so.
   `"start"` and `"end"` select document edges.
   Pipe-table row fragments at a table-cell target are the exception: they extend that table before or after the containing row.
   Use `replace` for inline continuation.
@@ -4882,18 +4883,19 @@ Each item below names a status and code, then its meaning.
 
   A `replace`'s `find` covers text inside a bold, italic, strikethrough, link or code span and text outside it, which would write the replacement outside the span, dropping a link with its URL or cutting the span to end on a space; nothing is written.
   The message names the span's text and kind and the markup that spells it: narrow `find` to the span's inside, or write the whole span with its markup in `find`, which then replaces the markup too (a find never spells strikethrough, so a struck span's edge takes one replace inside it and one outside).
+  Each span the `find` covers is weighed alone: one that spells a span's markup crosses the edge of every other span it covers whose markup it does not spell, as `wrote [this](https://a.example/1) and that` does where `that` is a second link.
 
 - `400 REPLACE_FIELDS`
 
-  A `replace` names no `with` (a JSON `null` is none), or carries a field `replace` does not take (`markdown`, `after`, `before`, `block`, `index`, `type`, `attributes`); nothing in the batch is written.
-  Such a replace was read as an empty `with`, which deleted the text its `find` matched; `with: ""` still deletes it on purpose.
-  The message names the operation and each such field: `operation 1: replace names no with, which would delete the text find matches, and carries markdown, which replace does not take; …`.
+  A `replace` names no `with` (a JSON `null` is none), or carries a member besides `op`, `find`, `with` and `occurrence`, whatever that member holds (`markdown`, `markdown: ""`, `text`, `replacement`); nothing in the batch is written.
+  Such a replace was read as an empty `with`, which deleted the text its `find` matched, or applied beside a member it never read; `with: ""` still deletes the match on purpose.
+  The message names the operation and each such member: `operation 1: replace names no with, which would delete the text find matches, and carries markdown, which replace does not take; …`.
 
 - `400 INSERT_DOES_NOT_FIT`
 
-  An `insert` anchored inside a typed block writes markdown that block's content rule cannot hold where the anchor puts it: a `requirement`, a `check` or a `plan_task` holds paragraphs alone, and an `ask` the paragraphs of its question and then one bullet list of options; nothing in the batch is written.
-  Such an insert was written after the typed block, at the document's level, so a requirement's words stood outside every requirement and no check's `serves` reached them.
-  The message names the operation, the anchor, the typed block and its id, its rule and what breaks it, and the anchor on the typed block itself that writes the markdown beside it instead: `operation 0: insert after "block:<id>" lands inside the requirement block "r1", whose content rule, paragraph+, cannot hold a heading there; …`.
+  An `insert` writes markdown the block it lands in cannot hold where the anchor puts it: a `requirement`, a `check` or a `plan_task` holds paragraphs alone, an `ask` the paragraphs of its question and then one bullet list of options, and a list item opens with its text, so no other block stands before it; nothing in the batch is written.
+  Such an insert was written after the typed block, at the document's level, so a requirement's words stood outside every requirement and no check's `serves` reached them, or before the whole list.
+  The message names the operation, the anchor, the block it lands in and its id, its rule and what breaks it, and the anchor on that block itself that writes the markdown outside it instead: `operation 0: insert after "block:<id>" lands inside the requirement block "r1", whose content rule, paragraph+, cannot hold a heading there; …`.
 
 - `400 TABLE_WIDTH`
 

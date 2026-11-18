@@ -30,12 +30,13 @@ func blockBoundary(doc *Node, target Range, after bool) (int, error) {
 	return boundary.Position, err
 }
 
-func listBoundary(doc *Node, target Range, after bool) (int, bool, error) {
+func listBoundary(doc *Node, target Range, after bool) (int, error) {
 	valid, err := ValidateDocument(doc, "ListBoundary")
 	if err != nil {
-		return 0, false, err
+		return 0, err
 	}
-	return valid.ListBoundary(target, after)
+	boundary, err := valid.ListBoundary(target, after)
+	return boundary.Position, err
 }
 
 // blockIndex is the index of the document-level block holding target, the answer

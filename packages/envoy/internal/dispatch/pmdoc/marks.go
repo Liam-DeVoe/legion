@@ -199,13 +199,15 @@ type Span struct {
 // range inside one span crosses no edge of it, and neither does one over a span's whole text
 // alone.
 //
-// find is the quote that matched r, and step the step of the matcher cascade it matched at. A find
-// matched as markdown (QuoteMarkdown) that spells a span's markup over the whole span (`wrote
-// [this](https://example.com/Sami)`) crosses no edge of it: it replaces that markup too, which is
-// then the text written over it to keep or drop (WithoutQuotedMarkup). One that spells only the
-// part of a span it covers (`**bold** now` in `**Sami said bold** now`) still crosses that span's
-// edge, and a find matched as written spells no markup at all.
-func (at TextblockAt) CrossedSpan(r Range, find string, step QuoteStep) (Span, bool) {
+// spelled is how the find that matched r spells it (QuoteFinder.FindSpelling). A find that spells
+// a span's markup over the whole span (`wrote [this](https://example.com/Sami)`) crosses no edge
+// of it: it replaces that markup too, which is then the text written over it to keep or drop
+// (WithoutQuotedMarkup). The test is the span's own: a find that spells one span's markup and
+// covers a second span of the type whose markup it does not spell (`wrote [this](…) and that`,
+// where `that` is a second link) crosses the second span's edge. One that spells only the part of
+// a span it covers (`**bold** now` in `**Sami said bold** now`) still crosses that span's edge,
+// and a find matched as written spells no markup at all.
+func (at TextblockAt) CrossedSpan(r Range, spelled Spelling) (Span, bool) {
 	type open struct {
 		mark Mark
 		// first is the index of the span's first child, and from its position.
@@ -215,8 +217,6 @@ func (at TextblockAt) CrossedSpan(r Range, find string, step QuoteStep) (Span, b
 	// overlaps another of its type.
 	var openSpans [5]open
 	opened := openSpans[:0]
-	var spelled inlineMarkup
-	read := false
 	children := at.Node.Children
 	pos := at.Content.From
 	for index := 0; index <= len(children); index++ {
@@ -234,13 +234,8 @@ func (at TextblockAt) CrossedSpan(r Range, find string, step QuoteStep) (Span, b
 			if span.from >= r.To || pos <= r.From || (span.from <= r.From && r.To <= pos) {
 				continue
 			}
-			if step == QuoteMarkdown && r.From <= span.from && pos <= r.To {
-				if !read {
-					spelled, read = quotedMarkup(find), true
-				}
-				if markTypeMarkup(span.mark.Type)&spelled != 0 {
-					continue
-				}
+			if r.From <= span.from && pos <= r.To && spelled.spells(span.mark.Type, span.from, pos) {
+				continue
 			}
 			return spanOf(span.mark, children[span.first:index]), true
 		}
