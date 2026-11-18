@@ -1,10 +1,15 @@
-import { beforeAll, expect, test } from "bun:test";
+import { beforeAll, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { cliRefusals } from "@legion/envoy-client/dispatch-cli";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { checkouts, specWork, statesDesign, TestHandoff } from "./score";
+
+// The hooks stage the runs and run score.ts over them as a process of its own. On a loaded
+// machine a hook takes longer than bun's 5 s default (running score.ts took 8.2 s at a load of
+// 268), so each test and hook gets one minute.
+setDefaultTimeout(60_000);
 
 // A run whose agent never got a model turn (Oh My Pi exits before its first request, as when the
 // profile's gateway key command runs past its budget) says nothing about the skill under test: the
