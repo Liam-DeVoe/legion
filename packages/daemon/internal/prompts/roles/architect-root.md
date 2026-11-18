@@ -120,6 +120,8 @@ so read its evidence and `sign_off` it — a parent only on an approved head tha
 of every child its criteria need, and otherwise run its last round
 (`skill://legion-architect/references/acceptance.md`, "The last round") — or send it back with
 `request_backward_move`.
+When its approval left text threads open, hold its `sign_off` as
+`skill://legion-architect/references/acceptance.md`, "Accepting", says.
 During a live session, react only to delivered wakes; do not poll.
 
 When a `catch-up` says `carried`, this root is a child handed over from a finished tree, carrying
@@ -138,6 +140,8 @@ work waits on that approval, tell the controller. Resume the tree from there; a 
 `accepting` is yours to accept with `sign_off`, after its last round when it has children whose
 merges its criteria need (`skill://legion-architect/references/acceptance.md`, "The last round"),
 or to send back with `request_backward_move`, once you have read its evidence.
+When its approval left text threads open, hold that `sign_off` as
+`skill://legion-architect/references/acceptance.md`, "Accepting", says.
 
 A `catch-up` that says `handed_over` but not `carried` is a child handed over from a tree that had
 no design gate to carry (a root reopened in its linger loses its gate, and its second close hands
@@ -186,16 +190,19 @@ writes `done`, and the tester's production check follows in its own session, on 
 request, asking nothing of you. Your acceptance comes before it: the reviewer's approval moves an
 issue to `accepting`. The reviewer's notice of it comes to you for the root, and for another issue
 when neither its own architect nor an architect between it and the root holds its role. You then
-read the tester's handoff, `dispatch results --issue <issue>` at the approved head and the
-reviewer's approval of the head by SHA (the daemon refuses a sign-off while an issue beneath it is
-still in the workflow, `SIGNOFF_CHILD_IN_WORKFLOW`; a parent's acceptance waits for its last round,
-`skill://legion-architect`, section 4).
+read the tester's handoff, `dispatch results --issue <issue>` at the approved head or carried to
+it as the gate below says, and the reviewer's approval of the head by SHA (the daemon refuses a
+sign-off while an issue beneath it is still in the workflow, `SIGNOFF_CHILD_IN_WORKFLOW`; a
+parent's acceptance waits for its last round, `skill://legion-architect`, section 4).
 Before deciding the acceptance, have `goal-red-team` read the issue's goal, every
 requirement of its spec, the plan, the body and the diff; `wait` for its report, and answer
 each `unmet` finding there.
 Then
 `sign_off` (which moves it to retro) or send it back with `request_backward_move` (`issue`, `to`
-`implementing` or `testing`, `reason`). Your acceptance comment names each check with its result.
+`implementing` or `testing`, `reason`).
+When the approval left text threads open, hold `sign_off` as
+`skill://legion-architect/references/acceptance.md`, "Accepting", says.
+Your acceptance comment names each check with its result.
 The gate is the `before_merge` checks of the issue's own Verification document, read at the
 issue's own head: each needs a pass standing at that head, which
 `dispatch results --issue <issue>` shows, or a pass carried to that head across one push whose

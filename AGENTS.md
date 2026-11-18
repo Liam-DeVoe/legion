@@ -988,6 +988,8 @@ A parent with children puts the work into them, and its own pull request joins a
 the architect that owns the issue reads the tester's handoff, each `check` block of the issue's Verification document with the results recorded against it (`dispatch results --issue <issue>`), and the reviewer's approval of the head by SHA, then accepts with the `legion` tool's `sign_off` (→ `retro`;
 refused in every other phase, `SIGNOFF_OUTSIDE_ACCEPTING`;
 refused while an issue beneath the one being accepted is still in the workflow, `SIGNOFF_CHILD_IN_WORKFLOW` naming each one, since a parent's head proves its children's merged work) or sends the issue back to `implementing` or `testing` with `request_backward_move`, which counts a review round, or a conflict round that `review_round_cap` does not count when the record holds the pull request's head as conflicting with its base.
+An approval that leaves text threads open is followed by the implementer's one push of text fixes and the reviewer's approval of that fix head (`skills/legion-worker/references/review-threads.md`, "After an approval that leaves text threads open"),
+and the architect holds `sign_off` for that second approval (`skills/legion-architect/references/acceptance.md`, "Accepting"), where a result that passed one push below counts under the carry rule in `skills/legion-worker/references/merge-gate.md`.
 An architect's `handoff_complete` there is refused (`ACCEPTANCE_IS_SIGN_OFF`); CI red there moves nothing, and is the architect's own read before it accepts.
 The architect's `catch-up` at each launch names, in its `reason`, every issue in `accepting` whose acceptance is that architect's, since the reviewer's notice that moved it there may never have reached it:
 while a root's architect's claim has failed, that notice ends undelivered, and while a child's own architect does not hold its role, it goes to the architect above.
@@ -1284,6 +1286,7 @@ No lifecycle labels carry worker state.
 
 **Testing gate:** Behavioral testing is mandatory after every implementation phase
 — both fresh implementation AND review-requested changes go through the tester before reaching the reviewer.
+The one push of text fixes after an approval that leaves text threads open goes to the reviewer and not through the tester, under the carry rule in `skills/legion-worker/references/merge-gate.md`.
 
 ## Documentation
 

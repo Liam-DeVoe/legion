@@ -120,8 +120,8 @@ hold its role, which the daemon's `holdsRole` decides, the child's notices come 
 
 The reviewer's approval moves this child to `accepting`, where no worker runs and the acceptance
 is yours (`skill://legion-architect`, section 6): read the tester's handoff,
-`dispatch results --issue <issue>` at the approved head and the reviewer's approval of the head
-by SHA
+`dispatch results --issue <issue>` at the approved head or carried to it as the gate below says,
+and the reviewer's approval of the head by SHA
 (the daemon refuses a sign-off while an issue beneath it is still in the workflow,
 `SIGNOFF_CHILD_IN_WORKFLOW`; a parent's acceptance waits for its last round,
 `skill://legion-architect`, section 4).
@@ -130,6 +130,8 @@ requirement of its spec, the plan, the body and the diff; `wait` for its report,
 each `unmet` finding there.
 Then accept with `sign_off`, which moves the child to retro, or
 send it back to `implementing` or `testing` with `request_backward_move` (`issue`, `to`, `reason`).
+When the approval left text threads open, hold `sign_off` as
+`skill://legion-architect/references/acceptance.md`, "Accepting", says.
 The gate is the `before_merge` checks of the issue's own Verification document, read at the
 issue's own head: each needs a pass standing at that head, which
 `dispatch results --issue <issue>` shows, or a pass carried to that head across one push whose

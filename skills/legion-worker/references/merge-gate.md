@@ -119,11 +119,11 @@ own carry rule and the architect's acceptance, not a path test.
   For a GitHub Actions job, GitHub ends that wait itself: a job still queued for a self-hosted runner after 24 hours is cancelled, a running job ends at its own `timeout-minutes` or at GitHub's execution limit, 6 hours on a GitHub-hosted runner and 5 days on a self-hosted one, which fails it, and every workflow run ends at 35 days, its waiting included (GitHub's Actions limits page); the settlement of that conclusion moves the round.
   A run `waiting` on an environment's approval waits on a person, up to 30 days, and a check run no Actions job owns, another GitHub App's or one a workflow created through the API, or a commit status left `pending`, has no such bound and ends only when whoever made it ends it: one that stands longer than its CI usually takes is the architect's to raise with a person, so tell the architect, naming the run, do not approve, and wait with a `WAITING` line naming what you wait on.
   The daemon's own count in the issue's `mergeWait`, `checkRuns`, is only the runs a CI settlement applied, so a zero there is no evidence of what GitHub holds: read the two lists on GitHub before you act.
-  Approval is refused while any `before_merge` check of the issue's own Verification document has no pass standing at the head being reviewed: `REQUEST_CHANGES` naming each such check by its block id, and `dispatch results --issue <issue>` is the read that decides it, under the check's own line saying whether a pass stands and from which roles. That answer leaves out a pass at another commit, a pass recorded under an older wording of the check and a retracted pass, each of which the command still prints; a fail recorded after a pass leaves that pass standing until someone retracts it.
+  Approval is refused while any `before_merge` check of the issue's own Verification document has neither a pass standing at the head being reviewed nor one carried to it across one push whose diff changes no code that runs, as the carry rule below says: `REQUEST_CHANGES` naming each such check by its block id, and `dispatch results --issue <issue>` is the read that decides a pass standing, under the check's own line saying whether a pass stands and from which roles. That answer leaves out a pass at another commit, a pass recorded under an older wording of the check and a retracted pass, each of which the command still prints; a fail recorded after a pass leaves that pass standing until someone retracts it.
   A check carrying `ci_check` is CI's: the one result that `dispatch results` derives from the named run decides it (`skill://legion-worker/references/ci-checks.md`). While that run has not concluded, wait for it by its name, and do not approve or request changes for that check. Wait the same way where GitHub could not be read. When no run of that name answers after the head's checks settle, tell the architect as a finding and request no changes for it.
   A check whose `run` is a whole test suite and has no pass standing at the head has wrong words, which the architect rewrites: tell the architect as a finding, wait for the rewrite with a `WAITING` line naming it, and request no changes for it. One that has a pass standing at the head is a finding for the architect too, and its pass decides the check, so the review goes on.
   An issue with no Verification document, or whose Verification document holds no `before_merge` check, is a gap you name in the review body, never a review that asks for changes: say which of the two it is, and tell the architect, who writes the checks. Your own findings and the checks that do exist still decide the review, and on an issue that has none the architect's acceptance is the gate.
-  A result proves the head it was recorded at. A result a child recorded against a root's check proves nothing for the root, since it was recorded at the child's head, and a child never records the result that proves a root's check. A child that carries part of a root's requirement proves it with a check on the child's own Verification document whose `serves` names that requirement, at the child's own head. A root's own checks are proven at the root's own head, or, for an `after_merge` check, on the branch the root's pull request merged into or on the repository's default branch, in the root's last round.
+  A result proves the head it was recorded at, and the head one push above it only as the carry rule below says. A result a child recorded against a root's check proves nothing for the root, since it was recorded at the child's head, and a child never records the result that proves a root's check. A child that carries part of a root's requirement proves it with a check on the child's own Verification document whose `serves` names that requirement, at the child's own head. A root's own checks are proven at the root's own head, or, for an `after_merge` check, on the branch the root's pull request merged into or on the repository's default branch, in the root's last round.
   A passing result stays current across one push above the head you approved when that push changes no code that runs: read that push's own diff (`gh api repos/<o>/<r>/compare/<approved sha>...<new head>`), approve the new head, and say in that approval that you read the diff, that it changes no code that runs, the head each result ran at and the head you approve. The carry rests on the diff and on your statement of it, never on the push being called a text fix: where that push's diff changes code that runs every result is stale, as it is after any other push, so you tell the architect and the architect moves the issue to `testing` with `request_backward_move`, since a review submitted outside `reviewing` moves nothing.
   On a docs-only PR the `Thermo` line still records the simplify pass and the defects it
   reported, and its pair half reads `thermonuclear pair: not run (docs-only)`.
@@ -271,13 +271,16 @@ with threads open — leaves the issue in `reviewing` until that answer comes cl
 - Between the reviewer's approval and retro the issue sits in `accepting` (Dispatch status
   `needs_review`), where no worker is started: the architect that owns the issue, the one each
   phase worker's `Legion addressing` line names, reads the evidence (the tester's handoff,
-  `dispatch results --issue <issue>` at the approved head and the reviewer's
+  `dispatch results --issue <issue>` at the approved head or carried to it under the carry
+  rule above, and the reviewer's
   approval of the head by SHA; the daemon refuses the sign-off while an issue beneath it is still
   in the workflow, `SIGNOFF_CHILD_IN_WORKFLOW`, so a parent is accepted after its children, on
   the head of its last round, `skill://legion-architect`, section 4) and accepts with the
   `legion` tool's `sign_off`, which moves the issue to retro, or sends it back to `implementing`
   or `testing` with `request_backward_move` and a reason, which reaches the started worker's task
-  as its `Reason:` line and counts a review round. The acceptance comment names each check with
+  as its `Reason:` line and counts a review round. Where the reviewer's approval leaves text
+  threads open, the architect holds the sign-off until the reviewer approves the fix head
+  (*After an approval with text threads open*, above). The acceptance comment names each check with
   its result. An issue with no Verification document, or none holding a `before_merge` check,
   is a gap the tester and the reviewer named and neither refused, so that comment is its only
   gate: it names the gap and decides how each delivered item is proven at this head, never
@@ -286,7 +289,8 @@ with threads open — leaves the issue in `reviewing` until that answer comes cl
   is gated by nothing. It does
   not accept while the issue holds a finding ask no controller took (`findings.md`, "When no
   controller takes it"). Approval is gated by the `before_merge` checks of the issue's own
-  Verification document at its head, so a child's result against a root's check proves nothing:
+  Verification document, each with a pass at its head or carried to it under the carry rule
+  above, so a child's result against a root's check proves nothing:
   a root's checks are proven at its own head, in its last round. No `after_merge` result is
   asked here: it is recorded after the close, where the project opens a check (*The production
   check after the close*, below).

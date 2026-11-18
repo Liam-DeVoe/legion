@@ -82,7 +82,7 @@ A tree often brings its own shortfall written up; that is no permission: your jo
 - An issue with no Verification document, or none holding a `before_merge` check, is a gap the tester and the reviewer name and neither refuses: its spec's delivered items are the requirements, met here or sent back. Checks you write close the `criteria` step where it is gated.
 - A finding ask holds the acceptance until it resolves or the controller replies (`skill://legion-architect/references/acceptance.md`).
 
-Post it as a `dispatch comment` naming each check and its result, then `legion({ op: "sign_off", issue: "<KEY>" })`.
+Post it as a `dispatch comment` naming each check and its result, then `legion({ op: "sign_off", issue: "<KEY>" })`. When the reviewer's approval left text threads open, hold `sign_off` as `skill://legion-architect/references/acceptance.md`, "Accepting", says.
 
 - `sign_off` works only in `accepting` (`SIGNOFF_OUTSIDE_ACCEPTING`), and the daemon refuses it while an issue beneath it is still in the workflow (`SIGNOFF_CHILD_IN_WORKFLOW`, naming each one), so a parent is accepted after its children, on the head of its last round (section 4).
 - When a check has neither a pass standing at that head nor one carried to it under the carry rule in `skill://legion-worker/references/merge-gate.md`, or a result contradicts what you read: `request_backward_move` with `issue`, `to` (`implementing` or `testing`) and a `reason` naming the check by its block id. It counts a review round. A `ci_check` run still going, or GitHub unread, is waited for and moves nothing back. A name no run answers is yours to correct in the check's words.

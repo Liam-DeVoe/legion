@@ -169,14 +169,16 @@ proves nothing about the change. A documented procedure counts only when it ran:
 reading the document that describes it, is not a run, and a procedure no surface available to
 you can run is reported under *When no surface reaches the changed path* below, never passed.
 
-**A result proves the head it was recorded at.** A `before_merge` result proves its commit while
-that commit is still the head of an open pull request of the check's issue, or the final head of
-a merged one, and while the check's words have not changed since; an `after_merge` result proves
-a commit the branch its own issue's pull request merged into carries, or the repository's default
-branch does — that default branch alone where Dispatch knows of no merge of that issue — and a
-`default_branch` result only a commit the repository's default branch carries.
+**A result proves the head it was recorded at.** It proves the head one push above it only under
+the diff rule below. A `before_merge` result proves its commit while that commit is still the
+head of an open pull request of the check's issue, or the final head of a merged one, and while
+the check's words have not changed since; an `after_merge` result proves a commit the branch its
+own issue's pull request merged into carries, or the repository's default branch does — that
+default branch alone where Dispatch knows of no merge of that issue — and a `default_branch`
+result only a commit the repository's default branch carries.
 A push moves the head, with no Dispatch write of anyone's, so each check with no `ci_check` is
-recorded again at the new head. `dispatch results --issue <issue>` prints each check with the
+recorded again at the new head unless the diff rule below keeps its result current.
+`dispatch results --issue <issue>` prints each check with the
 results recorded against it and the commit each one was recorded at;
 `dispatch read --issue <issue>` names each requirement of the spec no check serves.
 Where a result's commit stands is read, not stored. A `before_merge` result is compared only with
@@ -202,12 +204,13 @@ approves (`skill://legion-worker/references/merge-gate.md`).
 
 
 **An issue is proved by its own checks.** Approval is gated by the `before_merge` checks of its
-own Verification document, read at its own head, so a result a child recorded proves nothing for
-a root — it was recorded at the child's head — and a child never records the result that proves
-a root's check. A child carrying part of a root's requirement proves it with a check on its own
-Verification document whose `serves` names that requirement. A root's own checks are proven at
-its own head, or, for an `after_merge` check, on the branch the root's pull request merged into
-or on the repository's default branch, in its last round.
+own Verification document, each with a pass at its own head or carried to it by the diff rule
+above, so a result a child recorded proves nothing for a root — it was recorded at the child's
+head — and a child never records the result that proves a root's check. A child carrying part of
+a root's requirement proves it with a check on its own Verification document whose `serves` names
+that requirement. A root's own checks are proven at its own head, or, for an `after_merge` check,
+on the branch the root's pull request merged into or on the repository's default branch, in its
+last round.
 
 **An issue with no `before_merge` check is a named gap.** One with no Verification document, or
 with none holding a `before_merge` check, has no evidence of its own. The tester names the gap
