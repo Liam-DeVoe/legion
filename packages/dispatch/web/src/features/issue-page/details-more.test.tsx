@@ -1404,6 +1404,39 @@ test("a load of /collaborators keeps the focused Collaborators control's place a
   }
 });
 
+// `t v` puts the focus on the history once Details draws it, and the history keeps the place it
+// landed at in the same way when a row above it grows after the landing.
+test("after t v, a row above the focused history that grows scrolls Details by as much, and the history keeps its place", async () => {
+  const page = drawPeopleInDrawer(`/issues/${KEY}`);
+  try {
+    await userEvent.keyboard("tv");
+    const history = await screen.findByTestId("issue-history");
+    await waitFor(() =>
+      expect(document.activeElement, "t v did not focus the history").toBe(history)
+    );
+    for (let frame = 0; frame < 2; frame += 1) {
+      await act(async () => {
+        const { promise, resolve } = Promise.withResolvers<void>();
+        requestAnimationFrame(() => resolve());
+        await promise;
+      });
+    }
+    const top = history.getBoundingClientRect().top;
+    const scrolled = page.box.scrollTop;
+
+    page.grow("row-above", GROWTH);
+    page.resized();
+    expect(page.box.scrollTop, "the row above grew and Details did not scroll by as much").toBe(
+      scrolled + GROWTH
+    );
+    expect(history.getBoundingClientRect().top, "the row above grew and moved the history").toBe(
+      top
+    );
+  } finally {
+    page.restore();
+  }
+});
+
 // The place is held only until the reader names one of their own: once they press a key or turn
 // the wheel, a row above that grows moves what is in view, as it does anywhere else.
 test("a key or a turn of the wheel of the reader's ends the hold, and a later growth above the control scrolls nothing", async () => {

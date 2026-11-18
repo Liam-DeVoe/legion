@@ -53,6 +53,9 @@ const FOCUS_FRAMES = 4;
 /** The collaborators' row inside Details, which `t o` and its address open Details at. */
 const COLLABORATORS_ROW = `aside[${DETAILS_ATTRIBUTE}] [${DETAILS_ROW_ATTRIBUTE}="collaborators"]`;
 
+/** The history inside Details, which `t v` puts the focus on. */
+const HISTORY_IN_DETAILS = `aside[${DETAILS_ATTRIBUTE}] ${HISTORY}`;
+
 /** What a reader does that names a place of their own: the hold of the landed place ends at it. */
 const READER_ACTS = ["keydown", "pointerdown", "touchmove", "wheel"] as const;
 
@@ -299,7 +302,7 @@ export function DetailsHistory({ issue, state }: DetailsMoreProps): ReactNode {
       requestAnimationFrame(() =>
         onceInDetails(HISTORY, () => {
           openDetailsAt("collaborators");
-          holdLandedPlace();
+          holdLandedPlace(COLLABORATORS_ROW, FOCUS_FRAMES);
         })
       );
     }
@@ -325,6 +328,7 @@ export function DetailsHistory({ issue, state }: DetailsMoreProps): ReactNode {
         navigate(buildIssuePath({ key: issue.key, kind: "activity" }));
         openDetails?.(true);
         requestAnimationFrame(() => reachInDetails(HISTORY));
+        holdLandedPlace(HISTORY_IN_DETAILS, DRAWING_FRAMES);
       },
     },
     {
@@ -334,7 +338,7 @@ export function DetailsHistory({ issue, state }: DetailsMoreProps): ReactNode {
       run: () => {
         navigate(buildIssuePath({ key: issue.key, kind: "collaborators" }));
         openDetailsAt("collaborators");
-        holdLandedPlace();
+        holdLandedPlace(COLLABORATORS_ROW, FOCUS_FRAMES);
       },
     },
   ]);
@@ -389,45 +393,49 @@ function reachInDetails(selector: string): void {
 }
 
 /**
- * What starts the hold of the place the Collaborators control lands at in Details
- * (`holdLandedPlace`), called right after Details is asked to open at the collaborators' row. A
- * hold already running ends first, and Details closing or the page going ends it too. `open` is
- * whether Details is open, undefined where the page draws no Details drawer - every page but the
- * new issue page - where nothing is held.
+ * What starts the hold of the place a key or an address lands the focus at in Details
+ * (`holdLandedPlace`), called right after Details is asked to open there. A hold already running
+ * ends first, and Details closing or the page going ends it too. `open` is whether Details is
+ * open, undefined where the page draws no Details drawer - every page but the new issue page -
+ * where nothing is held.
  */
-function useLandedPlaceHold(open: boolean | undefined): () => void {
+function useLandedPlaceHold(open: boolean | undefined): (target: string, frames: number) => void {
   const release = useRef<(() => void) | undefined>(undefined);
   useEffect(() => {
     if (open === false) release.current?.();
   }, [open]);
   useEffect(() => () => release.current?.(), []);
   const drawn = open !== undefined;
-  return useCallback(() => {
-    release.current?.();
-    release.current = drawn ? holdLandedPlace() : undefined;
-  }, [drawn]);
+  return useCallback(
+    (target: string, frames: number) => {
+      release.current?.();
+      release.current = drawn ? holdLandedPlace(target, frames) : undefined;
+    },
+    [drawn]
+  );
 }
 
 /**
- * Keeps the focused Collaborators control where it landed in Details' view. `t o`, and an address
- * that opens Details at the collaborators' row, bring that row into Details' view and then focus
- * its control, two frames on (`useOpenDetailsAt`). A row above it that reads what it shows once
- * Details opens - Blocked by, which reads the titles of the issues it names - grows when that
- * read lands, after the focus, and would push the focused control down out of the view, where
- * the reader no longer sees the focus; a focused control keeps its own place. So once the focus
- * has arrived on the control - a few frames are waited for it, and nothing is held if it never
- * arrives - each change of height of what Details' scrolling box holds scrolls the box by as far
- * as the control then stands from the top it had when the focus arrived. That top is measured
- * afresh each time, so a move anything else made, the browser's own scroll anchoring among them,
- * is made good rather than added to.
+ * Keeps the focus a key or an address put in Details where it landed in Details' view: the
+ * Collaborators control, which `t o` and its address focus two frames after they bring its row
+ * into view (`useOpenDetailsAt`), and the history, which `t v` focuses once Details draws it. A
+ * row above it that reads what it shows once Details opens - Blocked by, which reads the titles
+ * of the issues it names - grows when that read lands, after the focus, and would push the
+ * focused element down, out of the view where the reader sees the focus; a focused element
+ * keeps its own place. So once the focus has arrived inside `target` - up to `frames` frames
+ * are waited for it, and nothing is held if it never arrives - each change of height of what
+ * Details' scrolling box holds scrolls the box by as far as the focused element then stands
+ * from the top it had when the focus arrived. That top is measured afresh each time, so a move
+ * anything else made, the browser's own scroll anchoring among them, is made good rather than
+ * added to.
  *
  * The reader's first act ends the hold: a turn of the wheel, a touch that moves, a key or a
  * press anywhere on the page, heard before anything under it can stop it. So does the focus
- * leaving the control, and (`useLandedPlaceHold`) Details closing, the page going and the next
+ * leaving the element, and (`useLandedPlaceHold`) Details closing, the page going and the next
  * landing. A scroll the hold makes is no act of the reader's and never ends it. Returns what ends
  * the hold.
  */
-function holdLandedPlace(): () => void {
+function holdLandedPlace(target: string, frames: number): () => void {
   let frame = 0;
   let held: { readonly control: HTMLElement; readonly sizes: ResizeObserver } | undefined;
   function release(): void {
@@ -442,7 +450,7 @@ function holdLandedPlace(): () => void {
     const control = document.activeElement;
     if (
       !(control instanceof HTMLElement) ||
-      document.querySelector(COLLABORATORS_ROW)?.contains(control) !== true
+      document.querySelector(target)?.contains(control) !== true
     ) {
       if (left > 0) frame = requestAnimationFrame(() => arrive(left - 1));
       return;
@@ -478,7 +486,7 @@ function holdLandedPlace(): () => void {
   };
   // The opener focuses the control in its second frame, and this looks in that frame, after it.
   frame = requestAnimationFrame(() => {
-    frame = requestAnimationFrame(() => arrive(FOCUS_FRAMES));
+    frame = requestAnimationFrame(() => arrive(frames));
   });
   return release;
 }
