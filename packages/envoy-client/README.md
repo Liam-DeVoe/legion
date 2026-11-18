@@ -664,10 +664,16 @@ write's pacing, and before anything may have landed a deadline or a stop that en
 it ends the write with that credential's error (after a landing, the write is unsettled with the
 deadline's or the stop's own); a trade still unanswered, a pod's registration still pending (each
 told only once the credential has waited out its share of the deadline) and a credential refused
-for good end the write at once. A write presents as one login: Dispatch keys a write per login
-(`requestKeyLogin`), so once an attempt may have landed, a presentation as another login (a
-sign-out, a sign-in, a session switch; `RequestCredential.identity`) is never sent, and the write
-ends unsettled with its key; before that, a repeat reaches no handler and goes as the new login.
+for good end the write at once. A write presents as one identity. Dispatch keys a write per
+login, the person or the service and never the session (`requestKeyLogin`), so a repeat as
+another person or as the machine is a new key there and could run the write twice. The client's
+pin is stricter than that key on purpose: an identity is the session and the broker variables the
+client was made from as well as the sign-in it trades (`RequestCredential.identity`), since the
+client cannot tell whether another session trades as the same person. So once an attempt may have
+landed, a presentation as another identity (a sign-out, a sign-in, a session switch) is never
+sent, and the write ends unsettled with its key; before that, a repeat reaches no handler and goes
+as the new identity. One change no identity sees is the broker binding another person to the same
+sign-in between two trades of one write; the broker does not do that today.
 When the write ends unsettled after this call saw the keyed layer judge it, the error says
 Dispatch finishes an attempt it received, and to read the write back before sending it again,
 since a new command sends it under a new key. A conversion that writes nothing

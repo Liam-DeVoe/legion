@@ -76,8 +76,9 @@ export type WriteEvent =
    *  that names no broker; a trade still unanswered (`TradeUnansweredError`) or a pod's
    *  registration still pending (`RegistrationPendingError`), which the token client tells only
    *  once the presentation has waited out its share of the call's deadline; or, once an attempt
-   *  may have landed, a presentation as another login than the write's, which Dispatch would key
-   *  apart (`requestKeyLogin`). Nothing was sent. */
+   *  may have landed, a presentation as another identity than the write's, which Dispatch may key
+   *  apart (`requestKeyLogin` keys by person or service; the identity is stricter, holding the
+   *  session too). Nothing was sent. */
   | "no-credential-final"
   /** Dispatch's `401 BROKER_TOKEN_NOT_ACTIVE`, the first of the call, where the credential can be
    *  told its token is not live: it is presented afresh and the write sent again at once. */

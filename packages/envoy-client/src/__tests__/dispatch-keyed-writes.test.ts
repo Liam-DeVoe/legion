@@ -1795,12 +1795,13 @@ describe("DispatchClient's writes", () => {
     expect(presented).toBe(1);
   });
 
-  // A5 (the review of be17859eca): Dispatch keys a write per login (`requestKeyLogin`,
-  // request_keys.go), so a repeat that presents as another login is a new key there and can run
-  // the write a second time. Once an attempt may have landed, a presentation as another login
-  // than the write's (a sign-out, a session switch) ends the write unsettled with its key, and
-  // nothing is presented again; before that, a repeat reaches no handler, and the write goes as
-  // the new login.
+  // A5 (the review of be17859eca): Dispatch keys a write per login, the person or the service and
+  // never the session (`requestKeyLogin`, request_keys.go), so a repeat as another person or as
+  // the machine is a new key there and can run the write a second time. The client's pin is
+  // stricter on purpose: it cannot tell whether another session trades as the same person. Once
+  // an attempt may have landed, a presentation as another identity than the write's ends the
+  // write unsettled with its key, and nothing is presented again; before that, a repeat reaches
+  // no handler, and the write goes as the new identity.
   const switching = () => {
     let login = "person-a";
     let presented = 0;
@@ -1848,7 +1849,7 @@ describe("DispatchClient's writes", () => {
       sent[0]?.headers["Idempotency-Key"] as string
     );
     expect((error as DispatchWriteUnsettledError).last.message).toContain(
-      "would present as another login than the attempt before it"
+      "would present as another identity than the attempt before it"
     );
   });
 
@@ -1870,6 +1871,33 @@ describe("DispatchClient's writes", () => {
 
     expect(sent.map((request) => request.headers.Authorization)).toEqual([
       "DPoP person-a-token",
+      "DPoP person-b-token",
+    ]);
+  });
+
+  // T2 (the review of 4dad905e68): the identity a write is pinned to is the one its attempts
+  // last went out as. A switch before anything may have landed moves it, so once the new
+  // identity's attempt may have landed, a repeat as that identity is the same write and goes on.
+  test("a switch before a landing moves the pin, so a repeat as the new identity after its landing goes on", async () => {
+    const { credential, switchTo } = switching();
+    const { fetchImpl, sent } = scripted([
+      () => {
+        switchTo("person-b");
+        throw refused();
+      },
+      refusal(503, "UNAVAILABLE", "the database is restarting"),
+      json(posted, 201),
+    ]);
+
+    await expect(
+      new DispatchClient("http://dispatch.test", credential, fetchImpl, {
+        writeRetry: pacing().retry,
+      }).comment("DSP-1", comment)
+    ).resolves.toEqual(posted);
+
+    expect(sent.map((request) => request.headers.Authorization)).toEqual([
+      "DPoP person-a-token",
+      "DPoP person-b-token",
       "DPoP person-b-token",
     ]);
   });

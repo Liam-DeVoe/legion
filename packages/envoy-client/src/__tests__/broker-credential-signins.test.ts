@@ -30,7 +30,7 @@ import {
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { forgetBrokerClients } from "../broker-credential";
 import { type DispatchEnvironment, dispatchSettings } from "../dispatch-config";
-import { DispatchClient } from "../dispatch-http";
+import { DispatchClient, DispatchWriteUnsettledError } from "../dispatch-http";
 import { envoySettings } from "../envoy-settings";
 import { brokerStandIns } from "./broker-stand-ins";
 
@@ -340,6 +340,80 @@ test("after a refusal, a new sign-in with a new box key gets a client of its own
     `DPoP ${broker.trades[1]?.token}`,
   ]);
 });
+
+// T1 (the review of 4dad905e68): a write that may have landed presents as no other login than its
+// attempts went out as, the sign-in half included. Once a sign-in was refused for good, every call
+// asks the store again (`clientFor`), so a sign-in signed out between two attempts of one write
+// sends the next presentation as the machine: another login to Dispatch (`requestKeyLogin`: the
+// service, not the person), whose key would run the write a second time. The write ends unsettled
+// with its key, and Dispatch is asked once.
+test("a write whose person signs out between two attempts ends unsettled, presenting nothing as the machine", async () => {
+  const broker = signInBroker();
+  const issuer = await issuerFor();
+  const revoked = await signedIn(PERSON, { client_id: CLIENT_ID });
+  const asked: { readonly authorization: string; readonly key: string }[] = [];
+  let signins = "";
+  let renewed: SignInRecord | undefined;
+  const dispatch = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch: async (request) => {
+      if (new URL(request.url).pathname === "/healthz") {
+        return Response.json({ status: "ok", idempotency_keys: true });
+      }
+      const key = request.headers.get("Idempotency-Key") ?? "";
+      asked.push({ authorization: request.headers.get("Authorization") ?? "", key });
+      if (request.method === "POST" && asked.length === 1) {
+        // The person signs out while Dispatch answers the write's first attempt.
+        await rm(signInPath(signins, (renewed as SignInRecord).person));
+        return Response.json(
+          { code: "UNAVAILABLE", error: "the database is restarting" },
+          { status: 503, headers: { "Idempotency-Key": key } }
+        );
+      }
+      return Response.json(
+        { comment: { id: "c-1" } },
+        { status: 201, headers: { "Idempotency-Key": key } }
+      );
+    },
+  });
+  servers.push(dispatch);
+  const pod = await signedInPod(broker.url, `http://127.0.0.1:${dispatch.port}`, issuer.url, [
+    revoked,
+  ]);
+  signins = pod.signins;
+  // A sign-in refused for good, so every later call reads the store again.
+  broker.revoked.add(revoked.thumbprint);
+  const client = dispatchOf(pod.env, "ses_01a9");
+  expect(await refusalOf(client.listAllIssues({}))).toContain("agent-secrets login");
+  // Signed in again: the write's first attempt goes as the person.
+  renewed = await signedIn(PERSON, { client_id: CLIENT_ID });
+  await writeSignIn(signins, renewed);
+
+  const error = await client
+    .comment("DSP-1", { body: "Shipped.", actor: { kind: "session", id: "ses_01a9" } })
+    .then(
+      () => undefined,
+      (caught: unknown) => caught
+    );
+
+  expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
+  expect((error as DispatchWriteUnsettledError).key).toBe(asked[0]?.key as string);
+  expect((error as DispatchWriteUnsettledError).last.message).toContain(
+    "would present as another identity"
+  );
+  expect(asked).toHaveLength(1);
+  // The revoked sign-in's trade, the renewed one's, which the attempt went out as, and then the
+  // machine's, whose token never reached Dispatch.
+  expect(
+    broker.trades.map((trade) => [trade.form.get("subject_token_type"), trade.thumbprint])
+  ).toEqual([
+    [SUBJECT_TOKEN_TYPE_PERSON, revoked.thumbprint],
+    [SUBJECT_TOKEN_TYPE_PERSON, renewed.thumbprint],
+    [SUBJECT_TOKEN_TYPE_KUBERNETES, broker.trades[2]?.thumbprint],
+  ]);
+  expect(asked[0]?.authorization).toBe(`DPoP ${broker.trades[1]?.token}`);
+}, 30_000);
 
 test("a new sign-in closes the client it replaces, so a client whose trades were failing trades no more", async () => {
   // A client's retry loop trades again for as long as the process runs. The credential replaces

@@ -477,10 +477,13 @@ export class BrokerTokenClient {
   /**
    * Forgets the token in hand, so the next {@link token} trades afresh: for a caller a server has
    * told that the token it presented is no longer live, such as one the broker ended at a revoke
-   * before it lapsed. A loop already under way is left alone, since the token it brings back is
-   * a fresh one.
+   * before it lapsed. Where the caller names that token (`accessToken`), a token in hand that is
+   * another, one this client traded since, is kept: it is not the one the server refused, and
+   * dropping it would cost a trade for nothing. A loop already under way is left alone, since the
+   * token it brings back is a fresh one.
    */
-  drop(): void {
+  drop(accessToken?: string): void {
+    if (accessToken !== undefined && this.#held?.accessToken !== accessToken) return;
     this.#held = null;
   }
 

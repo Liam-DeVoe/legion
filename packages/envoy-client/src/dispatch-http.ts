@@ -140,15 +140,19 @@ export class DispatchServiceError extends Error {
 }
 
 /**
- * A non-2xx answer that is not Dispatch's JSON, so whatever answers in its place (a proxy, a load
- * balancer, an auth gateway) wrote it. `answer` says what came back and `advice` what asking again
- * can do, judged from the method and the status alone; the message joins them. A caller that knows
- * more about what its own request did gives `answer` advice of its own instead. `code` is
- * `HTTP_<status>`, as for any refusal that names no code.
+ * An answer that is not Dispatch's JSON, so whatever answers in its place (a proxy, a load
+ * balancer, an auth gateway, a captive portal) wrote it: a non-2xx, or a 2xx that a read, a PUT or
+ * a DELETE could not read as JSON (`#response`; a POST's or a PATCH's 2xx is the write table's,
+ * `answerEvent`). `answer` says what came back and `advice` what asking again can do, judged from
+ * the method and the status alone; the message joins them. A caller that knows more about what
+ * its own request did gives `answer` advice of its own instead. `code` is `HTTP_<status>`, as for
+ * any refusal that names no code.
  */
 export class DispatchGatewayError extends DispatchServiceError {
   override readonly fromDispatch = false;
-  /** Whether the status can clear on its own: a 5xx, a timeout (408) or a rate limit (429). */
+  /** Whether asking again can clear it: a 5xx, a timeout (408), a rate limit (429), or a 2xx
+   *  something in Dispatch's place wrote (a portal or a proxy in the way, which a later request
+   *  can get past). */
   readonly transient: boolean;
   /**
    * Whether the request may have reached Dispatch before the gateway answered, so a write may
@@ -168,7 +172,7 @@ export class DispatchGatewayError extends DispatchServiceError {
     message = `${answer}, so ${advice}.`
   ) {
     super(`HTTP_${status}`, status, message);
-    this.transient = transientStatus(status);
+    this.transient = gatewayClears(status);
     this.mayHaveReachedDispatch = reachesDispatch(status);
   }
 }
@@ -179,12 +183,13 @@ export class DispatchGatewayError extends DispatchServiceError {
  * or may not have taken effect: a 5xx, a 408 or 429, `409 KEY_IN_FLIGHT` or a body that broke off
  * with no attempt or time left; a page something in Dispatch's place wrote, a 2xx that is no
  * answer of Dispatch's, a 3xx or a refusal Dispatch's auth made before the keyed layer ran; a
- * credential that could not present, or that would present as another login than the attempts
+ * credential that could not present, or that would present as another identity than the attempts
  * before it; or no answer at all: its last attempt cut off for silence, the call's deadline or the
  * caller's stop. This is deliberately no `DispatchServiceError`, which a caller reads as a refusal
  * Dispatch decided. `last` (also the `cause`) is what ended it. `key` is the `Idempotency-Key`
- * every attempt of the write carried, all of them as one login: a resend under it, as that login,
- * is answered from what Dispatch stored, never written twice. Where the call saw Dispatch's keyed
+ * every attempt of the write carried, each attempt that may have landed as one identity: a
+ * resend under it, as that identity, is answered from what Dispatch stored, never written twice.
+ * Where the call saw Dispatch's keyed
  * layer judge the write (`keyed`), the message says Dispatch finishes an attempt it received, and
  * that a resend is a new command's, under a new key, so the write is to be read back first.
  */
@@ -888,19 +893,27 @@ const GATEWAY_PAGE = "which looks like a proxy or gateway page rather than Dispa
 
 /**
  * What asking again can do once a gateway answered `method` with `status`. A status that cannot
- * clear answers the same request the same way. One that can (`transientStatus`) may clear for a
- * read. A write answered so may already have taken effect only when the request reached Dispatch
- * (`reachesDispatch`), where a blind retry could apply it twice; otherwise it did not, and a retry
- * may succeed as for a read.
+ * clear answers the same request the same way. One that can (`gatewayClears`) may clear for a
+ * read, and for a 2xx, which reaches here only for a read, a PUT or a DELETE (`#response`), none
+ * of which writes twice. A write answered so may already have taken effect only when the request
+ * reached Dispatch (`reachesDispatch`), where a blind retry could apply it twice; otherwise it did
+ * not, and a retry may succeed as for a read.
  */
 function gatewayAdvice(method: string, status: number): string {
-  if (!transientStatus(status)) {
+  if (!gatewayClears(status)) {
     return "a retry gets the same answer until the Dispatch URL, or whatever answers in its place, is fixed";
   }
-  if (method === "GET") return "a retry may succeed";
+  if (method === "GET" || (status >= 200 && status < 300)) return "a retry may succeed";
   return reachesDispatch(status)
     ? "the write may or may not have reached Dispatch: check whether it took effect before retrying it"
     : "the write did not reach Dispatch, and a retry may succeed";
+}
+
+/** Whether a gateway's answer with `status` can clear on asking again: one that can on its own
+ *  (`transientStatus`), or a 2xx something in Dispatch's place wrote, which a later request can
+ *  get past once whatever is in the way is. */
+function gatewayClears(status: number): boolean {
+  return transientStatus(status) || (status >= 200 && status < 300);
 }
 
 /**
@@ -2115,22 +2128,24 @@ export class DispatchClient {
     accept = "application/json",
     signal?: AbortSignal
   ): Promise<Response> {
-    const send = async (): Promise<Response> => this.#sendOnce(method, url, body, accept, signal);
-    const answer = await send();
-    if (this.#credential.stale === undefined || !(await tokenNotLive(answer))) return answer;
-    this.#credential.stale();
-    return await send();
+    const sent = await this.#sendOnce(method, url, body, accept, signal);
+    if (this.#credential.stale === undefined || !(await tokenNotLive(sent.answer))) {
+      return sent.answer;
+    }
+    // The presentation the dead token went out in, so the credential drops that token alone.
+    this.#credential.stale(undefined, sent.presented);
+    return (await this.#sendOnce(method, url, body, accept, signal)).answer;
   }
 
-  /** One request of a read, presenting the credential for it; `signal` aborts it beside the
-   *  client's own signal. */
+  /** One request of a read, presenting the credential for it, and the headers it presented;
+   *  `signal` aborts it beside the client's own signal. */
   async #sendOnce(
     method: string,
     url: string,
     body: EncodedBody | undefined,
     accept: string,
     signal: AbortSignal | undefined
-  ): Promise<Response> {
+  ): Promise<{ readonly answer: Response; readonly presented: Readonly<Record<string, string>> }> {
     // The call's own deadline and the client's, which the credential is given too, less the
     // request's reserve (`#credentialSignal`): a broker credential waiting on a pod's missing
     // registration stops at it, naming the session, and one whose renewal goes unanswered answers
@@ -2143,7 +2158,7 @@ export class DispatchClient {
       this.#credentialSignal(limit)
     );
     this.#sent.note(presented);
-    return this.#fetch(url, {
+    const answer = await this.#fetch(url, {
       method,
       headers: {
         Accept: accept,
@@ -2153,6 +2168,7 @@ export class DispatchClient {
       signal: limit,
       ...(body === undefined ? {} : { body: body.content }),
     });
+    return { answer, presented };
   }
 
   /**
@@ -2227,16 +2243,23 @@ export class DispatchClient {
     // is why nothing was sent, so a deadline or a stop that ends the wait for the next
     // presentation ends the write with it, not with the wait's own error.
     let credentialFailure: unknown;
-    // The login the write's attempts went out as (`RequestCredential.identity`). Dispatch keys a
-    // write per login (`requestKeyLogin`, request_keys.go), so once an attempt may have landed a
-    // presentation as another login (a sign-out, a sign-in, a session switch) is never sent: its
-    // repeat would be a new key there. Before that, a repeat reaches no handler, and the write
-    // goes as the login it presents now.
+    // The identity the write's attempts went out as (`RequestCredential.identity`). Dispatch
+    // keys a write per login, the person or the service and never the session (`requestKeyLogin`,
+    // request_keys.go), so a repeat as another person or as the machine is a new key there and can
+    // run the write a second time. The pin is stricter than that key on purpose: it holds the
+    // session and the variables the broker client was made from beside the sign-in, since this
+    // client cannot tell whether another session's client trades as the same person. So once an
+    // attempt may have landed, a presentation as another identity (a sign-out, a sign-in, a
+    // session switch) is never sent. Before that, a repeat reaches no handler, and the write goes
+    // as the identity it presents now.
     let login: string | undefined;
     // What the last attempt's answer's headers said, whether or not its body then came whole: that
     // the keyed layer answered (the key echoed), and the wait it asked for (`Retry-After`). A
     // resend after a body that broke off reads them as it reads a whole answer's.
     let heard: { readonly echoed: boolean; readonly retryAfterMs: number } | undefined;
+    // The headers the last attempt went out with, which a dead-token answer names to the
+    // credential (`stale`), so it drops that token alone.
+    let sentWith: Readonly<Record<string, string>> | undefined;
     // One presentation and attempt, its answer's body read inside it: its event.
     const attempt = async (): Promise<WriteEvent> => {
       answer = undefined;
@@ -2265,12 +2288,13 @@ export class DispatchClient {
       const presentsAs = this.#credential.identity?.(presented);
       if (state === "may-have-landed" && presentsAs !== login) {
         failure = new Error(
-          `${write.request} would present as another login than the attempt before it (a sign-out, a sign-in or a session switch came between them), and Dispatch keys a write per login, so it is not sent again`
+          `${write.request} would present as another identity than the attempt before it (a sign-out, a sign-in or a session switch came between them), which Dispatch may key apart from the write, so it is not sent again`
         );
         attemptEvent = "no-credential-final";
         return attemptEvent;
       }
       login = presentsAs;
+      sentWith = presented;
       progress.sent += 1;
       let response: Response;
       try {
@@ -2352,7 +2376,7 @@ export class DispatchClient {
           );
         case "retry-at-once":
           deadTokenTold = true;
-          this.#credential.stale?.();
+          this.#credential.stale?.(undefined, sentWith);
           event = await attempt();
           continue;
         case "retry-route": {
@@ -2719,11 +2743,7 @@ export class DispatchClient {
     return new DispatchGatewayError(
       response.status,
       `${request} answered ${response.status}${reason}${redirected} with ${body}, ${GATEWAY_PAGE}`,
-      // A read's 2xx in Dispatch's place is a proxy or portal in the way, which a retry can get
-      // past, as the listings always judged it; a write's never reaches here (`answerEvent`).
-      response.ok && method === "GET"
-        ? "a retry may succeed"
-        : gatewayAdvice(method, response.status)
+      gatewayAdvice(method, response.status)
     );
   }
 }

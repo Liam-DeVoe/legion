@@ -789,6 +789,55 @@ describe("DispatchClient", () => {
     expect(error.message).not.toContain("/login");
   });
 
+  // Red team 7 and 4 (the review of 4dad905e68): a read's 2xx that is not JSON is a
+  // DispatchGatewayError, with its status, advice that a retry may succeed, and `transient` saying
+  // so too: a portal or a proxy in the way, which a later request can get past, and which never
+  // reached Dispatch. A JSON answer is read whatever the case of its type, and a `+json` type is
+  // JSON; a bodiless 204 is no answer to refuse.
+  test("a read's 2xx that is not JSON is a gateway error a retry may clear; any JSON type and a 204 are read", async () => {
+    const { fetchImpl } = fakeFetch([
+      new Response("<html><title>Sign in to the network</title></html>", {
+        status: 200,
+        headers: { "Content-Type": "text/html" },
+      }),
+      new Response(JSON.stringify([{ id: 5 }]), {
+        status: 200,
+        headers: { "Content-Type": "Application/JSON; charset=utf-8" },
+      }),
+      new Response(JSON.stringify([{ id: 6 }]), {
+        status: 200,
+        headers: { "Content-Type": "application/vnd.dispatch+json" },
+      }),
+      new Response(null, { status: 204 }),
+    ]);
+    const client = new DispatchClient(
+      "http://dispatch.test",
+      bearerCredential("secret"),
+      fetchImpl
+    );
+
+    const error = await client.getIssueEvents("DSP-1", 4, 10).then(
+      () => {
+        throw new Error("expected a refusal");
+      },
+      (caught: unknown) => caught
+    );
+    expect(error).toBeInstanceOf(DispatchGatewayError);
+    const gateway = error as DispatchGatewayError;
+    expect(gateway.status).toBe(200);
+    expect(gateway.advice).toBe("a retry may succeed");
+    expect(gateway.transient).toBe(true);
+    expect(gateway.mayHaveReachedDispatch).toBe(false);
+    expect(gateway.message).toContain(
+      'answered 200 with a body that is not JSON ("Sign in to the network")'
+    );
+
+    const read = async (): Promise<unknown> => await client.getIssueEvents("DSP-1", 4, 10);
+    expect(await read()).toEqual([{ id: 5 }]);
+    expect(await read()).toEqual([{ id: 6 }]);
+    expect(await read()).toBe("");
+  });
+
   // A gateway's 5xx can come back after it forwarded a write and Dispatch applied it, so advising
   // a retry there can post a message twice: the write is told to check what took effect. A 408 or
   // 429 is the gateway's own timeout or rate limit, sent before it forwards the request, so the

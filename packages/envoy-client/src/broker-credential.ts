@@ -262,9 +262,11 @@ export interface TradedToken {
   readonly token: BrokerToken;
   readonly key: DpopKey;
   readonly session: string;
-  /** The login the token presents as: the client's entry ({@link keyOf}: the session and the
-   *  variables the factory read) and the sign-in it trades, or "" for the machine's own. Two
-   *  tokens with one identity are one login to Dispatch; any change of the three is another. */
+  /** The identity the token presents as: the client's entry ({@link keyOf}: the session and the
+   *  variables the factory read) and the sign-in it trades, or "" for the machine's own. Dispatch
+   *  keys a write by person or service, never by session, so two identities can be one login
+   *  there; the identity is stricter on purpose, since this client cannot tell whether another
+   *  entry trades as the same person. */
   readonly identity: string;
 }
 
@@ -384,8 +386,12 @@ export function brokerCredential(
   session?: BrokerSessionName | undefined
 ): RequestCredential {
   let presented = "";
-  // The login each presentation was made as, by the headers object it answered (`identity`).
-  const presentedAs = new WeakMap<object, string>();
+  // What each presentation was made as, by the headers object it answered: the login
+  // (`identity`), and the client's key and the token, which `stale` drops that one from.
+  const presentedAs = new WeakMap<
+    object,
+    { readonly identity: string; readonly key: ClientKey; readonly token: string }
+  >();
   /** The session whose credential answers a call acting for `acting`, which `headers` and
    *  `stale` read alike. */
   const own = (acting: string | undefined): string => (acting ?? "").trim() || sessionName(session);
@@ -397,20 +403,29 @@ export function brokerCredential(
       acting?: string,
       signal?: AbortSignal
     ): Promise<Readonly<Record<string, string>>> {
-      const { token, key, identity } = await tradedToken(env, own(acting), signal);
+      const traded = await tradedToken(env, own(acting), signal);
+      const { token, key, identity } = traded;
       presented = token.accessToken;
       const headers = {
         Authorization: `DPoP ${token.accessToken}`,
         DPoP: await key.proof({ method, url, accessToken: token.accessToken }),
       };
-      presentedAs.set(headers, identity);
+      presentedAs.set(headers, {
+        identity,
+        key: keyOf(env, traded.session),
+        token: token.accessToken,
+      });
       return headers;
     },
-    identity: (headers) => presentedAs.get(headers),
-    stale(acting?: string): void {
-      // Looked up, never made: a session this process never traded for is given no entry.
-      const key = keyOf(env, own(acting));
-      CLIENTS.get(key.session)?.get(key.variables)?.made?.client?.drop();
+    identity: (headers) => presentedAs.get(headers)?.identity,
+    stale(acting?: string, headers?: Readonly<Record<string, string>>): void {
+      // The presentation's own client, and its token alone, where the caller names it: the host
+      // may have moved to another session since, and the client may hold a fresher token.
+      // Otherwise the session `acting` resolves to now. Looked up, never made: a session this
+      // process never traded for is given no entry.
+      const told = headers === undefined ? undefined : presentedAs.get(headers);
+      const key = told?.key ?? keyOf(env, own(acting));
+      CLIENTS.get(key.session)?.get(key.variables)?.made?.client?.drop(told?.token);
     },
     secret: () => presented,
   };

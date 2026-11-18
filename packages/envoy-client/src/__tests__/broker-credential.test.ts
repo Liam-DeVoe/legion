@@ -457,3 +457,38 @@ test("stale() has the session's client drop its token, so its next headers() tra
     "session-two",
   ]);
 });
+
+// Red team 3 (the review of 4dad905e68): a caller told that the token it presented is not live
+// names that presentation, and the credential drops that token alone. A host that moved to
+// another session between the presentation and the answer, or a client that has traded a fresh
+// token since, keeps the token it holds: dropping a still-valid token costs a trade for nothing.
+test("stale() for a presentation drops that presentation's token alone, never the current session's or a fresher one", async () => {
+  const broker = stubBroker(600);
+  const env = podEnvironment(broker.url, "http://dispatch.test");
+  let session = "session-one";
+  const credential = brokerCredential(env, () => session);
+  const url = "http://dispatch.test/api/v1/issues";
+
+  const deadOne = await credential.headers("GET", url);
+  // The host moves to another session while Dispatch answers the first presentation.
+  session = "session-two";
+  const two = await credential.headers("GET", url);
+  expect(broker.trades).toHaveLength(2);
+
+  credential.stale?.(undefined, deadOne);
+  // The session the host is on now keeps its token: no trade.
+  expect((await credential.headers("GET", url)).Authorization).toBe(two.Authorization);
+  expect(broker.trades).toHaveLength(2);
+  // The session whose token was dead trades afresh when it is next presented.
+  session = "session-one";
+  expect((await credential.headers("GET", url)).Authorization).toBe(
+    `DPoP ${broker.trades[2]?.token}`
+  );
+  expect(broker.trades).toHaveLength(3);
+
+  // A presentation told stale after its client traded a fresher token leaves the fresher one.
+  const fresher = await credential.headers("GET", url);
+  credential.stale?.(undefined, deadOne);
+  expect((await credential.headers("GET", url)).Authorization).toBe(fresher.Authorization);
+  expect(broker.trades).toHaveLength(3);
+});

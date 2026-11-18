@@ -55,10 +55,11 @@ body: |-
   share of the call's deadline, and a credential refused for good, end the write at once with
   their own error. Where the deadline or the caller's stop ends the wait after such a failure,
   before anything landed, the write ends with the credential's latest error, not the wait's. A
-  write presents as one login: once an attempt may have landed, a presentation as another (a
-  sign-out, a sign-in or a session switch between two attempts) is never sent, since Dispatch
-  keys a write per login and would run the repeat a second time; the write ends unsettled with
-  its key. Before
+  write presents as one identity: once an attempt may have landed, a presentation as another (a
+  sign-out, a sign-in or a session switch between two attempts) is never sent, and the write ends
+  unsettled with its key. Dispatch keys a write per person or service, so a repeat as another
+  person or as the machine could run it twice; the client's pin is stricter, holding the session
+  too, since it cannot tell whether another session trades as the same person. Before
   anything of a write may have landed (a refused connection, a 408 or 429, a credential whose trade
   goes on), it is asked again without asking `/healthz` first, since a repeat then is no second
   write; before, the probe came first, and a fail-fast credential, which failed the probe's
@@ -79,12 +80,17 @@ body: |-
   after `Authorization: DPoP` was left in. The broker credential's pool identity follows no
   redirect either: a 307 or
   308 from Google's security token service would have sent the projected token in its body on to
-  another origin. The dead token's re-send happens once per write call. The markdown round-trip,
+  another origin. The dead token's re-send happens once per write call, and a dead token is
+  dropped alone: the credential is told which presentation it went out in
+  (`RequestCredential.stale`'s new second argument, `BrokerTokenClient.drop(accessToken)`), so a
+  session the host moved to in between, and a token traded since, keep the token they hold, where
+  the current session's still-valid token was dropped and traded again. The markdown round-trip,
   a POST that writes nothing, is never read as a write that may have landed, so a 503 and then an
   old build's no route leave the route absent and the upload goes on, as before this change. A
-  Dispatch read whose 2xx is empty, not typed JSON or not JSON (a captive portal's 200 page) is
-  refused as something in Dispatch's place, naming the body in one redacted line, where its text
-  was handed back as the route's answer: `dispatch open-asks` and Claude Code's session hook read
+  Dispatch read, PUT or DELETE whose 2xx is empty, not typed JSON or not JSON (a captive portal's
+  200 page) is refused as something in Dispatch's place (`DispatchGatewayError`, `transient`, and
+  advice that a retry may succeed), naming the body in one redacted line, where its text was
+  handed back as the route's answer: `dispatch open-asks` and Claude Code's session hook read
   such a page as no asks at all. A JSON type is read as Dispatch reads it, letter case aside and
   with `+json` types.
 time: 2026-11-17T12:39:04Z

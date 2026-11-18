@@ -1,11 +1,13 @@
 // packages/envoy-client/src/__tests__/dispatch-write-identity.test.ts
 //
-// A5 (the review of be17859eca), on the real broker credential: a write presents as one login.
-// Dispatch keys a write per login (`requestKeyLogin`, packages/envoy/internal/dispatch/api/
-// request_keys.go), so a repeat that presents as another is a new key there and can run the write
-// a second time. A process that switched sessions between two attempts of one write (a pod's
-// session switch, `/clear`) trades under the new session and would present its token: once an
-// attempt may have landed, the write ends unsettled with its key and presents nothing again.
+// A5 (the review of be17859eca), on the real broker credential: a write presents as one identity.
+// Dispatch keys a write per login, the person or the service and never the session
+// (`requestKeyLogin`, packages/envoy/internal/dispatch/api/request_keys.go), so a repeat as another
+// person or as the machine can run the write a second time. The client's pin is stricter on
+// purpose, holding the session too, since it cannot tell whether another session trades as the
+// same person: a process that switched sessions between two attempts of one write (a pod's
+// session switch, `/clear`) trades under the new session, and once an attempt may have landed the
+// write ends unsettled with its key and presents nothing again.
 
 import { expect, test } from "bun:test";
 import { brokerCredential } from "../broker-credential";

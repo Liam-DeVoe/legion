@@ -94,19 +94,24 @@ export interface RequestCredential {
    * live, so the next `headers` for that session presents a fresh one rather than the one in
    * hand: Dispatch answers `401 BROKER_TOKEN_NOT_ACTIVE` for a broker token the broker no longer
    * holds live, such as one a person's revoke ended before it lapsed, and a caller that is told
-   * so presents again once (`DispatchClient`'s `#send`). A broker credential has its client drop
+   * so presents again once (`DispatchClient`'s `#send`). `presented` is the very object of
+   * `headers`' answer the dead token went out in: where given, the credential drops that token
+   * alone, from the session it was presented for, and keeps a token it traded since and the
+   * token of a session its caller moved to in between. A broker credential has its client drop
    * the token, so the next `headers` trades. A bearer has none: it holds no other token to
    * present.
    */
-  stale?(session?: string): void;
+  stale?(session?: string, presented?: Readonly<Record<string, string>>): void;
   /**
-   * The login a presentation was made as, for `presented`, the very object one of `headers`'
+   * The identity a presentation was made as, for `presented`, the very object one of `headers`'
    * answers was, where the credential can present as more than one: a broker credential follows
    * the sign-in this machine holds and the session its caller acts as, each of which can change
-   * between two presentations. Dispatch keys a write per login (`requestKeyLogin`,
-   * packages/envoy/internal/dispatch/api/request_keys.go), so a write that may have landed is
-   * never sent again as another (`DispatchClient`'s `#write`). A credential that presents as one
-   * holder only, a bearer, has none.
+   * between two presentations. Dispatch keys a write per login, the person or the service
+   * (`requestKeyLogin`, packages/envoy/internal/dispatch/api/request_keys.go), and a write that
+   * may have landed is never sent again as another identity (`DispatchClient`'s `#write`). An
+   * identity may be stricter than Dispatch's login: two identities can be one person, where the
+   * credential cannot tell that they are. A credential that presents as one holder only, a
+   * bearer, has none.
    */
   identity?(presented: Readonly<Record<string, string>>): string | undefined;
   /**
