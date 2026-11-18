@@ -122,7 +122,8 @@ type Deps struct {
 	// AccessAccounts are the service-account subjects that may read the membership answer (GET
 	// /api/v1/access/projects/{key}, GET /api/v1/access/person and GET
 	// /api/v1/access/private-projects; cmd/dispatch: DISPATCH_ACCESS_ACCOUNTS). A caller with no
-	// credential is 401 NO_IDENTITY there, and every other caller 403 ACCESS_ACCOUNT_REQUIRED.
+	// credential, or one whose credential does not verify, is refused there as every route refuses
+	// it (401 NO_IDENTITY for none), and every other caller is 403 ACCESS_ACCOUNT_REQUIRED.
 	AccessAccounts []string
 	// BrokerTokens decides a caller presenting an access token the secrets broker issued, under
 	// the DPoP scheme (brokerTokenActor); nil is a deployment with no broker, which has no such

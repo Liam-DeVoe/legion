@@ -115,13 +115,13 @@ func TestNoAccessErrorNamesAPerson(t *testing.T) {
 			return err
 		}},
 		{"SetSlackChannels", func(tx pgx.Tx) error {
-			_, _, err := SetSlackChannels(ctx, tx, broker, "PRIV", []string{"C0123456789"}, by)
+			_, _, err := SetSlackChannels(ctx, tx, broker, "PRIV", []string{"C0123456789"}, by, by)
 			return err
 		}},
 		// OTHER lists C0SHARED001, so this write is refused once it has read who lists the channel:
 		// the refusal itself is this step succeeding.
 		{"SetSlackChannels of a channel another private project lists", func(tx pgx.Tx) error {
-			_, _, err := SetSlackChannels(ctx, tx, broker, "PRIV", []string{"C0SHARED001"}, by)
+			_, _, err := SetSlackChannels(ctx, tx, broker, "PRIV", []string{"C0SHARED001"}, by, by)
 			if errors.Is(err, ErrSlackChannelShared) {
 				return nil
 			}

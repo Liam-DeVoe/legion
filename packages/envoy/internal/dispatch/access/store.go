@@ -206,10 +206,9 @@ var slackChannel = regexp.MustCompile(`^[CG][A-Z0-9]{8,20}$`)
 // (lockSlackChannels) before it reads anything, and a private project's write naming a channel
 // another private project lists is refused with ErrSlackChannelShared, which names that project
 // only to a caller who sees it (refuseSharedSlackChannel); a public project's write is never
-// refused for it. by is the person the write records, and by.Viewer the request's own caller as
-// Resolve answered it, which decides what the refusal names. It appends project.access_changed in
-// tx.
-func SetSlackChannels(ctx context.Context, tx pgx.Tx, ev *events.Broker, key string, channels []string, by model.Actor) (model.ProjectAccess, model.Event, error) {
+// refused for it. by is the person the write records, and caller the request's own caller as the
+// API resolved it, whom the refusal is written for. It appends project.access_changed in tx.
+func SetSlackChannels(ctx context.Context, tx pgx.Tx, ev *events.Broker, key string, channels []string, by, caller model.Actor) (model.ProjectAccess, model.Event, error) {
 	named := make([]string, 0, len(channels))
 	for _, channel := range channels {
 		id := strings.TrimSpace(channel)
@@ -235,7 +234,7 @@ func SetSlackChannels(ctx context.Context, tx pgx.Tx, ev *events.Broker, key str
 		return model.ProjectAccess{}, model.Event{}, fmt.Errorf("read the visibility of project %s: %w", key, err)
 	}
 	if visibility == model.ProjectPrivate {
-		if err := refuseSharedSlackChannel(ctx, tx, key, named, by); err != nil {
+		if err := refuseSharedSlackChannel(ctx, tx, key, named, caller); err != nil {
 			return model.ProjectAccess{}, model.Event{}, err
 		}
 	}
@@ -271,16 +270,21 @@ func lockSlackChannels(ctx context.Context, tx pgx.Tx) error {
 
 // refuseSharedSlackChannel answers ErrSlackChannelShared when a private project other than key
 // lists one of channels, and nil when none does. Sound only under lockSlackChannels. The refusal
-// names that project only when by.Viewer, the request's caller as Resolve answered it, sees it: an
-// agent credential that lists no project sees only public ones, so it never reads a private
-// project's name here, whoever its person is. With no viewer the refusal names no project.
-func refuseSharedSlackChannel(ctx context.Context, tx pgx.Tx, key string, channels []string, by model.Actor) error {
+// names that project only when caller sees it by the read rule (Resolve), which is read only once
+// a share is found and under the lock: an agent credential that lists no project sees only public
+// ones, so it never reads a private project's name here, whoever its person is, and neither does
+// a caller with no person and no credential.
+func refuseSharedSlackChannel(ctx context.Context, tx pgx.Tx, key string, channels []string, caller model.Actor) error {
 	channel, other, err := SharedSlackChannel(ctx, tx, key, channels)
 	if err != nil || channel == "" {
 		return err
 	}
+	viewer, err := Resolve(ctx, tx, caller)
+	if err != nil {
+		return err
+	}
 	refusal := slackChannelShared{channel: channel}
-	if by.Viewer != nil && slices.Contains(by.Viewer.Sees, other) {
+	if slices.Contains(viewer.Sees, other) {
 		refusal.other = other
 	}
 	return refusal

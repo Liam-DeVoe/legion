@@ -86,19 +86,15 @@ func (s *server) patchProjectAccess(w http.ResponseWriter, r *http.Request) {
 		}
 		if input.SlackChannels != nil {
 			// A shared channel's refusal names the other private project only to a caller who sees
-			// it: the read rule over the request's own credential (access.Resolve), not over by, the
-			// person actingPerson answers. Read as that person, a token listing no project would see
-			// the person's private projects, which the token does not.
+			// it: the read rule over the request's own credential, not over by, the person
+			// actingPerson answers. Read as that person, a token listing no project would see the
+			// person's private projects, which the token does not. SetSlackChannels resolves it only
+			// once it finds a share.
 			caller, _, err := s.optionalActor(r)
 			if err != nil {
 				return model.ProjectAccess{}, nil, err
 			}
-			viewer, err := access.Resolve(ctx, tx, caller)
-			if err != nil {
-				return model.ProjectAccess{}, nil, err
-			}
-			by.Viewer = &viewer
-			written, event, err := access.SetSlackChannels(ctx, tx, s.deps.Events, key, *input.SlackChannels, by)
+			written, event, err := access.SetSlackChannels(ctx, tx, s.deps.Events, key, *input.SlackChannels, by, caller)
 			if err != nil {
 				return model.ProjectAccess{}, nil, err
 			}
