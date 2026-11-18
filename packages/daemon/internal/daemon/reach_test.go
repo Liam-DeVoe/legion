@@ -12,7 +12,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"maps"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -421,6 +424,44 @@ func TestARegistrationTheCleanStopDeletesStillCountsTheTwentyMinutes(t *testing.
 	if got := r.reach(planner.Token); !got.Unreachable() || !got.LastSeen.Equal(registered) {
 		t.Fatalf("at 27 minutes the planner reads %+v, want it marked with the last registration the stop read, %s", got, registered)
 	}
+}
+
+// The keeper keeps the last registration of each session a watched claim records, and of no other
+// session: Envoy's list names every session of the fleet, about 1,100 of them each minute, and the
+// registration of a session no watched claim records counts for nothing, so the sweep that finds
+// it so drops it.
+func TestTheKeeperKeepsTheRegistrationsOfItsClaimsSessionsAlone(t *testing.T) {
+	r := newReachRig(t, false)
+	worker := reachClaim(t, "LEGION-208", "LEGION-209", claim.RoleImplementer, "ses_implementer")
+	operator := reachClaim(t, "LEGION-208", "LEGION-210", claim.RolePlanner, "ses_operator")
+	operator.Role = "operator"
+	fleet := map[string]time.Duration{"ses_implementer": time.Minute, "ses_operator": time.Minute}
+	for i := range 1100 {
+		fleet[fmt.Sprintf("ses_fleet_%d", i)] = time.Minute
+	}
+	r.at(2 * time.Minute)
+	r.listing(fleet)
+	r.sweep(worker, operator)
+	if got := r.seenSessions(); !slices.Equal(got, []string{"ses_implementer"}) {
+		t.Fatalf("after a list of %d sessions the keeper keeps the registrations of %d sessions (first %v), want the watched claim's alone",
+			len(fleet), len(got), got[:min(3, len(got))])
+	}
+
+	// The claim takes a fresh session: the registration of the one it left goes too.
+	worker.Session = "ses_fresh"
+	r.at(3 * time.Minute)
+	r.listing(map[string]time.Duration{"ses_fresh": 3 * time.Minute, "ses_implementer": time.Minute})
+	r.sweep(r.with(worker))
+	if got := r.seenSessions(); !slices.Equal(got, []string{"ses_fresh"}) {
+		t.Fatalf("after the claim took a fresh session the keeper keeps the registrations of %v, want [ses_fresh]", got)
+	}
+}
+
+// seenSessions is every session whose last registration the keeper keeps, in order.
+func (r *reachRig) seenSessions() []string {
+	r.k.mu.Lock()
+	defer r.k.mu.Unlock()
+	return slices.Sorted(maps.Keys(r.k.seen))
 }
 
 // When Envoy's whole list holds no live session for 20 minutes, the daemon marks none, tells the

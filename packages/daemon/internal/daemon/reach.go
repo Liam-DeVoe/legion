@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"sync"
 	"time"
 
@@ -40,7 +41,8 @@ const (
 // and does about them. Once a minute, on the orphan sweep that already reads every claim, it reads
 // Envoy's whole session list with its unresponsive sessions (notify.HTTPPublisher.ListSessions) and
 // judges each claim's session from the last registration it has read of it: the listener's bucket
-// forgets a session after 5 minutes, so the keeper keeps that time itself (seen).
+// forgets a session after 5 minutes, so the keeper keeps that time itself (seen), for each session
+// a watched claim records.
 //
 // A claim is out of reach when the latest of its session's last registration, the daemon's boot,
 // its session's first ready (supervise.Reach.FirstReady), the end of the keeper's last failed read
@@ -93,8 +95,8 @@ type reachKeeper struct {
 	records map[claim.Token]supervise.Reach
 	dirty   map[claim.Token]bool
 	seen    map[string]time.Time
-	// listed is each session of the last list that answered, with the Envoy roles it holds.
-	listed map[string]notify.ListedSession
+	// sessions is each session of the last list that answered, with the Envoy roles it holds.
+	sessions map[string]notify.ListedSession
 	// failingSince is the first of a run of failed reads, and failedAt the end of the last failed
 	// read; noLiveSince is the first of a run of reads that found no live session, noLiveAt the
 	// last such read, and noLiveTold whether the controller has been told of that run.
@@ -424,14 +426,27 @@ func (k *reachKeeper) sweep(ctx context.Context, claims []supervise.Claim) {
 	}
 	k.failingSince = time.Time{}
 	k.alerts.Close(fleetalert.SessionListUnreadable, "")
+	// Envoy's list names every session of the fleet, about 1,100 a minute, and the keeper reads
+	// only the sessions its watched claims record: the registration of any other is forgotten,
+	// so seen and sessions hold no more sessions than the daemon has claims.
+	recorded := make(map[string]bool, len(claims))
+	for _, c := range claims {
+		if c.Session != "" && k.reachWatched(c) {
+			recorded[c.Session] = true
+		}
+	}
+	maps.DeleteFunc(k.seen, func(session string, _ time.Time) bool { return !recorded[session] })
 	live := false
-	k.listed = make(map[string]notify.ListedSession, len(sessions))
+	k.sessions = make(map[string]notify.ListedSession, len(recorded))
 	for _, s := range sessions {
+		live = live || s.Live()
+		if !recorded[s.Session] {
+			continue
+		}
 		if s.LastSeen.After(k.seen[s.Session]) {
 			k.seen[s.Session] = s.LastSeen
 		}
-		k.listed[s.Session] = s
-		live = live || s.Live()
+		k.sessions[s.Session] = s
 	}
 	if live {
 		if k.noLiveTold || k.noLiveUncleared || !k.loaded {
@@ -674,7 +689,7 @@ func (k *reachKeeper) controllerReachable(c supervise.Claim) {
 // session holds the controller's Envoy role in the last list read. The caller holds mu.
 func (k *reachKeeper) controllerBack(c supervise.Claim, rec supervise.Reach) bool {
 	return supervise.SaidReady(c.State) && c.LastReady.After(rec.RelaunchedAt) &&
-		k.listed[c.Session].HoldsRole(string(c.Token))
+		k.sessions[c.Session].HoldsRole(string(c.Token))
 }
 
 // report tells the controller, in one notice, of every claim newly out of reach this minute, and
