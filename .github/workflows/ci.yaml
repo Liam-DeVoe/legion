@@ -829,6 +829,8 @@ jobs:
               - 'packages/envoy/internal/dispatch/text/*'
               - 'packages/envoy/internal/fold/*'
               - 'packages/envoy/internal/googleidentity/*'
+              # googleidentity names GCE_METADATA_HOST's refusal through redact.Clean.
+              - 'packages/envoy/internal/redact/*'
               - 'packages/envoy/listenfd/*'
               # packages/envoy/migrationid is the identifier rule the daemon's embedded
               # migrations are held to, in the envoy module so both sets keep one rule.
@@ -4005,6 +4007,8 @@ jobs:
               - 'packages/envoy/internal/dispatch/text/*'
               - 'packages/envoy/internal/fold/*'
               - 'packages/envoy/internal/googleidentity/*'
+              # googleidentity names GCE_METADATA_HOST's refusal through redact.Clean.
+              - 'packages/envoy/internal/redact/*'
               - 'packages/envoy/listenfd/*'
               # packages/envoy/migrationid is the identifier rule the daemon's embedded
               # migrations are held to, in the envoy module so both sets keep one rule.
