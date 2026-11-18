@@ -40,7 +40,11 @@ type CookieIdentity struct {
 
 // Login returns the email of a valid session cookie whose generation is current and whose person
 // is still a member; otherwise ErrNoIdentity, an error matching ErrSignInUnavailable when a lapsed
-// confirmation could not be renewed (Membership.Confirm), or the store's own error.
+// confirmation could not be renewed (Membership.Confirm), or the store's own error. A place of the
+// request pool's share that r's context carries (admission.PlaceFrom) is held for its reads alone:
+// it is given back where a lapsed confirmation is renewed, since the renewal waits on the sign-in
+// issuer, which reads no pool (Membership.Confirm), and the caller takes it again for what it
+// reads after.
 func (i CookieIdentity) Login(r *http.Request) (string, error) {
 	session, ok := auth.SessionFromRequest(r, i.SigningKey)
 	if !ok {

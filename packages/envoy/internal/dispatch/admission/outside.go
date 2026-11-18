@@ -61,7 +61,11 @@ import (
 // QueueFull and WaitExceeded a class's queue refuses for), and work whose context ends while it
 // waits leaves the queue. A place is held for the whole of the work that reads the pool: a
 // decision's proof check and the row it writes, once the broker has answered, a check's whole
-// check, and a socket's three admission reads.
+// check, and a socket's three admission reads - all but the wait of a check, or of a socket,
+// whose caller's sign-in confirmation has lapsed, on the sign-in issuer's renewal of it: the work
+// gives its place back for that wait, and holds it again for the renewal's own reads and writes
+// and for what it reads after (Place, identity.Membership.Confirm), so an issuer slow to answer
+// holds none of the places, as a broker slow to answer holds none.
 
 // OutsideLimit is how many places the work outside admission may hold at once: the request
 // pool's connections admission does not hand out, unadmittedConnections, 8 of the 48. Admission's
@@ -218,15 +222,70 @@ func (o *Outside) Release() {
 
 // Hold is Take for work that gives its place back at a point of its own and must give it back on
 // every other way out as well: a document socket's admission reads, whose place goes back before
-// the socket is handed to ygo, and as the handler returns where the socket was refused. It answers
-// the release that gives the place back and Take's answer. The release gives the place back once
-// however often it is called, so a caller may call it where its work ends and defer it too; the
-// release of a Hold that took no place gives nothing back.
-func (o *Outside) Hold(ctx context.Context, user OutsideUser) (release func(), err error) {
+// the socket is handed to ygo, and as the handler returns where the socket was refused, and a
+// heartbeat check. It answers the place, held, and Take's answer; where Take refused one it answers
+// a nil Place, which holds nothing.
+func (o *Outside) Hold(ctx context.Context, user OutsideUser) (*Place, error) {
 	if err := o.Take(ctx, user); err != nil {
-		return func() {}, err
+		return nil, err
 	}
-	return sync.OnceFunc(o.Release), nil
+	return &Place{outside: o, user: user, held: true}, nil
+}
+
+// Place is a place of Outside one work holds (Hold), which the work gives back for a wait inside
+// it that reads no pool and takes again for what reads the pool after. A document socket's
+// admission and a heartbeat check resolve a sign-in cookie, and a cookie whose person's
+// confirmation has lapsed is renewed with the sign-in issuer first (identity.Membership.Confirm),
+// a round trip of up to 15 s that reads nothing of the pool: a place held across it would let an
+// issuer slow to answer fill the share with no database work at all, as a place held across the
+// broker's answer would (api's decidedBrokerToken). The work carries its place on its context
+// (WithPlace) to the call that waits. One goroutine uses a Place at a time: the work's own, and
+// the calls it makes in turn.
+type Place struct {
+	outside *Outside
+	user    OutsideUser
+	held    bool
+}
+
+// Release gives the place back where it is held, handing it to the work at the head of the queue
+// where any waits, and does nothing where it is not, so a caller may call it where its work ends
+// and defer it too. A nil Place holds nothing.
+func (p *Place) Release() {
+	if p == nil || !p.held {
+		return
+	}
+	p.held = false
+	p.outside.Release()
+}
+
+// Retake takes the place again where it was given back, waiting for it as Take waits, behind every
+// work that asked before it, and answers Take's answer. A place still held, and a nil Place, answer
+// nil at once.
+func (p *Place) Retake(ctx context.Context) error {
+	if p == nil || p.held {
+		return nil
+	}
+	if err := p.outside.Take(ctx, p.user); err != nil {
+		return err
+	}
+	p.held = true
+	return nil
+}
+
+// placeKey is the context key a Place is carried under (WithPlace).
+type placeKey struct{}
+
+// WithPlace is ctx carrying place to a call that gives it back while it waits on what reads no
+// pool (PlaceFrom).
+func WithPlace(ctx context.Context, place *Place) context.Context {
+	return context.WithValue(ctx, placeKey{}, place)
+}
+
+// PlaceFrom is the place ctx carries (WithPlace), and nil where it carries none: a request inside
+// admission holds an admission unit and no place.
+func PlaceFrom(ctx context.Context) *Place {
+	place, _ := ctx.Value(placeKey{}).(*Place)
+	return place
 }
 
 // OutsideStats is what an Outside holds, queues and has refused.

@@ -130,7 +130,7 @@ func defaultAcquireBound(name string) time.Duration {
 
 // ErrPoolBusy is a call a bound of this server's own, and not the caller's context, ended
 // before the database answered it, and after which nothing the caller asked for can have
-// committed. Six calls produce it:
+// committed. Seven calls produce it:
 //
 //   - an acquire that ran out its pool's acquire bound while the caller was still waiting,
 //     every connection of that pool having stayed taken for the whole bound (poolBusy);
@@ -145,7 +145,10 @@ func defaultAcquireBound(name string) time.Duration {
 //     rolled back (RanOutTheCommitBound);
 //   - a rollback that ran out its own bound before the database answered it, which pgconn ends
 //     by closing the connection under the transaction, so that transaction commits nothing
-//     (RanOutTheRollbackBound).
+//     (RanOutTheRollbackBound);
+//   - a lapsed sign-in's refresh that gave its place of the request pool's share outside
+//     admission back for the issuer's wait and was refused a place again for its own reads and
+//     writes (identity.Membership's retake), before any of them ran.
 //
 // The caller may retry; a request answers it as busy rather than as a failure. An acquire's
 // error wraps context.DeadlineExceeded too, so errors.Is finds both, and IsPoolBusy tells any

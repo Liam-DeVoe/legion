@@ -524,12 +524,12 @@ func (rig *outsideWorkRig) start(arrival int) <-chan outsideWorkAnswer {
 	}
 	go func() {
 		ctx := context.Background()
-		release, err := rig.limiter.Outside().Hold(ctx, admission.SocketAdmission)
+		place, err := rig.limiter.Outside().Hold(ctx, admission.SocketAdmission)
 		if err == nil {
 			rig.tookPlace(arrival)
 			var one int
 			err = rig.database.Pool.QueryRow(ctx, "select 1").Scan(&one)
-			release()
+			place.Release()
 		}
 		answered <- outsideWorkAnswer{err: err, at: time.Now()}
 	}()

@@ -57,9 +57,10 @@ func outsideRefusalReason(err error) Reason {
 
 // The work outside admission holds at most the request pool's connections admission leaves, 8 of
 // the 48, and waits for one of them when all are held: a ninth asks, waits, and takes the place
-// one gives back. Its refusals are counted by who asked and why. A Hold's release gives its place
-// back once however often it is called, a Limiter's places are its own, and a nil Outside limits
-// nothing.
+// one gives back. Its refusals are counted by who asked and why. A Hold's place is given back once
+// however often it is released, taken again by Retake once it has been given back and by no Retake
+// while it is held, and carried on a context to the call that gives it back (WithPlace); a
+// Limiter's places are its own, and a nil Outside limits nothing.
 func TestTheWorkOutsideAdmissionHoldsTheShareAdmissionLeaves(t *testing.T) {
 	if OutsideLimit != store.SharedPoolSize-MaxAdmittedUnits {
 		t.Fatalf("OutsideLimit = %d, want the request pool's %d less admission's %d", OutsideLimit, store.SharedPoolSize, MaxAdmittedUnits)
@@ -86,25 +87,49 @@ func TestTheWorkOutsideAdmissionHoldsTheShareAdmissionLeaves(t *testing.T) {
 	}
 
 	outside.Release()
-	release, err := outside.Hold(context.Background(), SocketAdmission)
+	place, err := outside.Hold(context.Background(), SocketAdmission)
 	if err != nil {
 		t.Fatalf("a Hold with a place free: %v", err)
 	}
-	release()
-	release()
-	if got := outside.Stats().InUse; got != OutsideLimit-1 {
-		t.Fatalf("%d places in use after a Hold's release was called twice, want %d: one place given back once", got, OutsideLimit-1)
+	if carried := PlaceFrom(WithPlace(context.Background(), place)); carried != place {
+		t.Fatalf("the place a context carries is %p, want the Hold's %p", carried, place)
 	}
+	if PlaceFrom(context.Background()) != nil {
+		t.Fatal("a context that carries no place answered one")
+	}
+	place.Release()
+	place.Release()
+	if got := outside.Stats().InUse; got != OutsideLimit-1 {
+		t.Fatalf("%d places in use after a Hold's place was released twice, want %d: one place given back once", got, OutsideLimit-1)
+	}
+	if err := place.Retake(context.Background()); err != nil {
+		t.Fatalf("Retake of the place given back, with a place free: %v", err)
+	}
+	if err := place.Retake(context.Background()); err != nil {
+		t.Fatalf("Retake of a place held: %v", err)
+	}
+	if got := outside.Stats().InUse; got != OutsideLimit {
+		t.Fatalf("%d places in use after Retake twice, want %d: the place taken again once", got, OutsideLimit)
+	}
+	place.Release()
 
 	var none *Outside
 	if err := none.Take(context.Background(), DPoPDecision); err != nil {
 		t.Fatalf("a nil Outside refused a place (%v), want it to limit nothing", err)
 	}
 	none.Release()
-	if release, err := none.Hold(context.Background(), SocketAdmission); err != nil {
+	unlimited, err := none.Hold(context.Background(), SocketAdmission)
+	if err != nil {
 		t.Fatalf("a nil Outside refused a Hold (%v), want it to limit nothing", err)
-	} else {
-		release()
+	}
+	unlimited.Release()
+	if err := unlimited.Retake(context.Background()); err != nil {
+		t.Fatalf("a nil Outside refused a Retake (%v), want it to limit nothing", err)
+	}
+	var nothing *Place
+	nothing.Release()
+	if err := nothing.Retake(context.Background()); err != nil {
+		t.Fatalf("a nil Place refused a Retake (%v), want it to hold nothing and take nothing", err)
 	}
 }
 

@@ -1352,17 +1352,23 @@ var errHeartbeatCheckSkipped = errors.New("the heartbeat's check was refused a p
 
 // takeHeartbeatPlace takes a place of the request pool's share outside admission for a heartbeat
 // check that reads the pool, waiting for one as admission.Outside.Take does, for at most a second,
-// well inside the check's own bound of a heartbeat (checkCaller). A check refused one is skipped
+// well inside the check's own bound of a heartbeat (checkCaller). It answers the place, which the
+// caller gives back with its Release once the check is done, and r carrying it
+// (admission.WithPlace), which the check resolves its caller with: the resolution holds the place
+// for its reads alone, and gives it back while the sign-in issuer renews a lapsed confirmation,
+// which reads no pool (identity.Membership.Confirm). A check refused one is skipped
 // (errHeartbeatCheckSkipped, wrapping the refusal), and one whose context ends while it waits
 // answers that context's error, which checkCaller reads as its bound where the bound ended it.
-// The caller gives a place it took back with s.outside.Release.
-func (s *server) takeHeartbeatPlace(ctx context.Context) error {
-	err := s.outside.Take(ctx, admission.HeartbeatCheck)
+func (s *server) takeHeartbeatPlace(r *http.Request) (*http.Request, *admission.Place, error) {
+	place, err := s.outside.Hold(r.Context(), admission.HeartbeatCheck)
 	var refusal *admission.OutsideRefusal
 	if errors.As(err, &refusal) {
-		return fmt.Errorf("%w: %w", errHeartbeatCheckSkipped, err)
+		return nil, nil, fmt.Errorf("%w: %w", errHeartbeatCheckSkipped, err)
 	}
-	return err
+	if err != nil {
+		return nil, nil, err
+	}
+	return r.WithContext(admission.WithPlace(r.Context(), place)), place, nil
 }
 
 // heartbeatTransientFailures counts the heartbeat checks that failed for a transient reason, a
@@ -1399,11 +1405,12 @@ func (s *server) signInStillResolves(r *http.Request) error {
 	if s.deps.Identity == nil {
 		return errorf(http.StatusInternalServerError, "IDENTITY_ERROR", "identity service unavailable")
 	}
-	if err := s.takeHeartbeatPlace(r.Context()); err != nil {
+	check, place, err := s.takeHeartbeatPlace(r)
+	if err != nil {
 		return err
 	}
-	defer s.outside.Release()
-	_, err := s.deps.Identity.Login(r)
+	defer place.Release()
+	_, err = s.deps.Identity.Login(check)
 	return err
 }
 

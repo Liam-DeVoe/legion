@@ -117,7 +117,8 @@ func (s *server) decidedBrokerToken(r *http.Request) (resolvedCaller, error) {
 // heartbeat that asks.
 //
 // Every other resolution that reads the request pool (resolutionReadsRequestPool) takes a place of
-// that share first (takeHeartbeatPlace), and is skipped where it is refused one.
+// that share first (takeHeartbeatPlace), and is skipped where it is refused one; a sign-in cookie's
+// resolution gives it back while a lapsed confirmation is renewed with the sign-in issuer.
 func (s *server) callerStillResolves(r *http.Request) error {
 	if _, presented := brokertoken.Presented(r); presented {
 		if s.deps.BrokerTokens == nil {
@@ -127,10 +128,12 @@ func (s *server) callerStillResolves(r *http.Request) error {
 		return err
 	}
 	if s.resolutionReadsRequestPool(r) {
-		if err := s.takeHeartbeatPlace(r.Context()); err != nil {
+		check, place, err := s.takeHeartbeatPlace(r)
+		if err != nil {
 			return err
 		}
-		defer s.outside.Release()
+		defer place.Release()
+		r = check
 	}
 	_, _, err := s.optionalActor(r)
 	return err

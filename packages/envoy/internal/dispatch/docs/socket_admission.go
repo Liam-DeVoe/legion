@@ -248,13 +248,17 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// work that asked before it, for at most a second; one refused a place - the queue for one full,
 	// or its second run out - reads nothing and is refused as one the server cannot serve now, and
 	// one whose browser leaves while it waits is answered nothing (refuseAdmission).
-	releaseReads, err := s.outside.Hold(r.Context(), admission.SocketAdmission)
-	defer releaseReads()
+	place, err := s.outside.Hold(r.Context(), admission.SocketAdmission)
+	defer place.Release()
 	if err != nil {
 		refuseAdmission(w, r, "dispatch: a document socket was refused: the request pool's places outside admission are all held", room, store.RequestsPool, err)
 		return
 	}
-	actor, err := s.requestActor(r)
+	// The caller's resolution carries the place (admission.WithPlace): where the caller's sign-in
+	// confirmation has lapsed, it is renewed with the sign-in issuer, which reads no pool, so the
+	// resolution gives the place back for that wait and holds it only for the renewal's own reads
+	// and writes (identity.Membership.Confirm). The issue's read takes it again below.
+	actor, err := s.requestActor(r.WithContext(admission.WithPlace(r.Context(), place)))
 	if err != nil {
 		if errors.Is(err, identity.ErrSignInUnavailable) {
 			identity.WriteError(w, r, err)
@@ -278,6 +282,14 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if id.String() != room {
 		http.Error(w, "document not found: a document's address is its id as Dispatch writes it, lower case with dashes, here "+id.String(), http.StatusNotFound)
+		return
+	}
+	// A resolution that renewed its caller's confirmation gave the place back (requestActor), and
+	// the socket takes it again for this read and the next, waiting for it as it waited first and
+	// refused as it would have been refused then; every other socket still holds its place, and
+	// takes nothing here.
+	if err := place.Retake(r.Context()); err != nil {
+		refuseAdmission(w, r, "dispatch: a document socket was refused: the request pool's places outside admission are all held", room, store.RequestsPool, err)
 		return
 	}
 	// Only a document that is not there is not found: the read finds no document row (no artifact
@@ -308,7 +320,7 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	// The admission's reads of the request pool are done: the place goes back now, not after the
 	// recovery wait or the document's load, and not when the handler returns.
-	releaseReads()
+	place.Release()
 	// A socket holds no connection while it waits for a failed room's recovery, so the wait ends
 	// only with the request's context: the browser left, or the server ended the request.
 	if err := s.awaitRoomRecovery(r.Context(), room); err != nil {
