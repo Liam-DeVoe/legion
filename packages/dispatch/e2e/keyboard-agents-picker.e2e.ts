@@ -49,6 +49,8 @@ async function sendAndCapturePath(page: Page, field: Locator): Promise<string> {
 /** The id of the option of a row's open Issue list that picks `key`, which the list's text box
  *  names in `aria-activedescendant` while that option is the active one. */
 async function optionIdOf(row: Locator, key: string): Promise<string> {
+  // `getAttribute` waits for the option to attach, and `MultiSelect` writes its id on that same
+  // element in the render that draws it, so the first answer is the option's id.
   const id = await issueOption(row, key).getAttribute("id");
   if (id === null) throw new Error(`the Issue list's option for "${key}" has no id`);
   return id;

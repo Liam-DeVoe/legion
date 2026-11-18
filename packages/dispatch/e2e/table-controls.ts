@@ -14,6 +14,7 @@ import { shownAgentRows } from "./agents";
 import { createAsk, createIssue, createIssueArtifact, createProject, patchIssue } from "./api";
 import { control, controlRow, openFilterPanel } from "./filters";
 import { drawer, peekTrigger } from "./inbox-drawer";
+import { expandedState, settledState } from "./settled";
 
 /** The eight pages R2 names, spelled as a failure spells them. */
 export type SurfaceName =
@@ -312,7 +313,8 @@ export async function openDisplay(
   label: "View" | "Group by" = "View"
 ): Promise<Locator> {
   const trigger = control(controlRow(within), CONTROL.displayMenu);
-  if ((await trigger.getAttribute("aria-expanded")) !== "true") await trigger.click();
+  if ((await expandedState(`the surface's ${label} menu`, trigger)) === "shut")
+    await trigger.click();
   const menu = page.getByRole("dialog", { name: label });
   await expect(menu).toHaveCount(1);
   return menu;
@@ -327,7 +329,7 @@ export async function openDisplay(
  */
 export async function closeControlPanel(within: Locator | Page): Promise<void> {
   const trigger = control(controlRow(within), CONTROL.panelTrigger).first();
-  if ((await trigger.getAttribute("aria-expanded")) === "true") await trigger.click();
+  if ((await expandedState("the row's filter trigger", trigger)) === "open") await trigger.click();
   await expect(trigger).toHaveAttribute("aria-expanded", "false");
 }
 
@@ -342,7 +344,7 @@ export async function pickInboxField(
 ): Promise<void> {
   await openFilterPanel(page, within);
   const trigger = page.getByRole("button", { name: `Filter by ${field}` });
-  if ((await trigger.getAttribute("aria-expanded")) !== "true") await trigger.click();
+  if ((await expandedState(`the ${field} filter`, trigger)) === "shut") await trigger.click();
   await page.getByRole("option", { name: option }).first().click();
   // The popover stays open on a pick, as a multi-select does; its own trigger shuts it.
   await trigger.click();
@@ -406,7 +408,11 @@ export async function openIssuesTab(
   await page.goto(`/projects/${project}/issues`);
   const button = page.getByRole("button", { exact: true, name: layout });
   await expect(button).toBeVisible();
-  if ((await button.getAttribute("aria-pressed")) !== "true") await button.click();
+  const shown = await settledState(`the ${layout} switch`, [
+    ["pressed", button.and(page.locator('[aria-pressed="true"]'))],
+    ["unpressed", button.and(page.locator('[aria-pressed="false"]'))],
+  ]);
+  if (shown === "unpressed") await button.click();
   await expect(button).toHaveAttribute("aria-pressed", "true");
 }
 
@@ -503,7 +509,7 @@ async function openAgentsPage(page: Page): Promise<Surface> {
     narrow: async () => {
       await openFilterPanel(page, root);
       const trigger = page.getByRole("button", { name: "Filter by machine" });
-      if ((await trigger.getAttribute("aria-expanded")) !== "true") await trigger.click();
+      if ((await expandedState("the machine filter", trigger)) === "shut") await trigger.click();
       // The popover's own options: the page's window control is a `select`, whose options
       // carry the same role and are never visible.
       await page.getByRole("listbox").getByRole("option").first().click();
@@ -536,7 +542,7 @@ async function openDeliveryPage(page: Page, scene: SurfaceScene): Promise<Surfac
       const trigger = page.getByRole("dialog", { name: "Filter" }).getByRole("button", {
         name: "Repository",
       });
-      if ((await trigger.getAttribute("aria-expanded")) !== "true") await trigger.click();
+      if ((await expandedState("the Repository filter", trigger)) === "shut") await trigger.click();
       await page.getByRole("listbox").getByRole("option").first().click();
       await trigger.click();
       await closeControlPanel(root);

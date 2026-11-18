@@ -97,7 +97,10 @@ test("the table sorts, searches facets and fuzzy text, groups, pages and receive
     await second.goto(`/issues/${target.key}`);
     await expect(second.getByRole("heading", { level: 1, name: target.title })).toBeVisible();
     const priority = second.getByRole("combobox", { name: `Priority of ${target.key}` });
-    const before = await priority.inputValue();
+    // The select is held to the priority the seed gave the issue before the edit picks the other
+    // of 0 and 1, so the select read is one the page has drawn rather than a first empty value.
+    const before = String(target.priority ?? "");
+    await expect(priority).toHaveValue(before);
     const next = before === "0" ? "1" : "0";
     await priority.selectOption(next);
     await expect
@@ -175,6 +178,8 @@ test("a live insertion above a vertically and horizontally scrolled reader keeps
     const openTab = page.getByRole("tab", { name: /^Open, \d+ issues/ });
     await expect(openTab).toHaveAccessibleName(/^Open, 80 issues/);
     const scroller = page.getByTestId("issues-table-scroll");
+    // The handle is taken once on purpose: it names this scroller element, which the row checks
+    // later is still the one connected.
     const original = await scroller.elementHandle();
     await scroller.evaluate((element) => {
       element.scrollTop = 1600;
@@ -189,6 +194,8 @@ test("a live insertion above a vertically and horizontally scrolled reader keeps
         return row ? { key: row.dataset.issueRow, top: row.getBoundingClientRect().top } : null;
       });
     await expect.poll(visibleAnchor).not.toBeNull();
+    // The poll above waited until a row sat under that point, and nothing has moved the table
+    // since, so this reads the row the poll found.
     const anchor = await visibleAnchor();
     if (!anchor?.key) throw new Error("No visible issue could be anchored after scrolling");
     expect(await scroller.evaluate((element) => element.scrollLeft)).toBeGreaterThan(0);
@@ -239,8 +246,11 @@ test("phone headers, saved widths, popover focus and short-window paging stay us
     // wide as the row itself, which is the box a reader had before the controls moved into one
     // row. The three controls beside it sit on the line under it.
     await expect(page.getByRole("searchbox", { name: "Search issues" })).toBeVisible();
+    // The search box was waited for on the line above, and a drawn element has a box.
     const search = await page.getByRole("searchbox", { name: "Search issues" }).boundingBox();
+    // The row holds the search box waited for above, so it is drawn and has a box too.
     const row = await controlRow(page).boundingBox();
+    // `ControlRow` draws the trigger in the one commit that draws the search box waited for.
     const trigger = await page.getByRole("button", { name: /^Filters/ }).boundingBox();
     if (!search || !row || !trigger) throw new Error("The control row could not be measured");
     expect(search.width).toBeGreaterThan(300);
@@ -253,8 +263,14 @@ test("phone headers, saved widths, popover focus and short-window paging stay us
     const titleHeader = page
       .getByRole("columnheader")
       .filter({ has: page.getByRole("button", { name: "Title", exact: true }) });
+    await expect(keyHeader).toBeVisible();
+    await expect(titleHeader).toBeVisible();
+    await expect(box).toBeVisible();
+    // The waits above drew both headers and the table, and a drawn element has a box.
     const keyBefore = await keyHeader.boundingBox();
+    // The title header was waited for above too, so its box is there as the key's is.
     const titleBefore = await titleHeader.boundingBox();
+    // The table was waited for above too, so its box is there as the key's is.
     const tableBox = await box.boundingBox();
     if (!keyBefore || !titleBefore || !tableBox)
       throw new Error("The identifying columns are missing");
@@ -265,7 +281,10 @@ test("phone headers, saved widths, popover focus and short-window paging stay us
     await box.evaluate((element) => {
       element.scrollLeft = element.scrollWidth;
     });
+    // The headers were waited for above, and a scroll moves them without taking them off the
+    // page, so the key header's box is there.
     const keyAfter = await keyHeader.boundingBox();
+    // The title header was waited for above as well, so its box is there as the key's is.
     const titleAfter = await titleHeader.boundingBox();
     if (!keyAfter || !titleAfter)
       throw new Error("The identifying columns disappeared after scrolling");
@@ -275,6 +294,8 @@ test("phone headers, saved widths, popover focus and short-window paging stay us
       page.locator("[data-issue-row]").first().locator("[data-issue-link]")
     ).toBeVisible();
     const remainingControl = page.getByRole("button", { name: "Filter Updated", exact: true });
+    await expect(remainingControl).toBeVisible();
+    // The wait above drew the control, and a drawn element has a box, so the box is there.
     const controlAtEnd = await remainingControl.boundingBox();
     if (!controlAtEnd) throw new Error("The Updated filter is missing");
     await box.evaluate(
@@ -283,6 +304,8 @@ test("phone headers, saved widths, popover focus and short-window paging stay us
       },
       Math.max(0, keyAfter.x + keyAfter.width - controlAtEnd.x)
     );
+    // The control was waited for above, and a scroll moves it without taking it off the page, so
+    // its box is there.
     const controlBox = await remainingControl.boundingBox();
     if (!controlBox) throw new Error("No control is visible beside the identifying columns");
     expect(controlBox.x).toBeGreaterThanOrEqual(keyAfter.x + keyAfter.width - 1);
@@ -509,10 +532,11 @@ test("phone status labels are readable and closed issues load from the Status fi
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto("/projects/CORE/issues");
     const strip = page.getByRole("region", { name: "Issues by status" });
-    // No Done entry at all while closed issues are unloaded: the bar counts the rows listed.
-    await expect(strip.getByRole("button", { name: /^Done/ })).toHaveCount(0);
     // The legend: Triage, Todo and Testing, one entry each.
     await expect(strip.getByRole("button")).toHaveCount(3);
+    // No Done entry at all while closed issues are unloaded: the bar counts the rows listed.
+    await expect(strip.getByRole("button", { name: /^Done/ })).toHaveCount(0);
+    // The count of three above waited for every entry the strip draws, so one read lists them.
     for (const button of await strip.getByRole("button").all()) {
       await button.scrollIntoViewIfNeeded();
       const readable = await button.evaluate((element) => {

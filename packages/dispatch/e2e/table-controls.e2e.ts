@@ -91,6 +91,7 @@ import { leaveFocus } from "./keyboard-issue";
 import { searchPath } from "./keyboard-palette";
 import { sql } from "./psql";
 import { sessionIds } from "./session-ids";
+import { expandedState, settledState } from "./settled";
 import {
   closeControlPanel,
   drawnControlNames,
@@ -383,6 +384,7 @@ test("however many narrowings are on, their chips take at most one more line of 
     await page.goto("/");
     await expect(firstRow).toBeVisible();
     await resetScroll(page, firstRow);
+    // The first item was waited for and the scroll reset above, so its top is the layout's.
     const plain = await topOf(firstRow);
 
     await page.goto(NINE_NARROWINGS);
@@ -390,6 +392,7 @@ test("however many narrowings are on, their chips take at most one more line of 
     // One chip per value picked, as the row draws them, so nine chips.
     await expect(control(controlRow(main), CONTROL.chip)).toHaveCount(9);
     await resetScroll(page, firstRow);
+    // The nine chips were counted and the scroll reset above, so this is the narrowed layout.
     const narrowed = await topOf(firstRow);
     const where = `${size.width}x${size.height}: nine narrowings moved the first item from ${Math.round(plain)}px to ${Math.round(narrowed)}px, ${Math.round(narrowed - plain)}px down`;
     readings.push(where);
@@ -438,12 +441,14 @@ test("however many narrowings are on, their chips take at most one more line of 
     // The Board is the stored view from here on, so the address below opens on it too.
     await openSurface(page, "project Board", { issue: first, project: "CORE" });
     await resetScroll(page, firstCard);
+    // `openSurface` waited for the first card, and the scroll is reset, so this is the layout.
     const plain = await topOf(firstCard);
 
     await page.goto(nine);
     await expect(firstCard).toBeVisible();
     await expect(control(controlRow(main), CONTROL.chip)).toHaveCount(9);
     await resetScroll(page, firstCard);
+    // The nine chips were counted and the scroll reset above, so this is the narrowed layout.
     const narrowed = await topOf(firstCard);
     const where = `${size.width}x${size.height}: nine narrowings moved the Board's first card from ${Math.round(plain)}px to ${Math.round(narrowed)}px, ${Math.round(narrowed - plain)}px down`;
     readings.push(where);
@@ -507,6 +512,8 @@ test("a chip of the Inbox's row that has the keyboard focus is shown whole, with
     // controls after them: twenty presses walk past the end of the row.
     for (let press = 0; press < 20; press++) {
       await page.keyboard.press("Tab");
+      // The Tab moves the focus, and `onFocus` scrolls it into view with no smooth scroll, while
+      // the browser handles the press, so the instant after it is what the reader sees.
       const reading = await page.evaluate((measure) => {
         const shown = new Function(`return (${measure})`)() as typeof shownOf;
         const focused = document.activeElement;
@@ -554,6 +561,7 @@ test("Clear filters stays in view in the Inbox's row however many narrowings are
     await expect(control(row, CONTROL.chip)).toHaveCount(9);
     const clear = row.getByRole("button", { exact: true, name: "Clear filters" });
     await expect(clear).toHaveCount(1);
+    // The nine chips and Clear filters were waited for above; how much of it shows is the reading.
     const reading = await clear.evaluate((button, measure) => {
       const shown = new Function(`return (${measure})`)() as typeof shownOf;
       return shown(button);
@@ -637,6 +645,7 @@ test("a pointer reaches and removes every chip of the Inbox's row with the row's
     expect(await scrollLeft(), `${where}: the strip does not open at its start`).toBe(0);
     const seen = new Set<number>();
     const look = async () => {
+      // Each call follows the chips' count or a press waited out to rest, so the strip is still.
       const whole = await row.evaluate(chipsSeenWhole, shownOf.toString());
       for (const [index, shown] of whole.entries()) if (shown) seen.add(index);
     };
@@ -693,6 +702,7 @@ test("a pointer reaches and removes every chip of the Inbox's row with the row's
         node.scrollLeft = 0;
       });
       await stripAtRest(strip);
+      // The strip was drawn with its nine chips above and has come to rest, so it has a box.
       const box = await strip.boundingBox();
       if (box === null) throw new Error(`${where}: the strip has no box`);
       await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
@@ -714,6 +724,8 @@ test("a pointer reaches and removes every chip of the Inbox's row with the row's
   await page.goto(NINE_NARROWINGS);
   await expect(chips).toHaveCount(9);
   let presses = 0;
+  // Each turn reads after the nine chips' count or a press waited out to rest, so the strip is
+  // still and what it shows whole is settled.
   while (!(await row.evaluate(chipsSeenWhole, shownOf.toString())).at(-1)) {
     expect(
       presses,
@@ -803,6 +815,8 @@ test("a chip taken off from the keyboard hands the focus to the next chip, then 
       let key = "Enter";
       let pick: "last" | "first" = "last";
       for (let removal = 0; removal < 20; removal++) {
+        // The first chip was waited for above and each later turn follows a removal whose count
+        // was waited for, so the chips read are the ones the page settled on.
         const before = await chips.evaluateAll((all) =>
           all.map((chip) => chip.getAttribute("aria-label") ?? "")
         );
@@ -828,6 +842,8 @@ test("a chip taken off from the keyboard hands the focus to the next chip, then 
           left.length === 0
             ? { where: "trigger", label: "the filter trigger" }
             : { where: "chip", label: left[Math.min(index, left.length - 1)] ?? "" };
+        // The count above saw the removal commit, and `ControlRow` hands the focus on in that
+        // commit's layout effect, so the focus read is where the removal left it.
         const focus = await focusInRow(row);
         const right =
           focus.where === expected.where &&
@@ -854,6 +870,8 @@ test("a chip taken off from the keyboard hands the focus to the next chip, then 
       await clear.focus();
       await page.keyboard.press("Enter");
       await expect(chips, `${where}: Clear filters left chips on`).toHaveCount(0);
+      // The count above saw Clear filters' commit, and `ControlRow` hands the focus on in that
+      // commit's layout effect, so the focus read is where the press left it.
       const focus = await focusInRow(row);
       if (focus.where !== "trigger") {
         wrong.push(
@@ -924,6 +942,8 @@ test("the selection bar gone from the keyboard hands the focus to the row marked
       .toBe(wanted)
       .then(() => true)
       .catch(() => false);
+    // The poll above waited until the focus landed or its timeout ran out, so this is where the
+    // focus settled.
     const focus = await focusNow();
     if (!landed) {
       wrong.push(`${where}: after ${after} the focus is on ${focus.label}, not on "${wanted}"`);
@@ -1013,7 +1033,10 @@ test("the selection bar gone from the keyboard hands the focus to the row marked
     await trigger.focus();
     await page.keyboard.press("Escape");
     await expect(inboxBar, `${where}: Escape on the filter trigger left the bar up`).toHaveCount(0);
+    // The bar was waited gone above, and for a key press its hand-off lands with that commit, so
+    // this reads where the Escape left the focus.
     if (!(await trigger.evaluate((node) => node === document.activeElement))) {
+      // The check above found the focus off the trigger, and this names where it went instead.
       const focus = await focusNow();
       wrong.push(
         `${where}: Escape on the filter trigger moved the focus to ${focus.label}, off the trigger`
@@ -1027,7 +1050,10 @@ test("the selection bar gone from the keyboard hands the focus to the row marked
     await expect(inboxBar).toContainText("1 selected");
     await page.keyboard.press("x");
     await expect(inboxBar, `${where}: x on the only marked row left the bar up`).toHaveCount(0);
+    // The bar was waited gone above, and for a key press its hand-off lands with that commit, so
+    // this reads where the `x` left the focus.
     if (!(await rows.nth(0).evaluate((node) => node === document.activeElement))) {
+      // The check above found the focus off the row, and this names where it went instead.
       const focus = await focusNow();
       wrong.push(`${where}: x on the focused row moved the focus to ${focus.label}, off the row`);
     }
@@ -1141,6 +1167,8 @@ test("a thread dismissed from the selection bar, or moved back to the Inbox from
     await page.keyboard.press("Enter");
     await expect(main.locator(`[data-inbox-row="${thread}"]`)).toHaveCount(0);
     await expect(bar, `${where}: Dismiss left the bar up`).toHaveCount(0);
+    // The dismissed row and the bar were both waited gone above, so the first row is the list's
+    // own, and `getAttribute` waits for its checkbox to attach.
     const first = await rows.first().getByRole("checkbox").first().getAttribute("aria-label");
     // The hand-off may land a moment after the bar goes, so the focus is read until it settles.
     const afterDismiss = await settled(first ?? "");
@@ -1150,8 +1178,9 @@ test("a thread dismissed from the selection bar, or moved back to the Inbox from
       );
     }
 
-    // Move to Inbox, from the dismissed view: the thread leaves that view with the bar, so the
-    // focus goes to the first row left there, or to the search box when none is.
+    // Move to Inbox, from the dismissed view: the thread leaves that view with the bar, and it is
+    // the one thread the turn dismissed, so the view is left empty and the focus goes to the
+    // search box.
     await page.goto("/?show=dismissed");
     const back = main.locator(`[data-inbox-row="${thread}"]`);
     await expect(back, `${where}: the dismissed thread is not listed`).toHaveCount(1);
@@ -1164,11 +1193,8 @@ test("a thread dismissed from the selection bar, or moved back to the Inbox from
     await page.keyboard.press("Enter");
     await expect(back).toHaveCount(0);
     await expect(bar, `${where}: Move to Inbox left the bar up`).toHaveCount(0);
-    const left = await rows.count();
-    const target =
-      left > 0
-        ? ((await rows.first().getByRole("checkbox").first().getAttribute("aria-label")) ?? "")
-        : "Search asks";
+    await expect(rows, `${where}: the dismissed view still lists a thread`).toHaveCount(0);
+    const target = "Search asks";
     const afterRestore = await settled(target);
     if (afterRestore !== target) {
       wrong.push(
@@ -1224,6 +1250,7 @@ test("the Agents page, the Delivery page and the project List keep the keyboard 
       .poll(async () => (await focusOutcome(page)).lost, { timeout: 2_000 })
       .toBe(false)
       .catch(() => undefined);
+    // The poll above waited up to two seconds for the focus to land, so this is where it settled.
     const outcome = await focusOutcome(page);
     if (outcome.lost) lost.push(`${where}: after ${press} the focus is on ${outcome.label}`);
     else if (!outcome.inView) {
@@ -1249,8 +1276,11 @@ test("the Agents page, the Delivery page and the project List keep the keyboard 
     await expect(clear).toHaveCount(0);
     await after(`Agents page at ${at}`, "Enter on Clear selection");
 
-    // The Delivery page's Window control: a new preset remounts it under a new key. The seeded
-    // window is a custom range, the last option, so ArrowUp picks the last preset.
+    // The Delivery page's Window control: a new preset changes the window under the select the
+    // reader is on, which stays mounted (`WindowControl.tsx`). The seeded window is a custom
+    // range, the last option, so ArrowUp picks the last preset. The focus never leaves the
+    // select, so `after`'s poll ends at once; the read still sees the press's result, because
+    // `toHaveURL` waits for the commit that wrote the new window.
     await page.goto(`/delivery?${DELIVERY_WINDOW}&mode=list`);
     const windowSelect = main.getByRole("combobox", { name: "Window" });
     await windowSelect.focus();
@@ -1344,6 +1374,8 @@ async function readColumnFilters(
   expected: Record<string, "picks" | "text">
 ): Promise<void> {
   const headers = page.getByRole("columnheader");
+  // Each caller waited for the table's first row, so its header row is drawn, and the assertion
+  // below fails a read that missed a filter.
   const named = await headers.evaluateAll((cells) =>
     cells.map((cell) => ({
       control: cell.querySelector('[data-control="column-filter"]') !== null,
@@ -1682,9 +1714,7 @@ test("the project List, the Board and the Agents page open the rows their parame
       .locator("[data-board-card]")
       .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-board-card") ?? ""));
   };
-  await page.goto("/projects/CORE/issues");
-  const board = page.getByRole("button", { exact: true, name: "Board" });
-  if ((await board.getAttribute("aria-pressed")) !== "true") await board.click();
+  await openIssuesTab(page, "CORE", "Board");
   expect(await carded("/projects/CORE/issues?label=backend"), "the Board's ?label=").toEqual([
     "CORE-2",
     "CORE-4",
@@ -1773,7 +1803,7 @@ test("the four parameters this change adds ride in the address and survive a rel
     ["role", "planner"],
   ] as const) {
     const trigger = page.getByRole("button", { name: `Filter by ${name}` });
-    if ((await trigger.getAttribute("aria-expanded")) !== "true") await trigger.click();
+    if ((await expandedState(`the ${name} filter`, trigger)) === "shut") await trigger.click();
     await page.getByRole("option", { exact: true, name: option }).click();
     await trigger.click();
   }
@@ -1812,9 +1842,7 @@ test("the four parameters this change adds ride in the address and survive a rel
   );
 
   // The drawer's own state is its own: narrowing it over the project List writes no parameter.
-  await page.goto(`/projects/${scene.project}/issues`);
-  const table = page.getByRole("button", { exact: true, name: "Table" });
-  if ((await table.getAttribute("aria-pressed")) !== "true") await table.click();
+  await openIssuesTab(page, scene.project, "Table");
   await expect(page.locator("[data-issue-row]").first()).toBeVisible();
   const before = page.url();
   await peekTrigger(page).click();
@@ -1970,9 +1998,7 @@ test("the project List keeps its grouping, columns, pager and layout, and the Bo
     const issue = await createIssue({ project: "CORE", title: `Listed work ${index}` });
     await patchIssue(issue.key, { labels: ["legion"], status: "todo" });
   }
-  await page.goto("/projects/CORE/issues");
-  const tableLayout = page.getByRole("button", { exact: true, name: "Table" });
-  if ((await tableLayout.getAttribute("aria-pressed")) !== "true") await tableLayout.click();
+  await openIssuesTab(page, "CORE", "Table");
   const table = page.getByRole("table", { name: "Project issues table" });
   await expect(table).toBeVisible();
   const main = page.getByTestId("main-content");
@@ -2020,6 +2046,8 @@ test("the project List keeps its grouping, columns, pager and layout, and the Bo
   const header = page
     .getByRole("columnheader")
     .filter({ has: page.getByRole("button", { exact: true, name: /^Created by/ }) });
+  // The Updated header was waited for above, and the Created by header stands in that same
+  // header row, so its box is drawn.
   const before = await header.boundingBox();
   if (before === null) throw new Error("the Created by column has no box");
   await page.mouse.move(before.x + before.width - 2, before.y + before.height / 2);
@@ -2545,7 +2573,9 @@ test("an issue's Artifacts tab keeps its narrowing, its order, its counts, its s
   await expect(page.getByTestId("issue-header")).toBeVisible();
   if (phone) {
     const reviewPanel = page.getByRole("button", { name: /review panel/i });
-    if ((await reviewPanel.getAttribute("aria-expanded")) === "true") await reviewPanel.click();
+    if ((await expandedState("the review panel", reviewPanel)) === "open") {
+      await reviewPanel.click();
+    }
   }
   await page.locator("body").focus();
   await page.keyboard.press("t");
@@ -2874,7 +2904,7 @@ test("the search bar keeps its narrowings, its groups, its count, its recent ite
  *  too once the focus has left the menu, and would shut the drawer with it. */
 async function shutDisplay(root: Locator): Promise<void> {
   const trigger = control(controlRow(root), CONTROL.displayMenu);
-  if ((await trigger.getAttribute("aria-expanded")) === "true") await trigger.click();
+  if ((await expandedState("the surface's View menu", trigger)) === "open") await trigger.click();
   await expect(trigger).toHaveAttribute("aria-expanded", "false");
 }
 
@@ -3182,6 +3212,8 @@ test("the Inbox drawer keeps every field, sort, grouping, count, view, bulk acti
   await expect(needsYou, "the count of what waits on the reader").toHaveText(
     /^Blocked on you · \d+$/
   );
+  // The text was waited for above until it carried a number, which the control draws only once
+  // every count it adds up has answered.
   const waiting = Number((await needsYou.textContent())?.replace(/\D+/g, ""));
   await needsYou.click();
   await expect(listed, "the count of what waits on the reader").toHaveCount(waiting);
@@ -3308,6 +3340,9 @@ test("the control in the row carries what the banner carried, and narrows the In
   const sidebar = page.getByRole("navigation", { name: "Navigation" }).getByRole("link", {
     name: /^Inbox/,
   });
+  await expect(sidebar, "the sidebar's Inbox entry draws no number").toHaveText(/\d/);
+  // The number was waited for above, and the entry draws it only once both counts it adds up
+  // have answered, so the number read is the whole sum.
   const sidebarCount = Number((await sidebar.textContent())?.replace(/\D+/g, "") ?? "0");
   expect(sidebarCount, "the sidebar's number does not add the unread thread").toBeGreaterThan(4);
 
@@ -4150,26 +4185,21 @@ test("no press in the shared controls drops the keyboard focus onto the page, at
     const at = `${size.width}x${size.height}`;
 
     // The Inbox's Mark all read, a page control in the row, goes once nothing is left unread:
-    // the focus goes to the next control in its slot, Blocked on you, else to the trigger. A
-    // thread of its own at each width, since the press at the first marks the first one read.
+    // the focus goes to the next control in its slot, Blocked on you, which `seedSurfaces`' six
+    // asks waiting on the reader draw. A thread of its own at each width, since the press at the
+    // first marks the first one read.
     let where = `Inbox at ${at}`;
     const thread = await createIssue({ project: "CORE", title: `Nightly mirror at ${at}` });
     await seedCommentThread(thread.key, "Is the nightly job still at 02:00?", "It moved to 03:00.");
     await page.goto("/");
     const markAll = row.getByRole("button", { exact: true, name: "Mark all read" });
     const blocked = row.getByRole("button", { name: /^Blocked on you/ });
-    const trigger = control(row, CONTROL.panelTrigger);
     await expect(markAll, `${where}: Mark all read is not drawn`).toBeVisible();
-    const besideMarkAll = (await blocked.count()) > 0;
+    await expect(blocked, `${where}: Blocked on you is not drawn`).toBeVisible();
     await markAll.focus();
     await page.keyboard.press("Enter");
     await expect(markAll, `${where}: Enter on Mark all read left it drawn`).toHaveCount(0);
-    await focusOn(
-      where,
-      "Enter on Mark all read",
-      besideMarkAll ? blocked : trigger,
-      besideMarkAll ? "Blocked on you" : "the filter trigger"
-    );
+    await focusOn(where, "Enter on Mark all read", blocked, "Blocked on you");
 
     // A scroll button of the chips line, pressed by a pointer while a chip holds the focus: the
     // press takes no focus, and the button that goes at the strip's end takes none with it.
@@ -4186,6 +4216,8 @@ test("no press in the shared controls drops the keyboard focus onto the page, at
         button,
         `${where}: Scroll filters ${side} is not drawn, so no chip is out of view that way`
       ).toBeVisible();
+      // The first turn follows the wait above, each later one a strip held still for five frames,
+      // and the button goes in the render its last scroll event makes, so the count is settled.
       for (let press = 1; (await button.count()) > 0; press++) {
         expect(
           press,
@@ -4210,6 +4242,7 @@ test("no press in the shared controls drops the keyboard focus onto the page, at
     await page.goto("/projects/CORE/issues?size=25");
     const pager = control(main, CONTROL.pager);
     await expect(pager, `${where}: the List draws no first page`).toContainText(/Page 1 of \d/);
+    // The pager was waited for above until it read `Page 1 of N`, so the count of pages is drawn.
     const pages = Number(/Page 1 of (\d+)/.exec((await pager.textContent()) ?? "")?.[1] ?? "1");
     expect(pages, `${where}: the seed fills fewer than two pages`).toBeGreaterThan(1);
     for (const [step, name, last] of [
@@ -4381,6 +4414,8 @@ test("no page-own press drops the keyboard focus onto the page, on any page of R
       .poll(async () => (await focusOutcome(page)).lost)
       .toBe(false)
       .catch(() => undefined);
+    // The poll above waited up to the expect timeout for the focus to land, so this reads where
+    // it settled.
     const outcome = await focusOutcome(page);
     if (outcome.lost) lost.push(`${where}: after ${press} the focus is on ${outcome.label}`);
     else if (!outcome.inView) {
@@ -4494,7 +4529,11 @@ test("no page-own press drops the keyboard focus onto the page, on any page of R
     where = `project Board at ${at}`;
     await openIssuesTab(page, "CORE", "Board");
     const lanes = page.getByRole("button", { exact: true, name: "Lanes" });
-    if ((await lanes.getAttribute("aria-pressed")) !== "true") await lanes.click();
+    const lanesShown = await settledState("the Board's lanes switch", [
+      ["shown", lanes.and(page.locator('[aria-pressed="true"]'))],
+      ["hidden", lanes.and(page.locator('[aria-pressed="false"]'))],
+    ]);
+    if (lanesShown === "hidden") await lanes.click();
     await expect(lanes).toHaveAttribute("aria-pressed", "true");
     const lane = `P${step + 1}`;
     const priority = page.getByLabel(`Priority of ${boardCard.key}`);
@@ -4583,6 +4622,7 @@ test("no page-own press drops the keyboard focus onto the page, on any page of R
     await page.keyboard.press("Enter");
     await expect(failure, `${where}: Retry left the failure up`).toHaveCount(0);
     await after(where, "Enter on a failed search's Retry");
+    // `after` above waited for the focus to land somewhere, so this reads where it settled.
     if (!(await palette.evaluate((node) => node.contains(document.activeElement)))) {
       lost.push(`${where}: after Enter on Retry the focus is outside the search bar`);
     }
@@ -4647,6 +4687,7 @@ test("a table that holds the keyboard focus scrolls freely, and the focus moves 
    *  below where it started. It answers where the focus ended too. */
   const wheelOver = async (box: Locator, rowAttribute: string, picked: string) => {
     await box.scrollIntoViewIfNeeded();
+    // `scrollIntoViewIfNeeded` waited above for the box to be visible and stable, so it has a box.
     const area = await box.boundingBox();
     if (area === null) throw new Error("the table's box is not on screen");
     // Near the box's left edge, in the first cell's padding, where no row draws a link: a pointer
@@ -4658,10 +4699,13 @@ test("a table that holds the keyboard focus scrolls freely, and the focus moves 
     const wrong: string[] = [];
     for (let step = 1; step <= 25; step++) {
       await page.mouse.wheel(0, 100);
+      // `settledScrollTop` waits until the box held still for three frames: that is the reading.
       const top = await settledScrollTop(box, WHEEL_STILL_FRAMES);
       const before = readings.at(-1) ?? 0;
       if (top < before - 1) wrong.push(`step ${step} pulled the box back from ${before} to ${top}`);
       readings.push(top);
+      // Read after the box held still for three frames, by which the focus rescue has answered a
+      // loss (`WHEEL_STILL_FRAMES`), so the focus read is where the step left it.
       const focused = await focusedRowOf(page, rowAttribute);
       if (focused !== null && focused !== picked) {
         wrong.push(`after step ${step} the focus is in ${focused}`);
@@ -4693,8 +4737,10 @@ test("a table that holds the keyboard focus scrolls freely, and the focus moves 
   await pager.getByRole("combobox").selectOption("250");
   await expect(page).toHaveURL(/[?&]size=250/);
   const listBox = control(main, CONTROL.dataTable);
-  const picked =
-    (await listBox.locator("[data-issue-row]").nth(2).getAttribute("data-issue-row")) ?? "";
+  const listRows = listBox.locator("[data-issue-row]");
+  // `getAttribute` waits for the third row to attach, and a row carries its key from its first
+  // render, so the key read is that row's own.
+  const picked = (await listRows.nth(2).getAttribute("data-issue-row")) ?? "";
   const pickedBox = listBox.getByRole("checkbox", { exact: true, name: `Select ${picked}` });
   await pickedBox.click();
   const bar = control(main, CONTROL.selectionBar);
@@ -4770,9 +4816,12 @@ test("Tab and Escape never leave a panel for the page behind it, in a dialog or 
    *  held by its handle, since the press that closes the panel takes it out of the page. */
   const tabOutOf = async (last: Locator) => {
     await last.focus();
+    // `focus` above waited for the control to attach and focused it, so the handle names it.
     const handle = await last.elementHandle();
     for (let press = 0; press < 5; press++) {
       await page.keyboard.press("Tab");
+      // A Tab moves the focus while the browser handles the press, so the instant after it shows
+      // whether the focus has left the control.
       if (!(await handle?.evaluate((node) => node === document.activeElement))) break;
     }
     await handle?.dispose();
@@ -5032,26 +5081,33 @@ test("a filter panel cut to a short window scrolls to its last control @firefox 
   expect(measured.cut, "the window is not short enough to cut the Filter panel").not.toBe("");
   const wrong: string[] = [];
 
-  // The wheel over the panel, more steps than it has room to move.
+  await panel.scrollIntoViewIfNeeded();
+  // `scrollIntoViewIfNeeded` waited above for the panel to be visible and stable, so it has a box.
   const area = await panel.boundingBox();
   if (area === null) throw new Error("the Filter panel is not on screen");
   await page.mouse.move(area.x + area.width / 2, area.y + area.height / 2);
+  // The wheel over the panel, more steps than it has room to move.
   for (let step = 0; step < 8; step++) await page.mouse.wheel(0, 100);
+  // `settledScrollTop` waits until the panel held still for three frames: that is the reading.
   const top = await settledScrollTop(panel, WHEEL_STILL_FRAMES);
+  // Read after the panel held still above, so its layout and the room it scrolls are settled.
   const end = await panel.evaluate((node) => node.scrollHeight - node.clientHeight);
   if (top < end - 1) wrong.push(`the wheel left the panel at ${top} px of the ${end} it scrolls`);
 
   // Tab from the control the panel opened on to its last, the Assignee filter, which is then in
-  // sight inside the panel. The control is held by its handle, in case a Tab closes the panel.
+  // sight inside the panel. The control is held by its handle, in case a Tab closes the panel;
+  // `elementHandle` waits for the filter to attach in the panel opened above.
   const last = await panel.getByRole("button", { name: "Filter by assignee" }).elementHandle();
-  if (last === null) throw new Error("the Filter panel has no Assignee filter");
   let reached = false;
   for (let press = 0; press < 30 && !reached; press++) {
     await page.keyboard.press("Tab");
+    // A Tab moves the focus while the browser handles the press, so the instant after it shows
+    // where the focus went.
     reached = await last.evaluate((node) => node === document.activeElement);
   }
   if (!reached) wrong.push("Tab never reached the Assignee filter");
   await settledScrollTop(panel, WHEEL_STILL_FRAMES);
+  // Read after the panel's scroll held still for three frames above, so this is where it settled.
   const shown = await last.evaluate((node) => {
     const own = node.getBoundingClientRect();
     const box = node.closest('[role="dialog"]')?.getBoundingClientRect();
@@ -5147,6 +5203,7 @@ test("a row a live update removes while it holds the focus hands the focus to no
     node.scrollTop = Math.round(node.scrollHeight / 2);
   });
   await settledScrollTop(listBox, WHEEL_STILL_FRAMES);
+  // Read after the box held still for three frames above, so the rows in sight are settled.
   const picked = await listBox.evaluate((node) => {
     const within = node.getBoundingClientRect();
     const mid = [...node.querySelectorAll<HTMLElement>("[data-issue-row]")].find((row) => {
@@ -5238,6 +5295,7 @@ test("a page's single-key shortcuts do not act from inside an open panel", async
   await page.goto("/");
   const rows = page.locator("[data-inbox-row]");
   await expect(rows).toHaveCount(2);
+  // The two rows were counted above, and a row carries its id from its first render.
   const top = await rows.first().getAttribute("data-inbox-row");
   if (top === null) throw new Error("the Inbox's first row carries no id");
   await selectRow(page, top);
@@ -5459,7 +5517,7 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
         await page.goto("/agents");
         const toggle = agent.locator("[data-agent-toggle]");
         await expect(toggle).toBeVisible();
-        if ((await toggle.getAttribute("aria-expanded")) !== "true") await toggle.click();
+        if ((await expandedState("the agent row", toggle)) === "shut") await toggle.click();
       },
       trigger: issue,
       value: shown(issue),
@@ -5668,6 +5726,8 @@ test("every list of options a reader picks from holds a text box that narrows it
       const panel = listOf(list.trigger);
       await expect(panel, `${at}: the list its trigger names is not drawn`).toBeVisible();
       const box = panel.locator(TEXT_BOXES);
+      // The panel was waited for above, and the shared list draws its text box in the panel's
+      // own render, so how many it draws is the count this row records.
       const boxes = await box.count();
       if (boxes === 1) {
         await expect(box, `${at}: the open list left the focus outside its text box`).toBeFocused();
@@ -5862,6 +5922,8 @@ test("a picked value too long for its list's trigger ends in an ellipsis before 
   /** Records what is wrong with how `trigger` draws the long value just picked. */
   const read = async (name: string, trigger: Locator) => {
     await expect(trigger, `${name} does not show the value picked`).toContainText(LONG_TITLE);
+    // The value was waited for above, and `longValueDrawing` waits out the trigger's animations
+    // before it measures, so the drawing read is the settled one.
     for (const what of await longValueDrawing(trigger)) wrong.push(`${name}: ${what}`);
   };
 

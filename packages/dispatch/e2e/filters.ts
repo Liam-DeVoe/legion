@@ -1,6 +1,7 @@
 import { expect, type Locator, type Page } from "@playwright/test";
 
 import { CONTROL, type ControlName } from "../web/src/components/control-names";
+import { expandedState } from "./settled";
 
 /**
  * One of the shared controls, found by the `data-control` value it writes
@@ -25,7 +26,7 @@ export function controlRow(within: Locator | Page): Locator {
  */
 export async function openFilterPanel(page: Page, within: Locator | Page = page): Promise<Locator> {
   const trigger = control(controlRow(within), CONTROL.panelTrigger);
-  if ((await trigger.getAttribute("aria-expanded")) !== "true") await trigger.click();
+  if ((await expandedState("the row's filter trigger", trigger)) === "shut") await trigger.click();
   // `Filter` on the Inbox, the Agents page, the Delivery page and the search bar; `Filters` on
   // the project's Issues table and Board, where the trigger also counts what is on.
   const panel = page.getByRole("dialog", { name: /^Filters?$/ });
@@ -40,8 +41,8 @@ export async function openFilterPanel(page: Page, within: Locator | Page = page)
  */
 export async function openDisplayMenu(page: Page, label = "View"): Promise<Locator> {
   const menu = page.getByRole("dialog", { name: label });
-  if ((await menu.count()) === 0)
-    await page.getByRole("button", { exact: true, name: label }).click();
+  const trigger = page.getByRole("button", { exact: true, name: label });
+  if ((await expandedState(`the ${label} menu`, trigger)) === "shut") await trigger.click();
   await expect(menu).toHaveCount(1);
   return menu;
 }
@@ -75,16 +76,15 @@ export function filterPicker(page: Page, picker: "Claimed by" | "Labels" | "Stat
 }
 
 /** Toggles one option in an expanded strip's `Labels` or `Status` multi-select, then closes the
- *  popover with Escape so it never covers the control the test drives next. */
+ *  popover with Escape so it never covers the control the test drives next. The trigger says
+ *  whether the popover is open, and is read once the page has drawn it. */
 export async function pickFilterOption(
   page: Page,
   picker: "Claimed by" | "Labels" | "Status",
   option: string
 ): Promise<void> {
   const trigger = filterPicker(page, picker);
-  if ((await trigger.getAttribute("aria-expanded")) === "false") {
-    await trigger.click();
-  }
+  if ((await expandedState(`the ${picker} picker`, trigger)) === "shut") await trigger.click();
   await page
     .getByRole("option", {
       // "Done, not loaded" while closed issues are still out: its count would be a lie.
