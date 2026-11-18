@@ -179,7 +179,7 @@ func TestAReopenedApprovalRequestNamesTheVersionAClosedSettlementWrote(t *testin
 
 	reopenAndSettle(t, f, issue.Key)
 	var restored carriedAsk
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+	for deadline := time.Now().Add(concurrentWait); ; time.Sleep(20 * time.Millisecond) {
 		if restored = readCarriedAsk(t, handler, request.ID); restored.Approval.Version == closed {
 			break
 		}

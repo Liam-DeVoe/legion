@@ -392,7 +392,6 @@ func TestRelatedCheckMeaningEmbedderFailingSearchesByKeywordsOnly(t *testing.T) 
 // meaning search ran to the meaning allowance from the check's start is a value the case
 // compares rather than a time it measures.
 func TestRelatedCheckMeaningEmbedderPastThreeSecondsSearchesByKeywordsOnly(t *testing.T) {
-	t.Parallel()
 	embedder := &fakeEmbedder{delay: time.Minute}
 	handler, _, srv := meaningServer(t, embedder)
 	createSuggestionProject(t, handler, "MSLOW")

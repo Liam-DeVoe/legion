@@ -108,9 +108,8 @@ func rawCall(t *testing.T, sock, line string) Response {
 // into the request object, the claim the broker grants for, and without it signs none, so the
 // grant lasts until the session ends.
 func TestSignRequestSignsTheLifetimeItIsAsked(t *testing.T) {
-	t.Parallel()
 	r := startRig(t, "")
-	if reg := r.call(t, Request{Op: "register", WaitSeconds: 10}); !reg.OK || reg.State != "enrolled" {
+	if reg := r.call(t, Request{Op: "register", WaitSeconds: 5}); !reg.OK || reg.State != "enrolled" {
 		t.Fatalf("register: %+v", reg)
 	}
 	for _, lifetime := range []*int{new(120), nil} {

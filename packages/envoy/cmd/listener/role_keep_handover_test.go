@@ -457,7 +457,7 @@ func sweepOnce(ctx context.Context, cfg listenerDeliveryHandlerConfig) {
 // alone.
 func sweptRoleWakes(t *testing.T, client *bus.Client, role string) []contracts.Envelope {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), listenerWait)
 	defer cancel()
 	reports, err := readStored(ctx, client, bus.LegionWakeTopic)
 	if err != nil {
@@ -674,8 +674,6 @@ func TestADispatchRoleRoutedEventToAnUnheldRoleReachesTheNextHolder(t *testing.T
 // - on a lane no claim was coming for, while every further keep for that role queued one more
 // goroutine on its guard.
 func TestAHandoverRetriesALaneHeadReadThatFailedOnlyForAClaimedRole(t *testing.T) {
-	// Serial: its assertion is a time, in its unclaimed row: a handover that does not retry ends
-	// inside roleKeepDrainRetryPause (1 s).
 	for _, test := range []struct {
 		name           string
 		claimed        bool
@@ -687,8 +685,6 @@ func TestAHandoverRetriesALaneHeadReadThatFailedOnlyForAClaimedRole(t *testing.T
 		{name: "unclaimed"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			// Serial: its assertion is a time: a handover that does not retry ends inside
-			// roleKeepDrainRetryPause (1 s).
 			harness := newListenerDeliveryHarness(t)
 			role := "kept-head-read-" + test.name
 			holder := "ses_kept_head_read_" + test.name

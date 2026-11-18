@@ -195,8 +195,10 @@ func TestRequestsUnderOneMsgIDLeaveTheStreamOneCopy(t *testing.T) {
 // The request's flush is held until the client has lost the connection (WithBeforeRequestFlush),
 // which is the interleaving a server that goes away right behind the publish has: nats.go clears
 // its pending flushes as the connection turns reconnecting, so a flush begun after that waits out
-// its whole timeout - 30 s here - for a PONG no server sends. The loss is the answer either way,
-// and it is given the moment the loss is seen.
+// its whole timeout for a PONG no server sends. The loss is the answer either way, and it is given
+// the moment the loss is seen. The timeout here outlasts any run of the test binary, so a Request
+// that waited it out gives no answer at all, and the answer the row waits for, at the package's
+// give-up, can only be the loss's.
 func TestARequestWhoseConnectionIsLostAnswersUnavailable(t *testing.T) {
 	t.Parallel()
 	var client *bus.Client
@@ -208,9 +210,9 @@ func TestARequestWhoseConnectionIsLostAnswersUnavailable(t *testing.T) {
 	}))
 	window := client.WindowUntil(nil)
 
-	pending := window.Request("notifications.role.request-lost", forwardEnvelope("lost"), bus.RequestOptions{MsgID: bus.ForwardMsgID("lost", "notifications.role.request-lost"), Timeout: 30 * time.Second})
+	pending := window.Request("notifications.role.request-lost", forwardEnvelope("lost"), bus.RequestOptions{MsgID: bus.ForwardMsgID("lost", "notifications.role.request-lost"), Timeout: 24 * time.Hour})
 	server.Stop(t)
-	if err := answerOf(t, pending, 10*time.Second); !errors.Is(err, bus.ErrUnavailable) || errors.Is(err, bus.ErrNotAcknowledged) {
+	if err := answerOf(t, pending, busWait); !errors.Is(err, bus.ErrUnavailable) || errors.Is(err, bus.ErrNotAcknowledged) {
 		t.Fatalf("a Request whose connection was lost returned %v, want ErrUnavailable", err)
 	}
 

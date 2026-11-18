@@ -1,8 +1,7 @@
 package bus_test
 
-// Every test here reaches t.Setenv through jetStreamGrantedClient (core_permission_test.go),
-// which panics the process beside t.Parallel, so none of them is parallel
-// (dispatch://INFRA-1075).
+// Every test here reaches t.Setenv through grantedClient (core_permission_test.go), which panics
+// the process beside t.Parallel, so none of them is parallel (dispatch://INFRA-1075).
 
 import (
 	"errors"

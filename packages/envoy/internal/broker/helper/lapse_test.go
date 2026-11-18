@@ -86,9 +86,9 @@ func endSessionThenReleaseRevokes(t *testing.T, r *rig, reg *Registry, sess *Ses
 		sess.peer.Close()
 	}
 	// Some revoke must follow the session's end — the session's own last try, or the handed-off
-	// revoke's first. None within 5 s means the id went nowhere, which says more here than the
-	// caller's own "never revoked" after its wait.
-	deadline := time.Now().Add(5 * time.Second)
+	// revoke's first. None within eventWait means the id went nowhere, which says more here than
+	// the caller's own "never revoked" after its wait.
+	deadline := time.Now().Add(eventWait)
 	for {
 		r.fake.mu.Lock()
 		n := r.fake.revokeAttempts

@@ -551,10 +551,6 @@ func TestUpdateWritesEachOfTwoMarksOfOneTypeOnOneRun(t *testing.T) {
 		gotJSON, _ := got.JSON()
 		t.Fatalf("read back %s", gotJSON)
 	}
-	if decoded := decodeWithYProsemirror(t, crdt.EncodeStateAsUpdateV1(doc, nil)); !decoded.Equal(want) {
-		decodedJSON, _ := decoded.JSON()
-		t.Fatalf("y-prosemirror decoded %s", decodedJSON)
-	}
 	before := crdt.EncodeStateAsUpdateV1(doc, nil)
 	doc.Transact(func(txn *crdt.Transaction) { err = Update(txn, frag, got) })
 	if err != nil {
@@ -562,5 +558,11 @@ func TestUpdateWritesEachOfTwoMarksOfOneTypeOnOneRun(t *testing.T) {
 	}
 	if after := crdt.EncodeStateAsUpdateV1(doc, nil); !bytes.Equal(before, after) {
 		t.Fatalf("Update wrote %d new bytes for an equal tree", len(after)-len(before))
+	}
+	// The browser engine's read comes last: requireBun skips the test where bun is missing outside
+	// CI, and the checks above need no bun.
+	if decoded := decodeWithYProsemirror(t, before); !decoded.Equal(want) {
+		decodedJSON, _ := decoded.JSON()
+		t.Fatalf("y-prosemirror decoded %s", decodedJSON)
 	}
 }

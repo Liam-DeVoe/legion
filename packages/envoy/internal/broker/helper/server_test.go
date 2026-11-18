@@ -274,9 +274,8 @@ func TestDrainWithSessionsSetsNothing(t *testing.T) {
 }
 
 func TestRegisterPinsCallerEnrollsAndSigns(t *testing.T) {
-	t.Parallel()
 	r := startRig(t, "")
-	resp := r.call(t, Request{Op: "register", WaitSeconds: 10})
+	resp := r.call(t, Request{Op: "register", WaitSeconds: 5})
 	if !resp.OK || resp.State != "enrolled" || resp.EnrollmentID == "" || resp.Operator != "ada@example.com" {
 		t.Fatalf("register: %+v", resp)
 	}
@@ -344,9 +343,8 @@ func TestSignOnlyForDescendantsOfARoot(t *testing.T) {
 // TestVerifyRequestObjectAcceptsItsOwnSignAndRefusesTheProofTyp proves the converse: a proof
 // refused as a request object).
 func TestSignRequestBuildsAValidRequestObject(t *testing.T) {
-	t.Parallel()
 	r := startRig(t, "")
-	reg := r.call(t, Request{Op: "register", WaitSeconds: 10})
+	reg := r.call(t, Request{Op: "register", WaitSeconds: 5})
 	if !reg.OK || reg.State != "enrolled" {
 		t.Fatalf("register: %+v", reg)
 	}
@@ -422,7 +420,7 @@ func TestExitRevokesAndUnregisterRevokes(t *testing.T) {
 	reg := r.call(t, Request{Op: "register", WaitSeconds: 10})
 	_ = child.Process.Kill()
 	_ = child.Wait()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(eventWait)
 	for time.Now().Before(deadline) {
 		r.fake.mu.Lock()
 		n := len(r.fake.deletes)
@@ -448,7 +446,7 @@ func TestExitRevokesAndUnregisterRevokes(t *testing.T) {
 	}
 	// unregister answers before its revoke ends (retire fires the revoke off), so the DELETE is
 	// waited for rather than read at once.
-	testwait.Holds(5*time.Second, testwait.Poll, func() bool {
+	testwait.Holds(eventWait, testwait.Poll, func() bool {
 		_, deletes, _ := r.fake.snapshot()
 		return len(deletes) == 2
 	})
@@ -496,8 +494,8 @@ func TestRenewRunsAndARefusedRenewReenrolls(t *testing.T) {
 	r.fake.mu.Lock()
 	r.fake.lease = 150 * time.Millisecond
 	r.fake.mu.Unlock()
-	reg := r.call(t, Request{Op: "register", WaitSeconds: 5})
-	renewDeadline := time.Now().Add(5 * time.Second)
+	reg := r.call(t, Request{Op: "register", WaitSeconds: int(eventWait / time.Second)})
+	renewDeadline := time.Now().Add(eventWait)
 	var renews int
 	for time.Now().Before(renewDeadline) {
 		r.fake.mu.Lock()
@@ -517,7 +515,7 @@ func TestRenewRunsAndARefusedRenewReenrolls(t *testing.T) {
 	delete(r.fake.enrolled, reg.EnrollmentID)
 	delete(r.fake.byTP, r.srv.Registry.Get(os.Getpid()).identity().Thumbprint)
 	r.fake.mu.Unlock()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(eventWait)
 	for time.Now().Before(deadline) {
 		if id := r.srv.Registry.Get(os.Getpid()).identity().EnrollmentID; id != "" && id != reg.EnrollmentID {
 			return
@@ -585,7 +583,7 @@ func TestRecoverRepinsLiveSessionsWithFreshKeys(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	srv2.Recover(ctx)
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(eventWait)
 	var sess *Session
 	for time.Now().Before(deadline) {
 		if sess = srv2.Registry.Get(child.Process.Pid); sess != nil && sess.snapshot().State == "enrolled" {
@@ -603,7 +601,7 @@ func TestRecoverRepinsLiveSessionsWithFreshKeys(t *testing.T) {
 	// call (Recover's ordering, from a review of the helper; enrollLoop revokes the session's
 	// lapsed id first): by the time sess reads "enrolled" above, the old id must already be
 	// revoked, so this poll should already find it on the first check.
-	revokeDeadline := time.Now().Add(5 * time.Second)
+	revokeDeadline := time.Now().Add(eventWait)
 	for {
 		r.fake.mu.Lock()
 		revoked := false
@@ -705,7 +703,7 @@ func TestRecoverRevokesThePriorEnrollmentBeforeReenrolling(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	srv2.Recover(ctx)
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(eventWait)
 	var sess *Session
 	for time.Now().Before(deadline) {
 		if sess = srv2.Registry.Get(child.Process.Pid); sess != nil && sess.snapshot().State == "enrolled" {
@@ -816,7 +814,7 @@ func TestRecoverFallsBackToIndependentRevokeIfTheRepinnedSessionEndsMidBackoff(t
 	// Registry.Remove, exactly what retire/unregister would do — while revokeLapsed is still
 	// retrying: every attempt fails until the fault is cleared below, so it cannot have
 	// succeeded meanwhile.
-	attemptDeadline := time.Now().Add(5 * time.Second)
+	attemptDeadline := time.Now().Add(eventWait)
 	for {
 		r.fake.mu.Lock()
 		attempts := r.fake.revokeAttempts
@@ -884,7 +882,7 @@ func TestRecoverDropsDeadRecords(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := startRig(t, state)
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(eventWait)
 	for time.Now().Before(deadline) {
 		r.fake.mu.Lock()
 		n := len(r.fake.deletes)
@@ -932,7 +930,7 @@ func TestRenewRefusedRevokesTheLapsedEnrollmentBeforeReenrolling(t *testing.T) {
 	r.fake.mu.Unlock()
 	time.Sleep(time.Until(expiry) + 20*time.Millisecond)
 	open()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(eventWait)
 	var newID string
 	for time.Now().Before(deadline) {
 		if id := r.srv.Registry.Get(os.Getpid()).identity().EnrollmentID; id != "" && id != reg.EnrollmentID {

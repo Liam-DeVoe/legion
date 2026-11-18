@@ -1293,8 +1293,9 @@ func TestGCPSecretPipeCommandKeepsTheGcloudAccountChoice(t *testing.T) {
 // never answers - here a script whose child holds its output open, as the real gcloud's Python does
 // under its shell wrapper - ends at the deadline on each store call (storeCallDeadline), so a stalled
 // refresh cannot outlast the store call it serves; the error names the account and the deadline.
-// Serial: it shortens storeCallDeadline, the package-level deadline on each store call that every
-// secret form reads (useStoreCallDeadline).
+// Serial: it shortens storeCallDeadline (useStoreCallDeadline), the package-level deadline
+// withStoreDeadline puts on each store call it bounds: a gcloud token refresh like this test's,
+// the gcloud source's `auth list`, and each store call of a secret create.
 func TestGcloudTokenRefreshThatNeverAnswersEndsAtTheStoreDeadline(t *testing.T) {
 	useStoreCallDeadline(t, 300*time.Millisecond)
 	dir := t.TempDir()

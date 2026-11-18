@@ -675,13 +675,17 @@ func (f *fakeBroker) issueCredential(t *testing.T, key *ecdsa.PrivateKey) *Machi
 	}
 }
 
+// eventWait is this package's guard for a give-up wait on an event another goroutine or process
+// makes happen. A wait that returns on its event never reaches it.
+const eventWait = 10 * time.Second
+
 // waitFor polls cond until it is true, failing the test when it never becomes true. Its bound is
-// the ten seconds this package keeps for the same waits elsewhere: expiryLogin's for the
+// eventWait, the ten seconds this package keeps for the same waits elsewhere: expiryLogin's for the
 // credential a login installs, contractRebootWait for a record reaching the disk. A login's first
 // token poll comes a second after its device authorization (the interval the fake names).
 func waitFor(t *testing.T, cond func() bool) {
 	t.Helper()
-	if !testwait.Holds(10*time.Second, 5*time.Millisecond, cond) {
+	if !testwait.Holds(eventWait, 5*time.Millisecond, cond) {
 		t.Fatal("condition never became true")
 	}
 }
@@ -812,7 +816,6 @@ func TestALateRejectionOfAnOldCredentialLeavesTheNewLoginAlone(t *testing.T) {
 // clear and the record; it waits up to 200 ms for that read, which returns at once unless the lock
 // holds it back until the refusal is recorded.
 func TestLoginStatusReadsARefusalWithTheClearThatCausedIt(t *testing.T) {
-	t.Parallel()
 	f := newFakeBroker(t)
 	b := loggedInBroker(t, f, "ada@example.com")
 	held := b.cred.Load()

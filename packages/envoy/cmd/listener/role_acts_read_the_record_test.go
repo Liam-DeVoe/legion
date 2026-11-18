@@ -479,11 +479,15 @@ func TestEachActReadsTheRecordInBothDirections(t *testing.T) {
 			dropRoleFromCopy(t, rig.harness.registry, role)
 			requireDrift(t, rig.harness.registry, role, "", holder)
 
+			reads := keptLaneHeadReads(t, rig.harness.client, role)
 			elapsed, err := rig.handOver(t, role)
 
-			if err == nil || elapsed < roleKeepDrainRetryPause {
-				t.Fatalf("the handover of role %s ended %s in, reporting %v; want it to wait out a pause of %s, read the lane again and report the read that failed: the claim record names %s",
-					role, elapsed, err, roleKeepDrainRetryPause, holder)
+			// The second read of the lane is what shows the handover waited the failed read out
+			// and read again; the lower bound beside it, which load cannot break, holds the wait to
+			// a pause.
+			if read := reads(); err == nil || read < 2 || elapsed < roleKeepDrainRetryPause {
+				t.Fatalf("the handover of role %s ended %s in having read the lane %d times, reporting %v; want it to wait out a pause of %s, read the lane again and report the read that failed: the claim record names %s",
+					role, elapsed, read, err, roleKeepDrainRetryPause, holder)
 			}
 		})
 	})

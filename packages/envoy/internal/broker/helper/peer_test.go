@@ -26,9 +26,9 @@ func sleeper(t *testing.T) *exec.Cmd {
 	return cmd
 }
 
-// waitExitReturns bounds a wait for WaitExit to return. It guards a hang and asserts nothing: a
-// pidfd turns readable as its process exits, and a stop is seen at the end of the 1 s poll slice
-// it lands in, so this only names a WaitExit that never returns.
+// waitExitReturns bounds a wait for WaitExit to see its process exit. It guards a hang and asserts
+// nothing: a pidfd turns readable as its process exits, so this only names a WaitExit that never
+// sees the exit.
 const waitExitReturns = 30 * time.Second
 
 // ompTree starts a session launcher with no session — a process whose kernel comm is `omp`, as a
@@ -190,7 +190,6 @@ func TestPinnedPeerReportsExit(t *testing.T) {
 }
 
 func TestWaitExitStops(t *testing.T) {
-	t.Parallel()
 	child := sleeper(t)
 	peer, err := PinPID(child.Process.Pid)
 	if err != nil {
@@ -206,7 +205,7 @@ func TestWaitExitStops(t *testing.T) {
 		if ok {
 			t.Fatal("WaitExit must return false when stopped")
 		}
-	case <-time.After(waitExitReturns):
+	case <-time.After(3 * time.Second):
 		t.Fatal("WaitExit ignored stop")
 	}
 }

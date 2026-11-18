@@ -663,11 +663,12 @@ func TestAKubernetesMachineIdentityIsRefusedBeforeAnyTrade(t *testing.T) {
 // own identity, and so holds a machine session in its cache, acts as a person from the first use
 // after they sign in, and the cache stays on disk for the next process with no sign-in.
 // Serial: it sets process-wide variables - GCE_METADATA_HOST (withMetadata's startMetadataServer,
-// and forceMetadataMachine's again), XDG_STATE_HOME, AGENT_SECRETS_SIGNIN_DIR, AGENT_SECRETS_URL
-// and AGENT_SECRETS_SESSION, AGENT_SECRETS_MACHINE_IDENTITY and AGENT_SECRETS_MACHINE_AUDIENCE
-// (forceMetadataMachine), and loginIssuer's AGENT_SECRETS_SIGNIN_ISSUER,
-// AGENT_SECRETS_SIGNIN_CLIENT_ID and AGENT_SECRETS_SIGNIN_CLIENT_SECRET_FILE - which the
-// in-process login reads for itself; t.Setenv panics under t.Parallel.
+// and forceMetadataMachine's again), XDG_STATE_HOME, AGENT_SECRETS_SIGNIN_DIR, AGENT_SECRETS_URL,
+// AGENT_SECRETS_MACHINE_IDENTITY and AGENT_SECRETS_MACHINE_AUDIENCE (forceMetadataMachine), and
+// loginIssuer's AGENT_SECRETS_SIGNIN_ISSUER, AGENT_SECRETS_SIGNIN_CLIENT_ID and
+// AGENT_SECRETS_SIGNIN_CLIENT_SECRET_FILE, which the in-process login reads for itself, and
+// AGENT_SECRETS_SESSION, which it clears and login does not read; t.Setenv panics under
+// t.Parallel.
 func TestSignInTakesEffectAfterAMachineCache(t *testing.T) {
 	binary := chainBinary(t)
 	broker := newChainBroker(t, storeSettings("gcp", "agent-secrets-vm"))

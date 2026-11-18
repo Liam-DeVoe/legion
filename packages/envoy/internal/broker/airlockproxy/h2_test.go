@@ -432,7 +432,6 @@ func TestAGRPCClientIsCarriedWithItsMetadataStreamsAndTrailers(t *testing.T) {
 // no watcher for a call that is not an upgrade, which leaves the stream running until the row's
 // deadline.
 func TestAGRPCStreamEndsWhenItsGrantStopsCarryingIt(t *testing.T) {
-	t.Parallel()
 	r := newRig(t, Options{Rules: grpcRules(), Watch: watchFast})
 	stand, health := grpcThrough(t, r)
 	ctx, cancel := context.WithTimeout(withPlaceholder(t), 2*cutWait)
@@ -498,7 +497,6 @@ func streamStandIn(r *rig) chan error {
 // other. The named revert: no watcher for a call that is not an upgrade, which leaves the answer
 // streaming until the row's deadline.
 func TestACarriedStreamEndsWhenItsGrantStopsCarryingIt(t *testing.T) {
-	t.Parallel()
 	r := newRig(t, Options{Watch: watchFast})
 	ended := streamStandIn(r)
 	client := r.client(workerPlaceholder)
@@ -740,7 +738,6 @@ func TestACallStillUploadingIsCutWhenItsGrantEnds(t *testing.T) {
 // reading the name alone (proxy-carry-ignores-slot), which leaves the call streaming with the
 // gone installation's token.
 func TestACarriedCallEndsWhenTheBrokerNoLongerReleasesItsSlot(t *testing.T) {
-	t.Parallel()
 	r := newRig(t, Options{Watch: watchFast})
 	r.useGitHubAppGrant()
 	ended := streamStandIn(r)

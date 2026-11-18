@@ -834,7 +834,6 @@ func TestExecFormRefusesAMissingCommandBeforeAskingTheBroker(t *testing.T) {
 // for a secret `secret create` made and has not yet filled, ends the exec form with exit 1, its line
 // naming the code and saying to ask again, and the command never runs.
 func TestExecFormASecretWaitingForItsValueExitsOneAndRunsNothing(t *testing.T) {
-	t.Parallel()
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
 	defer broker.Close()

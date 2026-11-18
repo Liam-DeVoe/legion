@@ -87,7 +87,6 @@ func TestConnectedRefusalDecidesOnlyOnAVersionItRead(t *testing.T) {
 // ConnectedRefusal keeps waiting and, when the drain does not end in a reconnect within the wait,
 // answers that the connection is not connected, never that a version cannot be read.
 func TestConnectedRefusalDoesNotReadADrainingConnectionAsAVersion(t *testing.T) {
-	t.Parallel()
 	_, uri := testnats.Start(t)
 	conn, err := nats.Connect(uri, nats.Name(t.Name()), nats.DrainTimeout(30*time.Second))
 	if err != nil {

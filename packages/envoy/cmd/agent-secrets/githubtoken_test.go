@@ -26,7 +26,6 @@ var githubTokenReleases = map[string]string{
 // holds the JSON object of installations the release carries, exactly as it always has, which is
 // what a caller sends to GitHub today and GitHub answers 401.
 func TestTheGitHubTokenFlagHandsOverTheTokenAlone(t *testing.T) {
-	t.Parallel()
 	binary := buildAgentSecrets(t)
 	b := newNarrowBroker(t, githubTokenReleases)
 	keyDir := newKeyDir(t)
@@ -53,7 +52,6 @@ func TestTheGitHubTokenFlagHandsOverTheTokenAlone(t *testing.T) {
 // over and says nothing about any other secret, so a grant that holds a password beside the
 // github-app secret runs with that password as it is stored and the App's token alone.
 func TestTheGitHubTokenFlagLeavesAPlainValueAsItIs(t *testing.T) {
-	t.Parallel()
 	binary := buildAgentSecrets(t)
 	b := newNarrowBroker(t, githubTokenReleases)
 	keyDir := newKeyDir(t)
@@ -87,7 +85,6 @@ func TestTheGitHubTokenFlagWithoutAnOwnerExitsTwo(t *testing.T) {
 // the flag, and runs nothing. The refusal names a remedy the caller can take, a narrowing that
 // leaves one installation, and no part of either token.
 func TestAGitHubAppReleaseOfTwoInstallationsRunsNothing(t *testing.T) {
-	t.Parallel()
 	binary := buildAgentSecrets(t)
 	b := newNarrowBroker(t, githubTokenReleases)
 	keyDir := newKeyDir(t)
@@ -107,7 +104,6 @@ func TestAGitHubAppReleaseOfTwoInstallationsRunsNothing(t *testing.T) {
 // secret gives --github-token nothing to hand over, which would make the flag a silent no-op and
 // send a password to GitHub, so the exec form exits 1 naming the names it read and the flag.
 func TestAGrantWithNoGitHubAppReleaseRunsNothing(t *testing.T) {
-	t.Parallel()
 	binary := buildAgentSecrets(t)
 	b := newNarrowBroker(t, githubTokenReleases)
 	keyDir := newKeyDir(t)

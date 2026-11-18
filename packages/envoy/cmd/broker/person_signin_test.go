@@ -49,7 +49,6 @@ const (
 //
 // It skips when BROKER_TEST_DATABASE_URL is unset, as every Postgres-backed broker test does.
 func TestTheBinaryTakesAPersonsSignInOnAMachine(t *testing.T) {
-	t.Parallel()
 	databaseURL := storetest.URL(t)
 	cluster, github, google := oidctest.New(t), oidctest.New(t), oidctest.New(t)
 	github.PublishKey(t, "github-key")
@@ -241,7 +240,6 @@ func TestTheBinaryTakesAPersonsSignInOnAMachine(t *testing.T) {
 // may see comes back from introspection as exactly that list under the person scope; one they may
 // not see is refused, naming it.
 func TestASignInTradeNamesTheProjectsItsSessionWorksOn(t *testing.T) {
-	t.Parallel()
 	databaseURL := storetest.URL(t)
 	cluster, github, google := oidctest.New(t), oidctest.New(t), oidctest.New(t)
 	github.PublishKey(t, "github-key")

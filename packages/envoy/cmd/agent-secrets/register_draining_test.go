@@ -46,7 +46,6 @@ func drainingHelper(t *testing.T, drains int32) (string, *atomic.Int32) {
 // TestRegisterRetriesADrainingHelper: a helper that answers DRAINING is about to be restarted, so
 // register retries it and registers with the restarted helper rather than giving up at once.
 func TestRegisterRetriesADrainingHelper(t *testing.T) {
-	t.Parallel()
 	sock, calls := drainingHelper(t, 2)
 	resp, err := registerWithPatience(sock, helper.Request{WaitSeconds: 5}, 0)
 	if err != nil || !resp.OK || resp.State != "enrolled" || calls.Load() != 3 {

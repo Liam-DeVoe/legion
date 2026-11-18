@@ -704,7 +704,7 @@ func TestAStartWhoseRefreshHangsResumesTheLoginWithinItsBound(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(eventWait):
 		t.Fatal("Start waited on a refresh the broker never answered")
 	}
 	if held := b.cred.Load(); held == nil || held.refreshToken != kept.RefreshToken {

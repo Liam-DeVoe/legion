@@ -832,8 +832,6 @@ func TestAPRChecksRunMarksOnlyPipelineViews(t *testing.T) {
 }
 
 func TestASessionGroupEditReachesEveryView(t *testing.T) {
-	// No t.Parallel: this test bounds the measures and pipeline views' recomputes after the
-	// session-group edit at 3 s each, a wall-clock span another test's load would stretch.
 	rig := newHubRig(t, nil)
 	seedHubSettings(t, rig.database)
 	pr := hubPR(1, rig.clock.Now().Add(-3*time.Hour))
@@ -864,8 +862,6 @@ func TestASessionGroupEditReachesEveryView(t *testing.T) {
 }
 
 func TestAResetChangeLogIsCaughtAndEveryViewRecomputed(t *testing.T) {
-	// No t.Parallel: this test bounds the measures view's recompute after each change-log reset
-	// at 3 s, a wall-clock span another test's load would stretch.
 	rig := newHubRig(t, nil)
 	seedHubSettings(t, rig.database)
 	now := rig.clock.Now()
@@ -1223,7 +1219,8 @@ func TestTheHubRecomputesAViewAgainAfterAnEventDuringItsRead(t *testing.T) {
 	// carries an event only once the safe horizon covers it. The horizon is proven from
 	// pg_snapshot_xmin, the oldest transaction id running anywhere on the instance
 	// (internal/dispatch/events, horizon.go), so a transaction a parallel test holds open
-	// stalls that wait, which this test bounds at 3 s.
+	// stalls that wait for as long as it stays open (waitForEvent waits it out by the horizon,
+	// horizontest.PollInProcess, not by a clock).
 	reading := make(chan struct{})
 	release := make(chan struct{})
 	releaseOnce := sync.OnceFunc(func() { close(release) })

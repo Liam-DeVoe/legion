@@ -3780,7 +3780,6 @@ func stallingProxy(t *testing.T, target, trigger string, budget int, hold time.D
 // regression lock. The lock is TestARoleRevisionScanThatEndsEarlyIsAnErrorNotAShortSnapshot,
 // which is deterministic, cannot pass vacuously, and fails on either of those two readings.
 func TestOpenFailsWhenTheRoleRevisionScanStalls(t *testing.T) {
-	t.Parallel()
 	direct, cleanup := connectNATS(t)
 	defer cleanup()
 	js, err := direct.JetStream()

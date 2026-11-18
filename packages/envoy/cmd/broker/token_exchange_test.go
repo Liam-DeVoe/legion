@@ -453,7 +453,6 @@ func TestAPodWritesOnlyUnderASessionRegisteredForIt(t *testing.T) {
 // the pod, since the entry fixes the session. The same request naming the scope read is refused
 // invalid_scope, so the scope is the entry's to grant and never the request's.
 func TestTheBinaryExchangesAReadEntrysPodTokenForOneThatOnlyReads(t *testing.T) {
-	t.Parallel()
 	databaseURL := storetest.URL(t)
 	cluster, github := oidctest.New(t), oidctest.New(t)
 	clusterKey := cluster.PublishKey(t, "cluster-key")
@@ -539,7 +538,6 @@ func TestTheBinaryExchangesAReadEntrysPodTokenForOneThatOnlyReads(t *testing.T) 
 // is keyed on the key it holds, so one key cannot be two machines' credentials.
 // It skips when BROKER_TEST_DATABASE_URL is unset, as every Postgres-backed broker test does.
 func TestTheBinaryExchangesAMachinesGoogleIdentityToken(t *testing.T) {
-	t.Parallel()
 	databaseURL := storetest.URL(t)
 	// Three issuers the test controls: the cluster's, GitHub's, and the one standing in for
 	// Google, which BROKER_GOOGLE_OIDC_ISSUER points the broker at.
@@ -974,7 +972,6 @@ func projectsOf(t *testing.T, answer map[string]any) []string {
 // full member's trade naming none, and the same trade while Dispatch cannot be reached, are
 // answered with no project, as today.
 func TestATradeNamesOnlyProjectsItsPersonSees(t *testing.T) {
-	t.Parallel()
 	databaseURL := storetest.URL(t)
 	cluster, github := oidctest.New(t), oidctest.New(t)
 	clusterKey := cluster.PublishKey(t, "cluster-key")
@@ -1052,7 +1049,6 @@ func TestATradeNamesOnlyProjectsItsPersonSees(t *testing.T) {
 // stored claim is a string because the session's extra claims return from the row as JSON, where a
 // list would read back as no projects at all.
 func TestTheProjectsClaimSurvivesTheStore(t *testing.T) {
-	t.Parallel()
 	databaseURL := storetest.URL(t)
 	cluster, github := oidctest.New(t), oidctest.New(t)
 	clusterKey := cluster.PublishKey(t, "cluster-key")
@@ -1121,7 +1117,6 @@ func exchangeEnv(t *testing.T, databaseURL string, cluster, github *oidctest.Iss
 // under the named scope; against one that says they do not, the same trade is refused naming the
 // project and the person.
 func TestAPodsEntryNamingAPrivateProjectIsHeldToItsPerson(t *testing.T) {
-	t.Parallel()
 	for _, c := range []struct {
 		name   string
 		listed []string

@@ -339,7 +339,6 @@ func TestAGitHubNarrowingTheBrokerWouldRefuseExitsTwo(t *testing.T) {
 // second call is for that one refusal: a broker that answers 422 NARROWING_REFUSED is asked
 // once, and its refusal reaches the caller, who runs nothing.
 func TestARequestCarriesTheNarrowingAndIsSentAgainForOneRefusalAlone(t *testing.T) {
-	t.Parallel()
 	binary := buildAgentSecrets(t)
 	keyDir := newKeyDir(t)
 	narrowed := map[string]any{"owner": "ada", "read_only": true}

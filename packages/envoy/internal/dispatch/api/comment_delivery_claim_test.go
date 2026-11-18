@@ -99,6 +99,10 @@ func TestConcurrentMentionRetryResolvesNewAttemptUnderLock(t *testing.T) {
 	roleLookups := 0
 	blockS1 := false
 	started := make(chan struct{})
+	// startedOnce closes started from either branch of a send: t.Fatalf would end this handler's
+	// goroutine and not the test's, and leave the test waiting on <-started until the binary's
+	// deadline, so a send that does not decode records its failure and releases that wait.
+	var startedOnce sync.Once
 	release := make(chan struct{})
 	sent := []string{}
 	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["steer"]}]`
@@ -119,13 +123,16 @@ func TestConcurrentMentionRetryResolvesNewAttemptUnderLock(t *testing.T) {
 				TargetSession string `json:"target_session"`
 			}
 			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-				t.Fatalf("decode retry send: %v", err)
+				t.Errorf("decode retry send: %v", err)
+				startedOnce.Do(func() { close(started) })
+				w.WriteHeader(http.StatusBadRequest)
+				return
 			}
 			mu.Lock()
 			block := blockS1 && request.TargetSession == "s1"
 			if block {
 				blockS1 = false
-				close(started)
+				startedOnce.Do(func() { close(started) })
 			}
 			mu.Unlock()
 			if block {

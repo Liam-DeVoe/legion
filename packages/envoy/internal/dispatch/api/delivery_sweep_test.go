@@ -147,8 +147,13 @@ func TestTheDeliverySweepFinishesEveryDeliveringRouteOnce(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			listener := newHoldingListener(t)
+			// The listener client's window outlasts any run of the test binary, so the held send
+			// ends when the test releases it (listener.release), never at the window: a try the
+			// window ended while the attempt was still the sender's would be settled by the sender
+			// itself, and the sweep below would have nothing to resend, however slow the steps
+			// between the send and the lapse of its claim.
 			handler, database, _, served := newRegisteredTestServer(t, testServerOptions{
-				envoyURL: listener.url, envoyTimeout: time.Minute,
+				envoyURL: listener.url, envoyTimeout: 24 * time.Hour,
 			})
 			// The lease of a run that died is not renewed again; this test ages it itself.
 			served.requestKeyRenewal = time.Hour

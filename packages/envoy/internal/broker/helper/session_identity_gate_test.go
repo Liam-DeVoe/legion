@@ -811,7 +811,7 @@ func TestAWakeRaisedBeforeThisEnrollmentDoesNotEnrollAgain(t *testing.T) {
 		if !again {
 			t.Fatal("a rename's wake must send the session to the enroll, not end its loops")
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(eventWait):
 		t.Fatal("a rename's wake did not reach the renew loop")
 	}
 }

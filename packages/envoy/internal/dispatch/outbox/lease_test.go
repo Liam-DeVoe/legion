@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // process is one envoy-dispatch process's outbox under test: its own pool, its own events broker
@@ -577,8 +578,9 @@ func TestAStoppedOutboxHandsThePublisherToTheOtherAtOnce(t *testing.T) {
 // test calls (run 42949344199) and with 111 test binaries at once (run 43716631673, job
 // 132819560357), and was then widened to 6 s, which made it a reading of the machine. A holder
 // that kept the hold through the outage is caught without one: it never writes the line, and the
-// row fails at eventWait, or it ends its turn for another reason, which the line names. The event
-// written after the cut is published by the process whose NATS works, waited on as an event too.
+// row fails thirty seconds before the run's own deadline, the one bound the release is waited
+// under. The event written after the cut is published by the process whose NATS works, waited on
+// as an event at eventWait, since that wait begins once the release is in.
 //
 // Serial: it reads publish's line through the default logger, which it swaps
 // (logtest.SetDefault); and a holder whose renewals a parallel batch starves for the 4 s from a
@@ -603,7 +605,10 @@ func TestAnOutboxThatLosesNATSReleasesThePublisher(t *testing.T) {
 	downAt := time.Now()
 	proxy.Cut()
 	var released map[string]string
-	waitFor(t, eventWait, "the cut process's line releasing the publisher hold", func() bool {
+	// Until what the test binary's deadline leaves, less the thirty seconds horizontest.Drain
+	// leaves a failure to print in (testwait.Bounded), and a day where the run has no deadline: no
+	// span past the grace is this row's (above).
+	waitFor(t, testwait.Bounded(t, 24*time.Hour, 30*time.Second), "the cut process's line releasing the publisher hold", func() bool {
 		var found bool
 		released, found = releaseLine(recorder, cut.outbox.instance)
 		return found

@@ -193,7 +193,10 @@ func (r *listenerRelay) close() {
 // During a deploy, a reconnect can interrupt the replacement's durable bind. The reconnect must
 // leave that bind to finish, keep the role lane forwarding, then make SIGTERM an ordered shutdown.
 func TestListenerReconnectWithBindInFlightShutsDownAfterForwardingRoles(t *testing.T) {
-	t.Parallel()
+	// Serial: a product deadline is under its steps. The old task holds the durable for the whole
+	// row, so the replacement's bind stays in flight only until durableBindDeadline (135 s), at
+	// which its start ends; every step from the listener's start to SIGTERM must land inside it,
+	// and a parallel test's load is what would stretch them past it.
 	const (
 		machineID = "reconnect-bind-sigterm"
 		holderID  = "ses_reconnect_bind_sigterm_holder"

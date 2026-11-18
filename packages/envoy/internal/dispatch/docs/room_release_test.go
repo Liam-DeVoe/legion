@@ -39,7 +39,7 @@ import (
 // this one. Measured with a pool of eight over the same counts (dispatch://INFRA-1075): the
 // pair of cap tests took 28.9s and 31.4s against 26.8s and 26.9s one at a time, and this test's
 // hundred writes 6.4s and 7.3s against 4.6s and 5.3s. The cap itself admits them either way -
-// canOpenRoom gates the document socket alone - and at most 167 rooms stood live against the
+// reserveRoom gates the document socket alone - and at most 167 rooms stood live against the
 // thousand it admits, so it is the contention that refuses, not the cap.
 func TestDocumentsOpenAfterMoreThanTheRoomCapWereTouched(t *testing.T) {
 	t.Parallel()

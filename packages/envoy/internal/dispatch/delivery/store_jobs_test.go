@@ -1,7 +1,6 @@
 package delivery
 
 import (
-	"context"
 	"net/http"
 	"strings"
 	"testing"
@@ -253,9 +252,9 @@ func TestAnEmptyListingStillWritesTheRunRow(t *testing.T) {
 // them as a deadlock (40P01).
 func TestAJobsWriteAndARunWriteOfOneRunNeverDeadlock(t *testing.T) {
 	t.Parallel()
+	// No bound on the whole test: each wait below on a write gives up at eventWait of its own, and
+	// one total span over setup and both lock waits left the later waits less than that.
 	pool, ctx := deliveryTestPool(t)
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
 	started := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 	run := changeTestRun(803, DeliveryRunKindDeploy, started, started)
 	if err := UpsertRun(ctx, pool, run); err != nil {
@@ -291,11 +290,18 @@ func TestAJobsWriteAndARunWriteOfOneRunNeverDeadlock(t *testing.T) {
 	if err := gate.Commit(ctx); err != nil {
 		t.Fatalf("release the change log's lock: %v", err)
 	}
-	if err := <-jobsDone; err != nil {
-		t.Errorf("UpsertRunJobs: %v", err)
-	}
-	if err := <-runDone; err != nil {
-		t.Errorf("UpsertRun: %v", err)
+	for _, write := range []struct {
+		name string
+		done <-chan error
+	}{{"UpsertRunJobs", jobsDone}, {"UpsertRun", runDone}} {
+		select {
+		case err := <-write.done:
+			if err != nil {
+				t.Errorf("%s: %v", write.name, err)
+			}
+		case <-time.After(eventWait):
+			t.Fatalf("%s did not return within %s of the change log's lock being let go", write.name, eventWait)
+		}
 	}
 	stored, err := ListRunJobs(ctx, pool, "acme/widgets", 803)
 	if err != nil || len(stored) != 2 {

@@ -468,7 +468,6 @@ func TestRunTellsTheModelACallFailedInTheResultsOwnText(t *testing.T) {
 // (runLoop, HTTPClient.Chat), so a run that keeps it sends the call with exactly that deadline.
 // The test ends the context itself once the model holds the call, so no clock decides the verdict.
 func TestRunEndsWithTheDeadlineWhenTheModelNeverAnswers(t *testing.T) {
-	t.Parallel()
 	model := goingtest.NewModel(t, goingtest.Reply{Silent: true})
 	transport := &deadlineTransport{}
 	answerer, err := going.NewAnswerer(going.AnswererConfig{

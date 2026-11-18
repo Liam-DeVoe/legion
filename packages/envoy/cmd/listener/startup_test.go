@@ -166,7 +166,10 @@ func assertSessionsMatchTheirSample(t *testing.T, listener *listenerProcess, wan
 // drops that copy by its dedupe key. The messages go straight onto the lane, as an operator's or
 // an earlier listener's do: the publish route forwards a role message itself.
 func TestARoleMessageReachesItsHolderOnceAcrossTwoTasksOfOneMachine(t *testing.T) {
-	t.Parallel()
+	// Serial: a product deadline is under its steps. The replacement's bind waits on the durable
+	// the old task holds, and its start ends at durableBindDeadline (135 s); every step from the
+	// replacement's start to the old task's exit must land inside it, and a parallel test's load
+	// is what would stretch them past it.
 	const (
 		machineID = "two-tasks"
 		holderID  = "ses_two_tasks_holder"

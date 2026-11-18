@@ -170,7 +170,7 @@ func TestTheCompactionQueueComesBackToADocumentWhenItsRowsComeOfAge(t *testing.T
 	step := steps.await(t, artifactID, 0, "the queue's check of the young rows", func(step compactionStepRecord) bool {
 		return step.next.kind == compactionLater
 	})
-	if wait := step.next.after; wait > compactMaxTailAge || wait < compactMaxTailAge-time.Minute {
+	if wait := step.next.after; wait > compactMaxTailAge || wait < maxTailAgeDueIn(t, service.store, artifactID) {
 		t.Fatalf("the queue checks the young rows again in %s, want about %s", wait, compactMaxTailAge)
 	}
 	// The step is recorded before it settles, and recheckNow reaches only a room the queue has
@@ -323,7 +323,7 @@ func TestTheCompactionQueueComesBackToARetriedDocumentWhenItsYoungRowsComeDue(t 
 	step := steps.await(t, artifactID, 0, "the retry that finds no old row to check the document again later", func(step compactionStepRecord) bool {
 		return step.retry > 0 && step.next.kind == compactionLater
 	})
-	if wait := step.next.after; wait > compactMaxTailAge || wait < compactMaxTailAge-time.Minute {
+	if wait := step.next.after; wait > compactMaxTailAge || wait < maxTailAgeDueIn(t, database, artifactID) {
 		t.Fatalf("the queue checks the young rows again in %s, want about %s, when they are due", wait, compactMaxTailAge)
 	}
 	waitFor(t, roomWait(t), "the queue to schedule the document's check", func() bool {
@@ -387,7 +387,7 @@ func TestTheCompactionQueueKeepsANoteThatComesWhileItsDocumentsStepRuns(t *testi
 	step := steps.await(t, artifactID, 0, "the check the note in flight queued", func(step compactionStepRecord) bool {
 		return step.next.kind == compactionLater
 	})
-	if wait := step.next.after; wait > compactMaxTailAge || wait < compactMaxTailAge-time.Minute {
+	if wait := step.next.after; wait > compactMaxTailAge || wait < maxTailAgeDueIn(t, database, artifactID) {
 		t.Fatalf("the queue checks the appended row again in %s, want about %s, when it is due", wait, compactMaxTailAge)
 	}
 	waitFor(t, roomWait(t), "the queue to schedule the document's check", func() bool {
@@ -433,7 +433,7 @@ func TestABurstAfterAQuietCheckBringsTheDocumentsCheckForward(t *testing.T) {
 	step := steps.await(t, artifactID, 0, "the quiet check", func(step compactionStepRecord) bool {
 		return step.next.kind == compactionLater
 	})
-	if wait := step.next.after; wait < 9*time.Minute {
+	if wait := step.next.after; wait < maxTailAgeDueIn(t, database, artifactID) {
 		t.Fatalf("the quiet check schedules the next in %s, want about 10 minutes, the oldest row's age rule", wait)
 	}
 	waitFor(t, roomWait(t), "the queue to schedule the quiet document's check", func() bool {
@@ -708,6 +708,26 @@ func quickCompactionQueue(service *Service, backoff time.Duration) *compactionSt
 	q.timing = compactionTiming{backoff: backoff, backoffCap: 4 * backoff}
 	q.mu.Unlock()
 	return steps
+}
+
+// maxTailAgeDueIn is how long until room's oldest row after its first passes compactMaxTailAge,
+// read from the rows as stored against the database's clock at this read: the least wait a check
+// of those rows made before it can have scheduled, since that check read the same created_at
+// against an earlier now() (checkCompaction). A wait at or above it is the oldest row's age rule
+// however long the check took to run after the rows were written, where a fixed span below the
+// rule is one a slow check outlasts.
+func maxTailAgeDueIn(t *testing.T, database *store.Store, room string) time.Duration {
+	t.Helper()
+	var seconds float64
+	if err := database.Pool.QueryRow(context.Background(), `
+		select extract(epoch from min(created_at) + make_interval(secs => $2) - now())::float8
+		from doc_updates
+		where artifact_id = $1 and version <= `+headVersion+`
+			and version > (select min(version) from doc_updates where artifact_id = $1)
+	`, room, compactMaxTailAge.Seconds()).Scan(&seconds); err != nil {
+		t.Fatalf("read when the oldest row after %s's first passes %s: %v", room, compactMaxTailAge, err)
+	}
+	return time.Duration(seconds * float64(time.Second))
 }
 
 func (s *compactionSteps) count() int {

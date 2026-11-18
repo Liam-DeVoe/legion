@@ -81,7 +81,7 @@ func TestASilentCutRewatchesTheCachesWithNoErrorLine(t *testing.T) {
 	}
 	written := time.Now()
 	for !listsInterest(t, listener.port, sessionID) {
-		if time.Since(written) > 10*time.Second {
+		if time.Since(written) > listenerWait {
 			t.Fatalf("%s after the thaw, the listener's cache still missed an interest another listener wrote:\n%s",
 				time.Since(written).Round(time.Millisecond), output())
 		}

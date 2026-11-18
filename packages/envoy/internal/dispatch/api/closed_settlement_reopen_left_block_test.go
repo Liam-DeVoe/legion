@@ -69,7 +69,7 @@ func TestAWithdrawnAskWhoseBlockLeftWhileClosedIsRestoredAtTheReopen(t *testing.
 	if err := documentService.ResumeOwedSettlementsForTest(ctx, 0); err != nil {
 		t.Fatalf("resume the closed issue's owed settlements: %v", err)
 	}
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+	for deadline := time.Now().Add(concurrentWait); ; time.Sleep(20 * time.Millisecond) {
 		_, version := documentTexts(t, handler, spec)
 		if strings.Contains(version, "Context") && !strings.Contains(version, "leaving-decision") &&
 			!documentOwesSettlement(t, database, spec) {
@@ -103,7 +103,7 @@ func TestAWithdrawnAskWhoseBlockLeftWhileClosedIsRestoredAtTheReopen(t *testing.
 		t.Fatalf("resume the reopened issue's owed settlements: %v", err)
 	}
 	var retracted model.Ask
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+	for deadline := time.Now().Add(concurrentWait); ; time.Sleep(20 * time.Millisecond) {
 		if retracted = readBlockAsk(t, handler, ask); retracted.State != "open" {
 			break
 		}
@@ -326,7 +326,7 @@ func rewordWithdrawnDecisionWhileClosed(t *testing.T) rewordedWhileClosed {
 func awaitRewordedAsk(t *testing.T, f rewordedWhileClosed) {
 	t.Helper()
 	var restored model.Ask
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+	for deadline := time.Now().Add(concurrentWait); ; time.Sleep(20 * time.Millisecond) {
 		if restored = readBlockAsk(t, f.handler, f.ask); restored.State == "open" && restored.Question == rewordedQuestion {
 			return
 		}

@@ -111,7 +111,6 @@ func TestTitleLexemesFillEveryStoredTitleAndFollowEveryRetitle(t *testing.T) {
 // a 500. 0089 takes issues EXCLUSIVE before it writes, so it waits for the reparent's table lock
 // holding nothing, the reparent's second row lock is granted, it commits, and 0089 then runs.
 func TestMigrate0089WaitsForAReparentWithoutDeadlockingIt(t *testing.T) {
-	t.Parallel()
 	ctx := context.Background()
 	store := openEmptyTestStore(t)
 	migrateThrough(t, store, 88)

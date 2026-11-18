@@ -1341,14 +1341,18 @@ func TestCensusReadsTheAgeOfAHolderOfItsOwnRoleWhoseTransactionBeganDuringTheCen
 		err    error
 	}
 	done := make(chan result, 1)
-	// The census waits on blocker for the test's rollback below, an event, so it waits under
-	// eventWait rather than production's LockTimeout, which a zero Locking takes: the test begins
-	// the holder's transaction and takes its lock while the census is queued, and under that five
-	// seconds a test slowed past them had the census's statement time out and refuse instead of
-	// reading the holder. The census judges a holder by the migration's own lock timeout, not by
-	// Locking (CensusOptions), so this changes nothing the row reads.
+	// The census waits on blocker for the test's rollback below, an event, so its lock timeout
+	// outlasts any run of the test binary rather than being production's LockTimeout, which a zero
+	// Locking takes: the test begins the holder's transaction and takes its lock while the census
+	// is queued, and under a timeout a test slowed past them had the census's statement time out
+	// and refuse instead of reading the holder. The census judges a holder by the migration's own
+	// lock timeout, not by Locking (CensusOptions), so this changes nothing the row reads. Its
+	// long-transaction bound outlasts the run too, for the same reason: the holder's transaction
+	// begins in this test, and the census refuses a holder older than LongTransaction (a minute,
+	// CensusLongTransaction), which a test slowed past it would read as an old holder. A holder
+	// the census cannot read is refused as hidden from its role whatever that bound is.
 	go func() {
-		report, err := census(ctx, url, set, pgmigrate.CensusOptions{Locking: pgmigrate.Locking{Timeout: eventWait}})
+		report, err := census(ctx, url, set, pgmigrate.CensusOptions{Locking: pgmigrate.Locking{Timeout: 24 * time.Hour}, LongTransaction: 24 * time.Hour})
 		done <- result{report, err}
 	}()
 	// Wait until the census is queued on blocker, which it reaches only after reading others' holders.
@@ -1377,7 +1381,12 @@ func TestCensusReadsTheAgeOfAHolderOfItsOwnRoleWhoseTransactionBeganDuringTheCen
 	if err := blocked.Rollback(ctx); err != nil {
 		t.Fatal(err)
 	}
-	got := <-done
+	var got result
+	select {
+	case got = <-done:
+	case <-time.After(eventWait):
+		t.Fatalf("the census did not finish within %s of the lock on blocker being let go", eventWait)
+	}
 	if got.err != nil {
 		t.Fatalf("census: %v", got.err)
 	}

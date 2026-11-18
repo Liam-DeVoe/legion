@@ -121,7 +121,7 @@ func documentOwesSettlement(t *testing.T, database *store.Store, document string
 // part, and answers that version's markdown.
 func awaitSettledVersionHolding(t *testing.T, handler http.Handler, database *store.Store, document, part string) string {
 	t.Helper()
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+	for deadline := time.Now().Add(concurrentWait); ; time.Sleep(20 * time.Millisecond) {
 		_, version := documentTexts(t, handler, document)
 		if strings.Contains(version, part) && !documentOwesSettlement(t, database, document) {
 			return version
@@ -261,7 +261,7 @@ func TestAnAskBlockWithNoRowIsResolvedWhileClosedAndOpensAtTheReopen(t *testing.
 		t.Fatalf("resume the reopened issue's owed settlements: %v", err)
 	}
 	var opened model.Ask
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+	for deadline := time.Now().Add(concurrentWait); ; time.Sleep(20 * time.Millisecond) {
 		if id := findBlockAsk(t, handler, issue.Key, spec, "closed-decision"); id != "" {
 			if opened = readBlockAsk(t, handler, id); opened.State == "open" {
 				break

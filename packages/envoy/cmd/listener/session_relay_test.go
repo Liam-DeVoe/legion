@@ -727,9 +727,10 @@ func TestSessionConsumerFramesStoredWhileTheOwnerWasDownArriveAfterItsRestart(t 
 // the message again.
 func TestSessionConsumerRelayLosingItsSessionReturnsTheMessageItHolds(t *testing.T) {
 	t.Parallel()
-	// The receipt wait is longer than the row, so the relay cannot pause, and so forget the frame
-	// it holds, before the row takes the session away.
-	rig := newRelayRigReceipt(t, relayPauseFirst, relayPauseMax, 30*time.Second)
+	// The receipt wait outlasts any run of the test binary (its -timeout ends a run first), so the
+	// relay cannot pause, and so forget the frame it holds, before the row takes the session away,
+	// however long the row's steps take.
+	rig := newRelayRigReceipt(t, relayPauseFirst, relayPauseMax, 24*time.Hour)
 	sessionID := "ses_relay_lost_" + id.New()
 	// A nil answer leaves the stand-in silent, so the frame stays outstanding and its message
 	// stays delivered and unacked.

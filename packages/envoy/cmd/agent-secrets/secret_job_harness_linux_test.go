@@ -43,9 +43,10 @@ type promptShell struct {
 }
 
 // awaitTerminalWait is this package's give-up on a terminal change another process makes: the
-// prompt's echo-off (awaitEchoOff, secret_tty_linux_test.go), bash's line editor taking the
-// terminal, and the shell's exit giving it up. These waits cross a process boundary, so a loaded
-// machine makes them long without making them wrong.
+// prompt's echo-off (awaitEchoOff, secret_tty_linux_test.go), the prompt's read of what is queued
+// at the terminal, bash's line editor taking the terminal, and the shell's exit giving it up.
+// These waits cross a process boundary, so a loaded machine makes them long without making them
+// wrong.
 const awaitTerminalWait = 10 * time.Second
 
 // rawFd answers f's file descriptor through its SyscallConn, which, unlike
@@ -191,7 +192,7 @@ func termiosKey(t *unix.Termios) string {
 
 func (s *promptShell) waitForeground(pid int) {
 	s.t.Helper()
-	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
+	for deadline := time.Now().Add(awaitTerminalWait); ; time.Sleep(time.Millisecond) {
 		foreground, err := unix.IoctlGetInt(s.ctlFd, unix.TIOCGPGRP)
 		if err != nil {
 			s.t.Fatal(err)

@@ -925,7 +925,6 @@ func TestInProgressExtendsTheAckWait(t *testing.T) {
 
 // A NAK with a delay has the message delivered again once the delay has passed.
 func TestNakWithDelayRedelivers(t *testing.T) {
-	t.Parallel()
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
 	const session = "ses_nak"
@@ -1028,7 +1027,6 @@ func waitForAckPending(t *testing.T, consumers *SessionConsumers, sessionID stri
 // is not restarts the consumer at its ack floor (RestartAtFloor), which is where stream order
 // comes from.
 func TestReleaseReturnsTheMessagesThePullHoldsUnread(t *testing.T) {
-	t.Parallel()
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
 	const session = "ses_released"

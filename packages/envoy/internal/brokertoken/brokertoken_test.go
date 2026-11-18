@@ -423,7 +423,6 @@ func TestATokenNamingAServiceAndNoPersonIsASessionsCredential(t *testing.T) {
 // goes through Verify and through Live, so an open connection's heartbeat is held to the same
 // rule as the request that opened it.
 func TestAReadOnlyTokenIsAcceptedOnlyByAVerifierThatServesOne(t *testing.T) {
-	t.Parallel()
 	caller := newSigner(t)
 	readOnly := readOnlyToken(caller.jkt, time.Hour)
 	readOnlyCaller := brokertoken.Caller{Session: "ses_reader", Service: "example-reader", ProjectScope: brokertoken.ProjectScopeNone, ReadOnly: true}

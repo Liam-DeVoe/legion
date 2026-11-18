@@ -36,6 +36,9 @@ func TestNextStoredMessageReadsByFilterAfterASequence(t *testing.T) {
 	}
 	publish("notifications.dispatch.issue.KEY-1.ask.opened", `{"n":1}`)
 	publish("notifications.agent.ses_a", `{"n":2}`)
+	// The stored time is bracketed by the clock read before this publish and the one after the
+	// read below, not held to a span since the publish that the steps between must beat.
+	published := time.Now()
 	third := publish("notifications.dispatch.issue.KEY-1.ask.answered", `{"n":3}`)
 	ctx, cancel := context.WithTimeout(context.Background(), busWait)
 	defer cancel()
@@ -47,8 +50,8 @@ func TestNextStoredMessageReadsByFilterAfterASequence(t *testing.T) {
 	if stored.Sequence != third || stored.Subject != "notifications.dispatch.issue.KEY-1.ask.answered" || string(stored.Data) != `{"n":3}` {
 		t.Fatalf("stored = %+v, want seq %d on the answered subject with its body", stored, third)
 	}
-	if time.Since(stored.Time) > time.Minute || stored.Time.After(time.Now()) {
-		t.Fatalf("stored time %s is not when it was stored", stored.Time)
+	if stored.Time.Before(published) || stored.Time.After(time.Now()) {
+		t.Fatalf("stored time %s is not when it was stored, at or after %s", stored.Time, published)
 	}
 
 	if _, err := client.NextStoredMessage(ctx, "notifications.dispatch.issue.KEY-1.>", third+1); !errors.Is(err, nats.ErrMsgNotFound) {

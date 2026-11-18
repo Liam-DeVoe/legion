@@ -628,7 +628,7 @@ Run again, it starts or reuses the same `dispatch-pg` container, which runs its 
 pgvector on PostgreSQL 18, whose `vector` extension the migrations need.
 It refuses a `dispatch-pg` on any other image or major and prints the commands that dump that container's databases and restore them into a new container on the pinned image.
 The `dispatch` database keeps its migrated schema, and a Go test never writes in it: each test makes a database of its own on the same server and drops it when the test ends, and the templates stay on the server (`docs/testing.md`, "A database a Go test creates").
-Most tests clone a migrated template; a test of the migration runner itself, and a test outside Dispatch's own store that opens a database through `internal/testpg` and migrates it (`cmd/listener/dispatch_resolution_test.go:176-185`), start from an empty one instead.
+Most tests clone a migrated template; a test of the migration runner itself, and a test outside Dispatch's own store that opens a database through `internal/testpg` and migrates it (`migratedDispatchDatabase`, `cmd/listener/dispatch_resolution_test.go:178-190`), start from an empty one instead.
 The test commands under Tests run against a throwaway server instead (`./scripts/dev-postgres.sh --throwaway`), which runs them faster and serves more connections at once; Tests says why.
 
 ## A large test database

@@ -162,7 +162,6 @@ func heldRecordFor(pendingFor, held time.Duration, database string) slog.Record 
 // so that a later change of any of the three moves the rows with it instead of leaving them to
 // test a boundary that has moved.
 func TestVerdictOfKeysTheWaitOnTheStallWarning(t *testing.T) {
-	t.Parallel()
 	const ownDatabase = "dispatch_test_ab"
 	// A foreign holder: another service's transaction on the same Postgres instance, which holds
 	// the horizon back and is no defect of Dispatch's, however long it has stood.
@@ -292,7 +291,6 @@ func TestVerdictOfKeysTheWaitOnTheStallWarning(t *testing.T) {
 		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			t.Parallel()
 			row.state.ownDatabase = ownDatabase
 			if got := verdictOf(row.state); got != row.want {
 				t.Errorf("verdictOf(%+v) = %s, want %s", row.state, got, row.want)

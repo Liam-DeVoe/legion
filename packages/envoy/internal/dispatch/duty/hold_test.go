@@ -241,7 +241,10 @@ func TestHoldReleaseFreesAtOnceAndNotifiesTheName(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
 	second := storetest.SecondProcess(t, database)
-	opts := duty.HoldOptions{TTL: 3 * time.Second, Renew: 500 * time.Millisecond, Margin: time.Second}
+	// A TTL that outlasts any run of the test binary: the hold stays live until Release however
+	// long a parallel batch starves its renewals, and the second process's one try at the end
+	// takes only a row Release deleted.
+	opts := duty.HoldOptions{TTL: 24 * time.Hour, Renew: 500 * time.Millisecond, Margin: time.Second}
 	ctx := context.Background()
 
 	listener, err := pgx.ConnectConfig(ctx, database.Pool.Config().ConnConfig.Copy())
@@ -366,7 +369,6 @@ func TestHoldZeroRowRenewalClosesLost(t *testing.T) {
 // The token the take records reads back, SetToken replaces it, and SetToken on a row another
 // holder has taken changes nothing and reports the loss.
 func TestHoldTokenReadsBack(t *testing.T) {
-	t.Parallel()
 	database := storetest.Open(t)
 	opts := duty.HoldOptions{TTL: 3 * time.Second, Renew: 500 * time.Millisecond, Margin: time.Second, Token: "deliver.first"}
 	ctx := context.Background()

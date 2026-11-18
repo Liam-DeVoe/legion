@@ -327,7 +327,6 @@ func TestAPublishWithKeepFalseToAnUnheldRoleIsRefusedAndKeepsNothing(t *testing.
 // lane holds nothing. No cluster gives the refusal on demand, so the keep is passed a publish that
 // answers it, which the keep takes in the stream's place.
 func TestAKeepPublishesAgainWhileItsMessageIDIsStillInProcess(t *testing.T) {
-	t.Parallel()
 	const role = "kept-in-process"
 	inProcess := fmt.Errorf("%w: %w", bus.ErrDuplicateInProcess,
 		&natsgo.APIError{Code: 409, ErrorCode: 10158, Description: "duplicate message id is in process"})

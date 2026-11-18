@@ -48,17 +48,18 @@ func TestNoCredentialReasonNamesWhyTheHelperHoldsNone(t *testing.T) {
 	}
 }
 
-// waitForRecord waits up to 5 s for a JSON log record in out whose msg is msg, and returns it.
+// waitForRecord waits up to eventWait for a JSON log record in out whose msg is msg, and returns
+// it.
 func waitForRecord(t *testing.T, out *syncBuffer, msg string) map[string]any {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(eventWait)
 	for {
 		records := logRecords(t, out)
 		if i := slices.IndexFunc(records, func(rec map[string]any) bool { return rec["msg"] == msg }); i >= 0 {
 			return records[i]
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("no line %q within 5 s; log:\n%s", msg, out.String())
+			t.Fatalf("no line %q within %v; log:\n%s", msg, eventWait, out.String())
 		}
 		time.Sleep(20 * time.Millisecond)
 	}

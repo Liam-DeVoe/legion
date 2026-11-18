@@ -598,9 +598,10 @@ func TestIdentity(t *testing.T) {
 // A process holding only a machine session, in the machine cache or in the key dir where a client
 // before #4143 kept one, answers 1.
 // Serial: it sets process-wide variables - identityPaths' HOME, XDG_CONFIG_HOME, XDG_RUNTIME_DIR,
-// XDG_STATE_HOME, AGENT_SECRETS_KEY_DIR and AGENT_SECRETS_HELPER_SOCK, then AGENT_SECRETS_URL and
-// GCE_METADATA_HOST (startMetadataServer) - which the identity form reads for itself; t.Setenv
-// panics under t.Parallel.
+// AGENT_SECRETS_KEY_DIR and AGENT_SECRETS_HELPER_SOCK, which the identity form reads for itself,
+// and identityPaths' XDG_STATE_HOME, then AGENT_SECRETS_URL and GCE_METADATA_HOST
+// (startMetadataServer), which it does not read: they put this row's machine cache, broker and
+// metadata server where a form that read them would find them; t.Setenv panics under t.Parallel.
 func TestIdentityWithoutSourceAsksNothing(t *testing.T) {
 	cases := append(identityCases(),
 		identityCase{name: "only a machine cache", setup: func(t *testing.T, p identityRowPaths) {

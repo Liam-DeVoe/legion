@@ -344,10 +344,11 @@ func databaseAddress(database *store.Store) string {
 // notification still reaches OnNotify on it.
 //
 // Real time, at the idle period and ping timeout this sets: both are waits on a live Postgres
-// connection, which no synctest bubble can hold. The ping timeout is ten seconds, twice
-// DefaultPingTimeout: the row runs beside a parallel batch, and a ping that outlasted a short
-// timeout under that load would replace the connection and fail the row on the machine's speed.
-// What the row holds - a healthy idle connection is pinged and kept - needs no short timeout.
+// connection, which no synctest bubble can hold. The ping timeout outlasts any run of the test
+// binary: the row runs beside a parallel batch, and a ping that outlasted a timeout under that
+// load would replace the connection and fail the row on the machine's speed. What the row holds -
+// a healthy idle connection is pinged and kept - needs no timeout on the ping at all: a ping that
+// never answered would stop the pings the row waits for.
 // For the same reason the row waits for the pings themselves, as the backend runs them, rather
 // than sleeping out seven idle periods and then requiring the backend's last statement to be a
 // ping: the sleep was a window the pings had to land in.
@@ -356,7 +357,7 @@ func TestTheListenerKeepsAHealthyIdleConnection(t *testing.T) {
 	database := storetest.Open(t)
 	probe := newListenerProbe()
 	listener := probe.listener(database.Pool.Listener)
-	listener.ListenIdle, listener.PingTimeout = 200*time.Millisecond, 2*DefaultPingTimeout
+	listener.ListenIdle, listener.PingTimeout = 200*time.Millisecond, 24*time.Hour
 	runListener(t, probe, listener)
 	probe.waitConnected(t, 5*time.Second, "first connection")
 	pid := probe.lastConn(t).PgConn().PID()
@@ -619,15 +620,15 @@ func TestTheListenerBacksOffFromOneSecondToThirtyWithJitter(t *testing.T) {
 // they run in it.
 //
 // Real time, at the idle period and ping timeout this sets: both are waits on a live Postgres
-// connection, which no synctest bubble can hold. The ping timeout is ten seconds for the reason
-// TestTheListenerKeepsAHealthyIdleConnection gives.
+// connection, which no synctest bubble can hold. The ping timeout outlasts any run of the test
+// binary for the reason TestTheListenerKeepsAHealthyIdleConnection gives.
 func TestAListenerWithNoOnNotifyDropsItsNotificationsAndDoesNotPanic(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
 	probe := newListenerProbe()
 	listener := probe.listener(database.Pool.Listener)
 	listener.OnNotify = nil
-	listener.ListenIdle, listener.PingTimeout = 200*time.Millisecond, 2*DefaultPingTimeout
+	listener.ListenIdle, listener.PingTimeout = 200*time.Millisecond, 24*time.Hour
 	runListener(t, probe, listener)
 	probe.waitConnected(t, 5*time.Second, "first connection")
 	pid := probe.lastConn(t).PgConn().PID()

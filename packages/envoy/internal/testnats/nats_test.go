@@ -292,7 +292,7 @@ func TestTheNkeyReadinessWaitRefusesAServerThatAdmitsAnyone(t *testing.T) {
 	}()
 	select {
 	case <-done:
-	case <-time.After(10 * time.Second):
+	case <-time.After(connectTimeout):
 		t.Fatal("the readiness wait is still waiting on a server that admits anyone")
 	}
 	if want := "admitted a client with no credential"; !strings.Contains(wait.message, want) {
@@ -807,7 +807,7 @@ func TestTheAnonymousWaitRefusesAServerThatRefusesAnyone(t *testing.T) {
 	}()
 	select {
 	case <-done:
-	case <-time.After(10 * time.Second):
+	case <-time.After(connectTimeout):
 		t.Fatal("the anonymous wait is still waiting on a server that refuses anyone")
 	}
 	if want := "refused a client with no credential"; !strings.Contains(wait.message, want) {

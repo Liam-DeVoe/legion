@@ -211,10 +211,11 @@ func TestPromptJobFastForegroundDoesNotRestopOrExposeValue(t *testing.T) {
 	}
 }
 
-// Serial: it measures a quiet window of wall-clock time. Its keys arrive 80 ms apart and have to
-// land inside the drain's 200 ms quiet window (pasteGapDeciseconds), which a parallel test's
-// load would stretch them past.
 func TestPromptJobControlByteDrainsBeforeReturningToShell(t *testing.T) {
+	// No step of this test has to land inside a window: the reader's poll waits without bound
+	// for the keys, and the 200 ms quiet window opens only after the "\r", when nothing more
+	// is sent.
+	t.Parallel()
 	for _, control := range []string{"\t", "\x1b[D", "\x00"} {
 		t.Run(fmt.Sprintf("%x", control), func(t *testing.T) {
 			s := newPromptShell(t)
@@ -736,7 +737,7 @@ func TestPromptJobExternalStopKeepsTheValueHidden(t *testing.T) {
 	s.send("head")
 	// The prompt must have read the bytes first: the shell would read any still queued.
 	s.wait("READ_SOME")
-	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
+	for deadline := time.Now().Add(awaitTerminalWait); ; time.Sleep(time.Millisecond) {
 		queued, err := unix.IoctlGetInt(s.terminal, unix.TIOCINQ)
 		if err != nil {
 			t.Fatal(err)

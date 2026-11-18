@@ -136,19 +136,23 @@ func TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument(t *testing
 // ends, so the settlement owed by the edit before the signal still runs and commits. Settlement waits
 // on the same lock, so the lock is released once Shutdown's settlement is queued behind it too.
 //
-// The process settles a live change five minutes after it, a longer settle delay than its whole
-// shutdown budget, as TestSIGTERMWithAnEditorConnectedSettlesItsDocumentBeforeExit's does, so the
-// settlement owed at the signal is Shutdown's alone and the row waits on events only: the title
-// change queued, the document service started, and Shutdown's settlement queued behind the lock.
-// At the server's own two seconds, the edit's timer ran a settlement of its own that the steps from
-// the edit to the lock had to beat, and the release had to come within two seconds of the document
-// service starting, before that timer's settlement could commit what Shutdown had yet to read as
-// owed: a run slowed past either found nothing owed at the signal and failed as a shutdown that
-// settled nothing.
+// The process settles a live change only after a settle delay that outlasts any run of the test
+// binary, so the edit's own timer never runs inside the row: the settlement owed at the signal is
+// Shutdown's alone, and the row waits on events: the title change queued, the document service
+// started, and Shutdown's settlement queued behind the lock. At the server's own two seconds, the
+// edit's timer ran a settlement of its own that the steps from the edit to the lock had to beat,
+// and the release had to come within two seconds of the document service starting, before that
+// timer's settlement could commit what Shutdown had yet to read as owed: a run slowed past either
+// found nothing owed at the signal and failed as a shutdown that settled nothing.
+//
+// Serial: a product deadline is under its steps. Shutdown's settlement waits on the lock this test
+// holds, and the document service gives it docs.ShutdownDrainBudget (9 s, inside
+// documentShutdownTimeout) from the line saying it settles documents with requests still in
+// flight, so the release must come inside those nine seconds or the settlement is cut short, and
+// a parallel test's load is what would stretch the steps before the release past them.
 func TestSIGTERMWhileARequestHoldsHTTPShutdownStillSettlesTheOwedDocument(t *testing.T) {
-	t.Parallel()
 	database := storetest.Open(t)
-	process := startDispatchProcessWithSettleDelay(t, database.Pool.Config().ConnString(), 5*time.Minute)
+	process := startDispatchProcessWithSettleDelay(t, database.Pool.Config().ConnString(), 24*time.Hour)
 	process.waitHealthy(t)
 	key, artifactID := process.createIssue(t)
 	process.editOwingSettlement(t, database, artifactID)

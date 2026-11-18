@@ -933,7 +933,7 @@ func TestAPublishSurvivesACloseOfItsRoomAskedForWhileItRuns(t *testing.T) {
 				if err != nil {
 					t.Fatalf("close the room: %v", err)
 				}
-			case <-time.After(ShutdownDrainBudget + 15*time.Second):
+			case <-time.After(roomWait(t)):
 				t.Fatal("the close never returned once the publish had left the room")
 			}
 			if test.closes && service.srv.GetDoc(artifactID) == live {
