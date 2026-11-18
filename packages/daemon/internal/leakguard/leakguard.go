@@ -70,10 +70,11 @@ type Options struct {
 	// reads, and the git commands a push's records and the refs of its destination are read with.
 	// Nil means this process's own (os.Environ()). Every child keeps all of it but two: the read
 	// with no credential (Guard.lsRemote), which keeps only the names lsRemoteInherits allows,
-	// and the read of a push's destination's refs, which keeps all of it but GIT_DIR
-	// (Guard.advertised). The guard adds to it the names that make a credential prompt fail
-	// closed (promptsNothing), of which the read with no credential takes the terminal prompt's
-	// alone and no askpass, and each child's own names on top of those.
+	// and the read of a push's destination's refs, which keeps all of it but GIT_DIR and the
+	// names of git configuration, the GIT_CONFIG_COUNT block and GIT_CONFIG_PARAMETERS among them
+	// (heldReadInherits, Guard.advertised). The guard adds to it the names that make a credential
+	// prompt fail closed (promptsNothing), of which the read with no credential takes the
+	// terminal prompt's alone and no askpass, and each child's own names on top of those.
 	Env []string
 }
 

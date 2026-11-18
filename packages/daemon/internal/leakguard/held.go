@@ -86,10 +86,19 @@ var fetchesNothing = []string{"GIT_NO_LAZY_FETCH=1"}
 // https://example.invalid/fork, url.<real.git>.pushInsteadOf that URL and
 // url.<fake.git>.insteadOf <real.git>, the push landed in real.git, the hook was handed real.git,
 // and a git ls-remote of it in the clone listed fake.git's refs. So the read keeps none of the
-// caller's GIT_DIR (outsideTheRepository), and a URL that is a relative local path is read
-// against dir (againstDir), as git read it for the push. The rest of the caller's environment
-// still applies, the GIT_CONFIG_COUNT block a pod's credential helper is set in among it, and so
-// does the user's global configuration.
+// caller's GIT_DIR, and a URL that is a relative local path is read against dir (againstDir), as
+// git read it for the push. A url.<base>.insteadOf set in the caller's environment, the user's
+// configuration or the machine's would lead the read to another repository the same way, so it
+// reads no git configuration but its own command line's, which a git wrapper of a host's own can
+// still add to, the case `legion git --after` runs: of the caller's environment it keeps no
+// GIT_CONFIG_COUNT block and no GIT_CONFIG_PARAMETERS (heldReadInherits), and
+// GIT_CONFIG_NOSYSTEM=1 and GIT_CONFIG_GLOBAL=/dev/null take away the system file and the user's,
+// the second also the one under XDG_CONFIG_HOME, and with them every file either includes. So the
+// credential helper a pod sets in its GIT_CONFIG_COUNT block does not reach the read, which over
+// https is anonymous where no .netrc under HOME names the host: a public repository on GitHub
+// answers it, and while GitHub asks some Git-over-HTTPS reads to authenticate, the read fails and
+// the push is refused as a setup failure, as it is for a destination the guard cannot name that
+// wants a credential set in git configuration.
 //
 // The read runs under the guard's prompt settings (promptsNothing), whose GIT_TERMINAL_PROMPT=0
 // and askpass that answers nothing make a read that wants a credential fail rather than prompt,
@@ -115,7 +124,8 @@ func (g *Guard) advertised(ctx context.Context, dir, url string) ([]string, erro
 	status, out, err := g.run(bounded, child{
 		argv:    gitArgv("ls-remote", "--heads", "--tags", "--", againstDir(dir, url)),
 		dir:     "/",
-		inherit: outsideTheRepository,
+		inherit: heldReadInherits,
+		env:     []string{"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null"},
 		stderr:  &stderr,
 	})
 	if err != nil {
@@ -154,14 +164,22 @@ func (g *Guard) advertised(ctx context.Context, dir, url string) ([]string, erro
 	return commits, nil
 }
 
-// outsideTheRepository is which names of the caller's environment the read of what a push's
-// destination holds keeps (Guard.advertised): every one but GIT_DIR. git hands a pre-push hook
-// GIT_DIR where the push was made with `git --git-dir <dir>`, which is how `jj git push` makes
-// it, and a git that keeps it reads that repository's configuration from any directory. Measured
-// on git 2.47.3 from /: GIT_DIR=<clone>/.git makes git read the clone's configuration, and
-// GIT_COMMON_DIR or GIT_WORK_TREE alone does not.
-func outsideTheRepository(name string) bool {
-	return name != "GIT_DIR"
+// heldReadInherits is which names of the caller's environment the read of what a push's
+// destination holds keeps (Guard.advertised): every one but GIT_DIR and the names that start
+// GIT_CONFIG. git hands a pre-push hook GIT_DIR where the push was made with `git --git-dir
+// <dir>`, which is how `jj git push` makes it, and a git that keeps it reads that repository's
+// configuration from any directory. Measured on git 2.47.3 from /: GIT_DIR=<clone>/.git makes git
+// read the clone's configuration, and GIT_COMMON_DIR or GIT_WORK_TREE alone does not. The names
+// that start GIT_CONFIG are configuration of the environment's own: the GIT_CONFIG_COUNT block
+// (GIT_CONFIG_COUNT with its GIT_CONFIG_KEY_<n> and GIT_CONFIG_VALUE_<n>), GIT_CONFIG_PARAMETERS,
+// which `git -c` hands the git it starts, GIT_CONFIG_SYSTEM, GIT_CONFIG_GLOBAL and
+// GIT_CONFIG_NOSYSTEM, which say which files git reads and the last two of which the read sets
+// itself, and GIT_CONFIG, which git config reads. Every other name stays: HOME, where ssh finds
+// its keys and libcurl a .netrc, SSH_AUTH_SOCK, GIT_SSH_COMMAND, GIT_ALLOW_PROTOCOL,
+// GIT_SSL_CAINFO, GIT_SSL_CAPATH and the proxy variables, so the read reaches a destination over
+// ssh, through a proxy or under the certificates the caller trusts as the push did.
+func heldReadInherits(name string) bool {
+	return name != "GIT_DIR" && !strings.HasPrefix(name, "GIT_CONFIG")
 }
 
 // againstDir is url as a read made outside dir reaches what git reached from dir: a URL that is a

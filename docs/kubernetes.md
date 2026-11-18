@@ -105,7 +105,11 @@ It carries:
     The read runs outside the clone, in `/` and without the hook's `GIT_DIR`, so no configuration of the clone's leads it to another repository:
     git hands the hook the URL the clone's configuration already led the push to, and under the clone's `url.<base>.pushInsteadOf` that URL can be one its `url.<base>.insteadOf` rewrites.
     A URL that is a relative local path is read from the clone's directory, where git read it for the push.
-    The process's own environment still applies, the `GIT_CONFIG_COUNT` block a pod's credential helper is set in among it, and so does the user's global configuration.
+    It reads no git configuration but its own command line's either, since a `url.<base>.insteadOf` in the process's environment, the user's configuration or the machine's would lead it to another repository the same way:
+    of the process's environment it keeps no `GIT_CONFIG_` variable, so no `GIT_CONFIG_COUNT` block and no `GIT_CONFIG_PARAMETERS`, and `GIT_CONFIG_NOSYSTEM=1` and `GIT_CONFIG_GLOBAL=/dev/null` take away the system file, the user's and every file either includes (`heldReadInherits`).
+    So the pod's credential helper, which its `GIT_CONFIG_COUNT` block sets, does not reach this read, which is anonymous over https:
+    a public repository on GitHub answers it, and while GitHub asks some Git-over-HTTPS reads to authenticate, the read fails and the push is refused as a setup error.
+    A destination the guard cannot name that wants a credential set through git configuration is refused the same way.
     The read has a bound of its own, two minutes, since the hook's context has none (`Guard.heldReadBound`); seven reads of cybermonklabs/legion's 5,749 branches and tags from an issue pod took 0.63 s at the median on 2026-11-18.
     A destination that stops answering refuses the push as a setup error that names the URL and the bound.
     The URL such an error names, and git's own message it quotes, carry no user and no token (`withoutUserinfo`).

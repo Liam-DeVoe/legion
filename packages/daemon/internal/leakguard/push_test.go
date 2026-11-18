@@ -13,29 +13,21 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 )
 
-// reach is what the guard's environment carries for url to reach the bare repository bare:
-// url.<file URL of bare>.insteadOf, as a GIT_CONFIG_COUNT block of one. The guard reads what a
-// push's destination holds with git ls-remote of its URL, run outside the repository under the
-// guard's own environment (Guard.advertised), whose GIT_CONFIG_COUNT block is where a pod's
-// credential helper is set too, so a test can name a repository on github.com and have the read
-// reach a bare of its own, never the network. A fixture's own git that pushes to url runs under
-// it too (fixturegit.Runner.With).
-func reach(url, bare string) []string {
-	return []string{"GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=url.file://" + bare + ".insteadOf", "GIT_CONFIG_VALUE_0=" + url}
-}
-
 // destinationAt is a bare repository of the test's own holding each of refspecs, which a push
 // from repo by the bare's path writes there as `git push` reads one ("<commit>:refs/heads/main"):
-// a push by path writes no remote-tracking ref of repo's. It answers what the guard's environment
-// carries for url to reach that bare (reach).
-func destinationAt(t *testing.T, fixture fixturegit.Runner, repo, url string, refspecs ...string) []string {
+// a push by path writes no remote-tracking ref of repo's. It answers the bare's path, the URL a
+// push to it is made to. The guard reads what a push's destination holds with git ls-remote of
+// that URL, run outside the repository and with no git configuration but its own command line's
+// (Guard.advertised), so the URL reaches the bare by itself; it names no repository on
+// github.com, so the guard scans the push without reading a visibility (Guard.scanThrough).
+func destinationAt(t *testing.T, fixture fixturegit.Runner, repo string, refspecs ...string) string {
 	t.Helper()
 	bare := filepath.Join(t.TempDir(), "destination.git")
 	fixture.Run(repo, fixturegit.InitBare(bare, "main")...)
 	if len(refspecs) > 0 {
 		fixture.Run(repo, append([]string{"git", "push", "--quiet", bare}, refspecs...)...)
 	}
-	return reach(url, bare)
+	return bare
 }
 
 // commitFiles writes files into repo's working tree, each path to its content, a directory a path
@@ -74,11 +66,9 @@ func TestAPushsRecordsAreReadFromItsCommits(t *testing.T) {
 	fixture.Run(root, fixturegit.InitWorkTree(repo, "main")...)
 	base := commitFiles(t, fixture, repo, map[string]string{"README.md": "one\n"}, "the commit the destination holds")
 	// The push's destination holds the base commit on its main, which it advertises: that is what
-	// makes it a commit no push adds. It is named on github.com, and the guard's environment
-	// reaches it at the local bare (reach).
+	// makes it a commit no push adds. The push is made to it by its path.
 	fixture.Run(repo, "git", "remote", "add", "origin", remote)
 	fixture.Run(repo, "git", "push", "--quiet", "origin", "main")
-	reached := reach(theURL, remote)
 	branch := func(t *testing.T, name string) {
 		t.Helper()
 		fixture.Run(repo, "git", "checkout", "--quiet", "-B", name, base)
@@ -153,11 +143,11 @@ func TestAPushsRecordsAreReadFromItsCommits(t *testing.T) {
 			if tc.newRef {
 				remoteSHA = noSHA
 			}
-			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, reached...)
+			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
 			err := guard.Push(bound(t), PushRequest{
 				Dir:    repo,
 				Remote: "origin",
-				URL:    theURL,
+				URL:    remote,
 				Updates: []Update{{
 					LocalRef:  ref,
 					LocalSHA:  head,
@@ -174,17 +164,17 @@ func TestAPushsRecordsAreReadFromItsCommits(t *testing.T) {
 	}
 }
 
-// pushOf is a repository whose base the destination at theURL holds on its main, the base
-// writing the files held, and head, the commit the push adds, on that base, which makes edit's
-// change to the working tree, where edit is not nil, and then writes the files added, each path
-// to its content. Where side is not nil, head is a merge, in the shape of
-// TestAMergesOwnResolutionIsRead: of main, at a commit of its own on the base, and of a branch
-// side, whose commit on the base writes the files side names, with the files added written by
-// the merge's resolution. The destination holds side's commit too, at a branch of its own, so
-// that the push adds main's commit and the merge alone: a file side writes is read as a parent's
-// file of the merge, and never as a file of a commit the push adds. It answers too what the
-// guard's environment carries for theURL to reach the destination (reach).
-func pushOf(t *testing.T, held, side, added map[string]string, edit func(t *testing.T, repo string)) (repo, base, head string, reached []string) {
+// pushOf is a repository whose base the destination holds on its main, the base writing the
+// files held, and head, the commit the push adds, on that base, which makes edit's change to the
+// working tree, where edit is not nil, and then writes the files added, each path to its content.
+// Where side is not nil, head is a merge, in the shape of TestAMergesOwnResolutionIsRead: of
+// main, at a commit of its own on the base, and of a branch side, whose commit on the base writes
+// the files side names, with the files added written by the merge's resolution. The destination
+// holds side's commit too, at a branch of its own, so that the push adds main's commit and the
+// merge alone: a file side writes is read as a parent's file of the merge, and never as a file of
+// a commit the push adds. It answers too the URL the push is made to, the destination's path
+// (destinationAt).
+func pushOf(t *testing.T, held, side, added map[string]string, edit func(t *testing.T, repo string)) (repo, base, head, destination string) {
 	t.Helper()
 	home, root := t.TempDir(), t.TempDir()
 	repo = filepath.Join(root, "repo")
@@ -210,7 +200,7 @@ func pushOf(t *testing.T, held, side, added map[string]string, edit func(t *test
 	if side != nil {
 		refspecs = append(refspecs, "side:refs/heads/side")
 	}
-	return repo, base, head, destinationAt(t, fixture, repo, theURL, refspecs...)
+	return repo, base, head, destinationAt(t, fixture, repo, refspecs...)
 }
 
 // mainPush is the push of head to main, where the destination holds base, to remote at url.
@@ -245,9 +235,9 @@ case " $* " in
 esac
 exec "$git" "$@"
 `)
-	repo, base, head, reached := pushOf(t, map[string]string{"notes.md": "one\n"}, nil, map[string]string{"notes.md": "one\nthe runner answers at " + theHost + "\n"}, nil)
-	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, append(reached, pathWith(bin))...)
-	err := guard.Push(bound(t), mainPush(repo, base, head, "origin", theURL))
+	repo, base, head, destination := pushOf(t, map[string]string{"notes.md": "one\n"}, nil, map[string]string{"notes.md": "one\nthe runner answers at " + theHost + "\n"}, nil)
+	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, pathWith(bin))
+	err := guard.Push(bound(t), mainPush(repo, base, head, "origin", destination))
 	wantRefused(t, err, []string{"notes.md: " + theClass})
 }
 
@@ -257,15 +247,15 @@ const octopusParents = 52
 
 // octopusRepo is the fixture of the octopus merge tests: a repository whose base, which the
 // destination holds, has one file, shared.md, and octopusParents parents on that base, each of
-// which adds a line of its own to shared.md, parent 17's being line17. The destination, which
-// theURL reaches under what the guard's environment carries for it (reach), holds every parent at
-// a branch of its own, so a merge of them is the whole of what a push of it adds. It answers the
-// repository, the base, every, shared.md as it holds every parent's line, which is what each
-// merge's shared file starts from, what the guard's environment carries, and octopus, which
-// writes a merge of every parent whose shared.md is as shared has it, and whose resolution.md is
-// as added has it, where added is not empty: a file no parent has. A merge's commit is written
-// with commit-tree over a tree of the fixture's own, so no octopus strategy resolves 52 heads.
-func octopusRepo(t *testing.T, line17 string) (repo, base, every string, reached []string, octopus func(shared, added string) string) {
+// which adds a line of its own to shared.md, parent 17's being line17. The destination, which a
+// push is made to by its path, holds every parent at a branch of its own, so a merge of them is
+// the whole of what a push of it adds. It answers the repository, the base, every, shared.md as
+// it holds every parent's line, which is what each merge's shared file starts from, the
+// destination's path, and octopus, which writes a merge of every parent whose shared.md is as
+// shared has it, and whose resolution.md is as added has it, where added is not empty: a file no
+// parent has. A merge's commit is written with commit-tree over a tree of the fixture's own, so no
+// octopus strategy resolves 52 heads.
+func octopusRepo(t *testing.T, line17 string) (repo, base, every, destination string, octopus func(shared, added string) string) {
 	t.Helper()
 	home, root := t.TempDir(), t.TempDir()
 	remote := filepath.Join(root, "remote.git")
@@ -304,7 +294,6 @@ func octopusRepo(t *testing.T, line17 string) (repo, base, every string, reached
 	}
 	fixture.Run(repo, "git", "remote", "add", "origin", remote)
 	fixture.Run(repo, push...)
-	reached = reach(theURL, remote)
 	octopus = func(shared, added string) string {
 		t.Helper()
 		write("shared.md", shared)
@@ -323,7 +312,7 @@ func octopusRepo(t *testing.T, line17 string) (repo, base, every string, reached
 		}
 		return head
 	}
-	return repo, base, every, reached, octopus
+	return repo, base, every, remote, octopus
 }
 
 // ParseUpdates reads git's own pre-push lines, which is how a `legion leak-check` standing in for

@@ -31,9 +31,9 @@ func TestAMergesOwnResolutionIsRead(t *testing.T) {
 	if parents := fixture.Run(repo, "git", "rev-list", "--parents", "-n", "1", head); len(strings.Fields(parents)) != 3 {
 		t.Fatalf("the fixture's head is %q, want a commit of two parents", parents)
 	}
-	reached := destinationAt(t, fixture, repo, theURL, base+":refs/heads/main")
-	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, reached...)
-	err := guard.Push(bound(t), mainPush(repo, base, head, "origin", theURL))
+	destination := destinationAt(t, fixture, repo, base+":refs/heads/main")
+	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
+	err := guard.Push(bound(t), mainPush(repo, base, head, "origin", destination))
 	wantRefused(t, err, []string{"resolution.md: " + theClass})
 }
 
@@ -85,10 +85,10 @@ func TestAMergesFileAboveTheBoundRefusesThePush(t *testing.T) {
 			if side == nil {
 				side = map[string]string{}
 			}
-			repo, base, head, reached := pushOf(t, nil, side, tc.added, nil)
-			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, reached...)
+			repo, base, head, destination := pushOf(t, nil, side, tc.added, nil)
+			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
 			guard.blobBound = 64
-			err := guard.Push(bound(t), mainPush(repo, base, head, "origin", theURL))
+			err := guard.Push(bound(t), mainPush(repo, base, head, "origin", destination))
 			if tc.failure != nil {
 				setupFailure(t, err)
 				if want := tc.failure(head); err.Error() != want {
@@ -107,7 +107,7 @@ func TestAMergesFileAboveTheBoundRefusesThePush(t *testing.T) {
 // holds every parent, so that line is text it already has, and the merge is the whole of what
 // each push adds.
 func TestAnOctopusMergeIsReadFromItsFiles(t *testing.T) {
-	repo, base, every, reached, octopus := octopusRepo(t, "the runner of parent 17 answers at "+theHost)
+	repo, base, every, destination, octopus := octopusRepo(t, "the runner of parent 17 answers at "+theHost)
 
 	for _, tc := range []struct {
 		name string
@@ -131,8 +131,8 @@ func TestAnOctopusMergeIsReadFromItsFiles(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, reached...)
-			err := guard.Push(bound(t), mainPush(repo, base, tc.head, "origin", theURL))
+			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
+			err := guard.Push(bound(t), mainPush(repo, base, tc.head, "origin", destination))
 			wantRefused(t, err, tc.want)
 		})
 	}

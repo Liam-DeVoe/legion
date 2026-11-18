@@ -124,8 +124,9 @@ func PushName(remote string) string {
 //
 // The rules read no commit the destination already holds, which is a commit one of its branches
 // or tags reaches as the destination itself reports them at the push: one git ls-remote of the
-// URL git hands the hook, run outside the repository so that none of its configuration leads the
-// read elsewhere, and bounded (Guard.advertised), made where an update moves a ref to a commit.
+// URL git hands the hook, run outside the repository and with no git configuration but its own
+// command line's, so that no configuration leads the read elsewhere, and bounded
+// (Guard.advertised), made where an update moves a ref to a commit.
 // A read that fails, or that its bound stops, refuses the push as a setup failure naming the URL.
 // No ref of the repository's own says what the destination holds: git moves a remote's
 // refs/remotes/<remote>/* for a push to whatever URL the remote pushes to at the time, a local
