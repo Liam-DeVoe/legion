@@ -135,8 +135,9 @@ func cmarkGFMRawHTML(n *ast.RawHTML, raw, source []byte, scan inlineScan) (ok bo
 // cmark-gfm's scan finds no end for: one that no backslash escapes, outside a code span, which
 // cmark-gfm reads as a `<` to scan (inlines.c:913), and that neither opens `<!-->` or `<!--->` nor
 // has a cmarkGFMCommentEnd after it. Bytes before scan.readTo were raw HTML to cmark-gfm and are
-// not read, and a code span goldmark opened among them is none to cmark-gfm, so its text after them
-// is read as text.
+// not read. A code span goldmark opened among them is none to cmark-gfm, so its text after them is
+// scanned here for such a `<!--`; raw HTML in that text is not read (VisibleMarkdown's "Not
+// modelled").
 func markTextOpener(n *ast.Text, source []byte, scan inlineScan) {
 	parent := n.Parent()
 	if parent == nil {
@@ -260,10 +261,18 @@ func linesBetween(block ast.Node, from, to int) []text.Segment {
 //     a name and then one space character at least (scanners.re:61, `declaration`), so GitHub
 //     writes such a one as text, where goldmark reads inline raw HTML and this takes it out. That
 //     takes out text the page shows, so a check fails rather than passes;
-//   - a tag or a quoted attribute value an HTML block leaves open, as in `<div title="x` and a
-//     blank line: on GitHub the HTML parser runs the tag on over what follows, up to the quote or
-//     the `>` that ends it, and hides that text, where this reads each node on its own, ends the
-//     tag with its block, and keeps the text;
+//   - a tag or a quoted attribute value that an HTML block or inline raw HTML leaves open, as in
+//     `<div title="x` and a blank line, `<b title="x --> y">`, or `<!-- a ---> b <a title="-->">c`,
+//     where cmark-gfm's end of a run-on comment lies inside the attribute: on GitHub the HTML
+//     parser runs the tag on over what follows, up to the quote or the `>` that ends it, and hides
+//     that text, where this reads each node on its own, ends the tag with its node, and keeps the
+//     text;
+//   - goldmark's reading after a run-on comment's raw HTML when a node goldmark began inside that
+//     raw HTML ends after it: a code span whose opening backtick that raw HTML took, as in the
+//     line Run `make` <!-- a ---> then `b --> <!-- c --> d` e. cmark-gfm reads every byte after
+//     the raw HTML afresh, so a comment, CDATA section or tag in the rest of such a code span is
+//     raw HTML on the page, where this keeps its text, and a later backtick pairs differently up to
+//     the end of the block, which can also take out text the page shows;
 //   - the order of footnotes: GitHub renders every footnote definition at the end of the page,
 //     after the body, where this carries an open comment in the order of the source. So a comment
 //     a footnote leaves open, which on GitHub hides the footnotes after it, here runs over the
