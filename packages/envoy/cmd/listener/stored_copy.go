@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -18,7 +19,9 @@ import (
 // tried again as any forward that failed is, and its next answer names the copy (sendToRole). The
 // cause is named in the text and not wrapped, so no comparison of a read's error (a denial, a
 // refused subject) can turn the answer into another one: writeBusUnavailable answers it 503 with
-// Retry-After: 1 under storedCopyUnreadablePrefix, whatever the read met.
+// Retry-After: 1 under storedCopyUnreadablePrefix, whatever the read met. Every error wrapping it
+// is written "<its text>: <reason>", so writeBusUnavailable writes the reason alone after the
+// prefix.
 var errStoredCopyUnread = errors.New("no stored copy read")
 
 // storedPublish is the publish of an envelope on its own topic that returns the stream's
@@ -27,25 +30,79 @@ var errStoredCopyUnread = errors.New("no stored copy read")
 // a keep.
 type storedPublish func(ctx context.Context, item contracts.Envelope) (bus.StoredAck, error)
 
+// storedReader reads the message the stream holds on a subject at a sequence or after it:
+// bus.Client in the listener, and a reader of the test's own where a test stands in for a read
+// that does not answer.
+type storedReader interface {
+	NextStoredMessage(ctx context.Context, subject string, seq uint64) (bus.StoredMessage, error)
+}
+
+// requestSender is who a send or a publish speaks for, which decides how much of a stored copy
+// its answer may carry (answer): the source and source_session of the envelope the route built
+// from the request, and, where the request presented a secrets-broker token, the session that
+// token proves (brokerCaller).
+type requestSender struct {
+	source, session string
+	proven          bool
+	tokenSession    string
+}
+
+// senderOf is the sender of r, whose route built item from it.
+func senderOf(r *http.Request, item contracts.Envelope) requestSender {
+	sender := requestSender{source: item.Source, session: item.SourceSession}
+	if caller, ok := brokerCaller(r); ok {
+		sender.proven, sender.tokenSession = true, caller.Session
+	}
+	return sender
+}
+
+// answer is held, a copy the stream holds under a request's message id, as the request's answer
+// may carry it. A copy whose source and source_session are the request's, and, where the request
+// proved a session with a broker token, whose source_session is that session, is the request's
+// sender's own, and is answered whole. Any other copy is another sender's message under a key
+// this caller repeated, which may be known or guessed (a Dispatch mention key, a role key taken
+// verbatim), so the answer says only that the key is taken: the copy's event_id and its times,
+// with its topic and dedupe key, which the caller sent itself, and none of what the other sender
+// wrote or who it is (payload, payload_summary, payload_ref, source, source_event_id,
+// source_session, sender, trace_id and the rest).
+//
+// A caller that names no session and the source dispatch reads Dispatch's own copies whole: the
+// route trusts a caller's source and an empty session as it always has (sessionNotBound).
+func (s requestSender) answer(held contracts.Envelope) contracts.Envelope {
+	if held.Source == s.source && held.SourceSession == s.session && (!s.proven || held.SourceSession == s.tokenSession) {
+		return held
+	}
+	return contracts.Envelope{
+		EventID:   held.EventID,
+		Topic:     held.Topic,
+		DedupeKey: held.DedupeKey,
+		IssuedAt:  held.IssuedAt,
+		ExpiresAt: held.ExpiresAt,
+		KeptAt:    held.KeptAt,
+	}
+}
+
 // publishHeld publishes *item within ctx through publish, marks charge by the stream's answer to
 // that publish (senderCharge.published), and leaves in *item the envelope the stream holds for
-// it, which it reads through client. It is the one publish of the send route and of the topic
-// publish, so neither can answer an envelope the stream does not hold: a route answers *item, and
-// after a duplicate verdict *item is the stored copy, not the envelope the route built.
+// it, which it reads through reader, as sender may read it (requestSender.answer). It is the one
+// publish of the send route and of the topic publish, so neither can answer an envelope the
+// stream does not hold: a route answers *item, and after a duplicate verdict *item is the stored
+// copy, not the envelope the route built.
 //
 // A publish the stream stored as a new copy leaves *item as it was, and duplicate false. A
 // duplicate verdict names the copy the stream holds under the same message id, at its sequence
-// (bus.StoredAck), and *item becomes that copy as storedCopy reads it. duplicate is whether that
-// copy is another request's, which is when its event_id is not *item's: a caller's repeat under
-// the same idempotency_key built a new envelope, with a new event_id, that no stored message
-// carries. A verdict that answers the bus's own resend after a closed connection
-// (bus.StoredAck.Resent) can name the copy this request's first send stored, which carries its own
-// event_id: that copy is this request's, answered with no duplicate as any new copy is.
+// (bus.StoredAck), and *item becomes that copy as storedCopy reads it, whole for its own sender
+// and its ids and times alone for anyone else. duplicate is whether that copy is another
+// request's, which is when its event_id is not *item's: a caller's repeat under the same
+// idempotency_key built a new envelope, with a new event_id, that no stored message carries. A
+// verdict that answers the bus's own resend after a closed connection (bus.StoredAck.Resent) can
+// name the copy this request's first send stored, which carries its own event_id: that copy is
+// this request's, answered with no duplicate as any new copy is.
 //
 // A copy that cannot be read, and a refusal of a publish whose message id is still in process
 // under an earlier one (bus.ErrDuplicateInProcess), are an error wrapping errStoredCopyUnread,
 // with *item untouched, and the charge stays marked by the publish's own answer.
-func publishHeld(ctx context.Context, client *bus.Client, publish storedPublish, charge *senderCharge, item *contracts.Envelope) (duplicate bool, err error) {
+func publishHeld(ctx context.Context, reader storedReader, publish storedPublish, charge *senderCharge, sender requestSender, item *contracts.Envelope) (duplicate bool, err error) {
 	ack, err := publish(ctx, *item)
 	charge.published(ack, err)
 	if errors.Is(err, bus.ErrDuplicateInProcess) {
@@ -54,24 +111,24 @@ func publishHeld(ctx context.Context, client *bus.Client, publish storedPublish,
 	if err != nil || !ack.Duplicate {
 		return false, err
 	}
-	held, err := storedCopy(ctx, client, item.Topic, *item, ack.Sequence)
+	held, err := storedCopy(ctx, reader, item.Topic, *item, ack.Sequence)
 	if err != nil {
 		return false, err
 	}
 	duplicate = held.EventID != item.EventID
-	*item = held
+	*item = sender.answer(held)
 	return duplicate, nil
 }
 
-// storedCopy reads the copy a duplicate verdict on item's publish to subject named at seq: the
-// message the stream holds at seq on subject, item's own topic for a send or a topic publish and
-// the holder's agent subject for a role forward (roleSend.deliveredHeld). Its message id is made
-// of its dedupe key and the subject it was stored on (bus.ForwardMsgID), and the read is of that
-// subject alone, so the message is that copy only when it is at seq itself and carries item's
-// dedupe key. Its envelope's own topic is not compared: a role forward stored on a holder's agent
-// subject under that holder's own send key (contracts.RoleForwardDedupeKey) keeps its role topic,
-// and is the copy a direct send under the same key repeats. Every other answer is an error
-// wrapping errStoredCopyUnread:
+// storedCopy reads, through reader, the copy a duplicate verdict on item's publish to subject
+// named at seq: the message the stream holds at seq on subject, item's own topic for a send or a
+// topic publish and the holder's agent subject for a role forward (roleSend.deliveredHeld). Its
+// message id is made of its dedupe key and the subject it was stored on (bus.ForwardMsgID), and
+// the read is of that subject alone, so the message is that copy only when it is at seq itself and
+// carries item's dedupe key. Its envelope's own topic is not compared: a role forward stored on a
+// holder's agent subject under that holder's own send key (contracts.RoleForwardDedupeKey) keeps
+// its role topic, and is the copy a direct send under the same key repeats. Every other answer is
+// an error wrapping errStoredCopyUnread:
 //
 //   - sequence 0, which names no copy, refused before any read as a defence: the read would hand
 //     back the subject's first message, another one. nats-server v2.10.29 acknowledged a
@@ -84,11 +141,11 @@ func publishHeld(ctx context.Context, client *bus.Client, publish storedPublish,
 //     remember an id whose copy has aged out: the next message on subject, or none, is no copy
 //     of this message, whatever dedupe key it carries;
 //   - a message there that does not decode, or carries another dedupe key.
-func storedCopy(ctx context.Context, client *bus.Client, subject string, item contracts.Envelope, seq uint64) (contracts.Envelope, error) {
+func storedCopy(ctx context.Context, reader storedReader, subject string, item contracts.Envelope, seq uint64) (contracts.Envelope, error) {
 	if seq == 0 {
 		return contracts.Envelope{}, fmt.Errorf("%w: the stream's duplicate verdict on %s named no sequence", errStoredCopyUnread, subject)
 	}
-	stored, err := client.NextStoredMessage(ctx, subject, seq)
+	stored, err := reader.NextStoredMessage(ctx, subject, seq)
 	if err != nil {
 		return contracts.Envelope{}, fmt.Errorf("%w: read sequence %d of %s: %v", errStoredCopyUnread, seq, subject, err)
 	}

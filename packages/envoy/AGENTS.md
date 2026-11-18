@@ -4751,14 +4751,6 @@ Each item below names an endpoint and its method, then its contract, and an item
   only those can ever answer `duplicate`: a send that declares `github`, `slack` or `ghostwispr` carries a `SourceEventID` minted for it, which its dedupe key does not name (`contracts.DedupeKeyNamesTheUpstreamEvent`);
   the field is omitted (read as false) otherwise, which is also what an older listener answers.
   It means "the stream already held another request's copy under this MsgId"; the publish path's own reconnect retry whose first attempt landed and lost its acknowledgement is no such repeat (below).
-  A `duplicate` answer's envelope is the copy the stream holds, never the one the route built for the repeat (`publishHeld`, `cmd/listener/stored_copy.go`):
-  the route mints a new `event_id` for every send, so a repeat's own envelope names no stored message, and the route reads the copy back at the sequence the duplicate verdict named (`bus.StoredAck.Sequence`, `bus.Client.NextStoredMessage` on the subject the envelope was published on, within the same 3.5 s budget) and answers its `event_id`, `issued_at`, body and every other field, `expects_reply` in the request's own spelling where the two agree (`expectsReplyAnswer`).
-  The request's record line names that copy's `event_id` too.
-  `duplicate` is true only where the copy is another request's, its `event_id` not this request's: a verdict on the bus's own resend after a closed connection can name this request's first send, which is answered as a new copy is.
-  The copy is that message only at that very sequence and with the request's dedupe key (`storedCopy`): its message id is that key and the subject it was read on, so its envelope's own `topic` is not compared, since a role forward stored under a holder's own send key keeps its role topic.
-  A read that fails or does not answer, a verdict with sequence 0 (refused before any read, which would hand back the subject's first message), a sequence that no longer holds the copy (an operator's delete, or the edge of the 72-hour age, which equals the duplicate window), and a publish the stream refuses while an earlier one under the same message id is in process (`bus.ErrDuplicateInProcess`) are answered `503 {"error":"envoy: the stream already knows this message's id, and no stored copy of it was read: <reason>"}` with `Retry-After: 1` and no envelope, recorded `outcome=stored_copy_unreadable`.
-  The same request again gets the copy once it can be read, and once the stream has forgotten the id of a copy it no longer holds a repeat stores a new copy and answers its own envelope.
-  Dispatch and `@legion/envoy-client` still record or show no `event_id` for a `duplicate` answer, since an older listener answers a repeat with its own new envelope.
   A message NATS cannot take whole is a 413 naming its size against the server's max payload, and a topic NATS does not accept (one holding whitespace or an empty token) a 400.
   The route takes the caller's `source` and idempotency key as given (`contracts.AgentSendEnvelope`), so any caller can send a `source: "dispatch"` frame under the key a Dispatch send will use, which a core-NATS host then drops as a repeat when the real send or its Retry arrives.
   That key is not secret: a comment mention's is `<comment id>:<target>:<the mention's mode>` (`model.CommentMentionIdempotencyKey`), and the comment id rides the `comment.created` envelope on the issue's owner topic.
@@ -4766,6 +4758,18 @@ Each item below names an endpoint and its method, then its contract, and an item
   suppressing one Retry is a subset of that, and a Dispatch-only credential is the fix for the whole class.
   The listener is not the only route to that either:
   a NATS user that may publish on `notifications.agent.>` or `notifications.dispatch.>` reaches core-NATS hosts directly, and with no nkey configured (`internal/bus/nkey.go`) that is any process that can reach the server.
+
+- A `duplicate` answer's envelope is the copy the stream holds, never the one the route built for the repeat (`publishHeld`, `cmd/listener/stored_copy.go`), on the send and the topic publish routes alike:
+  the route mints a new `event_id` for every send, so a repeat's own envelope names no stored message, and the route reads the copy back at the sequence the duplicate verdict named (`bus.StoredAck.Sequence`, `bus.Client.NextStoredMessage` on the subject the envelope was published on, within the same 3.5 s budget) and answers its `event_id`, `issued_at`, body and every other field, `expects_reply` in the request's own spelling where the two agree (`expectsReplyAnswer`).
+  The request's record line names that copy's `event_id` too.
+  The copy is answered whole only to its own sender: a request whose `source` and `source_session` are the copy's, and, where the request presents a secrets-broker token, whose token proves the copy's `source_session` (`requestSender.answer`).
+  Anyone else repeating that key, which may be known or guessed (a Dispatch mention key, a role key taken verbatim), learns only that it is taken: `200` with `duplicate: true` and the copy's `event_id`, `issued_at`, `expires_at`, `kept_at`, `topic` and `dedupe_key`, and none of `payload`, `payload_summary`, `payload_ref`, `source`, `source_event_id`, `source_session`, `sender` or `trace_id`, an answer `@legion/envoy-client`'s envelope schema does not parse, so its send reports itself unconfirmed and its publish throws.
+  A caller that names the source `dispatch` and no session still reads Dispatch's own copies whole, as the route trusts a caller's `source` and an empty session everywhere (above).
+  `duplicate` is true only where the copy is another request's, its `event_id` not this request's: a verdict on the bus's own resend after a closed connection can name this request's first send, which is answered as a new copy is.
+  The copy is that message only at that very sequence and with the request's dedupe key (`storedCopy`): its message id is that key and the subject it was read on, so its envelope's own `topic` is not compared, since a role forward stored under a holder's own send key keeps its role topic.
+  A read that fails or does not answer, a verdict with sequence 0 (refused before any read, which would hand back the subject's first message), a sequence that no longer holds the copy (an operator's delete, or the edge of the 72-hour age, which equals the duplicate window), and a publish the stream refuses while an earlier one under the same message id is in process (`bus.ErrDuplicateInProcess`) are answered `503 {"error":"envoy: the stream already knows this message's id, and no stored copy of it was read: <reason>"}` with `Retry-After: 1` and no envelope, recorded `outcome=stored_copy_unreadable`.
+  The same request again gets the copy once it can be read, and once the stream has forgotten the id of a copy it no longer holds a repeat stores a new copy and answers its own envelope.
+  Dispatch and `@legion/envoy-client` still record or show no `event_id` for a `duplicate` answer, since an older listener answers a repeat with its own new envelope.
 
 - `/v1/messages/publish` (POST)
 
@@ -4797,6 +4801,7 @@ Each item below names an endpoint and its method, then its contract, and an item
   the forward a repeat sent again, or the one the route's own record of the key names, read back at the sequence the stream acknowledged and answered with the forward mark taken off its `dedupe_key`.
   A forward the stream acknowledges as a duplicate with no sequence is that `503` at once, and a forward this very send stored on an earlier attempt whose acknowledgement was lost is answered as its own copy, with no `duplicate`.
   A forward the stream refuses while an earlier one under its id is in process is tried again, as any forward that failed is, and the stream's next answer names the copy.
+  The role send's `200` and its `202` kept answer follow the same sender rule as a send's.
 
 - A topic that does not begin with `notifications.` is refused `400 {"error":"topic must begin with notifications.","expected":["topic"]}` and nothing is published, which closes the raw-subject route a bearer could otherwise use to write the listener's own key-value buckets
   — the role-claim records among them — and reach `$JS.API.*`.

@@ -462,11 +462,12 @@ const grantGuardPrefix = "envoy: the role grant guard refused the claim because 
 // answered first of all, a 503 with Retry-After under storedCopyUnreadablePrefix, whatever the
 // read met: its error names that cause in its text and wraps none of it, so a read the server
 // denied is not the publish's 403, and the stored message is not lost to a refusal no retry gets
-// past.
+// past. The body carries the reason once, after the prefix, without the sentinel's own words.
 func writeBusUnavailable(w http.ResponseWriter, err error) int {
 	if errors.Is(err, errStoredCopyUnread) {
 		w.Header().Set("Retry-After", "1")
-		writeJSONError(w, http.StatusServiceUnavailable, fmt.Sprintf("%s: %s", storedCopyUnreadablePrefix, err))
+		reason := strings.TrimPrefix(err.Error(), errStoredCopyUnread.Error()+": ")
+		writeJSONError(w, http.StatusServiceUnavailable, fmt.Sprintf("%s: %s", storedCopyUnreadablePrefix, reason))
 		return http.StatusServiceUnavailable
 	}
 	if errors.Is(err, bus.ErrPublishDenied) {
@@ -989,7 +990,7 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			return
 		}
 		// item is the copy the stream holds after a duplicate verdict (publishHeld).
-		duplicate, err := publishHeld(ctx, d.client, d.client.PublishAckWithin, charge, &item)
+		duplicate, err := publishHeld(ctx, d.client, d.client.PublishAckWithin, charge, senderOf(r, item), &item)
 		if err != nil {
 			record.refuseBusUnavailable(w, err)
 			return
@@ -1373,7 +1374,7 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			// give-up (roleSend.noHolder) rather than to the envelope, which travels on to the
 			// holder and back in this route's own answer. No flag at all means keep, so every
 			// publisher that sets none is unchanged.
-			sendToRole(ctx, w, record, d, item, request.ExpectsReply, role, request.Keep == nil || *request.Keep, arrived)
+			sendToRole(ctx, w, record, d, item, senderOf(r, item), request.ExpectsReply, role, request.Keep == nil || *request.Keep, arrived)
 			return
 		}
 		// The counts are of the moment the message is published, and are read from memory alone
@@ -1388,7 +1389,7 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		defer cancel()
 		item.Sender = senderStamp(ctx, d.registry, d.sessions, item.SourceSession)
 		// item is the copy the stream holds after a duplicate verdict (publishHeld).
-		duplicate, err := publishHeld(ctx, d.client, d.client.PublishAckWithin, charge, &item)
+		duplicate, err := publishHeld(ctx, d.client, d.client.PublishAckWithin, charge, senderOf(r, item), &item)
 		if err != nil {
 			record.refuseBusUnavailable(w, err)
 			return

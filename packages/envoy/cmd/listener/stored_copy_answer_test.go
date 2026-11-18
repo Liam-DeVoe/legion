@@ -101,7 +101,7 @@ func TestADuplicateVerdictOnTheRequestsOwnCopyAnswersNoDuplicate(t *testing.T) {
 		item := envelope()
 		own := item
 		charge := &senderCharge{sender: "ses_own_copy", giveBack: func() {}}
-		duplicate, err := publishHeld(ctx, client, storedThen(own), charge, &item)
+		duplicate, err := publishHeld(ctx, client, storedThen(own), charge, requestSender{source: item.Source, session: item.SourceSession}, &item)
 		if err != nil || duplicate || item.EventID != own.EventID {
 			t.Fatalf("a resend's verdict on the request's own copy answered duplicate %t, event %s (%v); want no duplicate and its own event %s",
 				duplicate, item.EventID, err, own.EventID)
@@ -116,7 +116,7 @@ func TestADuplicateVerdictOnTheRequestsOwnCopyAnswersNoDuplicate(t *testing.T) {
 		item.DedupeKey = publishDedupePrefix + uuid.NewString()
 		other := item
 		other.EventID = id.New()
-		duplicate, err := publishHeld(ctx, client, storedThen(other), nil, &item)
+		duplicate, err := publishHeld(ctx, client, storedThen(other), nil, requestSender{source: item.Source, session: item.SourceSession}, &item)
 		if err != nil || !duplicate || item.EventID != other.EventID {
 			t.Fatalf("a verdict on another request's copy answered duplicate %t, event %s (%v); want duplicate and that copy's event %s",
 				duplicate, item.EventID, err, other.EventID)
@@ -205,7 +205,7 @@ func TestADuplicateVerdictThatNamesNoCopyAnswers503AtOnce(t *testing.T) {
 		item := contracts.MessageEnvelope(contracts.Message{Text: "in process"}, "notifications.team.in-process", publishDedupePrefix+uuid.NewString())
 		_, err := publishHeld(context.Background(), nil, func(context.Context, contracts.Envelope) (bus.StoredAck, error) {
 			return bus.StoredAck{}, inProcess
-		}, nil, &item)
+		}, nil, requestSender{}, &item)
 		var logs strings.Builder
 		record := &requestRecord{logger: logging.NewWithWriter("test", &logs), line: "listener publish", laneKey: "topic", item: &item}
 		recorder := httptest.NewRecorder()

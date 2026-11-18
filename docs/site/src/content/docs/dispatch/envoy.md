@@ -659,7 +659,10 @@ request's copy, a repeat under the same idempotency key, is answered `200` with 
 and that stored copy, its `event_id` included, never the envelope the listener built for the
 repeat. When the listener cannot read that copy back, the answer is `503` with `Retry-After: 1`
 and the body `envoy: the stream already knows this message's id, and no stored copy of it was
-read: …`, and the same request again gets the copy once it can be read.
+read: …`, and the same request again gets the copy once it can be read. The stored copy is
+answered whole only to its own sender, the same `source` and `source_session` and the session a
+secrets-broker token proves; anyone else repeating the key learns only that it is taken: the
+copy's `event_id`, its times, its topic and its dedupe key, and nothing the other sender wrote.
 
 ### The sender limit
 

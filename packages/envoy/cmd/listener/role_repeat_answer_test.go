@@ -6,8 +6,10 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"reflect"
 	"testing"
 
 	"github.com/google/uuid"
@@ -147,13 +149,23 @@ func TestARolePublishRepeatedUnderOneIdempotencyKeyAnswersTheStoredCopy(t *testi
 		sender := "ses_role_repeat_unclaimed_sender_" + id.New()
 		key := map[string]any{"idempotency_key": uuid.NewString()}
 		first := held(t, rig.publishFrom(t, sender, contracts.RoleTopicPrefix+role, key))
-		first.requireStatus(t, "the first publish to the unclaimed role", http.StatusAccepted)
-		repeat := held(t, rig.publishFrom(t, sender, contracts.RoleTopicPrefix+role, key))
-		repeat.requireStatus(t, "the repeated publish to the unclaimed role", http.StatusAccepted)
+		repeat := held(t, rig.publishFrom(t, sender, contracts.RoleTopicPrefix+role,
+			map[string]any{"idempotency_key": key["idempotency_key"], "message": "the repeat's own body"}))
 		kept := heldCopy(t, rig.harness.client, bus.KeptRoleSubject(role))
-		if repeat.envelope.EventID != first.envelope.EventID || repeat.envelope.EventID != kept.EventID {
-			t.Fatalf("the repeat's 202 names event %s, want the kept copy's %s (the first answer named %s)",
-				repeat.envelope.EventID, kept.EventID, first.envelope.EventID)
+		for _, answer := range []struct {
+			what string
+			heldAnswer
+		}{{"the first publish to the unclaimed role", first}, {"the repeated publish to the unclaimed role", repeat}} {
+			answer.requireStatus(t, answer.what, http.StatusAccepted)
+			if !reflect.DeepEqual(answer.envelope, kept) {
+				t.Fatalf("%s answered %+v, want the kept copy field for field: %+v", answer.what, answer.envelope, kept)
+			}
+			var fields struct {
+				Kept bool `json:"kept"`
+			}
+			if err := json.Unmarshal([]byte(answer.raw), &fields); err != nil || !fields.Kept {
+				t.Fatalf("%s answered %s (%v), want kept: true", answer.what, answer.raw, err)
+			}
 		}
 	})
 }
