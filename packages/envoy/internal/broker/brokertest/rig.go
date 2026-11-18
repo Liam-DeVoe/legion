@@ -43,10 +43,11 @@ import (
 // verifies them itself; chosen only to read clearly in a failure message.
 const podAudience = "legion-broker-pod"
 
-// exchangeAudience is the audience every Rig's token exchange takes a pod's subject token for,
+// ExchangeAudience is the audience every Rig's token exchange takes a pod's subject token for,
 // the one MintSubjectToken signs: a second audience of the same issuer, as a deployment gives an
-// exchanging pod a token beside the one it enrols with.
-const exchangeAudience = "legion-broker-exchange"
+// exchanging pod a token beside the one it enrols with. Tests read it to mint a subject token of
+// their own for a provider NewOAuthProvider builds.
+const ExchangeAudience = "legion-broker-exchange"
 
 // githubAudience is the audience every Rig's token exchange takes a workflow run's token for.
 // The Rig's own issuer stands in for GitHub's, as it stands in for the cluster's: a test mints
@@ -297,7 +298,7 @@ const MachineLoginURL = "https://dispatch.example/credentials/machine"
 // cmd/broker/main.go does: device codes live as long as a pending machine login, access tokens
 // fifteen minutes, refresh tokens as long as a launcher credential, and verification_uri is
 // MachineLoginURL. Its token exchange reads issuer for both kinds of subject token — a pod's, for
-// exchangeAudience, and a workflow run's, for githubAudience — and lists the two accounts and the
+// ExchangeAudience, and a workflow run's, for githubAudience — and lists the two accounts and the
 // one workflow the Rig's constants name, so an exchange test has an identity to be, a registered
 // one, and an unlisted one to be refused as.
 func NewOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer) *oauth.Provider {
@@ -332,7 +333,7 @@ func NewOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer) *o
 		RefreshLifetime: 7 * 24 * time.Hour, VerificationURL: MachineLoginURL, ProofSkew: time.Minute,
 		Exchange: oauth.ExchangeConfig{
 			Policy:     policy,
-			Kubernetes: oauth.IssuerConfig{Issuer: issuer.URL(), Audience: exchangeAudience, Keys: keys},
+			Kubernetes: oauth.IssuerConfig{Issuer: issuer.URL(), Audience: ExchangeAudience, Keys: keys},
 			GitHub:     oauth.IssuerConfig{Issuer: issuer.URL(), Audience: githubAudience, Keys: keys},
 		},
 	}, oauthStore)
@@ -530,7 +531,7 @@ func (r *Rig) MintAccountPodToken(t *testing.T, account, podUID string, lifetime
 // Kubernetes token type. A podUID of "" mints one bound to no pod, which the exchange refuses.
 func (r *Rig) MintSubjectToken(t *testing.T, account, podUID string) string {
 	t.Helper()
-	claims := r.podIssuer.Claims(account, exchangeAudience)
+	claims := r.podIssuer.Claims(account, ExchangeAudience)
 	if podUID != "" {
 		claims["kubernetes.io"] = map[string]any{"pod": map[string]any{"uid": podUID}}
 	}

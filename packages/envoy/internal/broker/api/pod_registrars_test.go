@@ -154,6 +154,18 @@ func (ts *testServer) exchangeProvedBy(t *testing.T, key *ecdsa.PrivateKey, subj
 	return exchanged{status: answer.status, code: body.Error, description: body.Description, issued: body.AccessToken != ""}
 }
 
+// rolesPodToken is pod's token of brokertest.ExchangeRolesAccount at the broker's own audience.
+func (ts *testServer) rolesPodToken(t *testing.T, pod string) string {
+	t.Helper()
+	return ts.accountToken(t, brokertest.ExchangeRolesAccount, pod, time.Hour)
+}
+
+// rolesTradeToken is rolesPodToken at the exchange's audience, the subject token pod trades.
+func (ts *testServer) rolesTradeToken(t *testing.T, pod string) string {
+	t.Helper()
+	return ts.audienceToken(t, brokertest.ExchangeRolesAccount, pod, brokertest.ExchangeAudience, time.Hour)
+}
+
 // TestTheRegistrationAudienceIsAcceptedAtTheRouteAlone: BROKER_POD_REGISTRATION_AUDIENCE is an
 // audience the registration route accepts a pod token at, beside the broker's own, and no other
 // route does. A token of that audience bound to a pod of the rig exchange's free-session account
@@ -202,7 +214,7 @@ func TestTheRegistrationAudienceIsAcceptedAtTheRouteAlone(t *testing.T) {
 		if code := decode[wireError](t, body).Code; status != http.StatusForbidden || code != "POD_IDENTITY_MISMATCH" {
 			t.Fatalf("POST /v1/enrollments of pod %s with its token of the registration audience = %d %s, want 403 POD_IDENTITY_MISMATCH: enrolment accepts the broker's own audience alone", pod, status, body)
 		}
-		if status, body := enrol(ts.accountToken(t, brokertest.ExchangeRolesAccount, pod, time.Hour)); status != http.StatusCreated {
+		if status, body := enrol(ts.rolesPodToken(t, pod)); status != http.StatusCreated {
 			t.Fatalf("POST /v1/enrollments of pod %s with its token of the broker's audience = %d %s, want 201: the refusal above is the audience, not the pod", pod, status, body)
 		}
 	})

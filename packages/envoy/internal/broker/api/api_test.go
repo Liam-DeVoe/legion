@@ -133,14 +133,12 @@ func newTestServerWith(t *testing.T, adjust func(*api.Deps)) *testServer {
 
 	issuer := oidctest.New(t)
 	podKey := issuer.PublishKey(t, "signing-key")
-	podVerifier, err := oidc.New(context.Background(), issuer.URL(), podAudience)
+	keys, err := oidc.NewKeys(context.Background(), issuer.URL())
 	if err != nil {
-		t.Fatalf("oidc.New: %v", err)
+		t.Fatalf("oidc.NewKeys: %v", err)
 	}
-	registrationVerifier, err := oidc.New(context.Background(), issuer.URL(), registrationAudience)
-	if err != nil {
-		t.Fatalf("oidc.New: %v", err)
-	}
+	podVerifier := oidc.NewWithKeys(issuer.URL(), podAudience, keys)
+	registrationVerifier := oidc.NewWithKeys(issuer.URL(), registrationAudience, keys)
 	serviceLogins := map[string]string{daemonAccount: "legion-daemon", otherDaemonAccount: "legion-daemon"}
 	// BROKER_SERVICES: both accounts the pods these tests enrol run as, bound to the service both
 	// daemon accounts log in as, which is what lets their logins enrol those pods. An account

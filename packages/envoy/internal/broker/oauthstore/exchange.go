@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"slices"
 	"time"
 
 	"authelia.com/provider/oauth2"
@@ -477,7 +476,7 @@ func (s *Store) lockPodSessionName(ctx context.Context, registrar, session strin
 // inserts after the read began is invisible to that read, but the insert waits for that write to
 // commit and then finds the row, which is read again, locked, as that write left it.
 func (s *Store) writePodSession(ctx context.Context, registrar, podUID, session, jkt string, generation int64) (PodSessionRegistration, error) {
-	held, found, err := s.lockPodSession(ctx, podUID, session)
+	locked, found, err := s.lockPodSession(ctx, podUID, session)
 	if err != nil {
 		return PodSessionRegistration{}, err
 	}
@@ -499,7 +498,7 @@ func (s *Store) writePodSession(ctx context.Context, registrar, podUID, session,
 			return PodSessionRegistration{}, err
 		}
 		// Another write inserted the row after the read above began.
-		if held, found, err = s.lockPodSession(ctx, podUID, session); err != nil {
+		if locked, found, err = s.lockPodSession(ctx, podUID, session); err != nil {
 			return PodSessionRegistration{}, err
 		}
 		if !found {
@@ -508,7 +507,7 @@ func (s *Store) writePodSession(ctx context.Context, registrar, podUID, session,
 	}
 	var row pgx.Row
 	switch {
-	case held.released || held.registrar != registrar:
+	case locked.released || locked.registrar != registrar:
 		// A release ended the row's registration, or it is another registrar's, lapsed, or no
 		// registrar's: nothing of it carries over, so the write sets it as a first write would.
 		row = s.db(ctx).QueryRow(ctx, `update oauth_pod_sessions
@@ -516,9 +515,9 @@ func (s *Store) writePodSession(ctx context.Context, registrar, podUID, session,
 			where pod_uid = $1 and session = $2
 			returning expires_at, coalesce(jkt, ''), generation`,
 			podUID, session, registrar, expires, jkt, generation)
-	case generation < held.Generation:
+	case generation < locked.Generation:
 		// The row's generation is higher, so the write changes nothing: answer the row as it is.
-		return held.PodSessionRegistration, nil
+		return locked.PodSessionRegistration, nil
 	default:
 		row = s.db(ctx).QueryRow(ctx, `update oauth_pod_sessions
 			set expires_at = greatest(expires_at, $3), jkt = coalesce(nullif($4, ''), jkt), generation = $5
@@ -530,16 +529,16 @@ func (s *Store) writePodSession(ctx context.Context, registrar, podUID, session,
 	if err := row.Scan(&stored.ExpiresAt, &stored.JKT, &stored.Generation); err != nil {
 		return PodSessionRegistration{}, err
 	}
-	if held.JKT != "" && stored.JKT != held.JKT {
-		stored.Replaced = held.JKT
+	if locked.JKT != "" && stored.JKT != locked.JKT {
+		stored.Replaced = locked.JKT
 	}
 	return stored, nil
 }
 
-// heldPodSession is a pod's registration for a session as writePodSession locked it: the
+// lockedPodSession is a pod's registration for a session as writePodSession locked it: the
 // registration, the registrar that wrote it ("" for a row that names none), and whether that
 // registrar released it.
-type heldPodSession struct {
+type lockedPodSession struct {
 	PodSessionRegistration
 	registrar string
 	released  bool
@@ -548,14 +547,14 @@ type heldPodSession struct {
 // lockPodSession reads the pod's registration for session and locks it until the transaction ctx
 // carries ends, first waiting for any write that holds it and reading the row as that write
 // committed it; found is false when there is none.
-func (s *Store) lockPodSession(ctx context.Context, podUID, session string) (held heldPodSession, found bool, err error) {
+func (s *Store) lockPodSession(ctx context.Context, podUID, session string) (locked lockedPodSession, found bool, err error) {
 	err = s.db(ctx).QueryRow(ctx, `select expires_at, coalesce(jkt, ''), generation, coalesce(registrar, ''), released_at is not null
 		from oauth_pod_sessions where pod_uid = $1 and session = $2 for update`, podUID, session).
-		Scan(&held.ExpiresAt, &held.JKT, &held.Generation, &held.registrar, &held.released)
+		Scan(&locked.ExpiresAt, &locked.JKT, &locked.Generation, &locked.registrar, &locked.released)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return heldPodSession{}, false, nil
+		return lockedPodSession{}, false, nil
 	}
-	return held, err == nil, err
+	return locked, err == nil, err
 }
 
 // PodSessionRegistered reports whether a registration still says the pod podUID may exchange
@@ -605,8 +604,8 @@ func (s *Store) PodSessionRegistered(ctx context.Context, podUID, session, jkt s
 // the row whole and makes that one registration live again (writePodSession).
 //
 // A name exchange.ValidSession refuses is one the registration route never wrote a row of, so it
-// is dropped as matching nothing rather than refused, and a name given twice is asked once. With
-// no name left it reads nothing and answers 0.
+// is dropped as matching nothing rather than refused, and a name given twice matches the same
+// rows. With no name left it reads nothing and answers 0.
 //
 // It is one transaction of its own, the update then the count, and takes no advisory lock: it
 // inserts no row, so it cannot race another registrar's first write of a name as two inserts can
@@ -627,8 +626,6 @@ func (s *Store) ReleasePodSessions(ctx context.Context, registrar string, sessio
 			names = append(names, session)
 		}
 	}
-	slices.Sort(names)
-	names = slices.Compact(names)
 	if len(names) == 0 {
 		return 0, nil
 	}

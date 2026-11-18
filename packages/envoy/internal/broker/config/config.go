@@ -836,7 +836,7 @@ func parseServiceAccounts(setting, value string) ([]serviceAccountEntry, error) 
 			return nil, fmt.Errorf("%s must be <service>=system:serviceaccount:<namespace>:<name> entries, each service lowercase letters, digits and hyphens, at most 64, not %s, got %q", setting, policy.OwnerShared, text)
 		}
 		if isDefaultServiceAccount(subject) {
-			return nil, fmt.Errorf("%s names a namespace's default service account, got %q: every pod in that namespace whose spec names no account runs as it and can get a token for the broker's audience, so it proves nothing; name a dedicated account", setting, text)
+			return nil, defaultServiceAccountRefusal(setting, text)
 		}
 		if err := bindOnce(seen, setting, subject, service); err != nil {
 			return nil, err
@@ -866,6 +866,14 @@ func servicesByAccount(entries []serviceAccountEntry) map[string]string {
 func isDefaultServiceAccount(subject string) bool {
 	_, account, _ := strings.Cut(strings.TrimPrefix(subject, "system:serviceaccount:"), ":")
 	return account == defaultServiceAccount
+}
+
+// defaultServiceAccountRefusal is the refusal of setting's entry text for naming a namespace's
+// default account (isDefaultServiceAccount), whose token any pod of that namespace whose spec
+// names no account can get for the broker's audience. parseServiceAccounts, parsePodRegistrars
+// and ParseAccount share it, so each setting they read refuses such an account in the same words.
+func defaultServiceAccountRefusal(setting, text string) error {
+	return fmt.Errorf("%s names a namespace's default service account, got %q: every pod in that namespace whose spec names no account runs as it and can get a token for the broker's audience, so it proves nothing; name a dedicated account", setting, text)
 }
 
 // bindOnce records in seen that account proves service, refusing an account seen already, since
@@ -900,7 +908,7 @@ func parsePodRegistrars(setting, value string) (api.PodRegistrars, error) {
 			return nil, fmt.Errorf("%s must be <registrar account>=<pod account> entries, each account system:serviceaccount:<namespace>:<name>, got %q", setting, text)
 		}
 		if isDefaultServiceAccount(registrar) || isDefaultServiceAccount(pod) {
-			return nil, fmt.Errorf("%s names a namespace's default service account, got %q: every pod in that namespace whose spec names no account runs as it and can get a token for the broker's audience, so it proves nothing; name a dedicated account", setting, text)
+			return nil, defaultServiceAccountRefusal(setting, text)
 		}
 		if registrars.Lists(registrar, pod) {
 			return nil, fmt.Errorf("%s names the pair %q twice; name each pair once", setting, text)
@@ -1094,7 +1102,7 @@ func ParseAccount(setting, text, account string) (Account, error) {
 	case !serviceAccountPattern.MatchString(account):
 		return Account{}, ErrAccountForm
 	case isDefaultServiceAccount(account):
-		return Account{}, fmt.Errorf("%s names a namespace's default service account, got %q: every pod in that namespace whose spec names no account runs as it and can get a token for the broker's audience, so it proves nothing; name a dedicated account", setting, text)
+		return Account{}, defaultServiceAccountRefusal(setting, text)
 	}
 	return Account{Address: account}, nil
 }
@@ -1938,7 +1946,7 @@ func Load(getenv func(string) string) (Config, error) {
 			{"BROKER_EXCHANGE_K8S_AUDIENCE", cfg.ExchangeK8sAudience},
 			{"BROKER_NATS_K8S_AUDIENCE", cfg.NATS.K8sAudience},
 		} {
-			if other.audience != "" && other.audience == cfg.PodRegistrationAudience {
+			if other.audience == cfg.PodRegistrationAudience {
 				return Config{}, fmt.Errorf("BROKER_POD_REGISTRATION_AUDIENCE is %q, which %s is too: a token of the registration audience is accepted at POST /v1/oauth/exchange/pod-sessions alone, so give it an audience no other setting names", cfg.PodRegistrationAudience, other.setting)
 			}
 		}

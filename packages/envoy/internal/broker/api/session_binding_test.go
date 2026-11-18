@@ -19,10 +19,6 @@ import (
 	"github.com/sjawhar/envoy/internal/logtest"
 )
 
-// exchangeAudience is the audience the test server's token exchange (brokertest.NewOAuthProvider)
-// takes a pod's token at: its own, neither podAudience nor registrationAudience.
-const exchangeAudience = "legion-broker-exchange"
-
 // heldMessage is the route's WARN line for a registration refused because another registrar holds
 // the session name.
 const heldMessage = "broker: a pod's session registration was refused: another registrar holds the session name"
@@ -51,15 +47,14 @@ func TestASessionNameIsRefusedToASecondDaemon(t *testing.T) {
 	ts := newTestServer(t)
 	const session, ownSession, podA, podB = "implementer-g1", "reviewer-g1", "pod-uid-of-a", "pod-uid-of-b"
 	daemonA, daemonB := ts.accountToken(t, daemonAccount, "", time.Hour), ts.accountToken(t, otherDaemonAccount, "", time.Hour)
-	podToken := func(pod string) string { return ts.accountToken(t, brokertest.ExchangeRolesAccount, pod, time.Hour) }
 	registrations := func() []string {
 		return ts.column(t, `select pod_uid || ' of ' || registrar from oauth_pod_sessions where session = $1 order by pod_uid`, session)
 	}
 
-	ts.admits(t, "A's registration of "+podA+" for "+session, daemonA, podToken(podA), podA, session)
+	ts.admits(t, "A's registration of "+podA+" for "+session, daemonA, ts.rolesPodToken(t, podA), podA, session)
 	var want []map[string]any
 	for _, pod := range []string{podB, podA} {
-		status, body := ts.registerPodSession(t, daemonB, podToken(pod), session)
+		status, body := ts.registerPodSession(t, daemonB, ts.rolesPodToken(t, pod), session)
 		refusal := decode[wireError](t, body)
 		if status != http.StatusConflict || refusal.Code != "SESSION_HELD_BY_ANOTHER_REGISTRAR" || !strings.Contains(refusal.Error, session) || !strings.Contains(refusal.Error, daemonAccount) {
 			t.Fatalf("%s, listed for %s, registering %s for %s, which %s holds = %d %s; want 409 SESSION_HELD_BY_ANOTHER_REGISTRAR naming %s and %s",
@@ -86,12 +81,12 @@ func TestASessionNameIsRefusedToASecondDaemon(t *testing.T) {
 		t.Fatalf("the two refused registrations logged %v, want exactly %v", logged, want)
 	}
 
-	ts.admits(t, "B's registration of "+podB+" for a name of its own, "+ownSession, daemonB, podToken(podB), podB, ownSession)
+	ts.admits(t, "B's registration of "+podB+" for a name of its own, "+ownSession, daemonB, ts.rolesPodToken(t, podB), podB, ownSession)
 	if _, err := ts.Store.Pool.Exec(context.Background(), `update oauth_pod_sessions set expires_at = now() - interval '1 minute'
 		where session = $1 and registrar = $2`, session, daemonAccount); err != nil {
 		t.Fatalf("lapse %s's registrations of %s: %v", daemonAccount, session, err)
 	}
-	ts.admits(t, "B's registration of "+podB+" for "+session+" once A's registrations of it lapsed", daemonB, podToken(podB), podB, session)
+	ts.admits(t, "B's registration of "+podB+" for "+session+" once A's registrations of it lapsed", daemonB, ts.rolesPodToken(t, podB), podB, session)
 }
 
 // TestAPodAnotherDaemonRegisteredCannotTradeUnderAHeldName: daemon A registers its pod P_A for S
@@ -105,29 +100,25 @@ func TestAPodAnotherDaemonRegisteredCannotTradeUnderAHeldName(t *testing.T) {
 	ts := newTestServer(t)
 	const session, ownSession, podA, podB = "implementer-g1", "reviewer-g1", "pod-uid-of-a", "pod-uid-of-b"
 	daemonA, daemonB := ts.accountToken(t, daemonAccount, "", time.Hour), ts.accountToken(t, otherDaemonAccount, "", time.Hour)
-	podToken := func(pod string) string { return ts.accountToken(t, brokertest.ExchangeRolesAccount, pod, time.Hour) }
-	tradeToken := func(pod string) string {
-		return ts.audienceToken(t, brokertest.ExchangeRolesAccount, pod, exchangeAudience, time.Hour)
-	}
 
-	ts.admits(t, "A's registration of "+podA+" for "+session, daemonA, podToken(podA), podA, session)
-	if answer := ts.exchangePodToken(t, tradeToken(podA), session); answer.status != http.StatusOK || !answer.issued {
+	ts.admits(t, "A's registration of "+podA+" for "+session, daemonA, ts.rolesPodToken(t, podA), podA, session)
+	if answer := ts.exchangePodToken(t, ts.rolesTradeToken(t, podA), session); answer.status != http.StatusOK || !answer.issued {
 		t.Fatalf("%s's trade under %s, which %s registered it for = %+v, want 200 with an access token", podA, session, daemonAccount, answer)
 	}
-	ts.admits(t, "B's registration of "+podB+" for its own name, "+ownSession, daemonB, podToken(podB), podB, ownSession)
+	ts.admits(t, "B's registration of "+podB+" for its own name, "+ownSession, daemonB, ts.rolesPodToken(t, podB), podB, ownSession)
 	// Each check below reports and goes on, so a registration of S wrongly admitted also shows
 	// whether P_B can then trade under S.
-	status, body := ts.registerPodSession(t, daemonB, podToken(podB), session)
+	status, body := ts.registerPodSession(t, daemonB, ts.rolesPodToken(t, podB), session)
 	if code := decode[wireError](t, body).Code; status != http.StatusConflict || code != "SESSION_HELD_BY_ANOTHER_REGISTRAR" {
 		t.Errorf("%s registering %s for %s, which %s holds = %d %s, want 409 SESSION_HELD_BY_ANOTHER_REGISTRAR", otherDaemonAccount, podB, session, daemonAccount, status, strings.TrimSpace(string(body)))
 	}
 
-	answer := ts.exchangePodToken(t, tradeToken(podB), session)
+	answer := ts.exchangePodToken(t, ts.rolesTradeToken(t, podB), session)
 	if answer.status != http.StatusBadRequest || answer.code != "invalid_grant" || answer.issued || !strings.HasPrefix(answer.description, oauthwire.PodSessionNotRegistered+":") {
 		t.Errorf("%s's trade under %s, which %s holds and did not register it for = %+v; want 400 invalid_grant, its description beginning %s:, and no token",
 			podB, session, daemonAccount, answer, oauthwire.PodSessionNotRegistered)
 	}
-	if answer := ts.exchangePodToken(t, tradeToken(podB), ownSession); answer.status != http.StatusOK || !answer.issued {
+	if answer := ts.exchangePodToken(t, ts.rolesTradeToken(t, podB), ownSession); answer.status != http.StatusOK || !answer.issued {
 		t.Errorf("%s's trade under %s, which %s registered it for = %+v, want 200 with an access token: the refusal above is the name, not the pod", podB, ownSession, otherDaemonAccount, answer)
 	}
 }

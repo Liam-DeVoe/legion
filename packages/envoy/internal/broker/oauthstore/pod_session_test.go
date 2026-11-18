@@ -452,24 +452,6 @@ func TestARegistrationInsideAnotherTransactionIsRefused(t *testing.T) {
 	}
 }
 
-// lockWaitersBehind is every backend that waits on a lock behind pid's, read once: one waiting on
-// a lock pid's backend holds, or on one a backend already counted holds or is ahead of it for.
-// It is the read storetest.AwaitLockWaiters polls, for a test whose other way out is the waiter
-// returning, which that helper would fail after ten seconds with no waiter.
-func lockWaitersBehind(t *testing.T, pool *pgxpool.Pool, pid uint32) []int32 {
-	t.Helper()
-	var waiting []int32
-	if err := pool.QueryRow(context.Background(), `with recursive waiting(pid) as (
-			select pid from pg_stat_activity where wait_event_type = 'Lock' and $1 = any(pg_blocking_pids(pid))
-			union
-			select a.pid from pg_stat_activity a, waiting w where a.wait_event_type = 'Lock' and w.pid = any(pg_blocking_pids(a.pid))
-		)
-		select coalesce(array_agg(pid order by pid), '{}') from waiting`, int32(pid)).Scan(&waiting); err != nil {
-		t.Fatalf("read the backends waiting behind %d: %v", pid, err)
-	}
-	return waiting
-}
-
 // registrationsOf is every registration of session, each as its pod and the registrar that wrote
 // it, in pod order.
 func registrationsOf(t *testing.T, pool *pgxpool.Pool, session string) []string {
@@ -539,7 +521,7 @@ func TestTwoDaemonsFirstWritesOfOneNameAdmitOne(t *testing.T) {
 		if returnedWhileHeld {
 			break
 		}
-		waiting := lockWaitersBehind(t, pool, pid)
+		waiting := storetest.LockWaitersBehind(t, pool, pid)
 		if len(waiting) > 0 {
 			break
 		}

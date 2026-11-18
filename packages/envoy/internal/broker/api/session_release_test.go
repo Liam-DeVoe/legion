@@ -18,14 +18,11 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 )
 
-// releasePath is the release route.
-const releasePath = "/v1/oauth/exchange/pod-sessions/release"
-
 // releasePodSessions posts body to POST /v1/oauth/exchange/pod-sessions/release with bearer as the
 // calling service's own ServiceAccount token.
 func (ts *testServer) releasePodSessions(t *testing.T, bearer string, body any) (int, []byte) {
 	t.Helper()
-	return ts.req(t, http.MethodPost, releasePath, map[string]string{"Authorization": "Bearer " + bearer}, body)
+	return ts.req(t, http.MethodPost, "/v1/oauth/exchange/pod-sessions/release", map[string]string{"Authorization": "Bearer " + bearer}, body)
 }
 
 // releases reports, without stopping the test, unless the registrar whose login token bearer is,
@@ -57,14 +54,14 @@ func TestAReleasedNameIsNotHonoured(t *testing.T) {
 	register := func(what string) {
 		t.Helper()
 		status, body := ts.req(t, http.MethodPost, "/v1/oauth/exchange/pod-sessions", map[string]string{"Authorization": "Bearer " + daemonA},
-			map[string]any{"pod_token": ts.accountToken(t, brokertest.ExchangeRolesAccount, pod, time.Hour), "session": session, "thumbprint": k})
+			map[string]any{"pod_token": ts.rolesPodToken(t, pod), "session": session, "thumbprint": k})
 		if got := decode[wirePodSession](t, body); status != http.StatusOK || got.PodUID != pod || got.Session != session || got.Thumbprint != k {
 			t.Fatalf("%s = %d %s, want 200 naming pod %s, session %s and the thumbprint %s", what, status, body, pod, session, k)
 		}
 	}
 	trade := func() exchanged {
 		t.Helper()
-		return ts.exchangeProvedBy(t, key, ts.audienceToken(t, brokertest.ExchangeRolesAccount, pod, exchangeAudience, time.Hour), session)
+		return ts.exchangeProvedBy(t, key, ts.rolesTradeToken(t, pod), session)
 	}
 
 	register("A's registration of " + pod + " for " + session + " bound to k")
@@ -84,7 +81,7 @@ func TestAReleasedNameIsNotHonoured(t *testing.T) {
 			pod, session, daemonAccount, session, answer, session, oauthwire.PodSessionNotRegistered)
 	}
 
-	status, body := ts.registerPodSession(t, daemonB, ts.accountToken(t, brokertest.ExchangeRolesAccount, podB, time.Hour), session)
+	status, body := ts.registerPodSession(t, daemonB, ts.rolesPodToken(t, podB), session)
 	if refusal := decode[wireError](t, body); status != http.StatusConflict || refusal.Code != "SESSION_HELD_BY_ANOTHER_REGISTRAR" ||
 		!strings.Contains(refusal.Error, session) || !strings.Contains(refusal.Error, daemonAccount) {
 		t.Fatalf("%s registering %s for %s, which %s released = %d %s; want 409 SESSION_HELD_BY_ANOTHER_REGISTRAR naming %s and %s: a released registration holds its name until it lapses",
@@ -114,10 +111,6 @@ func TestTheReleaseRouteReleasesOnlyTheCallersRegistrations(t *testing.T) {
 	const s1, s2, s3 = "implementer-g1", "reviewer-g1", "tester-g1"
 	const p1, p1Sibling, p2, p3 = "pod-uid-a-1", "pod-uid-a-1-sibling", "pod-uid-a-2", "pod-uid-b-3"
 	daemonA, daemonB := ts.accountToken(t, daemonAccount, "", time.Hour), ts.accountToken(t, otherDaemonAccount, "", time.Hour)
-	podToken := func(pod string) string { return ts.accountToken(t, brokertest.ExchangeRolesAccount, pod, time.Hour) }
-	tradeToken := func(pod string) string {
-		return ts.audienceToken(t, brokertest.ExchangeRolesAccount, pod, exchangeAudience, time.Hour)
-	}
 	registrations := func() []string {
 		return ts.column(t, `select pod_uid || ' ' || session || ' of ' || registrar || ' released ' || (released_at is not null)::text
 			from oauth_pod_sessions order by pod_uid`)
@@ -130,7 +123,7 @@ func TestTheReleaseRouteReleasesOnlyTheCallersRegistrations(t *testing.T) {
 		{daemonA, p1, s1}, {daemonA, p1Sibling, s1}, {daemonA, p2, s2}, {daemonB, p3, s3},
 	}
 	for _, h := range held {
-		ts.admits(t, "the registration of "+h.pod+" for "+h.session, h.registrar, podToken(h.pod), h.pod, h.session)
+		ts.admits(t, "the registration of "+h.pod+" for "+h.session, h.registrar, ts.rolesPodToken(t, h.pod), h.pod, h.session)
 	}
 	unreleased := []string{
 		p1 + " " + s1 + " of " + daemonAccount + " released false",
@@ -184,7 +177,7 @@ func TestTheReleaseRouteReleasesOnlyTheCallersRegistrations(t *testing.T) {
 		t.Errorf("oauth_pod_sessions holds %v after B released [%s, %s, %s], want %v: B releases its own %s and none of %s's rows", got, s1, s3, s3, afterB, s3, daemonAccount)
 	}
 	for _, h := range held[:3] {
-		if answer := ts.exchangePodToken(t, tradeToken(h.pod), h.session); answer.status != http.StatusOK || !answer.issued {
+		if answer := ts.exchangePodToken(t, ts.rolesTradeToken(t, h.pod), h.session); answer.status != http.StatusOK || !answer.issued {
 			t.Errorf("%s's trade under %s, which %s registered and B released nothing of = %+v, want 200 with an access token", h.pod, h.session, daemonAccount, answer)
 		}
 	}
@@ -194,7 +187,7 @@ func TestTheReleaseRouteReleasesOnlyTheCallersRegistrations(t *testing.T) {
 			delete(registrars, pair)
 		}
 	}
-	status, body := ts.registerPodSession(t, daemonA, podToken(p2), s2)
+	status, body := ts.registerPodSession(t, daemonA, ts.rolesPodToken(t, p2), s2)
 	refusedNotListed(t, daemonAccount+" registering once the list no longer names it", status, body, daemonAccount, brokertest.ExchangeRolesAccount)
 	ts.releases(t, "A's release of ["+s2+", "+s1+", \"has space\", \"\"], once the list no longer names it", daemonA, []string{s2, s1, "has space", ""}, 4, 3)
 	released := ts.column(t, `select pod_uid || ' released ' || (released_at is not null)::text from oauth_pod_sessions order by pod_uid`)

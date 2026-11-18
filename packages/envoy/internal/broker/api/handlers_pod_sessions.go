@@ -217,10 +217,9 @@ func (s *server) registerPodSession(w http.ResponseWriter, r *http.Request, regi
 // (Deps.PodRegistrationTokens). A token either verifier accepts is answered its claims. Any other
 // is answered the error of the verifier whose audience it carries: an oidc.ErrAudience from one
 // verifier yields to the other's error. A verifier judges a token's audience before its expiry,
-// so an expired token of either audience answers oidc.ErrExpired, as it did when the route had
-// one verifier, and the daemon retries it; a token of neither audience answers the second
-// verifier's oidc.ErrAudience. registerPodSession is the one caller, so no other route accepts a
-// token of the registration audience.
+// so an expired token of either audience answers oidc.ErrExpired, and the daemon retries it; a
+// token of neither audience answers the second verifier's oidc.ErrAudience. registerPodSession is
+// the one caller, so no other route accepts a token of the registration audience.
 func (s *server) podSessionToken(ctx context.Context, raw string) (enroll.AccountClaims, error) {
 	claims, err := s.deps.Enroll.Pod.VerifyAccount(ctx, raw)
 	if err == nil || s.deps.PodRegistrationTokens == nil {
