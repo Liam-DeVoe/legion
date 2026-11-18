@@ -90,13 +90,13 @@ func TestHealthzIsUnhealthyOnceACachesReadsCannotReadPastABarrierForTheBound(t *
 	}
 }
 
-// The known-session store is none of the listener's caches, so its reads that cannot read its bucket
-// past a barrier for longer than the store's stale bound are reported apart: 200 "degraded", naming
-// the store's KV read, its watcher and its bucket, with the healthy answer's fields kept. The store
-// is on a server of its own, whose one user may do everything the store does except publish to the
-// bucket's subjects, so every read's barrier is refused, as a denied publish is in production. The
-// bucket is made first with a maximum age of 2 s, which the store keeps, so the stale bound is 1 s
-// and the answer comes on the first read that fails.
+// The known-session store is none of the listener's caches, so its reads that cannot read its
+// bucket past a barrier for longer than the store's stale bound are reported apart: 200 "degraded",
+// naming the store's KV read, its watcher and its bucket, with the healthy answer's fields kept.
+// The store is on a server of its own, whose one user may do everything the store does except
+// publish to the bucket's subjects, so every read's barrier is refused, as a denied publish is in
+// production. The bucket is made first with a maximum age of 2 s, which the store keeps, so the
+// stale bound is 1 s and the answer comes on the first read that fails.
 func TestHealthzIsDegradedOnceTheKnownSessionStoresReadsCannotReadPastABarrier(t *testing.T) {
 	const consumer = "listener-healthz-known-read"
 	client := setupTestNATS(t)

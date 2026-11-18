@@ -52,17 +52,17 @@ type subjectsPage struct {
 // the stream has no leader, or a new member while a stream of one replica scales up
 // (jetstream_api.go:2100-2134). A member can have stored through and still lack a key the leader
 // holds: its older record expired or a snapshot it installed deleted it, and the record that
-// replaced it has not reached the member yet. So a page is taken only from the leader. Each answer
-// names the server its copy holds the stream's leader (`cluster.leader`, jetstream_cluster.go:14075)
-// and every other peer of the stream but the server answering (:14068-14121), so the answering
-// server is the leader exactly when it names a leader and no other peer of that name. A member
-// with no leader names none (:14075, 14081-14083); the preferred member of a scale-up, which
-// answers while another server leads (jetstream_api.go:2112-2133), names that leader among the
-// other peers; and a server that runs no cluster names itself and no peer
-// (jetstream_cluster.go:14013-14017). A page from any copy but the leader, or from one whose last
-// stored sequence is below through, is refused (ErrKeyListBehind): the leader stored every write it
-// acknowledged, through included, so it holds a message on every key that held a record at
-// through, whether that record or a later one.
+// replaced it has not reached the member yet. So a page is taken only from the leader. Each
+// answer names the server its copy holds the stream's leader (`cluster.leader`,
+// jetstream_cluster.go:14075) and every other peer of the stream but the server answering
+// (:14068-14121), so the answering server is the leader exactly when it names a leader and no
+// other peer of that name. A member with no leader names none (:14075, 14081-14083); the
+// preferred member of a scale-up, which answers while another server leads
+// (jetstream_api.go:2112-2133), names that leader among the other peers; and a server that runs no
+// cluster names itself and no peer (jetstream_cluster.go:14013-14017). A page from any copy but
+// the leader, or from one whose last stored sequence is below through, is refused
+// (ErrKeyListBehind): the leader stored every write it acknowledged, through included, so it holds
+// a message on every key that held a record at through, whether that record or a later one.
 //
 // A list of more than JSMaxSubjectDetails subjects, 100,000 (jetstream_api.go:494-495), comes in
 // pages: each answer sorts the subjects the store holds when it is asked and returns the ones from
@@ -82,12 +82,12 @@ type subjectsPage struct {
 //
 // That list holds every key that held a record at through and still holds one, whose subject is in
 // every store from through on: each range of subjects is read from the store of the page that
-// reaches past it. A key added after through, or removed after it, can be listed or not, and either
-// is correct: a key added later is delivered to the read's own consumer after the barrier, and a key
-// the leader no longer holds is answered as no record (HeldFromLeader). No write fails a list, so
-// a bucket of any size that is written to steadily is listed in one pass. A list makes one request
-// per page, and one more for each step back. A page costs each subject's length and 5 bytes more:
-// 3,701,041 bytes for a page of 100,000 subjects of 32 characters
+// reaches past it. A key added after through, or removed after it, can be listed or not, and
+// either is correct: a key added later is delivered to the read's own consumer after the barrier,
+// and a key the leader no longer holds is answered as no record (HeldFromLeader). No write fails a
+// list, so a bucket of any size that is written to steadily is listed in one pass. A list makes
+// one request per page, and one more for each step back. A page costs each subject's length and 5
+// bytes more: 3,701,041 bytes for a page of 100,000 subjects of 32 characters
 // (TestStoredKeysListsABucketPastOnePageWhileItChanges).
 //
 // ctx bounds the whole list, every page included. A ctx carrying no deadline is bounded by

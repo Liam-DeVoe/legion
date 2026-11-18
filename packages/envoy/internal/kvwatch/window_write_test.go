@@ -229,10 +229,10 @@ func TestARecreatedReadKeepsAWriteThroughAHandleCapturedBeforeIt(t *testing.T) {
 }
 
 // A delete a store made in the deleted bucket can reach the copy late, as the session reaper's
-// does: it deletes in the bucket, then takes the cache's lock and evicts (SessionRegistry.deleteGone).
-// Reached after a write of the same key in the new bucket, which landed after the new read's
-// consumer was made, it removes that write's row, and no scan delivers the write. The read sets the
-// key to what the bucket holds before it completes.
+// does: it deletes in the bucket, then takes the cache's lock and evicts
+// (SessionRegistry.deleteGone). Reached after a write of the same key in the new bucket, which
+// landed after the new read's consumer was made, it removes that write's row, and no scan delivers
+// the write. The read sets the key to what the bucket holds before it completes.
 func TestARecreatedReadRestoresARowADelayedDeleteOfTheOldBucketRemoved(t *testing.T) {
 	const key = "deleted-then-written-again"
 	uri := testnats.URL(t)
@@ -349,9 +349,9 @@ func TestAReadAfterAStaleWatchWasDiscardedKeepsItsWindowWrite(t *testing.T) {
 
 // A JetStream restore of a snapshot can keep the stream's creation time (nats-server v2.15.1
 // server/stream.go:9622-9623 sets it from the snapshot's metadata when that names one), and then
-// the watcher reads the restored bucket as the same one, with a sequence space that moved back. A
-// row the copy took after the snapshot, at a revision past the restored stream's last sequence, is a
-// key the restored bucket holds no record of: every read of the restored bucket removes it.
+// the watcher reads the restored bucket as the same one, with a sequence space that moved back.
+// A row the copy took after the snapshot, at a revision past the restored stream's last sequence,
+// is a key the restored bucket holds no record of: every read of the restored bucket removes it.
 //
 // The in-process server this rig runs stamps the restored stream with the time of the restore for
 // the snapshot taken here, so the watcher's handle reports every stream read with the original

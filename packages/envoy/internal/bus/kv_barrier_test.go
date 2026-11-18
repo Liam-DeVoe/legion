@@ -71,8 +71,8 @@ func TestWriteBarrierFailsOnAMemberCutOffFromTheOthers(t *testing.T) {
 }
 
 // Every call through a KeyValue refuses BarrierKey before it sends anything, as a refusal
-// (ErrReservedKey, an ErrRefused): no store writes, deletes or reads a record under it, so no record
-// a store keeps can be the barrier, and none can be removed by it.
+// (ErrReservedKey, an ErrRefused): no store writes, deletes or reads a record under it, so no
+// record a store keeps can be the barrier, and none can be removed by it.
 func TestEveryKeyValueCallRefusesTheBarrierKey(t *testing.T) {
 	_, kv := leaderReadBucket(t, "write-barrier-reserved")
 	refusals := map[string]error{
@@ -119,7 +119,8 @@ func barrierRevision(t *testing.T, kv KeyValue) uint64 {
 	return revision
 }
 
-// barrierRevisionOrZero is the revision of the bucket's latest barrier record, 0 when it holds none.
+// barrierRevisionOrZero is the revision of the bucket's latest barrier record, 0 when it holds
+// none.
 func barrierRevisionOrZero(t *testing.T, kv KeyValue) uint64 {
 	t.Helper()
 	js, err := kv.streams.Conn().JetStream()

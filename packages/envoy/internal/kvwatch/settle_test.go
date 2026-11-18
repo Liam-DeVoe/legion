@@ -159,11 +159,11 @@ func TestAReadKeepsAKeyTheBucketReplacedAheadOfItsConsumer(t *testing.T) {
 	}
 }
 
-// A write another writer makes in the read's window - another listener's, which this copy holds no
-// trace of - is in no list of keys the copy knows, and not in the read's scan. The read keeps it
-// anyway: its consumer delivers the write before the read completes. So does a key longer than a
-// filtered watch could name (testnats.LegacyKeys' readable one), which the read's watch of every key
-// delivers like any other.
+// A write another writer makes in the read's window - another listener's, which this copy holds
+// no trace of - is in no list of keys the copy knows, and not in the read's scan. The read keeps
+// it anyway: its consumer delivers the write before the read completes. So does a key longer than
+// a filtered watch could name (testnats.LegacyKeys' readable one), which the read's watch of every
+// key delivers like any other.
 func TestAReadKeepsWritesAnotherWriterMadeInItsWindow(t *testing.T) {
 	const written = "written-by-another-listener"
 	uri := testnats.URL(t)
@@ -385,10 +385,10 @@ func TestReadErrReportsAReadFailureThatOutlastsTheStaleBound(t *testing.T) {
 }
 
 // failingBarrierWatcher is a watcher, not yet started, on a bucket whose read barriers
-// (bus.KeyValue.WriteBarrier) fail while the returned flag is set (it is at first), over a copy that
-// holds held, a key the bucket does not. clock is the watcher's clock when not nil. Its waits are
-// the returned pending's, its scans' idle wait a long one no other wait has, and its stream probe
-// off.
+// (bus.KeyValue.WriteBarrier) fail while the returned flag is set (it is at first), over a copy
+// that holds held, a key the bucket does not. clock is the watcher's clock when not nil. Its waits
+// are the returned pending's, its scans' idle wait a long one no other wait has, and its stream
+// probe off.
 func failingBarrierWatcher(t *testing.T, held string, clock *clock) (*kvwatch.Watcher, *seen, *pending, *atomic.Bool) {
 	t.Helper()
 	uri := testnats.URL(t)
@@ -410,7 +410,8 @@ func failingBarrierWatcher(t *testing.T, held string, clock *clock) (*kvwatch.Wa
 
 // replacingBarrier is a bucket's jetstream context that, once it has published the first read
 // barrier, writes each of replace through other before the barrier's acknowledgement returns: the
-// writes another writer makes while the read waits past its barrier. written is each one's revision.
+// writes another writer makes while the read waits past its barrier. written is each one's
+// revision.
 type replacingBarrier struct {
 	jetstream.JetStream
 	other   bus.KeyValue
@@ -450,7 +451,8 @@ func (s *replacingBarrier) failure() error {
 	return s.err
 }
 
-// scriptedRecord is a record a scripted watch delivers, with the pending count it is delivered with.
+// scriptedRecord is a record a scripted watch delivers, with the pending count it is delivered
+// with.
 type scriptedRecord struct {
 	key      string
 	revision uint64

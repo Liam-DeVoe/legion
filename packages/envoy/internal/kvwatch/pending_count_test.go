@@ -192,11 +192,12 @@ func TestARowTheLeaderCannotBeAskedAboutIsKeptAndTheReadFails(t *testing.T) {
 // closed: the list of the bucket's keys (bus.KeyValue.StoredKeys) and the leader's read of a key
 // (HeldFromLeader) build their requests on that connection, so they fail, while the read barrier,
 // every stream read and every watch go on as usual. With listGoesThrough, the first connection
-// asked for while failing is the live one: a read asks for it once for its list, before any
-// leader read, so only the leader's reads fail. StoredKeys takes the connection once per list,
-// before its first page, however many pages and asks it then sends on it (kv_stored_keys.go:94),
-// and each row checks that its read's WARN names the step that failed, so a list that asked for
-// the connection again would fail the leader-read row rather than pass it for another reason.
+// asked for while failing is the live one, and the read's list is what asks for it first.
+// StoredKeys looks the connection up for each request it sends (bus.KeyValue.subjectsPageAt), and
+// the test bucket's list is one page, so the list makes one lookup and only the leader's reads
+// fail. A list of more pages would make its second lookup on the closed connection and fail as the
+// list, and each row checks that its read's WARN names the step that failed, so that would fail
+// the leader-read row rather than pass it for another reason.
 type leaderReadsThrough struct {
 	jetstream.JetStream
 	closed          *natsgo.Conn
@@ -215,10 +216,10 @@ func (s leaderReadsThrough) Conn() *natsgo.Conn {
 // pausedWatch is a first read's watch whose consumer the server holds paused from its creation
 // until resume (nats-server v2.11+ consumer pause, which stops delivery before the consumer
 // fetches its next record, consumer.go:5455-5459): the watch creates its watcher on the bucket,
-// pauses the watcher's consumer, and holds the watcher, as heldCreate does, until the test lets it
-// go. Records written meanwhile are stored and not delivered, so the bucket can replace one ahead of
-// the consumer's cursor. When zeroBarrier is set, each delivery of a read barrier is handed on with
-// a pending count of 0.
+// pauses the watcher's consumer, and holds the watcher, as heldCreate does, until the test lets
+// it go. Records written meanwhile are stored and not delivered, so the bucket can replace one
+// ahead of the consumer's cursor. When zeroBarrier is set, each delivery of a read barrier is
+// handed on with a pending count of 0.
 type pausedWatch struct {
 	held        *heldCreate
 	streams     jetstream.JetStream
