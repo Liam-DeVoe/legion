@@ -101,11 +101,7 @@ the tree. When the tree's architect claim reads `failed`
 `worker-died` section below says, with `<ROOT>` as its `<KEY>`: restart the tree when you find no
 cause or its cause is gone, and otherwise ask the person whether to park it, with no relaunch
 while the cause stays. When the claim of the architect that owns the issue does not read `failed`
-and `read_state` shows that claim unreachable, its session's last registration with Envoy more
-than 20 minutes old, relaunch it on its same session, which keeps its context, its workspace and
-the task it owes (`skill://legion-controller/references/unreachable-claims.md`); where that
-relaunch is refused, ask a person rather than reaching for `fresh_session`, which throws that
-session away.
+and the Envoy registry shows its session gone, `fresh_session` on that architect.
 Name each silent issue in the day's report, with its role and the length of its silence.
 
 ## `unslotted on <KEY>` (`{kind: "unslotted", reason}`)

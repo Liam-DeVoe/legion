@@ -12,11 +12,9 @@ own machine, and you are that foreground session. The daemon reads your liveness
 role registry: the holder of `legion-<project>-controller`, its state and its `last_seen`. It
 replaces no controller whose session reads `unresponsive` — past the live window, inside the gone
 horizon, still the holder — and acts only on one that reads `gone`. The daemon launches no
-controller itself, and relaunches none either, whatever Envoy says of this session, because it
-holds no launcher for a session an operator started: a controller of this kind that stops
-answering is a person's to start again. So do not exit the session: while none runs, the project
-has no controller. A second `legion controller start` replaces you: it mints a new secret, your
-grants stop working (every `set_status` answers 403), and the role moves to the new session.
+controller itself, so do not exit the session: while none runs, the project has no controller. A
+second `legion controller start` replaces you: it mints a new secret, your grants stop working
+(every `set_status` answers 403), and the role moves to the new session.
 
 ## Launched by the daemon (`controller: daemon`)
 
@@ -24,13 +22,6 @@ The daemon runs you in a pod and supervises you like a root architect. When the 
 daemon relaunches it and resumes this session with a new start message, so run the start procedure
 each time one arrives. A person reaches you through Dispatch (a message on the Agents page, an
 answer to your ask, a mention), Envoy or Slack. No `legion controller start` can replace you.
-
-The daemon reads this session's liveness in Envoy's session list, as it reads every claim's.
-When the last registration of this session is more than 20 minutes old, your claim is out of reach, and the daemon relaunches it on its same session, at most once in 6 hours: it stops this process through the launcher and starts it again, and it replaces the controller's pod where the launch needs that or the launcher is not connected, since no other role runs in that pod.
-The relaunch keeps this session, its context and whatever it owes, and the start message that follows is the one you run the start procedure on.
-
-That relaunch is refused while your worker stream has shown a step in the last 20 minutes, while you are in a turn and your session has sent an activity report in that turn in the last 20 minutes (it sends one every 5 minutes while a turn is open), while your open call is anything but a `wait`, and while your activity report since your launch shows a background job or a subagent running, which is the guard that keeps it off a turn still doing work.
-Where it is refused, where the process outlives the stop, and where a second relaunch would fall inside the 6 hours, `read_state` names the controller's claim unreachable (`controllerLocator.unreachable`) and the daemon writes the line that tells a person in Slack's #fleet-alerts, because no agent is left to act for you.
 
 ## The `legion` tool
 
@@ -52,10 +43,6 @@ Where it is refused, where the process outlives the stop, and where a second rel
   which sets `backlog` and then `todo` in the same turn, and the report issue's `icebox`, because
   that issue holds no work. You cannot set `done`: only an issue's architect or the daemon closes
   an issue.
-- `op: "relaunch"` starts an unreachable claim's process again on the session it already runs: it takes the `claim` token the daemon's notice carries, stops the old process through that claim's launcher and starts the new one, and the claim keeps its session, its workspace and the task it owes.
-  Nothing is charged to the claim, and the resumed session is told that its turn was cut.
-  The daemon refuses a claim it no longer marks unreachable (`CLAIM_REACHABLE`), one between states (`CLAIM_UNSETTLED`: not ready, idle or working, under a held suspension, a waiting wake or a compaction, recording no process, or in a pod the runtime could not read), the controller's own claim (`CLAIM_IS_CONTROLLER`), and one whose tree allows it no launch, because the tree's cleanup is reserved or the tree was opened again since (`TREE_REFUSES_LAUNCH`), which that tree's close or its next start decides; and it refuses `RELAUNCH_GUARD` a claim whose worker stream has shown a step in the last 20 minutes, one in a turn whose session has sent an activity report in that turn in the last 20 minutes, one whose open call is not a `wait`, one whose activity report since its launch shows a background job or a subagent running, and one that has sent no report since its launch.
-  Five refusals are a case for a person instead: the role's launcher is not connected (`LAUNCHER_NOT_CONNECTED`), the launch would replace the pod (`RELAUNCH_REPLACES_POD`), the process outlived the stop (`PROCESS_OUTLIVED_STOP`), every claim of a pod of two or more claims is unreachable (`POD_UNREACHABLE`), and the claim was relaunched in the last 6 hours (`RELAUNCHED_RECENTLY`) (`skill://legion-controller/references/unreachable-claims.md`).
 
 ## `gh`
 
