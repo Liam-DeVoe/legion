@@ -14,36 +14,34 @@ name: CI caches
 # would reach nobody.
 #
 # Five Go families, each one a restore step of ci.yaml's run names, keyed on the runner's
-# architecture and on the Go version the family's own module installs (go-envoy-infra on the hash
-# of its module files too, for the reason its job gives): go-notices (lint's notices step),
-# go-daemon (typecheck, daemon-go, plugin-pack and pi-legion), go-envoy (envoy-go-checks,
-# envoy-go-race-docs, envoy-go-docs-finalizers, listener-server-change, envoy-e2e-local and
-# envoy-session-stall), go-envoy-test (envoy-go, and the binaries job of
-# .github/workflows/dispatch-browser.yaml, which ci.yaml's dispatch-browser job calls: it builds
-# the Dispatch server, the real broker's commands and the dev OIDC issuer for the whole run, whose
-# packages the go-envoy entry's build of the listener and natsd alone does not hold; no other job
-# of that workflow runs a go command) and go-envoy-infra (envoy-infra-go, and the build job of
-# release-envoy-infra.yaml).
-# The key carries `runner.arch` because Go's build cache holds the objects of the architecture
-# that compiled them: an entry an x86_64 runner filled gives an arm64 job its modules and none of
-# its objects. So each family is filled on every architecture one of its readers runs on, one
-# matrix leg per runner: go-notices on ubuntu-24.04-arm alone, where lint runs, and go-daemon,
-# go-envoy, go-envoy-test and go-envoy-infra on ubuntu-24.04-arm and on ubuntu-24.04 both, since
-# each has a reader on each (typecheck and the envoy lanes on the first; daemon-go, plugin-pack,
-# pi-legion, envoy-go-checks, the browser lane and the release builds on the second). A leg builds
-# what that runner's readers build and no more: go-daemon's arm64 reader is typecheck alone, so its
-# arm64 leg runs typecheck's vet and leaves the test and race builds to the x86_64 leg. One
-# Go setup per leg, since the key carries the version that module's go.mod names: the daemon's
-# go.mod for go-daemon and for go-notices, which lint installs the daemon's Go for; the envoy
-# module's for go-envoy and go-envoy-test; the infra module's for go-envoy-infra. Each family is
-# first looked up (`lookup-only`, and no `restore-keys`: the question is whether that exact key
-# exists, and the answer downloads nothing), and only a miss runs the build the ci.yaml job runs
-# and saves what it left in the module cache and the build cache. A family whose key is already
-# there builds nothing, so a run that finds every key costs a checkout and a setup-go. Where a
-# job fills two families it fills the smaller one first, so the entry that carries the other's
-# objects too is the one that was large already. A leg of a matrix that fails leaves the other
-# running (`fail-fast: false`): a cancelled leg saves nothing, and one architecture's fill has no
-# reason to cost the other's.
+# architecture and on the Go version the family's own module installs (go-envoy-infra on the hash of
+# its module files too, for the reason its job gives): go-notices (lint's notices step), go-daemon
+# (typecheck, daemon-go, plugin-pack and pi-legion), go-envoy (envoy-go-checks, envoy-go-race-docs,
+# envoy-go-docs-finalizers, listener-server-change, envoy-e2e-local and envoy-session-stall),
+# go-envoy-test (envoy-go, and the binaries job of .github/workflows/dispatch-browser.yaml, which
+# ci.yaml's dispatch-browser job calls: it builds the Dispatch server, the real broker's commands
+# and the dev OIDC issuer for the whole run, whose packages the go-envoy entry's build of the
+# listener and natsd alone does not hold; no other job of that workflow runs a go command) and
+# go-envoy-infra (envoy-infra-go, and the build job of release-envoy-infra.yaml). The key carries
+# `runner.arch` because Go's build cache holds the objects of the architecture that compiled them:
+# an entry an x86_64 runner filled gives an arm64 job its modules and none of its objects. So each
+# family is filled on every architecture one of its readers runs on, one matrix leg per runner:
+# go-notices on ubuntu-24.04-arm alone, where lint runs, and go-daemon, go-envoy, go-envoy-test and
+# go-envoy-infra on ubuntu-24.04-arm and on ubuntu-24.04 both, since each has a reader on each, as
+# each reader's own `runs-on` decides (the envoy job's comment below names go-envoy's and
+# go-envoy-test's readers by runner). A leg builds what that runner's readers build and no more:
+# go-daemon's arm64 reader is typecheck alone, so its arm64 leg runs typecheck's vet and leaves the
+# test and race builds to the x86_64 leg. One Go setup per leg, since the key carries the version
+# that module's go.mod names: the daemon's go.mod for go-daemon and for go-notices, which lint
+# installs the daemon's Go for; the envoy module's for go-envoy and go-envoy-test; the infra
+# module's for go-envoy-infra. Each family is first looked up (`lookup-only`, and no `restore-keys`:
+# the question is whether that exact key exists, and the answer downloads nothing), and only a miss
+# runs the build the ci.yaml job runs and saves what it left in the module cache and the build
+# cache. A family whose key is already there builds nothing, so a run that finds every key costs a
+# checkout and a setup-go. Where a job fills two families it fills the smaller one first, so the
+# entry that carries the other's objects too is the one that was large already. A leg of a matrix
+# that fails leaves the other running (`fail-fast: false`): a cancelled leg saves nothing, and one
+# architecture's fill has no reason to cost the other's.
 #
 # Beside those five, the architecture-check job fills
 # architecture-check-<os>-<arch>-go<version>-<hash>, the family of the composite action
@@ -228,9 +226,11 @@ jobs:
 
   # go-envoy and go-envoy-test. Both key on packages/envoy/go.mod's Go, the module every job that
   # restores them sets Go up from, so one setup serves the two; their lookups and their builds are
-  # independent, and each build is gated on its own lookup. One leg per runner: the envoy lanes
-  # that restore them run on ubuntu-24.04-arm, and the browser lane's jobs that restore them on
-  # ubuntu-24.04.
+  # independent, and each build is gated on its own lookup. One leg per runner its readers run on,
+  # which each reader's own `runs-on` decides. Read at 29b902d1 on 2026-11-18: envoy-go-checks
+  # (go-envoy, ci-job-envoy-go-checks.yaml), dispatch-browser.yaml's binaries job and
+  # dispatch-browser-nightly.yaml's re-record job (go-envoy-test) run on ubuntu-24.04, and every
+  # other job that restores either family on ubuntu-24.04-arm.
   envoy:
     strategy:
       fail-fast: false

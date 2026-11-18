@@ -1028,6 +1028,11 @@ function seedDocument(
   if (blocks !== null) client.setQueryData(artifactBlocksQuery(id).queryKey, blocks);
 }
 
+// ---------------------------------------------------------------------------------------------
+// The Settings page's Legion section, which the landing neither answers nor seeds: that page
+// reads this entry from its own route (`features/settings/useLegionDaemons.ts`).
+// ---------------------------------------------------------------------------------------------
+
 /** One project's Legion daemon, or `null` for a project that names none — not a failure. Each
  *  project is its own entry: the Settings page's Legion section reads one entry per project
  *  (`useLegionDaemons`), since no route lists them. */

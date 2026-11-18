@@ -393,11 +393,11 @@ jobs:
       # The dashboard's and the proof editor's fast checks: no `full-ci` term, only the
       # dispatched one above, so they come back on every push.
       dispatch_ui: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.dispatch_ui }}
-      # The browser suite, ungated: a pull request that changes what it reads runs it, because
-      # the dispatch-browser job below then runs the cheap `pull-request` lane, the four projects
-      # a pull request is held to. The `full-ci` label no longer decides whether this suite runs,
-      # only which lane it runs: that job's `lane:` input reads the label, and the comment there
-      # says what each event gets.
+      # The browser suite, ungated: a pull request that changes what it reads runs it, because the
+      # dispatch-browser job below then runs the cheap `pull-request` lane, the projects a pull
+      # request is held to. The `full-ci` label no longer decides whether this suite runs, only
+      # which lane it runs: that job's `lane:` input reads the label, and the comment there says
+      # what each event gets.
       dispatch_browser: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.dispatch_browser }}
       claude_envoy: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.claude_envoy }}
       # The nine slow suites, whose runner time dwarfs every other job's. The merge queue runs
@@ -2508,19 +2508,17 @@ jobs:
               - 'packages/broker-client/**'
               - 'packages/envoy-client/test/**'
             # The browser suite (dispatch-browser), which .github/workflows/dispatch-browser.yaml
-            # holds: the binaries job, the two shard legs, the three `-alone` projects on one
-            # machine of their own, the two-process job, the fake-embedder job, the visual review
-            # and the merge job. Every entry is something a browser row reads: the dashboard and
-            # its contracts, the Dispatch server the binaries job builds and the rows execute, and
-            # the two workflow files that hold the steps. The retired `dispatch` job's filter also
-            # held three fixture sets whose only readers are the dashboard's and the proof
-            # editor's unit tests, and they are not here: dispatch-ui's filter names all three, and
-            # with this output ungated on a pull request they would start the binaries job, two
-            # shard machines, the embedder job and the merge job for a fixture-only change. The
-            # dispatch_browser gate in .github/scripts/ci_job_reads.py says what this suite reads,
-            # and check-ci-filters.sh holds this filter to that gate - it refuses a filter that
-            # misses a read, never one that is too wide, so a path is in this list because a
-            # browser row reads it and for no other reason.
+            # holds, the jobs that file's head names. Every entry is something a browser row reads:
+            # the dashboard and its contracts, the Dispatch server the binaries job builds and the
+            # rows execute, and the two workflow files that hold the steps. The retired `dispatch`
+            # job's filter also held three fixture sets whose only readers are the dashboard's and
+            # the proof editor's unit tests, and they are not here: dispatch-ui's filter names all
+            # three, and with this output ungated on a pull request they would start every job of
+            # the pull-request lane for a fixture-only change. The dispatch_browser gate in
+            # .github/scripts/ci_job_reads.py says what this suite reads, and check-ci-filters.sh
+            # holds this filter to that gate - it refuses a filter that misses a read, never one
+            # that is too wide, so a path is in this list because a browser row reads it and for no
+            # other reason.
             dispatch_browser:
               - *ci_router
               - *bun_install
@@ -2597,16 +2595,16 @@ jobs:
               # The workflow that holds every browser step, which this job reads as its own
               # definition - the place every other job of this file gives to its own
               # ci-job-<id>.yaml, so a change to it selects this job alone. An unlabelled pull
-              # request runs the pull-request lane, the four projects a change is held to; a pull
-              # request carrying `full-ci`, the merge group and a dispatch run the full lane,
-              # every project and the two-process job, which is the lane the nightly
+              # request runs the pull-request lane, the projects a change is held to; a pull request
+              # carrying `full-ci`, the merge group and a dispatch run the full lane, every project
+              # and the two-process job, which is the lane the nightly
               # (.github/workflows/dispatch-browser-nightly.yaml) calls. So a worker can put the
               # whole suite on a pull request with the label, and the group is where a change to
-              # that file meets it before main anyway. The nightly itself is not in this list:
-              # no step of this suite reads it, which rule 9's second direction refuses, since the
-              # binaries job, two shard machines, the embedder job and the merge job would start
-              # over a change no row sees. It is a read of the ci_filters gate instead, so a change
-              # to it re-runs this check, which holds this filter and that gate together.
+              # that file meets it before main anyway. The nightly itself is not in this list: no
+              # step of this suite reads it, which rule 9's second direction refuses, since every
+              # job of the pull-request lane would start over a change no row sees. It is a read of
+              # the ci_filters gate instead, so a change to it re-runs this check, which holds this
+              # filter and that gate together.
               - '.github/workflows/dispatch-browser.yaml'
               # The memory and CPU sampler the shard and alone jobs' browser steps start and read
               # back, the reading of the lanes' PostgreSQL those two jobs run before the suite,
@@ -5118,22 +5116,20 @@ jobs:
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
-  # Every browser row of the Dispatch suite, which .github/workflows/dispatch-browser.yaml
-  # holds: the binaries job that builds the Go commands the lanes run and the dashboard bundles
-  # they serve, two shard legs, the three `-alone` projects on one machine, the two-process job,
-  # the fake-embedder job that runs on both
-  # lanes, the containerised visual review, and the merge job that joins the shard and alone
-  # reports into one and posts this job's ci-ok report.
+  # Every browser row of the Dispatch suite, which .github/workflows/dispatch-browser.yaml holds:
+  # the binaries job that builds the Go commands the lanes run and the dashboard bundles they serve,
+  # the shard legs, the `-alone` projects on a machine of their own, the two-process job, the
+  # fake-embedder job that runs on both lanes, the containerised visual review, and the merge job
+  # that joins the shard and alone reports into one and posts this job's ci-ok report.
   #
   # Two lanes, and which run pays for which. A pull request without the label `full-ci` runs
-  # `pull-request`, the four projects a change is held to (chromium, iphone and the two stubbed
-  # ones) over the rows tagged `@pr`, so such a run
-  # proves those rows and no more - it is not the run that proves the suite before main.
-  # Every other run - the merge group, a workflow_dispatch and a pull request carrying `full-ci`
-  # - runs `full`: every project, the three `-alone` ones and the two-process job. So the merge
-  # group is where a change meets the whole suite before it lands, and the nightly
-  # (.github/workflows/dispatch-browser-nightly.yaml, which calls the same file with the full
-  # lane, from main) runs it again on main's tip.
+  # `pull-request`, the projects a change is held to, which dispatch-browser.yaml's shard job names
+  # for that lane, over the rows tagged `@pr`, so such a run proves those rows and no more - it is
+  # not the run that proves the suite before main. Every other run - the merge group, a
+  # workflow_dispatch and a pull request carrying `full-ci` - runs `full`: every project, the three
+  # `-alone` ones and the two-process job. So the merge group is where a change meets the whole
+  # suite before it lands, and the nightly (.github/workflows/dispatch-browser-nightly.yaml, which
+  # calls the same file with the full lane, from main) runs it again on main's tip.
   #
   # One input decides that: the called workflow reads `lane` for the projects each job runs, so
   # nothing here chooses them a second time. It picks no browser to install any more: the shard
@@ -5164,10 +5160,10 @@ jobs:
       checks: write
     uses: ./.github/workflows/dispatch-browser.yaml
     with:
-      # An unlabelled pull request gets the four-project `pull-request` lane; a pull request
-      # carrying `full-ci`, and every other event, gets the full lane. That is what lets a worker
-      # recheck a slow-suite failure on a pull request: the label picks the lane, while the
-      # `dispatch_browser` output above runs the suite either way.
+      # An unlabelled pull request gets the `pull-request` lane; a pull request carrying `full-ci`,
+      # and every other event, gets the full lane. That is what lets a worker recheck a slow-suite
+      # failure on a pull request: the label picks the lane, while the `dispatch_browser` output
+      # above runs the suite either way.
       lane: ${{ (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && 'full' || 'pull-request' }}
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
