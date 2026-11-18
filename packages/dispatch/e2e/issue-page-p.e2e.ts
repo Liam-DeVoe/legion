@@ -2198,6 +2198,23 @@ const ON_ISSUE_ACTIONS = {
   what: `button ${CONTROL_LABELS.issue_actions}`,
 } as const;
 
+/** Waits for Details, just opened, to hold the focus, as it takes the focus as it opens. */
+async function expectFocusInDetails(page: Page): Promise<void> {
+  await expect
+    .poll(() => details(page).evaluate((drawer) => drawer.contains(document.activeElement)), {
+      message: "Details took no focus as it opened",
+    })
+    .toBe(true);
+}
+
+/** Closes Details by Escape, and waits until it is hidden and two frames are drawn, so a focus
+ *  read next that only passes through a control is not taken for one that stays there. */
+async function escapeDetails(page: Page): Promise<void> {
+  await page.keyboard.press("Escape");
+  await expect(details(page), "Escape left Details open").toBeHidden();
+  await framesDrawn(page, 2);
+}
+
 // Details gives the focus back to the control it was opened from as it closes, but a write made
 // while it is open can take that control off the header: the labels' count goes once every label
 // fits, and the parent link once the parent is cleared. Details then had nothing to give the
@@ -2220,16 +2237,10 @@ test("Details closed after a write removed the labels' count leaves the focus in
     await count.focus();
     await page.keyboard.press("Enter");
     await expect(details(page), "Enter on the labels' count opened no Details").toBeVisible();
-    await expect
-      .poll(() => details(page).evaluate((drawer) => drawer.contains(document.activeElement)), {
-        message: "Details took no focus as it opened",
-      })
-      .toBe(true);
+    await expectFocusInDetails(page);
     await patchIssue(seeded.key, { labels: ["dispatch"] });
     await expect(count, "one label still draws the labels' count").toHaveCount(0);
-    await page.keyboard.press("Escape");
-    await expect(details(page), "Escape left Details open").toBeHidden();
-    await framesDrawn(page, 2);
+    await escapeDetails(page);
     expect(
       await focusNow(page),
       "Details, closed after its labels' count went, left the focus off Issue actions"
@@ -2251,16 +2262,10 @@ test("Details closed after a write removed the parent link leaves the focus in t
     await expect(parent, "the header's parent link took no focus").toBeFocused();
     await page.keyboard.press("Shift+M");
     await expect(details(page), "Shift+M on the parent link opened no Details").toBeVisible();
-    await expect
-      .poll(() => details(page).evaluate((drawer) => drawer.contains(document.activeElement)), {
-        message: "Details took no focus as it opened",
-      })
-      .toBe(true);
+    await expectFocusInDetails(page);
     await patchIssue(seeded.key, { parent: null });
     await expect(parent, "a cleared parent still draws the parent link").toHaveCount(0);
-    await page.keyboard.press("Escape");
-    await expect(details(page), "Escape left Details open").toBeHidden();
-    await framesDrawn(page, 2);
+    await escapeDetails(page);
     expect(
       await focusNow(page),
       "Details, closed after its parent link went, left the focus off Issue actions"
@@ -2284,23 +2289,21 @@ test("Details closed after an answer elsewhere removed Approve leaves the focus 
     const header = issueHeader(page);
     const approve = header.getByRole("button", { exact: true, name: "Approve" });
     await expect(approve, "the chip carries no Approve while its request waits").toBeVisible();
+    await expect(
+      reviewActions(header),
+      "the header's Approve and Request changes are not found by their drawn words"
+    ).toHaveCount(2);
     await approve.focus();
     await expect(approve, "the header's Approve took no focus").toBeFocused();
     await page.keyboard.press("Shift+M");
     await expect(details(page), "Shift+M on Approve opened no Details").toBeVisible();
-    await expect
-      .poll(() => details(page).evaluate((drawer) => drawer.contains(document.activeElement)), {
-        message: "Details took no focus as it opened",
-      })
-      .toBe(true);
+    await expectFocusInDetails(page);
     await reviewArtifact(seeded.specArtifactId, { state: "approved" }, { login: "bob" });
     await expect(
       reviewActions(header),
       "the header still draws an action once bob answered the request"
     ).toHaveCount(0);
-    await page.keyboard.press("Escape");
-    await expect(details(page), "Escape left Details open").toBeHidden();
-    await framesDrawn(page, 2);
+    await escapeDetails(page);
     const focus = await focusNow(page);
     await expect(
       approvalChip(page, seeded.specArtifactId),

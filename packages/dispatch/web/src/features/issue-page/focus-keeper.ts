@@ -126,22 +126,28 @@ function firstHolder(fallbacks: readonly FocusFallback[], loss: FocusLoss): HTML
  *   browser is about to drop to the body;
  * - the opener can no longer hold the focus: it is removed, disabled, hidden or inert;
  * - no press of the reader's put the focus on the body. A press outside the layer that moved the
- *   focus off an element onto the page, with no element focused since, is the reader putting it
- *   there. A press that moved no focus is no move of the reader's: the header's Details control
- *   keeps the focus where it is and closes Details. Nor is a press that moved the focus to an
- *   element, as one in a popover the layer opened: a later fall to the body is not its doing. A
- *   press is read once its own move is done: at its pointerup when the focus has moved by then,
- *   as a mouse press moves it as its button goes down; else at its click, as a tap moves it only
- *   after its pointer is up. The click is read before the target's own handler, so a click that
- *   closes the layer is read before it does.
+ *   focus off an element still in the page onto the page, with no element focused since, is the
+ *   reader putting it there. A press that moved no focus is no move of the reader's: the header's
+ *   Details control keeps the focus where it is and closes Details. Nor is a fall to the body
+ *   from an element that went as the press began: a popover that closes on a pointerdown, as an
+ *   `AnchoredPanel` does, takes the control focused in it along and drops the focus to the body
+ *   before the press's mousedown. Nor is a press that moved the focus to an element, as one in a
+ *   popover the layer opened: a later fall to the body is not its doing. A press is read once its
+ *   own move is done: at its pointerup when the focus has moved by then, as a mouse press moves
+ *   it as its button goes down; else at its click, as a tap moves it only after its pointer is
+ *   up. The click is read before the target's own handler, so a click that closes the layer is
+ *   read before it does.
  *
  * The loss names no added elements, since nothing watched the region while the layer was open,
  * and its place is read from where the opener stood when the watch began (`FocusLoss.place`).
  *
- * A loss inside a layer still open is the layer's own. The watch does not end when the focus
- * leaves the layer: a popover a control of the layer opens, as Details' Edit labels does, stands
- * on the page's body outside the layer and takes the focus, which comes back into the layer from
- * it or falls with it as the layer closes.
+ * A loss inside a layer still open is the layer's own. The watch also ends when the reader goes
+ * on to the page: a focus on an element of the page's own top-level container (the app's root)
+ * outside the layer leaves nothing of the layer's to drop, and a later fall of that focus to the
+ * body, as a control there goes, is no doing of the layer's. A popover a control of the layer
+ * opens, as Details' Edit labels does, is drawn on the page's body outside that container and
+ * takes the focus, which comes back into the layer from it or falls with it as the layer closes:
+ * a focus there keeps the watch going.
  */
 function watchLayer(
   region: HTMLElement,
@@ -159,14 +165,17 @@ function watchLayer(
     around.push(element);
     if (element === region) break;
   }
+  // The page's own top-level container, the app's root, which holds the region and the rest of
+  // the page but not a popover drawn straight on the page's body.
+  const app = region.closest("body > *");
   /** The press under way: where the focus was as it began, and whether it fell outside the
    *  layer; null while no press is under way. A press is under way from its pointerdown until
    *  the pointerup that finds the focus moved, or else until its click; a new pointerdown
    *  replaces one still under way. */
   let press: { readonly from: Element | null; readonly outside: boolean } | null = null;
   /** Whether the reader's last press that moved the focus put it on the page from outside the
-   *  layer, and no element has taken the focus since: then that press, not the layer, put the
-   *  focus on the body. */
+   *  layer, off an element still in the page, and no element has taken the focus since: then that
+   *  press, not the layer, put the focus on the body. */
   let pressedOntoPage = false;
   /** The timer of the read of the layer, which waits one task after a change of the layer or of
    *  an ancestor, or undefined while no read waits. */
@@ -182,9 +191,11 @@ function watchLayer(
     const { from, outside } = press;
     press = null;
     // A press that left the focus where it was is no move of the reader's, and leaves the mark as
-    // it was.
+    // it was. A fall to the body is the press's own only while the element the focus left is
+    // still in the page: a popover that closes as the press begins takes its focused control
+    // along, which drops the focus to the body before the press could move it.
     if (page.activeElement === from) return;
-    pressedOntoPage = outside && focusOnDocument();
+    pressedOntoPage = outside && focusOnDocument() && from?.isConnected === true;
   };
   const notePointerUp = () => {
     // A mouse press moves the focus as its button goes down, so a press that has moved it by its
@@ -198,7 +209,14 @@ function watchLayer(
     // from its click, which must not read as the press moving the focus.
     endPress();
   };
-  const noteFocus = () => {
+  const noteFocus = (event: FocusEvent) => {
+    const { target } = event;
+    if (target instanceof Node && app?.contains(target) === true && !layer.contains(target)) {
+      // The reader went on to the page, so the layer holds no focus of theirs to drop as it
+      // closes, and a later fall of this focus to the body is none of the layer's doing.
+      stop();
+      return;
+    }
     // An element took the focus, so a later fall of the focus to the body is not a press's doing.
     pressedOntoPage = false;
   };
@@ -228,9 +246,7 @@ function watchLayer(
     // An opener that can still hold the focus is the layer's to give it back to, or the reader
     // moved the focus off it.
     if (!dropped || pressedOntoPage || canHoldFocus(opener)) return;
-    const place = opener.isConnected
-      ? opener.parentElement
-      : (around.find((element) => element.isConnected) ?? null);
+    const place = around.find((element) => element.isConnected) ?? null;
     const loss: FocusLoss = { added: [], lost: opener, place, root: region };
     firstHolder(fallbacks.current, loss)?.focus();
   };
@@ -278,10 +294,12 @@ function watchLayer(
  * Details does not narrow the watch to that dialog - the keeper stops watching the region as
  * above, and watches that layer for the control the focus left (`watchLayer`): a write may take
  * that control away while the layer is open, and the layer then has nothing to give the focus
- * back to as it closes. That watch ends in three ways: when the focus comes back into the region,
- * whose own watch keeps the focus from there; once the layer has closed, whether the keeper
- * placed the focus, the layer's own code gave it back to the control, or the reader moved it;
- * and on unmount. It goes on wherever else the focus goes, as into a popover the layer opened.
+ * back to as it closes. That watch ends in four ways: when the focus comes back into the region,
+ * whose own watch keeps the focus from there; when it goes on to another element of the page
+ * outside the layer, from which a later fall to the body is no loss of the control's; once the
+ * layer has closed, whether the keeper placed the focus, the layer's own code gave it back to the
+ * control, or the reader moved it; and on unmount. A focus outside the page's own top-level
+ * container, as in a popover the layer opened on the page's body, keeps it going.
  *
  * `fallbacks` may be a new array on every render; the keeper always asks the latest one.
  */
@@ -320,7 +338,8 @@ export function useFocusKeeper(
      *  acted or the focus has moved on. */
     let given: { readonly from: HTMLElement; readonly to: HTMLElement } | null = null;
     /** Ends the watch of the layer the focus last left the region for (`watchLayer`), or is
-     *  undefined before the focus first leaves for one. Ending a watch that has ended does
+     *  undefined while no watch runs, save that a watch that ends by itself, as its layer closes
+     *  or the reader goes on to the page, leaves it set: ending a watch that has ended does
      *  nothing. */
     let stopLayerWatch: (() => void) | undefined;
 
@@ -364,29 +383,26 @@ export function useFocusKeeper(
       page.removeEventListener("pointerdown", notePress, true);
       page.removeEventListener("keydown", noteKey, true);
     };
-    /** The element outside the region the focus moved to from `lost`, or null while the focus is
-     *  on the body, still on `lost`, or on another element of the region. */
-    const focusOutside = (lost: HTMLElement): Element | null => {
+    /** Whether the focus has moved from `lost` to an element outside the region: the reader has
+     *  left the region, and the keeper stops watching it. Where that element stands in a layer
+     *  outside the region, the keeper watches that layer for `lost` until it closes. A focus on
+     *  the body, still on `lost`, or on another element of the region has not left. */
+    const leftRegion = (lost: HTMLElement): boolean => {
       const active = page.activeElement;
       if (focusOnDocument() || active === null || active === lost || region.contains(active)) {
-        return null;
+        return false;
       }
-      return active;
-    };
-    /** The focus moved from `lost` to `to`, outside the region: the reader has left the region,
-     *  and the keeper stops watching it. Where `to` stands in a layer outside the region, the
-     *  keeper watches that layer for `lost` until it closes. */
-    const leave = (lost: HTMLElement, to: Element) => {
       forget();
-      const layer = outermostLayer(to);
+      const layer = outermostLayer(active);
       if (layer !== null && !layer.contains(region)) {
         stopLayerWatch = watchLayer(region, lost, layer, latestFallbacks);
       }
+      return true;
     };
     /** Whether the focus `lost` held is lost: it is on the body or still on `lost`, no press of
      *  the reader's put it there, and `lost` can no longer hold it. Every other answer is final,
      *  and with the focus on the body the keeper then stops watching the region. A focus outside
-     *  the region is read before this, as the reader leaving it (`leave`). */
+     *  the region is read before this, as the reader leaving it (`leftRegion`). */
     const isLost = (lost: HTMLElement): boolean => {
       const onBody = focusOnDocument();
       if (!onBody && page.activeElement !== lost) {
@@ -426,11 +442,7 @@ export function useFocusKeeper(
       giveBack();
       // A give-back moved the focus, and its focusin made the control given it the one held.
       const lost = held;
-      const outside = focusOutside(lost);
-      if (outside !== null) {
-        leave(lost, outside);
-        return;
-      }
+      if (leftRegion(lost)) return;
       if (!isLost(lost)) {
         heard = [];
         return;
@@ -444,12 +456,7 @@ export function useFocusKeeper(
       // The focus may have moved since the check, so the loss is read again, of whatever the
       // region holds now, and the focus may have left the region since.
       const lost = held;
-      if (lost === null) return;
-      const outside = focusOutside(lost);
-      if (outside !== null) {
-        leave(lost, outside);
-        return;
-      }
+      if (lost === null || leftRegion(lost)) return;
       hear(observer.takeRecords());
       const change = heard;
       heard = [];
@@ -479,6 +486,7 @@ export function useFocusKeeper(
       // The reader is back in the region, so the layer they left it for, if any, holds no focus
       // of theirs to drop as it closes, and the region's own watch keeps the focus from here.
       stopLayerWatch?.();
+      stopLayerWatch = undefined;
       // A focus anywhere but where the keeper put it moves the focus on, past any give-back.
       if (given !== null && event.target !== given.to) given = null;
       hold(event.target);
