@@ -155,15 +155,24 @@ func TestTheFormsDrainLeavesADocumentAnotherProcessIndexedFirstOwed(t *testing.T
 		t.Fatalf("the forms queue holds %v, want the notes alone", listed)
 	}
 
-	// The other process's block-index pass holds the document's owner row, the issue's, for the
-	// length of its index, which the drain's index takes too.
+	// The other process is an older build's block-index pass. A build before the owner lock
+	// protocol serialises on the owner's row, so it holds the document's owner row, the issue's,
+	// for the length of its index. While a process of such a build is in the fleet, this build
+	// takes that row too, beside its advisory lock (store.LockOwner), so the drain's index waits on
+	// it. The fleet holds one here: a server_processes row with no owner_lock_protocol, as
+	// api.registerEarlierBuildProcess writes one.
+	if _, err := database.Pool.Exec(ctx, `
+		insert into server_processes (instance, commit, signing_keys)
+		values (gen_random_uuid(), 'earlier0build', '{fingerprint}')`); err != nil {
+		t.Fatalf("register a process of an earlier build: %v", err)
+	}
 	other, err := database.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin the other process's index: %v", err)
 	}
 	defer other.Rollback(ctx)
 	if _, err := other.Exec(ctx, `select 1 from issues where key = 'CORE-1' for no key update`); err != nil {
-		t.Fatalf("take the notes' owner row as a block index does: %v", err)
+		t.Fatalf("take the notes' owner row as an older build's block index does: %v", err)
 	}
 	passed := make(chan RefsFormsTick, 1)
 	failed := make(chan error, 1)

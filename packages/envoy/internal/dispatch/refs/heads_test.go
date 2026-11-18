@@ -39,11 +39,11 @@ func TestTheHeadsAReaderDrawsCutNoReferenceInHalf(t *testing.T) {
 		// 232 runes, so the key after them crosses the cut at 240 in both texts: the head an edge
 		// shows is the lead in both, though the first 240 runes of the two differ.
 		lead := strings.Repeat("x", 231) + " "
-		if got := editedHeadTargets(lead+"CORE-1234 a", lead+"CORE-1294 b", "", []text.Ref{core}); got != nil {
-			t.Fatalf("editedHeadTargets = %#v, want none: the head an edge shows did not move", got)
+		if got := EditedTargets(lead+"CORE-1234 a", lead+"CORE-1294 b", "", []text.Ref{core}); got != nil {
+			t.Fatalf("EditedTargets = %#v, want none: the head an edge shows did not move", got)
 		}
-		if got := editedHeadTargets("A first.", "A second.", "", []text.Ref{core}); len(got) != 1 {
-			t.Fatalf("editedHeadTargets = %#v, want the cited target: the head moved", got)
+		if got := EditedTargets("A first.", "A second.", "", []text.Ref{core}); len(got) != 1 {
+			t.Fatalf("EditedTargets = %#v, want the cited target: the head moved", got)
 		}
 	})
 }

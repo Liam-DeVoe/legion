@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
@@ -83,7 +84,7 @@ func insertSecondIssue(t *testing.T, tx pgx.Tx) {
 
 // indexDocumentVersion writes version number of document as this build's version write indexes
 // it: its blocks from the one rendering (documentOf), then its references and the excerpt of each
-// (ReplaceDocumentCounted).
+// (replaceDocumentVersion), settling the forms queue after both.
 func indexDocumentVersion(t *testing.T, tx pgx.Tx, document string, number int, parts []part) {
 	t.Helper()
 	ctx := context.Background()
@@ -95,13 +96,75 @@ func indexDocumentVersion(t *testing.T, tx pgx.Tx, document string, number int, 
 		t.Fatalf("write version %d of %s: %v", number, document, err)
 	}
 	located := NewReader(ctx, tx, "artifact", document, refsGrammarServer).Mentions(markdown)
-	moved, err := IndexBlocks(ctx, tx, document, number, versionAt, markdown, blocks, located, nil, refsGrammarServer)
-	if err != nil {
+	if _, err := IndexBlocks(ctx, tx, document, number, versionAt, markdown, blocks, located, nil, refsGrammarServer); err != nil {
 		t.Fatalf("index the blocks of version %d of %s: %v", number, document, err)
 	}
-	if _, err := ReplaceDocumentCounted(ctx, tx, document, number, versionAt, text.Refs(located), moved,
-		MentionExcerpts(markdown, blocks, located, refsGrammarServer), true); err != nil {
+	replaceDocumentVersion(t, tx, document, number, versionAt, located, MentionExcerpts(markdown, blocks, located, refsGrammarServer), true)
+}
+
+// replaceDocumentVersion reconciles a document version's references as docs' version write does
+// (replaceVersionRefs): the replacement, then the excerpts it cut, or with none the mark that
+// they are owed. blocksIndexed says the version's blocks were indexed first, which is what lets
+// the replacement settle the forms queue (Replacement.SettlingForms).
+func replaceDocumentVersion(t *testing.T, tx pgx.Tx, document string, number int, versionAt time.Time, located []text.Located, excerpts map[Target]model.GraphExcerpt, blocksIndexed bool) {
+	t.Helper()
+	ctx := context.Background()
+	replacement, err := PlanReplace(ctx, tx, "artifact", document, text.Refs(located), &versionAt)
+	if err != nil {
+		t.Fatalf("plan the references of version %d of %s: %v", number, document, err)
+	}
+	if blocksIndexed {
+		replacement = replacement.SettlingForms()
+	}
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		replacement.Queue(b)
+		if excerpts == nil {
+			ClearExcerpts(b, document)
+		} else {
+			QueueRecordExcerpts(b, document, number, excerpts)
+		}
+		return nil
+	}); err != nil {
 		t.Fatalf("index version %d of %s: %v", number, document, err)
+	}
+}
+
+// writeAskText indexes ask's whole text as this build's writes do, through reader. questionFirst
+// is a write of the ask's question - its creation, an edit - which reconciles the question's
+// references before the parts and settles the forms queue in the statement that ends the parts'
+// index (ItemIndexing.SettlingForms); otherwise it is a write of the parts alone - an answer -
+// which reconciles the question's references after them, dated at, and settles there
+// (Replacement.SettlingForms).
+func writeAskText(t *testing.T, tx pgx.Tx, reader *Reader, ask model.Ask, at time.Time, questionFirst bool) {
+	t.Helper()
+	ctx := context.Background()
+	index, err := ReadItemIndex(ctx, tx, ItemAsk, ask.ID)
+	if err != nil {
+		t.Fatalf("read the part index of ask %s: %v", ask.ID, err)
+	}
+	parts, err := PlanAskParts(index, reader, ask, at)
+	if err != nil {
+		t.Fatalf("plan the parts of ask %s: %v", ask.ID, err)
+	}
+	dated := &at
+	if questionFirst {
+		dated = nil
+	}
+	question, err := PlanReplace(ctx, tx, "ask", ask.ID, text.Refs(reader.Mentions(ask.Question)), dated)
+	if err != nil {
+		t.Fatalf("plan the question of ask %s: %v", ask.ID, err)
+	}
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		if questionFirst {
+			question.Queue(b)
+			parts.SettlingForms().Queue(b)
+			return nil
+		}
+		parts.Queue(b)
+		question.SettlingForms().Queue(b)
+		return nil
+	}); err != nil {
+		t.Fatalf("index ask %s: %v", ask.ID, err)
 	}
 }
 
@@ -128,9 +191,7 @@ func TestAWriteLeavesNothingOwedInTheFormsQueue(t *testing.T) {
 
 	write := func(body string) {
 		t.Helper()
-		if _, err := ReplaceCountedItem(ctx, tx, ItemComment, comment, body, refsGrammarServer, time.Now()); err != nil {
-			t.Fatalf("index the comment as %q: %v", body, err)
-		}
+		indexItemAsAWriteDoes(t, tx, ItemComment, comment, body, refsGrammarServer, time.Now())
 	}
 	write("The plan: dispatch://CORE-1/plan.")
 	if edges := edgesFrom(t, tx, "comment", comment); !slices.Equal(edges, []string{"issue CORE-1"}) {
@@ -202,9 +263,7 @@ func TestAVersionThatLeavesItsBlocksToTheBlockIndexStaysOwed(t *testing.T) {
 	}
 	located := NewReader(ctx, tx, "artifact", document, refsGrammarServer).Mentions(markdown)
 
-	if _, err := ReplaceDocumentCounted(ctx, tx, document, 1, versionAt, text.Refs(located), nil, nil, false); err != nil {
-		t.Fatalf("index version 1 with no rendering: %v", err)
-	}
+	replaceDocumentVersion(t, tx, document, 1, versionAt, located, nil, false)
 
 	if edges := edgesFrom(t, tx, "artifact", document); !slices.Equal(edges, []string{"issue CORE-1"}) {
 		t.Fatalf("the document's edges are %v, want the tab address's issue", edges)
@@ -227,13 +286,7 @@ func TestAnOlderBuildsAnswerLeavesTheAskOwed(t *testing.T) {
 	insertSecondIssue(t, tx)
 	ask := insertAsk(t, tx, "CORE-1", "Which tab holds it?",
 		model.AskOption{Label: "dispatch://CORE-2/plan"}, model.AskOption{Label: "Neither"})
-	reader := NewReader(ctx, tx, "ask", ask.ID, askPartServer)
-	if _, err := ReplaceCounted(ctx, tx, reader, ask.Question); err != nil {
-		t.Fatalf("index the ask's question: %v", err)
-	}
-	if _, err := IndexAskParts(ctx, tx, reader, ask, time.Now(), true); err != nil {
-		t.Fatalf("index the ask's parts: %v", err)
-	}
+	writeAskText(t, tx, NewReader(ctx, tx, "ask", ask.ID, askPartServer), ask, time.Now(), true)
 	cite := Target{Kind: "issue", ID: "CORE-2"}
 	if got := askPartTargets(t, tx, ask.ID); !slices.Equal(got, []Target{cite}) {
 		t.Fatalf("the ask's parts link %v, want the option's tab address", got)
@@ -284,13 +337,7 @@ func TestABareDeleteFromEachBlockTableLeavesItsOwnerOwed(t *testing.T) {
 	comment := insertIndexedItem(t, tx, ItemComment, "CORE-1", "See dispatch://CORE-1/plan.")
 	message := insertIndexedItem(t, tx, ItemMessage, "CORE-1", "See dispatch://CORE-1/plan.")
 	ask := insertAsk(t, tx, "CORE-1", "Is dispatch://CORE-1/plan right?", model.AskOption{Label: "Yes"})
-	reader := NewReader(ctx, tx, "ask", ask.ID, askPartServer)
-	if _, err := ReplaceCounted(ctx, tx, reader, ask.Question); err != nil {
-		t.Fatalf("index the ask's question: %v", err)
-	}
-	if _, err := IndexAskParts(ctx, tx, reader, ask, time.Now(), true); err != nil {
-		t.Fatalf("index the ask's parts: %v", err)
-	}
+	writeAskText(t, tx, NewReader(ctx, tx, "ask", ask.ID, askPartServer), ask, time.Now(), true)
 	if owed := formsOwed(t, tx); len(owed) != 0 {
 		t.Fatalf("the queue holds %v after this build indexed every owner, want it empty", owed)
 	}
@@ -347,28 +394,15 @@ func TestThisBuildsAskWritesSettleAfterTheirParts(t *testing.T) {
 	insertSecondIssue(t, tx)
 	ask := insertAsk(t, tx, "CORE-1", "Is dispatch://CORE-2/plan right?",
 		model.AskOption{Label: "dispatch://CORE-2/plan"}, model.AskOption{Label: "No"})
-	reader := NewReader(ctx, tx, "ask", ask.ID, askPartServer)
-	if _, err := ReplaceCounted(ctx, tx, reader, ask.Question); err != nil {
-		t.Fatalf("index the ask's question: %v", err)
-	}
-	if _, err := IndexAskParts(ctx, tx, reader, ask, time.Now(), true); err != nil {
-		t.Fatalf("index the ask's parts: %v", err)
-	}
+	writeAskText(t, tx, NewReader(ctx, tx, "ask", ask.ID, askPartServer), ask, time.Now(), true)
 	if owed := formsOwed(t, tx); len(owed) != 0 {
 		t.Fatalf("the queue holds %v after the ask's first write, want it empty", owed)
 	}
 
 	// An edit that drops the option citing CORE-2: the question keeps its edge, the option's part
 	// loses its own.
-	previous := ask.Question
 	writeAskOptions(t, tx, &ask, model.AskOption{Label: "No"})
-	edit := NewReader(ctx, tx, "ask", ask.ID, askPartServer)
-	if _, err := ReplaceCountedEdit(ctx, tx, edit, previous, ask.Question); err != nil {
-		t.Fatalf("index the edited question: %v", err)
-	}
-	if _, err := IndexAskParts(ctx, tx, edit, ask, time.Now(), true); err != nil {
-		t.Fatalf("index the edited parts: %v", err)
-	}
+	writeAskText(t, tx, NewReader(ctx, tx, "ask", ask.ID, askPartServer), ask, time.Now(), true)
 	cite := Target{Kind: "issue", ID: "CORE-2"}
 	if got := askPartTargets(t, tx, ask.ID); !slices.Equal(got, []Target{cite}) {
 		t.Fatalf("after the edit the ask's parts link %v, want the question's alone", got)
@@ -384,9 +418,7 @@ func TestThisBuildsAskWritesSettleAfterTheirParts(t *testing.T) {
 	if owed := formsOwed(t, tx); !slices.Equal(owed, []string{"ask " + ask.ID}) {
 		t.Fatalf("the answer's row write owes %v, want the ask", owed)
 	}
-	if _, err := IndexAskParts(ctx, tx, NewReader(ctx, tx, "ask", ask.ID, askPartServer), ask, ask.Answer.At, false); err != nil {
-		t.Fatalf("index the answered ask's parts: %v", err)
-	}
+	writeAskText(t, tx, NewReader(ctx, tx, "ask", ask.ID, askPartServer), ask, ask.Answer.At, false)
 	if edges := edgesFrom(t, tx, "ask", ask.ID); !slices.Equal(edges, []string{"issue CORE-2"}) {
 		t.Fatalf("after the answer the ask's edges are %v, want its question's alone", edges)
 	}
