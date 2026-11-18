@@ -42,10 +42,11 @@ import (
 //     it; a first request still running (its lease, IdempotencyLease, renewed every
 //     keyedLeaseRenewal while it runs) is 409 KEY_IN_FLIGHT with Retry-After: 1; a finished one is
 //     replayed, its stored status and body with Idempotency-Replayed: ?1, and the handler does not
-//     run again. A repeat that arrives while its first request still runs is never spooled
-//     (requestKeyInFlight): its body is read off the connection and discarded, and the repeat is
-//     judged by its digest once that body has arrived, by what the key holds then
-//     (answerDrainedRepeat).
+//     run again - unless a delete made since the key's first request began ended that answer
+//     (answerEndedByDelete), which is then never replayed. A repeat that arrives while its first
+//     request still runs is never spooled (requestKeyInFlight): its body is read off the
+//     connection and discarded, and the repeat is judged by its digest once that body has
+//     arrived, by what the key holds then (answerDrainedRepeat).
 //   - The handler finishes whatever its client does: it runs on the request's context with the
 //     client's cancellation taken off, bounded by keyedHandlerLimit and counted in the server's
 //     background wait, so a client that gives up and asks again waits on the first run rather than
@@ -194,7 +195,9 @@ func keyedAnswerPost(stored []byte) string {
 // replayKeptMembers are the members of a write's first answer a replay keeps beside the resource
 // as it stands now: what the write's answer carried that a read of the resource does not - a
 // write's advice, a reply's ask_waiting_on, whether an accept's text was already gone from the
-// live document (lost), and whether a reply route posted nothing (duplicate).
+// live document (lost), and whether a reply route posted nothing (duplicate). A recovery replay
+// keeps none of them from an answer a delete since ended (answerHeldKey); a reread keeps them
+// from any, as none of a reread route's holds the text of a post.
 var replayKeptMembers = []string{"advice", "ask_waiting_on", "lost", "duplicate"}
 
 // writeRefreshed answers a keyed replay with fresh, the resource as it stands now, in the first
@@ -722,7 +725,8 @@ func (m *boundaryMask) flush() {
 	m.pending = nil
 }
 
-// heldRequestKey is the row a repeat found under its key.
+// heldRequestKey is the row a repeat found under its key. createdAt is when the key's first
+// request claimed it (request_keys.created_at), which a takeover does not move.
 type heldRequestKey struct {
 	digest    string
 	method    string
@@ -736,6 +740,7 @@ type heldRequestKey struct {
 	committed bool
 	lapsed    bool
 	expired   bool
+	createdAt time.Time
 }
 
 // keyState is what a repeat finds its key holding, decided once from the row (heldRequestKey.state)
@@ -913,11 +918,12 @@ func (s *server) readHeldRequestKey(ctx context.Context, login, key string) (hel
 		select request_digest, method, path, attempt, status, headers, response,
 		       response is not null, recovery, committed_at is not null,
 		       leased_at is null or leased_at < now() - make_interval(secs => $3),
-		       created_at < now() - make_interval(secs => $4)
+		       created_at < now() - make_interval(secs => $4), created_at
 		from request_keys where login = $1 and idempotency_key = $2
 	`, login, key, s.keyLease().Seconds(), contracts.IdempotencyKeyTTL.Seconds()).Scan(
 		&held.digest, &held.method, &held.path, &held.attempt, &held.status, &held.headers,
 		&held.response, &held.kept, &held.recovery, &held.committed, &held.lapsed, &held.expired,
+		&held.createdAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return held, false, nil
@@ -934,6 +940,11 @@ func (s *server) readHeldRequestKey(ctx context.Context, login, key string) (hel
 // request still running told so, and a write that landed and lost its answer said to have landed.
 // A key past its window and one whose holder died with nothing committed answer nothing: the
 // repeat runs the request there.
+//
+// A recovery replay answers what the write made as it stands now and keeps beside it the
+// replayKeptMembers of the stored answer (writeRefreshed). An answer a delete ended since
+// (answerEndedByDelete) lends it none of them: the replay is handed no stored answer, as when
+// the first request never answered.
 func (s *server) answerHeldKey(
 	w http.ResponseWriter, r *http.Request, key string, held heldRequestKey, state keyState, replay keyedReplay, reread keyedReread,
 ) bool {
@@ -943,8 +954,19 @@ func (s *server) answerHeldKey(
 			"%s %q was already used for %s %s with different content; this request was not run: a changed request needs a new key",
 			contracts.IdempotencyKeyHeader, key, held.method, held.path))
 	case keyRecovered:
+		stored := held.storedSuccess()
+		if stored != nil {
+			ended, err := s.answerEndedByDelete(r.Context(), held)
+			if err != nil {
+				s.writeHandlerError(w, err)
+				return true
+			}
+			if ended {
+				stored = nil
+			}
+		}
 		w.Header().Set(contracts.IdempotencyReplayedHeader, "?1")
-		replay(w, r, held.recovery, held.storedSuccess())
+		replay(w, r, held.recovery, stored)
 	case keyAnswered:
 		s.replayAnswer(w, r, held, reread)
 	case keyInFlight:
@@ -1047,7 +1069,8 @@ func writeKeyCommitted(w http.ResponseWriter, key string, held heldRequestKey) {
 // replayAnswer answers a repeat whose key holds its first request's answer (keyAnswered). A kept
 // success that is a post, on a route that rereads one (keyedRereads), is answered by that
 // reread: every header the handler set, then the post as it stands now under the first
-// answer's status. Every other answer is replayed as it was kept (replayStoredAnswer).
+// answer's status. Every other answer is replayed as it was kept (replayStoredAnswer), unless a
+// delete since ended it (answerEndedByDelete).
 func (s *server) replayAnswer(w http.ResponseWriter, r *http.Request, held heldRequestKey, reread keyedReread) {
 	if reread != nil {
 		if id := keyedAnswerPost(held.storedSuccess()); id != "" {
@@ -1057,22 +1080,100 @@ func (s *server) replayAnswer(w http.ResponseWriter, r *http.Request, held heldR
 			return
 		}
 	}
-	replayStoredAnswer(w, held)
+	ended, err := s.answerEndedByDelete(r.Context(), held)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	replayStoredAnswer(w, held, ended)
 }
 
 // replayStoredAnswer answers a repeat with the first request's stored answer: its status, every
-// header its handler set, and its body. held is keyAnswered, so its status is set.
-func replayStoredAnswer(w http.ResponseWriter, held heldRequestKey) {
+// header its handler set, and its body. held is keyAnswered, so its status is set. An answer the
+// key did not keep, and one a delete since ended (ended, answerEndedByDelete), is answered
+// ANSWER_NOT_KEPT under the first answer's status instead, saying which of the two it is: a
+// client takes a replayed 2xx reading that code for a request that ran, and reads again what it
+// wants to see (answerNotKept, packages/contracts).
+func replayStoredAnswer(w http.ResponseWriter, held heldRequestKey, ended bool) {
 	w.Header().Set(contracts.IdempotencyReplayedHeader, "?1")
-	if !held.kept {
+	switch {
+	case !held.kept:
 		writeError(w, contracts.IdempotencyAnswerNotKept, *held.status, fmt.Sprintf(
 			"Dispatch ran this request and answered %d, but its answer was larger than the %d bytes a key keeps, so it is not replayed: read what the request wrote to see it",
 			*held.status, keyedAnswerKept))
-		return
+	case ended:
+		writeError(w, contracts.IdempotencyAnswerNotKept, *held.status, fmt.Sprintf(
+			"Dispatch ran this request and answered %d, but a comment or a message that answer carried was deleted since, so it is not replayed: read what the request wrote to see it",
+			*held.status))
+	default:
+		maps.Copy(w.Header(), held.headers)
+		w.WriteHeader(*held.status)
+		_, _ = w.Write(held.response)
 	}
-	maps.Copy(w.Header(), held.headers)
-	w.WriteHeader(*held.status)
-	_, _ = w.Write(held.response)
+}
+
+// answerUUID is a uuid as text, in either case: the id of every comment, message and document,
+// which is how an answer names each one, whatever member it stands in.
+var answerUUID = regexp.MustCompile(`(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`)
+
+// answerEndedQuery is answerEndedByDelete's statement: $1 is every uuid the kept answer names and
+// $2 the time the key's first request began. Each arm reads by an index: the two primary keys,
+// and comments_anchor_artifact, the index on an anchor's document.
+const answerEndedQuery = `
+	select exists (select 1 from comments where id = any($1::uuid[]) and deleted_at > $2)
+	    or exists (select 1 from messages where id = any($1::uuid[]) and deleted_at > $2)
+	    or exists (select 1 from comments where (anchor->>'artifact_id')::uuid = any($1::uuid[]) and deleted_at > $2)
+`
+
+// answerEndedByDelete reports whether a delete made after held's key first began ended the answer
+// the key kept. R3 of dispatch://INFRA-1523 holds every read of a deleted comment or issue
+// message, and every read that quotes one, to no part of its body, and a replay answers its
+// caller as a read does; so an answer that carried such a body is never replayed after the
+// delete (replayStoredAnswer, answerHeldKey), whatever route kept it.
+//
+// It reads two things at the repeat itself, so a delete that commits after the first answer was
+// kept ends it all the same and the delete writes nothing to any key: every uuid anywhere in the
+// kept answer's bytes, and request_keys.created_at, the time the key's first request began. A
+// delete before that time left nothing in the answer, since every read it was made of already
+// gave the post without its body. A delete is timed by deleted_at, which is when its own
+// transaction began. The answer is ended when one of those uuids is:
+//
+//   - a comment deleted since: the post an answer is or names by its id - a related-item check's
+//     hit with its snippet (model.WriteSuggestion), in a check of its own or in a write's advice -
+//     and the parent whose block text a reply carries, which the reply names (reply_to, answers,
+//     reply_block.node);
+//   - a message deleted since, for each of the same;
+//   - a document that a comment deleted since anchors on: an accept names the version it makes
+//     after the comment's body (acceptedVersionName) and the delete renames it
+//     (renameAcceptedVersion), so an answer carrying a document's versions - its rename, an
+//     upload of its next version - holds that name and names only the document. An anchor is the
+//     one way a comment reaches a document's versions: a suggestion has one, and the anchor of a
+//     comment a document owns is that document (resolveAnchor resolves it within its owner), so
+//     the owner column names no document the anchor does not.
+//
+// An answer the key did not keep holds no bytes to read, and one that names no uuid no post.
+func (s *server) answerEndedByDelete(ctx context.Context, held heldRequestKey) (bool, error) {
+	if !held.kept {
+		return false, nil
+	}
+	found := answerUUID.FindAll(held.response, -1)
+	if len(found) == 0 {
+		return false, nil
+	}
+	seen := make(map[string]bool, len(found))
+	ids := make([]string, 0, len(found))
+	for _, id := range found {
+		lowered := strings.ToLower(string(id))
+		if !seen[lowered] {
+			seen[lowered] = true
+			ids = append(ids, lowered)
+		}
+	}
+	var ended bool
+	if err := s.deps.Store.Pool.QueryRow(ctx, answerEndedQuery, ids, held.createdAt).Scan(&ended); err != nil {
+		return false, fmt.Errorf("read whether a delete ended a kept answer: %w", err)
+	}
+	return ended, nil
 }
 
 // storedStatus reports whether an answer of this status is a key's answer. A 5xx says nothing of
