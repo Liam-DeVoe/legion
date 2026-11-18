@@ -3260,13 +3260,18 @@ for signal in TERM INT; do
   bash "$vm" step --config "$config" "$name" 1 --duration 10m >"$tmp/out" 2>&1 &
   step_pid=$!
   set +m
-  waited=0
-  # The load is on: the fake `loadgen run` says it holds the load machine by writing its pid.
+  # The load is on: the fake `loadgen run` says it holds the load machine by writing its pid. The
+  # wait is for the step, not for a stretch of wall clock: a step that ends before its load is on
+  # fails the case at once, and the 600 s is a hang's backstop. Counted at 60 s, it failed 17 of
+  # 40 runs of this case on a dev box at a 1-minute load of 525 to 920, every one of them a step
+  # still making its way to the load.
+  started=$SECONDS
   while [ ! -s "$fake/run-alive" ]; do
-    ((waited < 600)) ||
-      fail "no loadgen run reached the load machine within 60 s, so SIG$signal would prove nothing: $(cat "$tmp/out")"
+    kill -0 "$step_pid" 2>/dev/null ||
+      fail "the step ended before any loadgen run reached the load machine, so SIG$signal would prove nothing: $(cat "$tmp/out")"
+    ((SECONDS - started < 600)) ||
+      fail "no loadgen run reached the load machine within 600 s, so SIG$signal would prove nothing: $(cat "$tmp/out")"
     "$REAL_SLEEP" 0.1
-    waited=$((waited + 1))
   done
   load_pid=$(tail -n1 "$fake/run-alive")
   tunnel_pid=$(awk '{print $1}' "$fake/tunnel-up" 2>/dev/null || true)
