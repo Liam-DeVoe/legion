@@ -1,14 +1,14 @@
 import { isIdPrefix, itemFromSearch } from "@legion/contracts";
-import {
-  type QueryFilters,
-  type QueryKey,
-  useIsFetching,
-  useQueryClient,
-} from "@tanstack/react-query";
-import { useMemo } from "react";
+import { notifyManager, type QueryKey, useQueryClient } from "@tanstack/react-query";
+import { useCallback, useMemo, useSyncExternalStore } from "react";
 
 import type { Ask, Comment, IssueDetails, MessageRead } from "../../api/types";
-import { type ItemLanding, type ItemRoute, useItemLanding } from "../issue/useItemLanding";
+import {
+  type ItemLanding,
+  type ItemRoute,
+  isItemRoute,
+  useItemLanding,
+} from "../issue/useItemLanding";
 import { askQuery, commentQuery, messageQuery, referencesQuery } from "../refs/reference-target";
 import { type IssueRoute, parseIssuePath } from "../refs/routes";
 import { prefixReference } from "../refs/text-references";
@@ -58,11 +58,15 @@ export function useAddressTarget(
     return { id: targetId, kind: targetKind } as AddressTarget;
   }, [targetDocument, targetId, targetKind]);
   const reveal = useMemo(() => pathToTarget(root, target), [root, target]);
-  const named = useMemo(() => {
-    const node = reveal?.at(-1);
-    return new Set(node === undefined ? [] : [node.id]);
-  }, [reveal]);
+  const named = useMemo(() => namedBy(reveal), [reveal]);
   return { named, reveal, target };
+}
+
+/** The id of the last node of the chain `reveal`, the node an address lands on, or nothing where
+ *  there is no chain: what a view keeps whatever its filter or its words match (`presetView`). */
+export function namedBy(reveal: readonly TreeNode[] | undefined): ReadonlySet<string> {
+  const node = reveal?.at(-1);
+  return new Set(node === undefined ? [] : [node.id]);
 }
 
 /**
@@ -79,7 +83,7 @@ export function outlineItemRoute(
   address: Pick<IssueAddress, "documentItem" | "target">
 ): ItemRoute | undefined {
   if (address.target?.kind !== "item" || address.documentItem !== undefined) return undefined;
-  if (route.kind === "ask" || route.kind === "comment" || route.kind === "message") return route;
+  if (isItemRoute(route)) return route;
   const item = itemFromSearch(search);
   return item === null || item === undefined
     ? undefined
@@ -195,9 +199,6 @@ export interface ConversationReads {
   readonly messages: readonly MessageRead[] | undefined;
 }
 
-/** What `useIsFetching` counts where the landing reads nothing: no query. */
-const NO_READ: QueryFilters = { predicate: () => false };
-
 /**
  * The key of the one read the old page's landing answers `route` from (`useItemLanding`), and
  * which its `unavailable` landing's `retry` asks again: the graph read that resolves an id
@@ -249,7 +250,8 @@ export function useAddressFallback({
   readonly search: string;
 }): AddressFallback | undefined {
   const item = outlineItemRoute(route, search, address);
-  const unheld = readsHeld && reveal === undefined ? item : undefined;
+  const unresolved = readsHeld && reveal === undefined;
+  const unheld = unresolved ? item : undefined;
   const unheldId = unheld?.id;
   const { asks, comments, messages } = reads;
   const openAsks = issue.open_asks;
@@ -271,23 +273,27 @@ export function useAddressFallback({
     [agentsOnly, comments, messages, root]
   );
   // The issue's own route reads nothing: the landing reads an item only where it falls back.
-  const read = unheld === undefined || agentsOnly !== undefined ? undefined : unheld;
+  const read = agentsOnly === undefined ? unheld : undefined;
   const landing = useItemLanding(read ?? { key: route.key, kind: "issue" }, issue);
   const client = useQueryClient();
   const readKey = read === undefined ? undefined : landingReadKey(read);
-  const retrying =
-    useIsFetching(readKey === undefined ? NO_READ : { exact: true, queryKey: readKey }) > 0;
-  // How many times the read has failed, by the cache's own count: the read's observer
-  // (`useItemLanding`) and `useIsFetching` draw the page again as the read's state changes.
-  const failure =
-    readKey === undefined ? 0 : (client.getQueryState(readKey)?.errorUpdateCount ?? 0);
+  // The state of the one read the landing answers from, which draws the page again as it
+  // changes: whether it runs again, and how many times it has failed, by the cache's own count.
+  const subscribe = useCallback(
+    (onChange: () => void) => client.getQueryCache().subscribe(notifyManager.batchCalls(onChange)),
+    [client]
+  );
+  const state = useSyncExternalStore(subscribe, () =>
+    readKey === undefined ? undefined : client.getQueryState(readKey)
+  );
+  const retrying = state?.fetchStatus === "fetching";
+  const failure = state?.errorUpdateCount ?? 0;
   if (agentsOnly !== undefined && ancestor !== undefined) {
     return { ancestor, id: agentsOnly, kind: "agents-only" };
   }
   const target = address.target;
   if (
-    readsHeld &&
-    reveal === undefined &&
+    unresolved &&
     address.document === undefined &&
     (target?.kind === "block" || target?.kind === "children")
   ) {
@@ -295,9 +301,9 @@ export function useAddressFallback({
   }
   if (unheld === undefined || landing === undefined || landing.kind === "turn") return undefined;
   if (landing.kind === "pending") {
-    if (readKey === undefined || !retrying || failure === 0) return undefined;
-    const again = { exact: true, queryKey: readKey };
-    const failed = { kind: "unavailable", retry: () => void client.refetchQueries(again) } as const;
+    if (!retrying || failure === 0) return undefined;
+    // Never called: the line is drawn only while the read runs again, when Retry asks nothing.
+    const failed = { kind: "unavailable", retry: () => undefined } as const;
     return { failure, kind: "landing", landing: failed, retrying, route: unheld };
   }
   return { failure, kind: "landing", landing, retrying, route: unheld };

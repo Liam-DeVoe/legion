@@ -19,6 +19,7 @@ import { buildIssuePath } from "../../refs/routes";
 import {
   type AddressFallback,
   landingPath,
+  namedBy,
   useAddressFallback,
   useAddressTarget,
 } from "../address-target";
@@ -109,7 +110,7 @@ export function BodySlot({ issue, route }: SlotProps): ReactNode {
   });
   const ancestor = fallback?.kind === "agents-only" ? fallback.ancestor : undefined;
   const ancestorNamed = useMemo(
-    () => (ancestor === undefined ? undefined : new Set(ancestor.slice(-1).map((one) => one.id))),
+    () => (ancestor === undefined ? undefined : namedBy(ancestor)),
     [ancestor]
   );
   const named = ancestorNamed ?? addressed.named;
@@ -180,7 +181,7 @@ export function BodySlot({ issue, route }: SlotProps): ReactNode {
  * drawn. It is started in a layout effect, which runs before every passive effect of that commit,
  * so a line drawn in the commit of the following itself reads the following's own controller.
  */
-function useReaderActs(following: string): RefObject<AbortController | undefined> {
+function useReaderActs(following: string): ReaderActs {
   const acts = useRef<AbortController | undefined>(undefined);
   // biome-ignore lint/correctness/useExhaustiveDependencies: each following is watched anew, though no value of it is read.
   useLayoutEffect(() => {

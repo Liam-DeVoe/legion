@@ -11,6 +11,7 @@ import { MemoryRouter, type NavigateFunction, useLocation, useNavigate } from "r
 import { prosemirrorJSONToYXmlFragment } from "y-prosemirror";
 import * as Y from "yjs";
 
+import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { jump, realClock } from "../../__tests__/fake-clock";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
@@ -6602,6 +6603,22 @@ test("a node whose words are only a bare address is named by its short form, in 
   expect(crumbs[1]?.textContent, "the crumb names the node by its address as written").toBe(short);
 });
 
+/** Seeds `client` with the reader and every read the body's tree is built from (`slots/body.tsx`),
+ *  each answered empty, but the comments', which answer `comments` and are left unread where
+ *  none are given. */
+function seedBodyReads(
+  client: QueryClient,
+  { comments }: { readonly comments?: readonly Comment[] } = {}
+): void {
+  client.setQueryData(["whoami"], { kind: "user", login: "alice" });
+  client.setQueryData(issueCoverageQuery(KEY).queryKey, { requirements: [] } as never);
+  client.setQueryData(issueResultsQuery(KEY).queryKey, { checks: [] } as never);
+  client.setQueryData(["decisions", KEY], { decisions: [], document: null, open_questions: [] });
+  client.setQueryData(["asks", KEY], []);
+  if (comments !== undefined) client.setQueryData(["comments", KEY], comments);
+  client.setQueryData(["issue-messages", KEY], []);
+}
+
 // The reviewer's finding on the outline's empty line: a tree with no node is also one whose reads
 // are still out - the asks, the comments, the messages, the decisions, the coverage, the results
 // and the documents' blocks each draw nodes once they answer, and only the children come with the
@@ -6615,12 +6632,7 @@ test("the outline says the issue holds nothing only once the reads its nodes com
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
-  client.setQueryData(["whoami"], { kind: "user", login: "alice" });
-  client.setQueryData(issueCoverageQuery(KEY).queryKey, { requirements: [] } as never);
-  client.setQueryData(issueResultsQuery(KEY).queryKey, { checks: [] } as never);
-  client.setQueryData(["decisions", KEY], { decisions: [], document: null, open_questions: [] });
-  client.setQueryData(["asks", KEY], []);
-  client.setQueryData(["issue-messages", KEY], []);
+  seedBodyReads(client);
   // The comments' read, held out until the case answers it.
   const held = Promise.withResolvers<never[]>();
   const comments = spyOn(api, "listComments").mockReturnValue(held.promise as never);
@@ -6686,13 +6698,7 @@ test("the outline mounted again past 30 s reads none of the reads it waits on ag
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: 30_000 } },
   });
-  client.setQueryData(["whoami"], { kind: "user", login: "alice" });
-  client.setQueryData(issueCoverageQuery(KEY).queryKey, { requirements: [] } as never);
-  client.setQueryData(issueResultsQuery(KEY).queryKey, { checks: [] } as never);
-  client.setQueryData(["decisions", KEY], { decisions: [], document: null, open_questions: [] });
-  client.setQueryData(["asks", KEY], []);
-  client.setQueryData(["comments", KEY], []);
-  client.setQueryData(["issue-messages", KEY], []);
+  seedBodyReads(client, { comments: [] });
   const reads = [
     spyOn(api, "getIssueCoverage").mockResolvedValue({ requirements: [] } as never),
     spyOn(api, "getIssueDecisions").mockResolvedValue({
@@ -6755,19 +6761,16 @@ function readComment(
   author: Comment["author"] = { id: "alice", kind: "user" }
 ): Comment {
   return {
+    ...commentDeliveryFields(),
     anchor: null,
     answers: reply_to,
-    artifact_id: null,
     ask_id: null,
     author,
     body: `The words of ${id}.`,
     created_at: `2026-11-05T01:${String(at).padStart(2, "0")}:00Z`,
-    deliveries: [],
     edited_at: null,
     id,
     issue_key: KEY,
-    mentions: [],
-    reply_block: null,
     reply_to,
     resolved: false,
     resolved_at: null,
@@ -6822,13 +6825,7 @@ function renderAddressedBody(
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
-  client.setQueryData(["whoami"], { kind: "user", login: "alice" });
-  client.setQueryData(issueCoverageQuery(KEY).queryKey, { requirements: [] } as never);
-  client.setQueryData(issueResultsQuery(KEY).queryKey, { checks: [] } as never);
-  client.setQueryData(["decisions", KEY], { decisions: [], document: null, open_questions: [] });
-  client.setQueryData(["asks", KEY], []);
-  client.setQueryData(["comments", KEY], comments);
-  client.setQueryData(["issue-messages", KEY], []);
+  seedBodyReads(client, { comments });
   const held: { navigate?: NavigateFunction } = {};
   const draw = () => (
     <MemoryRouter initialEntries={[path]}>
@@ -6922,26 +6919,31 @@ test("the same address followed twice lands both times, and a redraw of it after
   }
 });
 
+/** An id that names no comment of the issue, which the item's own read answers 404 for. */
+const GONE_COMMENT = "0b6e3f51-9c55-4d9e-8a3e-5b8cfa2c7d10";
+
+/** The item's own read's answer for an id that names no comment of the issue. */
+function noSuchComment(): ApiError {
+  return new ApiError(404, { code: "NOT_FOUND", error: "no such comment" });
+}
+
 // A node the tree does not hold falls back to the address's own page, never to the page's body,
 // once every read the tree is built from has answered: for an id no item of the issue holds, the
 // old page's landing reads the item and finds none (`missing`), and the page says so where the
 // outline would be, with the focus on that line.
 test("an address naming an item no node holds draws the item's failure once the reads are held, with the focus on its line", async () => {
   setViewport(1440);
-  const gone = "0b6e3f51-9c55-4d9e-8a3e-5b8cfa2c7d10";
   const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
-  const read = spyOn(api, "getComment").mockRejectedValue(
-    new ApiError(404, { code: "NOT_FOUND", error: "no such comment" })
-  );
+  const read = spyOn(api, "getComment").mockRejectedValue(noSuchComment());
   try {
     const body = renderAddressedBody(
-      buildIssuePath({ id: gone, key: KEY, kind: "comment" }),
+      buildIssuePath({ id: GONE_COMMENT, key: KEY, kind: "comment" }),
       TWO_THREADS
     );
     const heading = await waitFor(() =>
       body.view.getByRole("heading", { name: "Comment not found" })
     );
-    expect(read).toHaveBeenCalledWith(gone);
+    expect(read).toHaveBeenCalledWith(GONE_COMMENT);
     await waitFor(() =>
       expect(document.activeElement, "the failure's line does not hold the focus").toBe(heading)
     );
@@ -6992,9 +6994,6 @@ test("an address naming a turn only agents wrote in lands on its nearest drawn a
   }
 });
 
-/** An id that names no comment of the issue, which the item's own read answers 404 for. */
-const GONE_COMMENT = "0b6e3f51-9c55-4d9e-8a3e-5b8cfa2c7d10";
-
 // The fallback's line took the focus the moment it drew, whatever the reader had done since they
 // followed the address: a reader who put the focus on a control and pressed a key there while the
 // item's read was still out lost it to the line. The line takes the focus only while the reader
@@ -7013,9 +7012,7 @@ test("an item's failure drawn after the reader pressed a key leaves the focus wh
     await waitFor(() => expect(read).toHaveBeenCalledWith(GONE_COMMENT));
     await act(async () => outside.control.focus());
     await user.keyboard("{Shift}");
-    await act(async () =>
-      answer.reject(new ApiError(404, { code: "NOT_FOUND", error: "no such comment" }))
-    );
+    await act(async () => answer.reject(noSuchComment()));
     await waitFor(() => body.view.getByRole("heading", { name: "Comment not found" }));
     await nextFrame();
     expect(
@@ -7091,9 +7088,7 @@ test("an item whose read failed draws a Retry that is busy while it reads again,
 test("with the Spec view's slot not filled, an item's address beside the view's draws the outline: it lands on the item's row, or says the issue holds none", async () => {
   setViewport(1440);
   const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
-  const read = spyOn(api, "getComment").mockRejectedValue(
-    new ApiError(404, { code: "NOT_FOUND", error: "no such comment" })
-  );
+  const read = spyOn(api, "getComment").mockRejectedValue(noSuchComment());
   try {
     (document.activeElement as HTMLElement | null)?.blur();
     const held = renderAddressedBody(`/issues/${KEY}/spec?comment=reply-b`, TWO_THREADS, StageSlot);

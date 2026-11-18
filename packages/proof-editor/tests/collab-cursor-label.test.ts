@@ -146,16 +146,21 @@ test("a caret label that would pass the end of its box hangs back from the caret
           }),
         });
         // y-prosemirror draws the shared document, and each awareness change, in a task it
-        // queues (`setTimeout(0)`), so each pass yields to a 0 ms timeout of its own, which runs
-        // after every one queued before it, rather than waiting out a duration; no fake clock can
-        // stand in, as the task is y-prosemirror's own. Each pass was a `Bun.sleep(0)`, and about
-        // once in a hundred runs a hundred of those ended before y-prosemirror's task had run.
+        // queues (`setTimeout(0)`). Timeouts of one delay run in the order they were set, so a
+        // 0 ms timeout set now runs after every task queued so far. No fake clock can stand in:
+        // the task is y-prosemirror's own.
+        const queuedSoFar = () => {
+          const { promise, resolve } = Promise.withResolvers<void>();
+          setTimeout(resolve, 0);
+          return promise;
+        };
+        // Each pass yields to every task queued so far, rather than waiting out a duration. Each
+        // pass was a `Bun.sleep(0)`, and about once in a hundred runs a hundred of those ended
+        // before y-prosemirror's task had run.
         const yieldUntil = async (drawn: () => boolean, what: string) => {
           for (let task = 0; !drawn(); task++) {
             if (task > 100) throw new Error(`y-prosemirror never drew ${what}`);
-            const { promise, resolve } = Promise.withResolvers<void>();
-            setTimeout(resolve, 0);
-            await promise;
+            await queuedSoFar();
           }
         };
         // The next animation frame, which the labels are decided in.
@@ -258,14 +263,10 @@ test("a caret label that would pass the end of its box hangs back from the caret
           // queues (`setMeta`), and runs it on a view even once that view is destroyed. In CI one
           // such task ran after the view was gone (`this.docView` null in prosemirror-view's
           // `updateStateInner`), and one after this window was gone (`document is not defined`).
-          // Timeouts of one delay run in the order they were set, so a 0 ms timeout set now runs
-          // after every task queued so far: first while the view still lives, then once more
-          // after the view and the peers are gone, while this window is still the document.
-          // No fake clock can stand in: the task is y-prosemirror's own.
-          const queuedSoFar = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+          // So the case yields to every task queued so far first while the view still lives,
+          // then once more after the view is gone, while this window is still the document.
           await queuedSoFar();
           view.destroy();
-          for (const peer of [bob, carol, awareness]) peer.destroy();
           await queuedSoFar();
         }
       });

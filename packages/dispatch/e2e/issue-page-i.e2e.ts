@@ -302,6 +302,44 @@ async function storedMarkdown(artifactId: string): Promise<string> {
   return (await getArtifactText(artifactId)).markdown;
 }
 
+/** Opens the issue `key` on `page` and, once the page has put the focus on a row, presses End,
+ *  which reaches the node `nodeId`, the outline's last row, named `what` in a failure; with
+ *  `enter`, then Enter, which puts the caret in that node. */
+async function enterNode(
+  page: Page,
+  key: string,
+  nodeId: string,
+  what: string,
+  { enter }: { readonly enter: boolean }
+): Promise<void> {
+  await gotoIssue(page, `/issues/${key}`);
+  await expectIssuePageDrawn(page);
+  await expect
+    .poll(async () => (await focusedRow(page)) !== null, {
+      message: `the page opens with the focus on no row, so End cannot reach ${what}`,
+    })
+    .toBe(true);
+  await page.keyboard.press("End");
+  await expect.poll(() => focusedRow(page), { message: `End did not reach ${what}` }).toBe(nodeId);
+  if (!enter) return;
+  await page.keyboard.press("Enter");
+  await expect
+    .poll(() => caretInNode(page), { message: `Enter did not put the caret in ${what}` })
+    .toBe(true);
+}
+
+/** Makes the project CITED and an issue of it whose title runs past a phone's line, and answers
+ *  that issue's key, for a document of the seeded project to cite. */
+async function seedCitedIssue(): Promise<string> {
+  await createProject({ key: "CITED", name: "Cited issues" });
+  const cited = await createIssue({
+    force: true,
+    project: "CITED",
+    title: "A cited issue of another project, whose title runs past a phone's line",
+  });
+  return cited.key;
+}
+
 /** The kinds a row draws no tag for, because they are the conversation's own words rather than
  *  a kind it revealed: one tag where the node has a typed kind. */
 const UNTYPED_KINDS: readonly string[] = ["comment", "message"];
@@ -1732,12 +1770,7 @@ test("a row's editor on a phone does not scroll sideways, and its words wrap @ph
     await page.setViewportSize({ height: 664, width: 390 });
     // The cited issue is another project's, so its name is drawn once the editor's read of it
     // answers, as in the row of the names a document cites.
-    await createProject({ key: "CITED", name: "Cited issues" });
-    const cited = await createIssue({
-      force: true,
-      project: "CITED",
-      title: "A cited issue of another project, whose title runs past a phone's line",
-    });
+    const cited = await seedCitedIssue();
     const spec = await createIssue({
       force: true,
       project: PROJECT,
@@ -1746,7 +1779,7 @@ test("a row's editor on a phone does not scroll sideways, and its words wrap @ph
         "",
         "## Problem",
         "",
-        `- dispatch://${cited.key}`,
+        `- dispatch://${cited}`,
         "",
         `:::callout{#n-path kind="note" title="${UNBROKEN_PATH}"}`,
         "The note's own words.",
@@ -1762,21 +1795,7 @@ test("a row's editor on a phone does not scroll sideways, and its words wrap @ph
       title: "An issue whose plain statement stands under wide words",
     });
     const statement = blockNodeId(await primarySlug(spec.key), "r-plain");
-    await gotoIssue(page, `/issues/${spec.key}`);
-    await expectIssuePageDrawn(page);
-    await expect
-      .poll(async () => (await focusedRow(page)) !== null, {
-        message: "the page opens with the focus on no row",
-      })
-      .toBe(true);
-    await page.keyboard.press("End");
-    await expect
-      .poll(() => focusedRow(page), { message: "End did not reach the statement" })
-      .toBe(statement);
-    await page.keyboard.press("Enter");
-    await expect
-      .poll(() => caretInNode(page), { message: "Enter did not put the caret in the statement" })
-      .toBe(true);
+    await enterNode(page, spec.key, statement, "the statement", { enter: true });
     const box = nodeRow(page, statement).first().locator("[data-editor-box]");
     await expect(
       box.locator("a.dispatch-reference"),
@@ -1819,12 +1838,7 @@ test("a table a row's editor holds scrolls sideways inside itself, and the box a
 }) => {
   await phase(browser, seedNoChildren, async (page) => {
     await page.setViewportSize({ height: 664, width: 390 });
-    await createProject({ key: "CITED", name: "Cited issues" });
-    const cited = await createIssue({
-      force: true,
-      project: "CITED",
-      title: "A cited issue of another project, whose title runs past a phone's line",
-    });
+    const cited = await seedCitedIssue();
     const columns = Array.from({ length: 16 }, (_, index) => index + 1);
     const spec = await createIssue({
       force: true,
@@ -1839,7 +1853,7 @@ test("a table a row's editor holds scrolls sideways inside itself, and the box a
         ":::",
         "",
         ':::callout{#n-table kind="note"}',
-        `The note names dispatch://${cited.key} and lists what it found in sixteen columns.`,
+        `The note names dispatch://${cited} and lists what it found in sixteen columns.`,
         "",
         `| ${columns.map((column) => `column ${column}`).join(" | ")} |`,
         `| ${columns.map(() => "---").join(" | ")} |`,
@@ -1850,19 +1864,7 @@ test("a table a row's editor holds scrolls sideways inside itself, and the box a
       title: "An issue whose note holds a table wider than a phone",
     });
     const note = blockNodeId(await primarySlug(spec.key), "n-table");
-    await gotoIssue(page, `/issues/${spec.key}`);
-    await expectIssuePageDrawn(page);
-    await expect
-      .poll(async () => (await focusedRow(page)) !== null, {
-        message: "the page opens with the focus on no row",
-      })
-      .toBe(true);
-    await page.keyboard.press("End");
-    await expect.poll(() => focusedRow(page), { message: "End did not reach the note" }).toBe(note);
-    await page.keyboard.press("Enter");
-    await expect
-      .poll(() => caretInNode(page), { message: "Enter did not put the caret in the note" })
-      .toBe(true);
+    await enterNode(page, spec.key, note, "the note", { enter: true });
     const box = nodeRow(page, note).first().locator("[data-editor-box]");
     await expect(
       box.locator("a.dispatch-reference"),
@@ -1955,34 +1957,13 @@ test("a collaborator's caret label near a line's end hangs back inside the row's
       title: "An issue whose statement two readers edit",
     });
     const statement = blockNodeId(await primarySlug(spec.key), "r-plain");
-    const enterStatement = async (reader: Page, who: string) => {
-      await gotoIssue(reader, `/issues/${spec.key}`);
-      await expectIssuePageDrawn(reader);
-      await expect
-        .poll(async () => (await focusedRow(reader)) !== null, {
-          message: `${who}'s page opens with the focus on no row`,
-        })
-        .toBe(true);
-      await reader.keyboard.press("End");
-      await expect
-        .poll(() => focusedRow(reader), {
-          message: `End did not reach the statement on ${who}'s page`,
-        })
-        .toBe(statement);
-      await reader.keyboard.press("Enter");
-      await expect
-        .poll(() => caretInNode(reader), {
-          message: `Enter did not put ${who}'s caret in the statement`,
-        })
-        .toBe(true);
-    };
-    await enterStatement(page, "alice");
+    await enterNode(page, spec.key, statement, "the statement on alice's page", { enter: true });
     const bob = await asUser(browser, "bob");
     try {
       await withIssuePage(bob, "bob");
       const bobPage = await bob.newPage();
       await bobPage.setViewportSize({ height: 900, width: 1280 });
-      await enterStatement(bobPage, "bob");
+      await enterNode(bobPage, spec.key, statement, "the statement on bob's page", { enter: true });
       // End takes bob's caret to the end of the statement's first line, where the line breaks,
       // and the step back keeps it on that line.
       await bobPage.keyboard.press("End");
@@ -2236,17 +2217,7 @@ test("the words the caret Enter puts in a statement stand still while the editor
     );
     const statement = "r-cited-12";
     const last = blockNodeId(await primarySlug(spec.key), statement);
-    await gotoIssue(page, `/issues/${spec.key}`);
-    await expectIssuePageDrawn(page);
-    await expect
-      .poll(async () => (await focusedRow(page)) !== null, {
-        message: "the page opens with the focus on no row",
-      })
-      .toBe(true);
-    await page.keyboard.press("End");
-    await expect
-      .poll(() => focusedRow(page), { message: "End did not reach the last statement" })
-      .toBe(last);
+    await enterNode(page, spec.key, last, "the last statement", { enter: false });
     /** Where the caret stood at one frame, `at` ms after the first frame it was in the
      *  statement: its top down the window, and the window's scroll, in px. */
     type CaretReading = { readonly at: number; readonly scroll: number; readonly top: number };

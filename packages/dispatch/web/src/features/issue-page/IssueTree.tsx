@@ -604,7 +604,7 @@ export function IssueTree({
   // is the issue (`slots/body.tsx`), and the row it lands on is then the tree's tab stop, where
   // the tree says what has no row of its own. What the landing says (`landingReport`) is said at
   // the row once it holds the focus: the focus moving there lets go of what was said before.
-  const taken = useRef<{ readonly acts: AbortController; readonly id: string } | undefined>(
+  const taken = useRef<{ readonly acts: AbortController; readonly key: string } | undefined>(
     undefined
   );
   useEffect(() => () => taken.current?.acts.abort(), []);
@@ -614,7 +614,7 @@ export function IssueTree({
   const targetId = target?.id;
   useEffect(() => {
     if (landingKey === undefined || targetId === undefined || !focusReveal) return;
-    const held = taken.current?.id === landingKey ? taken.current : undefined;
+    const held = taken.current?.key === landingKey ? taken.current : undefined;
     const loose = focusIsLoose(body.current);
     if (held !== undefined && (held.acts.signal.aborted || !loose)) return;
     const selector =
@@ -629,19 +629,14 @@ export function IssueTree({
     if (row === null || row === undefined) return;
     if (held === undefined) {
       taken.current?.acts.abort();
-      taken.current = { acts: abortOnReaderAct(), id: landingKey };
+      taken.current = { acts: abortOnReaderAct(), key: landingKey };
     }
     // The landing on this row still waits for its frame.
     const asked = landingAsked.current;
     if (asked?.row === row && !asked.signal.aborted) return;
-    const rowKey = row.dataset.rowKey;
-    const landed =
-      landingReport === undefined
-        ? undefined
-        : () =>
-            setReport({ line: landingReport, ...(rowKey === undefined ? {} : { row: rowKey }) });
+    const landed = landingReport === undefined ? undefined : () => reportHere(landingReport);
     landingAsked.current = { row, signal: landOnRow(row, onScreenHold, landed).signal };
-  }, [focusReveal, landingKey, landingReport, rootId, rows, tabStop, targetId]);
+  }, [focusReveal, landingKey, landingReport, reportHere, rootId, rows, tabStop, targetId]);
 
   // The page opens with the keyboard focus on the first open question that waits on the reader,
   // in the outline's own order, its path unfolded and its row in the viewport; where none waits
@@ -856,15 +851,15 @@ export function IssueTree({
           {breadcrumb.map((above) => (
             <button
               // A crumb is a word in a line of text, not a control box. Below 1280 px every
-              // button takes the 44 px floor of `styles.css`, which is in no layer and whose one
-              // exemption for a button is a row's bullet and inline links (`[data-node-row]`),
-              // and the crumb line stands above the rows: `min-h-0!` and `min-w-0!` take the
-              // floor off, since a layered utility wins over an unlayered rule only with `!`. A
-              // 44 px crumb was a third of the head the first open question needs on a phone.
-              // Its hit box grows by the 6 px of padding above and below that
-              // `dispatch-inline-link` gives it instead: its box is its 16 px line, its hit box
-              // 28 px tall, over WCAG 2.2's 24 px (2.5.8). Measured in Chromium at 390 by 664 and
-              // 1024 by 768 px, on crumbs of one line of words each: each crumb 28 px tall (a
+              // button takes the 44 px floor of `styles.css`, which is in no layer and exempts a
+              // button only inside the view row, the header and a row (`[data-filter-row]`,
+              // `[data-issue-header]`, `[data-node-row]`), none of which holds the crumb line:
+              // `min-h-0!` and `min-w-0!` take the floor off, since a layered utility wins over
+              // an unlayered rule only with `!`. A 44 px crumb was a third of the head the first
+              // open question needs on a phone. Its box is 28 px tall instead, its 16 px line and
+              // the 6 px of padding above and below that `dispatch-inline-link` gives it, over
+              // WCAG 2.2's 24 px (2.5.8). Measured in Chromium at 390 by 664 and 1024 by 768 px,
+              // on crumbs of one line of words each: each crumb 28 px tall (a
               // five-character key's 34 px wide) and the line 28 px, one crumb tall, where the
               // floor made each crumb at least 44 by 44 px and the line 44 px; on a copy of a long
               // real issue at 390 by 664 px, the line one zoom draws is 28 px where it was 44, and
