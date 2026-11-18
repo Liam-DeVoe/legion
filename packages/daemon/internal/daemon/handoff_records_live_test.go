@@ -47,6 +47,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -422,9 +423,16 @@ func (r *handoffRecordsLive) a7DaemonSessionRecord() {
 
 	reviewer := r.claimant(claim.RoleReviewer, r.a7, "ses_a7_reviewer")
 	task := reviewer.awaitPrompt()
-	want := fmt.Sprintf("Handoff: test version %[1]d (dispatch handoff-read --issue %[2]s --phase test --version %[1]d); the newest version of that record: dispatch handoff-read --issue %[2]s --phase test. A version above %[1]d is a correction its writer recorded after the daemon accepted version %[1]d, so read it too.", rewritten.version, r.a7)
-	if !strings.Contains(task.Message, want) {
-		t.Fatalf("the reviewer was prompted %q, want it to name %q", task.Message, want)
+	// The prompt names the record as an agent reads it: the command that reads the version the
+	// daemon accepted, the same command with no --version, which reads the newest, and that a newer
+	// version is a correction. internal/workflow holds the line's words
+	// (TestTheHandoffLineExtractIsTheSentenceTheTaskWrites), so this proof reads what it names.
+	read := fmt.Sprintf("dispatch handoff-read --issue %s --phase test", r.a7)
+	pinned := fmt.Sprintf("%s --version %d", read, rewritten.version)
+	newest := slices.ContainsFunc(strings.Split(task.Message, read)[1:], func(rest string) bool { return !strings.HasPrefix(rest, " --version") })
+	if !strings.Contains(task.Message, pinned) || !newest || !strings.Contains(task.Message, "correction") {
+		t.Fatalf("the reviewer was prompted %q, want it to name %q, %q with no --version, and a newer version as a correction",
+			task.Message, pinned, read)
 	}
 	r.note("the reviewer's shim was prompted: %q", task.Message)
 	meta, _ = r.read(reviewer.session, r.a7, "test", "--version", strconv.Itoa(rewritten.version))

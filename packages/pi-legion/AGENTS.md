@@ -754,12 +754,16 @@ a `/skill:` sent that way puts no count back at zero. One sent in after that `ag
 fresh record and is matched.
 
 When a run is about to settle (`session_stop`) in the `active` rhythm, the reminder asks the daemon
-what this claim owes (`POST /legion/v1/claims/owed`, answered `{owes, work}`), and waits at most
-`OWED_READ_BOUND_MS` (3 s) for the answer (`@legion/pi-shared/phase-reminder`). It reminds the
-worker exactly when the daemon answers that the claim owes work, and names that work in the
-daemon's words; it reminds again at the end of every turn for as long as the daemon answers so. The
-reminder says the daemon's record holds that work open for the role: run `handoff_complete`, or
-reply with a line starting WAITING that names what the worker waits on. An answer that does not
+what this claim owes (`POST /legion/v1/claims/owed`, answered `{owes, work, architect}`), and
+waits at most `OWED_READ_BOUND_MS` (3 s) for the answer (`@legion/pi-shared/phase-reminder`).
+`architect` is the architect claim that owns this claim (the architect notice below): the daemon
+names it for a phase worker on an issue it records, whether or not the claim owes work, and leaves
+it out for an architect, the controller, a failed claim and an issue it does not record. The
+session reminds the worker exactly when the daemon answers that the claim owes work, and names
+that work in the daemon's words; it reminds again at the end of every turn for as long as the
+daemon answers so. The reminder says the daemon's record holds that work open for the role: run
+`handoff_complete`, or reply with a line starting WAITING that names what the worker waits on. An
+answer that does not
 arrive — an error, the bound passing, a refusal, or a body the contract does not describe — still
 nudges the worker (`UNREAD_CHECK`), with words that say the record could not be read and
 name no phase and no operation. A final message holding a tool call written as text is told so
@@ -778,7 +782,8 @@ drops to zero as soon as anything happens — a real tool call in the settling m
 block, Oh My Pi's name for it; `assistantRanTool` also takes Claude Code's `tool_use`), the
 daemon's task, an Envoy delivery. At `LEGION_STALL_ARCHITECT_AFTER` the session tells the
 architect the daemon names as the claim's owner in its owed answer (`architect`: the issue's own
-architect while its claim holds its role, else the nearest one above it, else the tree root's),
+architect while its claim holds its role, else the nearest one above it whose claim holds its
+role, else the tree root's),
 or the tree's architect while no answer has named one, over Envoy, once per run of reminders: the
 notice carries the issue, the role, the work the daemon answered was owed (absent when the answer
 could not be read), the count and the head of the worker's last message under one idempotency

@@ -2657,14 +2657,16 @@ func (r *outbox) bundleIssueWorkspace(ctx context.Context, row record.OutboxRow,
 // release carries, refused names the size and the bound: it records the refusal
 // (store.RecordBundleRefusal) and then cancels the release (cancelRelease). The record is what
 // the idle rule reads to mark no release of the issue again until a role of the pod does
-// something or the issue's branch moves (workflow.IdleRelease): until then the next save finds
-// the same work, and each release marked on the clock alone cost a bundle over the worker stream
-// and a hold record, once a minute. It is written before the cancel, so a cancel that fails,
-// which the lane runs again, finds it already there.
+// something or a push moves the head of the issue's pull request (workflow.IdleRelease): until
+// then the next save finds the same work, and each release marked on the clock alone cost a
+// bundle over the worker stream and a hold record, once a minute. With no pull request there is
+// no head to move, so only a role's act ends the hold. It is written before the cancel, so a
+// cancel that fails, which the lane runs again, finds it already there.
 //
-// It also tells the issue's worker, because only a push of that worker's can end it: the message
-// names the size and the bound, and the store queues it only for the first refusal at the
-// branch's head (RecordBundleRefusal), so the worker is told once and not on every refused save.
+// It also tells the issue's worker, because only a push of that worker's brings the work under
+// the bound: the message names the size and the bound and what ends the hold, and the store
+// queues it only for the first refusal at the head of the issue's pull request
+// (RecordBundleRefusal), so the worker is told once and not on every refused save.
 //
 // A save that failed for a reason of its own records nothing here and tells nobody: no push or
 // turn cures a database error or a runtime that answers nothing, and a hold waiting for one would
@@ -2709,12 +2711,14 @@ func (r *outbox) bundleTooLargeMessage(ctx context.Context, issue string, asked 
 	if err != nil {
 		return store.IdleReleaseRow{}, fmt.Errorf("the %s of %s: %w", role, issue, err)
 	}
-	body := fmt.Sprintf("The daemon did not release the idle pod of %s. "+
-		"The unpushed work in the workspace is %d bytes. "+
-		"A release can keep a maximum of %d bytes. "+
+	body := fmt.Sprintf("The daemon did not release the idle pod of %[1]s. "+
+		"The unpushed work in the workspace is %[2]d bytes. "+
+		"A release can keep a maximum of %[3]d bytes. "+
 		"Push your work to the branch on the remote. "+
 		"If the work has files that must not go to the remote, remove them first. "+
-		"The daemon does not try the release again until a push or a turn in the pod occurs.",
+		"The daemon tries the release again only after a role in the pod takes a turn, "+
+		"or after a push moves the head of the pull request of %[1]s. "+
+		"If %[1]s has no pull request, only a turn makes the daemon try again.",
 		issue, refused.Size, refused.Max)
 	encoded, err := record.NewOutboxRow(issue, record.RoleMessage{Role: string(token), Body: body}, r.now())
 	if err != nil {

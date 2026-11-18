@@ -47,9 +47,8 @@ const olderReleasesNewestMigration = 20261112180548
 // newest which the fixture applies all the same: this release's record.Store.PutIssue, which the
 // fixture records the tree with, writes the two issues columns it adds
 // (awaiting_answered_version and awaiting_answered_version_at), and nothing it adds
-// (pending_task_deliveries.resume, parked_decisions.seq, those two issues columns and the table
-// workspace_bundle_refusals) is one the phase entry reads or writes. So applying it first changes
-// nothing the upgrade decides.
+// (pending_task_deliveries.resume, parked_decisions.seq and those two issues columns) is one the
+// phase entry reads or writes. So applying it first changes nothing the upgrade decides.
 const deliveryResumeMigration = 20261112215432
 
 // upgradeProject is the Dispatch project of the tree the upgrade is read on, and upgradeRoot its

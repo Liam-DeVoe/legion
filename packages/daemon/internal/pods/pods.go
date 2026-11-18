@@ -138,7 +138,8 @@ type IdleRoot struct {
 // the moment the release was marked, and the head of the issue's pull request when the save was
 // refused, "" with no pull request. The idle rule reads it against the claims and the head now
 // (workflow.IdleRelease): the next save finds the same work until a role of the pod does
-// something or the branch moves.
+// something or a push moves the head of the issue's pull request, and with no pull request only
+// the role's act ends the hold.
 type BundleRefusal struct {
 	At   time.Time
 	Head string

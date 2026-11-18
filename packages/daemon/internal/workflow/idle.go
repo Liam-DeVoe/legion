@@ -260,14 +260,15 @@ type IdleDecision struct {
 //   - the save of the issue's last release did not find the work over the bound a release
 //     carries (IdleHoldBundleTooLarge) since anything changed what the next save would find
 //     (view.BundleRefusal). The next save finds the same work until a role of the pod does
-//     something, which writes its claim after the moment the refused release was marked, or the
-//     head of the issue's pull request moves, which is a push. Until one of the two, the pod is
-//     held under IdleHoldBundleTooLarge, because each release marked on the clock alone cost a
-//     bundle of the workspace over the worker stream and a hold record, once a tick. A turn or a
-//     push ends the hold, and the release is then marked once the pod is quiet again for the idle
-//     period. A save that failed for a reason of its own (IdleHoldBundleSave) is no such hold:
-//     no push or turn cures a database error or a runtime that answers nothing, so its release
-//     is marked again on the next tick, as it always was.
+//     something, which writes its claim after the moment the refused release was marked, or a
+//     push moves the head of the issue's pull request. An issue with no pull request has no head
+//     to move (the refusal and the view each read it as ""), so only a role's act ends its hold.
+//     Until one of the two, the pod is held under IdleHoldBundleTooLarge, because each release
+//     marked on the clock alone cost a bundle of the workspace over the worker stream and a hold
+//     record, once a tick. A turn or a moved head ends the hold, and the release is then marked
+//     once the pod is quiet again for the idle period. A save that failed for a reason of its own
+//     (IdleHoldBundleSave) is no such hold: no push or turn cures a database error or a runtime
+//     that answers nothing, so its release is marked again on the next tick, as it always was.
 //
 // A pod round is a live claim's, as the claim records it, and a claim that left the round keeps
 // the round it left (supervise.Claim.UpdateRound): the round is over for every claim of it only

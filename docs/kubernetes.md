@@ -2652,7 +2652,10 @@ The issue's `pullRequest` is read beside them and takes no new key: a correction
 A caller in a pod whose claims record a contract below 162 is served every issue with the four stripped (`withoutRepositoryCorrection`), so a pod of the release before this one reads the state as it always did.
 
 The second is a claim route, `POST /legion/v1/claims/owed`.
-It takes the claim token, session and secret that `claims/activity` takes, and answers `{"owes": <bool>, "work": <string>}`: whether the claim owes work now, read from the issue's record, and what that work is called (`the testing phase of LEGION-208`, `the production check of LEGION-208`), empty when nothing is owed.
+It takes the claim token, session and secret that `claims/activity` takes, and answers `{"owes": <bool>, "work": <string>, "architect": <claim token>}`: whether the claim owes work now, read from the issue's record, what that work is called (`the testing phase of LEGION-208`, `the production check of LEGION-208`), empty when nothing is owed, and the architect claim that owns the claim now.
+That architect is the issue's own architect while its claim holds its role, else the nearest architect above the issue whose claim holds its role, else the tree root's, which is the architect the daemon's own notices of the issue reach.
+`architect` is present for a phase worker on an issue the daemon records, whether or not the claim owes work, and absent for an architect, the controller, a failed claim and an issue the daemon does not record.
+The reminder's architect notice and the stall watch's notice of a stuck call go to the architect it names.
 The end-of-turn reminder of both harnesses asks it at each turn's end and keeps no phase of its own ([Idle release](#idle-release) says when a reminder is due).
 A plugin below 162 calls no such route, and nothing else of the claim wire changes.
 `packages/contracts/src/legion-api.ts` holds the two bodies as `LegionOwedRequest` and `LegionOwedResponse`.
@@ -2675,16 +2678,18 @@ Store migration 20261112215432_delivery_resume adds `pending_task_deliveries.res
 A design decision's notice now carries where Dispatch recorded the review (`review`, `record.Notice.Review`), and a kept spec decision takes its time and sequence from it.
 The same migration adds `issues.awaiting_answered_version`, the version of the changes request that answered a root's wait, and `issues.awaiting_answered_version_at`, the answer's moment it was written with, so the resume task reads the reviewed version as a number rather than out of the answer's detail text.
 It gives each wait a changes request answered before it its version, read once from the detail every earlier release wrote (`version <n>: "<reason>"`); every other row keeps both columns null.
-The same migration creates `workspace_bundle_refusals`, one row per issue whose last release's save found the work over 40 MiB: the moment that release was marked, and the head of the issue's pull request then.
-The idle rule marks no release of such an issue again until a role of its pod does something after that moment or the head moves ([Idle release](#idle-release)), and the refusal tells the issue's worker in a `role_message` row, whose payload carries only the `role` and `body` an earlier release's `record.RoleMessage` already names.
-A save that failed for another reason writes no row, and its release is marked again on the next idle tick, as before.
 Store migration 20261118073048_phase_entry_awaiting adds `phases.entry_awaiting`, the wait a resume answered, kept on the architect entry that resume raises, and drops `phases.entry_verbatim`, the mark it replaces ("A root's architect in the phase entry (daemon API contract 146)" above).
 Every row that mark was set on takes the empty wait, `{}`, since the release before kept the resume's text and no wait: a send of such an entry again names a person's act on the root, then how the gate and the asks stand.
 Every other row takes null.
+Store migration 20261118172458_bundle_size_refusals creates `workspace_bundle_refusals`, one row per issue whose last release's save found the work over 40 MiB: the moment that release was marked, and the head of the issue's pull request then, empty with no pull request.
+The idle rule marks no release of such an issue again until a role of its pod does something after that moment, or a push moves the head of the issue's pull request ([Idle release](#idle-release)).
+An issue with no pull request has no head to move, so only a role's act ends its hold.
+The refusal tells the issue's worker in a `role_message` row, whose payload carries only the `role` and `body` an earlier release's `record.RoleMessage` already names.
+A save that failed for another reason writes no row, and its release is marked again on the next idle tick, as before.
 
 To roll this release back, stop its daemon, run the block below, and then re-pin the earlier image (contract 152 at the base this release was written on).
 There is no `legion.yaml` key to put back.
-The earlier release names every column it reads and writes, so after the block it boots with the nine and the new table in place, reads none of them and writes none of them.
+The earlier release names every column it reads and writes, so after the block it boots with the nine columns and the two new tables in place, reads none of them and writes none of them.
 Its write of a later answer to a root's wait leaves `awaiting_answered_version` and `awaiting_answered_version_at` as they stood, and when this release is pinned again it reads that answer as one with no version, since the moment beside the version is no longer the answer's: the resume then asks whether the person's approval followed that changes request at the version the gate holds approved, as it asks of a kept decision.
 It never reads `workspace_bundles_refused` either, so a bundle this release refused for its repository stays in that table through the roll back, and no row of `workspace_bundles` is a refused one that its idle rule could hold a pod for.
 It never reads `workspace_bundle_refusals` either, so its idle rule marks the release of an issue whose save was refused again on each pass, as it did before this release: each pass asks the pod's shim for a bundle and records one more hold, for as long as the work stays over 40 MiB.
@@ -6111,10 +6116,11 @@ that refusal is the one every measured save over the bound met, and the daemon r
 Every shim that answers a save has sent its size this way since the save's first release, so this holds whichever worker image the deployment pins.
 A bundle a runtime answered whole over the bound is refused by the daemon's own check, the same way.
 A refusal that names no size is a `bundle_save_failed`, whatever its words say.
-The next save would find work over 40 MiB again until something changes it, so after a `bundle_too_large` the daemon marks no release of that issue again until a role of the pod does something after the refused release was marked, which a turn and an activity report each record on the role's claim, or the head of the issue's pull request moves, which is a push.
+The next save would find work over 40 MiB again until something changes it, so after a `bundle_too_large` the daemon marks no release of that issue again until a role of the pod does something after the refused release was marked, which a turn and an activity report each record on the role's claim, or a push moves the head of the issue's pull request.
+An issue with no pull request has no head to move, so a push alone does not end its hold, and only a role's act does.
 Until then each idle pass holds the pod under `bundle_too_large`; after either, the release is marked once the pod is quiet again for the idle period.
 A daemon restart keeps this, since the refusal is a row of `workspace_bundle_refusals`, and a save that stores the work or finds none deletes that row, as the end of the issue's work does.
-The refusal also tells the issue's worker, once for each head of the branch it was refused at, in a role message that names the size and the bound and asks for a push; the worker is the one whose phase is open when its claim is live, and otherwise the role the save was asked of.
+The refusal also tells the issue's worker, once for each head of the issue's pull request it was refused at, in a role message that names the size and the bound, asks for a push, and says what ends the hold; the worker is the one whose phase is open when its claim is live, and otherwise the role the save was asked of.
 A `bundle_save_failed` waits for no such event: no push or turn cures a database error or a runtime that answers nothing, so its release is marked again on the next idle tick.
 Only the pod's own launcher receives the bundle, over the launcher's authenticated connection, in `launcher_bundle` frames each under the 1 MiB frame limit (`shimwire.MaxFrameBytes`), and the launcher restores it in the roles container before any role starts, never in the token-holding `workspace-fetch` container.
 The daemon deletes the bundle once the launcher confirms the restore, and deletes it too, in the cancel's own transaction, when a wake cancels the release.

@@ -44,20 +44,6 @@
 -- once from the detail every release so far wrote for it (`version <n>: "<reason>"`, workflow's
 -- changesDetail), so it reads as it did; no daemon parses the detail after this.
 --
--- workspace_bundle_refusals is the last save of an issue's release that found the workspace's
--- unpushed work over the bound a release carries (workflow.IdleHoldBundleTooLarge), one row per
--- issue: the moment that release was marked, and the head of the issue's pull request then ('' with
--- no pull request). The idle rule reads it (store's readIdleView, workflow.IdleRelease) and marks
--- no release of the issue again until a claim of the pod is written after that moment or the head
--- moves: nothing else changes what the next save finds, and each release marked on the clock
--- alone cost a bundle attempt over the worker stream and a hold row, once a minute. A save that
--- failed for a reason of its own writes no row and is tried again on the next tick, since no push
--- or turn cures such a cause. The save writes the row before its cancel
--- (store.RecordBundleRefusal), so a restart reads it; a save that stores the work, or finds none
--- to store, deletes it (store's PutWorkspaceBundle and DeleteWorkspaceBundle), and so does the end
--- of the issue's work, which deletes the bundle. A daemon of an earlier release neither reads nor
--- writes the table, and marks the release on the clock as it always did.
---
 -- There is no down file: migrations here are forward-only.
 alter table pending_task_deliveries add column resume jsonb;
 alter table parked_decisions add column seq bigint;
@@ -68,8 +54,3 @@ update issues
        awaiting_answered_version_at = awaiting_answered_at
  where awaiting_answered_by = 'changes_requested' and awaiting_answered_at is not null
    and awaiting_answered_detail ~ '^version [0-9]+: ';
-create table workspace_bundle_refusals (
-  issue text primary key,
-  at timestamptz not null,
-  head text not null
-);

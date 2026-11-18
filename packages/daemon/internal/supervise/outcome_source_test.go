@@ -3,17 +3,15 @@ package supervise
 import (
 	"fmt"
 	"go/ast"
-	gobuild "go/build"
 	"go/constant"
 	"go/importer"
-	"go/parser"
 	gotoken "go/token"
 	"go/types"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/legion/daemon/internal/testtypes"
 )
 
 // The policy that decides whether a claim's failure charges a budget (Charges) has a chokepoint:
@@ -298,7 +296,7 @@ func (s *goSource) isZero(expr ast.Expr) bool {
 	return ok && len(literal.Elts) == 0
 }
 
-// goSource is one package's non-test source, type-checked.
+// goSource is one package's non-test source, type-checked (testtypes.CheckPackage).
 type goSource struct {
 	fileset *gotoken.FileSet
 	files   map[string]*ast.File
@@ -315,45 +313,13 @@ func checkOutcomeSources(t *testing.T) map[string]*goSource {
 	imports := importer.ForCompiler(fileset, "gc", compiledDependencies(t, "../stream", "../claudebridge"))
 	sources := map[string]*goSource{}
 	for path, dir := range dirs {
-		sources[path] = checkPackage(t, fileset, imports, path, dir)
+		checked, err := testtypes.CheckPackage(fileset, imports, path, dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sources[path] = &goSource{fileset: fileset, files: checked.Files, pkg: checked.Types, info: checked.Info}
 	}
 	return sources
-}
-
-// checkPackage type-checks the non-test source in dir as the package path.
-func checkPackage(t *testing.T, fileset *gotoken.FileSet, imports types.Importer, path, dir string) *goSource {
-	t.Helper()
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatalf("read the source of %s: %v", path, err)
-	}
-	src := &goSource{fileset: fileset, files: map[string]*ast.File{}, info: &types.Info{
-		Defs: map[*ast.Ident]types.Object{}, Uses: map[*ast.Ident]types.Object{},
-		Types: map[ast.Expr]types.TypeAndValue{}, Selections: map[*ast.SelectorExpr]*types.Selection{},
-	}}
-	var parsed []*ast.File
-	for _, entry := range entries {
-		name := entry.Name()
-		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
-			continue
-		}
-		// The files this build compiles, as the compiler chose them by their build constraints.
-		if built, err := gobuild.Default.MatchFile(dir, name); err != nil || !built {
-			continue
-		}
-		file, err := parser.ParseFile(fileset, filepath.Join(dir, name), nil, 0)
-		if err != nil {
-			t.Fatalf("parse %s: %v", name, err)
-		}
-		src.files[name] = file
-		parsed = append(parsed, file)
-	}
-	config := types.Config{Importer: imports}
-	src.pkg, err = config.Check(path, fileset, parsed, src.info)
-	if err != nil {
-		t.Fatalf("type-check %s: %v", path, err)
-	}
-	return src
 }
 
 func (s *goSource) pos(node ast.Node) string { return s.fileset.Position(node.Pos()).String() }

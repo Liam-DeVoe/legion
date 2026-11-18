@@ -2245,7 +2245,7 @@ package api
 // mirrors the two bodies as `LegionOwedRequest` and `LegionOwedResponse`, and
 // `packages/contracts/fixtures/daemon-api/owed.json` is the answer's golden.
 //
-// The daemon ships three store migrations with it. `20261112012123_issue_repository_correction.up.sql`
+// The daemon ships four store migrations with it. `20261112012123_issue_repository_correction.up.sql`
 // adds the four `issues` columns the keys are read from, `workspace_bundles.repo`, the third
 // restore outcome `refused_repository`, and the table `workspace_bundles_refused` a bundle of that
 // outcome is moved to. An older daemon binary put back on this schema writes none of them and
@@ -2262,6 +2262,11 @@ package api
 // start is rendered at that send rather than sent as the text written at the raise. A daemon of
 // the release before this one names `entry_verbatim` in its phases reads and writes, so it cannot
 // run on this schema until the block docs/kubernetes.md gives under this contract puts it back.
+// `20261118172458_bundle_size_refusals.up.sql` creates `workspace_bundle_refusals`, the last save
+// of an issue's release that found the work over the bound a release carries, so the idle rule
+// marks no release of that issue again until a role of the pod does something or a push moves the
+// head of the issue's pull request. An older daemon neither reads nor writes the table, and marks
+// such a release again on each idle pass, as before this release.
 //
 // This release's image pins Oh My Pi v18.18.6-sami.20261118-035823 (`.omp-pin`), the first fork
 // release whose `prompt` refusal and `prompt_result` carry `code: "session_busy"` when the agent

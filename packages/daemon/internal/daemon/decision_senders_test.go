@@ -1,26 +1,20 @@
 package daemon
 
 import (
-	"bytes"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"go/ast"
-	"go/build"
 	"go/constant"
 	"go/importer"
-	"go/parser"
 	"go/token"
 	"go/types"
-	"io"
-	"os"
-	"os/exec"
+	"maps"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/testtypes"
 )
 
 // senderModule is the import path every package the walk reads lives under.
@@ -108,9 +102,9 @@ var decisionReviewSentences = []struct{ phrase, renderer string }{
 // A sender passes when it reaches the predicate: it calls it, or calls a function of the three
 // packages that reaches it, however many calls down. The walk type-checks the three packages
 // (and record, for SpecDecision's switch) against the compiler's export data of their
-// dependencies (compiledDependencies) and resolves every call, and every function value a body
-// names, through types.Info to the function it is, so a method that shares a name with another is
-// never mistaken for it.
+// dependencies (testtypes.CompiledDependencies) and resolves every call, and every function value
+// a body names, through types.Info to the function it is, so a method that shares a name with
+// another is never mistaken for it.
 //
 // A list of kept decisions is held to more: every loop that ranges over one (keptDecisionTypes)
 // and writes a decision's kind into text (a fmt print, a WriteString, a string conversion) is a
@@ -390,7 +384,9 @@ func (w *decisionWalk) specDecisionKinds(t *testing.T) []string {
 	return kinds
 }
 
-// checkedPackage is one package's non-test source, type-checked.
+// checkedPackage is one package's non-test source, type-checked (testtypes.CheckPackage), with
+// its files in the order of their names, so the walk reads them, and logs what it finds, in the
+// same order on every run.
 type checkedPackage struct {
 	name  string
 	files []*ast.File
@@ -403,42 +399,35 @@ func (p *checkedPackage) pos(node ast.Node) string {
 	return fmt.Sprintf("%s:%d", filepath.Join(p.name, filepath.Base(position.Filename)), position.Line)
 }
 
-// checkPackage parses the non-test files of the package in dir, as the build would select them,
-// and type-checks them against the compiler's export data of their dependencies.
+// checkPackage type-checks the non-test source of internal/<name> against the compiler's export
+// data of its dependencies.
 func checkPackage(t *testing.T, fset *token.FileSet, imports types.Importer, name string) *checkedPackage {
 	t.Helper()
-	dir := filepath.Join("..", name)
-	listed, err := build.ImportDir(dir, 0)
+	checked, err := testtypes.CheckPackage(fset, imports, senderModule+name, filepath.Join("..", name))
 	if err != nil {
-		t.Fatalf("list the source of %s: %v", dir, err)
+		t.Fatal(err)
 	}
-	checked := &checkedPackage{name: name, fset: fset, info: &types.Info{
-		Types: map[ast.Expr]types.TypeAndValue{}, Defs: map[*ast.Ident]types.Object{}, Uses: map[*ast.Ident]types.Object{},
-		Selections: map[*ast.SelectorExpr]*types.Selection{},
-	}}
-	for _, file := range listed.GoFiles {
-		parsed, err := parser.ParseFile(fset, filepath.Join(dir, file), nil, parser.SkipObjectResolution)
-		if err != nil {
-			t.Fatalf("parse %s: %v", file, err)
-		}
-		checked.files = append(checked.files, parsed)
+	pkg := &checkedPackage{name: name, fset: fset, info: checked.Info}
+	for _, file := range slices.Sorted(maps.Keys(checked.Files)) {
+		pkg.files = append(pkg.files, checked.Files[file])
 	}
-	if len(checked.files) == 0 {
-		t.Fatalf("read no Go file in %s", dir)
-	}
-	config := types.Config{Importer: imports}
-	if _, err := config.Check(senderModule+name, fset, checked.files, checked.info); err != nil {
-		t.Fatalf("type-check %s: %v", name, err)
-	}
-	return checked
+	return pkg
 }
 
 // readDecisionWalk type-checks record and the three sender packages and reads every function
-// declaration of the three.
+// declaration of the three. It reads their dependencies' types where the compiler left them, as
+// supervise's source tests read them (testtypes.CompiledDependencies): the build that runs this
+// test has written them into its cache, so the walk reads those rather than type-checking the
+// dependency tree from its source. This package imports the other two sender packages and record,
+// so the one listing of its dependencies serves the four packages the walk checks.
 func readDecisionWalk(t *testing.T) *decisionWalk {
 	t.Helper()
+	compiled, err := testtypes.CompiledDependencies(senderModule + "daemon")
+	if err != nil {
+		t.Fatal(err)
+	}
 	fset := token.NewFileSet()
-	imports := importer.ForCompiler(fset, "gc", compiledDependencies(t))
+	imports := importer.ForCompiler(fset, "gc", compiled)
 	w := &decisionWalk{byName: map[string]*decisionFunc{}, record: checkPackage(t, fset, imports, "record")}
 	for _, name := range senderPackages {
 		pkg := checkPackage(t, fset, imports, name)
@@ -702,39 +691,4 @@ func setsField(lit *ast.CompositeLit, field string) bool {
 		key, ok := keyed.Key.(*ast.Ident)
 		return ok && key.Name == field
 	})
-}
-
-// compiledDependencies is where the compiler left the types of everything this package imports,
-// as supervise's source tests read them: the build that runs this test has written them into its
-// cache, and the go command reports the file of each, so the walk reads those rather than
-// type-checking the dependency tree from its source. This package imports the other two sender
-// packages and record, so the one listing serves the four packages the walk checks.
-func compiledDependencies(t *testing.T) func(string) (io.ReadCloser, error) {
-	t.Helper()
-	listed, err := exec.Command("go", "list", "-deps", "-export", "-json=ImportPath,Export", ".").Output()
-	if err != nil {
-		var exit *exec.ExitError
-		if errors.As(err, &exit) {
-			t.Fatalf("ask the go command where this package's dependencies were compiled: %v: %s", err, exit.Stderr)
-		}
-		t.Fatalf("ask the go command where this package's dependencies were compiled: %v", err)
-	}
-	exports := map[string]string{}
-	decoder := json.NewDecoder(bytes.NewReader(listed))
-	for decoder.More() {
-		var dependency struct{ ImportPath, Export string }
-		if err := decoder.Decode(&dependency); err != nil {
-			t.Fatalf("read the go command's answer: %v", err)
-		}
-		if dependency.Export != "" {
-			exports[dependency.ImportPath] = dependency.Export
-		}
-	}
-	return func(path string) (io.ReadCloser, error) {
-		export, found := exports[path]
-		if !found {
-			return nil, fmt.Errorf("the go command reported no compiled types for %s", path)
-		}
-		return os.Open(export)
-	}
 }
