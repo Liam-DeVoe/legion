@@ -59,6 +59,20 @@ export function failureRateBreakdown(confirmed: number, confirmedOrPending: numb
     : `${breaks}; ${onlyPending} more with only unreviewed flags`;
 }
 
+type FailureRate = DeliveryMeasuresResponse["measures"]["change_failure_rate"];
+
+/** Whether a failure source measured the change failure rate. Every rate is null while no failure
+ *  source exists (flags_source `none`): a rate nothing measured is no 0, so a card reads no value
+ *  from it. */
+function measured(f: FailureRate): f is FailureRate & {
+  per_pr: { rate: number };
+  per_deploy: { rate: number; upper_bound_rate: number };
+} {
+  return (
+    f.per_pr.rate !== null && f.per_deploy.rate !== null && f.per_deploy.upper_bound_rate !== null
+  );
+}
+
 function tone(met: boolean | null): string {
   if (met === null) return textMutedOnCanvas;
   return met ? successText : dangerText;
@@ -129,9 +143,6 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
   const targets = data?.targets;
   const status = data?.status;
   const measures = data?.measures;
-  // Every change failure rate is null while no failure source exists (flags_source `none`): a rate
-  // nothing measured is no 0, so the card reads no value from it.
-  const perDeploy = measures?.change_failure_rate.per_deploy;
 
   const strip = [
     {
@@ -145,7 +156,7 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
     {
       label: "CFR (per PR)",
       value: show((d) =>
-        d.measures.change_failure_rate.per_pr.rate === null
+        !measured(d.measures.change_failure_rate)
           ? NO_VALUE
           : pct(d.measures.change_failure_rate.per_pr.rate)
       ),
@@ -209,17 +220,16 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
             {/* Two decimals: 4.96% meets the target, 5.00% does not. */}
             <BigNumber className={toneOf((d) => d.status.change_failure_rate)}>
               {show((d) =>
-                d.measures.change_failure_rate.per_deploy.rate === null
+                !measured(d.measures.change_failure_rate)
                   ? NO_VALUE
                   : pct(d.measures.change_failure_rate.per_deploy.rate, 2)
               )}
             </BigNumber>
-            {perDeploy?.rate === null ? null : (
+            {data !== undefined && !measured(data.measures.change_failure_rate) ? null : (
               <span className={`text-xs ${textMutedOnSurface}`}>confirmed</span>
             )}
           </div>
-          {status === undefined || perDeploy === undefined ? null : perDeploy.rate === null ||
-            perDeploy.upper_bound_rate === null ? (
+          {data === undefined ? null : !measured(data.measures.change_failure_rate) ? (
             <div className={`text-xs ${textMutedOnCanvas}`}>
               Flags arrive with flag confirmation
             </div>
@@ -227,13 +237,18 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
             <>
               <div className={`text-xs ${textMutedOnSurface}`}>
                 up to{" "}
-                <span className={`font-semibold ${tone(status.change_failure_rate_upper_bound)}`}>
-                  {pct(perDeploy.upper_bound_rate, 2)}
+                <span
+                  className={`font-semibold ${tone(data.status.change_failure_rate_upper_bound)}`}
+                >
+                  {pct(data.measures.change_failure_rate.per_deploy.upper_bound_rate, 2)}
                 </span>{" "}
                 if every pending flag is confirmed
               </div>
               <div className={`text-[11px] ${textMutedOnSurface}`}>
-                {failureRateBreakdown(perDeploy.confirmed, perDeploy.confirmed_or_pending)}
+                {failureRateBreakdown(
+                  data.measures.change_failure_rate.per_deploy.confirmed,
+                  data.measures.change_failure_rate.per_deploy.confirmed_or_pending
+                )}
               </div>
             </>
           )}
@@ -439,8 +454,6 @@ function Definitions({ data }: { data: DeliveryMeasuresResponse }): ReactNode {
       : tone(dayMeets(target, (judge) => dailyValue(d, judge)));
   const frequency = measures.deploy_frequency;
   const lead = measures.lead_time;
-  // Every rate is null while no failure source exists (flags_source `none`): a rate nothing
-  // measured is no 0.
   const failures = measures.change_failure_rate;
   return (
     <>
@@ -474,9 +487,7 @@ function Definitions({ data }: { data: DeliveryMeasuresResponse }): ReactNode {
           p90 {formatMinutes(lead.opened_to_production.p90_minutes)}
         </DefinitionCard>
 
-        {failures.per_pr.rate === null ||
-        failures.per_deploy.rate === null ||
-        failures.per_deploy.upper_bound_rate === null ? (
+        {!measured(failures) ? (
           <>
             <DefinitionCard title="Change failure rate (per PR)" value={NO_VALUE}>
               No failure source yet: flags arrive with flag confirmation. Incidents: no source yet.

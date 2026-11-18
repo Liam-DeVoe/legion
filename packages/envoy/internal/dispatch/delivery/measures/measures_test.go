@@ -5,7 +5,6 @@ import (
 	"math"
 	"os"
 	"strconv"
-	"strings"
 	"testing"
 	"time"
 
@@ -281,14 +280,14 @@ func TestComputeWithNoFailureSourceReadsNoFailureRateAndNoRestoreTime(t *testing
 	if result.ChangeFailureRate != (ChangeFailureRate{}) {
 		t.Errorf("change_failure_rate = %+v with no failure source, want every count 0 and every rate nil", result.ChangeFailureRate)
 	}
-	encoded, err := json.Marshal(result)
+	encoded, err := json.Marshal(result.ChangeFailureRate)
 	if err != nil {
 		t.Fatal(err)
 	}
-	const unmeasured = `"change_failure_rate":{"per_pr":{"confirmed":0,"pending":0,"rejected":0,"reverts":0,"total":0,"rate":null},` +
+	const unmeasured = `{"per_pr":{"confirmed":0,"pending":0,"rejected":0,"reverts":0,"total":0,"rate":null},` +
 		`"per_deploy":{"confirmed":0,"pending":0,"rejected":0,"reverts":0,"total":0,"rate":null,"confirmed_or_pending":0,"upper_bound_rate":null}}`
-	if !strings.Contains(string(encoded), unmeasured) {
-		t.Errorf("the result encodes no %s with no failure source: %s", unmeasured, encoded)
+	if string(encoded) != unmeasured {
+		t.Errorf("change_failure_rate encodes %s with no failure source, want %s", encoded, unmeasured)
 	}
 	if result.TimeToRestore.MedianMinutes != nil {
 		t.Errorf("time_to_restore.median_minutes = %v, want nil", *result.TimeToRestore.MedianMinutes)

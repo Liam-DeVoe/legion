@@ -108,7 +108,7 @@ func TestTheDeliveryRoutesAnswerWhatTheyAnsweredAtTheBaseHead(t *testing.T) {
 			fixture.Summary(), fixture.Repos, recorded.Fixture.Summary, recorded.Fixture.Repos)
 	}
 
-	requests, values, differing, moved, movedWindows, failuresNulled, thresholds, pipelineCells := 0, 0, 0, 0, 0, 0, 0, 0
+	requests, values, differing, moved, movedWindows, failureValues, thresholds, pipelineCells := 0, 0, 0, 0, 0, 0, 0, 0
 	for _, window := range recorded.Windows {
 		var file struct {
 			Head    string                     `json:"head"`
@@ -148,7 +148,7 @@ func TestTheDeliveryRoutesAnswerWhatTheyAnsweredAtTheBaseHead(t *testing.T) {
 				}
 				named, difference := takeFailureMeasures(t, got, want)
 				values += named
-				failuresNulled += named
+				failureValues += named
 				if difference != "" {
 					differing++
 					t.Errorf("%s: GET %s: %s", window.File, target, difference)
@@ -194,9 +194,9 @@ func TestTheDeliveryRoutesAnswerWhatTheyAnsweredAtTheBaseHead(t *testing.T) {
 		"deploys_with_prs moved in %d of the %d windows, by %d deploys in all; %d failure-measure values the base head answered are null or 0 here; "+
 		"%d Pipeline answers state the slowest-jobs threshold %d the base head ranked by; %d Pipeline day cells compared on the days both answers show",
 		recorded.Fixture.Spec.Project, recorded.Fixture.Spec.Seed, recorded.Fixture.Spec.Days, recorded.Fixture.Spec.Now.Format(time.DateOnly),
-		recorded.Head, len(recorded.Windows), requests, values, differing, movedWindows, len(recorded.Windows), moved, failuresNulled,
+		recorded.Head, len(recorded.Windows), requests, values, differing, movedWindows, len(recorded.Windows), moved, failureValues,
 		thresholds, measures.SlowestMinResults, pipelineCells)
-	if failuresNulled == 0 {
+	if failureValues == 0 {
 		t.Error("no measures answer held a failure measure to compare, so the named difference was never read")
 	}
 	if thresholds == 0 {
