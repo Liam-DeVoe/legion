@@ -318,40 +318,52 @@ both `lib/` and `dev/lib/`, because Vite resolves the `development` export condi
 
 | Patch | What it makes linear |
 | --- | --- |
-| `micromark@4.0.2` | `lib/initialize/document.js`'s lazy-line test. `writeToChild` scanned every event of the child flow backwards on each lazy line; it now scans forward from a watermark of events already ended at or before the line's start, which can never be open across this line or a later one, since that offset only grows while one child flow lives and an end is never unset. The watermark is dropped when the event below it is no longer the one it was (a resolver rewrites events), for a new child flow, and at the end of input. The patch counts each event the test reads, and the package's entry exports the count as `lazyLineScanSteps()` |
+| `micromark@4.0.2` | `lib/initialize/document.js`'s lazy-line test. `writeToChild` scanned every event of the child flow backwards on each lazy line; it now scans forward from a watermark of events already ended at or before the line's start, which can never be open across this line or a later one, since that offset only grows while one child flow lives and an end is never unset. The watermark is dropped when the event below it is no longer the one it was (a resolver rewrites events), for a new child flow, and at the end of input. The patch counts each event the test reads, and the package's entry exports the count as `lazyLineScanSteps()`. It also counts, in `lib/create-tokenizer.js`'s `go`, each code a tokenizer hands a state, and the entry exports that as `tokenizerSteps()`: it makes nothing linear, and is the count of the whole tokenization the rows below read |
 | `micromark-core-commonmark@2.0.3` | `lib/label-end.js`. The scan for an opening `[` resumes where the scan of the previous `]` stopped and then goes on below the label start that `]` balanced, rather than walking every event again on each `]`; and the definition lookup is skipped outright where the document defines nothing, and otherwise bails, without serializing the label, once the label holds more characters that are not markdown whitespace than the longest defined identifier. The patch counts each event the scan reads and each label character the lookup counts or serializes, and the package's entry exports the count as `labelEndScanSteps()`. `lib/list.js` takes a list item's blank-line continuation without asking `blankLine` whether the line is blank: that continuation opens with `effects.check(blankLine, …)`, and where the line is already over - the code is a line ending or the end of the document, which is what a line of only spaces and tabs is once the continuations above have taken their indentation - the answer is yes and the check's store and restore are work for nothing. Every open list item runs it once per blank line, so a body of D nested items and N blank lines runs D*N of them: on 50 nested items and 32 KB of blank lines, about two fifths of what micromark spent |
 | `micromark-extension-gfm-footnote@2.1.0` | `lib/syntax.js`'s call scan, the same backwards walk. Footnote definitions are flow constructs, so they are all known before text is tokenized: with none defined the walk is skipped, and otherwise it resumes where the previous `]`'s walk stopped |
 | `mdast-util-from-markdown@2.0.3` | `lib/index.js`'s `prepareList`, which spliced each list item's enter and its exit into the whole event array and so moved everything after them once per item. It now records where each one goes and `compile` rebuilds the events once, the sort being stable so an inner item's exit stays before an outer item's |
 
 `tests/heavy-bodies.test.ts` and `tests/nested-directive.test.ts` are what holds two of these four
-patches in place, `micromark@4.0.2` and `micromark-core-commonmark@2.0.3`, each on the shapes
-named below. Each row parses its shape once, at the longest body a caller may write, and asserts
-two things: the document the parse returns, or, where the mode refuses the shape, the refusal;
-and that the parse took at most `scanStepsPerCharacter` scan steps a character of the body. The
-steps are the two patches' own count of what their scans read, `lazyLineScanSteps()` of
-`micromark` and `labelEndScanSteps()` of `micromark-core-commonmark` (the table above), which a
-row reads before and after its parse (`tests/parse-work.ts`). The count is the dependency's own
-record of the work, so a busy machine does not move it: the rows before INFRA-1629 asserted wall
-time and failed under load, and the CPU-time budget and growth ratio INFRA-1629 put in their
-place still read the machine, so INFRA-3149 replaced them with the count.
+patches in place, `micromark@4.0.2` and `micromark-core-commonmark@2.0.3`, and the parse as a
+whole, on the shapes named below. Each row parses its shape at the longest body a caller may write
+and at an eighth of its growing dimension (the items of a list, the lines after a marker, the
+brackets of a run, the blank lines under a nesting, the openers of a `:::` run), and asserts the
+document the full parse returns, or, where the mode refuses the shape, the refusal at both sizes.
+Around each parse it reads four counts (`tests/parse-work.ts`): `tokenizerSteps()` of `micromark`,
+one step for each code a tokenizer hands a state, which every construct runs through -
+CommonMark's, the extensions', and the `list` and `blockQuote` that `src/block-nesting.ts`
+rewrites - in the Milkdown parser the row parses with; and the three scans that read events
+rather than codes, which that count does not see: `lazyLineScanSteps()` of `micromark`,
+`labelEndScanSteps()` of `micromark-core-commonmark` (the table above), and `nestingScanSteps()`
+of `src/block-nesting.ts`, each event its `openedOnLine` walk reads. It then holds them three ways.
+Each count moved as far as the body says it must: a tokenizer step a character, a lazy-line step a
+lazy line, a label-end step a `]`, and a nesting-scan step where the body opens a list, a quote or
+a `:::` container, so a counter that stopped counting cannot pass the bounds on nothing. The full
+size took at most `tokenizerStepsPerCharacter` tokenizer steps and `scanStepsPerCharacter` scan
+steps a character of the body. And no count grew more than `growthSlack` times faster than the
+shape's growing dimension did from the eighth to the full size. The counts are the code's own
+record of the work, so a busy machine does not move them: the rows before INFRA-1629 asserted
+wall time and failed under load, and the CPU-time budget and growth ratio INFRA-1629 put in their
+place still read the machine, so INFRA-3149 replaced them with the counts.
 
-The highest healthy reading is 3.0 steps a character, `a run of 15,000 brackets and as many
-closers` in both modes; the two lazy shapes read 0.5 (one event a lazy line), and a body with no
-lazy line and no `]` reads none. `scanStepsPerCharacter` is 6, twice the highest. A scan put back
-to reading every event again reads thousands of steps a character at these lengths.
+The highest healthy readings, 2026-11-18, in both modes: 56.9 tokenizer steps a character, `a
+chain of 15,999 list markers on one line`, under `tokenizerStepsPerCharacter`'s 114; 3.0 scan
+steps a character, `a run of 15,000 brackets and as many closers`, under `scanStepsPerCharacter`'s
+6 (the lazy shapes read 0.5, one event a lazy line, and the nesting scan at most 0.19); and a
+growth of 8.88 times for a dimension 8 times larger, the tokenizer on `1,000 nested openers then
+1,000 closing lines`, under the bound of 16. A count that grows with the square of its dimension
+reads about 64 at that step.
 
-Five things these rows do not catch. Work that neither counter counts - the rest of micromark,
-`mdast-util-from-markdown`, the directive extension, Milkdown - can grow without bound and turn
-no row red, and so can a slowdown by a constant factor anywhere. Of the four patches,
-`mdast-util-from-markdown@2.0.3` is held by nothing here: reverted, it turned no instance red
-under the CPU-time rows either, and the shape it costs most on, `a plain list of 8,000 items`,
-cost 1,830 ms of CPU time read-only against 1,630 ms with the patch. Nor is
-`micromark-extension-gfm-footnote@2.1.0`: neither file has a footnote shape, so no row reads that
-patch at all. Nor is `micromark-core-commonmark@2.0.3`'s `lib/list.js` hunk, which saves a share of
-the work on the nested shapes rather than a square of it. And the six instances of `a plain list of
-8,000 items`, `49 items nested by indentation then blank lines` and `100 items nested by
-indentation then blank lines` read no scan step at all, so their rows hold the document and no
-cost.
+Four things these rows do not catch. Work that no counter counts - the resolvers that walk events
+(`src/directive-container.ts`'s among them), `mdast-util-from-markdown`, Milkdown's transform of
+the tree - can grow without bound and turn no row red, and so can a slowdown by a constant factor
+inside the bounds. Of the four patches, `mdast-util-from-markdown@2.0.3` is held by nothing here:
+reverted, it turned no instance red under the CPU-time rows either, and the shape it costs most
+on, `a plain list of 8,000 items`, cost 1,830 ms of CPU time read-only against 1,630 ms with the
+patch. Nor is `micromark-extension-gfm-footnote@2.1.0`: neither file has a footnote shape, so no
+row reads that patch at all. Nor is `micromark-core-commonmark@2.0.3`'s `lib/list.js` hunk, which
+saves a share of the work on the nested shapes rather than a square of it: put back, the four
+nested rows still pass (2026-11-18).
 
 To check that a row still catches the defect it guards, put a patch's scan back in a copy of the
 installed file and run the row. Bun runs `lib/` (the default export condition), and the installed
@@ -362,6 +374,13 @@ carrying no marker` took 256,111,982 steps where 192,000 are allowed;
 `micromark-core-commonmark@2.0.3`'s label-end scan put back to walking every event on each `]`,
 `a run of 15,000 brackets and as many closers` took 674,970,000 steps where 180,000 are allowed;
 and its definition lookup put back to serializing every label, the same row took 225,074,995.
+Measured on 2026-11-18: a list start in `src/block-nesting.ts` made to read ahead to the end of the
+document (an `effects.check` that consumes every code to the end) turned both rows of `a plain list
+of 8,000 items` red at 128,280,002 tokenizer steps where 3,648,000 are allowed, and, with that bound
+lifted, at a growth of 63.04 times where 16 are allowed; `openedOnLine` made to read every event of
+the document turned the rows of the two nested shapes and of `1,000 nested openers then 1,000
+closing lines` red at their scan bound; and `micromark@4.0.2`'s lazy-line count stopped turned the
+four rows of the two lazy shapes red at their floor (0 lazy-line steps for 1,999 lazy lines).
 The nesting bound in `src/block-nesting.ts` holds the marker chain and `100 items nested by
 indentation then blank lines`: raised past the shape, their value assertions read a depth past
 the bound. `maxDirectiveNesting` raised turns the four instances of

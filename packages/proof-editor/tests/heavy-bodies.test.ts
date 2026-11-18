@@ -10,10 +10,13 @@
  *
  * 1. What each shape parses to, and what it costs. Every shape, at the longest body a caller may
  *    write, parses in the read-only engine and in the default mode to the text and the nesting
- *    its row names, in a number of scan steps in proportion to its length: the steps the two
- *    scans the dependency patches make linear read, counted by the patches themselves
- *    (tests/parse-work.ts), at most `scanStepsPerCharacter` a character of the body. The one
- *    shape the default mode refuses is counted the same way and then asked for its refusal.
+ *    its row names, in a number of steps in proportion to its length: the steps the parse counts
+ *    itself (tests/parse-work.ts) - micromark's tokenizer, which every construct runs through, and
+ *    the three scans that read events, the two the dependency patches make linear and the bound's
+ *    own - at most `tokenizerStepsPerCharacter` and `scanStepsPerCharacter` a character of the
+ *    body, each count moved at least as far as the body says it must, and each grown no faster
+ *    than the shape's growing dimension from an eighth of it to the full size. The one shape the
+ *    default mode refuses is counted the same way and then asked for its refusal at both sizes.
  *    Which dependency patch holds which shape, and what each shape reads with that patch's scan
  *    put back, is in packages/proof-editor/AGENTS.md.
  * 2. The nesting bound, at the boundaries the document service draws them at
@@ -64,12 +67,17 @@ function nestedItems(depth: number): string {
 const nest49 = nestedItems(maxListNesting - 1);
 const nest100 = nestedItems(maxBlockNesting);
 
-/** A shape, as a reader is sent it: `WorkShape` of tests/parse-work.ts, with what the row reads
- *  on the parse. */
+/**
+ * A shape, as a reader is sent it and as a row grows it: `WorkShape` of tests/parse-work.ts, with
+ * what the row reads on the parse. `grow` builds the shape at a size of the dimension whose growth
+ * costs; the nesting of the two nested shapes is held at its depth while their blank lines shrink,
+ * because what costs there is the blank lines times the blocks open above them, and shrinking the
+ * whole body instead drops the blank lines and measures another shape.
+ */
 type HeavyShape = WorkShape & {
-  /** What a parse of the body produces, in a mode that reads it. */
+  /** What a parse of the full body produces, in a mode that reads it. */
   expectDoc: (doc: ProseMirrorNode) => void;
-  /** What the default mode refuses the body with, for the shape it refuses. */
+  /** What the default mode refuses the body with at either size, for the shape it refuses. */
   refusedInDefaultMode?: RegExp;
 };
 
@@ -80,7 +88,9 @@ const calloutLabel = ":::callout[";
 const shapes: HeavyShape[] = [
   {
     name: "a plain list of 8,000 items",
-    body: "- x\n".repeat(8_000),
+    grow: (size) => "- x\n".repeat(size),
+    full: 8_000,
+    opensContainers: true,
     expectDoc: (doc) => {
       expect(doc.textContent.length).toBe(8_000);
       expect(depthOf(doc, "bullet_list")).toBe(1);
@@ -88,7 +98,10 @@ const shapes: HeavyShape[] = [
   },
   {
     name: "a quote then lines carrying no marker",
-    body: `> x\n${"x\n".repeat(15_998)}`,
+    grow: (size) => `> x\n${"x\n".repeat(size)}`,
+    full: 15_998,
+    lazyLines: (size) => size,
+    opensContainers: true,
     expectDoc: (doc) => {
       expect(doc.textContent.length).toBe(31_997);
       expect(depthOf(doc, "blockquote")).toBe(1);
@@ -96,7 +109,10 @@ const shapes: HeavyShape[] = [
   },
   {
     name: "a list item then lines carrying no marker",
-    body: `- x\n${"x\n".repeat(15_998)}`,
+    grow: (size) => `- x\n${"x\n".repeat(size)}`,
+    full: 15_998,
+    lazyLines: (size) => size,
+    opensContainers: true,
     expectDoc: (doc) => {
       expect(doc.textContent.length).toBe(31_997);
       expect(depthOf(doc, "bullet_list")).toBe(1);
@@ -104,14 +120,18 @@ const shapes: HeavyShape[] = [
   },
   {
     name: "a run of 15,000 brackets and as many closers",
-    body: "[".repeat(15_000) + "]".repeat(15_000),
+    grow: (size) => "[".repeat(size) + "]".repeat(size),
+    full: 15_000,
+    opensContainers: false,
     expectDoc: (doc) => {
       expect(doc.textContent.length).toBe(30_000);
     },
   },
   {
     name: "49 items nested by indentation then blank lines",
-    body: nest49 + "\n".repeat(bodyCap - nest49.length),
+    grow: (size) => nest49 + "\n".repeat(size),
+    full: bodyCap - nest49.length,
+    opensContainers: true,
     expectDoc: (doc) => {
       expect(doc.textContent).toBe("a".repeat(maxListNesting - 1));
       expect(depthOf(doc, "bullet_list")).toBe(maxListNesting - 1);
@@ -119,7 +139,9 @@ const shapes: HeavyShape[] = [
   },
   {
     name: "100 items nested by indentation then blank lines",
-    body: nest100 + "\n".repeat(bodyCap - nest100.length),
+    grow: (size) => nest100 + "\n".repeat(size),
+    full: bodyCap - nest100.length,
+    opensContainers: true,
     expectDoc: (doc) => {
       // The 50 items past the bound are the text of the innermost item the bound allows.
       expect(doc.textContent.length).toBe(250);
@@ -128,7 +150,9 @@ const shapes: HeavyShape[] = [
   },
   {
     name: "a chain of 15,999 list markers on one line",
-    body: `${"- ".repeat(15_999)}x`,
+    grow: (size) => `${"- ".repeat(size)}x`,
+    full: 15_999,
+    opensContainers: true,
     expectDoc: (doc) => {
       expect(doc.textContent.length).toBe(31_899);
       expect(depthOf(doc, "bullet_list")).toBe(maxListNesting);
@@ -136,7 +160,9 @@ const shapes: HeavyShape[] = [
   },
   {
     name: "a typed fence whose label opens a run of brackets",
-    body: `${calloutLabel}${"[".repeat(15_000)}${"]".repeat(15_000 - calloutLabel.length)}`,
+    grow: (size) => `${calloutLabel}${"[".repeat(size)}${"]".repeat(size - calloutLabel.length)}`,
+    full: 15_000,
+    opensContainers: false,
     expectDoc: (doc) => {
       expect(doc.textContent.length).toBe(30_000);
     },

@@ -34,8 +34,9 @@ daemon_pid=
 daemon_keeper_pid=
 ok=
 container=legion-e2e-pg-$$
-# The server the run makes its database on, and that database, once made: cleanup drops it. The
-# run's own container's socket directory, once it has one: cleanup removes it after the container.
+# The caller's server the run makes its database on (LEGION_E2E_PG_DSN), and that database, once
+# made: cleanup drops it. The run's own container's socket directory, once it has one: cleanup
+# removes it after the container.
 pg_server=
 database=
 pg_sockets=
@@ -51,7 +52,7 @@ cleanup() {
   if [ -n "${pid:-}" ]; then kill -TERM "$pid" 2>/dev/null || true; fi
   if [ -n "${daemon_keeper_pid:-}" ]; then kill -TERM "$daemon_keeper_pid" 2>/dev/null || true; fi
   if [ -n "${database:-}" ]; then
-    psql "$pg_server" -X -q -v ON_ERROR_STOP=1 -c "drop database if exists \"$database\" with (force)" >/dev/null 2>&1 ||
+    server_psql -q -v ON_ERROR_STOP=1 -c "drop database if exists \"$database\" with (force)" >/dev/null 2>&1 ||
       echo "could not drop database $database; drop it by hand"
   fi
   docker rm -f -v "$container" >/dev/null 2>&1 || true
@@ -223,7 +224,6 @@ else
   # Its second readiness line: the entrypoint's bootstrap server answers on the same socket first,
   # then stops, and a daemon that connected to it would be reset.
   wait_for "postgres in $container to be ready" postgres_container_ready "$container"
-  pg_server="postgres://legion:${pg_password}@/legion?host=$pg_sockets"
 fi
 # lib/loopback-dsn.sh's require_loopback_dsn says why these three go before the first connection.
 unset PGHOSTADDR PGSERVICE PGSERVICEFILE
@@ -233,13 +233,31 @@ run_db=stage1_$$_$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')
 # below). A caller's DSN goes through the guard, which reads it with libpq and refuses any host
 # but a loopback one, here, before the database is made; the run's own container's is a socket
 # directory the run made, which the guard would refuse as no loopback host, so the run writes that
-# URI itself.
+# URI itself. The psql that makes and drops the database takes the libpq form (server_psql
+# below), so the guard checks that form as well, here, as it checks each form a caller hands on.
 refusal='' # require_run_database assigns it with printf -v: the refusal line, or nothing
 if [ -z "$pg_sockets" ]; then
   require_run_database refusal LEGION_E2E_PG_DSN "$pg_server" "$run_db" \
     "the run creates and drops a database there" --uri || fail "$refusal"
+  require_run_database refusal LEGION_E2E_PG_DSN "$pg_server" postgres \
+    "the run creates and drops a database there" --libpq-env || fail "$refusal"
 fi
-psql "$pg_server" -X -q -v ON_ERROR_STOP=1 -c "create database \"$run_db\"" >/dev/null ||
+# server_psql ARGS… runs psql on the run's PostgreSQL server, connected to its `postgres`
+# database, the one createdb and dropdb connect to when they make and drop another, since the
+# run's own database is the one the statements make and drop. psql is handed the connection in
+# libpq's own variables, PGPASSWORD among them, and takes no connection string, so no argument
+# list holds the password: lib/loopback-dsn.sh's exec_run_database hands a caller's DSN that way
+# (--libpq-env, as envoy-session-states.sh's run_psql takes it), and the run's own container's is
+# written the same way, as assignments. It runs in a subshell of its own, which the exec replaces.
+server_psql() {
+  if [ -n "$pg_sockets" ]; then
+    (PGHOST=$pg_sockets PGUSER=legion PGPASSWORD=$pg_password PGDATABASE=postgres exec psql -X "$@")
+    return
+  fi
+  (exec_run_database LEGION_E2E_PG_DSN "$pg_server" postgres \
+    "the run creates and drops a database there" --libpq-env -- psql -X "$@")
+}
+server_psql -q -v ON_ERROR_STOP=1 -c "create database \"$run_db\"" >/dev/null ||
   fail "could not create database $run_db on the run's PostgreSQL server"
 database=$run_db
 note "the daemon's store is the run's own database $database"

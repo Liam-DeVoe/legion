@@ -8,8 +8,9 @@ import { until } from "@legion/test-fixtures/wait";
 // The key command install-model-gateway.sh writes, against a fake hawk-token first on PATH. The
 // fake appends its pid to FAKE_MINT_LOG (one line per mint), sleeps FAKE_MINT_SLEEP seconds, then
 // by FAKE_MINT_MODE prints a JWT that expires in an hour (ok), fails the way the devbox wrapper
-// does when its 9000 ms budget runs out (budget), fails at once on the login (refused), or is
-// killed by a signal (killed).
+// does when its 9000 ms budget runs out (budget), fails at once on the login (refused), is
+// killed by a signal (killed), or never answers (hang): it waits until a signal stops it, and
+// appends the signal's name and its pid to FAKE_MINT_LOG.stopped.
 const lib = import.meta.dir;
 const dir = temporaryDirectory("install-model-gateway-test");
 const bin = join(dir, "bin");
@@ -37,6 +38,11 @@ refused)
   exit 1
   ;;
 killed) kill -KILL $$ ;;
+hang)
+  trap 'printf "TERM %s\\n" "$$" >>"$FAKE_MINT_LOG.stopped"; exit 143' TERM
+  sleep infinity >/dev/null &
+  wait "$!"
+  ;;
 esac
 `,
     { mode: 0o755 }
@@ -44,7 +50,7 @@ esac
 });
 
 interface Fake {
-  mode?: "ok" | "budget" | "refused" | "killed";
+  mode?: "ok" | "budget" | "refused" | "killed" | "hang";
   sleep?: number;
   // The MODEL_GATEWAY_CALLS_FILE a harness names in one agent's environment.
   callsFile?: string;
@@ -110,8 +116,12 @@ async function call(keyCommand: string, cwd: string, mints: string, fake: Fake =
     stdout: "pipe",
     stderr: "pipe",
   });
-  const [code, stdout] = await Promise.all([child.exited, new Response(child.stdout).text()]);
-  return { code, stdout: stdout.trim() };
+  const [code, stdout, stderr] = await Promise.all([
+    child.exited,
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+  ]);
+  return { code, stdout: stdout.trim(), stderr: stderr.trim() };
 }
 
 function unserved(...args: string[]) {
@@ -128,6 +138,19 @@ function unserved(...args: string[]) {
 const mintCount = (mints: string) => readFileSync(mints, "utf8").split("\n").filter(Boolean).length;
 // The record's own time format, UTC to the second.
 const now = () => new Date().toISOString().replace(/\.\d+Z$/, "Z");
+
+// How long Oh My Pi lets a `!command` config value run: `executeCommand` in
+// packages/coding-agent/src/config/resolve-config-value.ts of github.com/cybermonklabs/oh-my-pi
+// runs it as `runShellCommand(command, 10_000, cwd)` (line 76 at v18.18.6-sami.20261117-013345,
+// the release .omp-pin names), whose process tree `ptree.exec` stops at that timeout.
+const ohMyPiCommandMs = 10_000;
+
+// The bound every call but the preflight gives up at: the `deadline_ms` the key command sets.
+function callBoundMs(keyCommand: string): number {
+  const bound = /^deadline_ms=(\d+)$/m.exec(readFileSync(keyCommand, "utf8"))?.[1];
+  if (bound === undefined) throw new Error(`${keyCommand} sets no deadline_ms`);
+  return Number(bound);
+}
 
 describe("the model gateway key command", () => {
   test("mints once for a wave of callers that finds the kept key expired, and serves them all", async () => {
@@ -271,23 +294,40 @@ describe("the model gateway key command", () => {
     expect(unserved("--notes", dest, since, "merge").code).toBe(1);
   });
 
-  test("gives up on a mint that outlasts the caller, and on the wait behind it, before Oh My Pi's ten seconds", async () => {
+  test("stops a mint that never answers at the call's bound, and gives up on the wait behind it", async () => {
     const { run, dest, mints, keyCommand } = install();
+    const bound = callBoundMs(keyCommand);
     const since = now();
-    // The deadline under test is the key command's own clock, in another process, which no fake
-    // timer reaches, so each call's own record says when it gave up. The second caller starts once
-    // the first call's mint has started, under the lock: it waits behind that mint, and takes the
-    // lock the first releases when its mint is stopped with too little of its own deadline left
-    // to mint, or none.
-    const first = call(keyCommand, join(run, "pane-1"), mints, { sleep: 12 });
+    // The bound under test is the key command's own clock, in another process, which no fake timer
+    // reaches, so the row reads what each side does at it rather than when. The stand-in never
+    // answers, so only the key command ends its mint: the stand-in sees the TERM of the `timeout`
+    // the key command runs it under. The second caller starts once the first call's mint has
+    // started, under the lock: it waits behind that mint, and takes the lock the first releases
+    // when its mint is stopped with too little of its own bound left to mint, or none.
+    const first = call(keyCommand, join(run, "pane-1"), mints, { mode: "hang" });
     await until("the first call's mint to start", () => mintCount(mints) === 1);
-    const second = call(keyCommand, join(run, "pane-2"), mints, { sleep: 12 });
-    const calls = await Promise.all([first, second]);
+    const minter = readFileSync(mints, "utf8").trim();
+    const second = call(keyCommand, join(run, "pane-2"), mints, { mode: "hang" });
+    const stopped = `${mints}.stopped`;
+    await until(
+      `the key command to stop the mint that never answers (pid ${minter})`,
+      () => existsSync(stopped) && readFileSync(stopped, "utf8").includes(`TERM ${minter}\n`)
+    );
+    const [one, two] = await Promise.all([first, second]);
 
     expect(mintCount(mints)).toBe(1);
-    for (const c of calls) expect([c.code, c.stdout]).toEqual([1, ""]);
-    // Each call gave up at the call's 9500 ms deadline, under Oh My Pi's ten seconds: the first
-    // stopped its mint there, and the second its wait behind that mint.
+    // The first call ends with the timeout's own status, 124, and names the bound it stopped at.
+    expect([one.code, one.stdout, one.stderr]).toEqual([
+      1,
+      "",
+      `hawk-token key command: no key (timeout): the mint ran past the call's ${bound} ms and was stopped (exit 124)`,
+    ]);
+    expect([two.code, two.stdout]).toEqual([1, ""]);
+    expect(two.stderr).toMatch(
+      new RegExp(
+        `^hawk-token key command: no key \\(timeout\\): waited \\d+ ms for another call's mint\\b.* the call's ${bound} ms\\b`
+      )
+    );
     const outcomes = new Map(
       readFileSync(join(dest, "hawk-token.calls"), "utf8")
         .split("\n")
@@ -296,14 +336,19 @@ describe("the model gateway key command", () => {
         .map((fields) => [fields[2], fields.slice(4).join("\t")] as const)
     );
     expect(outcomes.get(join(run, "pane-1"))).toStartWith(
-      "timeout\tthe mint ran past the call's 9500 ms and was stopped"
+      `timeout\tthe mint ran past the call's ${bound} ms and was stopped`
     );
     expect(outcomes.get(join(run, "pane-2"))).toMatch(
-      /^timeout\twaited \d+ ms for another call's mint\b.* the call's 9500 ms\b/
+      new RegExp(`^timeout\\twaited \\d+ ms for another call's mint\\b.* the call's ${bound} ms\\b`)
     );
     const notes = unserved("--notes", dest, since, "outlast").stdout;
-    expect(notes).toContain(": timeout: the mint ran past the call's 9500 ms");
+    expect(notes).toContain(`: timeout: the mint ran past the call's ${bound} ms`);
     expect(notes).toContain("for another call's mint");
+  });
+
+  test("bounds every call but the preflight below the ten seconds Oh My Pi gives a `!command`", () => {
+    const { keyCommand } = install();
+    expect(callBoundMs(keyCommand)).toBeLessThan(ohMyPiCommandMs);
   });
 
   test("exempts the installer's preflight mint from the deadline, for hawk-token's first-run build", () => {

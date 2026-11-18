@@ -1,27 +1,82 @@
 diff --git a/dev/index.d.ts b/dev/index.d.ts
-index 46d294ea1d1cb82ef885834c68917966dc517675..b300863f2299be86788a270f5a59d0417e3044c9 100644
+index 46d294ea1d1cb82ef885834c68917966dc517675..b8f21e54055b7051163bdb374104ae044223dd7b 100644
 --- a/dev/index.d.ts
 +++ b/dev/index.d.ts
-@@ -76,6 +76,7 @@ export { compile } from "./lib/compile.js";
+@@ -76,6 +76,8 @@ export { compile } from "./lib/compile.js";
  export { parse } from "./lib/parse.js";
  export { postprocess } from "./lib/postprocess.js";
  export { preprocess } from "./lib/preprocess.js";
 +export { lazyLineScanSteps } from "./lib/initialize/document.js";
++export { tokenizerSteps } from "./lib/create-tokenizer.js";
  export type Options = import("micromark-util-types").Options;
  import type { Value } from 'micromark-util-types';
  import type { Encoding } from 'micromark-util-types';
 diff --git a/dev/index.js b/dev/index.js
-index e608e4db0b0b5fe893c51bfeb7002ee10e6ec512..f13a88f113966ece6ef05fc4fc463d3972759c68 100644
+index e608e4db0b0b5fe893c51bfeb7002ee10e6ec512..810c98ca935a324453a384dc91d55a14bef7ea4f 100644
 --- a/dev/index.js
 +++ b/dev/index.js
-@@ -15,6 +15,7 @@ export {compile} from './lib/compile.js'
+@@ -15,6 +15,8 @@ export {compile} from './lib/compile.js'
  export {parse} from './lib/parse.js'
  export {postprocess} from './lib/postprocess.js'
  export {preprocess} from './lib/preprocess.js'
 +export {lazyLineScanSteps} from './lib/initialize/document.js'
++export {tokenizerSteps} from './lib/create-tokenizer.js'
  
  /**
   * Compile markdown to HTML.
+diff --git a/dev/lib/create-tokenizer.d.ts b/dev/lib/create-tokenizer.d.ts
+index 989201b5cdced893bc9c34a72917454b5469cc75..e9bf96e844bfba2efe66ad460c011b73fc426313 100644
+--- a/dev/lib/create-tokenizer.d.ts
++++ b/dev/lib/create-tokenizer.d.ts
+@@ -1,3 +1,8 @@
++/**
++ * How many codes the tokenizers this module creates have handed a state, over every document they
++ * parsed since it loaded.
++ */
++export function tokenizerSteps(): number;
+ /**
+  * Create a tokenizer.
+  * Tokenizers deal with one type of data (e.g., containers, flow, text).
+diff --git a/dev/lib/create-tokenizer.js b/dev/lib/create-tokenizer.js
+index abd242f2cdd975ab0081394299b3e9194384ce8e..e681b6c04068d22ee156dbb13fc2aecc9cd24704 100644
+--- a/dev/lib/create-tokenizer.js
++++ b/dev/lib/create-tokenizer.js
+@@ -46,6 +46,27 @@ import {codes, values} from 'micromark-util-symbol'
+ 
+ const debug = createDebug('micromark')
+ 
++/**
++ * Codes the tokenizers of every document this module parsed handed a state: the count
++ * `tokenizerSteps` answers.
++ */
++let tokenizerStepped = 0
++
++/**
++ * How many codes the tokenizers this module creates have handed a state, over every document they
++ * parsed since it loaded: one for each code `main` passes to `go`, so a code a construct read and
++ * gave back when it did not match counts again each time it is read again. Every construct of every
++ * content type runs through `go` - the document's containers and the flow, content, string and text
++ * inside them, an extension's constructs and a construct an extension rewrote - so a test reads it
++ * before and after a parse to hold the whole tokenization to the length of the document.
++ *
++ * @returns {number}
++ *   Codes handed a state.
++ */
++export function tokenizerSteps() {
++  return tokenizerStepped
++}
++
+ /**
+  * Create a tokenizer.
+  * Tokenizers deal with one type of data (e.g., containers, flow, text).
+@@ -234,6 +255,7 @@ export function createTokenizer(parser, initialize, from) {
+    *   Nothing.
+    */
+   function go(code) {
++    tokenizerStepped++
+     assert(consumed === true, 'expected character to be consumed')
+     consumed = undefined
+     debug('main: passing `%s` to %s', code, state && state.name)
 diff --git a/dev/lib/initialize/document.d.ts b/dev/lib/initialize/document.d.ts
 index c35a3f76cf96adf527d76b915c7b7373edd3b557..9163394e0200f29b91c2906e7fbd80923777df7d 100644
 --- a/dev/lib/initialize/document.d.ts
@@ -171,29 +226,84 @@ index bca159ead63c2ccb5910d09076ef63b94c307e90..11b536e2a52b7d7e2c95e86a2a933a4b
  
        // Note: this algorithm for moving events around is similar to the
 diff --git a/index.d.ts b/index.d.ts
-index 46d294ea1d1cb82ef885834c68917966dc517675..b300863f2299be86788a270f5a59d0417e3044c9 100644
+index 46d294ea1d1cb82ef885834c68917966dc517675..b8f21e54055b7051163bdb374104ae044223dd7b 100644
 --- a/index.d.ts
 +++ b/index.d.ts
-@@ -76,6 +76,7 @@ export { compile } from "./lib/compile.js";
+@@ -76,6 +76,8 @@ export { compile } from "./lib/compile.js";
  export { parse } from "./lib/parse.js";
  export { postprocess } from "./lib/postprocess.js";
  export { preprocess } from "./lib/preprocess.js";
 +export { lazyLineScanSteps } from "./lib/initialize/document.js";
++export { tokenizerSteps } from "./lib/create-tokenizer.js";
  export type Options = import("micromark-util-types").Options;
  import type { Value } from 'micromark-util-types';
  import type { Encoding } from 'micromark-util-types';
 diff --git a/index.js b/index.js
-index 1977e060adf85e26bc7bb642ad18a02e57ed28f7..068c14dc375a232844792a47e97d19d305e9dd64 100644
+index 1977e060adf85e26bc7bb642ad18a02e57ed28f7..e301970610d1afc4cd9e2396b28aff737f544d72 100644
 --- a/index.js
 +++ b/index.js
-@@ -14,6 +14,7 @@ export { compile } from './lib/compile.js';
+@@ -14,6 +14,8 @@ export { compile } from './lib/compile.js';
  export { parse } from './lib/parse.js';
  export { postprocess } from './lib/postprocess.js';
  export { preprocess } from './lib/preprocess.js';
 +export { lazyLineScanSteps } from './lib/initialize/document.js';
++export { tokenizerSteps } from './lib/create-tokenizer.js';
  
  /**
   * Compile markdown to HTML.
+diff --git a/lib/create-tokenizer.d.ts b/lib/create-tokenizer.d.ts
+index 989201b5cdced893bc9c34a72917454b5469cc75..e9bf96e844bfba2efe66ad460c011b73fc426313 100644
+--- a/lib/create-tokenizer.d.ts
++++ b/lib/create-tokenizer.d.ts
+@@ -1,3 +1,8 @@
++/**
++ * How many codes the tokenizers this module creates have handed a state, over every document they
++ * parsed since it loaded.
++ */
++export function tokenizerSteps(): number;
+ /**
+  * Create a tokenizer.
+  * Tokenizers deal with one type of data (e.g., containers, flow, text).
+diff --git a/lib/create-tokenizer.js b/lib/create-tokenizer.js
+index 50aded8a5da95a3a2dad07427ba60b8ffcf836f1..712951ca6f5729578942fae3da88b833fcc04e20 100644
+--- a/lib/create-tokenizer.js
++++ b/lib/create-tokenizer.js
+@@ -40,6 +40,27 @@
+ import { markdownLineEnding } from 'micromark-util-character';
+ import { push, splice } from 'micromark-util-chunked';
+ import { resolveAll } from 'micromark-util-resolve-all';
++/**
++ * Codes the tokenizers of every document this module parsed handed a state: the count
++ * `tokenizerSteps` answers.
++ */
++let tokenizerStepped = 0;
++
++/**
++ * How many codes the tokenizers this module creates have handed a state, over every document they
++ * parsed since it loaded: one for each code `main` passes to `go`, so a code a construct read and
++ * gave back when it did not match counts again each time it is read again. Every construct of every
++ * content type runs through `go` - the document's containers and the flow, content, string and text
++ * inside them, an extension's constructs and a construct an extension rewrote - so a test reads it
++ * before and after a parse to hold the whole tokenization to the length of the document.
++ *
++ * @returns {number}
++ *   Codes handed a state.
++ */
++export function tokenizerSteps() {
++  return tokenizerStepped;
++}
++
+ /**
+  * Create a tokenizer.
+  * Tokenizers deal with one type of data (e.g., containers, flow, text).
+@@ -230,6 +251,7 @@ export function createTokenizer(parser, initialize, from) {
+    *   Nothing.
+    */
+   function go(code) {
++    tokenizerStepped++;
+     consumed = undefined;
+     expectedCode = code;
+     state = state(code);
 diff --git a/lib/initialize/document.d.ts b/lib/initialize/document.d.ts
 index c35a3f76cf96adf527d76b915c7b7373edd3b557..9163394e0200f29b91c2906e7fbd80923777df7d 100644
 --- a/lib/initialize/document.d.ts

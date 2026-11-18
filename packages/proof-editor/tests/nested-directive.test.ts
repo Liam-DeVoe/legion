@@ -4,9 +4,11 @@
  * refuses it naming its line, as the document service refuses a 33rd nested typed block. Bodies
  * that nest `:::` thousands deep, which froze a reader's tab for about a minute, are read here
  * for what they produce and what they cost: the read-only engine's parse for its text, the
- * default mode's for the line its refusal names, and both for their cost, in a number of scan
- * steps in proportion to the body's length (tests/parse-work.ts), which the dependency patches
- * count themselves, so a busy machine does not move it.
+ * default mode's for the line its refusal names, and both for their cost, in a number of steps in
+ * proportion to the body's length and growing no faster than its openers do, read at the full size
+ * and at an eighth of its openers (tests/parse-work.ts). The steps are the ones the parse counts
+ * itself - micromark's tokenizer and the scans that read events - so a busy machine does not move
+ * them.
  */
 
 import { expect, test } from "bun:test";
@@ -27,21 +29,28 @@ const serverBlockSchema: BlockSchema = JSON.parse(
 const maxNesting = 32;
 
 /**
- * A body that nests `:::` deeply, as a reader was sent it: `WorkShape` of tests/parse-work.ts, with
- * what the row reads on the parse. tests/heavy-bodies.test.ts's `HeavyShape` extends the same type.
+ * A body that nests `:::` deeply, as a reader was sent it and as a row grows it: `WorkShape` of
+ * tests/parse-work.ts, with what the row reads on the parse. `grow` builds the body at a size of
+ * the dimension whose growth costs, which is the openers of both bodies.
+ * tests/heavy-bodies.test.ts's `HeavyShape` extends the same type.
  */
 type DirectiveBody = WorkShape & {
-  /** What a parse of the body produces in the read-only engine. */
+  /** What a parse of the full body produces in the read-only engine. */
   expectDoc: (doc: ProseMirrorNode) => void;
-  /** What the default mode refuses the body with. */
+  /** What the default mode refuses the body with, at either size. */
   refusedInDefaultMode: RegExp;
 };
 
-/** The two bodies, each as a reader was sent it. */
+/** The long line's characters for each opener, so `grow` scales the two together. */
+const lineCharsPerOpener = 21_000 / 2_000;
+
+/** The two bodies, each at the size a reader was sent it. */
 const bodies: DirectiveBody[] = [
   {
     name: "2,000 nested unclosed openers then a long line",
-    body: ":::a\n".repeat(2_000) + "x".repeat(21_000),
+    grow: (size) => ":::a\n".repeat(size) + "x".repeat(Math.round(size * lineCharsPerOpener)),
+    full: 2_000,
+    opensContainers: true,
     expectDoc: (doc) => {
       // The openers past the bound, and the long line, are the text of the 32 paragraphs the
       // bound allows and of the one that holds the rest.
@@ -52,7 +61,9 @@ const bodies: DirectiveBody[] = [
   },
   {
     name: "1,000 nested openers then 1,000 closing lines",
-    body: ":::a\n".repeat(1_000) + ":::\n".repeat(1_000),
+    grow: (size) => ":::a\n".repeat(size) + ":::\n".repeat(size),
+    full: 1_000,
+    opensContainers: true,
     expectDoc: (doc) => {
       expect(doc.childCount).toBe(35);
       expect(doc.textContent.length).toBe(8_965);

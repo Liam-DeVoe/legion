@@ -258,7 +258,9 @@ jobs:
     # 44228254232 to 44267237201): the steps that run no guarded command at their longest, 391 s,
     # 6 s of its clock over them, and the eight bare `bun test` steps' longest, 174 s
     # (scripts/e2e/lib's 159 s among them), plus their guards, 145 s: 716 s, or 12 minutes.
-    # Thirty minutes leaves a slow runner room and still fails a hung harness inside the hour.
+    # The census step and its strace install below came after that reading, and add their guard,
+    # 5 s, and an apt install to it. Thirty minutes leaves a slow runner room and still fails a
+    # hung harness inside the hour.
     timeout-minutes: 30
 
     steps:
@@ -327,6 +329,18 @@ jobs:
       # Guard 5000 ms: the slowest row under 8 loops took 797.60 ms.
       - name: Test the priorities seed
         run: bun test --preload @legion/test-fixtures/row-deadline --timeout 5000 scripts/priorities-seed.test.ts
+
+      # The Bun transpiler-cache census (scripts/bun-cache-census.ts) runs a command under strace,
+      # and its test skips every row where strace is missing: the runner image's package list has
+      # none (actions/runner-images, images/ubuntu/Ubuntu2404-Readme.md, "Installed apt packages").
+      - name: Install strace
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends strace
+
+      # Guard 5000 ms: the slowest row under 8 busy loops on 2 CPUs in a builds Job at e976062e with
+      # this step's change (two runs, d2-scripts8), "the same child with bunCacheOff is clean",
+      # took 495.48 ms.
+      - name: Test the Bun transpiler-cache census
+        run: bun test --preload @legion/test-fixtures/row-deadline --timeout 5000 scripts/bun-cache-census.test.ts
 
       # The guides' own layout, in this job because it installs Bun's dependencies, which the
       # test's Markdown parser needs (scripts/semantic-line-breaks.guides.test.ts:5-7). The

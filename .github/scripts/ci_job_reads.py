@@ -2517,6 +2517,8 @@ GATES = [
     gate("conflicts_script", "conflicts-script", reads=reads(
         ("scripts/conflicts/**", f"{at('conflicts-script', 'Lint the conflict measurement script')}, typecheck (tsc -p scripts/conflicts) "
                                  "and test (__tests__/ and __fixtures__/); its modules import only one another, node: and bun:"),
+        (TEST_FIXTURES_SRC, f"{at('conflicts-script', 'Test the conflict measurement script')} preloads "
+                            "@legion/test-fixtures/row-deadline"),
     ) + biome(at("conflicts-script", "Lint the conflict measurement script")) + bun_job("conflicts-script")),
 
     gate("broker_client", "broker-client", reads=reads(

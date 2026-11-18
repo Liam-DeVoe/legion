@@ -39,14 +39,14 @@
   "main": "src/lib.ts",
   "types": "src/lib.ts",
   "//": [
-    "test: --timeout 45000 is at least twice the slowest row or hook under 8 busy loops on 2 CPUs at 61b66deb (two runs in a builds Job): upstream/ is what the pinned sources emit, 15,902.19 ms."
+    "test: --timeout 47000 is at least twice the slowest row or hook under 8 busy loops on 2 CPUs at e976062e with the work-count rows of tests/parse-work.ts (two runs in a builds Job, d2-pe8): upstream/ is what the pinned sources emit, 23,288.77 ms (16,987.78 ms in the other run; 15,902.19 ms at 61b66deb). The slowest of those rows read 13,815.86 ms, the default mode's 49 items nested by indentation then blank lines."
   ],
   "scripts": {
     "typecheck": "bunx tsc --noEmit -p tsconfig.check.json",
     "upstream-declarations": "bun scripts/upstream-declarations.ts",
     "build-upstream-tarball": "bun scripts/build-upstream-tarball.ts",
     "parity-fuzz": "bun scripts/parity-fuzz.ts",
-    "test": "bun test --timeout 45000 --preload @legion/test-fixtures/row-deadline src/tests tests",
+    "test": "bun test --timeout 47000 --preload @legion/test-fixtures/row-deadline src/tests tests",
     "lint": "bunx biome check ."
   },
   "dependencies": {

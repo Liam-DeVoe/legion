@@ -2202,14 +2202,18 @@ jobs:
               - *bun_install
               - 'packages/test-fixtures/**'
             # The conflict measurement script's lint, typecheck and tests: its own directory (tests
-            # and fixtures included; it imports nothing outside it), the Bun install and Bun it runs
-            # (the root manifest and lockfile pin its TypeScript and Bun types), and Biome.
+            # and fixtures included; it imports nothing outside it), the shared test fixtures its
+            # test step preloads, the Bun install and Bun it runs (the root manifest and lockfile
+            # pin its TypeScript and Bun types), and Biome.
             conflicts_script:
               - *ci_router
               - '.github/workflows/ci-job-conflicts-script.yaml'
               - *bun_install
               - *biome
               - 'scripts/conflicts/**'
+              # .github/workflows/ci-job-conflicts-script.yaml's test step preloads
+              # @legion/test-fixtures/row-deadline.
+              - 'packages/test-fixtures/src/**'
             # The session message-wait suite's own job: the suite, the script it spawns, the shared
             # test fixtures the suite imports and preloads, and the Bun install that resolves them.
             # The lint and the typecheck of the same directory stay in the test job, which the
