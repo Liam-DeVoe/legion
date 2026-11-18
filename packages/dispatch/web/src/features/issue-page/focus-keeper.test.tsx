@@ -392,7 +392,7 @@ test.each([
 
 // A press with no ending yet: `done` hears nothing of it, and its click then ends it as one press.
 test.each([
-  ["its pointerdown alone", () => undefined],
+  ["its pointerdown alone", (): void => undefined],
   // A tap moves the focus only after its pointer is up, from the mousedown the browser sends it.
   ["the pointerup of a tap that has moved no focus yet", () => fireEvent.pointerUp(document.body)],
   // A mouse press blurs the focused control as its button goes down: an element's blur, not the

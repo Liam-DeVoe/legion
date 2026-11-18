@@ -1272,6 +1272,76 @@ test("the press that ends a title edit reaches the control under it @phone", asy
   });
 });
 
+// A press the browser turns into a drag, as it does a press on words the reader selected in the
+// title's editor, sends no mouseup and no click: Chromium ends it with a pointercancel as the drag
+// starts and a dragend as the drop lands. The title row holds the heading at the editor's height
+// while a press that ended the edit is under way, so it must read that press as over at the
+// drag's end; else the next edit a key ends finds the press under way, and a title of three lines
+// stays drawn whole at 1440 px instead of clamped to two. A drag of selected words is a press of
+// the mouse, so the row runs at the desktop width and on no phone.
+test("the title is clamped again after a key ends an edit whose words the reader dragged", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedHeader, async (page, seeded) => {
+    await page.setViewportSize(viewportAt(DESKTOP.width));
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectHeaderDrawn(page);
+    const title = await titleOfLines(page, 3);
+    await patchIssue(seeded.key, { title });
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectHeaderDrawn(page);
+    const heading = issueHeader(page).getByRole("heading", { level: 1 });
+    const editor = issueHeader(page).getByRole("textbox", { name: "Issue title" });
+    await expect(heading).toHaveText(title);
+    await heading.click();
+    await expect(editor).toBeFocused();
+
+    // Every word of the title is selected, and the middle of the editor is on the second of its
+    // three lines, which words fill: a press there is a press on selected words, which the
+    // browser drags once the pointer moves.
+    await editor.selectText();
+    // The editor is focused above, so it is drawn here; a null box only throws.
+    const box = await editor.boundingBox();
+    if (box === null) throw new Error("the title's editor is not drawn while it is focused");
+    const from = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+    // What the page hears of the press, which says whether the mouse made a native drag.
+    const heard = await page.evaluateHandle(() => {
+      const events: string[] = [];
+      for (const type of ["dragstart", "pointercancel", "dragend", "mouseup", "click"]) {
+        window.addEventListener(type, () => events.push(type), true);
+      }
+      return events;
+    });
+    // The drop lands on the page's column under the header, where no field takes the words.
+    await page.mouse.move(from.x, from.y);
+    await page.mouse.down();
+    await page.mouse.move(from.x, from.y + 240, { steps: 8 });
+    await page.mouse.up();
+    await expect
+      .poll(() => heard.jsonValue(), { message: "the press on the selected words made no drag" })
+      .toContain("dragend");
+    // After its dragend the drag sends nothing more, so one read holds every event of its press.
+    const events = await heard.jsonValue();
+    for (const release of ["mouseup", "click"]) {
+      expect(events, `the drag of the selected words sent its press's ${release}`).not.toContain(
+        release
+      );
+    }
+
+    // The drag leaves the focus in the editor, so the key ends the edit the drag was made in.
+    await expect(editor, "the drag of the title's words moved the focus").toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect(editor).toHaveCount(0);
+    await expect(heading, "the drop of the title's words changed the title").toHaveText(title);
+    await expect
+      .poll(() => heading.evaluate((element) => getComputedStyle(element).webkitLineClamp), {
+        message: "the title stayed unclamped after a key ended an edit whose words were dragged",
+      })
+      .toBe("2");
+  });
+});
+
 // Row (8): the header's keys and the palette's rows reach the header's controls: the header's
 // steps of the rows of `e2e/keyboard-issue.e2e.ts` and `e2e/keyboard-palette.e2e.ts`.
 test("the header's keys and the palette reach their controls", async ({ browser }) => {
