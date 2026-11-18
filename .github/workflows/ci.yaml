@@ -269,8 +269,8 @@ jobs:
 
   # why: .github/ci-notes/ci.md#the-arm64-half-of-the-tool-fallback-proof
   tool-fallback-arm:
-    needs: changes
-    if: needs.changes.outputs.tool_fallback == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    needs: [changes, ci-images]
+    if: ${{ !cancelled() && needs.changes.outputs.tool_fallback == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1') }}
     # why: .github/ci-notes/ci.md#why-the-tool-fallback-arm-job-needs-no-other-scope
     permissions:
       contents: read

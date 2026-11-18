@@ -228,12 +228,13 @@ packages they compile, the Dispatch server internal/testbuild/testbuild.go:112 b
 for internal/daemon/outbox_scratch_dispatch_test.go:354, and what their tests read
 outside the daemon: contracts' fixtures
 (internal/api/state_golden_test.go:868, internal/intake/intake_test.go:802), the
-agents internal/prompts/roles_test.go:261 stats and the tools skill its :689 holds
-roles/mechanics/headless.md to, the GitHub App helper
+agents internal/prompts/roles_test.go:261 stats, the tools skill its :689 holds
+roles/mechanics/headless.md to, the merge gate internal/workflow/engine_test.go:432
+holds the reviewer's prompt to, the GitHub App helper
 internal/api/real_github_test.go:115 sources, and the examples and
 docs its tests hold to the code (cmd/legion/config_example_test.go:164,
 internal/config/controller_test.go:214, internal/config/kubernetes_test.go:1474).
-No bun_install and no skills/** - the one page of skills/ this filter names is all
+No bun_install and no skills/** - the two pages of skills/ this filter names are all
 this job reads of it: the tests of this suite that packed the two plugins - and so
 resolved the root manifest, the lockfile and the patches - or staged each plugin's
 partition of skills/ with the prepack script are the plugin-pack job's now, and
@@ -997,9 +998,9 @@ verdict stands at the end of every attempt. pr-title, the other check that rules
 the `pr-title` job at the end of this file, in the same shape and for the same reason: it runs
 check-pr-text.sh on a pull request that is not a draft and on the merge queue's group, the two
 events this workflow runs that carry a pull request's text, and its own check run is the report,
-so it posts nothing. pr-title.yaml carries that same check when the pull request is edited and
-when a review is submitted or edited, the two events this workflow does not run on, as its own
-job's check run too; its header says why it runs on nothing else.
+so it posts nothing. pr-title.yaml carries that same check when the pull request is edited, the
+event this workflow does not run on, as its own job's check run too; its header says why it runs
+on nothing else.
 The docs site's build on a push to main, and its GitHub Pages
 deploy, are docs-pages.yaml's, a workflow of its own whose header says why. Its paths are held
 to the docs filter of .github/ci-filters.yaml.
@@ -1097,14 +1098,16 @@ median and 542 s at most, the 19 x86_64 ones 890 s and 1428 s: an arm64 job that
 twenty others still waits for its turn, but the gating jobs started in 7 to 23 s (`lint` 7 s,
 `ci-ok` 14 s, `changes` 17 s, `pr-title` 23 s). What keeps a job on
 ubuntu-24.04, each a reason of its own machine and not of the job's code:
-  * a tool whose .github/ci-tools.yaml row is an x86_64 build alone: changie (test), crane
-    (ci-images), mise and jj (pi-shared), elan (airlock-lean);
+  * a tool with no arm64 row in .github/ci-tools.yaml: the Pulumi CLI, its docker plugin and
+    uv, which only x86_64 jobs install (envoy-smoke, daemon-go, tool-fallback). A tool that has
+    one is installed from its `-aarch64` row there, as changie (test), crane (ci-images), mise
+    and jj (pi-shared) and elan (airlock-lean) are;
   * the pinned Oh My Pi build, which .omp-pin names and whose release ships linux-x64 alone:
     daemon-go, plugin-pack, pi-envoy and pi-legion;
   * a browser: dispatch-browser (its container is an image built for linux/amd64 alone),
     dispatch-two-builds and docs (Playwright's Chromium on the runner's own libraries);
   * an image of this repository built for linux/amd64: worker-image, browser-image, and
-    envoy-smoke, which also installs the x86_64 rows of the Pulumi CLI and its docker plugin;
+    envoy-smoke;
   * envoy-go-checks, whose pack step builds the release's listener archives with no
     CGO_ENABLED, as release-envoy-listener.yaml does on ubuntu-24.04: Go's default turns cgo on
     for a native build and off for a cross build, so only an x86_64 runner builds the release's
@@ -1357,7 +1360,8 @@ This job is the one copy path: it runs on a pull request and on a merge group, w
 event that can bring a new row in, and a failed copy is re-run with `gh run rerun`.
 The copy of every tool asset is filled here too, in the step after the image half
 (.github/scripts/mirror-ci-tools.sh): it is the same package, under the same login, and the
-tool-fallback job below reads what this step filled, so that copy must land before it.
+tool-fallback and tool-fallback-arm jobs below read what this step filled, so that copy must
+land before them.
 
 ## Why the ci-images job holds packages write
 
@@ -1489,8 +1493,12 @@ The `tool_fallback` filter selects this job, as it selects that one: both drive 
 action over the same manifest through the same helper, so one filter decides both and
 neither can drift from the other. CI_OK_SELECTED_BY maps this job to that filter, and
 .github/scripts/ci_job_reads.py holds a gate of its own on it for what this job reads.
-It needs the `changes` job alone: nothing it runs reads the ghcr copy the ci-images job
-fills, so it has no reason to wait for that job as tool-fallback does.
+After the Bun halves it proves the other arm64 rows the same way: crane-aarch64,
+changie-aarch64, mise-aarch64, jj-aarch64 and elan-aarch64, each installed once from its
+release asset and once under the fault, where each must read its ghcr copy and each install's
+own 504 is read after a probe of its own (the called file's comments say how). Those faulted
+installs read the copies the ci-images job fills, so this job needs that job for order and
+carries `!cancelled()`, as tool-fallback does and for the reason that job's comment gives.
 
 ## Why the tool-fallback-arm job needs no other scope
 
@@ -1995,8 +2003,8 @@ that script, and the job holds no `checks: write`.
 
 A merge group carries no pull request, only the queue branch it runs on, so
 find-pr-payload.sh reads the pull request that branch names and writes it in the shape
-check-pr-text.sh wants. pr-title.yaml runs on an edit and a review alone, whose payloads
-carry the pull request, so a pull request that is opened, reopened or pushed to gets its
+check-pr-text.sh wants. pr-title.yaml runs on an edit alone, whose payload carries the pull
+request, so a pull request that is opened, reopened or pushed to gets its
 pr-title from this job, and a fork's head gets one too: a job's check run costs no token
 scope, where a POST needs `checks: write`, which a fork's run's read-only GITHUB_TOKEN does
 not carry. A dispatched run carries
