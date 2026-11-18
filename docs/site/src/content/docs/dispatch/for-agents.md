@@ -108,7 +108,8 @@ used the key, from a shell where those settings are as they were, and not the fi
 under the key, Dispatch makes each write at most once, and a run without it may make the write
 twice. The command reads copies of anything the first one read from stdin or a file, so run it as
 printed, with no here-document; the session keeps each request the first call sent, so the resend
-sends each as it was first sent. A command too long to print whole is not printed: send your own
+sends each as it was first sent, and says so where what you built this time differs: your change
+was not sent. A command too long to print whole is not printed: send your own
 command again with `--idempotency-key <key>` added. Where Dispatch says it keeps no idempotency
 keys, the line prints no command, and where the command could not learn whether it does, the line
 says to read the write back first. If a resend is refused, the earlier write may still have

@@ -292,8 +292,10 @@ export type DispatchCommand = (context: CommandContext) => Promise<DispatchToolR
 /**
  * The context every command starts from, built from the checked call. The fetch it hands the
  * client names the configured server in a transport error, since a session whose Dispatch moved
- * reads that message and nothing else. That message and every link name the server without the
- * user and password its URL may carry; the client's requests go to the URL as configured.
+ * reads that message and nothing else; the transport error stays its `cause`, so the client still
+ * tells a connection never made from one that may have carried the request. That message and every
+ * link name the server without the user and password its URL may carry; the client's requests go
+ * to the URL as configured.
  */
 export function sessionContext(
   input: ExecuteDispatchToolInput,
@@ -309,7 +311,8 @@ export function sessionContext(
       } catch (error) {
         if (error instanceof TypeError) {
           throw new Error(
-            `Dispatch at ${configUrl} is unreachable: ${error.message}. If the Dispatch URL changed, restart this agent process so it picks up the new configuration.`
+            `Dispatch at ${configUrl} is unreachable: ${error.message}. If the Dispatch URL changed, restart this agent process so it picks up the new configuration.`,
+            { cause: error }
           );
         }
         throw error;

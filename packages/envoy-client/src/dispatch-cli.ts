@@ -223,7 +223,7 @@ function unsettledLine(resend: Resend): string {
   } catch (error) {
     why = `what the call read could not be kept (${messageFor(error)})`;
   }
-  return `${send} The command is not printed here, because ${why}: send this call's own command again with \`--idempotency-key ${key}\` added. Under the key Dispatch makes no write twice, and refuses one whose request changed.`;
+  return `${send} The command is not printed here, because ${why}: send this call's own command again with \`--idempotency-key ${key}\` added. Under the key Dispatch makes no write twice: from this session the call sends each request again as its first call sent it, and from elsewhere Dispatch refuses one whose request changed.`;
 }
 
 /** How a gated write gets AskGate's marker, as a refusal or a warn-mode warning tells the agent. */
@@ -752,6 +752,13 @@ export async function runDispatchCli(
       // Everything else here is Dispatch's own refusal or failure.
       code = error instanceof ToolInputError ? USAGE : REFUSED;
     }
+  }
+  // A request the call sent as its first call sent it, in place of a different one it built (a
+  // body edited since): the agent is told its change was not sent.
+  for (const write of commandKey.swappedWrites) {
+    notes.push(
+      `dispatch: warning: this call sent ${write.method} ${write.path} under idempotency key ${write.key} as its first call sent it, not as this call built it, which differs: Dispatch holds the first call's request, and this call's change was not sent.`
+    );
   }
   const withLine = (line: string): ResultInput => ({
     ...entry,

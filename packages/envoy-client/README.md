@@ -655,41 +655,62 @@ the issue's messages for the reason, then close with one that points at it). The
 `PATCH` landing this way is the command's write, and exits 0.
 
 A write of a `dispatch` command that ends with no definitive answer after an attempt of it may have
-reached Dispatch may have landed with its answer lost, whatever the command throws: a
+reached Dispatch may have landed with its answer lost, whatever the command throws or returns: a
 `DispatchWriteUnsettledError`, Dispatch's own 5xx, a transport failure, a timeout or a
 cancellation while an attempt was out, a final answer Dispatch's keyed layer did not judge after
-such an attempt, or a 2xx whose body was lost while it was read (`#answer`). The client tells the
-command's `CommandKey` (`markUnsettled`, per write key), and the command exits 75 (sysexits'
-`EX_TEMPFAIL`, as `envoy-send` exits for a send it cannot confirm) rather than 1, which a caller
-reads as a refusal and runs again under a new key, a second write. After the error it prints one
-line, kept whole however the output is cut, that names the key of each write that may have landed
-and the command that sends the call again under the call's key: the argv with
-`--idempotency-key <key>` added unless it names the key already, each word quoted as
-`commandLine` quotes one (a word that opens with `=` too, which zsh would expand bare). Every text
-the call read from stdin or from a `--<field>-file`, and every value over 500 characters given
-inline, is kept in a copy under the session's `resend/` directory, which the command reads instead
-(`rerunWords`), so it needs no stdin, reads what the call read, and fits the 25,000 characters
-Claude Code shows. The line also names the settings the call found its Dispatch, its login and its
-session through (`settingsRead`: the host and session variables, and `ENVOY_CONFIG_FILE`,
-`DISPATCH_URL`, `DISPATCH_TOKEN`, `DISPATCH_TOKEN_FILE`, `DISPATCH_TOKEN_BROKER`, `LEGION_ISSUE`,
-`OMP_PROFILE`, `PI_CODING_AGENT_DIR`, `CLAUDE_CONFIG_DIR`, `XDG_CONFIG_HOME` and `HOME` where set)
-and the envoy.json it read, which the resend must find as they were, since Dispatch keeps a key for
-the login that sent it: their names, not their values, since the token is a secret and AskGate
-posts no command that opens with an assignment. Dispatch keeps a key 24 hours from the first call
-that used it (`IDEMPOTENCY_KEY_TTL_MS`). Sent again under the key, each write of the command takes
-the key it took the first time, so Dispatch answers a write it ran with that write's first answer,
-or `409 KEY_COMMITTED` (a landing, exit 0), and runs only the writes it never got; a write whose
-request changed in between is refused `422 KEY_REUSED`, never run. Two exceptions: a command that
-reads what the first call wrote refuses before it sends again (`dispatch artifact` finds its name
-held, `issue-update --status done` finds the issue closed), and `architecture-sync` with no
-`--repo`, which falls back to the older per-source route on a Dispatch without the plural one, can
-send its write under a key the first call left unused (a second sync imports again). A call sent
-again under a key that is refused, before or after it reaches Dispatch, exits 1 or 2 as any
-refusal does, and adds a line, also to its ledger entry, `dispatch: the earlier call's write may
-have landed: …`, since the earlier call's write may have landed all the same. Where Dispatch's
-`/healthz` answered and named no keyed layer, a resend under the key could run the write again, so
-the line says the write may have landed and to read it back, and prints no command. A `POST` that
-writes nothing never exits 75.
+such an attempt (a near-copy refusal the command returns among them), or a 2xx whose body was lost
+while it was read (`#answer`). A connection never made (`ECONNREFUSED`, `ENOTFOUND`, `EAI_AGAIN`,
+read through the `cause` `sessionContext` keeps) carried the request nowhere and is no such
+attempt. The client tells the command's `CommandKey` (`markUnsettled`, per write key), and the
+command exits 75 (sysexits' `EX_TEMPFAIL`, as `envoy-send` exits for a send it cannot confirm)
+rather than 1, which a caller reads as a refusal and runs again under a new key, a second write.
+
+The session keeps every request such a call sent at `resend/<key>.json`, never changing one it
+holds (`writeResendRecord`), and a call under that key sends each write it sends to the same route
+under the same key as its first call sent it, whatever it built this time (a body edited since, a
+revision read afresh, a picture changed), saying so where the two differ (`dispatch: warning: this
+call sent … as its first call sent it, not as this call built it`): Dispatch answers each write it
+ran with that write's first answer, or `409 KEY_COMMITTED` (a landing, exit 0), and runs only the
+writes it never got. From a session without the record, a write whose request changed is refused
+`422 KEY_REUSED`, never run. Dispatch keeps a key 24 hours from the first call that used it
+(`IDEMPOTENCY_KEY_TTL_MS`).
+
+After the error the command prints one line, kept whole however the output is cut, that names the
+key of each write that may have landed (`<key>` for the call's first write, `<key>.<n>` for its
+n-th) and what to do, by what the call learned of Dispatch's keyed layer (`unsettledLine`):
+
+- It runs (an answer echoed a key, or `/healthz` said `idempotency_keys`): the command that sends
+  the call again under its key, and that Dispatch makes each write at most once.
+- Dispatch's `/healthz` answered its health (`ok` and `db`) and named no keyed layer: a resend
+  under the key could run the write again, so the line says to read the write back, and prints no
+  command.
+- Nothing told (`/healthz` did not answer; the call asks it once): the line says to read the write
+  back first, then gives the command.
+
+The command is the argv with `--idempotency-key <key>` added unless it names the key already, each
+word quoted as `commandLine` quotes one (a word that opens with `=` too, which zsh would expand
+bare). Every text the call read from stdin or a `--<field>-file`, and every value over 500
+characters given inline to a flag with a file twin, is kept in a copy at
+`resend/<key>.<place>.<16 hex of its SHA-256>` (`writeResendInput`, never replaced by a later
+call), which the command reads instead (`rerunWords`), so it needs no stdin. A command longer than
+8,000 characters, or one whose input could not be kept, is not printed: the line says to send the
+call's own command again with the key added. The line also names the settings the call found its
+Dispatch, its login and its session through (`settingsRead`: the host and session variables, and
+`ENVOY_CONFIG_FILE`, `DISPATCH_URL`, `DISPATCH_TOKEN`, `DISPATCH_TOKEN_FILE`,
+`DISPATCH_TOKEN_BROKER`, `LEGION_ISSUE`, `OMP_PROFILE`, `PI_CODING_AGENT_DIR`, `CLAUDE_CONFIG_DIR`,
+`XDG_CONFIG_HOME` and `HOME` where set) and the envoy.json it read, or that it read none, which the
+resend must find as they were, since Dispatch keeps a key for the login that sent it: their names,
+not their values, since the token is a secret and AskGate posts no command that opens with an
+assignment.
+
+A command that reads what the first call wrote refuses before it sends again (`dispatch artifact`
+finds its name held, `issue-update --status done` finds the issue closed), and `architecture-sync`
+with no `--repo` sends its fallback to the older per-source route under the key the newer route was
+sent under, so a resend to a Dispatch upgraded since is refused `KEY_REUSED` rather than importing
+again. A call that names the key of a write an earlier call may have landed and is refused, before
+or after it reaches Dispatch, exits 1 or 2 as any refusal does, and adds a line, also to its ledger
+entry, `dispatch: the earlier call's write may have landed: …`. A `POST` that writes nothing never
+exits 75.
 
 Successful write responses may include `advice`. The executor preserves that object as
 `details.advice` and appends short pointers after the subscription/follow suffix: a primary spec

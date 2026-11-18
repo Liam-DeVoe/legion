@@ -543,10 +543,14 @@ function keyEchoed(response: Response, key: string): boolean {
 
 /** Whether a fetch failed before it made a connection, so its request reached nothing: nothing
  *  listened where the URL points (`ECONNREFUSED`), or its host's name did not resolve
- *  (`ENOTFOUND`, `EAI_AGAIN`), as Bun's fetch reports them in `code`. */
+ *  (`ENOTFOUND`, `EAI_AGAIN`), as Bun's fetch reports them in `code`, on the error or on the
+ *  `cause` a wrapper keeps it as (`sessionContext`). */
 function neverConnected(error: unknown): boolean {
-  const code = typeof error === "object" && error !== null ? Reflect.get(error, "code") : undefined;
-  return code === "ECONNREFUSED" || code === "ENOTFOUND" || code === "EAI_AGAIN";
+  for (let at = error; typeof at === "object" && at !== null; at = Reflect.get(at, "cause")) {
+    const code = Reflect.get(at, "code");
+    if (code === "ECONNREFUSED" || code === "ENOTFOUND" || code === "EAI_AGAIN") return true;
+  }
+  return false;
 }
 
 /** A request body encoded once, so every attempt of a write sends the bytes the first one did. */
@@ -871,6 +875,21 @@ function pathOf(url: string): string {
   return `${parsed.pathname}${parsed.search}`;
 }
 
+/** A write's type and body as Dispatch's keyed layer compares them: a multipart boundary, which a
+ *  client draws afresh for every encoding of one form, left out of both. */
+function requestDigest(write: SentWrite): string {
+  const type = write.type ?? "";
+  const boundary = /boundary="?([^";]+)"?/.exec(type)?.[1];
+  const content =
+    write.content === undefined
+      ? ""
+      : typeof write.content === "string"
+        ? write.content
+        : Buffer.from(write.content).toString("latin1");
+  if (boundary === undefined) return `${type}\n${content}`;
+  return `${type.replaceAll(boundary, "")}\n${content.replaceAll(boundary, "")}`;
+}
+
 /**
  * The key of one `dispatch` command, from which each write the command makes takes its own
  * `Idempotency-Key`: the first the key itself, and the n-th `<key>.<n>`, in the order the command
@@ -882,7 +901,8 @@ function pathOf(url: string): string {
  * (`sentWrites`, kept in the session by the CLI), and the call under its key is given them
  * (`recorded`): a write it sends under a key and to a route the first call sent goes as the first
  * call sent it (`send`), whatever it built this time (a revision read afresh, a picture edited
- * since), so Dispatch answers it with its first answer rather than running it twice. A write the
+ * since), so Dispatch answers it with its first answer rather than running it twice; where the two
+ * differ, `swappedWrites` names it, so the command can say its change was not sent. A write the
  * record does not hold goes as built, and one Dispatch holds another request under is refused
  * `422 KEY_REUSED`, never run: a command that reads what the first call wrote may refuse before it
  * sends (an artifact's name, a closed issue), which makes no second write either.
@@ -900,6 +920,8 @@ export class CommandKey {
   readonly #recorded: ReadonlyMap<string, SentWrite>;
   /** The writes this call sent, by key, in the order it first sent each. */
   readonly #sent = new Map<string, SentWrite>();
+  /** The recorded writes this call sent in place of a different request it built. */
+  readonly #swapped: SentWrite[] = [];
   #layer: KeyedLayer = "unknown";
   /** Whether the call has asked what Dispatch keeps: a `/healthz` probe ran, or memory answered. */
   #asked = false;
@@ -931,8 +953,20 @@ export class CommandKey {
       recorded !== undefined && recorded.method === built.method && recorded.path === built.path
         ? recorded
         : built;
+    if (
+      write === recorded &&
+      !this.#sent.has(built.key) &&
+      requestDigest(recorded) !== requestDigest(built)
+    ) {
+      this.#swapped.push(recorded);
+    }
     this.#sent.set(built.key, write);
     return write;
+  }
+
+  /** The recorded writes this call sent in place of a different request it built, in order. */
+  get swappedWrites(): readonly SentWrite[] {
+    return this.#swapped;
   }
 
   /** The writes this call sent, each as it was sent, in order. */

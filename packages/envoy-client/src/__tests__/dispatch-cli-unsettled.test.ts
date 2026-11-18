@@ -43,6 +43,9 @@ const PNG = Buffer.from("89504e470d0a1a0a0000000d49484452", "hex");
 /** The one write of `dispatch message`, the command most rows below lose the answer of. */
 const MESSAGE_WRITE = { method: "POST", path: `/api/v1/issues/${ISSUE}/messages` };
 const MESSAGE = ["message", "--issue", ISSUE, "--body", "Shipped."];
+/** How the line opens that says a call sent again a request its first call sent, in place of the
+ *  one it built. */
+const SWAPPED = "dispatch: warning: this call sent";
 
 let stateDir = "";
 beforeEach(() => {
@@ -524,6 +527,8 @@ describe("a write whose answer is lost", () => {
         expect(resent.length).toBeGreaterThan(0);
         expect(resent.map((request) => request.key)).toEqual(resent.map(() => lostKey));
         expect(again.stdout).not.toContain(MAY_HAVE_LANDED);
+        // The request it built is the one the first call sent, so nothing was swapped.
+        expect(again.stdout).not.toContain(SWAPPED);
       } else {
         // The command read what the first call wrote and refused before it sent anything, and
         // says beside the refusal that the earlier call's write may have landed.
@@ -795,7 +800,9 @@ describe("a write whose answer is lost", () => {
     ]);
   });
 
-  test("the call's own command sent again with the key sends what the first call sent", async () => {
+  // The resend sends what the first call sent, whatever the call built now, and says so where
+  // the two differ: the agent is never told its edited text was posted.
+  test("the call's own command sent again with the key sends what the first call sent, and says so", async () => {
     const note = join(stateDir, "note.md");
     writeFileSync(note, "Shipped.\n");
     const dispatch = keyedDispatch({ lose: MESSAGE_WRITE });
@@ -807,6 +814,9 @@ describe("a write whose answer is lost", () => {
     nextProcess();
     const again = await run([...own, "--idempotency-key", key], dispatch.fetchImpl);
     expect(again.code, again.stdout).toBe(0);
+    expect(again.stdout).toContain(
+      `\n${SWAPPED} POST ${MESSAGE_WRITE.path} under idempotency key ${key} as its first call sent it, not as this call built it, which differs: Dispatch holds the first call's request, and this call's change was not sent.\n`
+    );
     expect(dispatch.landed).toHaveLength(1);
   });
 
@@ -946,6 +956,19 @@ describe("a write that cannot have landed", () => {
     expect(stdout).not.toContain(MAY_HAVE_LANDED);
     expect(dispatch.landed).toEqual([]);
   });
+
+  // Nothing listened where the URL points, so no attempt carried the write anywhere: a refusal of
+  // the connection, exit 1, never a write that may have landed.
+  test("a write whose every connection was refused exits 1, not 75", async () => {
+    const refused = (async () => {
+      throw Object.assign(new TypeError("ECONNREFUSED: Unable to connect."), {
+        code: "ECONNREFUSED",
+      });
+    }) as unknown as typeof fetch;
+    const { code, stdout } = await run(MESSAGE, refused);
+    expect(code, stdout).toBe(1);
+    expect(stdout).not.toContain(MAY_HAVE_LANDED);
+  }, 30_000);
 
   test("an --idempotency-key that is no key the CLI names is a usage error, exit 2", async () => {
     const dispatch = keyedDispatch();
