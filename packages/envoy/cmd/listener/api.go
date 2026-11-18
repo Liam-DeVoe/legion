@@ -192,7 +192,8 @@ type publishResponse struct {
 	// such a repeat gets it: the shared transport's, under the idempotency_key it mints once per
 	// message, among them. A role send's 200 carries it for a forward the stream already held for
 	// its holder (roleSend.deliveredHeld), whatever the key's form, since every forward has a
-	// message id. Absent means false, which is what an older listener's answer reads as.
+	// message id, and its 202 for a repeat whose kept copy is another request's (roleSend.kept).
+	// Absent means false, which is what an older listener's answer reads as.
 	Duplicate bool `json:"duplicate,omitempty"`
 }
 
@@ -989,7 +990,10 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			record.refuse(w, http.StatusConflict, outcomeSessionStopped, "the session is stopped")
 			return
 		}
-		// item is the copy the stream holds after a duplicate verdict (publishHeld).
+		// item is the copy the stream holds after a duplicate verdict (publishHeld); the line
+		// names who asked from the envelope built for the request.
+		asked := item
+		record.asked = &asked
 		duplicate, err := publishHeld(ctx, d.client, d.client.PublishAckWithin, charge, senderOf(r, item), &item)
 		if err != nil {
 			record.refuseBusUnavailable(w, err)
@@ -1388,7 +1392,10 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		ctx, cancel := context.WithDeadline(r.Context(), arrived.Add(sendRequestBudget))
 		defer cancel()
 		item.Sender = senderStamp(ctx, d.registry, d.sessions, item.SourceSession)
-		// item is the copy the stream holds after a duplicate verdict (publishHeld).
+		// item is the copy the stream holds after a duplicate verdict (publishHeld); the line
+		// names who asked from the envelope built for the request.
+		asked := item
+		record.asked = &asked
 		duplicate, err := publishHeld(ctx, d.client, d.client.PublishAckWithin, charge, senderOf(r, item), &item)
 		if err != nil {
 			record.refuseBusUnavailable(w, err)
