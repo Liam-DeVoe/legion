@@ -29,11 +29,16 @@ body: |-
   runtime's "The operation timed out.". A Dispatch write keeps one idempotency key across every
   send of the call — its attempts, the re-send after `401 BROKER_TOKEN_NOT_ACTIVE`, and each
   retry after an old build's answer of no route, which used to mint a new key and could write
-  twice. Once an attempt shows it reached Dispatch (a 5xx or `409 KEY_IN_FLIGHT` answer, or a
-  silence cut, an upload's included), a later credential that cannot present, a last attempt's
-  transport failure, or an answer of no route to the end is `DispatchWriteUnsettledError` with
-  that failure as its cause, never the broker's, the transport's or the rolling release's error
-  alone, which read as nothing written and invited a resend that wrote twice.
+  twice. An attempt may have landed when it got a 5xx or `409 KEY_IN_FLIGHT`, was cut off for
+  silence (an upload's included), or failed in transport after it went out (a reset after
+  Dispatch read it); a refused connection or a name that did not resolve reached nothing. Once
+  one may have landed, only an answer about the write's key settles it: a 2xx, or a refusal
+  Dispatch's keyed layer judged. A later credential that cannot present, a last attempt's
+  transport failure, an answer of no route to the end, the deadline, or a final answer nothing
+  judged for the key (a gateway's 403 or 404 page, Dispatch's auth 401, `403 READ_ONLY_TOKEN`, a
+  second `401 BROKER_TOKEN_NOT_ACTIVE`) is `DispatchWriteUnsettledError`, carrying the write's
+  key as `key`, with that failure as its cause, never the refusal alone, which read as nothing
+  written and invited a resend that wrote twice.
 time: 2026-11-17T12:39:04Z
 custom:
     Issue: pr4140

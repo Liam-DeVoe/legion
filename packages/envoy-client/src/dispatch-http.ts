@@ -174,13 +174,17 @@ export class DispatchGatewayError extends DispatchServiceError {
  * so it may or may not have taken effect. Either the last attempt's refusal alone would say the
  * write never took effect (a gateway's 408 or 429, a rate limit of Dispatch's own) or names an
  * earlier attempt Dispatch was still running (`409 KEY_IN_FLIGHT`), while an earlier attempt failed
- * in transport, got a 5xx, was cut off unanswered or was that running one; or the write ended with
- * no answer at all, after an attempt that may have reached Dispatch: its last attempt was cut off
- * for silence, or the call's deadline ended it. This is deliberately no `DispatchServiceError`,
- * which a caller reads as a refusal Dispatch decided. `last` (also the `cause`) is that last
- * refusal, the silence cut or the deadline's timeout. Where the call saw Dispatch's keyed layer
- * judge the write (`keyed`), the message says Dispatch finishes an attempt it received, and that a
- * resend is a new command's, under a new key, so the write is to be read back first.
+ * in transport, got a 5xx, was cut off unanswered or was that running one; or the write's final
+ * answer, after such an attempt, was none Dispatch's keyed layer judged for its key (a gateway's
+ * page, a refusal Dispatch's auth made before the keyed layer ran); or the write ended with no
+ * answer at all, after an attempt that may have reached Dispatch: its last attempt was cut off for
+ * silence, or the call's deadline ended it. This is deliberately no `DispatchServiceError`, which a
+ * caller reads as a refusal Dispatch decided. `last` (also the `cause`) is that last refusal, the
+ * silence cut or the deadline's timeout. `key` is the `Idempotency-Key` every attempt of the write
+ * carried: a resend under it is answered from what Dispatch stored, never written twice. Where the
+ * call saw Dispatch's keyed layer judge the write (`keyed`), the message says Dispatch finishes an
+ * attempt it received, and that a resend is a new command's, under a new key, so the write is to be
+ * read back first.
  */
 export class DispatchWriteUnsettledError extends Error {
   override readonly name = "DispatchWriteUnsettledError";
@@ -188,6 +192,8 @@ export class DispatchWriteUnsettledError extends Error {
   constructor(
     readonly last: Error,
     readonly attempts: number,
+    /** The `Idempotency-Key` every attempt of the write carried. */
+    readonly key: string,
     /**
      * What the write got, as the message's first clause, where `last` is no refusal that says it:
      * `<METHOD> <url>` (the URL as `requestForText` names it) and how it ended. `last`'s own
@@ -2036,16 +2042,16 @@ export class DispatchClient {
       ) {
         throw error;
       }
-      const { progress, request } = write;
       if (error instanceof DispatchNoRouteError || isNoRoute(error)) {
         throw new DispatchWriteUnsettledError(
           error as DispatchServiceError,
-          progress.sent,
+          write.progress.sent,
+          write.key,
           undefined,
-          progress.sawKeyedLayer
+          write.progress.sawKeyedLayer
         );
       }
-      throw this.#ended(error, request, progress.sent, true, progress.sawKeyedLayer);
+      throw this.#ended(error, write, true);
     }
   }
 
@@ -2139,10 +2145,61 @@ export class DispatchClient {
   ): Promise<Response> {
     const send = async (): Promise<Response> =>
       this.#sendPresenting(method, url, body, accept, signal, write);
-    const answer = await send();
-    if (this.#credential.stale === undefined || !(await tokenNotLive(answer))) return answer;
-    this.#credential.stale();
-    return await send();
+    let answer = await send();
+    if (this.#credential.stale !== undefined && (await tokenNotLive(answer))) {
+      this.#credential.stale();
+      answer = await send();
+    }
+    return write === undefined ? answer : await this.#settles(method, url, answer, write);
+  }
+
+  /**
+   * A write's final answer, where it settles the write. Once an attempt of the write may have
+   * landed (`WriteProgress.landed`), only a definite answer about the write's key settles it: a
+   * 2xx, which Dispatch applied or replayed, or a refusal Dispatch's keyed layer judged for the key
+   * (the key echoed back, `keyEchoed`). Any other final answer says nothing of whether an earlier
+   * attempt landed: a page something in Dispatch's place wrote (a gateway's 403 or 404), or a
+   * refusal Dispatch made before its keyed layer ran (its auth's 401, `403 READ_ONLY_TOKEN`, a
+   * second `401 BROKER_TOKEN_NOT_ACTIVE` after the re-send). Such a write is
+   * `DispatchWriteUnsettledError`, carrying its key, never a refusal that reads as nothing written
+   * and invites a resend under a new key, which writes twice. An old build's answer of no route
+   * passes on, for `#noRoute` to ask again and settle; so does a write Dispatch made whose answer
+   * is gone (`DispatchWriteLandedError`, `#response`), which is definite. A status that carries no
+   * body (a 304) passes on unread, as `writeAnswer` hands it on.
+   */
+  async #settles(
+    method: string,
+    url: string,
+    response: Response,
+    write: WriteCall
+  ): Promise<Response> {
+    if (
+      !write.progress.landed ||
+      response.ok ||
+      NULL_BODY_STATUSES.has(response.status) ||
+      keyEchoed(response, write.key)
+    ) {
+      return response;
+    }
+    // Read once, and rebuilt for each reader: the refusal read here, and the caller's `#response`.
+    const text = await response.text();
+    const copy = (): Response =>
+      new Response(text, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: response.headers,
+      });
+    const refusal: unknown = await this.#response(method, url, copy()).catch(
+      (error: unknown) => error
+    );
+    if (!(refusal instanceof DispatchServiceError) || isNoRoute(refusal)) return copy();
+    throw new DispatchWriteUnsettledError(
+      refusal,
+      write.progress.sent,
+      write.key,
+      undefined,
+      write.progress.sawKeyedLayer
+    );
   }
 
   /**
@@ -2200,7 +2257,7 @@ export class DispatchClient {
         this.#credentialSignal(limit)
       );
     } catch (error) {
-      throw write === undefined ? error : this.#credentialFailed(error, request, write.progress);
+      throw write === undefined ? error : this.#credentialFailed(error, write);
     }
     if (body !== undefined) headers["Content-Type"] = body.type;
     if (write === undefined) {
@@ -2268,7 +2325,7 @@ export class DispatchClient {
           (this.#signal.aborted || name === "AbortError" || name === "TimeoutError")
         ) {
           const mayHaveReached = unpresented ? progress.landed : true;
-          throw this.#ended(error, request, progress.sent, mayHaveReached, progress.sawKeyedLayer);
+          throw this.#ended(error, write, mayHaveReached);
         }
         thrown = error;
         // A credential that failed sent nothing, so it is no attempt that may have reached
@@ -2306,13 +2363,7 @@ export class DispatchClient {
         try {
           await pause(wait, this.#signal);
         } catch (error) {
-          throw this.#ended(
-            error,
-            request,
-            progress.sent,
-            progress.reached,
-            progress.sawKeyedLayer
-          );
+          throw this.#ended(error, write, progress.reached);
         }
         again = this.#now() <= latest;
       }
@@ -2320,24 +2371,18 @@ export class DispatchClient {
         // An answer the write would have asked again after was read whole and rebuilt from its
         // text (`writeAnswer`), so it holds no connection and can be read here.
         if (answer !== undefined) {
-          return this.#unsettled(
-            method,
-            url,
-            answer.response,
-            progress.reached,
-            progress.sent,
-            progress.sawKeyedLayer
-          );
+          return this.#unsettled(method, url, answer.response, write);
         }
         if (thrown instanceof WriteAttemptSilent) {
           throw new DispatchWriteUnsettledError(
             thrown,
             progress.sent,
+            key,
             `${request} ${thrown.message}`,
             progress.sawKeyedLayer
           );
         }
-        if (unpresented) throw this.#credentialFailed(thrown, request, progress);
+        if (unpresented) throw this.#credentialFailed(thrown, write);
         // Any other failure of the last attempt (its transport) after an attempt that shows it
         // reached Dispatch — an answer that may have (a 5xx, 409 KEY_IN_FLIGHT) or a silence cut,
         // an upload's included: the write may have landed, so the caller is told it is
@@ -2347,6 +2392,7 @@ export class DispatchClient {
           throw new DispatchWriteUnsettledError(
             thrown,
             progress.sent,
+            key,
             `${request} failed on its last attempt (${thrown.message})`,
             progress.sawKeyedLayer
           );
@@ -2363,12 +2409,14 @@ export class DispatchClient {
    * error alone, which reads as nothing written and invites a resend under a new key; otherwise
    * nothing of the write went out, and the credential's own error stands.
    */
-  #credentialFailed(error: unknown, request: string, progress: WriteProgress): unknown {
+  #credentialFailed(error: unknown, write: WriteCall): unknown {
+    const { progress } = write;
     if (!progress.landed || !(error instanceof Error)) return error;
     return new DispatchWriteUnsettledError(
       error,
       progress.sent,
-      `${request} could not present its credential for another attempt (${error.message})`,
+      write.key,
+      `${write.request} could not present its credential for another attempt (${error.message})`,
       progress.sawKeyedLayer
     );
   }
@@ -2430,26 +2478,21 @@ export class DispatchClient {
    * What a write throws when its deadline or its caller's cancellation ends it, with `error` the
    * fetch's or the pause's: once an attempt may have reached Dispatch (`mayHaveReached`), the
    * deadline's timeout is a `DispatchWriteUnsettledError` saying the write may or may not have
-   * taken effect (and, where the call saw the keyed layer judge it, `keyed`, that Dispatch finishes
-   * it); a cancellation, the caller's own, and a timeout before anything reached Dispatch are
-   * thrown as they are.
+   * taken effect (and, where the call saw the keyed layer judge it, that Dispatch finishes it); a
+   * cancellation, the caller's own, and a timeout before anything reached Dispatch are thrown as
+   * they are.
    */
-  #ended(
-    error: unknown,
-    request: string,
-    attempts: number,
-    mayHaveReached: boolean,
-    keyed: boolean
-  ): unknown {
+  #ended(error: unknown, write: WriteCall, mayHaveReached: boolean): unknown {
     const reason: unknown = this.#signal.aborted ? this.#signal.reason : error;
     const timedOut =
       (reason instanceof Error || reason instanceof DOMException) && reason.name === "TimeoutError";
     if (!timedOut || !mayHaveReached || !(error instanceof Error)) return error;
     return new DispatchWriteUnsettledError(
       error,
-      attempts,
-      `${request} had no definitive answer when its deadline ended it`,
-      keyed
+      write.progress.sent,
+      write.key,
+      `${write.request} had no definitive answer when its deadline ended it`,
+      write.progress.sawKeyedLayer
     );
   }
 
@@ -2517,27 +2560,35 @@ export class DispatchClient {
   /**
    * What a write throws once it stops asking with no definitive answer: the last attempt's refusal
    * as `#response` reads it, unless that refusal alone would say the write never took effect while
-   * an attempt may have reached Dispatch (`reached`), when it is a `DispatchWriteUnsettledError`
-   * (which says, where the call saw the keyed layer judge the write, `keyed`, that Dispatch finishes
-   * it). `#response` throws for every status `writeAnswer` asks again after.
+   * an attempt may have reached Dispatch (`WriteProgress.reached`), when it is a
+   * `DispatchWriteUnsettledError` carrying the write's key (which says, where the call saw the
+   * keyed layer judge the write, that Dispatch finishes it). `#response` throws for every status
+   * `writeAnswer` asks again after.
    */
   async #unsettled(
     method: string,
     url: string,
     response: Response,
-    reached: boolean,
-    attempts: number,
-    keyed: boolean
+    write: WriteCall
   ): Promise<never> {
     const refusal: unknown = await this.#response(method, url, response).catch(
       (error: unknown) => error
     );
-    if (reached && refusal instanceof DispatchServiceError) {
+    const { progress } = write;
+    if (progress.reached && refusal instanceof DispatchServiceError) {
       const landedAlone =
         refusal instanceof DispatchGatewayError
           ? refusal.mayHaveReachedDispatch
           : refusal.status >= 500;
-      if (!landedAlone) throw new DispatchWriteUnsettledError(refusal, attempts, undefined, keyed);
+      if (!landedAlone) {
+        throw new DispatchWriteUnsettledError(
+          refusal,
+          progress.sent,
+          write.key,
+          undefined,
+          progress.sawKeyedLayer
+        );
+      }
     }
     throw refusal;
   }

@@ -640,12 +640,17 @@ that. When the write ends with no definitive answer after this call saw the keye
 it, the error says Dispatch finishes an attempt it received, and to read the write back before
 sending it again, since a new command sends it under a new key. The call's deadline and
 its cancellation end the write at once and are never retried. Any other answer - a 2xx, a replay,
-`422 KEY_REUSED`, another 4xx - is the answer, at once. Once an attempt shows it reached Dispatch
-(a 5xx or `409 KEY_IN_FLIGHT` answer, or a silence cut, an upload's included), what ends the write
-without an answer of its own - a credential that cannot present another attempt, the last
-attempt's transport failure, or an answer of no route on every later send - is
-`DispatchWriteUnsettledError` with that failure as its cause: the write may have landed. A
-transport failure on every attempt shows no landing, and is told as Dispatch being unreachable.
+`422 KEY_REUSED`, another 4xx - is the answer, at once, while no attempt may have landed. An
+attempt may have landed when it got a 5xx or `409 KEY_IN_FLIGHT`, was cut off for silence (an
+upload's included), or failed in transport after it went out (a reset after Dispatch read it);
+a refused connection or a name that did not resolve reached nothing. Once one may have landed,
+only an answer about the write's key settles it: a 2xx, or a refusal Dispatch's keyed layer
+judged (the key echoed back). Everything else that ends the write - a credential that cannot
+present another attempt, the last attempt's transport failure, an answer of no route on every
+later send, the deadline, or a final answer nothing judged for the key (a gateway's page, a
+refusal Dispatch's auth made before the keyed layer ran) - is `DispatchWriteUnsettledError`,
+with that failure as its cause and the write's key as its `key`: the write may have landed. A
+refused connection on every attempt shows no landing, and is told as Dispatch being unreachable.
 
 A write is asked again only against a Dispatch this process has lately seen run the keyed layer,
 since an earlier Dispatch ignores the header and would run a retried write a second time. A

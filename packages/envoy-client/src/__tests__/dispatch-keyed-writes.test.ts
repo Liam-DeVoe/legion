@@ -1167,6 +1167,97 @@ describe("DispatchClient's writes", () => {
     expect(error.message).toContain("may or may not have taken effect");
   });
 
+  // F4 (the review of 215510405b): once an attempt may have landed, only an answer about the
+  // write's key settles it — a 2xx, or a refusal Dispatch's keyed layer judged (the key echoed
+  // back). A final answer nothing judged for the key says nothing of the earlier attempt, so the
+  // write is unsettled, carrying its key, never a refusal that reads as nothing written.
+  const unjudged: readonly (readonly [string, () => Response, number])[] = [
+    ["a gateway's 403 page", () => page(403, "Forbidden"), 403],
+    ["a gateway's 404 page", () => page(404, "Not Found"), 404],
+    ["Dispatch's auth 401", () => refusal(401, "UNAUTHORIZED", "a token is required"), 401],
+    [
+      "Dispatch's 403 READ_ONLY_TOKEN",
+      () => refusal(403, "READ_ONLY_TOKEN", "this token may only read"),
+      403,
+    ],
+  ];
+  test.each(
+    unjudged
+  )("%s after a silent attempt leaves the write unsettled, carrying its key", async (_, answer, status) => {
+    const { retry, stall } = stalling();
+    const { fetchImpl, sent } = scripted([stall, answer()], { echo: false });
+
+    const error = await failure(client(fetchImpl, retry).comment("DSP-1", comment));
+
+    expect(sent).toHaveLength(2);
+    expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
+    const unsettled = error as DispatchWriteUnsettledError;
+    expect(unsettled.key).toBe(sent[0]?.headers["Idempotency-Key"] as string);
+    expect((unsettled.last as DispatchServiceError).status).toBe(status);
+    expect(error.message).toContain("so it may or may not have taken effect");
+  });
+
+  // A second 401 BROKER_TOKEN_NOT_ACTIVE, after the client presented afresh and sent again, is
+  // Dispatch's auth refusing before its keyed layer ran: unsettled too.
+  test("a second dead-token answer after a silent attempt leaves the write unsettled, carrying its key", async () => {
+    const { retry, stall } = stalling();
+    const notActive = () =>
+      refusal(
+        401,
+        "BROKER_TOKEN_NOT_ACTIVE",
+        "the secrets broker does not hold this token as live"
+      );
+    const { fetchImpl, sent } = scripted([stall, notActive(), notActive()], { echo: false });
+    let stale = 0;
+    const credential: RequestCredential = {
+      scheme: "DPoP",
+      headers: () => ({ Authorization: "DPoP live-token" }),
+      stale: () => {
+        stale += 1;
+      },
+      secret: () => "live-token",
+    };
+
+    const error = await failure(
+      new DispatchClient("http://dispatch.test", credential, fetchImpl, {
+        writeRetry: retry,
+      }).comment("DSP-1", comment)
+    );
+
+    expect(stale).toBe(1);
+    expect(sent).toHaveLength(3);
+    expect(new Set(sent.map((request) => request.headers["Idempotency-Key"])).size).toBe(1);
+    expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
+    expect((error as DispatchWriteUnsettledError).key).toBe(
+      sent[0]?.headers["Idempotency-Key"] as string
+    );
+  });
+
+  // The twins: a refusal the keyed layer judged for the key (echoed) is definite after a landing,
+  // and an unjudged refusal with nothing landed says nothing was written.
+  test("a refusal the keyed layer judged after a silent attempt stands as the refusal", async () => {
+    const { retry, stall } = stalling();
+    const { fetchImpl } = scripted([
+      stall,
+      refusal(403, "READ_ONLY_TOKEN", "this token may only read"),
+    ]);
+
+    const error = await failure(client(fetchImpl, retry).comment("DSP-1", comment));
+
+    expect(error).toBeInstanceOf(DispatchServiceError);
+    expect((error as DispatchServiceError).code).toBe("READ_ONLY_TOKEN");
+  });
+
+  test.each(unjudged)("%s with nothing landed stands as the refusal", async (_, answer, status) => {
+    const { fetchImpl, sent } = scripted([answer()], { echo: false });
+
+    const error = await failure(client(fetchImpl, pacing().retry).comment("DSP-1", comment));
+
+    expect(sent).toHaveLength(1);
+    expect(error).toBeInstanceOf(DispatchServiceError);
+    expect((error as DispatchServiceError).status).toBe(status);
+  });
+
   // The deadline that ends a no-route retry's wait after an attempt that may have landed leaves the
   // write unsettled too, never the runtime's bare "The operation timed out." (the red team of the
   // review of c5ed36708c, F3).
