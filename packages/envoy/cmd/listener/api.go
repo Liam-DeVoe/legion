@@ -386,15 +386,18 @@ const publishDeniedPrefix = "envoy: the message bus denied the publish under thi
 // room.
 const streamFullPrefix = "envoy: the message bus refused the message because its stream is full"
 
-// streamRefusedPrefix opens the body of every answer this listener gives a send or publish the
-// stream refuses for the message itself (bus.StreamRefusesMessage: a message or headers past the
-// stream's maxima, a message too large for the store, a sealed stream). It is neither the
-// bus-unavailable 503, since the bus answered, nor the full stream's, since no room makes the
-// stream take this message: it is refused however often and whenever it is sent, so the answer is
-// a 409 with no Retry-After, which no client of ours retries
+// streamRefusedPrefix opens the body of the answer writeBusUnavailable gives a send or publish
+// whose publish or forward the stream refuses for the message itself (bus.StreamRefusesMessage: a
+// message or headers past the stream's maxima, a message too large for the store, a sealed
+// stream). It is neither the bus-unavailable 503, since the bus answered, nor the full stream's,
+// since no room makes the stream take this message: it is refused however often and whenever it is
+// sent, so the answer is a 409 with no Retry-After, which no client of ours retries
 // (packages/envoy-client/src/transport.ts retries 500 and above) and which the Legion stall teller
 // takes as final. 413 stays this listener's own payload bound (bus.ErrTooLarge), checked before
-// anything is sent, and a sealed or re-configured stream is not the caller's bytes being wrong.
+// anything is sent, and a sealed or re-configured stream is not the caller's bytes being wrong. A
+// publish to a role with no live holder whose keep the stream refuses that way is not this answer:
+// the keep is that route's own give-up, and a keep a rule refuses is its no-holder 404
+// (roleSend.noHolder).
 const streamRefusedPrefix = "envoy: the message bus stream refused the message, and refuses it however often it is sent"
 
 // grantGuardPrefix opens the error of the answer POST /v1/roles/set gives a soft claim the grant

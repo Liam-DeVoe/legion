@@ -129,15 +129,17 @@ func (cfg listenerDeliveryHandlerConfig) forwardAndWait(subject string, item con
 	return wait()
 }
 
-// forwardRefused reports whether a forward failed in a way another attempt repeats: NATS refuses
-// the envelope or subject however often it is sent (bus.ErrRefused), the listener's grant does not
-// allow the subject (bus.ErrPublishDenied), or the stream refuses the message itself
-// (bus.StreamRefusesMessage), the same rules that end a role-lane forward (roleForwardEnded). A
-// role send answers it at once, as requestRecord.refuseBusUnavailable maps it (413 or 400 for a
-// refusal, 403 for a denial, 409 for the stream's refusal); retrying it to the send's own window
-// and answering 504 would have a sender that re-sends on a 5xx re-send it for as long as the
-// stream's answer stands.
-func forwardRefused(err error) bool {
+// busRefusesForGood reports whether NATS refused a publish under a rule another attempt repeats:
+// NATS refuses the envelope or subject however often it is sent (bus.ErrRefused), the listener's
+// grant does not allow the subject (bus.ErrPublishDenied), or the stream refuses the message
+// itself (bus.StreamRefusesMessage). It is the one list of those rules: the role lane ends a
+// forward on it (roleForwardEnded) and ends a keep on it (keepFailureHolds), a role send answers
+// a forward it refuses at once, as requestRecord.refuseBusUnavailable maps it (413 or 400 for a
+// refusal, 403 for a denial, 409 for the stream's refusal), and a kept copy's walk takes a dead
+// letter it refuses as sent (endKeptCopyWithDeadLetter). A refusal class added here reaches every
+// one of them. A send that retried such a forward to its window would answer 504, which a sender
+// that re-sends on a 5xx re-sends for as long as the refusal stands.
+func busRefusesForGood(err error) bool {
 	return errors.Is(err, bus.ErrRefused) || errors.Is(err, bus.ErrPublishDenied) || bus.StreamRefusesMessage(err)
 }
 
@@ -312,8 +314,8 @@ func (s *roleSend) unresolved(err error) {
 	s.settle(sendFailed)
 }
 
-// refused answers a forward NATS refuses however often it is sent, or one the listener's grant
-// denies (forwardRefused), as requestRecord.refuseBusUnavailable maps it.
+// refused answers a forward NATS refuses under a rule another attempt repeats (busRefusesForGood),
+// as requestRecord.refuseBusUnavailable maps it.
 func (s *roleSend) refused(err error) {
 	s.record.holder = s.holder
 	s.record.refuseBusUnavailable(s.w, err)
@@ -459,7 +461,7 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, record *requestRecor
 				send.delivered(sendDelivered)
 				return
 			}
-			if forwardRefused(err) {
+			if busRefusesForGood(err) {
 				send.refused(err)
 				return
 			}

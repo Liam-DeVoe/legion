@@ -279,11 +279,11 @@ func (f *roleForwarder) finish(forward roleForward, err error) {
 // roleForwardEnded reports whether err ends a role forward to subject for good, under a rule no
 // other attempt changes, rather than leaving unknown whether the stream will ever hold a copy. Its
 // errors are every one bus.Client.StartRequestStoredTo and PendingForward.Wait return:
-//   - Ended: NATS refuses the envelope or the subject however often it is sent (bus.ErrRefused: no
-//     message id, a subject NATS does not accept, a message past the server's max payload), or the
-//     listener's grant denies the subject (bus.ErrPublishDenied).
-//   - Ended: the stream answered with a refusal of the message itself, which it gives however often
-//     and whenever the message is sent (bus.StreamRefusesMessage: a message or headers past the
+//   - Ended: NATS refuses the publish under a rule another attempt repeats (busRefusesForGood, the
+//     one list a keep ends on too): it refuses the envelope or the subject however often it is
+//     sent (bus.ErrRefused: no message id, a subject NATS does not accept, a message past the
+//     server's max payload), the listener's grant denies the subject (bus.ErrPublishDenied), or the
+//     stream refuses the message itself (bus.StreamRefusesMessage: a message or headers past the
 //     stream's maxima, a store that refuses it as too large, a sealed stream).
 //   - Ended: no acknowledgement came, or the server answered no responders, for a publish the
 //     server took, and a read of the deployed stream made now says it does not capture subject
@@ -304,13 +304,9 @@ func (f *roleForwarder) finish(forward roleForward, err error) {
 func roleForwardEnded(client *bus.Client, subject string, err error) bool {
 	var answered *nats.APIError
 	switch {
-	case errors.Is(err, bus.ErrRefused), errors.Is(err, bus.ErrPublishDenied):
+	case busRefusesForGood(err):
 		return true
-	case !errors.Is(err, bus.ErrForwardNotStored):
-		return false
-	case errors.As(err, &answered):
-		return bus.StreamRefusesMessage(err)
-	case errors.Is(err, bus.ErrPublishUnconfirmed):
+	case !errors.Is(err, bus.ErrForwardNotStored), errors.As(err, &answered), errors.Is(err, bus.ErrPublishUnconfirmed):
 		return false
 	}
 	captures, read := client.ReadDeployedStreamCaptures(subject, roleForwardTimeout)

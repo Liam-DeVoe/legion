@@ -509,13 +509,11 @@ const (
 
 // keepFailureHolds reports whether a keep that kept nothing (keepRoleLaneMessage) leaves the
 // message held for another attempt: a keep that failed on NATS does, and one that a rule refuses
-// however often it runs does not - a role token no claim can name (errRoleUnkeepable), an envelope
-// NATS refuses (bus.ErrRefused), a subject the listener's grant denies (bus.ErrPublishDenied), and
-// a stream answer that refuses the message itself (bus.StreamRefusesMessage: too large, a sealed
-// stream), the same rules that end a forward (roleForwardEnded).
+// however often it runs does not - a role token no claim can name (errRoleUnkeepable), the keep's
+// own rule, and every rule NATS refuses a publish under (busRefusesForGood), the one list a
+// forward ends on too (roleForwardEnded).
 func keepFailureHolds(err error) bool {
-	return !errors.Is(err, errRoleUnkeepable) && !errors.Is(err, bus.ErrRefused) && !errors.Is(err, bus.ErrPublishDenied) &&
-		!bus.StreamRefusesMessage(err)
+	return !errors.Is(err, errRoleUnkeepable) && !busRefusesForGood(err)
 }
 
 // resolveCoreRoleHolder resolves the current live holder for a role-lane delivery

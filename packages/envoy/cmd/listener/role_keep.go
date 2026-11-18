@@ -1739,7 +1739,7 @@ func deadLetterRefusal(sender string, letter contracts.Envelope) error {
 // same, with one Error line and a count, and is not sent again: a refusal known before the publish
 // (deadLetterRefusal) in the one write {kept: the copy's sequence}, since there is nothing to claim
 // the copy for - a plain write, which no claim of this walk's makes worth reading back - and one
-// the publish met (forwardRefused) after the claim it made.
+// the publish met (busRefusesForGood) after the claim it made.
 func endKeptCopyWithDeadLetter(ctx context.Context, lane *roleKeepLaneCursor, kept uint64, stored bus.StoredMessage, judged keptCopyVerdict) (ended, unconfirmed bool, err error) {
 	cfg, role, item := lane.cfg, lane.role, judged.item
 	letter, msgID := keptRoleDeadLetter(role, stored, item, judged.at, judged.drop)
@@ -1754,7 +1754,7 @@ func endKeptCopyWithDeadLetter(ctx context.Context, lane *roleKeepLaneCursor, ke
 		return false, false, err
 	}
 	published := cfg.publishDeadLetter(ctx, letter.Topic, letter, msgID)
-	if published != nil && !forwardRefused(published) {
+	if published != nil && !busRefusesForGood(published) {
 		return false, false, fmt.Errorf("send the dead letter of role %s's kept message %s to %s: %w", role, item.EventID, item.SourceSession, published)
 	}
 	landed, err := lane.confirm(ctx, bus.KeptRoleCursor{Kept: stored.Sequence})
