@@ -83,7 +83,8 @@ const markWriteText = "issue {pinned?, last_read_seq?, pinned_items?, seq?, acto
 	"message {dismissed, newest_reply?, unread_replies?}: dismissed true, which takes the newest session reply and the " +
 	"unread replies the page drew in the thread, takes it out of the Inbox only while those are still the thread's; " +
 	"dismissed false puts it back. ask {snoozed_until}: an RFC3339 time in the future replaces the snooze, and null " +
-	"un-snoozes. A malformed field is 400 INVALID_STATE, a malformed snooze 400 SNOOZE_INPUT."
+	"un-snoozes. A field of the wrong JSON type is 400 INVALID_JSON, a value its field refuses 400 INVALID_STATE, and " +
+	"a malformed snooze 400 SNOOZE_INPUT."
 
 // v2MeRows are the caller's own routes (plan t11's caller half): rows 189, 120 to 123, 126, 124 and
 // 135, 131 and 132, 129, and 125, 127, 128, 130, 133 and 136 of the route map.
@@ -192,8 +193,9 @@ func (s *server) v2MeRows() []routeRow {
 			Description: "The caller's stored marks, of the kind kind= names (issue, agent, document, thread, message " +
 				"or ask; every kind where it names none), each of the ids id= names (repeatable; every id where it names " +
 				"none), by kind in that order and then by id. " + markText + ". An agent mark is listed for every session " +
-				"the caller has cleared, read, pinned or holds an unread reply from; a mark of any other kind once the " +
-				"caller has written it. Needs the person scope. limit 1 to 200 (default 50) and offset; {items, total, " +
+				"the caller has cleared, read, pinned or holds an unread reply from; a thread mark for every thread the " +
+				"caller wrote in; a mark of any other kind once the caller has written it. Needs the person scope. limit 1 " +
+				"to 200 (default 50) and offset; {items, total, " +
 				"limit, offset}.",
 			Handler:  s.listMarksV2,
 			Resource: "marks", Kind: kindCollection, Key: "{kind}/{id}",

@@ -735,23 +735,16 @@ func (field queryField) decode(values []string, present bool, into reflect.Value
 
 // decodeLimit reads a list's limit against the row's bounds (R1.4).
 func (field queryField) decodeLimit(values []string, present bool, into reflect.Value, bounds listBounds) error {
-	most, fallback := bounds.Max, bounds.Default
-	if bounds == (listBounds{}) {
-		most, fallback = maxListLimit, defaultListLimit
-	}
+	least, fallback, most := bounds.limits()
 	if !present {
 		into.SetInt(int64(fallback))
 		return nil
 	}
 	limit, err := strconv.ParseInt(soleValue(values), 10, 0)
-	least := int64(1)
-	if bounds.Counts {
-		least = 0
-	}
 	switch {
-	case bounds.Whole && (len(values) != 1 || err != nil || limit < 1):
+	case bounds.Whole && (len(values) != 1 || err != nil || limit < int64(least)):
 		return errorf(apicode.InvalidLimit, "limit must be one integer of 1 or more")
-	case !bounds.Whole && (len(values) != 1 || err != nil || limit < least || limit > int64(most)):
+	case !bounds.Whole && (len(values) != 1 || err != nil || limit < int64(least) || limit > int64(most)):
 		return errorf(apicode.InvalidLimit, "limit must be one integer from %d to %d", least, most)
 	}
 	into.SetInt(limit)

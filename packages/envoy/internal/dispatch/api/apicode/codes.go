@@ -449,6 +449,12 @@ var (
 	// (TargetNotFound); /api/v2 names it as the object its path names (decision 11).
 	BlockNotFound = renamed("TARGET_NOT_FOUND", http.StatusNotFound, "BLOCK_NOT_FOUND")
 
+	// SessionGroupNotFound is a session group's {id} that names no group, and a group gone before
+	// the write that read it could make it (delivery.ErrSessionGroupNotFound). /api/v1 answered
+	// both as it answers a row nothing holds (NOT_FOUND); /api/v2 names the group, the object its
+	// path names (decision 11).
+	SessionGroupNotFound = renamed("NOT_FOUND", http.StatusNotFound, "SESSION_GROUP_NOT_FOUND")
+
 	// AskClosed is a first answer to an ask somebody has already answered (transitionAskTx),
 	// which /api/v1 answered under a code of its own. /api/v2 answers it as it answers every other
 	// transition of an answered ask (AskAnswered), so one condition takes one code there (R7).
@@ -472,7 +478,6 @@ var (
 	// broker's own 404 as one of these.
 	AskNotFound               = v2Only("ASK_NOT_FOUND", http.StatusNotFound)
 	AgentTokenNotFound        = v2Only("AGENT_TOKEN_NOT_FOUND", http.StatusNotFound)
-	SessionGroupNotFound      = v2Only("SESSION_GROUP_NOT_FOUND", http.StatusNotFound)
 	VersionNotFound           = v2Only("VERSION_NOT_FOUND", http.StatusNotFound)
 	DeliveryNotFound          = v2Only("DELIVERY_NOT_FOUND", http.StatusNotFound)
 	RepositoryNotFound        = v2Only("REPOSITORY_NOT_FOUND", http.StatusNotFound)

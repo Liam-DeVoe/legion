@@ -157,10 +157,11 @@ const (
 // The document arm is a named piece of its own (searchDocumentKeywordLeg), so that it can be
 // ranked, read and measured apart from the four arms beside it.
 //
-// Every arm narrows its rows to the one project $2 names, or to none where $2 is empty; the
-// statements of a search naming several projects take searchKeywordLegsIn's other form.
+// Every arm narrows its rows to the one project $2 names, or to none where $2 is empty, and by a
+// date window of its start alone; the statements of a search naming several projects, or an end
+// to the window, take searchKeywordLegsIn's other forms.
 func searchKeywordLegs(rank func(searchColumn string) string) string {
-	return searchKeywordLegsIn(rank, searchOneProject)
+	return searchKeywordLegsIn(rank, searchOneProject, searchSince)
 }
 
 // searchProjectScope is how a statement narrows its rows to the projects a search names: to the
@@ -185,8 +186,21 @@ func (scope searchProjectScope) of(column string) string {
 	return "($2 = '' or " + column + " = $2)"
 }
 
-// searchKeywordLegsIn is searchKeywordLegs with every arm narrowed by projects (searchProjectScope).
-func searchKeywordLegsIn(rank func(searchColumn string) string, projects searchProjectScope) string {
+// searchWindow is the date window a statement's legs keep: from its start alone (searchSince), the
+// form every /api/v1 search, every /api/v2 search naming no to and every related-item check runs,
+// so their statements keep the text, and the plans, their measurements were taken of; or from its
+// start to its end (searchUntil), which only a GET /api/v2/search-results naming a to binds.
+// searchQOpenerIn binds the end, and searchRowFilters reads it, in that form alone.
+type searchWindow int
+
+const (
+	searchSince searchWindow = iota
+	searchUntil
+)
+
+// searchKeywordLegsIn is searchKeywordLegs with every arm narrowed by projects (searchProjectScope)
+// and by window.
+func searchKeywordLegsIn(rank func(searchColumn string) string, projects searchProjectScope, window searchWindow) string {
 	return `
   select 'issue' as kind, 'keyword' as list, i.key as issue_key, null::uuid as owner_artifact_id, null::uuid as artifact_id, i.key as id, null::text as block_id,
          null::text as window_id, null::text[] as covers,
@@ -195,7 +209,7 @@ func searchKeywordLegsIn(rank func(searchColumn string) string, projects searchP
          false as own, ` + rank("i.search") + ` as r
     from issues i, q
    where i.search @@ q.tsq and not (i.key = any(q.own_keys)) and ` + projects.of("i.project_key") +
-		searchRowFilters("i.status", "i.created_by", "i.updated_at") + `
+		searchRowFilters("i.status", "i.created_by", "i.updated_at", window) + `
   union all
   select 'issue', 'keyword', i.key, null::uuid, null::uuid, i.key, null::text,
          null::text, null::text[],
@@ -203,9 +217,9 @@ func searchKeywordLegsIn(rank func(searchColumn string) string, projects searchP
          true, ` + rank("i.search") + `
     from q, unnest(q.own_keys) as named(key), issues i
    where i.key = named.key and ` + projects.of("i.project_key") +
-		searchRowFilters("i.status", "i.created_by", "i.updated_at") + `
+		searchRowFilters("i.status", "i.created_by", "i.updated_at", window) + `
   union all
-` + searchDocumentKeywordLegIn(rank, projects) + `
+` + searchDocumentKeywordLegIn(rank, projects, window) + `
   union all
   select 'comment' as kind, 'keyword', c.issue_key, c.artifact_id, coalesce(c.artifact_id, (c.anchor->>'artifact_id')::uuid), c.id::text, null::text,
          null::text, null::text[],
@@ -217,7 +231,7 @@ func searchKeywordLegsIn(rank func(searchColumn string) string, projects searchP
     left join artifacts a on a.id = c.artifact_id
     left join projects p on p.key = a.project_key, q
    where c.search @@ q.tsq and ` + projects.of("coalesce(i.project_key, p.key)") +
-		searchRowFilters("i.status", "c.author", "c.created_at") + `
+		searchRowFilters("i.status", "c.author", "c.created_at", window) + `
   union all
   select 'ask' as kind, 'keyword', k.issue_key, case when k.issue_key is null then coalesce(k.artifact_id, k.block_artifact_id) else null::uuid end,
          coalesce(k.artifact_id, k.block_artifact_id, ` + store.CastableUUID(`k.anchor->>'artifact_id'`) + `), k.id::text, ` + askBlockNodeSQL + `,
@@ -229,7 +243,7 @@ func searchKeywordLegsIn(rank func(searchColumn string) string, projects searchP
     left join artifacts a on a.id = coalesce(k.artifact_id, k.block_artifact_id)
     left join projects p on p.key = a.project_key, q
    where k.search @@ q.tsq and ` + projects.of("coalesce(i.project_key, p.key)") +
-		searchRowFilters("i.status", "k.author", "k.created_at") + `
+		searchRowFilters("i.status", "k.author", "k.created_at", window) + `
   union all
   select 'message' as kind, 'keyword', m.issue_key, null::uuid, null::uuid, m.id::text, null::text,
          null::text, null::text[],
@@ -237,7 +251,7 @@ func searchKeywordLegsIn(rank func(searchColumn string) string, projects searchP
          false, ` + rank("m.search") + `
     from messages m join issues i on i.key = m.issue_key, q
    where m.search @@ q.tsq and ` + projects.of("i.project_key") +
-		searchRowFilters("i.status", "m.author", "m.created_at")
+		searchRowFilters("i.status", "m.author", "m.created_at", window)
 }
 
 // searchRowFilters is the status, author and date filter every leg of every search narrows by,
@@ -253,13 +267,18 @@ func searchKeywordLegsIn(rank func(searchColumn string) string, projects searchP
 // ordered by: an issue's updated_at moves whenever anything on it moves, and a comment written
 // last year on an issue touched today is not a comment from today. The date filter is a window,
 // [updated_since, updated_to): /api/v1 names its start alone (updated_since), and /api/v2 its
-// start and its end (from, to).
-func searchRowFilters(status, author, written string) string {
-	return `
+// start and its end (from, to); the end is read under searchUntil alone, so a statement that binds
+// none is the text it was measured as.
+func searchRowFilters(status, author, written string, window searchWindow) string {
+	filters := `
      and (q.status_filter = '' or ` + status + ` = q.status_filter)
      and (q.author_filter = '' or ` + author + `->>'id' = q.author_filter)
-     and (q.updated_since is null or ` + written + ` >= q.updated_since)
+     and (q.updated_since is null or ` + written + ` >= q.updated_since)`
+	if window == searchUntil {
+		filters += `
      and (q.updated_to is null or ` + written + ` < q.updated_to)`
+	}
+	return filters
 }
 
 // searchDocumentKeywordLeg is searchKeywordLegs' document arm, written apart from the four arms
@@ -279,11 +298,12 @@ func searchRowFilters(status, author, written string) string {
 // neighbours with the union the arms are separated by, and a caller running the arm by itself
 // wraps it in a select of its own.
 func searchDocumentKeywordLeg(rank func(searchColumn string) string) string {
-	return searchDocumentKeywordLegIn(rank, searchOneProject)
+	return searchDocumentKeywordLegIn(rank, searchOneProject, searchSince)
 }
 
-// searchDocumentKeywordLegIn is searchDocumentKeywordLeg narrowed by projects (searchProjectScope).
-func searchDocumentKeywordLegIn(rank func(searchColumn string) string, projects searchProjectScope) string {
+// searchDocumentKeywordLegIn is searchDocumentKeywordLeg narrowed by projects (searchProjectScope)
+// and by window.
+func searchDocumentKeywordLegIn(rank func(searchColumn string) string, projects searchProjectScope, window searchWindow) string {
 	return `  select 'document' as kind, 'keyword', a.issue_key, case when a.issue_key is null then a.id else null::uuid end, a.id, a.id::text, null::text,
          null::text, null::text[],
          i.title, i.status, p.key, a.slug, a.name,
@@ -294,15 +314,17 @@ func searchDocumentKeywordLegIn(rank func(searchColumn string) string, projects 
     left join issues i on i.key = a.issue_key
     join projects p on p.key = a.project_key, q
    where a.kind = 'doc' and v.search @@ q.tsq and ` + projects.of("p.key") +
-		searchRowFilters("i.status", "a.created_by", "v.created_at")
+		searchRowFilters("i.status", "a.created_by", "v.created_at", window)
 }
 
 // searchKeywordLegsSQL is search's own keyword legs, each arm ranked by ts_rank_cd with length
-// normalisation (searchKeywordRank), and searchKeywordLegsSeveralSQL the same legs narrowed to
-// several projects.
+// normalisation (searchKeywordRank), searchKeywordLegsSeveralSQL the same legs narrowed to several
+// projects, and the two Until forms each of them with the date window's end (searchWindow).
 var (
-	searchKeywordLegsSQL        = searchKeywordLegs(searchKeywordRank)
-	searchKeywordLegsSeveralSQL = searchKeywordLegsIn(searchKeywordRank, searchSeveralProjects)
+	searchKeywordLegsSQL             = searchKeywordLegs(searchKeywordRank)
+	searchKeywordLegsSeveralSQL      = searchKeywordLegsIn(searchKeywordRank, searchSeveralProjects, searchSince)
+	searchKeywordLegsUntilSQL        = searchKeywordLegsIn(searchKeywordRank, searchOneProject, searchUntil)
+	searchKeywordLegsSeveralUntilSQL = searchKeywordLegsIn(searchKeywordRank, searchSeveralProjects, searchUntil)
 )
 
 // searchKeywordRank is search's keyword rank of one search column.
@@ -479,19 +501,22 @@ select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 
 //
 // Parameters: $1 q, $2 project (empty for every project), $3 limit, $4 firstTerm,
 // $5 headlineOptions, $6 offset, $7 contracts.SearchKindDepth, $8 searchFusionK, then
-// searchQOpener's own seven from $9: $9 the fallback's rarest words, $10 the words it excludes,
-// $11 the issues the query names by key, $12 status, $13 author, $14 updated_since, $15
-// updated_to (searchQueryArguments). searchQuerySeveral is the same statement over several
-// projects, $2 their list (searchProjectScope).
+// searchQOpener's own six from $9: $9 the fallback's rarest words, $10 the words it excludes,
+// $11 the issues the query names by key, $12 status, $13 author, $14 updated_since
+// (searchQueryArguments). searchQuerySeveral is the same statement over several projects, $2
+// their list (searchProjectScope), and the two Until forms each of them with the date window's
+// end at $15, updated_to (searchWindow).
 var (
-	searchQuery        = searchQOpener(9) + searchQueryBody(searchKeywordLegsSQL, searchFusedSQL, "")
-	searchQuerySeveral = searchQOpener(9) + searchQueryBody(searchKeywordLegsSeveralSQL, searchFusedSQL, "")
+	searchQuery             = searchQOpener(9) + searchQueryBody(searchKeywordLegsSQL, searchFusedSQL, "")
+	searchQuerySeveral      = searchQOpener(9) + searchQueryBody(searchKeywordLegsSeveralSQL, searchFusedSQL, "")
+	searchQueryUntil        = searchQOpenerIn(9, searchUntil) + searchQueryBody(searchKeywordLegsUntilSQL, searchFusedSQL, "")
+	searchQuerySeveralUntil = searchQOpenerIn(9, searchUntil) + searchQueryBody(searchKeywordLegsSeveralUntilSQL, searchFusedSQL, "")
 )
 
 // searchQOpener opens searchQuery and searchQueryMeaning: their q, the query text read as
 // websearch_to_tsquery, its first term ($4) for the snippet window, the issues the query names by
 // key (own_keys, searchOwnIssueKeys) and the three filters every leg narrows by
-// (searchRowFilters). base is the first parameter index of the seven values the opener itself
+// (searchRowFilters). base is the first parameter index of the six values the opener itself
 // binds, which differs between the two statements because the keyword body's own parameters end
 // at $8 and the meaning body's at $11. The related-item check prefixes the same two bodies with
 // its own q (relatedQOpener), which names the same columns with no key and no filter, their
@@ -508,6 +533,16 @@ var (
 // ($base+1), since ORing the words back in without them would return the rows a -word left out;
 // a query that excludes nothing binds the empty string and takes the shorter form.
 func searchQOpener(base int) string {
+	return searchQOpenerIn(base, searchSince)
+}
+
+// searchQOpenerIn is searchQOpener for window: under searchUntil it binds a seventh value, the
+// date window's end, as updated_to.
+func searchQOpenerIn(base int, window searchWindow) string {
+	until := ""
+	if window == searchUntil {
+		until = fmt.Sprintf(",\n         $%d::timestamptz as updated_to", base+6)
+	}
 	return fmt.Sprintf(`
 with q as (select
          case when $%[1]d = '' then websearch_to_tsquery('english', $1)
@@ -515,9 +550,8 @@ with q as (select
               else websearch_to_tsquery('english', $%[1]d) && websearch_to_tsquery('english', $%[2]d)
          end as tsq,
          $4::text as term, $%[3]d::text[] as own_keys,
-         $%[4]d::text as status_filter, $%[5]d::text as author_filter, $%[6]d::timestamptz as updated_since,
-         $%[7]d::timestamptz as updated_to),
-`, base, base+1, base+2, base+3, base+4, base+5, base+6)
+         $%[4]d::text as status_filter, $%[5]d::text as author_filter, $%[6]d::timestamptz as updated_since%[7]s),
+`, base, base+1, base+2, base+3, base+4, base+5, until)
 }
 
 // searchKindsCTE is the kinds CTE both bodies open with: the arms whose rows the query ranks,
@@ -732,12 +766,14 @@ func (s *server) beginMeaningScan(ctx context.Context) (pgx.Tx, error) {
 //
 // Parameters: $1 q, $2 project, $3 limit, $4 firstTerm, $5 headlineOptions, $6 offset,
 // $7 contracts.SearchKindDepth, $8 searchFusionK, $9 the query's embedding (a vector literal),
-// $10 searchMeaningFloor, $11 the query embedder's identity, then searchQOpener's own seven from
+// $10 searchMeaningFloor, $11 the query embedder's identity, then searchQOpener's own six from
 // $12: $12 the fallback's rarest words, $13 the words it excludes, $14 the issues the query names
-// by key, $15 status, $16 author, $17 updated_since, $18 updated_to (searchMeaningQueryArguments).
-// All three shapes take all eighteen; searchQueryMeaning reads $2 in its keyword legs alone. The
-// two shapes over several projects take the same eighteen, $2 their list (searchProjectScope):
-// on the candidate row's own column, and on the owner each arm joins.
+// by key, $15 status, $16 author, $17 updated_since (searchMeaningQueryArguments). All three
+// shapes take all seventeen; searchQueryMeaning reads $2 in its keyword legs alone. The two shapes
+// over several projects take the same seventeen, $2 their list (searchProjectScope): on the
+// candidate row's own column, and on the owner each arm joins. The two Until forms, the joined
+// shapes a search naming the date window's end runs (meaningStatementFor), take an eighteenth,
+// $18 updated_to (searchWindow).
 var (
 	searchQueryMeaning       = searchQOpener(12) + searchQueryMeaningBody(searchKeywordLegsSQL, searchFusedSQL, "", meaningEveryProject)
 	searchQueryMeaningScoped = searchQOpener(12) + searchQueryMeaningBody(searchKeywordLegsSQL, searchFusedSQL, "", meaningOneProject)
@@ -745,6 +781,11 @@ var (
 
 	searchQueryMeaningSeveral       = searchQOpener(12) + searchQueryMeaningBody(searchKeywordLegsSeveralSQL, searchFusedSQL, "", meaningSeveralProjects)
 	searchQueryMeaningSeveralJoined = searchQOpener(12) + searchQueryMeaningBody(searchKeywordLegsSeveralSQL, searchFusedSQL, "", meaningSeveralProjectsJoined)
+
+	searchQueryMeaningJoinedUntil = searchQOpenerIn(12, searchUntil) +
+		searchQueryMeaningBodyIn(searchKeywordLegsUntilSQL, searchFusedSQL, "", meaningOneProjectJoined, searchUntil)
+	searchQueryMeaningSeveralJoinedUntil = searchQOpenerIn(12, searchUntil) +
+		searchQueryMeaningBodyIn(searchKeywordLegsSeveralUntilSQL, searchFusedSQL, "", meaningSeveralProjectsJoined, searchUntil)
 )
 
 // meaningProjectScope is which of the three shapes of the meaning statement is being composed,
@@ -819,15 +860,21 @@ func (scope meaningProjectScope) joined() bool {
 // searchQueryMeaningBody is searchQueryMeaning after its q, over keywordLegs (searchKeywordLegs),
 // fused (searchFusedSQL or relatedFusedSQL, as searchQueryBody takes it), without or with an
 // exclusion (searchKindsCTE), and scoped to one project - on the row's own column or on the
-// owner each arm joins - or to every one.
+// owner each arm joins - or to every one, each arm keeping a date window of its start alone.
 func searchQueryMeaningBody(keywordLegs, fused, exclude string, scope meaningProjectScope) string {
+	return searchQueryMeaningBodyIn(keywordLegs, fused, exclude, scope, searchSince)
+}
+
+// searchQueryMeaningBodyIn is searchQueryMeaningBody with each meaning arm keeping window
+// (searchWindow), as keywordLegs must keep it too.
+func searchQueryMeaningBodyIn(keywordLegs, fused, exclude string, scope meaningProjectScope, window searchWindow) string {
 	return `meaning_issue_candidates as (
   select i.key as issue_key, i.key as id, i.title as issue_title, i.status as issue_status, i.updated_at,
          1 - (e.embedding <=> $9::vector) as r
     from embeddings e
     join issues i on i.key = e.id, q
    where e.kind = 'issue' and e.embedding is not null and e.model = $11` + scope.candidateProject("i.project_key") +
-		searchRowFilters("i.status", "i.created_by", "i.updated_at") + `
+		searchRowFilters("i.status", "i.created_by", "i.updated_at", window) + `
    order by e.embedding <=> $9::vector
    limit $7
 ),
@@ -848,7 +895,7 @@ meaning_document_candidates as (
     join projects p on p.key = a.project_key
     join lateral (select created_at from artifact_versions v where v.artifact_id = a.id order by v.number desc limit 1) v on true, q
    where e.kind = 'document_block' and a.kind = 'doc' and e.embedding is not null and e.model = $11` + scope.candidateProject("p.key") +
-		searchRowFilters("i.status", "a.created_by", "v.created_at") + `
+		searchRowFilters("i.status", "a.created_by", "v.created_at", window) + `
    order by e.embedding <=> $9::vector
    ` + searchWindowLimit + `
 ),
@@ -860,7 +907,7 @@ meaning_document as (
     from meaning_document_candidates where r >= $10
    order by meaning_document_candidates.id, r desc, window_id
 ),
-` + searchMeaningCommentArm(scope) + `,
+` + searchMeaningCommentArm(scope, window) + `,
 meaning_ask_candidates as (
   select k.issue_key, k.artifact_id, k.block_artifact_id, k.anchor, k.id, ` + askBlockNodeSQL + ` as block_id, e.id as window_id, e.covers,
          i.title as issue_title, i.status as issue_status,
@@ -872,7 +919,7 @@ meaning_ask_candidates as (
     left join artifacts a on a.id = coalesce(k.artifact_id, k.block_artifact_id)
     left join projects p on p.key = a.project_key, q
    where e.kind = 'ask_part' and e.embedding is not null and e.model = $11` + scope.candidateProject("coalesce(i.project_key, p.key)") +
-		searchRowFilters("i.status", "k.author", "k.created_at") + `
+		searchRowFilters("i.status", "k.author", "k.created_at", window) + `
    order by e.embedding <=> $9::vector
    ` + searchWindowLimit + `
 ),
@@ -892,7 +939,7 @@ meaning_message_candidates as (
     join messages m on m.id = ` + windowItemUUID + `
     join issues i on i.key = m.issue_key, q
    where e.kind = 'message_block' and e.embedding is not null and e.model = $11` + scope.candidateProject("i.project_key") +
-		searchRowFilters("i.status", "m.author", "m.created_at") + `
+		searchRowFilters("i.status", "m.author", "m.created_at", window) + `
    order by e.embedding <=> $9::vector
    ` + searchWindowLimit + `
 ),
@@ -998,9 +1045,9 @@ totals as (
 // (meaningStatementFor). The project predicate is the one filter that had to move the other
 // way, down into the candidate CTE: it is the one a search names on nearly every request, so it
 // is the one whose absence from the index scan spent the whole candidate set on other projects.
-func searchMeaningCommentArm(scope meaningProjectScope) string {
+func searchMeaningCommentArm(scope meaningProjectScope, window searchWindow) string {
 	if scope.joined() {
-		return searchMeaningCommentArmJoined(scope)
+		return searchMeaningCommentArmJoined(scope, window)
 	}
 	return `meaning_comment_candidates as (
   select e.id as window_id, e.covers, ` + windowItemUUID + ` as comment_id,
@@ -1022,7 +1069,7 @@ meaning_comment as (
     left join issues i on i.key = c.issue_key
     left join artifacts a on a.id = c.artifact_id
     left join projects p on p.key = a.project_key, q
-   where meaning_comment_candidates.r >= $10` + searchRowFilters("i.status", "c.author", "c.created_at") + `
+   where meaning_comment_candidates.r >= $10` + searchRowFilters("i.status", "c.author", "c.created_at", window) + `
    order by c.id, meaning_comment_candidates.r desc, meaning_comment_candidates.window_id
 )`
 }
@@ -1070,7 +1117,7 @@ const searchMeaningCommentProject = `coalesce(i.project_key, p.key)`
 // the price of serving every row until the pass has labelled them. A search narrowing by status,
 // author or updated_since keeps it for good, since those three filters are inside this arm's
 // limit and above the other's.
-func searchMeaningCommentArmJoined(scope meaningProjectScope) string {
+func searchMeaningCommentArmJoined(scope meaningProjectScope, window searchWindow) string {
 	return `meaning_comment_candidates as (
   select c.issue_key, c.artifact_id, c.anchor, c.id, e.id as window_id, e.covers, i.title as issue_title, i.status as issue_status, p.key as owner_project, a.slug as owner_slug, a.name as owner_name,
          coalesce(i.updated_at, c.created_at) as updated_at,
@@ -1082,7 +1129,7 @@ func searchMeaningCommentArmJoined(scope meaningProjectScope) string {
     left join projects p on p.key = a.project_key, q
    where e.kind = 'comment_block' and e.embedding is not null and e.model = $11` +
 		scope.candidateProject(searchMeaningCommentProject) +
-		searchRowFilters("i.status", "c.author", "c.created_at") + `
+		searchRowFilters("i.status", "c.author", "c.created_at", window) + `
    order by e.embedding <=> $9::vector
    ` + searchWindowLimit + `
 ),
@@ -1312,12 +1359,19 @@ func (s *server) runKeywordOnlyDegraded(ctx context.Context, parameters searchPa
 // which its callers (runKeywordOnlyDegraded, and runSearch itself for a request that asked for
 // keywords only, both after runSearch's checks) must have established first. The text is assumed
 // already validated (length, non-empty after trimming); an empty project searches every project,
-// several take searchQuerySeveral, and an empty filter narrows nothing.
+// several take searchQuerySeveral, a search naming the date window's end the Until form of either
+// (searchWindow), and an empty filter narrows nothing.
 func (s *server) runFusedSearchQuery(ctx context.Context, parameters searchParameters) (model.SearchResponse, error) {
 	started := time.Now()
+	several, until := parameters.projectScope() == searchSeveralProjects, parameters.until != nil
 	statement := searchQuery
-	if parameters.projectScope() == searchSeveralProjects {
+	switch {
+	case several && until:
+		statement = searchQuerySeveralUntil
+	case several:
 		statement = searchQuerySeveral
+	case until:
+		statement = searchQueryUntil
 	}
 	rows, err := s.deps.Store.Pool.Query(ctx, statement, searchQueryArguments(parameters)...)
 	if err != nil {
@@ -1342,8 +1396,9 @@ func (s *server) runFusedSearchQuery(ctx context.Context, parameters searchParam
 // row that says whether the fill has labelled the corpus (embeddingProjectKeysFilled), and
 // meaningStatementForSeveral's for a search naming several projects; meaningProjectScope says
 // why the choice is made here, in Go, rather than written as one "$2 is empty, or it matches"
-// predicate the planner would have to serve all three ways. The arguments are the same eighteen
-// whichever it is, $2 among them: the keyword legs read it in all three.
+// predicate the planner would have to serve all three ways. The arguments are the same seventeen
+// whichever it is, $2 among them: the keyword legs read it in all three. A search naming the date
+// window's end is filtered, and runs the joined shape's Until form with an eighteenth (searchWindow).
 //
 // It runs in a read transaction of its own, the one place searchMeaningScan's settings apply
 // (beginMeaningScan), the bound on the statement among them. A statement the server ends at that
@@ -1367,6 +1422,14 @@ func (s *server) runMeaningSearch(ctx context.Context, parameters searchParamete
 	statement := meaningStatementFor(parameters.project, filled, filtered)
 	if several {
 		statement = meaningStatementForSeveral(filled, filtered)
+	}
+	if parameters.until != nil {
+		// The end of the date window is one of q's filters, so the statement is a joined one,
+		// read in its form that binds the end (searchWindow).
+		statement = searchQueryMeaningJoinedUntil
+		if several {
+			statement = searchQueryMeaningSeveralJoinedUntil
+		}
 	}
 	rows, err := tx.Query(ctx, statement,
 		searchMeaningQueryArguments(parameters, vector, s.deps.Embedder.Identity())...)

@@ -6,14 +6,16 @@ package api
 // which its row names (routeRow.Position) and its index entry and description carry: after and
 // before read that field, and a value that is no position of it, or an after above the last one
 // the log has written, is 400 POSITION_INVALID naming the parameter and the field. Each takes limit
-// and offset beside them, and answers the envelope with its exact total - but the global event
-// log, whose total is null (logPage), since counting it costs about ten times its page for a
-// reader near the oldest event.
+// and offset beside them, and answers the envelope with its exact total - but the global event log
+// and the caller's dismissed threads, whose total is null (logPage): counting the global log costs
+// about ten times its page for a reader near the oldest event, and counting the dismissed threads
+// is a count of every thread the caller has ever dismissed.
 
 import (
 	"cmp"
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -22,6 +24,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -151,7 +154,9 @@ func (s *server) v2LogRows() []routeRow {
 				"parameter and dismissed_at,thread_id). issue=<key> or " +
 				"artifact=<document id> narrows to one owner (both is 400 INVALID_QUERY), and an agent row, which has neither, is " +
 				"then in no answer. limit 1 to 200 (default 50) and offset; {items, total, limit, offset, as_of}, total the exact " +
-				"count of both kinds the filters keep, and as_of the database time of the one read-only repeatable-read snapshot " +
+				"count of both kinds the filters keep, and null under state=dismissed, which is read a page at a time from a " +
+				"position, as the global event log is, rather than counted; as_of the database time of the one read-only " +
+				"repeatable-read snapshot " +
 				"every row was read in, which is what a mark-all passes back as its read mark. Each row names the thread, its " +
 				"owner, its issue's priority, its project, the thread's subject, its root's deep link (an agent row's is the " +
 				"session's live view), the newest reply's author, first line and time, the caller's read mark, whether it is " +
@@ -237,10 +242,10 @@ type myThreadsV2Query struct {
 	Artifact string `query:"artifact"`
 }
 
-// myThreadsV2 is the body GET /api/v2/me/threads answers: the envelope, with the snapshot every
-// row was read in beside it.
+// myThreadsV2 is the body GET /api/v2/me/threads answers: the envelope, its total null under
+// state=dismissed (logPage), with the snapshot every row was read in beside it.
 type myThreadsV2 struct {
-	page[model.MyReplyRow]
+	logPage[model.MyReplyRow]
 	AsOf time.Time `json:"as_of"`
 }
 
@@ -515,6 +520,11 @@ func (s *server) listArtifactEventsV2(w http.ResponseWriter, r *http.Request) {
 	}
 	var lastSeq int64
 	if err := s.deps.Store.Pool.QueryRow(r.Context(), `select last_seq from artifacts where id = $1`, artifact.ID).Scan(&lastSeq); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// Deleted since documentOwnerFromRequest read it: a document nothing holds (decision 11).
+			s.writeHandlerError(w, r, errorf(apicode.ArtifactNotFound, "no document %s", artifact.ID))
+			return
+		}
 		s.writeHandlerError(w, r, fmt.Errorf("read the document's event sequence: %w", err))
 		return
 	}
@@ -601,7 +611,7 @@ func boolOrder(left, right bool) int {
 
 // listMyThreadsV2 answers GET /api/v2/me/threads: the read GET /api/v1/me/replies makes
 // (readMyReplies), paged by limit and offset in every state, the dismissed threads between an after
-// and a before in place of a cursor, and every state's total counted.
+// and a before in place of a cursor, and every state's total counted but the dismissed threads'.
 func (s *server) listMyThreadsV2(w http.ResponseWriter, r *http.Request) {
 	caller, ok := s.actingPerson(w, r)
 	if !ok {
@@ -650,18 +660,26 @@ func (s *server) listMyThreadsV2(w http.ResponseWriter, r *http.Request) {
 	response, err := s.readMyReplies(r.Context(), caller, myRepliesRead{
 		reply: reply, agent: agent, state: query.State,
 		limit: &limit, offset: query.Offset, from: from, after: after, issue: issue, artifact: artifact,
-		countDismissed: true,
 	})
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return
 	}
-	WriteJSON(w, http.StatusOK, myThreadsV2{page: newPage(response.Rows, response.Total, query.pageQuery), AsOf: response.AsOf})
+	// The dismissed threads are every thread the caller has ever dismissed, read a page at a time
+	// from a position, so their total is not counted (null), as the global event log's is not;
+	// every other state's is the exact count readMyReplies read.
+	answer := myThreadsV2{logPage: logPage[model.MyReplyRow]{Items: response.Rows, Limit: query.Limit, Offset: query.Offset}, AsOf: response.AsOf}
+	if query.State != myRepliesStateDismissed {
+		answer.Total = &response.Total
+	}
+	WriteJSON(w, http.StatusOK, answer)
 }
 
 // dismissedThreadPosition reads a position of the dismissed threads, `<RFC3339 time>,<thread id>`,
 // that the parameter name gives: the dismissed_at and thread_id of a row, as the answer writes
-// them. One that is not is 400 POSITION_INVALID naming the parameter and the two fields (R5).
+// them, the id in any spelling uuid.Parse reads, and kept in its canonical spelling, which is the
+// one Postgres's uuid reads for every one of them (it refuses urn:uuid:…). One that is not is 400
+// POSITION_INVALID naming the parameter and the two fields (R5).
 func dismissedThreadPosition(name, raw string) (*myRepliesCursor, error) {
 	at, thread, found := strings.Cut(raw, ",")
 	refusal := errorf(apicode.PositionInvalid,
@@ -672,10 +690,11 @@ func dismissedThreadPosition(name, raw string) (*myRepliesCursor, error) {
 	if _, err := time.Parse(time.RFC3339Nano, at); err != nil {
 		return nil, refusal
 	}
-	if _, err := uuid.Parse(thread); err != nil {
+	parsed, err := uuid.Parse(thread)
+	if err != nil {
 		return nil, refusal
 	}
-	return &myRepliesCursor{at: at, thread: thread}, nil
+	return &myRepliesCursor{at: at, thread: parsed.String()}, nil
 }
 
 // dismissedAfterWritten refuses an after above the last position the caller's dismissed threads

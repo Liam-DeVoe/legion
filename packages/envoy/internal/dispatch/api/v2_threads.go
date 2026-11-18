@@ -13,6 +13,7 @@ package api
 // answered with its own 404 (decision 11); a {session_id} keeps today's answer (ruling A).
 
 import (
+	"context"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -144,17 +145,20 @@ func (s *server) v2ThreadRows() []routeRow {
 			Method: http.MethodPut, Pattern: "/comments/{id}/state", Auth: authAny, Versions: onlyV2,
 			Description: "Move a comment's thread to a state, its body by state. {state: resolved} resolves it, for any " +
 				"caller, a bearer naming its session in actor; it is also how a suggestion that can no longer be accepted or " +
-				"rejected is closed. {state: open} reopens a resolved thread root, which needs the person scope (a reply or an " +
-				"ask thread's comment is 400 INVALID_COMMENT). {state: accepted} accepts a suggestion, which needs the person " +
-				"scope: its replacement is applied to the live document and a version is named after the comment, and the " +
-				"answer carries lost, whether the document already lacks the accepted text (null when the check reached no " +
-				"verdict); an unanchored suggestion is 400 INVALID_SUGGESTION, and an anchor the document no longer holds is " +
-				"recorded orphaned and refused. {state: rejected} rejects a suggestion, which needs the person scope, and " +
-				"removes its mark. Accepting or rejecting a comment with no suggestion is 400 INVALID_SUGGESTION, and a " +
-				"suggestion already accepted or rejected is 409 ALREADY_ACTIONED. A body equal to the comment's present state, " +
-				"from the caller who set it, answers 200 and writes nothing; an open thread records no setter, so a body of " +
-				"open on an open thread writes nothing whoever sends it. Answers the comment; 400 STATE_INVALID for any other " +
-				"state, 409 ISSUE_CLOSED on a closed issue, 404 COMMENT_NOT_FOUND.",
+				"rejected is closed. {state: open} reopens a resolved thread root, which needs the person scope (a resolved " +
+				"reply or ask thread's comment is 400 INVALID_COMMENT). {state: accepted} accepts a suggestion, which needs " +
+				"the person scope: its replacement is applied to the live document and a version is named after the comment, " +
+				"and the answer carries lost, whether the document already lacks the accepted text (null when the check " +
+				"reached no verdict); an unanchored suggestion is 400 INVALID_SUGGESTION, and an anchor the document no longer " +
+				"holds is recorded orphaned and refused. {state: rejected} rejects a suggestion, which needs the person scope, " +
+				"and removes its mark. Accepting or rejecting a comment with no suggestion is 400 INVALID_SUGGESTION. A " +
+				"suggestion already accepted or rejected is a thread resolved by whoever decided it: accepting, rejecting or " +
+				"resolving it is 409 ALREADY_ACTIONED, but for the body equal to its state from the person who decided it. A " +
+				"body equal to the comment's present state, from the caller who set it, answers 200 and writes nothing (an " +
+				"accept's answer with lost null), and {state: resolved} from the person who accepted or rejected a suggestion " +
+				"is such a body; an open thread records no setter, so a body of open on an open thread writes nothing whoever " +
+				"sends it. Answers the comment; 400 STATE_INVALID for any other state, 409 ISSUE_CLOSED on a closed issue, 404 " +
+				"COMMENT_NOT_FOUND.",
 			Handler:  s.putCommentStateV2,
 			Resource: "state", Kind: kindState,
 			Body: requestBody{Kind: bodyStateUnion, Arms: map[string]any{
@@ -747,7 +751,11 @@ func commentStateSetter(comment model.Comment) putSetter {
 // route's work - the reopen (reopenCommentAs), the resolve, the accept or the reject
 // (commentActionAs) - once the no-op rule of decision 8 has found the body is a change. A body
 // equal to the comment's present state from the caller who set it answers the comment and writes
-// nothing (putChangesNothing).
+// nothing (putChangesNothing), an accept's answer with lost null, since nothing was applied that
+// could have lost text. A suggestion accepted or rejected is a thread resolved by whoever decided
+// it, so {state: resolved} on it is that equal body from them, and from anyone else 409
+// ALREADY_ACTIONED, as an accept or a reject of it is: a resolve would record somebody else as
+// the one who decided it.
 func (s *server) putCommentStateV2(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -787,8 +795,22 @@ func (s *server) putCommentStateV2(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, r, err)
 		return
 	}
-	if unchanged(commentStateOf(comment), commentStateSetter(comment)) {
-		WriteJSON(w, http.StatusOK, newShapedComment(comment, wantsDisplayTrees(r)))
+	current := commentStateOf(comment)
+	decided := current == "accepted" || current == "rejected"
+	if state == "resolved" && decided {
+		current = "resolved"
+	}
+	if unchanged(current, commentStateSetter(comment)) {
+		shaped := newShapedComment(comment, wantsDisplayTrees(r))
+		if state == "accepted" {
+			WriteJSON(w, http.StatusOK, acceptedComment{shapedComment: shaped})
+			return
+		}
+		WriteJSON(w, http.StatusOK, shaped)
+		return
+	}
+	if state == "resolved" && decided {
+		writeError(w, r, apicode.AlreadyActioned, "suggestion has already been actioned")
 		return
 	}
 	switch state {
@@ -818,21 +840,24 @@ func (s *server) issueCommentsV2ETag(key, artifactFilter string, watermark, last
 // listIssueCommentsV2 answers GET /api/v2/issues/{key}/comments: one page of the comment list GET
 // /api/v1/issues/{key}/comments answers (answerCommentList), its validator read first, under a
 // validator of its own and kept under the /api/v2 route's own key (commentListV2Route), so a v1
-// read and a v2 read of one issue's comments each answer their own version's body.
+// read and a v2 read of one issue's comments each answer their own version's body. The validator's
+// own statement says whether the issue is there (commentListWatermark), as an issue's event log
+// reads it (listIssueEventsV2), and only the page it answers is hydrated.
 func (s *server) listIssueCommentsV2(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
 	key := r.PathValue("key")
-	if !s.requireIssueV2(w, r, key) {
-		return
-	}
 	query := v2Query[issueCommentsV2Query](r)
 	artifact := strings.TrimSpace(query.Artifact)
 	owner := issueOwner(key)
 	watermark, lastSeq, ownerHeld, err := s.commentListWatermark(r.Context(), owner)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
+		return
+	}
+	if !ownerHeld {
+		s.writeHandlerError(w, r, errorf(apicode.IssueNotFound, "no issue %s", key))
 		return
 	}
 	trees := wantsDisplayTrees(r)
@@ -844,12 +869,11 @@ func (s *server) listIssueCommentsV2(w http.ResponseWriter, r *http.Request) {
 	if s.listAnswers.answer(w, kept) {
 		return
 	}
-	comments, err := s.loadOwnerComments(r.Context(), s.deps.Store.Pool, owner, artifact)
+	listed, err := s.commentPageV2(r.Context(), owner, artifact, query.pageQuery)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return
 	}
-	listed := pageOf(comments, query.pageQuery)
 	reader := s.readDisplayTrees(r.Context(), trees)
 	reads := shapedComments(listed.Items, reader)
 	reader.resolve()
@@ -859,6 +883,21 @@ func (s *server) listIssueCommentsV2(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeListAnswer(w, kept, encoded, ownerHeld)
+}
+
+// commentPageV2 is the page query asks for of owner's comments, oldest first, artifactFilter
+// keeping one document's where it names one: every comment's row read, and the side tables of
+// the page's alone (hydrateCommentSideTables), which reads each comment by itself.
+func (s *server) commentPageV2(ctx context.Context, owner owner, artifactFilter string, query pageQuery) (page[model.Comment], error) {
+	comments, err := readOwnerComments(ctx, s.deps.Store.Pool, owner, artifactFilter)
+	if err != nil {
+		return page[model.Comment]{}, err
+	}
+	listed := pageOf(comments, query)
+	if listed.Items, err = s.hydrateCommentSideTables(ctx, s.deps.Store.Pool, listed.Items); err != nil {
+		return page[model.Comment]{}, err
+	}
+	return listed, nil
 }
 
 // createIssueCommentV2 answers POST /api/v2/issues/{key}/comments: the comment POST

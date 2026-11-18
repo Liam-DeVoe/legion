@@ -121,7 +121,7 @@ func (s *server) changeAskFollower(w http.ResponseWriter, r *http.Request, follo
 			return
 		}
 	}
-	if !s.writeAskFollower(w, r, actor, askID, sessionID, follow) {
+	if !s.writeAskFollower(w, r, actor, askID, sessionID, follow, nil) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -170,8 +170,13 @@ func (s *server) askFollowerActor(
 // recorded as actor: one ask.follower_added or ask.follower_removed event for a change, and none
 // for a follow of a session that already follows, which changes nothing. Unfollowing a session
 // that does not follow is 404 FOLLOWER_NOT_FOUND. Both versions of the follower routes write
-// through it and answer in their own shape; it writes a refusal itself and answers false.
-func (s *server) writeAskFollower(w http.ResponseWriter, r *http.Request, actor model.Actor, askID, sessionID string, follow bool) bool {
+// through it and answer in their own shape; it writes a refusal itself and answers false. readBack
+// reads, on the write's own transaction and before it commits, what a /api/v2 route answers, so a
+// read that fails rolls the write back (askReadBack); /api/v1's routes read nothing back (nil).
+func (s *server) writeAskFollower(
+	w http.ResponseWriter, r *http.Request, actor model.Actor, askID, sessionID string, follow bool,
+	readBack func(ctx context.Context, q queryer) error,
+) bool {
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, r, err)
@@ -204,7 +209,7 @@ func (s *server) writeAskFollower(w http.ResponseWriter, r *http.Request, actor 
 			writeError(w, r, apicode.FollowerNotFound, "session does not follow this ask")
 			return false
 		}
-		return true
+		return s.readFollowerBack(w, r, tx, readBack)
 	}
 	event, err := s.appendEvent(r.Context(), tx, own.event(eventType, actor, model.AskFollowerEventPayload{
 		AskID: askID, SessionID: sessionID, By: actor,
@@ -213,10 +218,26 @@ func (s *server) writeAskFollower(w http.ResponseWriter, r *http.Request, actor 
 		s.writeHandlerError(w, r, err)
 		return false
 	}
+	if !s.readFollowerBack(w, r, tx, readBack) {
+		return false
+	}
 	if err := tx.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, r, err)
 		return false
 	}
 	s.publish(r.Context(), event)
+	return true
+}
+
+// readFollowerBack runs a follower write's readBack, where it has one, on its transaction tx,
+// writing its failure and answering false.
+func (s *server) readFollowerBack(w http.ResponseWriter, r *http.Request, tx queryer, readBack func(ctx context.Context, q queryer) error) bool {
+	if readBack == nil {
+		return true
+	}
+	if err := readBack(r.Context(), tx); err != nil {
+		s.writeHandlerError(w, r, err)
+		return false
+	}
 	return true
 }

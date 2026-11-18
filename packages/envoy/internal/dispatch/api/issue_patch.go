@@ -709,9 +709,17 @@ func replacementLabelLimit(own string) labelLimit {
 
 // mergeIssueLabels adds labels, already held to a caller's limits, to existing without dropping a
 // concurrent writer's labels. It keeps the labels the issue holds as they are, its own repo: label
-// (own, its key) among them whatever its length, and holds the merged labels other than that one
-// to maxIssueLabels.
+// (own, its key) among them whatever its length, and refuses more than maxIssueLabels counted as
+// c8a44f97 counted them, before a label the issue already holds is folded away: every label it
+// holds and every label added, less its own repo: label, which counts toward no limit (R14).
 func mergeIssueLabels(existing, added []string, own string) ([]string, error) {
+	counted := len(existing) + len(added)
+	if own != "" {
+		counted--
+	}
+	if counted > maxIssueLabels {
+		return nil, countExceededError(apicode.LabelsInput, "labels", counted, maxIssueLabels)
+	}
 	labels := append(make([]string, 0, len(existing)+len(added)), existing...)
 	seen := make(map[string]struct{}, len(existing)+len(added))
 	for _, label := range existing {
@@ -724,13 +732,6 @@ func mergeIssueLabels(existing, added []string, own string) ([]string, error) {
 		}
 		seen[key] = struct{}{}
 		labels = append(labels, label)
-	}
-	counted := len(labels)
-	if own != "" {
-		counted--
-	}
-	if counted > maxIssueLabels {
-		return nil, countExceededError(apicode.LabelsInput, "labels", counted, maxIssueLabels)
 	}
 	return labels, nil
 }

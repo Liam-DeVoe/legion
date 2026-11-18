@@ -205,14 +205,16 @@ func sessionGroupSessions(w http.ResponseWriter, r *http.Request, field string, 
 	return sessions, true
 }
 
-// writeSessionGroupError answers a group write's refusal with its code, naming what it refers to.
+// writeSessionGroupError answers a group write's refusal with its code, naming what it refers to:
+// a group gone before the write could make it is a group nothing holds, 404 NOT_FOUND on /api/v1
+// and SESSION_GROUP_NOT_FOUND on /api/v2 (apicode.SessionGroupNotFound).
 func (s *server) writeSessionGroupError(w http.ResponseWriter, r *http.Request, err error) {
 	var inGroup *delivery.SessionInGroupError
 	var taken *delivery.SessionGroupNameTakenError
 	var titled *delivery.SessionGroupNameIsTitleError
 	switch {
 	case errors.Is(err, delivery.ErrSessionGroupNotFound):
-		writeError(w, r, apicode.NotFound, err.Error())
+		writeError(w, r, apicode.SessionGroupNotFound, err.Error())
 	case errors.Is(err, delivery.ErrSessionGroupEmpty):
 		writeError(w, r, apicode.SessionGroupInput, err.Error())
 	case errors.As(err, &inGroup):

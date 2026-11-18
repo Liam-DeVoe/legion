@@ -207,14 +207,14 @@ const (
 // its documentation name.
 type positionField struct {
 	// Field is the field's name as the answer writes it: seq, id, source_seq, or for a
-	// positionTimeAndID both fields, dismissed_at,id.
+	// positionTimeAndID both fields, dismissed_at,thread_id.
 	Field string
 	Type  positionType
 }
 
 // listBounds is a list's limit: the one a request that names none is answered with, and the
 // largest it may name, either of which a request outside is refused (R1.4). A route keeps the
-// bound it has today; one with none takes 50 and 200, which the decoder fills where both are 0.
+// bound it has today; one with none takes 50 and 200 (limits).
 type listBounds struct {
 	Default int
 	Max     int
@@ -226,6 +226,23 @@ type listBounds struct {
 	// Max are named as on any bounded list, and the handler answers limit 0 with no item itself,
 	// since pageOf reads a limit of 0 as a catalogue's every item.
 	Counts bool
+}
+
+// limits is the limit a request to a list is held to, which the decoder reads it by
+// (decodeLimit) and the route index and the OpenAPI document state: the least limit it takes, 0
+// for a list whose bounds count and 1 for every other; the one a request that names none is
+// answered with; and the largest it may name. A list whose row names no bounds takes 50 and 200.
+// A catalogue read whole has neither of the last two, and answers 0 for both: it takes any limit
+// of 1 or more, and one that names none reads every item (pageOf).
+func (bounds listBounds) limits() (least, fallback, most int) {
+	least, fallback, most = 1, bounds.Default, bounds.Max
+	if bounds.Counts {
+		least = 0
+	}
+	if bounds == (listBounds{}) {
+		fallback, most = defaultListLimit, maxListLimit
+	}
+	return least, fallback, most
 }
 
 // bodyKind is how a route's request body is written, which is how the v2 decoder reads it.
@@ -409,7 +426,8 @@ type routeRow struct {
 	// Refusals are the refusals the route answers, each a condition and its code, one code per
 	// condition across the whole table (decision 4, TestOneConditionOneCode).
 	Refusals []apicode.Refusal
-	// List is a collection's limit bounds; zero for a route that is no list.
+	// List is a list's limit bounds, zero for a list that takes 50 and 200 (listBounds.limits)
+	// and for a route that is no list: a route is a list when its Query takes a limit.
 	List listBounds
 
 	// OAuthScopes are the scopes every request to the route needs (gateRouteScopes).

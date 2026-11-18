@@ -229,8 +229,11 @@ func openAPIDocument(version apiVersion) (*openAPIEmitter, *openapi31.Spec, erro
 				"declares, by `envoy-dispatch openapi`. Edit those, never this document: it is " +
 				"committed so a client's types can be rendered from it, and `envoy-dispatch openapi " +
 				"--check` refuses a tree where it is stale. Each operation of a /api/v2 row lists " +
-				"the refusal codes it can answer with their statuses (x-refusal-codes), and " +
-				"components.x-refusal-codes every code /api/v2 can answer, once; every object a " +
+				"the refusal codes it can answer with their statuses (x-refusal-codes): its row's own and " +
+				"those of every layer the server runs it behind, but the router's origin and host guards " +
+				"in front of every route (ORIGIN_REFUSED, HOST_MISMATCH), the test hooks " +
+				"(SLOW_WRITE_CUT_OFF) and a server built with no store (DATABASE_UNAVAILABLE). " +
+				"components.x-refusal-codes lists every code /api/v2 can answer, once; every object a " +
 				"Go struct answers declares each member it can hold and no other.")
 	default:
 		spec.Info.WithVersion("1")
@@ -954,18 +957,53 @@ type openAPIAuthority struct {
 	Scopes []string `json:"scopes"`
 }
 
+// callerCodes are the codes the resolution of a request's caller can answer (optionalActor,
+// through writeAuthenticationError): a bearer that is no token or a revoked one, a
+// service-account token refused or its issuer out of reach, each refusal of a broker-issued token
+// (brokerTokenActor), and the identity layer's own (identity.Refusal).
+var callerCodes = []apicode.Code{
+	apicode.Unauthorized, apicode.TokenRevoked, apicode.OIDCTokenInvalid, apicode.OIDCIssuerUnavailable,
+	apicode.BrokerTokenNotActive, apicode.BrokerTokenKeyMismatch, apicode.BrokerTokenProofInvalid,
+	apicode.BrokerTokenNotASession, apicode.BrokerTokenRateLimited, apicode.BrokerUnavailable,
+	apicode.NoIdentity, apicode.SigninUnavailable, apicode.IdentityError,
+}
+
 // openAPIOperationCodes are the refusal codes one /api/v2 route can answer, by name, each with its
-// status: the refusals its row declares, and those every layer the route runs behind can answer
-// it with (routeHandler) - the decoder's of its query, and of its body where it reads one; the
-// identity layer's on a route that is not public; the scope gate's where the row needs a scope;
-// the keyed layer's on a keyed write; and the server's own fault.
+// status: the refusals its row declares, and every code a layer the mount runs the route behind
+// (routeHandler) can write, under the condition that layer runs in:
+//
+//   - every route: the query decoder's (QUERY_KEY_UNKNOWN, INVALID_QUERY, and INVALID_LIMIT and
+//     INVALID_OFFSET where the query pages), the parameter check's (NUL_CHARACTER, INVALID_UTF8,
+//     refuseUnstorableParameters), and the server's own fault (INTERNAL);
+//   - a route the read list does not name: the read-only gate's READ_ONLY_TOKEN;
+//   - a route that is not public, and one whose scope gate or authority gate resolves the caller:
+//     every code that resolution answers (callerCodes);
+//   - a route that needs a scope, or a value of whose request needs one: OAUTH_SCOPE_REQUIRED;
+//   - a route that resolves an id written short: the prefix layer's ID_AMBIGUOUS and its 404s;
+//   - a write: the login check's LOGIN_CHANGED and the sign-in check's SIGN_IN_REQUIRED, the
+//     project check's PROJECT_SCOPE or PROJECT_SCOPE_DEPLOYMENT by the row's class, and the
+//     drain's 413 for a body past the route's bound, a write that reads no body among them;
+//   - a write into one session's rows, by its path or by its body: the session check's
+//     SESSION_SCOPE;
+//   - a route that reads a JSON body or an upload: the body decoder's;
+//   - an upload to an issue: the closed-issue check's ISSUE_CLOSED and ISSUE_NOT_FOUND;
+//   - a keyed write: the keyed layer's.
+//
+// Three answers stand outside the list, since no layer of the mount writes them for a request a
+// deployment serves: the router's guards in front of the mount (ORIGIN_REFUSED of the cookie-origin
+// guard, HOST_MISMATCH of dev sign-in mode), the slow-write test hook's SLOW_WRITE_CUT_OFF, and
+// DATABASE_UNAVAILABLE, which only a server built with no store answers.
 func openAPIOperationCodes(route apiRoute) map[string]any {
-	codes := []apicode.Code{apicode.QueryKeyUnknown, apicode.InvalidQuery, apicode.InternalError}
+	codes := []apicode.Code{apicode.QueryKeyUnknown, apicode.InvalidQuery, apicode.NULCharacter, apicode.InvalidUTF8, apicode.InternalError}
 	for _, refusal := range route.Refusals {
 		codes = append(codes, refusal.Code)
 	}
-	if route.Auth != authPublic {
-		codes = append(codes, apicode.NoIdentity, apicode.SigninUnavailable, apicode.IdentityError)
+	if !route.ReadScope {
+		codes = append(codes, apicode.ReadOnlyToken)
+	}
+	gated := len(route.OAuthScopes) > 0 || len(route.Authorities) > 0
+	if route.Auth != authPublic || gated {
+		codes = append(codes, callerCodes...)
 	}
 	if query, err := compileV2Query(route.Query); err == nil {
 		for _, field := range query.fields {
@@ -977,14 +1015,40 @@ func openAPIOperationCodes(route apiRoute) map[string]any {
 			}
 		}
 	}
-	if len(route.OAuthScopes) > 0 || len(route.Authorities) > 0 {
+	if gated {
 		codes = append(codes, apicode.OAuthScopeRequired)
+	}
+	if ids := route.IDs; ids != nil && (ids.Kind != "" || ids.Blocks) {
+		codes = append(codes, apicode.IDAmbiguous)
+		for _, notFound := range []apicode.Code{ids.NotFound, ids.BlockNotFound} {
+			if !notFound.IsZero() {
+				codes = append(codes, notFound)
+			}
+		}
+	}
+	tooLarge := route.bodyLimit().TooLarge
+	if route.Method != http.MethodGet {
+		codes = append(codes, apicode.LoginChanged, apicode.SignInRequired)
+		switch route.Scope {
+		case scopeProject:
+			codes = append(codes, apicode.ProjectScope)
+		case scopeDeployment:
+			codes = append(codes, apicode.ProjectScopeDeployment)
+		}
+		if tooLarge != nil {
+			// The bound a body is held to, and its refusal, are the route's own (routeRow.bodyLimit).
+			codes = append(codes, tooLarge.code)
+		}
+	}
+	if addressesOneSession(route) || addressesSessions(route.Body) {
+		codes = append(codes, apicode.SessionScope)
 	}
 	switch route.Body.Kind {
 	case bodyJSON, bodyStateUnion, bodyKindUnion:
-		codes = append(codes, apicode.InvalidJSON, apicode.JSONContentType)
+		codes = append(codes, apicode.InvalidJSON, apicode.JSONContentType, apicode.RequestBodyUnreadable)
 	case bodyUpload:
-		codes = append(codes, apicode.InvalidJSON)
+		codes = append(codes, apicode.InvalidJSON, apicode.JSONContentType, apicode.RequestBodyUnreadable,
+			apicode.InvalidBody, apicode.CapExceededTooLarge)
 	}
 	switch route.Body.Kind {
 	case bodyStateUnion:
@@ -992,12 +1056,15 @@ func openAPIOperationCodes(route apiRoute) map[string]any {
 	case bodyKindUnion:
 		codes = append(codes, apicode.InvalidKind)
 	}
-	if tooLarge := route.bodyLimit().TooLarge; route.Body.Kind != bodyNone && tooLarge != nil {
-		// The bound a body is held to, and its refusal, are the route's own (routeRow.bodyLimit).
+	if tooLarge != nil && route.Body.Kind != bodyNone {
 		codes = append(codes, tooLarge.code)
 	}
+	if route.RefusesClosedOwner {
+		codes = append(codes, apicode.IssueClosed, apicode.IssueNotFound)
+	}
 	if keyedMethod(route) {
-		codes = append(codes, apicode.KeyReused, apicode.KeyInFlight, apicode.KeyInvalid, apicode.KeyCommitted, apicode.AnswerNotKept)
+		codes = append(codes, apicode.KeyReused, apicode.KeyInFlight, apicode.KeyInvalid, apicode.KeyCommitted, apicode.AnswerNotKept,
+			apicode.RequestBodyUnreadable)
 	}
 	named := map[string]any{}
 	for _, code := range codes {
@@ -1212,14 +1279,7 @@ func v2QueryParameters(route apiRoute) ([]openapi31.ParameterOrReference, error)
 func openAPIQueryFieldSchema(field queryField, bounds listBounds) map[string]any {
 	switch field.kind {
 	case queryLimit:
-		most, fallback := bounds.Max, bounds.Default
-		if bounds == (listBounds{}) {
-			most, fallback = maxListLimit, defaultListLimit
-		}
-		least := 1
-		if bounds.Counts {
-			least = 0
-		}
+		least, fallback, most := bounds.limits()
 		schema := map[string]any{"type": "integer", "minimum": least}
 		if !bounds.Whole {
 			// A catalogue read whole takes any limit of 1 or more, and every item where the

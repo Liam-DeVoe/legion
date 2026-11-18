@@ -39,6 +39,7 @@ package api
 // (sessionAddressing), and this gate holds each to the same rule (plan t4 step 4).
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -103,14 +104,22 @@ func (s *server) gateV2Authorities(route apiRoute, handler http.HandlerFunc) htt
 			s.writeHandlerError(w, r, fmt.Errorf("%s %s: the authority gate holds no decoded request", route.Method, route.Pattern))
 			return
 		}
+		// The caller is resolved once a request, at the first rule that holds, and carried on the
+		// request as the route's scope gate carries it (gateRouteScopes), so a second rule, every
+		// layer behind this one and the handler read it rather than look a token up again.
+		resolved := false
 		for _, rule := range rules {
 			if !rule.holdsFor(decoded) {
 				continue
 			}
-			actor, _, err := s.optionalActor(r)
+			actor, human, err := s.optionalActor(r)
 			if err != nil {
 				s.writeAuthenticationError(w, r, err)
 				return
+			}
+			if !resolved {
+				r = r.WithContext(context.WithValue(r.Context(), resolvedCallerKey{}, resolvedCaller{actor: actor, human: human}))
+				resolved = true
 			}
 			for _, scope := range rule.Scopes {
 				if !actor.Credential.Holds(scope) {

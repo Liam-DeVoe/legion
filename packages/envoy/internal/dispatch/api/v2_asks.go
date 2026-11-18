@@ -81,7 +81,9 @@ func (s *server) v2AskRows() []routeRow {
 				"turn it is, the person's before the agent's, then the latest activity, newest first) or created_at (oldest " +
 				"first), each reversed after a -. limit 1 to 200 (default 50) and offset; {items, total, limit, offset, count, " +
 				"waiting_on_human, waiting_on_agent, as_of}: count the asks the filters keep, as total does, the two waiting_on " +
-				"counts the open ones among them by whose turn it is, and as_of the database time the read was made at.",
+				"counts the asks among them whose state is open by whose turn it is (under state=open, the open asks on open " +
+				"issues and project documents; under another state, every ask of state open it keeps, one on a closed issue " +
+				"among them), and as_of the database time the read was made at.",
 			Handler:  s.listAsksV2,
 			Resource: "asks", Kind: kindCollection, Key: "{id}",
 			TimeFields:   []string{"created_at"},
@@ -114,7 +116,8 @@ func (s *server) v2AskRows() []routeRow {
 				"who has signed in (400 ASSIGNEE_NOT_ALLOWED otherwise), which needs the person scope: the ask waits on them " +
 				"from now on, wherever its issue goes, and naming the assignee of its own issue empties the field instead, so the " +
 				"ask follows its issue again; either way the row records who handed it on and when (asked_of_by, asked_of_at). " +
-				"A body naming both, or neither, is 400 INVALID_ASK. A bearer names its session in actor. Answers the ask as GET " +
+				"A body naming both, or neither, is 400 INVALID_ASK. A bearer names its session in actor on a reword; a hand-on " +
+				"is the person's act, recorded as the person the credential acts for. Answers the ask as GET " +
 				"/api/v2/asks/{id} reads it. An ask that is not open is 409 ASK_NOT_OPEN, an approval request's wording 409 " +
 				"ASK_KIND_FIXED, an ask on a closed issue 409 ISSUE_CLOSED; 404 ASK_NOT_FOUND.",
 			Handler:  s.editAskV2,
@@ -447,8 +450,10 @@ func (s *server) askV2Rows(ctx context.Context, q queryer, read askV2Read, page 
 }
 
 // completeAsksV2 fills in what every row of rows a read of asks lists carries beyond its read
-// (askV2Rows) - every member completeWrittenAskV2 fills in - and the thread where include asks for
-// it, read with the rows' texts through one reader, so the texts are one query and one store.
+// (askV2Rows): its identity event, its backlink count and its part ids (prepareAsksV2), its address
+// and its trees (finishAsksV2), its anchor's block position on the read of one ask (single) alone,
+// and the thread where include asks for it, read with the rows' texts through one reader, so the
+// texts are one query and one store.
 func (s *server) completeAsksV2(ctx context.Context, r *http.Request, rows []askV2, thread, single bool) error {
 	if err := s.prepareAsksV2(ctx, rows, single); err != nil {
 		return err
@@ -556,7 +561,7 @@ func finishAsksV2(rows []askV2, reader *displayTreeReader) error {
 	return nil
 }
 
-// askV2Ref is the dispatch:// address of the ask row is, as every writer of an ask's address
+// askV2Ref is the dispatch:// address of the ask row holds, as every writer of an ask's address
 // writes it (refs.AskRef): under its issue, or under the project document that owns it.
 func askV2Ref(row askV2) string {
 	ref := text.Ref{Kind: "ask", ID: row.ID}
@@ -721,11 +726,13 @@ func askStateCondition(state string, acrossProjects bool) string {
 }
 
 // askSource reads source=<kind>:<id> into the kind and id of a reference source, the kinds
-// refs.ScopeOf reads (questionSourceKinds).
+// refs.ScopeOf reads (questionSourceKinds), the id a whole uuid or an id written short
+// (text.IsIDPrefix): any other value names no source, and is refused as a malformed query.
 func askSource(source string) (kind, id string, err error) {
 	kind, id, found := strings.Cut(source, ":")
 	id = strings.TrimSpace(id)
-	if !found || !slices.Contains(questionSourceKinds, kind) || id == "" {
+	_, notUUID := uuid.Parse(id)
+	if !found || !slices.Contains(questionSourceKinds, kind) || (notUUID != nil && !text.IsIDPrefix(id)) {
 		return "", "", errorf(apicode.InvalidQuery,
 			"source is <kind>:<id>, the kind one of %s and the id a whole uuid or a prefix of one", strings.Join(questionSourceKinds, ", "))
 	}
@@ -1024,62 +1031,69 @@ func actorIdentity(actor model.Actor) string {
 
 // changeAskFollowerV2 is the follower write both /api/v2 follower routes make, as /api/v1's
 // (changeAskFollower) make it, once the path's ask is held to exist: the session named in the path
-// put on or taken off the ask's followers, recorded as who the credential acts for. It writes a
-// refusal itself and answers false.
-func (s *server) changeAskFollowerV2(w http.ResponseWriter, r *http.Request, follow bool) (askID, sessionID string, ok bool) {
+// put on or taken off the ask's followers, recorded as who the credential acts for, with readBack,
+// where it is given, reading what the route answers of the ask and the session on the write's own
+// transaction before it commits (writeAskFollower). It writes a refusal itself and answers false.
+func (s *server) changeAskFollowerV2(
+	w http.ResponseWriter, r *http.Request, follow bool, readBack func(ctx context.Context, q queryer, askID, sessionID string) error,
+) bool {
 	actor, human, err := s.optionalActor(r)
 	if err != nil {
 		s.writeAuthenticationError(w, r, err)
-		return "", "", false
+		return false
 	}
-	askID = r.PathValue("id")
+	askID := r.PathValue("id")
 	if !s.requireAskV2(w, r, askID) {
-		return "", "", false
+		return false
 	}
-	sessionID = strings.TrimSpace(r.PathValue("session_id"))
+	sessionID := strings.TrimSpace(r.PathValue("session_id"))
 	if sessionID == "" {
 		writeError(w, r, apicode.FollowerInput, "follower session id is required")
-		return "", "", false
+		return false
 	}
 	// A person at a browser writes as themselves (changeAskFollower); every other credential acts
 	// as the addressed session, or as a person on another, as its body and scopes say.
 	actor = actor.Recorded()
 	if !human {
+		var ok bool
 		if actor, ok = s.askFollowerActor(w, r, actor, s.callerHoldsScope(r, model.ScopePerson), sessionID, v2Body[actorInput](r).Actor); !ok {
-			return "", "", false
+			return false
 		}
 	}
-	if !s.writeAskFollower(w, r, actor, askID, sessionID, follow) {
-		return "", "", false
+	var back func(ctx context.Context, q queryer) error
+	if readBack != nil {
+		back = func(ctx context.Context, q queryer) error { return readBack(ctx, q, askID, sessionID) }
 	}
-	return askID, sessionID, true
+	return s.writeAskFollower(w, r, actor, askID, sessionID, follow, back)
 }
 
 // followAskV2 answers PUT /api/v2/asks/{id}/followers/{session_id}: 200 with the follower, which
 // /api/v1 answers 204, a follow of a session already following changing nothing (decision 8: a
-// follower records no setter).
+// follower records no setter). The follower is read on the follow's own transaction, before it
+// commits, as every other /api/v2 ask write reads what it answers (askReadBack).
 func (s *server) followAskV2(w http.ResponseWriter, r *http.Request) {
-	askID, sessionID, ok := s.changeAskFollowerV2(w, r, true)
-	if !ok {
-		return
-	}
-	followers, err := asks.Followers(r.Context(), s.deps.Store.Pool, askID)
-	if err != nil {
-		s.writeHandlerError(w, r, err)
-		return
-	}
-	for _, follower := range followers {
-		if follower.SessionID == sessionID {
-			WriteJSON(w, http.StatusOK, follower)
-			return
+	var answer model.AskFollower
+	if !s.changeAskFollowerV2(w, r, true, func(ctx context.Context, q queryer, askID, sessionID string) error {
+		followers, err := asks.Followers(ctx, q, askID)
+		if err != nil {
+			return err
 		}
+		for _, follower := range followers {
+			if follower.SessionID == sessionID {
+				answer = follower
+				return nil
+			}
+		}
+		return fmt.Errorf("session %s follows ask %s, and its read of the followers finds no such row", sessionID, askID)
+	}) {
+		return
 	}
-	s.writeHandlerError(w, r, fmt.Errorf("session %s follows ask %s, and its read of the followers finds no such row", sessionID, askID))
+	WriteJSON(w, http.StatusOK, answer)
 }
 
 // unfollowAskV2 answers DELETE /api/v2/asks/{id}/followers/{session_id}: 204.
 func (s *server) unfollowAskV2(w http.ResponseWriter, r *http.Request) {
-	if _, _, ok := s.changeAskFollowerV2(w, r, false); !ok {
+	if !s.changeAskFollowerV2(w, r, false, nil) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

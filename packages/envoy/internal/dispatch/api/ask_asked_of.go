@@ -56,10 +56,10 @@ func (s *server) putAskAskedOf(w http.ResponseWriter, r *http.Request) {
 
 // handAskOn hands the open ask askID to the person named, for actor, once the route has read its
 // body: it writes asks.asked_of and who handed it on and when, appends one ask.asked_of event,
-// and answers the ask read back under its own locks. PUT /api/v1/asks/{id}/asked-of
-// (putAskAskedOf) and PATCH /api/v2/asks/{id} with asked_of (editAskV2) each answer it in their
-// own shape, the /api/v2 route reading its own on the write's transaction (readBack). It writes a
-// refusal itself and answers false.
+// and, with no readBack, answers the ask read back under its own locks, which PUT
+// /api/v1/asks/{id}/asked-of (putAskAskedOf) answers. PATCH /api/v2/asks/{id} with asked_of
+// (editAskV2) reads its own answer on the write's transaction (readBack) and is answered the zero
+// ask. It writes a refusal itself and answers false.
 func (s *server) handAskOn(w http.ResponseWriter, r *http.Request, actor model.Actor, askID, named string, readBack askReadBack) (model.Ask, bool) {
 	if named == "" {
 		writeError(w, r, apicode.InvalidAsk, "asked_of must be a person's email")
@@ -161,20 +161,23 @@ func (s *server) handAskOn(w http.ResponseWriter, r *http.Request, actor model.A
 		s.writeHandlerError(w, r, err)
 		return model.Ask{}, false
 	}
-	// What the 200 answers: the ask as every other read of it answers, read back under this
+	// What /api/v1's 200 answers: the ask as every other read of it answers, read back under this
 	// transaction's own locks through the columns those reads share (askReadColumns), so it
 	// carries waiting_on and waiting_on_person - which the locked row above carries neither of,
 	// and which a handler setting them by hand would be a second rule to keep in step with
 	// askedOfPersonExpression at every hand-back. It is written as the shaped read every other
 	// ask write answers (display_trees.go), so a caller that sent `Dispatch-Trees: 1` reads the
 	// trees of this ask's texts here as it does from an edit or an answer. The event payload
-	// stays the locked row, which is the shape every ask.* payload has (ask_rows.go).
-	answer, err := s.loadAsk(r.Context(), tx, ask.ID)
-	if err != nil {
-		s.writeHandlerError(w, r, err)
-		return model.Ask{}, false
-	}
-	if err := readBack.read(r.Context(), tx, ask.ID); err != nil {
+	// stays the locked row, which is the shape every ask.* payload has (ask_rows.go). A /api/v2
+	// route reads its own answer on the same transaction (readBack), and this one is not read.
+	var answer model.Ask
+	if readBack == nil {
+		answer, err = s.loadAsk(r.Context(), tx, ask.ID)
+		if err != nil {
+			s.writeHandlerError(w, r, err)
+			return model.Ask{}, false
+		}
+	} else if err := readBack.read(r.Context(), tx, ask.ID); err != nil {
 		s.writeHandlerError(w, r, err)
 		return model.Ask{}, false
 	}

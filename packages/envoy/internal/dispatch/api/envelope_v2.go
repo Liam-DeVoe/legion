@@ -20,10 +20,12 @@ type page[T any] struct {
 	Offset int `json:"offset"`
 }
 
-// logPage is one page of the global event log, GET /api/v2/events, the one list whose total is
-// null (R5 of dispatch://INFRA-4071/spec, plan t6): a log read forward by id would count the whole
-// log on every page, which costs about ten times the page for a reader near the oldest event.
-// Every other list, every other log among them, answers page's exact total.
+// logPage is one page of a list whose total is null (R5 of dispatch://INFRA-4071/spec, plan t6):
+// the global event log, GET /api/v2/events, which a log read forward by id would count whole on
+// every page, about ten times the page for a reader near the oldest event, and the caller's
+// dismissed threads, GET /api/v2/me/threads?state=dismissed, every thread they have ever
+// dismissed (listMyThreadsV2), whose other states answer their exact total in it. Every other
+// list, every other log among them, answers page's exact total.
 type logPage[T any] struct {
 	Items  []T  `json:"items"`
 	Total  *int `json:"total"`

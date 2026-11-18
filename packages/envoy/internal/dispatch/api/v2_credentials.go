@@ -35,7 +35,8 @@ var (
 
 // brokerRelayText is what every credential route says of the broker's answers.
 const brokerRelayText = "404 FEATURE_OFF without a configured secrets broker, 503 AGENT_SECRETS_UNAVAILABLE when it " +
-	"cannot be reached, and every other refusal the broker answers relayed with its own status and code"
+	"cannot be reached, 500 AGENT_SECRETS_ACCOUNT_TOKEN_UNREADABLE when Dispatch cannot read its own ServiceAccount " +
+	"token for it, and every other refusal the broker answers relayed with its own status and code"
 
 // brokerPageText is what every credential list says of its page: the broker does not page, so
 // Dispatch slices what it answers.
@@ -317,7 +318,7 @@ func (s *server) putCredentialRequestStateV2(w http.ResponseWriter, r *http.Requ
 	if input.Code != nil {
 		record, raw, err := lookupMachineRecord(r.Context(), client, *input.Code)
 		if err != nil {
-			relayBrokerResponse(w, r, nil, err)
+			s.writeBrokerLookupError(w, r, err)
 			return
 		}
 		current := credentialRequestStateV2Input{State: record.State, Code: input.Code}
@@ -339,20 +340,45 @@ func (s *server) putCredentialRequestStateV2(w http.ResponseWriter, r *http.Requ
 		relayBrokerResponse(w, r, decided, nil)
 		return
 	}
-	_, raw, err := lookupMachineRecord(r.Context(), client, *input.Code)
-	if err == nil && raw == nil {
-		err = fmt.Errorf("the secrets broker decided credential request %s and then read no record by its code", id)
+	record, raw, err := lookupMachineRecord(r.Context(), client, *input.Code)
+	switch {
+	case err != nil:
+		s.writeBrokerLookupError(w, r, err)
+	case raw == nil:
+		s.writeHandlerError(w, r, fmt.Errorf("the secrets broker decided credential request %s and then read no record by its code", id))
+	case record.RecordID != id:
+		// The broker reads a code's newest record (machine.LookupByCode), and a code another
+		// login took since can name another record: that one is no answer for this request.
+		s.writeHandlerError(w, r, fmt.Errorf("the secrets broker decided credential request %s, and its code now reads record %s", id, record.RecordID))
+	default:
+		relayBrokerResponse(w, r, raw, nil)
 	}
-	if err != nil {
-		relayBrokerResponse(w, r, nil, err)
+}
+
+// brokerLookupError is a machine-login lookup's call of the broker that failed, which
+// relayBrokerResponse answers as /api/v1 relays it; every other failure of lookupMachineRecord is
+// Dispatch's own.
+type brokerLookupError struct{ err error }
+
+func (e *brokerLookupError) Error() string { return e.err.Error() }
+func (e *brokerLookupError) Unwrap() error { return e.err }
+
+// writeBrokerLookupError answers a lookupMachineRecord that failed: the broker's own failure as
+// /api/v1 relays it (relayBrokerResponse), and Dispatch's own - a body it could not encode, an
+// answer it could not read - as a logged 500 (writeHandlerError), which no broker answer is.
+func (s *server) writeBrokerLookupError(w http.ResponseWriter, r *http.Request, err error) {
+	var call *brokerLookupError
+	if errors.As(err, &call) {
+		relayBrokerResponse(w, r, nil, call.err)
 		return
 	}
-	relayBrokerResponse(w, r, raw, nil)
+	s.writeHandlerError(w, r, err)
 }
 
 // lookupMachineRecord reads the machine login the typed code selects (Client.MachineLookup): the
 // record and its bytes as the broker answered them, or neither where the broker holds no login of
-// that code (404 NO_SUCH_CODE), and the error of any other failure.
+// that code (404 NO_SUCH_CODE). A failed call of the broker is a brokerLookupError, and any other
+// error Dispatch's own.
 func lookupMachineRecord(ctx context.Context, client *agentsecrets.Client, code string) (wire.RecordResponse, json.RawMessage, error) {
 	request, err := json.Marshal(wire.MachineLookupRequest{Code: code})
 	if err != nil {
@@ -360,11 +386,11 @@ func lookupMachineRecord(ctx context.Context, client *agentsecrets.Client, code 
 	}
 	raw, err := client.MachineLookup(ctx, request)
 	var brokerErr *agentsecrets.Error
-	if errors.As(err, &brokerErr) && brokerErr.Status == http.StatusNotFound {
+	if errors.As(err, &brokerErr) && brokerErr.Status == http.StatusNotFound && brokerErr.Code == "NO_SUCH_CODE" {
 		return wire.RecordResponse{}, nil, nil
 	}
 	if err != nil {
-		return wire.RecordResponse{}, nil, err
+		return wire.RecordResponse{}, nil, &brokerLookupError{err: err}
 	}
 	var record wire.RecordResponse
 	if err := json.Unmarshal(raw, &record); err != nil {

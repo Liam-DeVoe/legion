@@ -13,7 +13,7 @@ import (
 func (s *server) v2IndexRows() []routeRow {
 	return []routeRow{{
 		Method: http.MethodGet, Pattern: "", Auth: authPublic, Versions: onlyV2,
-		Description: "This index: every /api/v2 route with its method, path, auth, scopes and purpose, and what a client reads of it: the resource it serves and that resource's kind and key, the time fields a read windows on, the field a log is read in order by, the bounds of a list's limit, and whether it reads across projects. {docs, items, total, limit, offset}, sorted by path then method; every route is on one page unless the request names a limit (any of 1 or more) and an offset.",
+		Description: "This index: every /api/v2 route with its method, path, auth, scopes and purpose, and what a client reads of it: the resource it serves and that resource's kind and key, the time fields a read windows on, the field a log is read in order by, the bounds of a list's limit, and whether it reads across projects. {docs, items, total, limit, offset}, sorted by path then method; every route is on one page unless the request names a limit (any of 1 or more) or an offset.",
 		Handler:     s.getRouteIndexV2,
 		Resource:    "routes",
 		Kind:        kindCollection,
@@ -48,7 +48,8 @@ type routeIndexV2Entry struct {
 	TimeFields []string `json:"time_fields"`
 	// Position is the field a log's after and before read; null for a route that is no log.
 	Position *routeIndexPosition `json:"position"`
-	// List is a list's limit bounds; null for a route that is no list.
+	// List is a list's limit bounds (listBounds.limits); null for a route whose query takes no
+	// limit, which is no list.
 	List *routeIndexList `json:"list"`
 	// CrossProject is a read across projects, filtered by a repeatable project (R1.3).
 	CrossProject bool `json:"cross_project"`
@@ -98,13 +99,13 @@ func routeIndexV2Entries(routes []apiRoute) []routeIndexV2Entry {
 		if route.Position != (positionField{}) {
 			entry.Position = &routeIndexPosition{Field: route.Position.Field, Type: string(route.Position.Type)}
 		}
-		switch {
-		case route.List.Whole:
-			entry.List = &routeIndexList{MinLimit: 1}
-		case route.List != (listBounds{}):
-			entry.List = &routeIndexList{DefaultLimit: &route.List.Default, MaxLimit: &route.List.Max, MinLimit: 1}
-			if route.List.Counts {
-				entry.List.MinLimit = 0
+		if query, err := compileV2Query(route.Query); err == nil {
+			if _, pages := query.field("limit"); pages {
+				least, fallback, most := route.List.limits()
+				entry.List = &routeIndexList{MinLimit: least}
+				if !route.List.Whole {
+					entry.List.DefaultLimit, entry.List.MaxLimit = &fallback, &most
+				}
 			}
 		}
 		entries[index] = entry

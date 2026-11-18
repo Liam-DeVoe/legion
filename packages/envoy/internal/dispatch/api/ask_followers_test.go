@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -376,4 +377,52 @@ func TestAHumanAddsAndRemovesAnyFollower(t *testing.T) {
 	if badID.Code != http.StatusBadRequest || !strings.Contains(badID.Body.String(), `"code":"ASK_ID_INPUT"`) {
 		t.Fatalf("followers of a malformed ask id: status=%d body=%s", badID.Code, badID.Body.String())
 	}
+}
+
+// PUT /api/v2/asks/{id}/followers/{session_id} reads the follower it answers on the follow's own
+// transaction, before the commit, as every other /api/v2 ask write reads its answer (askReadBack):
+// a read that fails rolls the follow back and answers 500 with nothing stored and its
+// Idempotency-Key unclaimed, so the retry under that key follows afresh, and the follower answered
+// is the one a fresh read of the followers holds.
+func TestAV2FollowReadsItsAnswerBeforeItCommits(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	issue := createInteractionIssue(t, handler, "FOLV", "Followed", "# Spec\n\nA passage.")
+	askID := openAskAs(t, handler, issue.Key, "session-asker", "Which way?")
+	target := "/api/v2/asks/" + askID + "/followers/session-follower"
+	alter := func(t *testing.T, statement string) {
+		t.Helper()
+		if _, err := database.Pool.Exec(t.Context(), statement); err != nil {
+			t.Fatalf("%s: %v", statement, err)
+		}
+	}
+	// A follower table the answer's read cannot select from: the follow's insert names no since,
+	// and the read of the follower it answers does.
+	alter(t, `alter table ask_followers rename column since to since_unread`)
+	failed := keyedRequest(t, handler, http.MethodPut, target, nil, "alice", "follow-read-back-1")
+	alter(t, `alter table ask_followers rename column since_unread to since`)
+	if failed.Code != http.StatusInternalServerError {
+		t.Fatalf("a follow whose answer could not be read answered %d %s, want 500", failed.Code, failed.Body.String())
+	}
+	if followers := readAskFollowers(t, handler, askID); slices.Contains(followers, "session-follower") {
+		t.Fatalf("a follow that answered 500 left the followers %v, want it rolled back", followers)
+	}
+	retried := keyedRequest(t, handler, http.MethodPut, target, nil, "alice", "follow-read-back-1")
+	if retried.Code != http.StatusOK || replayed(retried) {
+		t.Fatalf("the retry under the failed follow's key answered %d %s (replayed %v), want a follow of its own",
+			retried.Code, retried.Body.String(), replayed(retried))
+	}
+	answered := decodeBody[model.AskFollower](t, retried)
+	fresh := sessionRequest(t, handler, http.MethodGet, "/api/v1/asks/"+askID+"/followers", nil)
+	if fresh.Code != http.StatusOK {
+		t.Fatalf("read the followers: %d %s", fresh.Code, fresh.Body.String())
+	}
+	for _, follower := range decodeBody[askFollowersRead](t, fresh).Followers {
+		if follower.SessionID == "session-follower" {
+			if !follower.Since.Equal(answered.Since) {
+				t.Fatalf("the follow answered since %v, and a fresh read holds %v", answered.Since, follower.Since)
+			}
+			return
+		}
+	}
+	t.Fatalf("the follow answered %+v, and a fresh read of the followers holds no such follower", answered)
 }

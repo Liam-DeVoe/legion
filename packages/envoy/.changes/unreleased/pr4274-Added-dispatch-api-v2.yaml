@@ -3,10 +3,11 @@ custom:
   Issue: pr4274
 body: |-
   Dispatch serves `/api/v2` beside `/api/v1`, every route in one shape. Each list answers
-  `{items, total, limit, offset}` within the route's `limit` bounds, the global event log with
-  `total: null`; each refusal is `{code, error}`, its code one of one declared list; a query key the
-  route does not declare is refused `400 QUERY_KEY_UNKNOWN`, naming the key and every key the route
-  declares; every `POST`, `PATCH`, `PUT` and `DELETE` takes an `Idempotency-Key`, and a `PUT` whose
+  `{items, total, limit, offset}` within the route's `limit` bounds, the global event log and a
+  person's dismissed threads with `total: null`; each refusal is `{code, error}`, its code one of
+  one declared list; a query key the route does not declare is refused `400 QUERY_KEY_UNKNOWN`,
+  naming the key and every key the route declares; every `POST`, `PATCH`, `PUT` and `DELETE` takes
+  an `Idempotency-Key`, and a `PUT` whose
   body equals the object's present state answers `200` and writes nothing; a path that names a
   missing object answers `404` with that object's code; and an unknown path answers
   `404 NO_ROUTE`. `GET /api/v2` lists every route with what a client reads to call it, and

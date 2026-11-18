@@ -268,7 +268,7 @@ func (s *server) searchOwnIssueKeys(ctx context.Context, q, scope string) ([]str
 // searchQueryBase is the eight parameters both of search's statements open with, in the order
 // searchQuery's own comment names them: the query, the project (projectArgument), the page and
 // the two constants. The statements differ in what follows them - the meaning leg's three, then
-// the opener's seven (searchQOpenerArguments) - and each caller appends what it binds, so no
+// the opener's own (searchQOpenerArguments) - and each caller appends what it binds, so no
 // caller counts this list's length to splice around it.
 func searchQueryBase(parameters searchParameters) []any {
 	return []any{parameters.text, parameters.projectArgument(), parameters.limit,
@@ -276,9 +276,10 @@ func searchQueryBase(parameters searchParameters) []any {
 		contracts.SearchKindDepth, searchFusionK}
 }
 
-// searchQOpenerArguments is searchQOpener's own seven, which both statements end with: the
+// searchQOpenerArguments is searchQOpener's own six, which both statements end with: the
 // fallback's words and the words it excludes, the issues the query names by key, and the three
-// filters every leg is narrowed by, the date filter's window its two bounds.
+// filters every leg is narrowed by, the date filter its start; and a seventh, its end, for a
+// search that names one, which runs a statement that binds it (searchQOpenerIn, searchUntil).
 func searchQOpenerArguments(parameters searchParameters) []any {
 	keys := parameters.ownKeys
 	if keys == nil {
@@ -290,11 +291,15 @@ func searchQOpenerArguments(parameters searchParameters) []any {
 	if len(parameters.broaden) > 0 {
 		broaden = strings.Join(parameters.broaden, " or ")
 	}
-	return []any{broaden, parameters.excluded, keys, parameters.status, parameters.author, parameters.since, parameters.until}
+	arguments := []any{broaden, parameters.excluded, keys, parameters.status, parameters.author, parameters.since}
+	if parameters.until != nil {
+		arguments = append(arguments, parameters.until)
+	}
+	return arguments
 }
 
 // searchQueryArguments binds searchQuery's parameters, in the order its own comment names them:
-// the base eight, then searchQOpener's own seven from $9. searchQueryMeaning takes the same values
+// the base eight, then searchQOpener's own from $9. searchQueryMeaning takes the same values
 // with the meaning leg's three between them (searchMeaningQueryArguments), so this pair is the
 // one place that knows what a search binds.
 func searchQueryArguments(parameters searchParameters) []any {
@@ -302,9 +307,9 @@ func searchQueryArguments(parameters searchParameters) []any {
 }
 
 // searchMeaningQueryArguments binds searchQueryMeaning's: the base eight, the meaning leg's
-// three at $9-$11, then the opener's seven from $12, each appended to the one before it as
+// three at $9-$11, then the opener's own from $12, each appended to the one before it as
 // relatedSearch appends the check's own, so that a parameter added to the base moves the
-// opener's seven along with it rather than being bound in their place.
+// opener's own along with them rather than being bound in their place.
 func searchMeaningQueryArguments(parameters searchParameters, vector []float32, identity string) []any {
 	arguments := append(searchQueryBase(parameters), embed.Literal(vector), searchMeaningFloor, identity)
 	return append(arguments, searchQOpenerArguments(parameters)...)

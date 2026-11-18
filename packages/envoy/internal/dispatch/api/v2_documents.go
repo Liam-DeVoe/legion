@@ -7,10 +7,11 @@ package api
 // answers is one row, artifactV2: the artifact's own fields with its latest version number, never
 // its versions, which are a list of their own (the route map's J2). The slug routes of /api/v1
 // are filters of those lists (J7), and the edit and the named version of a slug are the writes of
-// the artifact the list answers. Every route runs the work its /api/v1 route runs, each path
-// object checked first and answered with its own 404 (decision 11): ARTIFACT_NOT_FOUND,
-// BLOCK_NOT_FOUND, VERSION_NOT_FOUND, ISSUE_NOT_FOUND and PROJECT_NOT_FOUND, and a {session_id}
-// keeps the answer it has today (ruling A).
+// the artifact the list answers. Every route with a /api/v1 route runs that route's work - the
+// list of a document's versions, which has none, reads the versions row 10 answered inside the
+// artifact - each object its path names that Dispatch stores checked first and answered with its
+// own 404 (decision 11): ARTIFACT_NOT_FOUND, BLOCK_NOT_FOUND, VERSION_NOT_FOUND, ISSUE_NOT_FOUND
+// and PROJECT_NOT_FOUND, and a {session_id} keeps the answer it has today (ruling A).
 
 import (
 	"context"
@@ -61,8 +62,8 @@ const artifactIncludeText = "include=text adds to each document its canonical ma
 // artifactSlugText is what the descriptions of an issue's and a project's artifact lists say of
 // slug=, which answers for the /api/v1 read by slug (J7).
 const artifactSlugText = "slug=<slug or file name> keeps the artifacts at that slug and the documents of that exact " +
-	"file name, as dispatch://<owner>/artifact/<slug> names one: one row, or two where one document's file name is " +
-	"another's slug or two documents share a file name."
+	"file name, as dispatch://<owner>/artifact/<slug> names one: one row, or more where one document's file name is " +
+	"another's slug or documents share a file name."
 
 // artifactUploadText is what the descriptions of the three uploads say alike.
 const artifactUploadText = "JSON {name, content?, summary?, actor?} stores a markdown document, or multipart with a file " +
@@ -76,10 +77,11 @@ const artifactUploadText = "JSON {name, content?, summary?, actor?} stores a mar
 	"are. " +
 	"Answers 201 {artifact, version}, artifact the artifact's row as it stands once the upload is stored (its own " +
 	"fields, latest_version, latest_version_at, latest_version_size, version_count and a document's approval) and " +
-	"version the version the upload wrote, for a new artifact and for a new version alike. 400 ARTIFACT_INPUT " +
-	"(primary given, content beside a file, no JSON or multipart body, blank content under an existing document's " +
-	"name), ARTIFACT_KIND_MISMATCH, ARTIFACT_ROLE_NAME, INVALID_ARTIFACT (no name, no file, a new name or key over " +
-	"2692 bytes), 413 CAP_EXCEEDED past 25 MB or a markdown document past 1 MiB."
+	"version the version the upload wrote, for a new artifact and for a new version alike. A body that is neither " +
+	"JSON nor multipart is 415 JSON_CONTENT_TYPE, and an empty JSON body 400 INVALID_JSON; 400 ARTIFACT_INPUT " +
+	"(primary given, content beside a file, blank content under an existing document's name), ARTIFACT_KIND_MISMATCH, " +
+	"ARTIFACT_ROLE_NAME, INVALID_ARTIFACT (no name, no file, a new name or key over 2692 bytes), 413 " +
+	"REQUEST_TOO_LARGE past 25 MB or a markdown document past 1 MiB."
 
 // v2DocumentRows are the document routes (plan t7): rows 5; 4; 9; 10, 15 and 29; 11; 12; 13; 14; 16;
 // 18; 19; 20, 89 and 161; 22; 23; 24; 25; 26 and 32; 27; 28; 30, 91 and 164; 6, 31, 92 and 165; 85,
@@ -337,8 +339,9 @@ func (s *server) v2DocumentRows() []routeRow {
 		{
 			Method: http.MethodGet, Pattern: "/artifacts/{id}/references", Auth: authAny, Versions: onlyV2,
 			Description: "The mentions of a document, by kind and id. direction=in (the default) lists the items that cite " +
-				"it, one row per citing item {kind, id, issue_key?, project, excerpt, ref_key?}, an ask citing it from an option " +
-				"or an answer among them; direction=out the items it cites {kind, to_id, artifact?}, artifact the cited " +
+				"it, one row per citing item {kind, id, issue_key?, project?, excerpt?, ref_key?}, each ? absent where the " +
+				"item has none (an empty excerpt among them), an ask citing it from an option or an answer among them; " +
+				"direction=out the items it cites {kind, to_id, artifact?}, artifact the cited " +
 				"document's row where the item is one. limit 1 to 200 (default 50) and offset; {items, total, limit, offset}. " +
 				"GET /api/v2/references reads every edge kind of one node, a page by position. 404 ARTIFACT_NOT_FOUND.",
 			Handler:  s.listArtifactReferencesV2,
@@ -369,7 +372,8 @@ func (s *server) v2DocumentRows() []routeRow {
 				"open, the version that ask names for it, and then answers that ask, preserving its thread, and reviews every " +
 				"document it named, each at the version it names. version is the version the caller read, a guard: a review " +
 				"that would record another is 409 REVIEW_VERSION_MOVED, naming the version it would record, with nothing " +
-				"written, and a version that is no whole number of 1 or more is 400 INVALID_REVIEW. Answers 201 the review of " +
+				"written, and a version that is an integer below 1 is 400 INVALID_REVIEW (one that is no integer 400 " +
+				"INVALID_JSON). Answers 201 the review of " +
 				"this document. 409 NO_VERSION, 409 ISSUE_CLOSED, 400 NOT_DOCUMENT, 400 CAP_EXCEEDED for a reason past the " +
 				"bound, 404 ARTIFACT_NOT_FOUND.",
 			Handler:  s.createArtifactReviewV2,
@@ -1045,12 +1049,11 @@ func (s *server) listArtifactCommentsV2(w http.ResponseWriter, r *http.Request) 
 	if s.listAnswers.answer(w, kept) {
 		return
 	}
-	comments, err := s.loadOwnerComments(r.Context(), s.deps.Store.Pool, owner, "")
+	listed, err := s.commentPageV2(r.Context(), owner, "", query)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return
 	}
-	listed := pageOf(comments, query)
 	reader := s.readDisplayTrees(r.Context(), trees)
 	reads := shapedComments(listed.Items, reader)
 	reader.resolve()

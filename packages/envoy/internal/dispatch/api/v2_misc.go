@@ -7,8 +7,10 @@ package api
 // route runs the work its /api/v1 route runs (agentRows, sessionanswers.List, blockLinkDocuments,
 // searchAnswer, goingAsker, createGoingRequestFrom, signedInUsers, liveDashboardEntries,
 // createDeliverySessionGroupFrom, updateDeliverySessionGroupFrom, deleteDeliverySessionGroupAs,
-// markdownRoundTrip, cireconcile.Passes), or is that route's handler where it reads no query and
-// answers the same. A list answers the envelope; a report, bytes, a stream and one object answer
+// markdownRoundTrip), or is that route's handler where it reads no query and answers the same,
+// but the CI reconcile passes, which /api/v1 reads as the last 24 hours whole
+// (cireconcile.RecentPasses) and /api/v2 within a window it names (cireconcile.Passes). A list
+// answers the envelope; a report, bytes, a stream and one object answer
 // none (R1.4's departure). The {id} of a session group answers SESSION_GROUP_NOT_FOUND and of a
 // going request GOING_REQUEST_NOT_FOUND (decision 11); {session_id} keeps today's answer (ruling
 // A), and a deploy run keeps its own 404s, since its id is GitHub's and its repository the
@@ -317,8 +319,9 @@ func (s *server) v2MiscRows() []routeRow {
 		{
 			Method: http.MethodGet, Pattern: "/ci-reconcile-passes", Auth: authAny, Versions: onlyV2,
 			Description: "The CI reconcile passes that started within from and to, RFC3339, from inclusive and to " +
-				"exclusive, newest first; from defaults to 24 hours before to, and to to now, so a request naming " +
-				"neither reads the last 24 hours, and a from not before to is 400 INVALID_QUERY. Rows are kept for 48 " +
+				"exclusive, newest first; from defaults to 24 hours before to, or before now where to is absent, and an " +
+				"absent to sets no end, so a request naming neither reads every pass from 24 hours ago on, and a from not " +
+				"before to is 400 INVALID_QUERY. Rows are kept for 48 " +
 				"hours and pruned by the pass that ends. Each pass is its id, the server process that ran it (instance), " +
 				"started_at and ended_at, what it did (counts: graphql_queries, graphql_points, rest_requests, " +
 				"rest_not_modified, heads_over_rest, records, heads, heads_known) and where it left the cursor, which is " +
@@ -738,8 +741,9 @@ type ciReconcilePassesV2Query struct {
 
 // listCIReconcilePassesV2 answers GET /api/v2/ci-reconcile-passes: the passes that started within
 // [from, to) (cireconcile.Passes), one page of them, where GET /api/v1/ci-reconcile/passes answers
-// the last 24 hours whole. A request naming neither bound reads the last 24 hours by the
-// database's clock, as /api/v1 does; one naming to alone reads the 24 hours before it.
+// the last 24 hours whole (cireconcile.RecentPasses). A request naming neither bound reads from 24
+// hours before the database's clock on, that instant included, which /api/v1's window leaves out;
+// one naming to alone reads the 24 hours before it.
 func (s *server) listCIReconcilePassesV2(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return

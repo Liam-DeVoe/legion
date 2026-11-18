@@ -321,14 +321,17 @@ func (s *server) openAsk(
 		return model.Ask{}, nil, nil, false
 	}
 	// The person this question reaches, read under this write's own transaction through the rule
-	// every read of that person shares, so the caller is told whose Inbox it just landed in
-	// rather than having to read the ask again. It is set after the payload above is built:
+	// every read of that person shares, so a /api/v1 caller is told whose Inbox it just landed in
+	// rather than having to read the ask again; a /api/v2 route reads its whole answer on this
+	// transaction (readBack) and needs none of it. It is set after the payload above is built:
 	// model.Ask carries the field on reads alone, and no `ask.*` event payload may hold it
 	// (model.Ask's own comment, and AskEventPayloadSchema in packages/contracts, which strips it).
-	ask.WaitingOnPerson, err = askWaitingOnPerson(r.Context(), tx, ask.ID)
-	if err != nil {
-		s.writeHandlerError(w, r, err)
-		return model.Ask{}, nil, nil, false
+	if readBack == nil {
+		ask.WaitingOnPerson, err = askWaitingOnPerson(r.Context(), tx, ask.ID)
+		if err != nil {
+			s.writeHandlerError(w, r, err)
+			return model.Ask{}, nil, nil, false
+		}
 	}
 	event, err := s.appendEvent(r.Context(), tx, owner.event("ask.opened", actor, openedPayload))
 	if err != nil {

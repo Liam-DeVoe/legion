@@ -585,10 +585,6 @@ type myRepliesRead struct {
 	after    *myRepliesCursor
 	issue    string
 	artifact *string
-	// countDismissed counts a Dismissed page's total, the rows from its position on, which
-	// /api/v2 answers as every list but the global event log does (R5 of
-	// dispatch://INFRA-4071/spec) and /api/v1 never did: its total is the page it answers.
-	countDismissed bool
 }
 
 // readMyReplies reads the caller's Inbox threads of the kinds read names, in the state it names,
@@ -649,11 +645,11 @@ func (s *server) readMyReplies(ctx context.Context, caller model.Actor, read myR
 		reach = &through
 	}
 	// Every state but the Dismissed view counts its rows when the read is paged, since the page it
-	// answers is a cut of a list the caller is told the length of. The Dismissed view is counted
-	// only where the read asks for it (countDismissed, below): it answers a page at a time from a
-	// position, and a count of it is a count of every thread the person has ever dismissed -
-	// 110,000 rows at INFRA-450's a14 seed, 8 s of the 9.4 s that read took. /api/v1's total there
-	// is the page it answers (contracts' MyRepliesResponse).
+	// answers is a cut of a list the caller is told the length of. The Dismissed view is not
+	// counted: it answers a page at a time from a position, and a count of it is a count of every
+	// thread the person has ever dismissed - 110,000 rows at INFRA-450's a14 seed, 8 s of the 9.4 s
+	// that read took. Its total is the page it answers (contracts' MyRepliesResponse), which GET
+	// /api/v2/me/threads answers as null (listMyThreadsV2).
 	counted := limit != nil && state != myRepliesStateDismissed
 	if wantReply {
 		countQuery, pageQuery := myRepliesQueries(state, from)
@@ -690,17 +686,9 @@ func (s *server) readMyReplies(ctx context.Context, caller model.Actor, read myR
 		response.Total += total
 		rows = append(rows, agentRows...)
 	}
-	dismissedCounted := read.countDismissed && state == myRepliesStateDismissed
-	if dismissedCounted {
-		total, err := countMyDismissedThreads(ctx, tx, caller, read.issue, read.artifact, wantReply, wantAgent, from, after)
-		if err != nil {
-			return model.MyRepliesResponse{}, err
-		}
-		response.Total = total
-	}
 	// An unpaged read of either kind read every matching row, so the rows in hand are the total,
 	// taken before the offset cut below throws any away. The Dismissed view's total is the page it
-	// answers where nothing counted it, so it is taken after that cut, below.
+	// answers, so it is taken after that cut, below.
 	if limit == nil {
 		response.Total = len(rows)
 	}
@@ -722,9 +710,8 @@ func (s *server) readMyReplies(ctx context.Context, caller model.Actor, read myR
 	if limit != nil && *limit < len(rows) {
 		rows = rows[:*limit]
 	}
-	// The Dismissed view's own total, where nothing counted it: the page it answers, counted once
-	// the cut has taken it.
-	if state == myRepliesStateDismissed && !dismissedCounted {
+	// The Dismissed view's own total: the page it answers, counted once the cut has taken it.
+	if state == myRepliesStateDismissed {
 		response.Total = len(rows)
 	}
 	// A Dismissed page that filled answers the cursor the next one resumes from. A page that did
@@ -741,68 +728,6 @@ func (s *server) readMyReplies(ctx context.Context, caller model.Actor, read myR
 	}
 	response.Rows = append(response.Rows, rows...)
 	return response, nil
-}
-
-// myRepliesDismissedBefore and myAgentDismissedBefore narrow a count of the Dismissed view to the
-// rows below one position ($4 the dismissal time as the caller's own text, $5 the thread id), the
-// rows a page read from that position reaches (myRepliesDismissedCursor, myAgentDismissedCursor).
-// They bind one place earlier than those do, because a count takes no number of rows to read.
-const (
-	myRepliesDismissedBefore = `
-	  and (u.dismissed_at, u.thread_id) < ($4::text::timestamptz, $5::uuid)`
-	myAgentDismissedBefore = `
-		  and (d.dismissed_at, d.message_id) < ($4::text::timestamptz, $5::uuid)`
-)
-
-// myAgentDismissedCount counts the Agent roots a Dismissed read holds: each of the person's
-// dismissal marks whose root is one of their one-off messages (myAgentDismissedRootsHead) and
-// holds a reply of the session's, which is what makes a root an Agent row at all
-// (myAgentRowFacts' inner lateral).
-var myAgentDismissedCount = `
-	select count(*) from roots r
-	where exists (` + agentThreadCTE("r.root_id") + `
-		select 1 from thread t where t.author->>'kind' = 'session'
-	)`
-
-// countMyDismissedThreads counts the rows of the caller's Dismissed view, below from and above
-// after where each is given, in the snapshot tx reads: the Reply rows and the Agent rows of the
-// kinds the read asks for, narrowed as the page read is.
-func countMyDismissedThreads(
-	ctx context.Context, tx pgx.Tx, caller model.Actor, issue string, artifact *string,
-	wantReply, wantAgent bool, from, after *myRepliesCursor,
-) (int, error) {
-	// between narrows a count statement whose own parameters are args to the rows between the two
-	// positions, each bound behind the ones before it.
-	between := func(statement, below, markColumn, idColumn string, args []any) (string, []any) {
-		if from != nil {
-			statement, args = statement+below, append(args, from.at, from.thread)
-		}
-		if after != nil {
-			statement = statement + dismissedAbove(markColumn, idColumn, len(args)+1)
-			args = append(args, after.at, after.thread)
-		}
-		return statement, args
-	}
-	total := 0
-	if wantReply {
-		statement, args := between(myRepliesCount+myRepliesDismissed, myRepliesDismissedBefore, "u.dismissed_at", "u.thread_id",
-			[]any{model.CanonicalLogin(caller.ID), issue, artifact})
-		var count int
-		if err := tx.QueryRow(ctx, statement+myRepliesCountRest, args...).Scan(&count); err != nil {
-			return 0, fmt.Errorf("count my dismissed replies: %w", err)
-		}
-		total += count
-	}
-	if wantAgent {
-		statement, args := between(myAgentDismissedRootsHead, myAgentDismissedBefore, "d.dismissed_at", "d.message_id",
-			unreadDirectRepliesArgs(caller.ID, nil))
-		var count int
-		if err := tx.QueryRow(ctx, statement+myAgentDismissedRootsEnd+myAgentDismissedCount, args...).Scan(&count); err != nil {
-			return 0, fmt.Errorf("count my dismissed agent threads: %w", err)
-		}
-		total += count
-	}
-	return total, nil
 }
 
 // withAfter is a Dismissed page read's parameters with the after its statement reads forward

@@ -132,7 +132,21 @@ func (s *server) commentListETag(owner owner, artifactFilter string, watermark, 
 	return s.listETag(hash, trees)
 }
 
+// loadOwnerComments is every comment of owner, oldest first, with what hydrateCommentSideTables
+// adds to each (mentions, delivery attempts, the block a reply answers), as /api/v1's lists answer
+// them whole.
 func (s *server) loadOwnerComments(ctx context.Context, q queryer, owner owner, artifactFilter string) ([]model.Comment, error) {
+	comments, err := readOwnerComments(ctx, q, owner, artifactFilter)
+	if err != nil {
+		return nil, err
+	}
+	return s.hydrateCommentSideTables(ctx, q, comments)
+}
+
+// readOwnerComments is every comment of owner, oldest first, its rows alone: a /api/v2 list
+// hydrates the page it answers (hydrateCommentSideTables reads each comment by itself), and none
+// of the rows before or after it.
+func readOwnerComments(ctx context.Context, q queryer, owner owner, artifactFilter string) ([]model.Comment, error) {
 	var ownerColumn, ownerValue string
 	switch {
 	case owner.IssueKey != nil:
@@ -163,7 +177,7 @@ func (s *server) loadOwnerComments(ctx context.Context, q queryer, owner owner, 
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	return s.hydrateCommentSideTables(ctx, q, comments)
+	return comments, nil
 }
 
 func commentHasOwner(comment model.Comment, owner owner) bool {

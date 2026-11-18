@@ -635,10 +635,11 @@ func (s *server) getIssueReferences(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, model.IssueReferences{Members: members, Truncated: truncated})
 }
 
-// issueReferenceMembers is the issue key and its reference closure as both versions of GET
-// references answer it: each document in the closure with its depth and the node it was reached
-// via, every version of each or with latestOnly its latest alone, and whether the closure was cut
-// at its bound. A key no issue carries answers loadIssue's refusal.
+// issueReferenceMembers is the issue key names and its reference closure as GET
+// /api/v1/issues/{key}/references answers it: each document in the closure with its depth and the
+// node it was reached via, every version of each or with latestOnly its latest alone, and whether
+// the closure was cut at its bound (/api/v2 reads its own, issueReferenceMembersV2). A key no issue
+// carries answers loadIssue's refusal.
 func (s *server) issueReferenceMembers(
 	ctx context.Context, key string, latestOnly bool,
 ) (model.Issue, []model.ReferenceMember, bool, error) {

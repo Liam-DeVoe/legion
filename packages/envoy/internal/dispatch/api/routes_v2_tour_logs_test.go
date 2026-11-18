@@ -140,8 +140,9 @@ type logAnswer struct {
 // offset case: each log names the field its after and before read in its index entry; an after
 // above the log's last written position, or one that is no position at all, is 400
 // POSITION_INVALID naming the parameter and the field; a before past the end answers the newest
-// page; the global event log answers a null total, which its index entry says, and every other log
-// an exact one; and an offset of a long log answers the page it names, which /api/v1 ignored.
+// page; the global event log and the dismissed threads answer a null total, which the global log's
+// index entry says, and every other log an exact one; and an offset of a long log answers the page
+// it names, which /api/v1 ignored.
 func TestV2LogPositions(t *testing.T) {
 	tour := newRouteTour(t)
 	alice := tourPerson("alice")
@@ -250,7 +251,7 @@ func TestV2LogPositions(t *testing.T) {
 				ThreadID    string    `json:"thread_id"`
 				DismissedAt time.Time `json:"dismissed_at"`
 			} `json:"items"`
-			Total int `json:"total"`
+			Total *int `json:"total"`
 		}
 		threads := func(t *testing.T, query url.Values) dismissedThreads {
 			t.Helper()
@@ -262,28 +263,35 @@ func TestV2LogPositions(t *testing.T) {
 			return decodeBody[dismissedThreads](t, response)
 		}
 		newestFirst := threads(t, url.Values{})
-		if len(newestFirst.Items) < 2 {
-			t.Fatalf("the dismissed threads answered %d rows, want the two dismissed", len(newestFirst.Items))
+		if len(newestFirst.Items) < 2 || newestFirst.Total != nil {
+			t.Fatalf("the dismissed threads answered %d rows, total %v, want the two dismissed and total null", len(newestFirst.Items), newestFirst.Total)
 		}
 		position := func(index int) string {
 			row := newestFirst.Items[index]
 			return row.DismissedAt.UTC().Format(time.RFC3339Nano) + "," + row.ThreadID
 		}
 		newest, older := newestFirst.Items[0].ThreadID, newestFirst.Items[1].ThreadID
-		if above := threads(t, url.Values{"after": {position(1)}}); len(above.Items) != 1 || above.Items[0].ThreadID != newest || above.Total != 1 {
-			t.Fatalf("after the older dismissal: %+v, want the newest alone, total 1", above)
+		if above := threads(t, url.Values{"after": {position(1)}}); len(above.Items) != 1 || above.Items[0].ThreadID != newest || above.Total != nil {
+			t.Fatalf("after the older dismissal: %+v, want the newest alone, total null", above)
 		}
-		if between := threads(t, url.Values{"after": {position(1)}, "before": {position(0)}}); len(between.Items) != 0 || between.Total != 0 {
-			t.Fatalf("between the two dismissals: %+v, want none, total 0", between)
+		if between := threads(t, url.Values{"after": {position(1)}, "before": {position(0)}}); len(between.Items) != 0 || between.Total != nil {
+			t.Fatalf("between the two dismissals: %+v, want none, total null", between)
 		}
 		if below := threads(t, url.Values{"before": {position(0)}, "limit": {"1"}}); len(below.Items) != 1 || below.Items[0].ThreadID != older {
 			t.Fatalf("before the newest dismissal: %+v, want the older first", below)
 		}
-		if atTheNewest := threads(t, url.Values{"after": {position(0)}}); len(atTheNewest.Items) != 0 || atTheNewest.Total != 0 {
-			t.Fatalf("after the newest dismissal itself: %+v, want none, total 0", atTheNewest)
+		// A position's thread id read as uuid.Parse reads it, in any of its spellings: a urn is the
+		// thread its canonical form names.
+		urn := newestFirst.Items[0].DismissedAt.UTC().Format(time.RFC3339Nano) + ",urn:uuid:" + newest
+		if below := threads(t, url.Values{"before": {urn}, "limit": {"1"}}); len(below.Items) != 1 || below.Items[0].ThreadID != older {
+			t.Fatalf("before the newest dismissal, its thread id a urn: %+v, want the older first", below)
 		}
-		later := newestFirst.Items[0].DismissedAt.Add(time.Hour).UTC().Format(time.RFC3339Nano) + "," + uuid.NewString()
-		refused(t, "/me/threads", nil, url.Values{"state": {"dismissed"}, "after": {later}}, "after", "dismissed_at,thread_id")
+		if atTheNewest := threads(t, url.Values{"after": {position(0)}}); len(atTheNewest.Items) != 0 || atTheNewest.Total != nil {
+			t.Fatalf("after the newest dismissal itself: %+v, want none, total null", atTheNewest)
+		}
+		later := newestFirst.Items[0].DismissedAt.Add(time.Hour).UTC().Format(time.RFC3339Nano)
+		refused(t, "/me/threads", nil, url.Values{"state": {"dismissed"}, "after": {later + "," + uuid.NewString()}}, "after", "dismissed_at,thread_id")
+		refused(t, "/me/threads", nil, url.Values{"state": {"dismissed"}, "after": {later + ",urn:uuid:" + uuid.NewString()}}, "after", "dismissed_at,thread_id")
 		refused(t, "/me/threads", nil, url.Values{"state": {"dismissed"}, "after": {"abc"}}, "after", "dismissed_at,thread_id")
 	})
 
@@ -296,19 +304,23 @@ func TestV2LogPositions(t *testing.T) {
 		}
 	})
 
-	t.Run("the global log's total is null and every other log's a number", func(t *testing.T) {
+	t.Run("the global log's total and the dismissed threads' are null and every other log's a number", func(t *testing.T) {
 		if global := read(t, "/events", nil, url.Values{"limit": {"3"}}); string(global.Total) != "null" || len(global.Items) != 3 {
 			t.Fatalf("GET /api/v2/events: %d items, total %s, want 3 and null", len(global.Items), global.Total)
+		}
+		if dismissed := read(t, "/me/threads", nil, url.Values{"state": {"dismissed"}}); string(dismissed.Total) != "null" {
+			t.Fatalf("GET /api/v2/me/threads?state=dismissed: total %s, want null", dismissed.Total)
 		}
 		for name, log := range map[string]struct {
 			pattern string
 			path    map[string]string
 			query   url.Values
 		}{
-			"an issue's":     {"/issues/{key}/events", forty, nil},
-			"a document's":   {"/artifacts/{id}/events", map[string]string{"id": tour.document(t)}, nil},
-			"the references": {"/references", nil, url.Values{"to": {"dispatch://" + forty["key"]}}},
-			"the threads":    {"/me/threads", nil, url.Values{"state": {"dismissed"}}},
+			"an issue's":               {"/issues/{key}/events", forty, nil},
+			"a document's":             {"/artifacts/{id}/events", map[string]string{"id": tour.document(t)}, nil},
+			"the references":           {"/references", nil, url.Values{"to": {"dispatch://" + forty["key"]}}},
+			"the threads' unread":      {"/me/threads", nil, nil},
+			"the threads' whole inbox": {"/me/threads", nil, url.Values{"state": {"inbox"}}},
 		} {
 			answer := read(t, log.pattern, log.path, log.query)
 			if _, err := strconv.Atoi(string(answer.Total)); err != nil {

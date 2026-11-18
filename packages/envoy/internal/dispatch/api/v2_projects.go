@@ -50,7 +50,7 @@ const projectDefaultAssigneeText = "the person a project's unowned work lands on
 
 // architectureSourceText is what every route answering architecture sources says of the row.
 const architectureSourceText = "each source {project, repo, branch, enabled, created_by, created_at, last_sync_at, " +
-	"last_commit, last_error}"
+	"last_commit, last_error, components}, components how many components the project holds from it"
 
 // v2ProjectRows are the project, architecture, repository, priority and settings routes (plan
 // t10's project half): rows 147 and 182; 148; 166 and 167; 149; 150, 152 and 178; 154; 155; 151,
@@ -100,9 +100,10 @@ func (s *server) v2ProjectRows() []routeRow {
 			Description: "Change a project {default_assignee?, gated_steps?}, a bearer naming its session in actor; a body " +
 				"that names neither is 400 INVALID_PROJECT. default_assignee moves " + projectDefaultAssigneeText + " to " +
 				"another person, the email of a person who has signed in (400 ASSIGNEE_NOT_ALLOWED otherwise), and appends " +
-				"settings.project_default_assignee.updated naming both people; it needs the person scope (403 " +
-				"OAUTH_SCOPE_REQUIRED otherwise), and a blank one is 400 INVALID_PROJECT, since a project always names a " +
-				"person and the default cannot be cleared (null leaves it as it stands). gated_steps publishes the " +
+				"settings.project_default_assignee.updated naming both people; a body naming default_assignee at all, null " +
+				"included, needs the person scope (403 OAUTH_SCOPE_REQUIRED otherwise), and a blank one is 400 " +
+				"INVALID_PROJECT, since a project always names a person and the default cannot be cleared (null leaves it " +
+				"as it stands). gated_steps publishes the " +
 				"design-gate steps the Legion deployment that serves the project gates, a list of decisions, criteria and " +
 				"spec in the order it gates them or [] for none, which needs no scope: the deployment's daemon writes it at " +
 				"every boot. A step that is none of the three or is named twice is 400 INVALID_PROJECT, and the list the " +
@@ -182,7 +183,8 @@ func (s *server) v2ProjectRows() []routeRow {
 				"no source from, before any is imported), and absent or [] imports every source of the project (404 " +
 				"SOURCE_NOT_FOUND for a project with none). Each source is imported whatever another's import did, and each " +
 				"failure - an access failure, a credential or branch problem, included - is on its own row's last_error, " +
-				"the previous projection kept up. An import stores the source's sync bookkeeping and, on a change, its " +
+				"the previous projection kept up; a named source removed while the sync runs is 404 SOURCE_NOT_FOUND, naming " +
+				"it, once the sources before it are imported. An import stores the source's sync bookkeeping and, on a change, its " +
 				"components, and appends architecture.synced or architecture.sync_failed only when the source's state " +
 				"changes. Answers 200 {items, total, limit, offset}, every source imported in the order they were added: " +
 				architectureSourceText + ". 404 PROJECT_NOT_FOUND for a project that does not exist.",
@@ -715,7 +717,9 @@ type architectureSyncV2Input struct {
 // it (Importer.Sync). Every named source is held to exist before any is imported, and each is
 // imported whatever another's import did. A failure recorded on its row - an access failure
 // among them, which the one-source route of /api/v1 answers 409 SOURCE_ACCESS - is that row's
-// last_error at 200; only one that could not be recorded is a 500.
+// last_error at 200; only one that could not be recorded is a 500, and a named source removed
+// while the sync runs is the 404 of a source the project does not hold, once those before it are
+// imported.
 func (s *server) syncArchitectureV2(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -831,6 +835,13 @@ func (s *server) listNearCopyChecksV2(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
+	// Ahead of the project check, which reads the pool too: a server with no store is answered
+	// DATABASE_UNAVAILABLE rather than a read of a pool it does not have.
+	pool, err := s.readyPool()
+	if err != nil {
+		s.writeHandlerError(w, r, err)
+		return
+	}
 	key := r.PathValue("key")
 	if !s.requireProjectV2(w, r, key) {
 		return
@@ -838,11 +849,6 @@ func (s *server) listNearCopyChecksV2(w http.ResponseWriter, r *http.Request) {
 	query := v2Query[nearCopyChecksV2Query](r)
 	if query.From != nil && query.To != nil && !query.From.Before(*query.To) {
 		writeError(w, r, apicode.InvalidQuery, "from must be before to")
-		return
-	}
-	pool, err := s.readyPool()
-	if err != nil {
-		s.writeHandlerError(w, r, err)
 		return
 	}
 	var total int

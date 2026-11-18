@@ -1,9 +1,11 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/url"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -60,5 +62,56 @@ func TestTheV2RouteIndexReadsItsPageThroughTheDecoder(t *testing.T) {
 		if refused, _ := refusalOf(t, response); response.Code != http.StatusBadRequest || refused != code {
 			t.Errorf("GET %s: %d %s, want 400 %s", target, response.Code, response.Body.String(), code)
 		}
+	}
+}
+
+// A list whose row names no bounds is read at limit 1 to 200, default 50 (decodeLimit), so the
+// route index and the document state those bounds for it as for a list that names its own: every
+// route whose query takes a limit carries its bounds in its index entry and in its operation's
+// x-list, the two alike, and GET /api/v2/asks, which names none, carries 50 and 200.
+func TestTheV2IndexAndDocumentStateTheBoundsOfEveryList(t *testing.T) {
+	tree, _ := readOpenAPITreeOf(t, apiV2)
+	document, _ := tree.(map[string]any)
+	entries := map[string]routeIndexV2Entry{}
+	for _, entry := range routeIndexV2Entries(servedAt(apiV2, (&server{deps: Deps{TestHooksEnabled: true}}).routes())) {
+		entries[entry.Method+" "+entry.Path] = entry
+	}
+	lists := 0
+	for _, route := range servedAt(apiV2, (&server{deps: Deps{TestHooksEnabled: true}}).routes()) {
+		if !route.v2Bound() {
+			continue
+		}
+		name := route.Method + " " + route.Pattern
+		query, err := compileV2Query(route.Query)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if _, pages := query.field("limit"); !pages {
+			continue
+		}
+		lists++
+		entry := entries[name]
+		if entry.List == nil {
+			t.Errorf("%s takes a limit, and its index entry names no bounds", name)
+			continue
+		}
+		stated, err := json.Marshal(openAPIAt(document, "paths", route.Pattern, strings.ToLower(route.Method))["x-list"])
+		if err != nil {
+			t.Fatal(err)
+		}
+		indexed, err := json.Marshal(entry.List)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(stated) != string(indexed) {
+			t.Errorf("%s: the document's x-list is %s, the index entry's list %s", name, stated, indexed)
+		}
+	}
+	if lists == 0 {
+		t.Fatal("no /api/v2 route takes a limit")
+	}
+	asks := entries["GET /api/v2/asks"].List
+	if asks == nil || asks.DefaultLimit == nil || *asks.DefaultLimit != 50 || asks.MaxLimit == nil || *asks.MaxLimit != 200 || asks.MinLimit != 1 {
+		t.Fatalf("GET /api/v2/asks's index entry states the bounds %+v, want default 50, max 200, min 1", asks)
 	}
 }

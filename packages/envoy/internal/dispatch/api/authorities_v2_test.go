@@ -201,6 +201,38 @@ func TestTheV2AuthorityGateHoldsEachDeclaredValue(t *testing.T) {
 	}
 }
 
+// The gate resolves the caller once a request, at the first of the route's rules that holds, and
+// carries it on the request (resolvedCallerKey) as the route's scope gate does: a second rule that
+// holds, every layer behind the gate and the handler read that caller rather than look a personal
+// token up again.
+func TestTheV2AuthorityGateCarriesTheCallerItResolved(t *testing.T) {
+	_, database, _, served := newRegisteredTestServer(t, testServerOptions{})
+	person := routeScopeSet{model.ScopePerson}
+	inbox := madeUpRow()
+	inbox.Versions, inbox.Query, inbox.List = onlyV2, widgetInboxQuery{}, listBounds{}
+	inbox.Authorities = []authorityRule{
+		{Where: authorityWhere{In: partQuery, Name: "waiting_on"}, Value: "me", Scopes: person},
+		{Where: authorityWhere{In: partQuery, Name: "include"}, Value: "mark", Scopes: person},
+	}
+	var carried atomic.Bool
+	inbox.Handler = func(w http.ResponseWriter, r *http.Request) {
+		caller, resolved := r.Context().Value(resolvedCallerKey{}).(resolvedCaller)
+		carried.Store(resolved && caller.err == nil && caller.actor.Owner != nil && *caller.actor.Owner == "alice")
+		WriteJSON(w, http.StatusOK, map[string]bool{"ran": true})
+	}
+	mux := http.NewServeMux()
+	for _, route := range mountRow(inbox) {
+		mux.HandleFunc(route.Method+" "+route.Pattern, served.routeHandler(route))
+	}
+	token := personalTokenOwnedBy(t, database, "alice", model.ScopePerson)
+	if response := tokenRequest(t, mux, http.MethodGet, "/api/v2/widgets?waiting_on=me&include=mark", nil, token, ""); response.Code != http.StatusOK {
+		t.Fatalf("a read both rules hold for, by a token holding their scope: answered %d %s, want 200", response.Code, response.Body.String())
+	}
+	if !carried.Load() {
+		t.Fatal("the handler behind the gate found no caller on the request: the gate resolved one and kept it to itself")
+	}
+}
+
 // A body that names the sessions its write goes into (sessionAddressing) is held to the rule
 // withinSessionScope holds a path's session to: a credential that proved one session writes into
 // no other session's rows, and an arm whose id is no session is not held to it (plan t4 step 4,
