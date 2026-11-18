@@ -137,10 +137,11 @@ func (tick BlockIndexTick) OldestOwedDocumentAge(now time.Time) time.Duration {
 // RunBlockIndexReconciliation indexes what no block-aware version write indexed: every document
 // owed a block index (document_block_versions.version null) - each one at migration 0121, each
 // version any build writes (migration 0122's trigger) that its own writer did not index, and each
-// rebuild-refs marks - every document the backfill marked (store_owed_at, migration
-// 20261116221539), whose blocks' nodes, part_of tuples and parent_block_id are this release's to
-// state and which the release before this one never clears - every comment, ask and issue
-// message whose text holds `#b-`, owed an
+// rebuild-refs marks - every document holding this build's own mark (store_owed_at, migration
+// 20261116221539), which the backfill and every debt this build owes beside the null version set,
+// whose blocks' nodes, part_of tuples and parent_block_id are this release's to state and which
+// the release before this one never clears - every comment, ask and issue message whose text
+// holds `#b-`, owed an
 // index with the block grammar (block_grammar_owed, migrations 0123-0126), which a build older
 // than the block grammar indexes without, every source owed an index with this build's whole
 // grammar (refs_grammar_owed, migrations 20261103205037-20261103205042), which a build older than
@@ -800,11 +801,13 @@ func (liveAhead liveAheadDocuments) forgetUnlisted(after string, owed []owedDocu
 //
 // A document is owed in either of two ways, and each is read through its own partial index in key
 // order before the two are merged: its version is null (document_block_versions_owed), which every
-// release reads and sets; or it holds the backfill's mark, store_owed_at
-// (document_block_versions_store_owed, migration 20261116221539). The second is the one the
-// release before this one cannot clear: it neither reads nor writes that column, so a document it
-// indexes after the backfill stays listed here until a pass of this release states its blocks and
-// clears the mark (refs.IndexBlocks). A document holding both is listed by the first alone.
+// release reads and sets; or it holds this build's own mark, store_owed_at
+// (document_block_versions_store_owed, migration 20261116221539), which the backfill sets and every
+// debt this build owes beside the null version (oweDocumentIndex, refs.RebuildAll). The second is
+// the one the release before this one cannot clear: it neither reads nor writes that column, so a
+// document it indexes after either was set stays listed here until a pass of this release states
+// its blocks and clears the mark (refs.IndexBlocks). A document holding both is listed by the
+// first alone.
 func (s *Service) owedDocuments(ctx context.Context, after string) ([]owedDocument, error) {
 	var cursor any
 	if after != "" {
@@ -874,24 +877,35 @@ func (s *Service) reindexOwedText(ctx context.Context, source refs.Owed) (bool, 
 	return false, fmt.Errorf("re-index %s %s: not a kind the queue holds", source.Kind, source.ID)
 }
 
-// oweDocumentIndex owes a document a block index (document_block_versions.version null), which is
-// what a document's re-index with the whole grammar is: the batch of owed documents indexes its
-// latest version whole (indexOwedDocument, indexRenderedVersion), so its own mentions, the
-// mentions its blocks hold and the excerpt each shows are all read with this build's grammar. The
-// drain owes the work there rather than indexing the document itself because that batch is the one
-// writer of a document's index and holds the rules a document needs - its keyset cursor, the owner
-// row it indexes under, and the live text it must not date to the version that text is ahead of -
-// and because a document an older build's version write left owed is indexed by that batch in this
-// same tick.
+// oweDocumentIndex owes a document a block index, which is what a document's re-index with the
+// whole grammar is: the batch of owed documents indexes its latest version whole
+// (indexOwedDocument, indexRenderedVersion), so its own mentions, the mentions its blocks hold and
+// the excerpt each shows are all read with this build's grammar. The drain owes the work there
+// rather than indexing the document itself because that batch is the one writer of a document's
+// index and holds the rules a document needs - its keyset cursor, the owner row it indexes under,
+// and the live text it must not date to the version that text is ahead of - and because a
+// document an older build's version write left owed is indexed by that batch in this same tick.
+// A version write that leaves its blocks to that batch owes it the same way (indexDocument).
+//
+// It sets both marks a debt of this build carries: document_block_versions.version null, which
+// every release reads and drains, and store_owed_at, this build's own (migration 20261116221539),
+// which the release before this one neither reads nor clears. That release may take the
+// block-index lease first and index the document, writing every row it adds with no node and
+// stating nothing in the store, and only the second mark brings this build's pass to the document
+// after it, to name those rows' nodes and state what they project (refs.IndexBlocks). A mark the
+// document already holds keeps its time, so the debt stays dated from the write that first owed
+// it.
 //
 // A document that is gone owes no index: the row is written from the artifacts table, so nothing
 // is inserted for one. exec is the pool for a caller that owes the index on its own
 // (reindexScope), and the transaction that settles a queue row for the drain
-// (drainOwedDocument), which must owe the index and settle the row together or do neither.
+// (drainOwedDocument) or writes the version (indexDocument), which must owe the index with that
+// write or do neither.
 func oweDocumentIndex(ctx context.Context, exec refs.Execer, artifactID string) error {
 	if _, err := exec.Exec(ctx, `
-		insert into document_block_versions (artifact_id) select id from artifacts where id = $1::uuid
-		on conflict (artifact_id) do update set version = null
+		insert into document_block_versions (artifact_id, store_owed_at) select id, now() from artifacts where id = $1::uuid
+		on conflict (artifact_id) do update set version = null,
+			store_owed_at = coalesce(document_block_versions.store_owed_at, excluded.store_owed_at)
 	`, artifactID); err != nil {
 		return fmt.Errorf("owe document %s a block index: %w", artifactID, err)
 	}

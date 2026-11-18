@@ -370,11 +370,17 @@ type heldLink struct{ kind, toKind, toID string }
 
 // heldDocumentBlocks is what the store states now of the blocks of the document refKey names, by
 // block id: each block node that states itself a member of the document (an in_document tuple
-// into the document's artifact address) and that the store holds live, with every link it states
-// now beside that membership and its placement, read the way the store reads a current relation
-// (graphstore.CurrentTupleRead), in kind and far-end order. A member that states no link is in the
-// map with none, and one whose address does not start with the document's ref_key is no block the
-// pass addresses and is left out.
+// into the document's artifact address) and that the store holds in any state but gone, with
+// every link it states now beside that membership and its placement, read the way the store reads
+// a current relation (graphstore.CurrentTupleRead), in kind and far-end order. A member that
+// states no link is in the map with none, and one whose address does not start with the
+// document's ref_key is no block the pass addresses and is left out.
+//
+// The state read is every state but gone, not live alone: a later release marks a block
+// proposed, settled or overtaken, and the index pass keeps such a state unless the pass itself
+// makes the block gone (blockNode). A block in one of those states that another release's
+// version dropped is as gone as a live one, and a read of the live blocks alone would leave it
+// standing in that state for ever, with nothing projecting it.
 //
 // It is the store's own side of the document, and IndexBlocks reads it only where that side is
 // stale (standsAtVersion): another release indexed the document after the store last stated its
@@ -394,7 +400,7 @@ func heldDocumentBlocks(ctx context.Context, tx pgx.Tx, refKey string) (map[stri
 			  and t.kind = '`+TupleInDocument+`' and t.from_kind = '`+BlockNodeKind+`'
 		) member
 		join graph_nodes n on n.kind = '`+BlockNodeKind+`' and n.id = member.id
-			and n.state = '`+graphstore.StateLive+`'
+			and n.state <> '`+graphstore.StateGone+`'
 		left join lateral (
 			select current.kind, current.to_kind, current.to_id
 			from (
@@ -432,12 +438,12 @@ func heldDocumentBlocks(ctx context.Context, tx pgx.Tx, refKey string) (map[stri
 	return held, rows.Err()
 }
 
-// goneSinceStated is, in id order, each block the store holds live in the document (held) that
-// the version holds no node of (nodes, its unique blocks) and that the rows did not hold either
-// (deleted, the blocks of the rows the version dropped, which IndexBlocks states gone itself): a
-// block another release's version dropped after the store last stated the document. That release
-// deleted the block's row and stated nothing, so its node stands, and it is gone exactly as a
-// block the rows dropped is, by the version that does not hold it.
+// goneSinceStated is, in id order, each block the store holds in the document in any state but
+// gone (held) that the version holds no node of (nodes, its unique blocks) and that the rows did
+// not hold either (deleted, the blocks of the rows the version dropped, which IndexBlocks states
+// gone itself): a block another release's version dropped after the store last stated the
+// document. That release deleted the block's row and stated nothing, so its node stands, and it is
+// gone exactly as a block the rows dropped is, by the version that does not hold it.
 func goneSinceStated(held map[string][]heldLink, nodes []model.ArtifactBlock, deleted []string) []string {
 	if len(held) == 0 {
 		return nil

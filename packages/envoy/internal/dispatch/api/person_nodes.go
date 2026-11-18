@@ -134,11 +134,11 @@ var personNodesQuery = personNodesTied + `, items as (
 		         else '/projects/' || a.project_key || '/documents/' || a.slug || '?comment=' || c.id::text
 		       end as href
 		from related r
-		join comments c on r.from_kind = 'comment' and r.from_id = c.id::text
+		join comments c on r.from_kind = '` + graphstore.KindComment + `' and r.from_id = c.id::text
 		left join issues i on i.key = c.issue_key
 		left join artifacts a on a.id = c.artifact_id
 		where (i.key is not null or a.id is not null)
-		  and ` + refs.VisibleKind("comment", "c.id::text", "$2") + `
+		  and ` + refs.VisibleKind(graphstore.KindComment, "c.id::text", "$2") + `
 	)
 	select count(*) over () as total, kind, id, relations, text, created_at, href
 	from items
