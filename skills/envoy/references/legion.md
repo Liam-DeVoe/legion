@@ -45,6 +45,6 @@ Read this in a Legion pane before you touch a role claim, or when a Legion role 
 - Never forward these failure payloads to an architect, because the daemon already acts on them.
 
 - A role send the listener refuses `404` also raises one exception on `notifications.envoy.exceptions.notifications.role.<role>`, with the reason it refused: `unclaimed` or `holder_lapsed`.
-  The listener refuses only a publish it keeps nothing for: one sent with `keep: false`, as the daemon's own notices are, or one whose keep failed.
+  The listener refuses only a publish it keeps nothing for under a rule: one sent with `keep: false`, as the daemon's own notices are, one whose role token no claim can name, or one whose keep the bus refuses however often it is sent; a keep that failed on NATS is a `503` with `Retry-After: 1` and no exception, and the sender sends it again.
   It is a bus signal and nothing more: no consumer acts on a peer's refusal, and the daemon's own refused outbox row retries by itself until the role is held or its architect cannot hold it again.
   Never re-send a refused message by hand on the strength of one.

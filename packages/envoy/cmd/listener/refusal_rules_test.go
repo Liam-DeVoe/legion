@@ -15,11 +15,13 @@ import (
 // Every path that decides whether NATS refused a publish for good reads one list
 // (busRefusesForGood), so the paths agree on every refusal class: the role lane ends a forward on
 // it (roleForwardEnded), ends a keep on it rather than holding the message (keepFailureHolds), and
-// the publish route answers it with a 4xx, which no sender of ours retries, rather than the 5xx it
-// gives a failure that another attempt can get past (writeBusUnavailable). Each class is wrapped as
-// the bus returns it. A role token no claim can name is the keep's own rule: it ends a keep and is
-// no refusal of NATS's. The rows that need a read of the deployed stream (no responders, no
-// acknowledgement) are the forward's alone and are in its own table
+// the publish route answers it with a 4xx rather than the 5xx it gives a failure that another
+// attempt can get past (writeBusUnavailable). Each sender of ours ends on that 4xx, except two that
+// meet it again at their own cadence: the phase reminder at its next delivered reminder, and a
+// session's registration, which its own route refuses the same way, at its next heartbeat. Each
+// class is wrapped as the bus returns it. A role token no claim can name is the keep's own rule: it
+// ends a keep and is no refusal of NATS's. The rows that need a read of the deployed stream (no
+// responders, no acknowledgement) are the forward's alone and are in its own table
 // (TestListenerDeliveryHandler_RoleForwardFailureEndsOnlyUnderARule).
 func TestTheRoleLanesRefusalRulesAgree(t *testing.T) {
 	answered := func(status, code int, description string, names ...error) error {
