@@ -735,13 +735,20 @@ test("a failed action carries the API's reason, and a refusal of what it writes 
   }
 });
 
-function decisionLink(fromBlock: string, to: string, document = "CORE-1/spec"): DecisionLink {
+/** A `shaped` link to block `to` of the document at `document`, as the server answers a block of
+ *  an issue room: its node the room's (`CORE-1/tree#<id>`), and the document holding it named on
+ *  the link (`to.document`). */
+function decisionLink(
+  fromBlock: string,
+  to: string,
+  document = "dispatch://CORE-1/spec"
+): DecisionLink {
   return {
     created_at: "2026-10-01T00:00:00Z",
     created_version: 1,
     from_block: fromBlock,
     stale: false,
-    to: graphNode({ block_id: to, id: `${document}#${to}`, kind: "block" }),
+    to: graphNode({ block_id: to, document, id: `CORE-1/tree#${to}`, kind: "block" }),
   };
 }
 
@@ -802,7 +809,7 @@ const issueDecisions: IssueDecisions = {
     decisionOf("d-1", [
       decisionLink("d-1", "p-a"),
       decisionLink("d-1", "p-b"),
-      decisionLink("d-1", "n-1", "CORE-1/notes-md"),
+      decisionLink("d-1", "n-1", "dispatch://CORE-1/artifact/notes-md"),
     ]),
     decisionOf("d-2", [decisionLink("d-2", "p-b")], { unsure: true }),
     // A decision of another document under the same block id: an item of its own.
@@ -850,7 +857,7 @@ test("an open and a declined ask are no decision beside the spec, and an answere
     await waitFor(() =>
       expect(JSON.parse(screen.getByLabelText("Margin decisions").textContent ?? "")).toEqual({
         decisions: [["p-a", "answered-ask", false]],
-        items: ["decision:answered-ask:CORE-1/spec#p-a"],
+        items: ["decision:answered-ask:CORE-1/tree#p-a"],
       })
     );
   } finally {
@@ -921,11 +928,11 @@ test("each decision is a margin item beside every spec block it links, in the sp
           ["p-c", "CORE-1/choices-md#d-4", false],
         ],
         items: [
-          "decision:CORE-1/choices-md#d-1:CORE-1/spec#p-b",
-          "decision:CORE-1/choices-md#d-2:CORE-1/spec#p-b",
-          "decision:CORE-1/notes-md#d-2:CORE-1/spec#p-b",
-          "decision:CORE-1/choices-md#d-1:CORE-1/spec#p-a",
-          "decision:CORE-1/choices-md#d-4:CORE-1/spec#p-c",
+          "decision:CORE-1/choices-md#d-1:CORE-1/tree#p-b",
+          "decision:CORE-1/choices-md#d-2:CORE-1/tree#p-b",
+          "decision:CORE-1/notes-md#d-2:CORE-1/tree#p-b",
+          "decision:CORE-1/choices-md#d-1:CORE-1/tree#p-a",
+          "decision:CORE-1/choices-md#d-4:CORE-1/tree#p-c",
         ],
       })
     );

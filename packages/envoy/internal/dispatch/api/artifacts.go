@@ -593,7 +593,9 @@ func (s *server) storeArtifact(
 		// A document of a converted issue joins the issue's room (joinIssueRoom below) and writes
 		// no role: the part it plays is the query value of its node, a query node of that name
 		// (decision 2 of dispatch://INFRA-1253's plan), which the read projects as its role.
-		joining := kind == "doc" && issueRoom != ""
+		// A document whose address the store cannot hold stays its own room (documentJoinsIssueRoom).
+		refKey := graphstore.ArtifactRefKey(deref(target.IssueKey), deref(project), deref(session), slug)
+		joining := kind == "doc" && issueRoom != "" && documentJoinsIssueRoom(refKey)
 		query := ""
 		if joining && role != nil {
 			query, role = *role, nil
@@ -604,7 +606,7 @@ func (s *server) storeArtifact(
 			return
 		}
 		var nodeKind, nodeAddress *string
-		if refKey := graphstore.ArtifactRefKey(deref(target.IssueKey), deref(project), deref(session), slug); graphstore.AddressFits(refKey) {
+		if graphstore.AddressFits(refKey) {
 			at := time.Now().UTC()
 			var facts []graphstore.Tuple
 			if target.IssueKey != nil {
@@ -2098,12 +2100,23 @@ func scanArtifact(row pgx.Row) (model.Artifact, error) {
 		return model.Artifact{}, err
 	}
 	artifact.Project = deref(project)
+	if err := json.Unmarshal(createdBy, &artifact.CreatedBy); err != nil {
+		return model.Artifact{}, fmt.Errorf("decode artifact author: %w", err)
+	}
+	placeArtifact(&artifact, role, queryRole)
+	return artifact, nil
+}
+
+// placeArtifact sets what an artifact row's role columns and its room (artifactColumns) say past
+// the columns themselves: the role it plays, its row's own, else the query its node is of
+// (graphstore.ArtifactQueryRoleSQL); whether it is its issue's decisions query; and the fragment of
+// its room that holds it - its own id's in an issue room, the room's own fragment where the
+// document is its own room, none for the decisions query. Every reader of an artifact row sets
+// these here (scanArtifact, loadArtifactsByRefKey).
+func placeArtifact(artifact *model.Artifact, role, queryRole *string) {
 	artifact.Role = deref(queryRole)
 	if role != nil {
 		artifact.Role = *role
-	}
-	if err := json.Unmarshal(createdBy, &artifact.CreatedBy); err != nil {
-		return model.Artifact{}, fmt.Errorf("decode artifact author: %w", err)
 	}
 	artifact.DecisionsQuery = artifact.Kind == "doc" && deref(queryRole) == graphstore.QueryDecisions && artifact.Room == artifact.ID
 	switch {
@@ -2113,7 +2126,6 @@ func scanArtifact(row pgx.Row) (model.Artifact, error) {
 	default:
 		artifact.Fragment = model.ArtifactFragmentOwn
 	}
-	return artifact, nil
 }
 
 // artifactOwnerKey is the owner part of ref_key (artifactTarget.refPrefix), which the 0071

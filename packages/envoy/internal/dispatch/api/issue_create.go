@@ -902,6 +902,21 @@ func joinIssueRoom(ctx context.Context, tx pgx.Tx, room, document string) error 
 	return docs.AnnounceDocumentRooms(ctx, tx, room, document)
 }
 
+// documentJoinsIssueRoom is whether a new document of a converted issue, whose ref_key is refKey,
+// is made a fragment of the issue's room: only while the store can hold its address
+// (graphstore.AddressFits). A block of the room is a node keyed by the room's tree, and its
+// in_document and a top-level block's part_of name the node of the document whose fragment holds
+// it, so a document whose own address is past the bound would leave those tuples naming an
+// address no writer of the store may write, and one near the artifacts key's own bound
+// (maxNewArtifactKeyBytes) gives a tuple the repeat key cannot hold at all (graph_tuples_once),
+// which failed its upload. The room's three role documents have short fixed names; only another
+// document of the issue can be that long, and it stays its own room, as every document of an
+// unconverted issue is and as main keeps it: its blocks' addresses hold its ref_key, so they are
+// no nodes of the store either, and every reader serves it as such a room.
+func documentJoinsIssueRoom(refKey string) bool {
+	return graphstore.AddressFits(refKey)
+}
+
 // createDecisionsQuery creates, in tx, the decisions query node of the issue key in project: a
 // doc row with no fragment and no document_rooms row (D6 of this branch's plan), whose node is a
 // query node of query `decisions` (graphstore.QueryNode) with its part_of the issue, written

@@ -157,7 +157,12 @@ func TestIssueAskEventsKeepDeletedAnchorDocumentReadable(t *testing.T) {
 	ask := decodeBody[struct {
 		ID string `json:"id"`
 	}](t, created)
-	for _, table := range []string{"doc_snapshots", "doc_updates", "doc_checkpoints", "artifact_versions", "events"} {
+	// The document is a fragment of the issue room its issue was born with, so its document_rooms
+	// row and the issue_room_blocks rows of its blocks name it too, and neither key to artifacts
+	// carries a cascade: this hand-written delete takes them with the document. The removal route
+	// takes only a document holding no block, and clears its document_rooms row itself
+	// (artifactRemovalClears).
+	for _, table := range []string{"doc_snapshots", "doc_updates", "doc_checkpoints", "artifact_versions", "events", "document_rooms"} {
 		if _, err := database.Pool.Exec(
 			context.Background(),
 			"delete from "+table+" where artifact_id = $1",
@@ -165,6 +170,11 @@ func TestIssueAskEventsKeepDeletedAnchorDocumentReadable(t *testing.T) {
 		); err != nil {
 			t.Fatalf("delete %s for anchor document: %v", table, err)
 		}
+	}
+	if _, err := database.Pool.Exec(context.Background(), `
+		delete from issue_room_blocks where document_id = $1
+	`, artifact.Artifact.ID); err != nil {
+		t.Fatalf("delete the room blocks of the anchor document: %v", err)
 	}
 	if _, err := database.Pool.Exec(context.Background(), `
 		delete from artifacts where id = $1

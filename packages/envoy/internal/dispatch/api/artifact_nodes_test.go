@@ -90,16 +90,23 @@ func TestAnArtifactNodeHangsUnderItsIssueWithItsBytesAsValues(t *testing.T) {
 	requireNoBytes(t, database, spec.refKey)
 
 	// An upload refused at its commit leaves neither its document's row, nor its node, nor a tuple
-	// out of it or into the issue: the issue holds the spec's part_of alone, before and after. The
-	// spec's top-level blocks hang under the issue too (refs.IndexBlocks), and are no part of what
-	// an upload could leave, so they are not counted.
+	// out of it or into the issue: the issue holds the part_of of each artifact it was born with -
+	// its spec, its tree and its decisions query - alone, before and after. The spec's top-level
+	// blocks hang under the issue too (refs.IndexBlocks), keyed by the room's tree, and are no part
+	// of what an upload could leave, so they are not counted.
+	var roomKey string
+	if err := database.Pool.QueryRow(ctx, `select room.ref_key from artifacts room where room.id = `+
+		refs.DocumentRoomSQL("$1::uuid"), issue.PrimaryArtifactID).Scan(&roomKey); err != nil {
+		t.Fatalf("read the ref_key of the spec's room: %v", err)
+	}
+	born := issueArtifactsAttached(t, database, key)
 	underTheIssue := func() int {
 		t.Helper()
 		var count int
 		if err := database.Pool.QueryRow(ctx, `
 			select count(*) from graph_tuples
 			where to_kind = $1 and to_id = $2 and not (from_kind = $3 and starts_with(from_id, $4))
-		`, graphstore.KindIssue, key, refs.BlockNodeKind, spec.refKey+"#").Scan(&count); err != nil {
+		`, graphstore.KindIssue, key, refs.BlockNodeKind, roomKey+"#").Scan(&count); err != nil {
 			t.Fatalf("count the tuples into issue %s: %v", key, err)
 		}
 		return count
@@ -120,9 +127,9 @@ func TestAnArtifactNodeHangsUnderItsIssueWithItsBytesAsValues(t *testing.T) {
 	})
 	requireNothingOf(t, database, key+"/notes-md")
 	requireNothingOf(t, database, key+"/shot-png")
-	if after := underTheIssue(); after != before || before != 1 {
-		t.Errorf("issue %s holds %d tuples into it after the refused uploads and %d before, want the spec's part_of alone both times",
-			key, after, before)
+	if after := underTheIssue(); after != before || before != born {
+		t.Errorf("issue %s holds %d tuples into it after the refused uploads and %d before, want the part_of of each of its %d artifacts alone both times",
+			key, after, before, born)
 	}
 
 	markdown := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+key+"/artifacts", map[string]string{

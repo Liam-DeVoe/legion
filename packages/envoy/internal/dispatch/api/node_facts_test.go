@@ -562,8 +562,14 @@ func TestAChangeMovesOnlyTheChangedNode(t *testing.T) {
 // rewrote the first paragraph and version 3 the second, so one pass indexing version 3 dates the
 // first to version 2, by alice, and the second to version 3, by bob. A block a later version adds
 // names that version's author as its maker.
+//
+// Its subject is the unconverted path itself: a document written before blocks shipped is no
+// fragment of an issue room, since every room is this branch's and each block of one records its
+// authors from its first write (refs.RecordsAuthorsSQL), so no room block is ever first seen
+// without its maker. The issue is held unconverted (holdIssuesUnconverted).
 func TestABlockSeenFirstAtItsDocumentsFirstIndexingHasNoMaker(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
+	holdIssuesUnconverted(t, database)
 	ctx := context.Background()
 	createReferenceAPIProject(t, handler, "CORE")
 	issue := createSpecIssue(t, handler, "CORE", "First paragraph.\n\nSecond paragraph.\n")

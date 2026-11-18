@@ -19,7 +19,12 @@ import { compareTimestamps } from "../../lib/timestamps";
 import type { ComposerOwner } from "../conversation/composer-model";
 import { rootOf } from "../conversation/conversation-model";
 import type { CarriedBlockIds } from "../conversation/send-request";
-import { isDecisionEntry, issueDecisionsQuery } from "../doc/spec-marks";
+import {
+  isDecisionEntry,
+  issueDecisionsQuery,
+  issueSpecAddress,
+  linkReachesDocument,
+} from "../doc/spec-marks";
 import { useProjectArtifact } from "../document/useProjectArtifact";
 import {
   type ConversationPinKind,
@@ -489,16 +494,17 @@ export function useMarginItems(
   const showsDecisions =
     owner?.kind === "issue" && visibleArtifact?.primary === true && documentShown;
   const decisionsView = useQuery(issueDecisionsQuery(issueKey ?? "", showsDecisions));
-  const specRefKey = visibleArtifact?.ref_key;
+  const specAddress = issueSpecAddress(issueKey ?? "");
   const decisions = useMemo<DecisionMarginItem[]>(() => {
     if (!showsDecisions) return [];
     const decisionItems = (decisionsView.data?.entries ?? []).flatMap((decision) => {
       if (decision.replaced || !isDecisionEntry(decision)) return [];
-      // The spec nodes this entry shaped, each once: a node of the spec on screen, by its id.
+      // The spec nodes this entry shaped, each once: a node of a block the spec on screen holds
+      // (linkReachesDocument), by its id, which for a spec of an issue room is the room's node.
       const nodes = new Map<string, string>();
       for (const link of decision.shaped ?? []) {
         const blockId = link.to.block_id;
-        if (blockId !== undefined && link.to.id.startsWith(`${specRefKey}#`)) {
+        if (blockId !== undefined && linkReachesDocument(link, specAddress)) {
           nodes.set(link.to.id, blockId);
         }
       }
@@ -523,7 +529,7 @@ export function useMarginItems(
     decisionsView.data,
     markPlacements,
     showsDecisions,
-    specRefKey,
+    specAddress,
   ]);
   const items = useMemo<MarginItem[]>(() => {
     const commentItems = sortedThreads.map(({ root }) => ({

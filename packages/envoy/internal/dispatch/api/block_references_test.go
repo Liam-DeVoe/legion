@@ -345,7 +345,8 @@ func TestABlocksChangedVersionMovesOnlyWithItsText(t *testing.T) {
 // A node one document cites from two blocks is cited twice, so a version that moves a citation
 // from one citing block to two, or back, moves the node's count even though the document cites it
 // throughout: each such version's event names it, and the count reads one per citing block plus
-// the target's own spec, attached_to it: 2, 3, 2.
+// each artifact attached_to the target - its spec, and the tree and the decisions query an issue
+// born converted is made with.
 func TestAVersionWriteNamesATargetWhoseBlockCountChanged(t *testing.T) {
 	handler, database := blockIndexHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
@@ -355,7 +356,8 @@ func TestAVersionWriteNamesATargetWhoseBlockCountChanged(t *testing.T) {
 	source := createSpecIssue(t, handler, "OPS", "First cites "+cite+".\n\nSecond paragraph.\n")
 	events := "/api/v1/issues/" + source.Key + "/events"
 	named := []model.ChangedReference{{Kind: "issue", ID: target.Key}}
-	requireCitations := func(stage string, blocks, count int) {
+	attached := issueArtifactsAttached(t, database, target.Key)
+	requireCitations := func(stage string, blocks int) {
 		t.Helper()
 		var got int
 		if err := database.Pool.QueryRow(context.Background(), `
@@ -366,17 +368,17 @@ func TestAVersionWriteNamesATargetWhoseBlockCountChanged(t *testing.T) {
 		if got != blocks {
 			t.Fatalf("%s: blocks citing %s = %d, want %d", stage, target.Key, got, blocks)
 		}
-		requireIssueBacklinkCount(t, handler, target.Key, count)
+		requireIssueBacklinkCount(t, handler, target.Key, blocks+attached)
 	}
-	requireCitations("one citing block", 1, 2)
+	requireCitations("one citing block", 1)
 
 	editSpec(t, handler, source.Key, []map[string]any{{"op": "replace", "find": "Second paragraph.", "with": "Second cites " + cite + "."}})
 	requireArtifactEventNames(t, handler, events, source.PrimaryArtifactID, named)
-	requireCitations("two citing blocks", 2, 3)
+	requireCitations("two citing blocks", 2)
 
 	editSpec(t, handler, source.Key, []map[string]any{{"op": "replace", "find": "Second cites " + cite + ".", "with": "Second paragraph."}})
 	requireArtifactEventNames(t, handler, events, source.PrimaryArtifactID, named)
-	requireCitations("one citing block again", 1, 2)
+	requireCitations("one citing block again", 1)
 }
 
 // Migration 0122's trigger marks a document owed on every version insert; each path a block-aware

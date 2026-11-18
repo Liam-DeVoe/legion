@@ -295,7 +295,8 @@ func TestNoAttributeTiesABlockToItsConversation(t *testing.T) {
 	const words = "I want the urgent asks first."
 	comment, block := personComment(t, handler, database, issue.Key, words+"\n\nThen the rest.")
 	created(t, "a criterion under the comment's first block", uploadChecks(t, handler, issue.Key, criterionUnder(block)))
-	criterion := issue.Key + "/checks-md#k1"
+	// The criterion's node is the room's: checks.md is a fragment of the issue's room.
+	criterion := readDecisionDocument(t, database, issue.Key, "checks-md").address("k1")
 	walk := func(when string) {
 		t.Helper()
 		parent := walkUp(t, database, criterion)

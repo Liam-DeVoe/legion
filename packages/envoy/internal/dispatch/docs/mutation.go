@@ -1371,13 +1371,14 @@ func (s *Service) readDocument(ctx context.Context, artifactID string) (*documen
 }
 
 // documentReadRoom is the room a read of artifactID's document reads it in (roomOf) and, for a
-// read of a document that is its own room and no room of this process holds, that room's stamp,
-// read in the same statement (VersionedStore.DocumentStamp), so such a cold read costs no round
-// trip for its room. heldTree's checks of the document's own room come first, as they come before
-// a cold read's stamp: the read is joined to no transaction, no failed room of artifactID's is
-// recovering, and none is resident. stamp is nil where one of them fails, whose read finds the
-// room (roomOf) and checks it as it always has, and for a document converted into an issue room,
-// whose room heldTree checks once it is known (readDocumentIn).
+// read of a document no room of this process holds, that room's stamp, read in the same statement
+// (VersionedStore.DocumentStamp), so such a cold read costs no round trip for its room.
+// heldTree's checks of the document's own room come first, as they come before a cold read's
+// stamp: the read is joined to no transaction, no failed room of artifactID's is recovering, and
+// none is resident. stamp is nil where one of them fails, whose read finds the room (roomOf) and
+// checks it as it always has. A document converted into an issue room learns its room from the
+// statement, so heldTree's checks of that room come after it, and stamp is nil where that room is
+// failed or resident, whose read heldTree takes (readDocumentIn).
 func (s *Service) documentReadRoom(ctx context.Context, artifactID string) (room string, stamp *DocumentStamp, err error) {
 	if ledgerFrom(ctx).inTransaction() || s.roomFailed(artifactID) || s.srv.GetDoc(artifactID) != nil {
 		room, err := roomOf(ctx, s.queryFrom(ctx), artifactID)
@@ -1387,7 +1388,7 @@ func (s *Service) documentReadRoom(ctx context.Context, artifactID string) (room
 	if err != nil {
 		return "", nil, s.stampUnread(ctx, artifactID, err)
 	}
-	if room != artifactID {
+	if room != artifactID && (s.roomFailed(room) || s.srv.GetDoc(room) != nil) {
 		return room, nil, nil
 	}
 	return room, &read, nil

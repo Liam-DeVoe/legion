@@ -378,20 +378,21 @@ func TestAConvertedIssuesDecisionAnswersAsAnUnconvertedIssuesDecisionDoes(t *tes
 		}
 		for _, link := range links {
 			text, shaped := words[link.To.BlockID]
-			if !shaped || link.To.Kind != refs.BlockNodeKind || link.To.ID != spec.refKey+"#"+link.To.BlockID ||
+			if !shaped || link.To.Kind != refs.BlockNodeKind || link.To.ID != spec.pointed(link.To.BlockID) ||
 				link.To.Ref != pointer(link.To.BlockID) || link.To.Document != "dispatch://"+issue.Key+"/spec" ||
 				!strings.Contains(link.To.Text, text) || link.To.ChangedVersion != 1 || link.FromBlock != "d1" || link.Stale {
-				t.Errorf("%s answers the shaped link %s, want one to a paragraph at the spec's own address %s#<id>, with its words, version 1 and the spec",
-					what, entryJSON(t, link), spec.refKey)
+				t.Errorf("%s answers the shaped link %s, want one to a paragraph of the spec, at its node %s, at the spec's address %s, with its words, version 1 and the spec",
+					what, entryJSON(t, link), spec.pointed("<id>"), pointer("<id>"))
 			}
 		}
 	}
 	requireSpecLinks("the decision's entry", entry.Shaped)
-	// The margin's shape of the links (useMarginItems): each one whose node is the spec's own,
-	// placed beside the spec's block of its block id.
+	// The margin's shape of the links (useMarginItems, linkReachesDocument): each one whose block the
+	// spec holds, as the link's document says - its node is the issue room's, whichever document of
+	// the room holds the block - placed beside the spec's block of its block id.
 	placed := []string{}
 	for _, link := range entry.Shaped {
-		if link.To.BlockID != "" && strings.HasPrefix(link.To.ID, spec.refKey+"#") {
+		if link.To.BlockID != "" && link.To.Document == "dispatch://"+issue.Key+"/spec" {
 			placed = append(placed, link.To.BlockID)
 		}
 	}

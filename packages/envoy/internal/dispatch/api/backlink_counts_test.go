@@ -169,7 +169,7 @@ func requireIssueBacklinkCount(t *testing.T, handler http.Handler, key string, w
 // the event has to name them. The write itself is the only place that knows: refs.ReplaceCounted
 // reconciles the edges and resolves what moved in the same transaction that appends the event.
 func TestReferenceWritesNameChangedTargets(t *testing.T) {
-	handler := newTestHandler(t)
+	handler, database := newTestHandlerWithStore(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	createReferenceAPIProject(t, handler, "OPS")
 	target := createReferenceAPIIssue(t, handler, "CORE")
@@ -214,9 +214,11 @@ func TestReferenceWritesNameChangedTargets(t *testing.T) {
 		{Kind: "issue", ID: target.Key},
 	})
 
-	// The count the issue header names: this issue's own spec document is attached to it, so
-	// the structural edge counts beside the message and the comment that cite it.
-	requireIssueBacklinkCount(t, handler, target.Key, 3)
+	// The count the issue header names: each artifact attached to the issue - its spec, and the
+	// tree and the decisions query an issue born converted is made with - counts its structural
+	// edge beside the message and the comment that cite it.
+	attached := issueArtifactsAttached(t, database, target.Key)
+	requireIssueBacklinkCount(t, handler, target.Key, 2+attached)
 
 	if response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/comments/"+commentID, map[string]any{
 		"body": "Unblocked; the dependency is gone.",
@@ -227,7 +229,7 @@ func TestReferenceWritesNameChangedTargets(t *testing.T) {
 	requireReferencesChanged(t, handler, source.Key, "comment.edited", commentID, []model.ChangedReference{
 		{Kind: "issue", ID: target.Key},
 	})
-	requireIssueBacklinkCount(t, handler, target.Key, 2)
+	requireIssueBacklinkCount(t, handler, target.Key, 1+attached)
 
 	if response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/comments/"+commentID, map[string]any{
 		"body": "Unblocked; nothing left to wait on.",
@@ -235,7 +237,7 @@ func TestReferenceWritesNameChangedTargets(t *testing.T) {
 		t.Fatalf("edit without a mention: status=%d body=%s", response.Code, response.Body.String())
 	}
 	requireReferencesChanged(t, handler, source.Key, "comment.edited", commentID, nil)
-	requireIssueBacklinkCount(t, handler, target.Key, 2)
+	requireIssueBacklinkCount(t, handler, target.Key, 1+attached)
 }
 
 // An ask's own clarification replies are inbound `replies_to` edges, and its card already shows
@@ -469,7 +471,7 @@ func TestDocumentWritePathsNameChangedTargets(t *testing.T) {
 // An ask's question is a body like any other: opening one that cites an issue, and editing the
 // citation away again, each move that issue's own backlink count, so both events name it.
 func TestAskWritesNameChangedTargets(t *testing.T) {
-	handler := newTestHandler(t)
+	handler, database := newTestHandlerWithStore(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	createReferenceAPIProject(t, handler, "OPS")
 	target := createReferenceAPIIssue(t, handler, "CORE")
@@ -484,7 +486,8 @@ func TestAskWritesNameChangedTargets(t *testing.T) {
 	askID := decodeBody[writtenRecord](t, opened).ID
 	want := []model.ChangedReference{{Kind: "issue", ID: target.Key}}
 	requireReferencesChanged(t, handler, source.Key, "ask.opened", askID, want)
-	requireIssueBacklinkCount(t, handler, target.Key, 2)
+	attached := issueArtifactsAttached(t, database, target.Key)
+	requireIssueBacklinkCount(t, handler, target.Key, 1+attached)
 
 	if response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/asks/"+askID, map[string]any{
 		"question": "Does anything ship first?",
@@ -492,7 +495,7 @@ func TestAskWritesNameChangedTargets(t *testing.T) {
 		t.Fatalf("edit the citation away: status=%d body=%s", response.Code, response.Body.String())
 	}
 	requireReferencesChanged(t, handler, source.Key, "ask.edited", askID, want)
-	requireIssueBacklinkCount(t, handler, target.Key, 1)
+	requireIssueBacklinkCount(t, handler, target.Key, attached)
 }
 
 // An edge a write keeps still shows its source's text as its excerpt in the target's
@@ -500,7 +503,7 @@ func TestAskWritesNameChangedTargets(t *testing.T) {
 // that excerpt names the target although its count stays; an edit that leaves it alone names
 // nothing.
 func TestEditsThatKeepAnEdgeNameItsTargetWhenItsExcerptMoves(t *testing.T) {
-	handler := newTestHandler(t)
+	handler, database := newTestHandlerWithStore(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	createReferenceAPIProject(t, handler, "OPS")
 	target := createReferenceAPIIssue(t, handler, "CORE")
@@ -544,7 +547,7 @@ func TestEditsThatKeepAnEdgeNameItsTargetWhenItsExcerptMoves(t *testing.T) {
 		t.Fatalf("reword the citing ask: status=%d body=%s", response.Code, response.Body.String())
 	}
 	requireReferencesChanged(t, handler, source.Key, "ask.edited", askID, want)
-	requireIssueBacklinkCount(t, handler, target.Key, 3)
+	requireIssueBacklinkCount(t, handler, target.Key, 2+issueArtifactsAttached(t, database, target.Key))
 
 	document := createProjectDocument(t, handler, "CORE", "Rollout notes", "# Rollout notes\n\nWaiting on "+cited+".\n\nAn unrelated paragraph.\n")
 	events := "/api/v1/artifacts/" + document.ID + "/events"

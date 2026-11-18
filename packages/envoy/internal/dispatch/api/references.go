@@ -843,20 +843,24 @@ func (s *server) loadArtifactsByRefKey(ctx context.Context, q queryer, refKeys [
 	if len(refKeys) == 0 {
 		return artifacts, nil
 	}
-	versions := `join artifact_versions v on v.artifact_id = a.id`
+	versions := `join artifact_versions v on v.artifact_id = artifacts.id`
 	if latestOnly {
 		versions = `join lateral (
-			select * from artifact_versions v where v.artifact_id = a.id order by v.number desc limit 1
+			select * from artifact_versions v where v.artifact_id = artifacts.id order by v.number desc limit 1
 		) v on true`
 	}
+	// The row's role columns, retired mark and room are artifactColumns', read as every reader of
+	// an artifact row reads them, so a member answers its room and fragment (placeArtifact).
 	rows, err := q.Query(ctx, `
-		select a.id::text, a.issue_key, coalesce(a.project_key, ''), a.session_id, a.ref_key, a.slug, a.name, a.kind, a.is_primary,
-		       a.created_by, a.created_at,
+		select artifacts.id::text, artifacts.issue_key, coalesce(artifacts.project_key, ''), artifacts.session_id,
+		       artifacts.ref_key, artifacts.slug, artifacts.name, artifacts.kind, artifacts.is_primary,
+		       artifacts.role, `+graphstore.ArtifactQueryRoleSQL+`, artifacts.created_by, artifacts.created_at,
+		       artifacts.retired_at is not null, (`+refs.DocumentRoomSQL("artifacts.id")+`)::text,
 		       `+versionColumns+`
-		from artifacts a
+		from artifacts
 		`+versions+`
-		where a.ref_key = any($1)
-		order by a.ref_key, v.number
+		where artifacts.ref_key = any($1)
+		order by artifacts.ref_key, v.number
 	`, refKeys)
 	if err != nil {
 		return nil, err
@@ -868,6 +872,7 @@ func (s *server) loadArtifactsByRefKey(ctx context.Context, q queryer, refKeys [
 	authorsByJSON := map[string][]model.Actor{}
 	for rows.Next() {
 		var artifact model.Artifact
+		var role, queryRole *string
 		var createdBy, authors []byte
 		var version model.Version
 		if err := rows.Scan(
@@ -880,8 +885,12 @@ func (s *server) loadArtifactsByRefKey(ctx context.Context, q queryer, refKeys [
 			&artifact.Name,
 			&artifact.Kind,
 			&artifact.Primary,
+			&role,
+			&queryRole,
 			&createdBy,
 			&artifact.CreatedAt,
+			&artifact.Retired,
+			&artifact.Room,
 			&version.Number,
 			&version.Named,
 			&version.Summary,
@@ -898,6 +907,7 @@ func (s *server) loadArtifactsByRefKey(ctx context.Context, q queryer, refKeys [
 			if err := json.Unmarshal(createdBy, &artifact.CreatedBy); err != nil {
 				return nil, fmt.Errorf("decode artifact author: %w", err)
 			}
+			placeArtifact(&artifact, role, queryRole)
 			current = &artifact
 			artifacts[artifact.RefKey] = current
 		}

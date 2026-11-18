@@ -33,9 +33,10 @@ type decisionDocument struct {
 // address is a block's node address in the document.
 func (d decisionDocument) address(block string) string { return d.nodeKey + "#" + block }
 
-// pointed is the address a pointer at a block of the document spells, which a shaped tuple's far
-// end and a decision's link name: the document's own, whatever room the document is edited in.
-func (d decisionDocument) pointed(block string) string { return d.refKey + "#" + block }
+// pointed is the node a pointer at a block of the document resolves to, which a shaped tuple's far
+// end and a decision's link name: a tuple's ends are nodes, and the node of a block of a document
+// converted into its issue's room is the room's (address), whatever address the pointer spells.
+func (d decisionDocument) pointed(block string) string { return d.address(block) }
 
 // readDecisionDocument reads the id and ref_key of the issue's document slug, and those of the
 // artifact its blocks are keyed under (refs.DocumentRoomSQL).
@@ -288,19 +289,19 @@ func TestDecisionNodeCarriesItsTuplesAndItsCertainty(t *testing.T) {
 	// The event names the block whose backlink count the new tie moved, as a version event names
 	// what its block index moved, so a page reading counts off the event refreshes it.
 	if !slices.ContainsFunc(openedPayload.ReferencesChanged, func(changed model.ChangedReference) bool {
-		return changed.Kind == refs.BlockNodeKind && changed.ID == issue.Key+"/spec#r1"
+		return changed.Kind == refs.BlockNodeKind && changed.ID == spec.pointed("r1")
 	}) {
-		t.Errorf("the ask.opened of %s names the changed references %+v, want the block %s/spec#r1 its shaped tie reaches", askID, openedPayload.ReferencesChanged, issue.Key)
+		t.Errorf("the ask.opened of %s names the changed references %+v, want the block %s its shaped tie reaches", askID, openedPayload.ReferencesChanged, spec.pointed("r1"))
 	}
-	if len(askShaped) != 1 || askShaped[0].ToKind != refs.BlockNodeKind || askShaped[0].ToID != issue.Key+"/spec#r1" {
-		t.Fatalf("the ask %s states the shaped %+v once its settlement opened it, want one tuple to %s/spec#r1", askID, askShaped, issue.Key)
+	if len(askShaped) != 1 || askShaped[0].ToKind != refs.BlockNodeKind || askShaped[0].ToID != spec.pointed("r1") {
+		t.Fatalf("the ask %s states the shaped %+v once its settlement opened it, want one tuple to %s", askID, askShaped, spec.pointed("r1"))
 	}
 	requireCaused(t, "the new ask's shaped", askShaped[0], "alice", opened)
 	var marked int
 	if err := database.Pool.QueryRow(ctx, `
 		select count(*) from block_refs
 		where block_id = 'a1' and kind = 'shaped' and node_kind = $1 and node_address = $2 and to_id = $3
-	`, graphstore.KindAsk, askID, issue.Key+"/spec#r1").Scan(&marked); err != nil {
+	`, graphstore.KindAsk, askID, spec.pointed("r1")).Scan(&marked); err != nil {
 		t.Fatalf("read the new ask's shaped row: %v", err)
 	}
 	if marked != 1 {
@@ -337,7 +338,7 @@ func TestDecisionNodeCarriesItsTuplesAndItsCertainty(t *testing.T) {
 		t.Fatalf("d1 states %d shaped tuples, want one for each of the three requirements: %+v", len(shapedTies), shapedTies)
 	}
 	for index, tuple := range shapedTies {
-		if want := issue.Key + "/spec#r" + string(rune('1'+index)); tuple.ToKind != refs.BlockNodeKind || tuple.ToID != want {
+		if want := spec.pointed("r" + string(rune('1'+index))); tuple.ToKind != refs.BlockNodeKind || tuple.ToID != want {
 			t.Errorf("shaped tuple %d of d1 reaches %s/%s, want block %s", index+1, tuple.ToKind, tuple.ToID, want)
 		}
 		requireCaused(t, "a shaped tuple of d1", tuple, "alice", uploaded)
@@ -602,7 +603,7 @@ func TestATieToAnotherIssueIsRefusedOnEveryWritePath(t *testing.T) {
 		t.Fatalf("settlement refused the browser's write, want it stored")
 	}
 	address := browser.address("b1")
-	if held := currentTies(t, database, address, refs.TupleShaped); len(held) != 1 || held[0].ToID != issue.Key+"/spec#r1" {
+	if held := currentTies(t, database, address, refs.TupleShaped); len(held) != 1 || held[0].ToID != readDecisionDocument(t, database, issue.Key, "spec").pointed("r1") {
 		t.Errorf("the browser's decision states the shaped %+v, want its tie inside %s alone", held, issue.Key)
 	}
 	if held := currentTies(t, database, address, refs.TupleFromAsk); len(held) != 0 {

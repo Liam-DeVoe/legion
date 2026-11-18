@@ -35,6 +35,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -747,33 +748,18 @@ func TestCreateIssueRejectsASpecLineTheBrowserReadsAsBlockHTML(t *testing.T) {
 	}
 }
 
+// A document whose store cannot be read answers its text and blocks 503 DOC_SERVICE_UNAVAILABLE.
+// The issue is made through a server whose store works, since an issue is born converted and its
+// create writes the spec's fragment into the issue room it seeds; the reads go through a second
+// server on the same database whose store fails every read (readingServer).
 func TestDocumentTextReportsUnavailableService(t *testing.T) {
-	database := storetest.Open(t)
-	broker := events.NewBroker()
-	documentService := docs.New(docs.Deps{
-		Store:       database,
-		Persistence: failingLoadStore{VersionedStore: docs.NewPgVersioned(database)},
-		Events:      broker,
-	})
-	t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
-	deps, err := NewDeps(DepsInput{
-		Store:    database,
-		Identity: headerIdentity(database),
-		Docs:     documentService,
-		Events:   broker,
-	})
-	if err != nil {
-		t.Fatalf("new API dependencies: %v", err)
-	}
-	mux := http.NewServeMux()
-	t.Cleanup(Register(mux, t.Context(), deps).Wait)
-
-	if response := dispatchRequest(t, mux, http.MethodPost, "/api/v1/projects", map[string]string{
+	writer, database, _ := newTestServer(t, testServerOptions{})
+	if response := dispatchRequest(t, writer, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
 	}, "alice"); response.Code != http.StatusCreated {
 		t.Fatalf("create project: status=%d body=%s", response.Code, response.Body.String())
 	}
-	issueResponse := dispatchRequest(t, mux, http.MethodPost, "/api/v1/issues", map[string]string{
+	issueResponse := dispatchRequest(t, writer, http.MethodPost, "/api/v1/issues", map[string]string{
 		"project": "TEST", "title": "Issue", "spec": "before",
 	}, "alice")
 	if issueResponse.Code != http.StatusCreated {
@@ -782,6 +768,7 @@ func TestDocumentTextReportsUnavailableService(t *testing.T) {
 	issue := decodeBody[struct {
 		PrimaryArtifactID string `json:"primary_artifact_id"`
 	}](t, issueResponse)
+	mux := readingServer(t, database, failingLoadStore{VersionedStore: docs.NewPgVersioned(database)}, nil)
 
 	response := dispatchRequest(t, mux, http.MethodGet, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/text", nil, "alice")
 	if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), `"code":"DOC_SERVICE_UNAVAILABLE"`) {
@@ -1948,10 +1935,12 @@ func TestDocumentUploadIndexesDispatchReferences(t *testing.T) {
 	if uploaded.Code != http.StatusCreated {
 		t.Fatalf("upload document: status=%d body=%s", uploaded.Code, uploaded.Body.String())
 	}
+	// A document of an issue room is indexed by the room's pass, whose references are keyed by the
+	// room's tree artifact (docs.IndexDocumentReferences).
 	var references int
 	if err := database.Pool.QueryRow(context.Background(), `
 		select count(*) from refs
-		where from_kind = 'artifact' and from_id = $1 and to_kind = 'artifact' and to_id = 'TEST-1/spec'
+		where from_kind = 'artifact' and from_id = (`+refs.DocumentRoomSQL("$1::uuid")+`)::text and to_kind = 'artifact' and to_id = 'TEST-1/spec'
 	`, artifact.Artifact.ID).Scan(&references); err != nil {
 		t.Fatalf("count uploaded document references: %v", err)
 	}
@@ -1976,10 +1965,12 @@ func TestIssueDocumentCreationIndexesDispatchReferences(t *testing.T) {
 	if created.Code != http.StatusCreated {
 		t.Fatalf("create issue: status=%d body=%s", created.Code, created.Body.String())
 	}
+	// The spec is a fragment of the issue room it is born in, whose references are keyed by the
+	// room's tree artifact (docs.IndexDocumentReferences).
 	var references int
 	if err := database.Pool.QueryRow(context.Background(), `
 		select count(*) from refs
-		where from_kind = 'artifact' and from_id = $1 and to_kind = 'artifact' and to_id = 'TEST-1/spec'
+		where from_kind = 'artifact' and from_id = (`+refs.DocumentRoomSQL("$1::uuid")+`)::text and to_kind = 'artifact' and to_id = 'TEST-1/spec'
 	`, issue.PrimaryArtifactID).Scan(&references); err != nil {
 		t.Fatalf("count created document references: %v", err)
 	}

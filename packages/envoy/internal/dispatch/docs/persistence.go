@@ -195,9 +195,9 @@ func (p *PgVersioned) Head(ctx context.Context, room string) (persistence.Versio
 }
 
 // DocumentStamp is, read through the pool that owns loads as Head reads the head, the room
-// artifactID's document is edited in and the DocumentStamp of the stored history named artifactID
-// now, in one round trip (readDocumentStamp): the stamp is the room's where the document is its own
-// room, and a read of an issue room asks it by the room's own id.
+// artifactID's document is edited in and the DocumentStamp of that room's stored history now, in
+// one round trip (readDocumentStamp): a document converted into an issue room is read at its
+// room's stamp, and a read of an issue room asks it by the room's own id.
 func (p *PgVersioned) DocumentStamp(ctx context.Context, artifactID string) (string, DocumentStamp, error) {
 	rooms, err := p.store.Pool.Rooms()
 	if err != nil {
@@ -697,15 +697,21 @@ func (p *PgVersioned) Delete(ctx context.Context, room string) error {
 	})
 }
 
-// headVersion is the SQL expression for the version a room's stored history stands at, for the room
-// $1 names: a prune's checkpoint ceiling while one stands, otherwise the greatest stored version, 0
-// for none. Every query that reads the head builds on it (head, readDocumentStamp, ListVersions,
-// GetUpdate), so what counts as the head cannot change for one of them and not the others.
-const headVersion = `coalesce(
-	(select ceiling from doc_checkpoints where artifact_id = $1),
-	(select max(version) from doc_updates where artifact_id = $1),
+// headVersionOf is the SQL expression for the version a room's stored history stands at, for the
+// room the uuid SQL expression room names: a prune's checkpoint ceiling while one stands, otherwise
+// the greatest stored version, 0 for none. Every query that reads the head builds on it (head,
+// readDocumentStamp, ListVersions, GetUpdate), so what counts as the head cannot change for one of
+// them and not the others.
+func headVersionOf(room string) string {
+	return `coalesce(
+	(select ceiling from doc_checkpoints where artifact_id = ` + room + `),
+	(select max(version) from doc_updates where artifact_id = ` + room + `),
 	0
 )`
+}
+
+// headVersion is the head of the room $1 names (headVersionOf).
+var headVersion = headVersionOf("$1")
 
 func (p *PgVersioned) head(ctx context.Context, q Queryer, room string) (persistence.Version, error) {
 	var version int64
