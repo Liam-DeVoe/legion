@@ -6,16 +6,15 @@
 --   commit_repo   the canonical `owner/repo` of a repository the check's issue links a pull
 --                 request in and did not resolve to at the write, which the record route took
 --                 the commit to be of (api/results_linked.go, refuseUnknownCommit): one with an
---                 open or merged linked pull request that GitHub said holds the commit, or,
---                 where GitHub proved the issue's own repository does not hold it and no linked
---                 repository was shown to, the first linked repository whose read did not
---                 answer, which no read showed to hold the commit but which may. Null for every
---                 other row. A result at the merge commit of a pull request the issue links in
---                 a second repository names a commit of that repository, and the results read
---                 compares an `after_merge` or a `default_branch` result with that repository's
---                 branches where the column names one (api/results_comparison.go,
---                 onNamedBranch). Asked of the issue's own repository, GitHub answers 404 for
---                 such a commit and the result reads unknown.
+--                 open or merged linked pull request that GitHub said holds the commit, and no
+--                 other: where a linked read did not answer and no repository is shown to hold
+--                 the commit, no result is stored at all. Null for every other row. A result at
+--                 the merge commit of a pull request the issue links in a second repository
+--                 names a commit of that repository, and the results read compares an
+--                 `after_merge` or a `default_branch` result with that repository's branches
+--                 where the column names one (api/results_comparison.go, onNamedBranch). Asked
+--                 of the issue's own repository, GitHub answers 404 for such a commit and the
+--                 result reads unknown.
 --
 -- A row recorded before this migration carries null here, and so does every result at a commit
 -- of the issue's own repository: the read compares such a row in the repository the check's

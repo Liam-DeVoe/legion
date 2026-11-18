@@ -782,7 +782,8 @@ func TestAReadThroughKeepsAnAttributionOnlyTheCommitMessagesName(t *testing.T) {
 }
 
 // A row whose repository the App cannot read is stamped, not warned about forever: the reconcile
-// orders the never-read first, so an unstamped row holds the front of every batch.
+// orders the never-read first, so an unstamped row holds the front of every batch. So is a row
+// stored under a name GitHub does not allow, `acme/..`, which no read can reach.
 func TestAnUnreadableRepositoryStampsThePullRequestHead(t *testing.T) {
 	fastPageRetries(t)
 	pool, ctx := deliveryTestPool(t)
@@ -797,7 +798,7 @@ func TestAnUnreadableRepositoryStampsThePullRequestHead(t *testing.T) {
 		w.WriteHeader(http.StatusForbidden)
 		fmt.Fprint(w, `{"message":"Resource not accessible by integration"}`)
 	})
-	for _, repo := range []string{"acme/hidden", "acme/walled"} {
+	for _, repo := range []string{"acme/hidden", "acme/walled", "acme/.."} {
 		if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
 			Repo: repo, Number: 51, HeadSHA: "cccccccccccccccccccccccccccccccccccccccc",
 			HeadRef: "topic", BaseRef: "main", State: "open",
@@ -811,7 +812,7 @@ func TestAnUnreadableRepositoryStampsThePullRequestHead(t *testing.T) {
 	if err := reconcile.reconcilePullRequestHeads(ctx, now); err != nil {
 		t.Fatalf("reconcile the pull request heads: %v", err)
 	}
-	for _, repo := range []string{"acme/hidden", "acme/walled"} {
+	for _, repo := range []string{"acme/hidden", "acme/walled", "acme/.."} {
 		if head := readHead(t, ctx, pool, repo, 51); head.CheckedAt == nil {
 			t.Fatalf("%s#51 = %+v, want it stamped read so it leaves the front of the batch", repo, head)
 		}

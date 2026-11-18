@@ -11,10 +11,13 @@ body: |-
   repository the GitHub App is not installed on or cannot read (GitHub's 403 that is no rate
   limit). One record reads at most 10 linked pull requests, and a refusal says how many it left
   unread past that bound. `400 RESULT_COMMIT_UNKNOWN` names the commit and each repository that
-  Dispatch asked. A read of a linked pull request or of a linked repository that does not answer
-  (a rate limit, a 5xx, a timeout), where no repository is shown to hold the commit, refuses the
-  record with `502 GITHUB_UNREADABLE` and stores nothing: the refusal tells the caller to record
-  the result again, and a rate limit names GitHub's wait, in the sentence and in `Retry-After`.
+  Dispatch asked, and each linked pull request in a repository the App cannot read, as
+  `owner/repo#n (repository_unreadable)`, saying to grant the App that repository or link a
+  readable pull request. A read of a linked pull request or of a linked repository that does
+  not answer (a rate limit, a 5xx, a timeout), where no repository is shown to hold the commit,
+  refuses the record with `502 GITHUB_UNREADABLE` and stores nothing: the refusal tells the
+  caller to record the result again, and a rate limit names GitHub's wait, in the sentence and
+  in `Retry-After`.
   The read of the pull requests GitHub names for the commit, after the write, reads the
   repository the commit is taken to be of.
 
@@ -35,6 +38,8 @@ body: |-
   `GET /api/v1/github/app-installation/{owner}/{repo}` hold the path's repository to the names
   GitHub allows, as `renamed_to` already is: a path such as `acme/...git` or `acme/.git`, whose
   name is `..` or empty once `.git` is trimmed, is `400 INVALID_REPO_PROJECT`. `DELETE` reads its
-  path as before, so a mapping stored under such a name can still be removed. Delivery refuses a
-  stored repository name GitHub does not allow, naming it, before it makes any GitHub request, so
-  a mapping or a `renamed_to` stored before this release never reaches GitHub.
+  path as before, so a mapping stored under such a name can still be removed. Delivery, the CI
+  reconcile, the architecture importer and the results read of a check CI proves each refuse a
+  stored repository name GitHub does not allow, naming it, before they make any GitHub request,
+  so a mapping or a `renamed_to` stored before this release, and a pull request row stored under
+  one, never reaches GitHub.

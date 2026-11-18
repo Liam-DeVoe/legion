@@ -1083,11 +1083,14 @@ func attributePayload(ctx context.Context, pool *store.Pool, client *githubapp.C
 // RefreshPullRequestHead reads one pull request through the App and writes its head row: the
 // reconcile's per-row step. A pull request GitHub cannot find, and a repository the App cannot
 // read (no installation, or a repository or resource its token is refused), leave the row as it
-// is, stamped so the batch moves on and does not warn about the same row every pass; a rate
-// limit comes back as the *githubapp.RateLimitError, which stops the batch. The row is stamped
-// even when the commit messages could not be read: this pass is itself the retry, so the next
-// one reads it again in PullRequestHeadStaleAfter rather than holding the front of every batch,
-// and that write, being incomplete, leaves any attribution the row already carries standing.
+// is, stamped so the batch moves on and does not warn about the same row every pass. A canonical
+// name GitHub does not allow (splitRepo's refs.ErrNotGitHubRepo) is stamped the same way, before
+// any GitHub call, and comes back as that error, so the reconcile warns of the row on the pass
+// that stamps it and not on every pass; a rate limit comes back as the *githubapp.RateLimitError,
+// which stops the batch. The row is stamped even when the commit messages could not be read: this
+// pass is itself the retry, so the next one reads it again in PullRequestHeadStaleAfter rather
+// than holding the front of every batch, and that write, being incomplete, leaves any
+// attribution the row already carries standing.
 //
 // repoFull is the key ListStalePullRequestHeads read off the row, which may be a name the
 // repository has been renamed away from, and every step here but the stamp works on the
@@ -1110,6 +1113,12 @@ func RefreshPullRequestHead(
 	}
 	owner, repo, err := splitRepo(canonical)
 	if err != nil {
+		// No read of GitHub can reach a name GitHub does not allow, so the row is stamped as an
+		// unreadable one is, and the error goes back: the reconcile warns of it on the pass that
+		// stamps it rather than on every pass.
+		if stamp := MarkPullRequestHeadChecked(ctx, pool, repoFull, number, now); stamp != nil {
+			return errors.Join(err, stamp)
+		}
 		return err
 	}
 	token, err := client.RepositoryToken(ctx, owner, repo)

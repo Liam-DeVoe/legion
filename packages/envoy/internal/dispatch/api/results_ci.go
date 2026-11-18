@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
@@ -142,13 +143,17 @@ type provedCI struct {
 // readCIRuns reads every page of the check runs of head's commit, in head's own repository,
 // under one ciReadDeadline, and answers the run of the highest id of each name in names: GitHub
 // keeps every attempt of a run, and the newest decides (classify.mergeAttemptSets in the daemon
-// keeps one name's run the same way). A deployment holding no App key, a token GitHub would not
-// mint, an HTTP error, a rate limit and the deadline are each the error, worded as GitHub
-// answered it. The token never reaches it: it is sent in a header, and no answer names it.
+// keeps one name's run the same way). A row whose repository is no name GitHub allows
+// (refs.SplitGitHubRepo, which every reader of a stored name splits it with) is the error before
+// any GitHub call: a rename stored before the routes held names to that rule can make
+// `acme/..` the canonical name of a row, and its halves would go into the paths as they are. A
+// deployment holding no App key, a token GitHub would not mint, an HTTP error, a rate limit and
+// the deadline are each the error, worded as GitHub answered it. The token never reaches it: it
+// is sent in a header, and no answer names it.
 func (s *server) readCIRuns(ctx context.Context, head delivery.NewestHead, names map[string]struct{}) (map[string]*ciRun, error) {
-	owner, repo, split := strings.Cut(head.Repo, "/")
-	if !split || owner == "" || repo == "" {
-		return nil, fmt.Errorf("the pull request row names repository %q, which is not owner/repo", head.Repo)
+	owner, repo, err := refs.SplitGitHubRepo(head.Repo)
+	if err != nil {
+		return nil, fmt.Errorf("the pull request row's %w", err)
 	}
 	ctx, cancel := context.WithTimeout(ctx, ciReadDeadline)
 	defer cancel()
