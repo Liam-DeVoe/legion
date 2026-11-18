@@ -426,6 +426,28 @@ These rules are how a file leaves nothing behind:
   So the permission holds only while `XDG_CACHE_HOME` is honoured and the pod points it at its own volume, which Legion's runtime does for every role (`/legion/scratch/cache`).
   With `XDG_CACHE_HOME` unset in a pod, that cache is no longer a tool's cache but the pod's death.
 
+## A test that looks for a process it started
+
+A test, and each script library that a test runs, reads one process by its pid, never every process on the machine.
+It reads that process's command line from `/proc/<pid>/cmdline`, its state, parent, process group and session from `/proc/<pid>/stat`, and its children from `/proc/<pid>/task/*/children`.
+A command name may hold spaces and parentheses, so the fields of `/proc/<pid>/stat` are read after its last `) `.
+`box_login_pid_args` in `scripts/e2e/lib/box-login.sh` prints one process's command line from that process's own `/proc/<pid>/cmdline`.
+`runsWith` in `packages/claude-envoy/tests/answers-hook.test.ts` asks whether one refresher still runs, and `sampler_stopped` in `.github/scripts/disk_watch.test.sh` reads one sampler's state.
+Each of them asks `ps` or `pgrep` only on a host with no `/proc`.
+`commandRuns` in the same answers-hook test asks the kernel about a token command's whole process group with one `kill(-pid, 0)`, so it also sees a child that the command left running.
+The test of `psCommandLine` in `packages/test-fixtures/src/deadline.ts`, the reading of a host with no `/proc`, hands it a stand-in for `ps`.
+
+`pgrep` reads every process on the machine, and so does procps-ng's `ps` with `-p`, even for one pid.
+On the dev box on 2026-11-17, at 12,086 to 13,662 processes, one `pgrep -f` opened 13,558 `/proc/<pid>/cmdline` files and one `ps -o args= -p PID` opened 12,564 `/proc/<pid>/stat` files.
+One such call took 0.59 s to 0.97 s at a load of 365 to 375, and a read of one process's file took 1 ms to 3 ms.
+A `Bun.spawnSync` holds the test file's one event loop until its child ends, so each such call also holds every timer of the file, Bun's timeout of the row included, and a row that polls through it polls less often the busier the machine is (dispatch://INFRA-4398).
+A scan of `/proc` in the test process is no way out: it reads as many files as `pgrep` does.
+Only a test that looks for processes whose pids nothing records, such as the survivors of an interrupted run, still reads every process (`commandLines` in `packages/dispatch/e2e/__tests__/bounded-subprocess.test.ts`).
+
+When a test waits for a process that the code under test starts, the code tells the test that process's pid.
+The answers hook writes the pid of the refresher it starts into the record it writes to `ENVOY_ANSWERS_TIMING_FILE`, a variable only tests set.
+A command that a test hands to the code, such as a `!` token command or a stand-in, writes its own pid (`echo $$ >FILE`) as its first act.
+
 ## Unix sockets in Go tests
 
 A unix socket path must be 107 bytes or shorter.
