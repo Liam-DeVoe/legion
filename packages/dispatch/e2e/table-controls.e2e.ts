@@ -58,7 +58,14 @@ import {
   setSignIns,
 } from "./fake-broker-helpers";
 import { seedFakeGithub } from "./fake-github-helpers";
-import { control, controlRow, displayChoice, openFilterPanel } from "./filters";
+import {
+  control,
+  controlRow,
+  displayChoice,
+  listOf,
+  listTrigger,
+  openFilterPanel,
+} from "./filters";
 import { nextFrames, settledScrollTop } from "./frames";
 import { drawer, peekTrigger, seedAsk } from "./inbox-drawer";
 import { assigneeFilter, assigneeOptions, openFilterFields } from "./inbox-filter";
@@ -4850,16 +4857,12 @@ test("Tab and Escape never leave a panel for the page behind it, in a dialog or 
   // Filter, then Project, then Shift+Tab out of the list: three presses of Escape close what is
   // left, the search bar last.
   await barTrigger.click();
-  await page
-    .getByRole("dialog", { name: "Filter" })
-    .getByRole("button", { exact: true, name: "Project" })
-    .click();
+  const barProject = listTrigger(page.getByRole("dialog", { name: "Filter" }), "Project");
+  await barProject.click();
   await page.getByRole("combobox", { exact: true, name: "Search projects" }).focus();
   await page.keyboard.press("Shift+Tab");
   await expect(
-    page
-      .getByRole("dialog", { name: "Filter" })
-      .getByRole("button", { exact: true, name: "Project" }),
+    barProject,
     "search bar: Shift+Tab out of the Project list's text box"
   ).toBeFocused();
   await page.keyboard.press("Escape");
@@ -4873,9 +4876,7 @@ test("Tab and Escape never leave a panel for the page behind it, in a dialog or 
   // On a page: the issue header's Assignee list, which Tab out of its text box closes onto its
   // trigger, the badge.
   await page.goto(`/issues/${issueKey}`);
-  const assigneeTrigger = page.getByRole("button", {
-    name: new RegExp(`^Assignee of ${issueKey}\\b`),
-  });
+  const assigneeTrigger = listTrigger(page, `Assignee of ${issueKey}`);
   await assigneeTrigger.click();
   const assigneeBox = page.getByRole("combobox", { exact: true, name: "Search people" });
   await expect(assigneeBox).toBeFocused();
@@ -5291,26 +5292,6 @@ const TEXT_BOXES = [
   '[role="textbox"]',
 ].join(", ");
 
-/** The control labelled `label` that opens a list: the list's own button. A native select, which
- *  is what several of these lists were before each held a text box, is found by the same label, so
- *  a page that still draws one fails on that list by name rather than on a trigger not found. A
- *  label finds a trigger named by it alone or by it and then what the trigger shows, as a single
- *  pick's is (`MultiSelect`); a pattern finds a trigger whose name it matches. */
-function listTrigger(scope: Locator | Page, label: string | RegExp): Locator {
-  const name =
-    typeof label === "string"
-      ? new RegExp(`^${label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?: |$)`)
-      : label;
-  return scope.getByRole("button", { name }).or(scope.getByRole("combobox", { name }));
-}
-
-/** The panel a list's trigger names in `aria-controls` while the list stands open: the list is
- *  portalled out of its host, so it is found from its own trigger and from nothing page-wide, as
- *  `issueListOf` (`e2e/agents.ts`) finds the composer's. */
-function listOf(trigger: Locator): Locator {
-  return trigger.locator("xpath=id(./@aria-controls)");
-}
-
 /** One list of options R3 holds to a text box, as the row below drives it at one width. */
 interface PickList {
   /** The list as a failure names it: its page, and its trigger's words. */
@@ -5451,12 +5432,12 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
   const advance = listTrigger(page, "Priority to advance");
   const createIssueDialog = page.getByRole("dialog", { name: "Create issue" });
   const dialogProject = listTrigger(createIssueDialog, "Project");
-  // The Settings page's lists, each found by a name that begins with its label. The New project
-  // form's Default assignee is the one whose label does not go on with " of <KEY>".
-  const opsDefault = listTrigger(page, /^Default assignee of OPS\b/);
+  // The Settings page's lists. The New project form's Default assignee is the one whose label
+  // does not go on with " of <KEY>".
+  const opsDefault = listTrigger(page, "Default assignee of OPS");
   const newProjectDefault = listTrigger(page, /^Default assignee(?! of )/);
-  const mappingProject = listTrigger(page, /^Project\b/);
-  const sourceProject = listTrigger(page, /^Source project\b/);
+  const mappingProject = listTrigger(page, "Project");
+  const sourceProject = listTrigger(page, "Source project");
   // Each width's pick is a change: the first hands the issue from alice to bob, the second from
   // bob to carol, and OPS's default from carol to bob and back; the first gives the issue
   // acme/gadgets of its own, the second takes it back to the default it inherits.

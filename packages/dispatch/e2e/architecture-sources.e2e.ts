@@ -7,11 +7,7 @@ import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 // A project imports its component model from two repositories, each its own source, and the
-// model is both sources' components together. This file was written with only helpers, markup
-// and fake-GitHub routes that existed before multi-source support, so the same file run against a
-// build with one source per project failed at the two-row Settings assertion (the second save
-// replaced the first), not at an import, seed or selector. The Source project list it picks from
-// has since become the shared single-pick list.
+// model is both sources' components together.
 
 /** legion/arch: Platform, holding Web. */
 const legionFiles = {
