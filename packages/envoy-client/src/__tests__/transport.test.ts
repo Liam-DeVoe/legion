@@ -1583,6 +1583,43 @@ describe("EnvoyClient", () => {
     );
   });
 
+  // A redirect in front of the listener is never followed (A1 of the review of 87105ed7e8): a 301,
+  // 302 or 303 would turn the send's POST into a GET, and a 307 or 308 would send it again to
+  // another origin. The 3xx is the answer: it says nothing reached the listener, so the send is
+  // refused, never "may or may not have arrived".
+  test.each([
+    301, 302, 303, 307, 308,
+  ])("a send a %i answers is refused, and the redirect is not followed", async (status) => {
+    let followed = 0;
+    let sent = 0;
+    const client = createEnvoyClient({
+      baseUrl: "http://listener",
+      fetch: (async (_url: RequestInfo | URL, init?: RequestInit) => {
+        sent += 1;
+        if (init?.redirect !== "manual") {
+          // What fetch does where it follows: the request goes to the other origin.
+          followed += 1;
+          return Response.json(
+            { event_id: "evt-elsewhere", recipient: "ses_target", recipient_state: "live" },
+            { status: 202 }
+          );
+        }
+        return new Response("moved", {
+          status,
+          headers: { Location: "http://elsewhere.test/v1/messages/send" },
+        });
+      }) as unknown as typeof fetch,
+    });
+    const error = await client
+      .send({ sourceSessionID: "ses_source", targetSessionID: "ses_target", message: "hello" })
+      .catch((caught: unknown) => caught);
+    expect(followed).toBe(0);
+    expect(sent).toBe(1);
+    expect(error).not.toBeInstanceOf(EnvoySendUnconfirmedError);
+    expect(error).toBeInstanceOf(EnvoyApiError);
+    expect((error as EnvoyApiError).details.status).toBe(status);
+  });
+
   // A refused connection, or a name that does not resolve, reached no listener, so nothing was
   // stored: the send is refused, in the transport's own words, never "may or may not have
   // arrived" with a resend to make.

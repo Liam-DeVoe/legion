@@ -22,6 +22,7 @@ import {
   DispatchGatewayError,
   DispatchServiceError,
   DispatchWriteLandedError,
+  DispatchWriteUnsettledError,
 } from "../dispatch-http";
 import { dispatchChildRef, dispatchIssueRef, issueTopic } from "../dispatch-owner";
 import { messageFor } from "../errors";
@@ -361,12 +362,20 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
     if (error instanceof DispatchWriteLandedError) throw error;
     // A URL links exactly one issue. A server from before EXTERNAL_LINK_TAKEN answers the
     // unique-index violation with 500 INTERNAL, which names nothing; say what it means. A
-    // gateway's 500 page is not that answer, and gets no such reading.
+    // gateway's 500 page is not that answer, and gets no such reading. A 500 can also come after
+    // the update committed, so the client ends such a write unsettled (write-outcome.ts), with
+    // that answer as `last`: the hint reads it there and joins the unsettled account.
+    const answered = error instanceof DispatchWriteUnsettledError ? error.last : error;
     const taken =
-      dispatchAnswered(error, 500) && newLinks.length > 0
+      dispatchAnswered(answered, 500) && newLinks.length > 0
         ? `one of ${newLinks.join(", ")} may already be linked from another issue (a URL links exactly one issue)`
         : "";
-    if (closingNote === undefined) throw refusalWithCode(error, taken);
+    if (closingNote === undefined) {
+      if (taken !== "" && !(error instanceof DispatchServiceError)) {
+        throw withAccount(error, taken);
+      }
+      throw refusalWithCode(error, taken);
+    }
     // The reason is on the issue, so a blind retry would post it a second time: the error
     // says where the first one is, and whether the close may have landed anyway. A gateway's
     // timeout or rate limit refused nothing there is to fix.
@@ -379,7 +388,7 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
       ? `${posted}, and the close may or may not have taken effect. Read the issue's status before retrying: done means it closed; otherwise retry with a reason that points at message ${closingNote.id}, since retrying this call posts its reason again`
       : `${posted} but the issue did not close. Retrying this call posts its reason again, so ${fix}retry with a reason that points at message ${closingNote.id}`;
     if (error instanceof DispatchServiceError) throw refusalWithCode(error, taken, landed);
-    throw withAccount(error, landed);
+    throw withAccount(error, [taken, landed].filter((clause) => clause !== "").join("; "));
   }
   refuseUnsavedRepository("updated", after, repo);
   const links = after.external_links ?? [];

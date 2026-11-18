@@ -969,10 +969,14 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
       // fails in the credential's own words (a pending registration names its session).
       if (unminted !== undefined && deadline.aborted) return { notSent: unminted };
       for (const [name, value] of Object.entries(presented ?? {})) headers.set(name, value);
+      // No call follows a redirect: the listener answers none, so a 3xx is something in its
+      // place, and followed it would turn a POST into a GET (301, 302, 303) or send it again to
+      // another origin (307, 308). The 3xx is the call's answer, which reached no listener.
       response = await config.fetch(url, {
         ...init,
         headers,
         signal: deadline,
+        redirect: "manual",
       });
     } catch (error) {
       // A name that did not resolve, or a connection nothing took, sent nothing to any listener:

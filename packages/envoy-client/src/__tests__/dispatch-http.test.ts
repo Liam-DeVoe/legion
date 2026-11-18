@@ -15,6 +15,7 @@ import {
   DispatchClient,
   DispatchGatewayError,
   DispatchNoRouteError,
+  DispatchWriteUnsettledError,
   type SearchOptions,
 } from "../dispatch-http";
 import { fakeSearchResponse } from "./fake-search-response";
@@ -775,13 +776,18 @@ describe("DispatchClient", () => {
     const gateway = ", which looks like a proxy or gateway page rather than Dispatch's own answer";
     const page404 = `${request}404 Not Found with a body that is not Dispatch's error JSON ("404 Not Found")`;
 
+    // A 502 can come after Dispatch committed the write, so with no ask left the write ends
+    // unsettled (the transition table, write-outcome.ts), the gateway's page as its cause.
     const badGateway = await refusal();
+    expect(badGateway).toBeInstanceOf(DispatchWriteUnsettledError);
     expect(badGateway.message).toBe(
       `${request}502 Bad Gateway with a body that is not Dispatch's error JSON ("502 Bad Gateway")` +
-        `${gateway}, so the write may or may not have reached Dispatch: check whether it took ` +
-        "effect before retrying it."
+        `${gateway} (its only attempt), and an attempt of the write may have reached Dispatch, so ` +
+        "it may or may not have taken effect: check whether it did before retrying it."
     );
-    expect(badGateway).toEqual(expect.objectContaining({ mayHaveReachedDispatch: true }));
+    expect((badGateway as DispatchWriteUnsettledError).last).toEqual(
+      expect.objectContaining({ mayHaveReachedDispatch: true })
+    );
     for (const [status, statusText] of [
       [408, "Request Timeout"],
       [429, "Too Many Requests"],

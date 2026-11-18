@@ -404,8 +404,10 @@ describe("executeDispatchTool", () => {
       "POST http://dispatch.test/api/v1/issues/DSP-1/messages answered 502 Bad Gateway with a body that is not Dispatch's error JSON"
     );
     expect(write).not.toContain("<");
+    // A 502 can come after Dispatch committed the write: with no ask left, the write ends
+    // unsettled (the transition table, write-outcome.ts) and says so.
     expect(write).toEndWith(
-      "so the write may or may not have reached Dispatch: check whether it took effect before retrying it."
+      "(its only attempt), and an attempt of the write may have reached Dispatch, so it may or may not have taken effect: check whether it did before retrying it."
     );
     expect(write).not.toContain("a retry may succeed");
     // Nothing here says this Dispatch runs the keyed layer: the gateway answers its /healthz too,
@@ -425,19 +427,19 @@ describe("executeDispatchTool", () => {
   });
 
   // Whether a write a gateway answered may have reached Dispatch decides what the agent does next.
-  // A 5xx can come back after Dispatch applied it, so the agent checks before posting again; a 408
-  // or 429 is the gateway's own timeout or rate limit, sent before it forwards the request, so the
-  // message was not posted and a retry may succeed. The gateway answers every attempt the same, so
-  // the last attempt's answer is the one the agent reads.
+  // A 5xx can come back after Dispatch applied it, so the write ends unsettled and the agent checks
+  // before posting again; a 408 or 429 is the gateway's own timeout or rate limit, sent before it
+  // forwards the request, so the message was not posted and a retry may succeed. The gateway
+  // answers every attempt the same, so the last attempt's answer is the one the agent reads.
   test("tells dispatch_message whether a gateway's answer may have reached Dispatch", async () => {
     const gateway = ", which looks like a proxy or gateway page rather than Dispatch's own answer";
     for (const [status, statusText, advice] of [
-      [408, "Request Timeout", "the write did not reach Dispatch, and a retry may succeed"],
-      [429, "Too Many Requests", "the write did not reach Dispatch, and a retry may succeed"],
+      [408, "Request Timeout", ", so the write did not reach Dispatch, and a retry may succeed."],
+      [429, "Too Many Requests", ", so the write did not reach Dispatch, and a retry may succeed."],
       [
         502,
         "Bad Gateway",
-        "the write may or may not have reached Dispatch: check whether it took effect before retrying it",
+        " (its only attempt), and an attempt of the write may have reached Dispatch, so it may or may not have taken effect: check whether it did before retrying it.",
       ],
     ] as const) {
       const fetchImpl = async () =>
@@ -465,8 +467,8 @@ describe("executeDispatchTool", () => {
 
       expect(failure).toBe(
         `POST http://dispatch.test/api/v1/issues/DSP-1/messages answered ${status} ${statusText} ` +
-          `with a body that is not Dispatch's error JSON ("${status} ${statusText}")${gateway}, so ` +
-          `${advice}.`
+          `with a body that is not Dispatch's error JSON ("${status} ${statusText}")${gateway}` +
+          advice
       );
     }
   });
@@ -5046,7 +5048,10 @@ describe("executeDispatchTool", () => {
         writeRetry,
       })
     ).rejects.toThrow(
-      `INTERNAL: internal server error; one of ${pullRequest} may already be linked from another issue (a URL links exactly one issue)`
+      "INTERNAL: internal server error (its only attempt), and an attempt of the write may have " +
+        "reached Dispatch, so it may or may not have taken effect: check whether it did before " +
+        `retrying it. One of ${pullRequest} may already be linked from another issue (a URL links ` +
+        "exactly one issue)"
     );
   });
 
@@ -5087,10 +5092,11 @@ describe("executeDispatchTool", () => {
     );
 
     expect(failure).toBe(
-      "HTTP_500: PATCH http://dispatch.test/api/v1/issues/ACME-175 answered 500 Internal Server " +
+      "PATCH http://dispatch.test/api/v1/issues/ACME-175 answered 500 Internal Server " +
         'Error with a body that is not Dispatch\'s error JSON ("500 Internal Server Error"), which ' +
-        "looks like a proxy or gateway page rather than Dispatch's own answer, so the write may or " +
-        "may not have reached Dispatch: check whether it took effect before retrying it."
+        "looks like a proxy or gateway page rather than Dispatch's own answer (its only attempt), " +
+        "and an attempt of the write may have reached Dispatch, so it may or may not have taken " +
+        "effect: check whether it did before retrying it."
     );
   });
 
@@ -5361,10 +5367,12 @@ describe("executeDispatchTool", () => {
   // failure but a timeout and a refusal that cannot clear is asked again until the write's five
   // attempts run out, each failing the same way, so the last attempt's account is the agent's.
   test("dispatch_issue_update says whether a failed post of the reason leaves it posted", async () => {
-    const answered = (status: string, page: string) =>
-      `HTTP_${status.slice(0, 3)}: POST http://dispatch.test/api/v1/issues/ACME-175/messages ` +
-      `answered ${status} with a body that is not Dispatch's error JSON ("${page}"), which looks ` +
-      "like a proxy or gateway page rather than Dispatch's own answer";
+    const page = (status: string, text: string) =>
+      `POST http://dispatch.test/api/v1/issues/ACME-175/messages answered ${status} with a body ` +
+      `that is not Dispatch's error JSON ("${text}"), which looks like a proxy or gateway page ` +
+      "rather than Dispatch's own answer";
+    const answered = (status: string, text: string) =>
+      `HTTP_${status.slice(0, 3)}: ${page(status, text)}`;
     const unknown =
       "; the reason may or may not have been posted, and the close was not sent: read the " +
       "issue's messages before retrying, since retrying this call posts its reason again";
@@ -5383,14 +5391,16 @@ describe("executeDispatchTool", () => {
       "effect. Dispatch finishes an attempt it received whatever this command does, so read " +
       "the write back before you send it again: a new command sends it under a new key.";
     for (const [message, expected, attempts] of [
+      // A 5xx can come after Dispatch committed the reason, so with no ask left the post ends
+      // unsettled (write-outcome.ts), and the reason's account follows as a sentence of its own.
       [
         () => gatewayPage(502, "Bad Gateway"),
-        `${answered("502 Bad Gateway", "502 Bad Gateway")}${unknown}`,
+        `${page("502 Bad Gateway", "502 Bad Gateway")} (the last of 5 attempts), and ${landedTail}${unknownSentence}`,
         5,
       ],
       [
         () => refusal(500, "INTERNAL", "internal server error"),
-        `INTERNAL: internal server error${unknown}`,
+        `INTERNAL: internal server error (the last of 5 attempts), and ${landedTail}${unknownSentence}`,
         5,
       ],
       ...unanswered.map(
@@ -5526,11 +5536,12 @@ describe("executeDispatchTool", () => {
   // rather than following it, so the message never says both that a retry may succeed and that
   // retrying posts the reason again.
   test("dispatch_issue_update says the close is unknown when the PATCH times out or 5xxes after the post", async () => {
-    const unknown =
-      "; the reason already landed as message message-7 (dispatch://ACME-175/message/message-7), " +
-      "and the close may or may not have taken effect. Read the issue's status before retrying: " +
-      "done means it closed; otherwise retry with a reason that points at message message-7, " +
-      "since retrying this call posts its reason again";
+    // A 5xx can come after Dispatch committed the close, so with no ask left the PATCH ends
+    // unsettled (write-outcome.ts), and the close's account follows as a sentence of its own.
+    const landedTail =
+      "an attempt of the write may have reached Dispatch, so it may or may not have taken " +
+      "effect. Dispatch finishes an attempt it received whatever this command does, so read " +
+      "the write back before you send it again: a new command sends it under a new key.";
     const unknownSentence =
       " The reason already landed as message message-7 (dispatch://ACME-175/message/message-7), " +
       "and the close may or may not have taken effect. Read the issue's status before retrying: " +
@@ -5545,12 +5556,16 @@ describe("executeDispatchTool", () => {
             tries,
           ] as const
       ),
-      [() => refusal(502, "HTTP_502", "Bad Gateway"), `HTTP_502: Bad Gateway${unknown}`, 5],
+      [
+        () => refusal(502, "HTTP_502", "Bad Gateway"),
+        `HTTP_502: Bad Gateway (the last of 5 attempts), and ${landedTail}${unknownSentence}`,
+        5,
+      ],
       [
         () => gatewayPage(502, "Bad Gateway"),
-        "HTTP_502: PATCH http://dispatch.test/api/v1/issues/ACME-175 answered 502 Bad Gateway " +
+        "PATCH http://dispatch.test/api/v1/issues/ACME-175 answered 502 Bad Gateway " +
           'with a body that is not Dispatch\'s error JSON ("502 Bad Gateway"), which looks like a ' +
-          `proxy or gateway page rather than Dispatch's own answer${unknown}`,
+          `proxy or gateway page rather than Dispatch's own answer (the last of 5 attempts), and ${landedTail}${unknownSentence}`,
         5,
       ],
     ] as const) {

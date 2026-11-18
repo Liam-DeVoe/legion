@@ -372,6 +372,9 @@ describe("DispatchClient's writes", () => {
     expect(sent).toHaveLength(4);
   });
 
+  // A 5xx can come after Dispatch committed the write, so a write whose probe says it may not ask
+  // again ends unsettled, carrying its key, with the gateway's answer as `last`: never the answer
+  // alone, which a caller would read as a refusal (the transition table, write-outcome.ts).
   test("report the failure when the probe fails, times out or answers no JSON", async () => {
     for (const health of [
       new TypeError("fetch failed"),
@@ -391,8 +394,11 @@ describe("DispatchClient's writes", () => {
 
       expect(sent).toHaveLength(1);
       expect(probes).toHaveLength(1);
-      expect(error).toBeInstanceOf(DispatchGatewayError);
-      expect(error).toEqual(expect.objectContaining({ mayHaveReachedDispatch: true }));
+      expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
+      const unsettled = error as DispatchWriteUnsettledError;
+      expect(unsettled.key).toBe(sent[0]?.headers["Idempotency-Key"] as string);
+      expect(unsettled.last).toBeInstanceOf(DispatchGatewayError);
+      expect(unsettled.last).toEqual(expect.objectContaining({ mayHaveReachedDispatch: true }));
     }
   });
 
@@ -464,9 +470,9 @@ describe("DispatchClient's writes", () => {
     await expect(rolledBack().comment("DSP-1", comment)).resolves.toEqual(posted);
     expect(echoed.probes).toEqual([]);
     clock.advance(KEYED_LAYER_MEMORY_MS);
-    await expect(failure(rolledBack().comment("DSP-1", comment))).resolves.toBeInstanceOf(
-      DispatchGatewayError
-    );
+    const unsettled = await failure(rolledBack().comment("DSP-1", comment));
+    expect(unsettled).toBeInstanceOf(DispatchWriteUnsettledError);
+    expect((unsettled as DispatchWriteUnsettledError).last).toBeInstanceOf(DispatchGatewayError);
     expect(echoed.probes).toHaveLength(1);
     expect(echoed.sent).toHaveLength(4);
   });
@@ -499,7 +505,10 @@ describe("DispatchClient's writes", () => {
     await dispatch.comment("DSP-1", comment);
     const error = await failure(dispatch.comment("DSP-1", comment));
 
-    expect(error).toEqual(expect.objectContaining({ code: "INTERNAL", status: 500 }));
+    expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
+    expect((error as DispatchWriteUnsettledError).last).toEqual(
+      expect.objectContaining({ code: "INTERNAL", status: 500 })
+    );
     expect(sent).toHaveLength(2);
     expect(probes).toHaveLength(1);
   });
@@ -596,7 +605,11 @@ describe("DispatchClient's writes", () => {
     );
   });
 
-  test("stop after five attempts and throw the last attempt's refusal as it stands", async () => {
+  // R1-8710 (the review of 87105ed7e8): a 5xx can come after Dispatch committed the write, so a
+  // write that runs out of attempts on 5xx answers ends unsettled, carrying its key, with the last
+  // answer as `last`. It used to throw that answer as it stood, which a caller reads as a refusal
+  // ("try again in a minute") and resends under a new key.
+  test("stop after five attempts and end unsettled, the last attempt's refusal as its cause", async () => {
     const { fetchImpl, sent } = scripted(Array.from({ length: 5 }, () => page(502, "Bad Gateway")));
     const { retry, pauses } = pacing();
 
@@ -604,12 +617,48 @@ describe("DispatchClient's writes", () => {
 
     expect(sent).toHaveLength(5);
     expect(pauses).toEqual([1_000, 2_000, 4_000, 8_000]);
-    expect(error).toBeInstanceOf(DispatchGatewayError);
+    expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
+    expect((error as DispatchWriteUnsettledError).key).toBe(
+      sent[0]?.headers["Idempotency-Key"] as string
+    );
+    expect((error as DispatchWriteUnsettledError).last).toBeInstanceOf(DispatchGatewayError);
     expect(error.message).toBe(
       "POST http://dispatch.test/api/v1/issues/DSP-1/comments answered 502 Bad Gateway with a " +
         `body that is not Dispatch's error JSON ("502 Bad Gateway"), which looks like a proxy or ` +
-        "gateway page rather than Dispatch's own answer, so the write may or may not have reached " +
-        "Dispatch: check whether it took effect before retrying it."
+        "gateway page rather than Dispatch's own answer (the last of 5 attempts), and an attempt " +
+        "of the write may have reached Dispatch, so it may or may not have taken effect. Dispatch " +
+        "finishes an attempt it received whatever this command does, so read the write back " +
+        "before you send it again: a new command sends it under a new key."
+    );
+  });
+
+  // The reviewer's R1-8710 case: a silence cut, then Dispatch's broker-token gate answering 503
+  // BROKER_UNAVAILABLE (before its keyed layer reads the key) on every later attempt, echoed or
+  // not. The write ends unsettled with its key, never "try again in a minute".
+  test.each([
+    ["un-echoed", false],
+    ["echoed", true],
+  ] as const)("a silence cut then %s 503s to the end leaves the write unsettled", async (_, echoes) => {
+    const { retry, stall } = stalling();
+    const unavailable = () =>
+      refusal(
+        503,
+        "BROKER_UNAVAILABLE",
+        "the secrets broker cannot be reached; try again in a minute"
+      );
+    const { fetchImpl, sent } = scripted([stall, ...Array.from({ length: 30 }, unavailable)], {
+      echo: (request) => echoes && request > 1,
+    });
+
+    const error = await failure(client(fetchImpl, retry).comment("DSP-1", comment));
+
+    expect(sent.length).toBeGreaterThan(2);
+    expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
+    expect((error as DispatchWriteUnsettledError).key).toBe(
+      sent[0]?.headers["Idempotency-Key"] as string
+    );
+    expect((error as DispatchWriteUnsettledError).last).toEqual(
+      expect.objectContaining({ code: "BROKER_UNAVAILABLE", status: 503 })
     );
   });
 
@@ -779,7 +828,8 @@ describe("DispatchClient's writes", () => {
 
   // The call's deadline is the caller's limit, never a reason to ask again. A write it ends while
   // an attempt is out, which may have reached Dispatch, may or may not have taken effect, and says
-  // so; the caller's own cancellation is thrown as it is.
+  // so; so does the caller's own cancellation once an attempt may have landed, while one before any
+  // attempt went out is thrown as it is (the transition table, write-outcome.ts).
   test("the deadline or the caller's cancellation ends a write's attempts", async () => {
     const hung = scripted([hang]);
     const timeout = await failure(
@@ -806,6 +856,8 @@ describe("DispatchClient's writes", () => {
     expect(thrown).toBeInstanceOf(DispatchWriteUnsettledError);
     expect(timedOut.sent).toHaveLength(1);
 
+    // The caller's stop during the pause after a 502, which may have landed: unsettled, with the
+    // stop as its cause, and nothing sent after it.
     const controller = new AbortController();
     const cancelled = scripted([page(502, "Bad Gateway"), json(posted, 201)]);
     const paused: DispatchWriteRetry = {
@@ -818,8 +870,19 @@ describe("DispatchClient's writes", () => {
     const aborted = await failure(
       client(cancelled.fetchImpl, paused, controller.signal).comment("DSP-1", comment)
     );
-    expect(aborted.name).toBe("AbortError");
+    expect(aborted).toBeInstanceOf(DispatchWriteUnsettledError);
+    expect((aborted as DispatchWriteUnsettledError).last.name).toBe("AbortError");
     expect(cancelled.sent).toHaveLength(1);
+
+    // The caller's stop before any attempt went out is thrown as it is.
+    const early = new AbortController();
+    early.abort(new DOMException("The operation was aborted.", "AbortError"));
+    const none = scripted([json(posted, 201)]);
+    const stopped = await failure(
+      client(none.fetchImpl, pacing().retry, early.signal).comment("DSP-1", comment)
+    );
+    expect(stopped.name).toBe("AbortError");
+    expect(none.sent).toHaveLength(0);
   });
 
   // The second half of this row proves the caller's deadline ends a pause rather than waiting it
