@@ -11,10 +11,11 @@
 -- between that fails for some other reason, such as a read the database did not answer, leaves the
 -- mark as it stands. Every existing row takes null: it was never held.
 --
--- claims.relaunch_generation is supervise.Reach.LastRelaunchGeneration: the launch generation the
+-- claims.relaunch_generation is supervise.Claim.LastRelaunchGeneration: the launch generation the
 -- claim's last relaunch on its same session left it at, beside that relaunch's moment
--- (claims.relaunched_at). The relaunch's own write after its launch records it, and a write that
--- carries an older relaunch, or none, leaves it as it stands (store's putClaim). The reach keeper
+-- (claims.relaunched_at). The relaunch's launch records it in the launch's own write, whichever
+-- path made that launch, and a write that carries an older relaunch, or none, leaves it as it
+-- stands (store's putClaim). The reach keeper
 -- counts the claim's later launches from it, so a daemon that ends before its own record of the
 -- relaunch is written does not take a later launch — the process exiting at its Envoy role claim
 -- and launched again — for the relaunch's own. Null is a relaunch whose launch is not recorded,

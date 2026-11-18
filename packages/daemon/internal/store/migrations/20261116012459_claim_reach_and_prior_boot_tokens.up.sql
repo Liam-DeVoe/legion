@@ -16,7 +16,7 @@
 -- a machine's writes. Every existing row takes '{}', the record of a claim nothing has been read of
 -- yet.
 --
--- claims.relaunched_at is supervise.Reach.LastRelaunch: when a relaunch of a claim Envoy could not
+-- claims.relaunched_at is supervise.Claim.LastRelaunch: when a relaunch of a claim Envoy could not
 -- reach last ended its process to start it again on the same session. It is a column of the claim's
 -- own row, which the claim's own write carries — its launch's write at the latest — in that write's
 -- own statement, and not a field of claims.reach, which the daemon's reach keeper writes after the
