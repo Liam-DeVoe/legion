@@ -129,7 +129,8 @@ const (
 
 // RatingReasonMost is the most a rating's reason holds, counted in Unicode code points as the
 // daemon counts it when the retro's completion carries the reason, so every reason the daemon
-// takes is one Dispatch takes.
+// takes is one Dispatch takes. It and the scale are held equal to the daemon's own bounds by
+// TestDispatchsRatingBoundsAreTheDaemons (internal/textcheck).
 const RatingReasonMost = 2000
 
 // The refusals a caller maps to an answer of its own. They are the only ones: a write is never
