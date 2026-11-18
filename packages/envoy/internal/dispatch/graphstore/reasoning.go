@@ -606,7 +606,10 @@ func readInvocations(ctx context.Context, tx pgx.Tx, lenses []string, tuples []T
 // is. A block no document holds - a finding of a lens, a block a version removed - answers none,
 // and no rule that names a block type lets it through. A document no project holds, an agent
 // conversation's file, answers no project. A retired document keeps its document_blocks rows, so
-// its checks are read, and refused, for what they are.
+// its checks are read, and refused, for what they are. A write that asserts a prevented_by reads
+// them holding the owner row of each check's document (api's lockReasoningOwners), the row a
+// retirement (docs.RetireDocument) and the index pass that marks a block gone take first, so what
+// it reads of the document and the block is what stands until it commits.
 func (e *pointerEnds) readBlocks(ctx context.Context, tx pgx.Tx, ids []string) error {
 	rows, err := tx.Query(ctx, `
 		select d.node_id, d.type, a.project_key, a.retired_at is not null

@@ -552,7 +552,10 @@ type riskWritten struct {
 // belongs under a pre-mortem, and a prevented_by to a block that is no check is the same, as is
 // one to a check of another project or of a retired document, naming the check. A lens the caller
 // may not see under the issue, and a check the caller may not see wherever it stands, are 404
-// NOT_FOUND. Each stores nothing.
+// NOT_FOUND. Each stores nothing. It takes the issue's row and the owner row of the check's
+// document before it reads either (lockReasoningOwners), so a retirement of that document or an
+// index pass that marks the check gone, which take that row first, commits wholly before the
+// risk, and the check reads retired or gone, or wholly after it, and retracts its prevented_by.
 func (s *server) writeRisk(w http.ResponseWriter, r *http.Request) {
 	var input riskInput
 	if err := decodeJSON(r, &input); err != nil {
@@ -583,6 +586,14 @@ func (s *server) writeRisk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(ctx)
+	var checks []string
+	if input.PreventedBy != nil {
+		checks = []string{*input.PreventedBy}
+	}
+	if err := lockReasoningOwners(ctx, tx, key, checks); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	at, err := transactionNow(ctx, tx)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -979,7 +990,11 @@ func pointerEnd(ctx context.Context, q refs.Queryer, who model.Actor, key, kind,
 // (refusalNamed); a second has_kind, and a retarget of a pre-mortem's away from pre-mortem, are its
 // 409 POINTER_ALREADY_ASSERTED, one body whatever hangs under the lens. A retarget touches no
 // part_of tuple, and this route writes none: a node moves to another parent through its parent
-// route.
+// route. Before it reads a node it takes the issue's row and, for an append or a retarget of a
+// prevented_by, the owner row of the document of the check at to (lockReasoningOwners), so a
+// retirement of that document or an index pass that marks the check gone, which take that row
+// first, commits wholly before the tuple, which is then refused, or wholly after it, and retracts
+// it with the rest.
 func (s *server) writePointer(w http.ResponseWriter, r *http.Request) {
 	var input pointerInput
 	if err := decodeJSON(r, &input); err != nil {
@@ -1020,6 +1035,15 @@ func (s *server) writePointer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(ctx)
+	// An append and a retarget assert a prevented_by at to; a retraction asserts nothing.
+	var checks []string
+	if input.Kind == graphstore.TuplePreventedBy && input.Action != pointerRetract {
+		checks = []string{input.To}
+	}
+	if err := lockReasoningOwners(ctx, tx, key, checks); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	at, err := transactionNow(ctx, tx)
 	if err != nil {
 		s.writeHandlerError(w, err)

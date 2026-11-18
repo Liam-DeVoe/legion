@@ -6,12 +6,15 @@ import (
 	"maps"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // reasoningNode is one node of the reasoning kinds a request writes under an issue: a lens
@@ -48,12 +51,68 @@ type reasoningWrite struct {
 
 // lockIssueRow takes the issue's row `for no key update`, the owner row the lock order on
 // api/inbox_read.go's markInboxReadThreads puts before every other, and answers the issue's
-// project: the first statement of every reasoning write. An issue that does not exist is
-// pgx.ErrNoRows.
+// project: the first lock of every reasoning write that names no check. A write that names one
+// takes the row before, with the owner rows of its checks' documents (lockReasoningOwners), and
+// then takes here a row its transaction holds, which waits on nothing. An issue that does not
+// exist is pgx.ErrNoRows.
 func lockIssueRow(ctx context.Context, tx pgx.Tx, key string) (string, error) {
 	var project string
 	err := tx.QueryRow(ctx, `select project_key from issues where key = $1`+ownerRowLock, key).Scan(&project)
 	return project, err
+}
+
+// lockReasoningOwners takes every owner row a reasoning write stands under, in one
+// events.LockOwnerRows call, so once each and in ascending owner key, before the write reads a
+// node: the issue's own, and the owner of the document of each check a prevented_by of the write
+// asserts, which checks names by the dispatch:// addresses the request gave, none for a write that
+// asserts no prevented_by. A retirement of a document (docs.RetireDocument) and an index pass that
+// marks a block gone (refs.IndexBlocks, under the revision fence) each take that document's owner
+// row first, so an assertion that races either runs wholly before it, and is retracted with the
+// rest, or wholly after it, and reads the document retired or the check gone, and is refused (spec
+// requirement r-constraint-risk). Two writes that name each other's issues take the rows they
+// share in one order, so neither holds a row the other waits for.
+//
+// The document a check stands in is read off its address with no lock, before the locks: a
+// document block's id is its document's ref_key, '#' and its block id, a ref_key names one
+// document, and no write moves a document to another issue (project_scope.go). An address that
+// names no block of a document names no owner, and the read under the locks answers it as one
+// that does not exist.
+func lockReasoningOwners(ctx context.Context, tx pgx.Tx, issue string, checks []string) error {
+	owners := events.OwnerRows{}
+	owners.Add(issue, "", "the issue "+issue)
+	documents := make(map[string]string, len(checks))
+	for _, check := range checks {
+		kind, id, ok := decodeNodeAddress(check)
+		if !ok || kind != refs.BlockNodeKind {
+			continue
+		}
+		// A ref_key holds no '#', so the block's id names its document before the first one.
+		if document, _, held := strings.Cut(id, "#"); held {
+			if _, named := documents[document]; !named {
+				documents[document] = check
+			}
+		}
+	}
+	if len(documents) > 0 {
+		rows, err := tx.Query(ctx, `
+			select ref_key, id::text, coalesce(issue_key, '') from artifacts where ref_key = any($1)
+		`, slices.Sorted(maps.Keys(documents)))
+		if err != nil {
+			return fmt.Errorf("read the documents of the checks the write names: %w", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var refKey, id, issueKey string
+			if err := rows.Scan(&refKey, &id, &issueKey); err != nil {
+				return fmt.Errorf("read the documents of the checks the write names: %w", err)
+			}
+			owners.Add(issueKey, id, "the check "+documents[refKey])
+		}
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("read the documents of the checks the write names: %w", err)
+		}
+	}
+	return events.LockOwnerRows(ctx, tx, owners)
 }
 
 // writeReasoningNodes is the one write path of the lenses, the findings, the risks and the
@@ -83,7 +142,8 @@ func lockIssueRow(ctx context.Context, tx pgx.Tx, key string) (string, error) {
 // project of the issue (the project graphstore.IssueNode states of the issue's own node), and
 // between no parties.
 //
-// It takes the issue's row first (lockIssueRow) and reads the project off it; an issue that does
+// It takes the issue's row first (lockIssueRow) and reads the project off it, a row its caller
+// holds already where the write asserts a prevented_by (lockReasoningOwners); an issue that does
 // not exist is pgx.ErrNoRows. Then it writes every node, the authors' among them, and every tuple
 // in one graphstore.Write: the nodes in ascending (kind, id), the type rules of the pointer tuples
 // checked before the first tuple is appended (graphstore's pointerRules, whose refusals are 400
@@ -99,7 +159,10 @@ func lockIssueRow(ctx context.Context, tx pgx.Tx, key string) (string, error) {
 // which stands under any issue of the project (the store holds it to the risk's project), and an
 // end that stands under no issue - a has_kind tuple's lens_kind, a constraint of the catalogue a
 // lens_kind reaches - are no nodes FindNodeUnderIssue answers but 404 for, and are found through
-// refs.Node with the caller's visibility instead (pointerEnd).
+// refs.Node with the caller's visibility instead (pointerEnd). A caller whose write asserts a
+// prevented_by first takes the owner row of each check's document with the issue's
+// (lockReasoningOwners), so its read of the check and the store's read of whether the check's
+// document is retired stand under the row a retirement and the index pass take first.
 //
 // It answers the nodes the request wrote, in the order it named them, without their authors':
 // the nodes this write made, which are the ones a write made for a run names as changed by it
@@ -205,13 +268,14 @@ type reasoningPointer struct {
 // writeReasoningPointer is the one write path of a pointer tuple a request appends, retracts or
 // retargets out of a lens, a risk or a requirement block, and of the moved_to the pre-mortem
 // conversion appends out of the document it retires (retireConvertedDocument), in the caller's
-// transaction. It takes the issue's row first (lockIssueRow), and then writes through the store,
-// which holds the tuple to its type rule (graphstore's pointerRules) and takes the node rows that
-// rule names after the owner row: an append and a retraction through graphstore.Write, a
-// retarget through graphstore.Retarget. No event is appended, as none is for the nodes these
-// tuples tie (writeReasoningNodes). The pointer is marked as changing the node it goes out of
-// (graphstore.Tuple's Changes), so a write made for a run names that node, and not its far end,
-// as changed by it.
+// transaction. It takes the issue's row first (lockIssueRow), which a caller that asserts a
+// prevented_by holds already, taken with the owner row of the check's document
+// (lockReasoningOwners), and then writes through the store, which holds the tuple to its type rule
+// (graphstore's pointerRules) and takes the node rows that rule names after the owner row: an
+// append and a retraction through graphstore.Write, a retarget through graphstore.Retarget. No
+// event is appended, as none is for the nodes these tuples tie (writeReasoningNodes). The pointer
+// is marked as changing the node it goes out of (graphstore.Tuple's Changes), so a write made for
+// a run names that node, and not its far end, as changed by it.
 //
 // A retraction of a tuple the node does not hold now is a 404, as a retarget of one is
 // (graphstore.ErrPointerNotHeld): there is nothing to retract. An append of a tuple the node holds

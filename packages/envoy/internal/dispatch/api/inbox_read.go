@@ -475,7 +475,9 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 // every writer:
 //
 //  1. the owner row comes first, through ownerRowLock (owner.go) or lockArtifactOwner
-//     (docs/service.go), as it does for every other writer above;
+//     (docs/service.go), as it does for every other writer above, and a write that stands under
+//     several owners takes all of them first, in one events.LockOwnerRows call, once each in
+//     ascending owner key;
 //  2. a node's graph_nodes row is written before any projection row whose foreign key names it
 //     (document_blocks, block_refs and comments, migration 20261109022248), so the write that
 //     makes a node and the write that points at it never meet in the opposite order;
@@ -509,7 +511,18 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 // queue at that row and the second reads the first's tuple; graphstore.Retarget takes the row of
 // the node whose pointer it moves before the rest of its write. The reasoning write
 // (writeReasoningNodes) takes its issue's owner row first, as invariant 1 says, and writes its
-// nodes in one graphstore.Write.
+// nodes in one graphstore.Write. A write that asserts a risk's prevented_by - the pointer route's
+// append and retarget, the risk route and the pre-mortem conversion - stands under its issue and
+// under the document of each check it points at, which another issue may own. It takes all of
+// their owner rows before it reads a node, in one events.LockOwnerRows call (api's
+// lockReasoningOwners), so two such writes naming each other's issues take the rows they share in
+// one order, and only then reads the check and whether its document is retired (graphstore's
+// readBlocks); its writeReasoningNodes or writeReasoningPointer then takes again an issue row it
+// holds, which waits on nothing. A retirement (docs.RetireDocument, through lockArtifactOwner) and
+// the index pass that marks a block gone (under the revision fence, invariant 5) take that
+// document's owner row first too, so an assertion that races either runs wholly before it, and is
+// retracted with the rest, or wholly after it, and reads the document retired or the check gone,
+// and is refused.
 //
 // A run of the command bar (api/going.go) owns no issue and no document, so none of its writes
 // takes an owner row. Its record (recordGoingRequest) writes the run's interaction node, its

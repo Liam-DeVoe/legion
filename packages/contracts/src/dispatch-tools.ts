@@ -2703,9 +2703,10 @@ export const dispatchToolSpecs = [
       "document does not hold, a number twice, a risk with no entry, an address that names no " +
       "check block you may see, a blank reason, and an entry of any other shape are refused " +
       "with 400 ARTIFACT_INPUT, naming the entry by its position from 1 and its risk number, " +
-      "and an entry naming a check of another project or of a retired document with 400 " +
-      "INVALID_POINTER, naming the entry, its risk and the check, with preview as without it; " +
-      "nothing is written. preview answers what the conversion would write and writes nothing; " +
+      "and an entry naming a check of another project, of a retired document or of the document " +
+      "itself, which the conversion retires, with 400 INVALID_POINTER, naming the entry, its " +
+      "risk and the check, with preview as without it; nothing is written and the document " +
+      "stays unretired. preview answers what the conversion would write and writes nothing; " +
       "run it first. A document converted already is answered as such, naming its lens, and " +
       "nothing is written. The result names the lens's dispatch://lens/<uuid> address and each " +
       "risk's dispatch://risk/<uuid> address. The conversion appends one event, the document's " +

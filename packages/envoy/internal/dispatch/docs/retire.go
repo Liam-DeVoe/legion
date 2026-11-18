@@ -63,7 +63,10 @@ var retirementEvents = events.NewBroker()
 // block of the document, as actor at the retirement's own time (retiredPreventions), and the store
 // refuses any later one (graphstore's pointerRules): a risk such a check covered reads prevented
 // by nothing from then on, and the check reads preventing no risk
-// (spec requirement r-constraint-risk).
+// (spec requirement r-constraint-risk). A write that asserts a prevented_by takes the document's
+// owner row, the row this takes first, before it reads whether the document is retired (api's
+// lockReasoningOwners), so one that races the retirement commits wholly before it, and is
+// retracted here, or wholly after it, and is refused.
 //
 // It takes the document's owner row first (lockArtifactOwner), then writes the store's lock order
 // as a create writes it: the node, its projection row, the event, and the node's facts under that

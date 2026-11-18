@@ -109,10 +109,11 @@ type PremortemRisk struct {
 // PremortemMapError is a map the conversion refuses, naming the entry: its position in the map,
 // from 1, and the risk it names, or, with Entry 0, the risk the document holds that no entry names.
 // The route answers it 400 ARTIFACT_INPUT, and the command names the line of its file that entry
-// came from. An entry naming a check of another project than the issue's, or a check of a retired
-// document, is refused by the store's rule (graphstore's pointerRules) once the conversion writes:
-// refusal is that refusal, naming the check, which Problem words and the error wraps, so the route
-// answers it 400 INVALID_POINTER; it is nil for every other refusal.
+// came from. An entry naming a check of another project than the issue's, a check of a retired
+// document, or a check of the document the conversion retires, is refused by the store's rule
+// (graphstore's pointerRules) once the conversion writes: refusal is that refusal, naming the
+// check, which Problem words and the error wraps, so the route answers it 400 INVALID_POINTER; it
+// is nil for every other refusal.
 type PremortemMapError struct {
 	Entry   int
 	Risk    int
@@ -578,20 +579,30 @@ func premortemChecks(ctx context.Context, q refs.Queryer, who model.Actor, entri
 // the write records (reasoningWrite): it is the one conversion, which the route and the command
 // both run.
 //
-// It takes the issue's row `for no key update` first, the owner row the lock order on
-// api/inbox_read.go's markInboxReadThreads puts before every other, so two conversions of one
-// issue queue there and the second reads what the first wrote. It reads the document's newest
-// version. A document whose address carries a moved_to tuple already is converted: the call
-// answers that lens, AlreadyConverted, and writes nothing. Otherwise it parses the document
-// (parsePremortem), holds entries to it (checkPremortemMap) and writes, through
+// It first takes, in one call (lockReasoningOwners), the issue's row `for no key update` - the
+// owner row the lock order on api/inbox_read.go's markInboxReadThreads puts before every other,
+// and the owner of the document it converts - and the owner row of the document of every check the
+// map names. So two conversions of one issue queue there and the second reads what the first
+// wrote, and a retirement of a check's document or an index pass that marks a check gone, which
+// take that row first, commits wholly before the conversion reads the check, or wholly after it,
+// and retracts the prevented_by with the rest (spec requirement r-constraint-risk). It
+// reads the document's newest version. A document whose address carries a moved_to tuple already
+// is converted: the call answers that lens, AlreadyConverted, and writes nothing. Otherwise it
+// parses the document (parsePremortem), holds entries to it (checkPremortemMap), retires the
+// document and moves its address to the lens (retireConvertedDocument), and then writes, through
 // writeReasoningNodes at graphstore.NoEvent, one lens of kind pre-mortem under the issue's node,
 // whose verdict is the document's verdict followed by its two closing sections, and under it one
 // risk for each risk of the document in the order of their numbers, each with its heading, its
-// early warning and its prevention and a prevented_by tuple to each check its entry names. Then it
-// retires the document and moves its address to the lens (retireConvertedDocument); the retirement
-// retracts each prevented_by at a block of the document, a check the document held among them
-// (docs.RetireDocument). It answers the report and the events the conversion appended - the
-// document.retired of the retirement - which the caller publishes once tx commits.
+// early warning and its prevention and a prevented_by tuple to each check its entry names. It
+// answers the report and the events the conversion appended - the document.retired of the
+// retirement - which the caller publishes once tx commits.
+//
+// The document is retired before the risks are written so that the store holds their
+// prevented_by tuples to the document as it will stand: nobody runs a retired document's checks,
+// so an entry naming a check the document itself holds is refused by the store's rule as any
+// check of a retired document is (graphstore's pointerRules), rather than written and then
+// retracted by the retirement that follows (docs.RetireDocument), which would answer the caller a
+// pointer the store no longer holds (spec requirement r-premortem-nodes).
 //
 // With dryRun it runs every one of those writes in a savepoint of tx and rolls the savepoint back,
 // so the store's own rules hold the write as they would hold the real one and nothing of it
@@ -599,18 +610,26 @@ func premortemChecks(ctx context.Context, q refs.Queryer, who model.Actor, entri
 //
 // A map the document refuses is a PremortemMapError, and a document that is none, no pre-mortem,
 // or retired by anything but a conversion a PremortemDocumentError; each is refused before
-// anything is written. An entry naming a check of another project than the issue's, or a check of
-// a retired document, is refused by the store's rule as the write runs, in a dry run as in a real
-// one, and answered as the PremortemMapError of that entry, wrapping the store's
-// graphstore.ErrInvalidPointer (refusedPrevention); the write it refused is the savepoint's, rolled
-// back, or tx's, which the caller rolls back on that error, so nothing of it remains.
+// anything is written. An entry naming a check of another project than the issue's, a check of a
+// retired document, or a check of the document the conversion retires, is refused by the store's
+// rule as the write runs, in a dry run as in a real one, and answered as the PremortemMapError of
+// that entry, wrapping the store's graphstore.ErrInvalidPointer (refusedPrevention); the write it
+// refused is the savepoint's, rolled back, or tx's, which the caller rolls back on that error, so
+// nothing of it remains and the document stays unretired.
 func ConvertPremortem(ctx context.Context, tx pgx.Tx, proving, recorded model.Actor, key, slug string, entries []PremortemEntry, dryRun bool) (PremortemReport, []model.Event, error) {
-	_, _, err := issueStatus(ctx, tx, key, ownerRowLock)
+	var checks []string
+	for _, entry := range entries {
+		checks = append(checks, entry.Checks...)
+	}
+	if err := lockReasoningOwners(ctx, tx, key, checks); err != nil {
+		return PremortemReport{}, nil, fmt.Errorf("take the owner rows of %s and of the documents of the checks its map names: %w", key, err)
+	}
+	_, _, err := issueStatus(ctx, tx, key, "")
 	if errors.Is(err, pgx.ErrNoRows) {
 		return PremortemReport{}, nil, &PremortemDocumentError{Missing: true, Problem: fmt.Sprintf("no issue %s holds a document %q", key, slug)}
 	}
 	if err != nil {
-		return PremortemReport{}, nil, fmt.Errorf("take the row of the issue %s: %w", key, err)
+		return PremortemReport{}, nil, fmt.Errorf("read the issue %s: %w", key, err)
 	}
 	source, err := readPremortemSource(ctx, tx, key, slug)
 	if err != nil {
@@ -696,12 +715,16 @@ func ConvertPremortem(ctx context.Context, tx pgx.Tx, proving, recorded model.Ac
 
 	lens := refs.StoreRef(graphstore.KindLens, lensID)
 	convert := func(q pgx.Tx) (model.Event, error) {
+		retired, err := retireConvertedDocument(ctx, q, source, key, lensID, lens, at, recorded)
+		if err != nil {
+			return model.Event{}, err
+		}
 		if _, err := writeReasoningNodes(ctx, q, reasoningWrite{
 			reasoningCaller: reasoningCaller{proving: proving, recorded: recorded}, issue: key, at: at, nodes: nodes,
 		}); err != nil {
 			return model.Event{}, err
 		}
-		return retireConvertedDocument(ctx, q, source, key, lensID, lens, at, recorded)
+		return retired, nil
 	}
 	if dryRun {
 		savepoint, err := tx.Begin(ctx)
@@ -730,15 +753,16 @@ func ConvertPremortem(ctx context.Context, tx pgx.Tx, proving, recorded model.Ac
 	return report, []model.Event{retired}, nil
 }
 
-// retireConvertedDocument retires source, the document of the issue key the conversion wrote the
-// lens lensID, at lens, in the place of, as actor, at the transaction's own time at. It appends the
-// moved_to tuple from the document's own address - the store's form of
-// `dispatch://<KEY>/artifact/<slug>`, kind artifact at its ref_key, as a tuple names a document
-// (farEndOf) - to the lens, through writeReasoningPointer at graphstore.NoEvent, so the readers of
-// a move (graphstore.MovedTo: GET /api/v1/references?to= and refs.Closure) answer the document's
-// old address with the lens. Then it retires the document through docs.RetireDocument, the one
-// retire path, whose reason names the lens, "converted into the pre-mortem lens <lens>", and
-// answers the document.retired event that retirement appended.
+// retireConvertedDocument retires source, the document of the issue key the conversion writes the
+// lens lensID, at lens, in the place of, as actor, at the transaction's own time at, before that
+// lens and its risks are written (ConvertPremortem). It appends the moved_to tuple from the
+// document's own address - the store's form of `dispatch://<KEY>/artifact/<slug>`, kind artifact
+// at its ref_key, as a tuple names a document (farEndOf) - to the lens, through
+// writeReasoningPointer at graphstore.NoEvent, so the readers of a move (graphstore.MovedTo: GET
+// /api/v1/references?to= and refs.Closure) answer the document's old address with the lens. Then
+// it retires the document through docs.RetireDocument, the one retire path, whose reason names the
+// lens, "converted into the pre-mortem lens <lens>", and answers the document.retired event that
+// retirement appended.
 func retireConvertedDocument(ctx context.Context, tx pgx.Tx, source premortemSource, key, lensID, lens string, at time.Time, actor model.Actor) (model.Event, error) {
 	if err := writeReasoningPointer(ctx, tx, reasoningPointer{issue: key, action: pointerAppend, pointer: graphstore.Tuple{
 		FromKind: graphstore.KindArtifact, FromID: source.refKey, Kind: graphstore.TupleMovedTo, ToKind: graphstore.KindLens, ToID: lensID,
@@ -754,11 +778,12 @@ func retireConvertedDocument(ctx context.Context, tx pgx.Tx, source premortemSou
 }
 
 // refusedPrevention is err as the entry of the map it refuses, where err is the store's refusal of
-// a risk's prevented_by at a check of another project than the risk's or of a retired document
-// (graphstore's pointerRules): the PremortemMapError of the entry of the first risk, in the order
-// the conversion writes them, whose entry names that check - the store holds a write's tuples in
-// its order and refuses the first that breaks its rule - wrapping the refusal with the check named
-// by its address (refusalNamed). Any other err it answers as it is.
+// a risk's prevented_by at a check of another project than the risk's or of a retired document,
+// the document the conversion retires among them (graphstore's pointerRules): the
+// PremortemMapError of the entry of the first risk, in the order the conversion writes them, whose
+// entry names that check - the store holds a write's tuples in its order and refuses the first
+// that breaks its rule - wrapping the refusal with the check named by its address (refusalNamed).
+// Any other err it answers as it is.
 func refusedPrevention(err error, document premortem, preventions map[int]premortemPrevention) error {
 	for _, risk := range document.risks {
 		prevention := preventions[risk.number]
@@ -852,10 +877,11 @@ func decodePremortemEntries(raw json.RawMessage) ([]PremortemEntry, string) {
 // document.retired event of the retirement once the transaction commits. A body that is not JSON
 // is decodeJSON's 400 INVALID_JSON; a map of any other shape, and a map the document refuses, are
 // 400 ARTIFACT_INPUT naming the entry by its position and its risk, or the risk no entry names; an
-// entry naming a check of another project or of a retired document is the store's 400
-// INVALID_POINTER, naming the entry, its risk and the check, in a dry run as in a real one; no
-// document {slug} of the issue is 404 ARTIFACT_NOT_FOUND, and a document that is no pre-mortem, or
-// that something other than a conversion retired, 400 ARTIFACT_INPUT. Each writes nothing. A
+// entry naming a check of another project, of a retired document or of the document {slug} itself,
+// which the conversion retires, is the store's 400 INVALID_POINTER, naming the entry, its risk and
+// the check, in a dry run as in a real one; no document {slug} of the issue is 404
+// ARTIFACT_NOT_FOUND, and a document that is no pre-mortem, or that something other than a
+// conversion retired, 400 ARTIFACT_INPUT. Each writes nothing, and leaves the document unretired. A
 // document converted already answers 200 naming its lens and writes nothing, and so does a dry
 // run, naming what it would write.
 func (s *server) convertPremortemRoute(w http.ResponseWriter, r *http.Request) {

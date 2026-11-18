@@ -57,9 +57,10 @@ A blank line, and a line whose first character is #, are skipped. For example:
 
 The command refuses, writing nothing and naming the line: a line of any other shape, a number the
 document does not hold, a number twice, a risk the document holds with no line, an address that
-names no check block that is not gone, and a check of another project than the issue's, which the
-store's rule on prevented_by refuses, naming the line's risk and the check, with --dry-run as
-without it.
+names no check block that is not gone, and a check of another project than the issue's, of a
+retired document, or of the document <slug> itself, which the conversion retires and whose checks
+nobody runs then; the store's rule on prevented_by refuses those three, naming the line's risk and
+the check, with --dry-run as without it, and the document stays unretired.
 
 Exit 0 when it converted, ran dry, or found the document converted already, printing the report; 1
 when it refused (the map file, or a document that is none, no pre-mortem, or retired by anything
