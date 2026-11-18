@@ -61,14 +61,25 @@ jobs:
           go-version-file: packages/envoy/go.mod
           cache: false
       # go-envoy: the listener and natsd test/envoy-stack.ts builds, as envoy-e2e-local's
-      # e2e-local.sh does.
+      # e2e-local.sh does, and the modules of the Dispatch server test/dispatch-stack.ts builds,
+      # under the key .github/workflows/ci-caches.yaml's envoy job fills: the runner's
+      # architecture, the Go version and the hash of the module files those builds read in the
+      # root workspace.
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum') }}
           restore-keys: ${{ format('go-envoy-{0}-{1}-', runner.os, runner.arch) }}
+      # The stacks' builds (test/envoy-stack.ts's buildGoBinaries, and the role takeover smoke's
+      # through packages/pi-envoy/scripts/local-stack.sh) run with GOPROXY=off, since a fetch
+      # inside a test fails it whenever the module proxy does, on a change that touched nothing it
+      # tests. This step fetches their modules first, from the cache restored above and tried
+      # again on failure: a pull request that changes the module files restores an older entry by
+      # prefix, and this fetches what moved.
+      - name: Fetch the modules of the envoy commands the stacks build
+        run: .github/scripts/go-fetch.sh deps packages/envoy ./cmd/listener ./internal/testnats/cmd/natsd ./cmd/dispatch
       - name: Size the service for this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       - name: Build contracts for the stall suites

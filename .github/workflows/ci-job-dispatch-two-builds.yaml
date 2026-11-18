@@ -186,6 +186,12 @@ jobs:
       - name: Build contracts for dispatch e2e
         run: bun run build:dispatch
         working-directory: packages/contracts
+      # The browser tests' harness builds Dispatch A's server (e2e/run-server.sh) with
+      # GOPROXY=off: a fetch inside a test fails it whenever the module proxy does, on a change
+      # that touched nothing it tests. This step fetches that build's modules first, tried again
+      # on failure, and the build step and the tests after it read them from the module cache.
+      - name: Fetch the modules of the Dispatch server the browser tests build
+        run: .github/scripts/go-fetch.sh deps packages/envoy ./cmd/dispatch
       - name: Build the Dispatch server
         # Dispatch A's; run-server.sh builds it too, inside the harness's boot wait for each server
         # (e2e/harness-start.ts, bounded by the listener's bootMs); built here, A finds it current

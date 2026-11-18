@@ -133,6 +133,13 @@ jobs:
         # intermittently failed `apt-get update` and took `--with-deps` down with it.
         run: bunx playwright install chromium
         working-directory: docs/site
+      # The screenshots' harness builds the Dispatch server (packages/dispatch/e2e/run-server.sh)
+      # and the real broker's three commands (e2e/run-broker.sh) with GOPROXY=off: a fetch inside
+      # the run fails it whenever the module proxy does, on a change that touched nothing it
+      # shows. This step fetches those builds' modules first, from the cache restored above and
+      # tried again on failure.
+      - name: Fetch the modules of the commands the screenshots' harness builds
+        run: .github/scripts/go-fetch.sh deps packages/envoy ./cmd/dispatch ./cmd/broker ./cmd/dev-oidc-issuer ./internal/broker/brokertest/requestseed
       - name: Take the screenshots
         run: bun run docs:media
         # A step of the run that hangs fails it within two minutes (STEP_TIMEOUT_MS in

@@ -33,6 +33,13 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
+      # src/go-command.test.ts runs the real go command, against a module proxy on disk it writes
+      # itself, so it fetches nothing from the network and needs no module cache restored. The
+      # daemon's go.mod is the Go pin a job without a module of its own reads.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/daemon/go.mod
+          cache: false
       - name: Typecheck the shared test fixtures
         run: bun run typecheck
         working-directory: packages/test-fixtures

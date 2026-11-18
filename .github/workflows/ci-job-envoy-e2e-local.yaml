@@ -44,14 +44,23 @@ jobs:
         with:
           go-version-file: packages/envoy/go.mod
           cache: false
-      # go-envoy: the listener and natsd e2e-local.sh builds.
+      # go-envoy: the listener and natsd e2e-local.sh builds, under the key
+      # .github/workflows/ci-caches.yaml's envoy job fills: the runner's architecture, the Go
+      # version and the hash of the module files those builds read in the root workspace.
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum') }}
           restore-keys: ${{ format('go-envoy-{0}-{1}-', runner.os, runner.arch) }}
+      # e2e-local.sh builds the listener and natsd with GOPROXY=off, in both steps below: a fetch
+      # inside a test fails it whenever the module proxy does, on a change that touched nothing it
+      # tests. This step fetches their modules first, from the cache restored above and tried
+      # again on failure: a pull request that changes the module files restores an older entry by
+      # prefix, and this fetches what moved.
+      - name: Fetch the modules of the listener and natsd e2e-local.sh builds
+        run: .github/scripts/go-fetch.sh deps packages/envoy ./cmd/listener ./internal/testnats/cmd/natsd
       # scripts/e2e-local.test.sh drives the driver's refusals, which the acceptance run below
       # never reaches: an unknown option, --help, and an E2E_NATS_PORT, E2E_PORT or E2E_SESSION_PORT
       # another process already holds, which the driver uses as given and fails on rather than

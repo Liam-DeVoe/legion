@@ -67,12 +67,36 @@ poll_until() {
 # an older revision's extracted beside it (smoke-role-takeover.sh's --base-rev). Non-zero when the
 # build fails, having let `go build` say why, so the caller refuses in its own words.
 build_natsd() {
-  (cd -- "$1" && go build -o "$2" ./internal/testnats/cmd/natsd)
+  build_offline "$1" "$2" ./internal/testnats/cmd/natsd
 }
 
 # build_listener SOURCE OUT: the listener built from SOURCE, the same way.
 build_listener() {
-  (cd -- "$1" && go build -o "$2" ./cmd/listener)
+  build_offline "$1" "$2" ./cmd/listener
+}
+
+# build_offline SOURCE OUT PACKAGE: `go build -o OUT PACKAGE` in SOURCE, from the module cache
+# alone (GOPROXY=off). A fetch while the smoke runs would turn a fault of the module proxy into its
+# failure, on a change that touched nothing it drives; the job that runs it fetches the modules in
+# a step before (envoy-session-stall), and a module the cache lacks fails the build, with the
+# fetch that prevents it named after go's own output. SOURCE is named from the repository root
+# when it is inside it, as that fetch is run from there, and whole otherwise.
+build_offline() {
+  local output root dir
+  if output=$(cd -- "$1" && GOPROXY=off go build -o "$2" "$3" 2>&1); then
+    [[ -z "$output" ]] || printf '%s\n' "$output" >&2
+    return 0
+  fi
+  printf '%s\n' "$output" >&2
+  if [[ "$output" == *GOPROXY=off* ]]; then
+    root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd)
+    dir=$(cd -- "$1" && pwd)
+    [[ "$dir" != "$root"/* ]] || dir=${dir#"$root"/}
+    printf '%s\n  %s\n' \
+      "The module cache lacks a module this build needs, and a test fetches no module while it runs. Fetch them before the tests, from the repository root:" \
+      ".github/scripts/go-fetch.sh deps $dir $3" >&2
+  fi
+  return 1
 }
 
 # set_natsd_argv BIN PORT MONITOR_PORT STORE_DIR: sets the array `natsd_argv` to natsd serving

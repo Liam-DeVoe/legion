@@ -661,6 +661,7 @@ jobs:
           # is its own subshell, so a variable set in the left-hand one does not survive it; the
           # `||` is what keeps `sh -e` from ending the subshell before the status is written.
           rm -f "$RUNNER_TEMP/suite-status"
+          # shellcheck disable=SC2086 # $projects and $lane_grep are argument lists, split on purpose
           { bunx playwright test --config e2e/playwright.config.ts $projects $lane_grep --shard=${{ matrix.shard }}/4 --workers 4 --reporter=list,blob,./e2e/failure-reporter.ts 2>&1 ||
               echo "$?" > "$RUNNER_TEMP/suite-status"; } | tee "$RUNNER_TEMP/playwright-log.txt"
           status=0
@@ -1176,6 +1177,13 @@ jobs:
       - name: Build contracts for dispatch e2e
         run: bun run build:dispatch
         working-directory: packages/contracts
+      # The browser tests' harness builds the Dispatch server (e2e/run-server.sh) and, for the
+      # sign-in run, the dev OIDC issuer (e2e/run-signin-issuer.sh) with GOPROXY=off: a fetch
+      # inside a test fails it whenever the module proxy does, on a change that touched nothing it
+      # tests. This step fetches both builds' modules first, tried again on failure, and the build
+      # step and the tests after it read them from the module cache.
+      - name: Fetch the modules of the server and issuer the two-process harness builds
+        run: .github/scripts/go-fetch.sh deps packages/envoy ./cmd/dispatch ./cmd/dev-oidc-issuer
       - name: Build the Dispatch server
         # run-server.sh builds it too, inside the harness's boot wait for each server
         # (e2e/harness-start.ts, bounded by the listener's bootMs); built here, both servers find it
@@ -1290,15 +1298,15 @@ jobs:
         with:
           go-version-file: packages/envoy/go.mod
           cache: false
-      # go-envoy, restored only, as the multiprocess job restores it and for the same reason:
-      # run-server.sh builds the Dispatch server, which the family's saving jobs do not.
+      # go-envoy, restored only, under the key .github/workflows/ci-caches.yaml's envoy job fills,
+      # whose fill fetches the modules of the four commands this job's harness builds.
       - id: go-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum') }}
           restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-{0}-{1}-', runner.os, runner.arch) || '' }}
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
@@ -1309,6 +1317,13 @@ jobs:
         # build again (packages/dispatch's build:contracts).
         run: bun run build:dispatch
         working-directory: packages/contracts
+      # The one-process harness builds the Dispatch server (e2e/run-server.sh) and the real
+      # broker's three commands (e2e/run-broker.sh) with GOPROXY=off: a fetch inside a test fails
+      # it whenever the module proxy does, on a change that touched nothing it tests. This step
+      # fetches those builds' modules first, from the cache restored above and tried again on
+      # failure.
+      - name: Fetch the modules of the commands the embedder lane's harness builds
+        run: .github/scripts/go-fetch.sh deps packages/envoy ./cmd/dispatch ./cmd/broker ./cmd/dev-oidc-issuer ./internal/broker/brokertest/requestseed
       - name: Build the Dispatch server for the embedder lane
         # run-server.sh builds it too, inside the harness's boot wait; built here, the server
         # finds it current and starts in seconds. The name carries the lane because
@@ -1476,6 +1491,14 @@ jobs:
       # another digest here leaves that step to pull its own inside its budget again.
       - name: Pull the stack's Postgres image
         run: docker pull ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+      # The stack e2e/visual-run.sh starts builds the Dispatch server (e2e/run-server.sh) and the
+      # real broker's three commands (e2e/run-broker.sh) inside the browser step, with
+      # GOPROXY=off: a fetch inside a test fails it whenever the module proxy does, on a change
+      # that touched nothing it tests, and here it would count inside that step's 4 minutes too.
+      # This step fetches those builds' modules first, from the cache restored above and tried
+      # again on failure.
+      - name: Fetch the modules of the commands the visual stack builds
+        run: .github/scripts/go-fetch.sh deps packages/envoy ./cmd/dispatch ./cmd/broker ./cmd/dev-oidc-issuer ./internal/broker/brokertest/requestseed
       # The stack's connection limit, read outside the browser step's budget, where
       # e2e/harness-postgres.ts would otherwise compile it (DISPATCH_E2E_PG_CONNECTIONS).
       - name: Read the connections the visual stack's Postgres must allow

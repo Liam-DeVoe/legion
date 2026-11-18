@@ -99,6 +99,13 @@ jobs:
             ~/.cache/go-build
           key: go-daemon-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-daemon-{0}-{1}-', runner.os, runner.arch) }}
+      # daemon-pane.ts runs daemon-pane.go with GOPROXY=off (@legion/test-fixtures/go-command): a
+      # fetch inside a test fails it whenever the module proxy does, on a change that touched
+      # nothing it tests. This step fetches first, from the cache restored above and tried again
+      # on failure, the modules of every package of the daemon module: the program's main exists
+      # only in its overlay, and it imports the daemon's own packages alone.
+      - name: Fetch the modules of the daemon packages daemon-pane.go imports
+        run: .github/scripts/go-fetch.sh deps packages/daemon ./...
       - run: bun install --frozen-lockfile
       - name: Build contracts for pi-legion
         run: bun run build

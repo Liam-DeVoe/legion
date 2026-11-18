@@ -162,6 +162,13 @@ jobs:
       - name: Check the whole tree with Biome
         run: bunx biome check .
 
+      # The test below builds natsfloor while it runs, with GOPROXY=off
+      # (@legion/test-fixtures/go-command): a fetch inside a test fails it whenever the module
+      # proxy does, on a change that touched nothing it tests. This step fetches that build's
+      # modules first, tried again on failure; this job restores no module cache before the test.
+      - name: Fetch the modules of the natsfloor build the NATS pin scan makes
+        run: .github/scripts/go-fetch.sh deps packages/envoy ./natsversion/cmd/natsfloor
+
       # The listener and the Legion daemon refuse a nats-server below packages/envoy/natsversion's
       # floor, so a live proof that starts one, and a script or page that installs one, must name
       # one the floor takes. The test scans every tracked shell script and every tracked text file

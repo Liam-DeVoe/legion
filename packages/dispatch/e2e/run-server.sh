@@ -373,8 +373,23 @@ cd "$(dirname "$0")/../../envoy"
 # once serialise: Go rewrites it only when the source changed, and a running server keeps the
 # inode it started from. The port is chosen only after the build, and held-port.py execs `env`,
 # which execs the server, so the pid a caller started is still the server's.
+#
+# The build reads the module cache alone (GOPROXY=off): a fetch while a test runs would turn a
+# fault of the module proxy into that test's failure, on a change that touched nothing it tests.
+# Each CI job whose tests start this script fetches ./cmd/dispatch's modules in a step before them
+# (.github/scripts/go-fetch.sh deps), and a module the cache lacks fails the build here, with that
+# fetch named after go's own output.
 if [ -z "$server_bin" ]; then
-  flock ./.dispatch-e2e.lock go build -o ./dispatch-e2e ./cmd/dispatch
+  if ! build_output=$(flock ./.dispatch-e2e.lock env GOPROXY=off go build -o ./dispatch-e2e ./cmd/dispatch 2>&1); then
+    printf '%s\n' "$build_output" >&2
+    if [[ "$build_output" == *GOPROXY=off* ]]; then
+      printf '%s\n  %s\n' \
+        "The module cache lacks a module this build needs, and a test fetches no module while it runs. Fetch them before the tests, from the repository root:" \
+        ".github/scripts/go-fetch.sh deps packages/envoy ./cmd/dispatch" >&2
+    fi
+    exit 1
+  fi
+  [ -z "$build_output" ] || printf '%s\n' "$build_output" >&2
   server_bin=./dispatch-e2e
 fi
 exec "${listen[@]}" env \
