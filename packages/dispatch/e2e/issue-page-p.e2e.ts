@@ -152,6 +152,8 @@ async function pressOutOfTheEdit(
     await control.tap();
     return;
   }
+  // Both callers wait for the header drawn and the title's editor focused first, so the control
+  // is drawn here; a null box only throws.
   const box = await control.boundingBox();
   if (box === null) throw new Error(`${what} is not drawn while the title is edited`);
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
@@ -468,7 +470,15 @@ test("the header holds its list and its limits at every width @phone", async ({ 
       await header.getByTestId("issue-details-control").click();
       await expect(details(page), "Details' control opened no Details").toBeVisible();
       await closeDetails(page);
-      await header.getByRole("button", { exact: true, name: CONTROL_LABELS.issue_actions }).click();
+      const actionsControl = header.getByRole("button", {
+        exact: true,
+        name: CONTROL_LABELS.issue_actions,
+      });
+      await actionsControl.click();
+      await expect(
+        actionsControl,
+        `the actions control opened no menu at ${width} px`
+      ).toHaveAttribute("aria-expanded", "true");
       // The open menu hangs under its control, so a second press on the control reaches the
       // control, which closes the menu, rather than the menu's first action.
       expect(
@@ -1545,6 +1555,8 @@ test("the band stays when the page scrolls, and on a phone the header goes @phon
           message: `the band's stuck state is wrong once scrolled at ${width} px`,
         })
         .toBe(wide);
+      // The two polls above waited for the scroll and the band's stuck state, so this one reading
+      // is of the settled page; null only throws.
       const scrolled = await stickyReading(page);
       if (scrolled === null) throw new Error("the header left the page as it scrolled");
       expect(
@@ -1752,6 +1764,7 @@ test("the labels' count names every label the line leaves out, at every width of
           element.style.maxWidth = `${at}px`;
         }, full - by);
         await framesDrawn(page, 4);
+        // Four frames were drawn since the line's width changed, so it is laid out at that width.
         const { cut, left, whole } = await labelsAgainstTheCount(page);
         if (whole + left !== TWENTY_LABELS.length || cut.length > 0) {
           wrong.push(
@@ -2137,6 +2150,8 @@ test("the header's menu gives the focus back to its control on Escape and after 
       await page.keyboard.press("Enter");
       await expect(trigger).toHaveAttribute("aria-expanded", "true");
       for (let step = 0; step < at; step += 1) await page.keyboard.press("Tab");
+      // The menu was read open above, and each Tab moves the focus before its press resolves;
+      // null only throws.
       const focused = await page.evaluate(
         () => (document.activeElement as HTMLElement | null)?.dataset.issueAction ?? null
       );
@@ -2978,6 +2993,7 @@ test("Request changes in its dialog pressed again by Enter before the change req
     ).toBeVisible();
     await framesDrawn(page, 2);
     const pressedOn = await focusNow(page);
+    // This only names the dialog's state in the messages below; no step of the row depends on it.
     const dialogOpen = await dialog.isVisible();
     const where = `${pressedOn.what}, with the dialog ${dialogOpen ? "open" : "shut"}`;
     await page.keyboard.press("Enter");
