@@ -1215,12 +1215,12 @@ test("while a place is kept in a named box, the anchor watches the box's other c
 });
 
 // A host that leaves its box to the browser's own scroll anchoring, as the Inbox's columns do,
-// keeps that anchoring while a place is kept there. The reader focuses a row and scrolls past it,
-// and the focused row stays the kept place; content between that row and the view then changing
-// height in a commit of its own is the browser's to answer, which holds the rows in view. Turned
-// off for every host that names a box, the anchoring let the rows in view move by the change.
-// Nor does the anchor watch the box's other children for such a host, while it still keeps the
-// focused row's place as its own root changes height.
+// keeps that anchoring while a place is kept there. The reader scrolls and focuses a row in view,
+// which is the kept place; content between that row and the view then changing height in a
+// commit of its own is the browser's to answer, which holds the rows in view. Turned off for
+// every host that names a box, the anchoring let the rows in view move by the change. Nor does
+// the anchor watch the box's other children for such a host, while it still keeps the focused
+// row's place as its own root changes height.
 test("a host that does not take its box over keeps the box's own scroll anchoring while a focused row is kept, and watches no other child of the box", () => {
   const RealResizeObserver = globalThis.ResizeObserver;
   const watched = new Set<Element>();
@@ -1257,23 +1257,23 @@ test("a host that does not take its box over keeps the box's own scroll anchorin
     const root = scroller?.lastElementChild ?? null;
     if (scroller === null || above === null || root === null) throw new Error("box missing");
     scroller.style.setProperty("overflow-anchor", "auto");
-    rowOf("r3").focus();
-    // The reader scrolls past the focused row, and the browser says so with the box's scroll
-    // event, which user-event has no form for.
+    // The reader scrolls, and the browser says so with the box's scroll event, which user-event
+    // has no form for; then they focus a row in the view.
     scroller.scrollTop = 1000;
     fireEvent.scroll(scroller);
-    expect(chosen()).toEqual({ id: "r3", via: "focus" });
-    const kept = viewportTop("r3");
-    expect(kept).toBe(-800);
+    rowOf("r23").focus();
+    expect(chosen()).toEqual({ id: "r23", via: "focus" });
+    const kept = viewportTop("r23");
+    expect(kept).toBe(200);
     expect(scroller.style.getPropertyValue("overflow-anchor")).toBe("auto");
     expect(watched.has(above)).toBe(false);
     expect(watched.has(root)).toBe(true);
 
     // r2 grows by a row's height in a commit of its own, which the anchor sees as its root
-    // resized: the place is kept, and r3 goes back where the reader last saw it.
+    // resized: the place is kept, and r23 goes back where the reader last saw it.
     heights = { r2: 2 * ROW_HEIGHT };
     for (const callback of observers) callback([], undefined as unknown as ResizeObserver);
-    expect(viewportTop("r3")).toBe(kept);
+    expect(viewportTop("r23")).toBe(kept);
     expect(scroller.style.getPropertyValue("overflow-anchor")).toBe("auto");
   } finally {
     view.unmount();

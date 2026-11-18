@@ -715,13 +715,21 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
 
   /** `interacted()`, else the row the host keeps the place of (`keepRow`), else - only once the
    *  reader has scrolled - the row nearest the list's visible centre (a hit-test probe: layout
-   *  reads). The row a commit anchors to, save a focused row wholly outside the view of the box
-   *  the host named: the commit then anchors to the first row in view (`rowToKeep`). The box
-   *  that scrolls is `scroller`'s element while the host gave one and it holds one, else the
-   *  window, and `componentDidUpdate` moves whichever this read. */
+   *  reads). The row a commit will anchor to. Where the focus is in a row wholly outside the view
+   *  of the box the host named, that is the first row in view instead (`rowToKeep`, `view`), or
+   *  none where no row is in view: a row the commit draws between the focused row and the view
+   *  then moves no row the reader sees. The box that scrolls is `scroller`'s element while the
+   *  host gave one and it holds one, else the window, and `componentDidUpdate` moves whichever
+   *  this read. */
   current(): (AnchorRow & { row: HTMLElement }) | null {
     const interacted = this.interacted();
-    if (interacted !== null) return interacted;
+    if (interacted !== null) {
+      const box = this.scrollerElement();
+      if (interacted.via !== "focus" || box === null) return interacted;
+      const row = this.rowToKeep(interacted.row, box.getBoundingClientRect());
+      if (row === interacted.row) return interacted;
+      return row === null ? null : { id: this.idOf(row), row, via: "view" };
+    }
     const kept = this.hostKept();
     if (kept !== null) return { id: this.idOf(kept), row: kept, via: "kept" };
     const root = this.root;
@@ -791,21 +799,18 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     const { enabled } = this.props;
     if (enabled !== undefined && !enabled()) return null;
     const current = this.current();
-    const scroller = this.scrollerElement();
-    // A focused row wholly outside the view gives way to the first row in view (`rowToKeep`):
-    // a row the commit draws between the two then moves no row the reader sees.
-    const row =
-      current?.via === "focus" && scroller !== null
-        ? this.rowToKeep(current.row, scroller.getBoundingClientRect())
-        : (current?.row ?? null);
-    if (row === null) return null;
-    const id = this.idOf(row);
-    const at = this.groupOf(row);
-    // Where the reader last saw the row kept, while that place still holds: a change no commit
-    // of this component's saw may already have moved it (`held`), and measuring again there
-    // would take that drift for the place to keep.
-    const held = this.heldTop(id, at);
-    return { group: at, id, top: held ?? row.getBoundingClientRect().top };
+    if (current === null) return null;
+    const at = this.groupOf(current.row);
+    // Where the reader last saw the row they have their hand on, while that place still holds:
+    // a change no commit of this component's saw may already have moved it (`held`), and
+    // measuring again there would take that drift for the place to keep.
+    const held = this.heldTop(current.id, at);
+    return {
+      group: at,
+      id: current.id,
+      top: held ?? current.row.getBoundingClientRect().top,
+      via: current.via,
+    };
   }
 
   componentDidUpdate(
