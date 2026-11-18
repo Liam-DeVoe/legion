@@ -3205,10 +3205,13 @@ test("the tree's keys move, fold, zoom and open the focused node", async ({ brow
 
 // SLOW(>=2s): the whole issue seeded and loaded in a context of its own, then some sixty keys
 // pressed at two sizes, each followed by a read of where the focus is, and the page loaded again
-// for a zoom into a long comment's row, read again a second later.
+// for a zoom into a long comment's row, read again a second later. It took 27 to 36 s in the
+// pod's runs that passed, and twice in a busy pod it ran out of the project's 60 s mid-move, so it
+// takes the 120 s the file's other long rows take.
 test("Tab enters and leaves the tree at one stop and every move keeps the row on screen", async ({
   browser,
 }) => {
+  test.setTimeout(120_000);
   const { context, page, seeded } = await openTree(browser);
   try {
     const order = await visibleIds(page);

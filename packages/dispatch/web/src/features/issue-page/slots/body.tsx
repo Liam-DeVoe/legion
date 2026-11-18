@@ -80,10 +80,13 @@ export function BodySlot({ issue, route }: SlotProps): ReactNode {
   const artifacts = useMemo(() => artifactsBySlug(issue), [issue]);
   const request = useOutlineRequest();
   // Whether the reader has acted since they followed the address, after which a line drawn in
-  // the outline's place leaves the focus where they put it, unless the line it replaces held it,
-  // and the address's row drawn after the act does nothing to the page (`IssueTree`'s
-  // `addressActs`).
+  // the outline's place leaves the focus where they put it, unless the focus was on the body's
+  // box as what the line replaces left the page (`held`), and the address's row drawn after the
+  // act does nothing to the page (`IssueTree`'s `addressActs`).
   const acts = useReaderActs(locationKey);
+  // Whether the focus is on the body's box - a row of the outline, or a line drawn in its place -
+  // as it stays while those swap (`useFocusHeld`).
+  const { box, held } = useFocusHeld();
   // The document a row of the outline is being edited in, and that document's one editor, which
   // the body draws for the row to take onto its own stage (`useOutlineEditing`).
   const { onEditing, panels } = useOutlineEditing(issue);
@@ -98,16 +101,18 @@ export function BodySlot({ issue, route }: SlotProps): ReactNode {
       <div
         className="mx-auto flex w-full max-w-[1000px] min-w-0 flex-col max-[761px]:-mr-1 max-[761px]:-ml-2.5 max-[761px]:w-auto"
         data-issue-body=""
+        ref={box}
       >
         {fallback?.kind === "landing" ? (
           // Keyed on the following, so a link to the same item followed again is drawn anew and
           // takes the focus again.
-          <ItemFallback acts={acts} fallback={fallback} key={locationKey} />
+          <ItemFallback acts={acts} fallback={fallback} held={held} key={locationKey} />
         ) : fallback?.kind === "absent" ? (
           // Keyed on the following, as the item's own page is.
           <NotFoundLine
             acts={acts}
             heading={ABSENT_LINES[fallback.target.kind].heading}
+            held={held}
             issueKey={key}
             key={locationKey}
             line={ABSENT_LINES[fallback.target.kind].line(key)}
@@ -159,6 +164,58 @@ function useReaderActs(following: string): ReaderActs {
 }
 
 /**
+ * Whether the focus is on the body's box (`box`, given to it as its ref), which stays as the
+ * outline and every line drawn in its place swap: what a line drawn in the outline's place reads
+ * to take the focus the element it replaces took off the page with it (`useFocusOnDraw`).
+ *
+ * It is read by listeners of the page's own on the box, which hear every focus inside its DOM,
+ * an element a React portal draws there included - the document a row is being edited in, whose
+ * React parent is the body's `panels`, beside the box - where React's `onFocus` and `onBlur` on
+ * the box hear only what React draws inside it. The focus going into the box marks it held. The
+ * focus leaving it - for an element outside it, or for none, as Tab out of the outline, the
+ * page's last tab stop, or a press on blank space leaves it - clears the mark, unless the element
+ * it left has left the page: Chromium fires blur and focusout, its relatedTarget null, at a
+ * focused element React takes out of the page, while that element is still connected (measured
+ * in Chromium 156), so the mark is cleared a microtask later, and only where that element is
+ * still connected and the focus has not come back into the box. React commits synchronously, so
+ * an element it took out is detached by then, and the line drawn in its place takes the focus.
+ * The listeners are added in a layout effect, before the passive effect that focuses a line
+ * drawn in the same commit (`useFocusOnDraw`), which they hear.
+ */
+function useFocusHeld(): { box: RefObject<HTMLDivElement | null>; held: FocusHeld } {
+  const box = useRef<HTMLDivElement | null>(null);
+  const held = useRef(false);
+  useLayoutEffect(() => {
+    const element = box.current;
+    if (element === null) return;
+    const listening = new AbortController();
+    element.addEventListener(
+      "focusin",
+      () => {
+        held.current = true;
+      },
+      { signal: listening.signal }
+    );
+    element.addEventListener(
+      "focusout",
+      (event) => {
+        const to = event.relatedTarget;
+        if (to instanceof Node && element.contains(to)) return;
+        const left = event.target;
+        queueMicrotask(() => {
+          if (left instanceof Node && left.isConnected) {
+            held.current = element.contains(document.activeElement);
+          }
+        });
+      },
+      { signal: listening.signal }
+    );
+    return () => listening.abort();
+  }, []);
+  return { box, held };
+}
+
+/**
  * The address's item's own page, drawn in the outline's place where the tree holds no node of
  * the item and the old page's landing has read it (`useAddressFallback`), as today's page draws
  * it (`issue/IssuePage.tsx`, `IssueDetail`): an item of another issue, or one beside a document,
@@ -167,10 +224,11 @@ function useReaderActs(following: string): ReaderActs {
  * is said to be so. The list and the failure take the focus as they are drawn, so it is on the
  * line that names the item and never left on the page's body, unless the reader has acted since
  * the address was followed (`acts`): the focus is then where they put it, nowhere included - a
- * press on blank space. A line drawn in place of the one that held the focus - a Retry pressed,
- * and its read answering that the item is gone, or naming several - takes it, as the focus fell
- * to the page's body with the line it was on, which is no place the reader put it
- * (`useFocusOnDraw`'s `held`).
+ * press on blank space. A line drawn in place of what held the focus on the body's box (`held`)
+ * takes it, as the focus fell to the page's body with what it was on, which is no place the
+ * reader put it: a row of the outline the reader had moved to, the outline replaced as the item's
+ * read answered, or a Retry pressed, and its read answering that the item is gone, or naming
+ * several.
  *
  * Going to a document goes to the address that opens it with the item marked (`landingPath`),
  * never to the one the old landing writes (`?comment=`), which this page reads as the item's
@@ -179,54 +237,42 @@ function useReaderActs(following: string): ReaderActs {
 function ItemFallback({
   acts,
   fallback,
+  held,
 }: {
   acts: ReaderActs;
   fallback: Extract<AddressFallback, { kind: "landing" }>;
+  held: FocusHeld;
 }): ReactNode {
-  // Whether a line of the fallback holds the focus, read on the element its lines are drawn in,
-  // which stays as they swap: the focus going into it marks it held, and the focus leaving it -
-  // for an element outside it, or for none, as a press on blank space leaves it - clears the
-  // mark. A line taken out of the page while it holds the focus fires no focusout in Chromium,
-  // so the mark stays set for the line drawn in its place, which takes the focus.
-  const held = useRef(false);
   const { failure, landing, retrying, route } = fallback;
   // The address is replaced rather than added to the reader's history, so Back still leaves the
   // page they came from.
   if (landing.kind === "redirect" || landing.kind === "rewrite") {
     return <Navigate replace to={landingPath(landing.to)} />;
   }
+  if (landing.kind === "ambiguous") {
+    return <MatchList acts={acts} candidates={landing.candidates} held={held} route={route} />;
+  }
   const noun = ITEM_NOUNS[route.kind];
+  if (landing.kind === "missing") {
+    return (
+      <NotFoundLine
+        acts={acts}
+        heading={`${noun} not found`}
+        held={held}
+        issueKey={route.key}
+        line={`That link doesn't name ${route.kind === "ask" ? "an" : "a"} ${noun.toLowerCase()} on ${route.key} — it may have been deleted.`}
+      />
+    );
+  }
   return (
-    // biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handlers only note where the focus has already gone, so the lines' box needs no role of its own.
-    <div
-      onBlur={(event) => {
-        if (!event.currentTarget.contains(event.relatedTarget)) held.current = false;
-      }}
-      onFocus={() => {
-        held.current = true;
-      }}
-    >
-      {landing.kind === "ambiguous" ? (
-        <MatchList acts={acts} candidates={landing.candidates} held={held} route={route} />
-      ) : landing.kind === "missing" ? (
-        <NotFoundLine
-          acts={acts}
-          heading={`${noun} not found`}
-          held={held}
-          issueKey={route.key}
-          line={`That link doesn't name ${route.kind === "ask" ? "an" : "a"} ${noun.toLowerCase()} on ${route.key} — it may have been deleted.`}
-        />
-      ) : (
-        <ItemReadFailed
-          acts={acts}
-          failure={failure}
-          held={held}
-          noun={noun}
-          onRetry={landing.retry}
-          retrying={retrying}
-        />
-      )}
-    </div>
+    <ItemReadFailed
+      acts={acts}
+      failure={failure}
+      held={held}
+      noun={noun}
+      onRetry={landing.retry}
+      retrying={retrying}
+    />
   );
 }
 
@@ -254,25 +300,25 @@ function MatchList({
 /** What the reader's first act since the address was followed aborts (`useReaderActs`). */
 type ReaderActs = RefObject<AbortController | undefined>;
 
-/** Whether a line of the fallback holds the focus, or held it as it left the page
- *  (`ItemFallback`). */
+/** Whether the focus is on the body's box, or was as the element holding it there left the
+ *  page (`BodySlot`'s `held`). */
 type FocusHeld = RefObject<boolean>;
 
 /**
  * The element its ref is given to takes the focus once it is drawn while the reader has not
  * acted since the address was followed (`acts`), as the landing on a row does
- * (`IssueTree.tsx`), or where the line it is drawn in place of held the focus (`held`): that
- * line took the focus off the page with it - a Retry the reader pressed, whose read then
- * answered. Anywhere else the focus is the reader's after such an act, nowhere included: a
- * line drawn after they pressed blank space, which leaves the focus on the page's body, takes
- * none, as the row takes none.
+ * (`IssueTree.tsx`), or where the focus was on the body's box as what it is drawn in place of
+ * left the page (`held`): that took the focus off the page with it - a row of the outline the
+ * reader had moved to, or a Retry they pressed, whose read then answered. Anywhere else the focus
+ * is the reader's after such an act, nowhere included: a line drawn after they pressed blank
+ * space, or Tab from the outline to the page's body, takes none, as the row takes none.
  */
-function useFocusOnDraw<T extends HTMLElement>(acts: ReaderActs, held?: FocusHeld) {
+function useFocusOnDraw<T extends HTMLElement>(acts: ReaderActs, held: FocusHeld) {
   const element = useRef<T>(null);
   useEffect(() => {
     const drawn = element.current;
     if (drawn === null) return;
-    if (acts.current?.signal.aborted !== true || held?.current === true) drawn.focus();
+    if (acts.current?.signal.aborted !== true || held.current) drawn.focus();
   }, [acts, held]);
   return element;
 }
@@ -325,9 +371,9 @@ function NotFoundLine({
 }: {
   acts: ReaderActs;
   heading: string;
-  /** Whether the line drawn before this one held the focus (`ItemFallback`); left out where
-   *  no line is drawn before it. */
-  held?: FocusHeld;
+  /** Whether the focus was on the body's box as what this line is drawn in place of left the
+   *  page (`BodySlot`'s `held`). */
+  held: FocusHeld;
   issueKey: string;
   line: string;
 }): ReactNode {
