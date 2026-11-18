@@ -4864,6 +4864,49 @@ const EVENT_AFTER_WAITED_READ: RuleWay = {
   },
 };
 
+/** The live feed back with its gap replayed whole while the reader is away, which asks for a
+ *  refused read, then the reader coming back while a write is out, so the read waits for the
+ *  write, and leaving before the write settles, so the read is given up unsent. */
+const BACK_AND_GONE_WHILE_WAITING: RuleWay = {
+  words:
+    "the live feed back with its gap replayed whole, then the reader coming back while a write is out and leaving before it settles",
+  does: async (rig) => {
+    await restartFeed(rig);
+    startFeedOn(rig.sockets, true);
+    await tick(300, 10);
+    const settleWrite = holdWrite(rig);
+    await tick(10, 10);
+    comeBack(rig);
+    await tick(500, 10);
+    leave(rig);
+    await tick(100, 10);
+    act(() => settleWrite());
+    await tick(50, 10);
+  },
+};
+
+/** The reader coming back, pressing Retry on the refused tree's failed line while a write is out,
+ *  so the Retry's read waits for the write, and leaving before the write settles, so the read is
+ *  given up unsent. */
+const RETRY_GONE_WHILE_WAITING: RuleWay = {
+  words:
+    "the reader coming back, pressing Retry while a write is out and leaving before it settles",
+  does: async (rig) => {
+    comeBack(rig);
+    await tick(300, 10);
+    const settleWrite = holdWrite(rig);
+    await tick(10, 10);
+    act(() => {
+      void stageOf(rig).result.current.refetch();
+    });
+    await tick(300, 10);
+    leave(rig);
+    await tick(100, 10);
+    act(() => settleWrite());
+    await tick(50, 10);
+  },
+};
+
 /** The margin's resolve of the comment (`useMarginItems.ts`), answered by Dispatch in `latency`:
  *  its `onMutate` writes the resolve into the comments read before Dispatch holds it, its
  *  `onSuccess` invalidates the comments and the issue once Dispatch answers, and the resolve's
@@ -5018,6 +5061,8 @@ const WAYS = {
       mountStage(rig);
     },
   },
+  backAndGoneWhileWaiting: BACK_AND_GONE_WHILE_WAITING,
+  retryGoneWhileWaiting: RETRY_GONE_WHILE_WAITING,
 } satisfies Record<string, RuleWay>;
 
 /** How many reads of a query a way starts: a count, or the least and the most. */
@@ -5613,6 +5658,24 @@ const READ_RULES: readonly ReadRule[] = [
   { read: "plan", state: "answered", observed: false, way: "reload", now: 0, back: 1 },
   { read: "verification", state: "answered", observed: true, way: "reload", now: 1 },
   { read: "verification", state: "answered", observed: false, way: "reload", now: 0, back: 1 },
+  // A trigger whose read waited for a write and was given up unsent as the reader left is still
+  // owed: the reader coming back reads it.
+  {
+    read: "tree",
+    state: "refused",
+    observed: false,
+    way: "backAndGoneWhileWaiting",
+    now: 0,
+    back: 1,
+  },
+  {
+    read: "tree",
+    state: "refused",
+    observed: false,
+    way: "retryGoneWhileWaiting",
+    now: 0,
+    back: 1,
+  },
 ];
 
 describe("the rule for when a read of the tree or of a view starts", () => {
