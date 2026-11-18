@@ -616,6 +616,10 @@ restoreEntryLoad();
 beforeAll(() => setNatsConnectForTests(natsStandInConnect));
 afterAll(() => resetNatsConnectForTests());
 
+// A bound on work, not a hang guard: nothing here waits. The body removes and makes the row's
+// scratch directories, which a loaded host stretches. 60_000. Worst measured cost: 194.62 ms over
+// 10 runs of the `session_shutdown` budget row at 22 busy loops (11 per CPU) on a two-CPU, 8 GiB
+// pod, where 22 stands for 96; 29.72 ms idle over 3 087 invocations.
 beforeEach(() => {
   rowGeneration += 1;
   jest.useRealTimers();
@@ -659,7 +663,7 @@ beforeEach(() => {
   configDirectory = mkdtempSync(join(tmpdir(), "envoy-config-"));
   process.env.ENVOY_CONFIG_FILE = join(configDirectory, "envoy.json");
   writeFileSync(process.env.ENVOY_CONFIG_FILE, `${JSON.stringify(ASKGATE_OFF)}\n`);
-});
+}, 60_000);
 
 /**
  * Advanced by the file's `afterEach` and `beforeEach`, so a poll a row started sees that its row
