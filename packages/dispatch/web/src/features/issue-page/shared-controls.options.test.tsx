@@ -344,9 +344,11 @@ function componentsIssue(components: IssueComponents, key = "CORE-1") {
 test("an approval entry links its document at the version the request asks about", () => {
   const entries = [
     specEntry({ latest_version: 2, state: "awaiting", waiting_on: "human" }),
+    // The request asks about version 4 and the document stands at 5, so the link names the
+    // request's version and not the latest.
     verificationEntry({
       by: { id: "bob", kind: "user" },
-      latest_version: 4,
+      latest_version: 5,
       reason: "The checks name no command.",
       state: "changes_requested",
       version: 4,
@@ -881,6 +883,42 @@ test("ApprovalSteps with layout contents adds no box of its own and keeps each e
       expect(boxed).toEqual([]);
     } finally {
       undraw(view);
+    }
+
+    // A step with no request draws its "Not requested" mark, which is an item of the caller's
+    // line as the others are.
+    const unasked = draw(
+      <div className="flex flex-wrap" data-case="line">
+        <ApprovalSteps
+          actionsOn={[SPEC_ID]}
+          entries={[
+            specEntry({ latest_version: 1, state: "awaiting", waiting_on: "human" }),
+            { document: undefined, label: "Verification", step: "criteria" },
+          ]}
+          layout="contents"
+          primaryArtifactId={SPEC_ID}
+          size="compact"
+          testId="issue-header-approval-steps"
+        />
+      </div>,
+      surface
+    );
+    try {
+      const line = caseOf(unasked, "line");
+      const list = within(line).getByRole("list", { name: "Approvals" });
+      const [, criteria] = within(list).getAllByRole("listitem");
+      if (criteria === undefined) throw new Error("the step with no request is missing");
+      const mark = within(criteria).getByText(
+        surface === "inside" ? CONTROL_LABELS.not_requested : "Not requested"
+      );
+      const boxed: string[] = [];
+      for (let at = parentOf(mark); at !== line; at = parentOf(at)) {
+        const box = at.getAttribute("class") ?? "";
+        if (box !== "contents") boxed.push(box);
+      }
+      expect(boxed, "the Not requested mark stands in a box of its own").toEqual([]);
+    } finally {
+      undraw(unasked);
     }
   }
 });
