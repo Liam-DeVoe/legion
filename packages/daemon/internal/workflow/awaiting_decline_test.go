@@ -514,3 +514,61 @@ func TestCarriedWordsCannotCloseTheirBlock(t *testing.T) {
 		t.Fatalf("the resume task's fields are %v, want the act and the person the record names, none of the reply's lines", read.fields)
 	}
 }
+
+// R1: "It carries up to 4,000 characters of one act, or up to 1,000 characters of each act where
+// it carries several" (dispatch://INFRA-3686/spec). A root waits on a person on ask-q. While it
+// waits, the person requests changes to the spec at version 2 (a changes request the gate records
+// as told after the wait began, which did not answer it) and then answers ask-q with 3,000
+// characters. The resume carries both acts' words, the answer in the answer block and the reason
+// in the later_reason block, so it holds each to 1,000 UTF-16 units with the count of the rest.
+func TestAResumeThatCarriesTwoActsCutsEachToOneThousand(t *testing.T) {
+	const root = "LEGION-208"
+	answer := &record.ActWords{Text: strings.Repeat("a", 3000), By: "user:alice", At: resumeWordsAt}
+	ask := record.RootAsk{Issue: root, Ask: "ask-q", Kind: record.AskQuestion, Seq: 4, PersonAnswerSeq: 8, PersonAnswerWords: answer}
+	version := 2
+	gate := &record.DesignGate{Issue: root, ArtifactID: "artifact-208", LatestVersion: 2, ToldChangesVersion: &version,
+		ToldChangesReason: strings.Repeat("r", 3000), ToldChangesBy: "user:alice",
+		ToldChangesMark: record.EventMark{Seq: 7, At: resumeWordsAt.Add(-time.Minute)}}
+	waiting := record.Awaiting{Ask: "ask-q", AnsweredBy: record.AnsweredByAsk, Since: record.EventMark{Seq: 5}}
+
+	task := RootResume(root, waiting, record.DesignStepSpec, gate, []string{"artifact-208"}, []record.RootAsk{ask}, true)
+	if task.Answer == nil || task.LaterReason == nil {
+		t.Fatalf("the resume carries answer %v and later_reason %v, want both acts' words", task.Answer != nil, task.LaterReason != nil)
+	}
+	if len(task.Answer.Text) != 1000 || task.Answer.Rest != 2000 {
+		t.Errorf("the answer block holds %d units with rest %d, want the first 1000 and rest 2000: the resume carries two acts",
+			len(task.Answer.Text), task.Answer.Rest)
+	}
+	if len(task.LaterReason.Text) != 1000 || task.LaterReason.Rest != 2000 {
+		t.Errorf("the later_reason block holds %d units with rest %d, want the first 1000 and rest 2000: the resume carries two acts",
+			len(task.LaterReason.Text), task.LaterReason.Rest)
+	}
+}
+
+// R1: "Above that, it carries the first part, the count of the rest ... and the item's
+// reference." A resume for an answer of an ask carries a later changes request's reason in the
+// later_reason block. Cut (a reason of 5,000 cut at 4,000), the text names the version of that
+// request (later_changes_version) and must also name the document it was made on by its
+// dispatch:// link, which the resume today sets only where the act that answered the wait was on
+// the document (an approval, a changes request or a version).
+func TestACutLaterReasonNamesTheDocumentItWasMadeOn(t *testing.T) {
+	const root = "LEGION-208"
+	answer := &record.ActWords{Text: "Go with the smaller cut.", By: "user:alice", At: resumeWordsAt}
+	ask := record.RootAsk{Issue: root, Ask: "ask-q", Kind: record.AskQuestion, Seq: 4, PersonAnswerSeq: 8, PersonAnswerWords: answer}
+	version := 2
+	gate := &record.DesignGate{Issue: root, ArtifactID: "artifact-208", LatestVersion: 2, ToldChangesVersion: &version,
+		ToldChangesReason: strings.Repeat("r", 5000), ToldChangesBy: "user:alice",
+		ToldChangesMark: record.EventMark{Seq: 7, At: resumeWordsAt.Add(-time.Minute)}}
+	waiting := record.Awaiting{Ask: "ask-q", AnsweredBy: record.AnsweredByAsk, Since: record.EventMark{Seq: 5}}
+
+	task := RootResume(root, waiting, record.DesignStepSpec, gate, []string{"artifact-208"}, []record.RootAsk{ask}, true)
+	if task.LaterReason == nil || task.LaterReason.Rest == 0 {
+		t.Fatalf("the later reason is %+v, want it carried and cut", task.LaterReason)
+	}
+	text := resumeTask(root, waiting, record.DesignStepSpec, gate, []string{"artifact-208"}, []record.RootAsk{ask}, true)
+	fields, _, _ := strings.Cut(text, "\n<")
+	if !strings.Contains(fields, "dispatch://LEGION-208/spec") {
+		t.Errorf("the later_reason block is cut with rest %d, and no field of the resume names the document it was made on (dispatch://LEGION-208/spec):\n%s",
+			task.LaterReason.Rest, fields)
+	}
+}

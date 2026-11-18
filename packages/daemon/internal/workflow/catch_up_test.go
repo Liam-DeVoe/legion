@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -561,5 +562,51 @@ func TestAParkedDecisionCarriesThePersonsWords(t *testing.T) {
 	if notice.Answer != answer[:4000] || notice.Words["answer"].Rest != 1000 || notice.Ref != "dispatch://LEGION-208/ask/ask-q" {
 		t.Fatalf("the notice carries %d bytes of the answer with %+v at %s, want the first 4000, rest 1000 and the ask's reference",
 			len(notice.Answer), notice.Words["answer"], notice.Ref)
+	}
+}
+
+// A catch-up that names one kept decision carries one act: R1 lets it carry up to 4,000 UTF-16
+// units of it ("up to 4,000 characters of one act, or up to 1,000 characters of each act where it
+// carries several", dispatch://INFRA-3686/spec). The kept-decisions task of the same one decision
+// carries it whole (KeptDecisionsOf); the catch-up cuts an answer of 1,500 to its first 1,000.
+func TestACatchUpWithOneKeptDecisionCarriesItUpToFourThousand(t *testing.T) {
+	at := time.Date(2026, 11, 14, 22, 44, 10, 0, time.UTC)
+	answer := strings.Repeat("w", 1500)
+	kept := record.KeptDecisions{Decisions: []record.DecisionMark{{Ref: "dispatch://LEGION-208/ask/ask-q", At: at, Issue: "LEGION-208",
+		Decision: record.DecisionAskAnswered, Actor: "user:alice", Answer: answer, AnswerAt: at}}}
+
+	facts, words := keptFacts(kept)
+	if got := facts.Decisions[0].Answer; got != answer {
+		t.Errorf("the catch-up carries %d units of the one kept answer with rest %d, want all 1500: it carries one act",
+			len(got), words["catch_up.kept.decisions[0].answer"].Rest)
+	}
+	if task := KeptDecisionsOf("LEGION-208", kept); task.Kept[0].Answer.Text != answer {
+		t.Errorf("the kept-decisions task carries %d units of the one kept answer, want all 1500", len(task.Kept[0].Answer.Text))
+	}
+}
+
+// R2 has a daemon text name each Dispatch item by its dispatch:// link. A root's catch-up states
+// each design-gate step it holds, and names the step's document by the bare artifact id alone
+// (catch_up.gates[0].artifact), where the root architect's start task names the same document as
+// dispatch://KEY/spec (gateSteps).
+func TestACatchUpNamesItsGateDocumentByALink(t *testing.T) {
+	const artifact = "0b8f1c2e-5d6a-4f7b-9c3d-2e1f0a9b8c7d"
+	pool := migratedPool(t)
+	root := askRoot()
+	seedIssue(t, pool, root)
+	seedGate(t, pool, record.DesignGate{Issue: root.Key, Step: record.DesignStepSpec, ArtifactID: artifact, LatestVersion: 2})
+
+	var facts texts.CatchUpFacts
+	seedRecord(t, pool, func(tx pgx.Tx) error {
+		var err error
+		facts, err = treeCatchUp(context.Background(), tx, record.NewStore(), []record.DesignStep{record.DesignStepSpec}, root)
+		return err
+	})
+	payload, err := json.Marshal(texts.CatchUpRecord{NoticeHead: texts.NoticeHead{Kind: texts.CatchUp, Issue: root.Key}, CatchUp: &facts})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(payload), "dispatch://"+root.Key+"/spec") {
+		t.Errorf("the catch-up names the spec step's document by no dispatch:// link: %s", payload)
 	}
 }
