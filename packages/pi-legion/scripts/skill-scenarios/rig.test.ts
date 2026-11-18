@@ -2104,6 +2104,31 @@ describe("red_fixture", () => {
     }
   });
 
+  // Catches: a `--json` read that names a field the world's record lacks, or a field gh does not
+  // know, answered exit 0 with the field left out, where GitHub answers every field the command
+  // lists and gh 2.98.0 refuses an unknown one. The stand-in's picker (gh-standin.ts, `picked`)
+  // kept only the fields the record held. The tester's round-10 batch at 4728c2f7 met it in 11
+  // of its first 46 runs, every one a head run: `pr view --json mergeStateStatus` (a-head-2,
+  // d-head-1, d-head-5, e-head-4) read the field as missing, `pr view --json files` (d-head-2)
+  // exited 1 in the one world where the files decide attribution, and `run view --json
+  // runAttempt` (a-head-1, a-head-4, b-head-3, b-head-4, c-head-1, c-head-2), a field gh refuses,
+  // exited 0. Each such read must give the field a value, or be refused.
+  test("a --json read answers every field it names, or is refused", async () => {
+    const run = redFixture("a");
+    const reads = [
+      ["pr", "view", String(RED_PR), "--repo", RED_REPO, "--json", "mergeStateStatus"],
+      ["pr", "view", String(RED_PR), "--repo", RED_REPO, "--json", "files"],
+      ["run", "view", String(RED_RUN_ID), "--repo", RED_REPO, "--json", "status,runAttempt"],
+    ];
+    for (const args of reads) {
+      const read = await gh(run, args);
+      const fields = args[args.indexOf("--json") + 1].split(",");
+      const answered = read.exit === 0 ? (JSON.parse(read.stdout) as Record<string, unknown>) : {};
+      const silent = fields.filter((field) => read.exit === 0 && answered[field] === undefined);
+      expect({ call: args.join(" "), silent }).toEqual({ call: args.join(" "), silent: [] });
+    }
+  });
+
   // Catches: a route for other commits that takes a read of the head by another of its names, its
   // short sha or its branch, or a `status` read of it, each of which answered the head's red
   // before those routes and must answer it still; a base whose status or statuses read as
