@@ -202,7 +202,8 @@ export interface ProofDocumentProps {
   /** Called with this document's live editor as the document makes it, and with `undefined` as
    *  it tears that editor down: a host that acts on the editor's view itself - a row of an
    *  issue's outline holds every edit of it to the row's own block (`issue-page/node-caret.ts`) -
-   *  takes it here, before the editor has drawn the document. */
+   *  takes it here, in the task the editor is made in, which has drawn the document by then
+   *  where the room already held it. */
   onEditorHandle?(handle: EditorHandle | undefined): void;
   onToolbarChange?(toolbar: DocumentToolbar | undefined): void;
   /** Called in `pane` only, with the server's reason, when the document cannot be opened: a tree

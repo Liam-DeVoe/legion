@@ -1,6 +1,8 @@
 import { afterEach, expect, jest, setSystemTime, spyOn, test } from "bun:test";
 import { macBaseKeymap } from "@milkdown/kit/prose/commands";
-import type { EditorView } from "@milkdown/kit/prose/view";
+import { Schema } from "@milkdown/kit/prose/model";
+import { EditorState } from "@milkdown/kit/prose/state";
+import { EditorView } from "@milkdown/kit/prose/view";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, waitFor } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
@@ -15,7 +17,7 @@ import { api } from "../../api/client";
 import { issueCoverageQuery, issueResultsQuery } from "../../api/queries";
 import type { Artifact, Decision, IssueDecisions, IssueDetails } from "../../api/types";
 import { pageFocusedRow } from "../../theme/classes";
-import { createEditor, type EditorHandle } from "../doc/editor";
+import { bindRemoteMarks, createEditor, type EditorHandle } from "../doc/editor";
 import { compiledBlockSchema } from "../doc/schema";
 import { MarginProvider } from "../margin/margin-context";
 import { buildDispatchReference, buildIssuePath } from "../refs/routes";
@@ -27,6 +29,7 @@ import { type FocusedNode, FocusedNodeProvider, useFocusedNode } from "./focused
 import { IssueTree, LANDING_WAIT_MS, ZOOMED_TREE_QUERY } from "./IssueTree";
 import { CLEARANCE, FOOT_HEIGHT_PROPERTY, IDENTITY_HEIGHT_PROPERTY } from "./identity-block";
 import type { TreeNode } from "./issue-tree";
+import * as nodeCaret from "./node-caret";
 import { EDITOR_BOX_ATTRIBUTE } from "./node-caret";
 import {
   OutlineRequestProvider,
@@ -153,9 +156,45 @@ function FocusedNodeProbe({ seen }: { seen: { node?: FocusedNode } }): ReactNode
   return null;
 }
 
-/** What stands in for the editor of the document a row is editing in: a plain element, or the
- *  document's own editor (`LiveEditor`), which takes how to hand itself to the row. */
+/** What stands in for the editor of the document a row is editing in: a plain element, or what
+ *  takes how to hand the row its editor (`onEditing`) and draws one - the document's own
+ *  (`LiveEditor`), or one that hands the row nothing. */
 type StandInEditor = ReactNode | ((onEditor: (editor: RowEditor | undefined) => void) => ReactNode);
+
+/** What a page whose tree hands it nothing to take the editor with hands the editor to. */
+const takesNoEditor = () => {};
+
+/** A ProseMirror view of an empty document, which a plain element standing in for the document's
+ *  editor hands the row as its editor: a plain element is no ProseMirror editor, and the row puts
+ *  a caret in the stand-in only once its hold is on the editor it was handed
+ *  (`holdEditsToBlock`), which goes on this view. */
+function standInView(): EditorView {
+  return new EditorView(null, {
+    state: EditorState.create({
+      schema: new Schema({ nodes: { doc: { content: "text*" }, text: {} } }),
+    }),
+  });
+}
+
+/** A plain element standing in for the document's editor, handed to the row (`standInView`) as
+ *  the page hands its editor over: as it is made, and `undefined` as it goes. */
+function HandedStandIn({
+  children,
+  onEditor,
+}: {
+  children: ReactNode;
+  onEditor: (editor: RowEditor | undefined) => void;
+}): ReactNode {
+  useEffect(() => {
+    const view = standInView();
+    onEditor({ view });
+    return () => {
+      view.destroy();
+      onEditor(undefined);
+    };
+  }, [onEditor]);
+  return children;
+}
 
 /** The page's one editor of the document a row of the tree is editing in, as `IssuePresetPanels`
  *  draws it for the row to take onto its stage, in the box it scrolls in there, with `editor`
@@ -173,10 +212,15 @@ function EditedDocument({
   >(undefined);
   held.set = (artifactId, onEditor) =>
     setEdited(artifactId === undefined ? undefined : { artifactId, onEditor });
+  const onEditor = edited?.onEditor ?? takesNoEditor;
   return edited === undefined ? null : (
     <DocumentStage artifactId={edited.artifactId}>
       <EditorBox>
-        {typeof editor === "function" ? editor(edited.onEditor ?? (() => {})) : editor}
+        {typeof editor === "function" ? (
+          editor(onEditor)
+        ) : (
+          <HandedStandIn onEditor={onEditor}>{editor}</HandedStandIn>
+        )}
       </EditorBox>
     </DocumentStage>
   );
@@ -1510,9 +1554,13 @@ test("Enter on a statement whose block holds no text puts the caret in that bloc
 });
 
 /** A comment, a statement of the spec and a second comment, with Enter pressed on the
- *  statement's row and the frame after it run, while the row's editor - a plain editable - has
- *  drawn none of the document yet. Answers the tree and that editable. */
-async function enterBeforeDrawn(user: UserEvent) {
+ *  statement's row and the frame after it run, while the row's editor - `editor`, a plain
+ *  editable handed to the row unless given - has drawn none of the document yet. Answers the tree
+ *  and that editable. */
+async function enterBeforeDrawn(
+  user: UserEvent,
+  editor: StandInEditor = <div contentEditable suppressContentEditableWarning />
+) {
   const spec: Artifact = { ...decisionsDocument, id: "artifact-spec", name: "Spec", slug: "spec" };
   const root = node({
     children: [
@@ -1523,10 +1571,7 @@ async function enterBeforeDrawn(user: UserEvent) {
     id: KEY,
     type: "issue",
   });
-  const view = renderTree(root, {
-    artifacts: [spec],
-    editor: <div contentEditable suppressContentEditableWarning />,
-  });
+  const view = renderTree(root, { artifacts: [spec], editor });
   await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
   await user.keyboard("j");
   await waitFor(() => expect(focusedRow(view.container)).toBe("spec#b-r1"));
@@ -2109,9 +2154,33 @@ function pressIn(editable: HTMLElement, key: string, modifiers: KeyboardEventIni
 /** A block of a document as the room holds it, in ProseMirror's JSON: its type, its attributes -
  *  its `blockId` among them - and what it holds. */
 interface LiveBlock {
-  readonly attrs?: Readonly<Record<string, unknown>>;
-  readonly content?: readonly unknown[];
+  readonly attrs?: Readonly<Record<string, string | number>>;
+  readonly content?: readonly (LiveBlock | LiveText)[];
   readonly type: string;
+}
+
+/** A run of a block's words. */
+interface LiveText {
+  readonly text: string;
+  readonly type: "text";
+}
+
+/** `block` as the room holds it: a Yjs element of its type and attributes, holding its words and
+ *  its blocks, as y-prosemirror writes a document there. Yjs holds an attribute of any value, a
+ *  heading's level as the number it is, where its own types name strings alone. */
+function roomBlock(block: LiveBlock): Y.XmlElement {
+  const element = new Y.XmlElement(block.type);
+  const attributes = element as Y.XmlElement<Record<string, string | number>>;
+  for (const [name, value] of Object.entries(block.attrs ?? {})) {
+    attributes.setAttribute(name, value);
+  }
+  element.insert(
+    0,
+    (block.content ?? []).map((child) =>
+      "text" in child ? new Y.XmlText(child.text) : roomBlock(child)
+    )
+  );
+  return element;
 }
 
 /** A paragraph `blockId` of `words`. */
@@ -2158,10 +2227,11 @@ function liveRoom(): LiveRoom {
   return { browser, server };
 }
 
-/** The document's own editor (`doc/editor.ts`), made as `ProofDocument` makes it for the row:
- *  handed to the row (`onEditor`) the moment it is made, before it has drawn the document, which
- *  the room then sends it - `blocks`, drawn as a collaborator's edit is, as the editor draws
- *  every document it opens. */
+/** The document's own editor (`doc/editor.ts`), made as `ProofDocument` makes it for the row: the
+ *  room holds the document - `blocks` - before the editor is made, as it does once it has synced,
+ *  so the editor draws the document as it is made (y-prosemirror draws as its plugin goes on) and
+ *  is handed to the row (`onEditor`) only then, some microtasks on, and bound to the room's marks
+ *  (`bindRemoteMarks`). */
 function LiveEditor({
   blocks,
   onEditor,
@@ -2177,6 +2247,9 @@ function LiveEditor({
     if (parent === null) return;
     let live = true;
     let made: EditorHandle | undefined;
+    let unbindMarks = () => {};
+    const held = room.server.getXmlFragment("prosemirror");
+    if (held.length === 0) held.insert(0, blocks.map(roomBlock));
     void createEditor(parent, {
       awareness: null,
       blockSchema: compiledBlockSchema,
@@ -2192,15 +2265,12 @@ function LiveEditor({
       made = handle;
       room.editor = handle;
       onEditor(handle);
-      prosemirrorJSONToYXmlFragment(
-        handle.view.state.schema,
-        { content: blocks, type: "doc" },
-        room.server.getXmlFragment("prosemirror")
-      );
+      unbindMarks = bindRemoteMarks(room.browser, handle);
     });
     return () => {
       live = false;
       if (made === undefined) return;
+      unbindMarks();
       void made.destroy();
       onEditor(undefined);
     };
@@ -2661,6 +2731,114 @@ test("a collaborator's edit outside the node's block applies, and the block is h
   );
 });
 
+/** The words above the statement, in ProseMirror's JSON, as the room holds them once `mark` is
+ *  set over `words above`: the mark is a span of the text there, as a collaborator's editor
+ *  writes one. */
+function wordsAboveMarked(mark: {
+  readonly attrs: Readonly<Record<string, unknown>>;
+  readonly type: string;
+}) {
+  return {
+    attrs: { blockId: "r0" },
+    content: [
+      { text: "The ", type: "text" },
+      { marks: [mark], text: "words above", type: "text" },
+      { text: " the statement.", type: "text" },
+    ],
+    type: "paragraph",
+  };
+}
+
+/** The marks the row's `editable` draws in block `id`, each as its kind, its id and the words it
+ *  is drawn over. */
+function marksDrawn(editable: HTMLElement, id: string): string[] {
+  return [
+    ...editable.querySelectorAll<HTMLElement>(`[data-block-id="${id}"] [data-proof][data-id]`),
+  ].map((span) => `${span.dataset.proof} ${span.dataset.id}: ${span.textContent}`);
+}
+
+// A mark set in the room - a collaborator's comment on the words above the statement - reaches the
+// row's editor as its span, which y-prosemirror draws from the room, and as its record in the
+// room's `marks` map, which the editor projects (`bindRemoteMarks`). Both are the collaboration's
+// (`holdEditsToBlock`), so the mark is drawn outside the node's block while the row is edited.
+test("a mark set in the room over the words above the statement is drawn in the row's editor while the row is edited", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const { editable, room, view } = await editLive(user);
+  const before = blocksOf(view);
+  const comment = { attrs: { by: "human:bob", id: "comment-1" }, type: "proofComment" };
+  act(() => {
+    room.server.transact(() => {
+      prosemirrorJSONToYXmlFragment(
+        view.state.schema,
+        { content: [wordsAboveMarked(comment), ...liveBlocks().slice(1)], type: "doc" },
+        room.server.getXmlFragment("prosemirror")
+      );
+      room.server.getMap("marks").set("comment-1", {
+        by: "human:bob",
+        createdAt: "2026-11-05T00:00:00.000Z",
+        kind: "comment",
+        quote: "words above",
+      });
+    });
+  });
+  expect(marksDrawn(editable, "r0"), "the mark set in the room was not drawn").toEqual([
+    "comment comment-1: words above",
+  ]);
+  expect(blocksOf(view), "the mark changed the document's words").toEqual(before);
+  expect(caretBlock(), "the mark took the caret out of the statement").toBe("r1");
+});
+
+// The one change of the text the editor's projection of the room's marks makes is to take out the
+// span of a suggestion the room has accepted or rejected (`proof-sdk-upstream`'s
+// `applyRemoteMarks`): a transaction of the editor's own making, marked as y-prosemirror marks
+// the collaboration's, so it applies outside the node's block too.
+test("the span of a suggestion the room has accepted goes from the words above the statement while the row is edited", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const { editable, room, view } = await editLive(user);
+  const before = blocksOf(view);
+  const suggested = {
+    by: "human:bob",
+    content: "lines over",
+    createdAt: "2026-11-05T00:00:00.000Z",
+    kind: "replace",
+    quote: "words above",
+  };
+  act(() => {
+    room.server.transact(() => {
+      prosemirrorJSONToYXmlFragment(
+        view.state.schema,
+        {
+          content: [
+            wordsAboveMarked({
+              attrs: { by: "human:bob", id: "suggestion-1", kind: "replace" },
+              type: "proofSuggestion",
+            }),
+            ...liveBlocks().slice(1),
+          ],
+          type: "doc",
+        },
+        room.server.getXmlFragment("prosemirror")
+      );
+      room.server.getMap("marks").set("suggestion-1", { ...suggested, status: "pending" });
+    });
+  });
+  expect(marksDrawn(editable, "r0"), "the suggestion set in the room was not drawn").toEqual([
+    "suggestion suggestion-1: words above",
+  ]);
+  act(() => {
+    room.server.getMap("marks").set("suggestion-1", { ...suggested, status: "accepted" });
+  });
+  expect(
+    marksDrawn(editable, "r0"),
+    "the span of the suggestion the room accepted stayed in the row's editor"
+  ).toEqual([]);
+  expect(blocksOf(view), "the suggestion's span going changed the document's words").toEqual(
+    before
+  );
+});
+
 // A selection moved out of the node's block once the reader has acted - a press on another block
 // of the editor, a drag across blocks, a platform's own key for a move - comes back to the
 // block's nearer end, as the editor's own in the same task: an end above the block to its start,
@@ -2746,6 +2924,296 @@ test("no key edits the document while the node's block of the row's editor is no
   ] as const) {
     const name = `${Object.keys(modifiers).join("+")} ${key}`;
     expect(!pressIn(editable, key, modifiers), `${name} refused: ${!refused}`).toBe(refused);
+  }
+});
+
+// The editor's hold on its edits (`holdEditsToBlock`) is the caret's precondition. What the hold
+// is built of loads apart from the editor: held back here, the editor is made, handed to the row
+// and has drawn the statement, and no caret goes in - the focus stays on the row, where no key
+// edits, and a key pressed in the editor is refused. The caret goes in once the hold is on, and
+// the editor then holds its edits to the block.
+test("the caret goes into the row's editor only once the editor holds its edits to the node's block", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const parts = await nodeCaret.loadEditsHold();
+  const held = Promise.withResolvers<nodeCaret.HoldParts>();
+  const load = spyOn(nodeCaret, "loadEditsHold").mockReturnValue(held.promise);
+  try {
+    const room = liveRoom();
+    const blocks = liveBlocks();
+    const editable = await enterStatement(user, (onEditor) => (
+      <LiveEditor blocks={blocks} onEditor={onEditor} room={room} />
+    ));
+    const row = editable.closest<HTMLElement>("[data-node-row]");
+    // The editor has drawn the statement, and the frames after that have run.
+    await waitFor(() => wordsOf(editable, "r1"));
+    await nextFrame();
+    await nextFrame();
+    expect(
+      document.activeElement === row,
+      "the focus left the row before the editor held its edits"
+    ).toBe(true);
+    expect(
+      editable.contains(window.getSelection()?.anchorNode ?? null),
+      "a caret went into an editor that does not hold its edits yet"
+    ).toBe(false);
+    await select(wordsOf(editable, "r1"), 3);
+    expect(pressIn(editable, "x"), "a key reached an editor that does not hold its edits yet").toBe(
+      false
+    );
+
+    await act(async () => held.resolve(parts));
+    await waitFor(() =>
+      expect(
+        document.activeElement === editable && caretBlock() === "r1",
+        "no caret went into the statement once the editor held its edits"
+      ).toBe(true)
+    );
+    expect(selected(), "the caret is not at the statement's start").toEqual(["r1:0", "r1:0"]);
+    const view = room.editor?.view;
+    if (view === undefined) throw new Error("the row's editor was never made");
+    const before = blocksOf(view);
+    pressIn(editable, "Backspace");
+    expect(blocksOf(view), "the editor that took the caret does not hold its edits").toEqual(
+      before
+    );
+  } finally {
+    load.mockRestore();
+  }
+});
+
+/** Fails the load of what the hold is built of, held back so far, with `reject`, and waits a
+ *  task on: a rejection nothing handled is reported then, and fails the case it happens in. */
+function failLoad(reject: (reason: Error) => void): Promise<void> {
+  return act(async () => {
+    reject(new Error("the hold's parts did not load"));
+    const reported = Promise.withResolvers<void>();
+    setTimeout(reported.resolve, 20);
+    await reported.promise;
+  });
+}
+
+// What the hold is built of can fail to load - a chunk the network did not bring. No hold goes on
+// then, so no caret goes in: the editing ends, the row says its editor could not open, and the
+// focus is on the row. The failure is answered by the hold the editor was handed to and by the
+// row that asked for the load, and the next Enter loads again.
+test("a row whose editor's hold fails to load ends the editing and says its editor could not open", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const held = Promise.withResolvers<nodeCaret.HoldParts>();
+  const load = spyOn(nodeCaret, "loadEditsHold").mockReturnValue(held.promise);
+  try {
+    const { editable, view } = await enterBeforeDrawn(user);
+    const [row] = rowsFor(view.container, "spec#b-r1");
+    await drawStatementBlocks(editable);
+    await nextFrame();
+    expect(view.edited.at(-1), "the editing ended while the hold was still loading").toBe(
+      "artifact-spec"
+    );
+    expect(
+      document.activeElement === row,
+      "the focus left the row while the hold was still loading"
+    ).toBe(true);
+
+    await failLoad(held.reject);
+    await waitFor(() =>
+      expect(
+        rowReport(view.container),
+        "the row whose hold failed to load did not say its editor could not open"
+      ).toBe(KEY_REPORTS.editor_closed)
+    );
+    expect(
+      row?.querySelector("[data-row-report]") != null,
+      "the report is not at the statement's row"
+    ).toBe(true);
+    expect(view.edited.at(-1), "the editing did not end").toBeUndefined();
+    await waitFor(() =>
+      expect(
+        row?.querySelector('[contenteditable="true"]') == null,
+        "the row still holds the editor"
+      ).toBe(true)
+    );
+    expect(document.activeElement === row, "the focus is not on the statement's row").toBe(true);
+
+    // The next Enter asks for the load again, which now answers.
+    load.mockRestore();
+    await user.keyboard("{Enter}");
+    const again = await waitFor(() => {
+      const found = row?.querySelector<HTMLElement>('[contenteditable="true"]');
+      if (found == null) throw new Error("the second Enter put no editor in the row");
+      return found;
+    });
+    await drawStatementBlocks(again);
+    await waitFor(() =>
+      expect(
+        document.activeElement === again && caretBlock() === "r1",
+        "the second Enter put no caret in the statement"
+      ).toBe(true)
+    );
+  } finally {
+    load.mockRestore();
+  }
+});
+
+// The load can fail before the page has handed the row an editor, or for a page that hands it
+// none: the row alone has asked for it then, and answers for it all the same.
+test("a hold that fails to load before the row is handed an editor ends the editing too", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const held = Promise.withResolvers<nodeCaret.HoldParts>();
+  const load = spyOn(nodeCaret, "loadEditsHold").mockReturnValue(held.promise);
+  try {
+    const { view } = await enterBeforeDrawn(user, () => (
+      <div contentEditable suppressContentEditableWarning />
+    ));
+    const [row] = rowsFor(view.container, "spec#b-r1");
+    await failLoad(held.reject);
+    await waitFor(() =>
+      expect(
+        rowReport(view.container),
+        "the row whose hold failed to load did not say its editor could not open"
+      ).toBe(KEY_REPORTS.editor_closed)
+    );
+    expect(view.edited.at(-1), "the editing did not end").toBeUndefined();
+    expect(document.activeElement === row, "the focus is not on the statement's row").toBe(true);
+  } finally {
+    load.mockRestore();
+  }
+});
+
+// A page that draws the row's editor and hands the row nothing to hold would leave that editor
+// unguarded. The row waits while the editor draws no block of the node's, and a task after the
+// block is drawn with no editor handed over - a page hands its editor over in the task the
+// editor is made in - the editing ends with no caret placed, and the row says so.
+test("a page that hands the row no editor gets no caret: the editing ends and the row says its editor could not open", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const { editable, view } = await enterBeforeDrawn(user, () => (
+    <div contentEditable suppressContentEditableWarning />
+  ));
+  const [row] = rowsFor(view.container, "spec#b-r1");
+  expect(view.edited.at(-1), "the editing ended before the editor had drawn the node's block").toBe(
+    "artifact-spec"
+  );
+  await drawStatementBlocks(editable);
+  await waitFor(() =>
+    expect(
+      rowReport(view.container),
+      "the row handed no editor did not say its editor could not open"
+    ).toBe(KEY_REPORTS.editor_closed)
+  );
+  expect(view.edited.at(-1), "the editing did not end").toBeUndefined();
+  expect(
+    editable.contains(window.getSelection()?.anchorNode ?? null),
+    "a caret went into an editor the row was never handed"
+  ).toBe(false);
+  expect(document.activeElement === row, "the focus is not on the statement's row").toBe(true);
+});
+
+// The document's editor draws a document the room already holds as it is made, some microtasks
+// before the page hands it to the row (`doc/ProofDocument.tsx`'s `onEditorHandle`), and a look at
+// the row falls between the two: the row's own watch on its editor's drawing. That look read the
+// editor as one the page would never hand over, and ended the editing. The row reads that a task
+// later, so the editor handed over in the task it drew the block in takes the caret.
+test("an editor that has drawn the node's block microtasks before the page hands it over takes the caret", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  let handOver: ((editor: RowEditor | undefined) => void) | undefined;
+  const { editable, view } = await enterBeforeDrawn(user, (onEditor) => {
+    handOver = onEditor;
+    return <div contentEditable suppressContentEditableWarning />;
+  });
+  const handed = standInView();
+  try {
+    await act(async () => {
+      for (const [id, words] of STATEMENT_BLOCKS) {
+        const block = document.createElement("p");
+        block.dataset.blockId = id;
+        block.textContent = words;
+        editable.append(block);
+      }
+      // The row's watch on the drawing looks at the row here, before the editor is handed over.
+      await Promise.resolve();
+      await Promise.resolve();
+      handOver?.({ view: handed });
+    });
+    await waitFor(() =>
+      expect(
+        document.activeElement === editable && caretBlock() === "r1",
+        "the editor handed over in the task it drew the block in took no caret"
+      ).toBe(true)
+    );
+    // The task after, in which the row reads whether it was handed an editor.
+    await act(async () => {
+      const read = Promise.withResolvers<void>();
+      setTimeout(read.resolve, 20);
+      await read.promise;
+    });
+    expect(view.edited.at(-1), "the editing ended").toBe("artifact-spec");
+    expect(rowReport(view.container), "the row said its editor could not open").toBeUndefined();
+  } finally {
+    handOver?.(undefined);
+    handed.destroy();
+  }
+});
+
+/** A plain editable standing in for the document's editor, which `remake.again` takes out of the
+ *  page and makes again, as the document makes its editor again for a room that refused its
+ *  connection and then admitted it. */
+function RemadeStandIn({ remake }: { remake: { again?: () => void } }): ReactNode {
+  const [made, setMade] = useState(0);
+  remake.again = () => setMade((count) => count + 1);
+  return <div contentEditable key={made} suppressContentEditableWarning />;
+}
+
+// Until the reader has acted, the row puts the caret back in the node's block as the editor
+// redraws it. The document can make its editor again while the row is edited, and hands the row
+// the new one: no caret goes back in until that editor's own hold is on.
+test("an editor made again while the row is edited takes the caret back only once it holds its edits", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  let handOver: ((editor: RowEditor | undefined) => void) | undefined;
+  const remake: { again?: () => void } = {};
+  const { editable, view } = await enterBeforeDrawn(user, (onEditor) => {
+    handOver = onEditor;
+    return <RemadeStandIn remake={remake} />;
+  });
+  const [row] = rowsFor(view.container, "spec#b-r1");
+  const first = standInView();
+  const second = standInView();
+  const caretIn = (editor: HTMLElement) =>
+    document.activeElement === editor && caretBlock() === "r1";
+  try {
+    await act(async () => handOver?.({ view: first }));
+    await drawStatementBlocks(editable);
+    await waitFor(() =>
+      expect(caretIn(editable), "Enter put no caret in the statement").toBe(true)
+    );
+
+    // The document tears its editor down and makes it again, which draws the statement before
+    // the row is handed it.
+    await act(async () => {
+      handOver?.(undefined);
+      remake.again?.();
+    });
+    const again = row?.querySelector<HTMLElement>('[contenteditable="true"]');
+    if (again == null || again === editable) throw new Error("the editor was not made again");
+    await drawStatementBlocks(again);
+    await nextFrame();
+    expect(caretIn(again), "a caret went into an editor that does not hold its edits yet").toBe(
+      false
+    );
+
+    await act(async () => handOver?.({ view: second }));
+    await waitFor(() =>
+      expect(caretIn(again), "the editor made again took no caret once it held its edits").toBe(
+        true
+      )
+    );
+  } finally {
+    handOver?.(undefined);
+    first.destroy();
+    second.destroy();
   }
 });
 

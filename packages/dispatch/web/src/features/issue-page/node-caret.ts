@@ -66,6 +66,13 @@ export function caretInBlock(host: HTMLElement, blockId: string | undefined): bo
   return true;
 }
 
+/** Whether the editor in `host` draws `blockId`'s block, which is when a caret can go in it
+ *  (`caretInBlock`). */
+export function drawsBlock(host: HTMLElement, blockId: string | undefined): boolean {
+  const editable = host.querySelector<HTMLElement>('[contenteditable="true"]');
+  return editable !== null && blockIn(editable, blockId) !== null;
+}
+
 /**
  * Puts the selection from `anchor` to `focus` in the editor holding the focus, and has the
  * editor take it as its own at once. The editor reads a selection put in it only once the
@@ -211,26 +218,20 @@ function couldEdit(event: KeyboardEvent): boolean {
  *  marks each transaction the collaboration brings with. Both are the editor library's own,
  *  which sits behind its own `import()` (`doc/editor.ts`), so they are imported here only once a
  *  row is edited, and kept from then on. */
-type HoldParts = readonly [state: typeof ProseMirrorState, sync: typeof YProseMirror];
-let holdParts: HoldParts | undefined;
+export type HoldParts = readonly [state: typeof ProseMirrorState, sync: typeof YProseMirror];
 let loadingHoldParts: Promise<HoldParts> | undefined;
 
 /** Loads what `holdEditsToBlock` is built of, once. A row asks for it as it starts editing, so
- *  the parts are held by the time the page hands the row its editor. A load that failed is tried
- *  again by the next call. */
+ *  it has loaded by the time the page hands the row its editor, and the row gives the hold what
+ *  this answers. A load that failed is the caller's to answer for, and the next call loads
+ *  again. */
 export function loadEditsHold(): Promise<HoldParts> {
   loadingHoldParts ??= importWhenOnline(() =>
     Promise.all([import("@milkdown/kit/prose/state"), import("y-prosemirror")])
-  ).then(
-    (parts) => {
-      holdParts = parts;
-      return parts;
-    },
-    (error: unknown) => {
-      loadingHoldParts = undefined;
-      throw error;
-    }
-  );
+  ).catch((error: unknown) => {
+    loadingHoldParts = undefined;
+    throw error;
+  });
   return loadingHoldParts;
 }
 
@@ -256,55 +257,66 @@ const BLOCK_ID_PROPERTY = "blockId";
  * heading's words (`syncHeadingIdPlugin`), and writes it in a transaction of its own after every
  * change of them, to each heading whose name that change moves.
  *
- * Every transaction the collaboration brings applies, wherever it lands: a collaborator's edit
- * and the marks the room projects, each marked with y-prosemirror's `ySyncPluginKey`. The
- * block's place is mapped through each transaction, and found again by its id where one moved it
- * elsewhere. y-prosemirror's undo (Mod-z, `@milkdown/plugin-collab`) reaches the document the
- * same way, and applies too: the row's editor is made for the row, so its undo manager holds this
- * editor's own edits alone, each inside the block. A transaction that changes neither the
- * document nor the selection - a decoration drawn, a mark stored for the next letter - leaves the
- * document as it was, and applies.
+ * Every transaction the collaboration brings applies, wherever it lands, each marked with
+ * y-prosemirror's `ySyncPluginKey`: what y-prosemirror draws from the room - a collaborator's
+ * edit, the span of a mark set there, its own undo (Mod-z, `@milkdown/plugin-collab`) - and the
+ * editor's projection of the room's `marks` map (`doc/editor.ts`'s `bindRemoteMarks`, through
+ * `proof-sdk-upstream`'s `applyRemoteMarks`, which marks its transaction as y-prosemirror marks
+ * its own), which carries the marks' records and takes the spans of the suggestions the room has
+ * accepted or rejected out of the text. The block's place is mapped through each transaction, and
+ * found again by its id where one moved it elsewhere. The undo applies since the row's editor is
+ * made for the row, so its undo manager holds this editor's own edits alone, each inside the
+ * block. A transaction that changes neither the document nor the selection - a decoration drawn,
+ * a mark stored for the next letter - leaves the document as it was, and applies.
  *
- * The plugin goes on in the call where `loadEditsHold` has loaded what it is built of, which the
- * row asks for as it starts editing: so as the page hands over the editor, before the editor has
- * drawn the document, and before the caret is placed; else once they have loaded. A change of the
- * editor's plugins makes ProseMirror make each plugin's view again (`useNodeEditing.ts`). The
- * collaborators' cursors go on later in the same way, keeping every plugin the editor holds
- * (`@legion/proof-editor`'s `installCollabCursorsWhenReady`). While `heldBlock` names no block, or
- * the document holds no block of its id, no edit of the editor's own goes in. Answers what takes
- * the plugin off again.
+ * The plugin goes on once `parts` have loaded - what it is built of, which the row asks for as it
+ * starts editing (`loadEditsHold`) - and `onHeld` is called as it goes on: the row puts no caret
+ * in the editor before that (`useNodeEditing.ts`). Where they had loaded before the page handed
+ * the editor over, that is in the task it was handed over in, before a key or a press can reach
+ * the editor; the editor may have drawn the document by then. A load that failed puts no plugin
+ * on, and is the row's to answer for, which asked for it. A change of the editor's plugins makes
+ * ProseMirror make each plugin's view again (`useNodeEditing.ts`). The collaborators' cursors go
+ * on later in the same way, keeping every plugin the editor holds (`@legion/proof-editor`'s
+ * `installCollabCursorsWhenReady`). While `heldBlock` names no block, or the document holds no
+ * block of its id, no edit of the editor's own goes in. Answers what takes the plugin off again,
+ * or keeps it from going on.
  */
 export function holdEditsToBlock(
   view: EditorView,
-  heldBlock: () => string | undefined
+  heldBlock: () => string | undefined,
+  parts: Promise<HoldParts>,
+  onHeld: () => void
 ): () => void {
   let held: Plugin | undefined;
   let letGo = false;
-  const hold = ([state, sync]: HoldParts) => {
-    if (letGo || view.isDestroyed) return;
-    const plugin: Plugin<number | undefined> = new state.Plugin<number | undefined>({
-      filterTransaction: (transaction, editorState) =>
-        transaction.getMeta(sync.ySyncPluginKey) !== undefined ||
-        (!transaction.docChanged && !transaction.selectionSet) ||
-        keepsToBlock(transaction, editorState, heldBlock(), plugin.getState(editorState)),
-      // The block's start, as last found: the guess a transaction checks before it searches.
-      state: {
-        apply: (transaction, start, _, { doc }) =>
-          !transaction.docChanged
-            ? start
-            : blockStart(
-                doc,
-                heldBlock(),
-                start === undefined ? undefined : transaction.mapping.map(start, 1)
-              ),
-        init: (_, { doc }) => blockStart(doc, heldBlock(), undefined),
-      },
-    });
-    held = plugin;
-    view.updateState(view.state.reconfigure({ plugins: [...view.state.plugins, plugin] }));
-  };
-  if (holdParts === undefined) void loadEditsHold().then(hold);
-  else hold(holdParts);
+  void parts.then(
+    ([state, sync]) => {
+      if (letGo || view.isDestroyed) return;
+      const plugin: Plugin<number | undefined> = new state.Plugin<number | undefined>({
+        filterTransaction: (transaction, editorState) =>
+          transaction.getMeta(sync.ySyncPluginKey) !== undefined ||
+          (!transaction.docChanged && !transaction.selectionSet) ||
+          keepsToBlock(transaction, editorState, heldBlock(), plugin.getState(editorState)),
+        // The block's start, as last found: the guess a transaction checks before it searches.
+        state: {
+          apply: (transaction, start, _, { doc }) =>
+            !transaction.docChanged
+              ? start
+              : blockStart(
+                  doc,
+                  heldBlock(),
+                  start === undefined ? undefined : transaction.mapping.map(start, 1)
+                ),
+          init: (_, { doc }) => blockStart(doc, heldBlock(), undefined),
+        },
+      });
+      held = plugin;
+      view.updateState(view.state.reconfigure({ plugins: [...view.state.plugins, plugin] }));
+      onHeld();
+    },
+    // The row answers for a load that failed, which asked for it.
+    () => undefined
+  );
   return () => {
     const plugin = held;
     held = undefined;
