@@ -627,8 +627,8 @@ func writeIssueAskStates(t *testing.T, service *Service, asks []model.Ask, actor
 // documentText is the document's own markdown (Text), which the writes of an ask's state while
 // another build serves change (WriteIssueAskStates) and which holds no ask's state once the fleet
 // is one build: every caller compares it with stored bytes, a latest version or a document the
-// same write changed, never with the text an agent reads with each ask's state rendered on read
-// (TextWithAnswers).
+// same write changed, never with the text an agent reads, which holds no ask's state at all and
+// answers each in its asks member (TextWithAsks).
 func documentText(t *testing.T, service *Service, artifactID string) string {
 	t.Helper()
 	text, err := service.Text(context.Background(), artifactID)

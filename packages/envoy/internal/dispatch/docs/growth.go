@@ -40,9 +40,9 @@ import (
 // (dispatch://INFRA-1150 R3), and while another build serves the server keeps a copy of it in the
 // block for that build's pages (rollWindowAskAttributes), whose words the answer route and
 // settlement each leave out of a block the document has no room for, as the release before does
-// (KeepAskBlockInStep, withholdAnswersWithoutRoom). The text routes render each answer into its
-// block on read, and hold what they answer to this bound, so an agent's read still uploads back:
-// an answer the document has no room for is left out of its block there (TextWithAnswers). Of the
+// (KeepAskBlockInStep, withholdAnswersWithoutRoom). The text routes serve no answer in the
+// markdown, so an agent's read uploads back as its rendering does: they take the server-owned
+// attributes off every ask block and answer each ask beside the text (TextWithAsks). Of the
 // other writes that run through none of these, a rebuild weighs the
 // markdown a caller supplies as SeedText weighs a new document's, and restores a latest version
 // whatever it weighs, since that is the server's own text (RebuildDocument); the block-id backfill

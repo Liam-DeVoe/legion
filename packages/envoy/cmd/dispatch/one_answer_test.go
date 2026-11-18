@@ -31,6 +31,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
 
@@ -656,8 +657,9 @@ func requireOneAnswerCase(t *testing.T, ctx context.Context, current *dispatchPr
 	}
 
 	// The source is answered: the copy's document owes a settlement, and once it has settled again
-	// the copy reads the source's answer in the text an agent reads, naming the source and its
-	// document.
+	// the copy's entry in the asks member of the text an agent reads holds the source's answer,
+	// naming the source and its document, while the copy's opening line in that text holds none
+	// of the server-owned attributes.
 	answerAsk(t, current, c.source, "East", "East first.")
 	var owed bool
 	if err := database.QueryRow(ctx, `select exists (select 1 from doc_settlements_pending where artifact_id = $1::uuid)`, copyDocument).Scan(&owed); err != nil || !owed {
@@ -678,7 +680,8 @@ func requireOneAnswerCase(t *testing.T, ctx context.Context, current *dispatchPr
 		t.Errorf("%s: the copy settled again reads its source %q %q, want the source's answer", c.what, copiedState, copiedAnswer)
 	}
 	var text struct {
-		Markdown string `json:"markdown"`
+		Markdown string          `json:"markdown"`
+		Asks     []model.TextAsk `json:"asks"`
 	}
 	readJSON(t, current, "/api/v1/artifacts/"+copyDocument+"/text", &text)
 	opener := ""
@@ -687,13 +690,21 @@ func requireOneAnswerCase(t *testing.T, ctx context.Context, current *dispatchPr
 			opener = line
 		}
 	}
-	for _, want := range []string{
-		`state="answered"`, `answered_by="` + dispatchTestLogin + `"`, `answer="East first."`,
-		`copied_from="` + c.source + `"`, `copied_from_document="dispatch://` + c.issue + `/spec"`,
-	} {
-		if !strings.Contains(opener, want) {
-			t.Errorf("%s: the copy's text, settled again, opens its block %q, want it holding %s:\n%s", c.what, opener, want, text.Markdown)
+	for _, name := range storedAskAttributes {
+		if strings.Contains(opener, " "+name+`="`) {
+			t.Errorf("%s: the copy's text, settled again, opens its block %q, holding the server-owned attribute %s:\n%s", c.what, opener, name, text.Markdown)
 		}
+	}
+	var entry *model.TextAsk
+	for index := range text.Asks {
+		if text.Asks[index].BlockID == c.sourceBlock {
+			entry = &text.Asks[index]
+		}
+	}
+	if entry == nil || entry.State != asks.StateAnswered || entry.AnsweredBy != dispatchTestLogin || entry.Answer == nil || *entry.Answer != "East first." ||
+		entry.CopiedFrom != c.source || entry.CopiedFromDocument != "dispatch://"+c.issue+"/spec" {
+		t.Errorf("%s: the copy's text, settled again, answers its block %s in its asks as %s, want it answered by %s with East first., naming %s on dispatch://%s/spec",
+			c.what, c.sourceBlock, mustJSON(t, entry), dispatchTestLogin, c.source, c.issue)
 	}
 }
 

@@ -7841,6 +7841,109 @@ describe("executeDispatchTool", () => {
     expect(result.text).toBe("# Garrett reply");
   });
 
+  // The live text holds no ask's state or answer: each answered ask is named in the trailer from
+  // the text's asks, its words quoted and its choice beside them. A version read prints the stored
+  // bytes, the record a person approved, and names none. A Dispatch of the release before sends no
+  // asks and writes each answer on its block's opening line, where the trailer reads it instead.
+  describe("dispatch_doc_read names each answered ask beside the token", () => {
+    const readDocument = async (text: unknown, args: Record<string, unknown> = {}) => {
+      const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+        const target = new URL(String(url));
+        if (target.pathname === "/api/v1/issues/DSP-42") {
+          return response({
+            key: "DSP-42",
+            primary_artifact_id: "artifact-42",
+            artifacts: [{ id: "artifact-42", slug: "spec", name: "spec.md", primary: true }],
+            open_asks: [],
+          });
+        }
+        if (target.pathname === "/api/v1/artifacts/artifact-42/text") return response(text);
+        if (target.pathname === "/api/v1/artifacts/artifact-42/versions/3") {
+          return response({
+            number: 3,
+            markdown:
+              ':::ask{#q-drive urgency="med" multiple="false" state="answered" answered_by="alice" answered_at="2026-11-18T12:00:00Z" selected="[]" answer="Yes."}\nDrive?\n:::',
+          });
+        }
+        if (target.pathname === "/api/v1/issues/DSP-42/comments") return response([]);
+        throw new Error(`unexpected request: ${target.pathname}`);
+      };
+      return executeDispatchTool({
+        tool: "dispatch_doc_read",
+        args: { issue: "DSP-42", ...args },
+        cwd: "/workspace",
+        host: "omp",
+        config,
+        env: {},
+        exec: repoExec("owner/repo"),
+        fetchImpl: fetchImpl as typeof fetch,
+      });
+    };
+    const served =
+      ':::ask{#q-drive urgency="med" multiple="false"}\nWhich transport?\n\n- REST: Plain HTTP\n- gRPC: Streaming\n:::\n\n' +
+      ':::ask{#q-open urgency="med" multiple="false"}\nWhich region?\n:::\n\n' +
+      ':::ask{#q-new urgency="med" multiple="false"}\nWhich owner?\n:::';
+
+    test("from the text's asks", async () => {
+      const result = await readDocument({
+        markdown: served,
+        token: "sha256:spec",
+        version: 4,
+        asks: [
+          {
+            block_id: "q-drive",
+            state: "answered",
+            answered_by: "bob",
+            answered_at: "2026-11-18T12:05:00Z",
+            selected: ["REST"],
+            answer: "Plain HTTP until a client streams.",
+          },
+          { block_id: "q-open", state: "open" },
+          { block_id: "q-new" },
+        ],
+      });
+      expect(result.text).toBe(
+        [
+          served,
+          "",
+          [
+            "Document token: sha256:spec",
+            'Answered q-drive by bob at 2026-11-18T12:05:00Z: "Plain HTTP until a client streams." (chose "REST")',
+          ].join("\n"),
+        ].join("\n")
+      );
+    });
+
+    test("from the opening lines a Dispatch of the release before writes, which sends no asks", async () => {
+      const result = await readDocument({
+        markdown:
+          ':::ask{#q-drive urgency="med" multiple="false" state="answered" answered_by="bob" answered_at="2026-11-18T12:05:00Z" selected="[&#x22;REST&#x22;]" answer="Plain &#x22;HTTP&#x22;."}\nWhich transport?\n:::\n\n' +
+          ':::ask{#q-chosen urgency="med" multiple="false" state="answered" answered_by="carol" answered_at="2026-11-18T12:06:00Z" selected="[&#x22;gRPC&#x22;]"}\nWhich stream?\n:::\n\n' +
+          ':::ask{#q-open urgency="med" multiple="false" state="open"}\nWhich region?\n:::',
+        token: "sha256:spec",
+        version: 4,
+      });
+      expect(result.text.split("\n\n").at(-1)).toBe(
+        [
+          "Document token: sha256:spec",
+          'Answered q-drive by bob at 2026-11-18T12:05:00Z: "Plain \\"HTTP\\"." (chose "REST")',
+          'Answered q-chosen by carol at 2026-11-18T12:06:00Z: chose "gRPC"',
+        ].join("\n")
+      );
+    });
+
+    test("and a version read names none", async () => {
+      const result = await readDocument(
+        { markdown: served, token: "sha256:spec", version: 4 },
+        { version: 3 }
+      );
+      expect(result.text).not.toContain("Answered ");
+      expect(result.text).toStartWith(
+        ':::ask{#q-drive urgency="med" multiple="false" state="answered"'
+      );
+    });
+  });
+
   test("resolves an issue document id before an earlier artifact's matching slug", async () => {
     const requests: string[] = [];
     const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
@@ -8617,12 +8720,14 @@ describe("executeDispatchTool", () => {
     const stateless = (block: string) =>
       `:::ask{#${block} urgency="med" multiple="false"}\nQuestion of ${block}?\n:::`;
     // `live`, when given, is what the live text (`GET /artifacts/{id}/text`) renders; without it
-    // a read of the live text is an unexpected request.
+    // a read of the live text is an unexpected request. `liveAsks`, when given, is the live text's
+    // `asks` member, which a Dispatch of the release before does not send.
     const requestOver = async (
       blocks: string[],
       version4: string[],
       asks: unknown[],
-      live?: string[]
+      live?: string[],
+      liveAsks?: unknown[]
     ) => {
       const posts: string[] = [];
       const requests: string[] = [];
@@ -8659,6 +8764,7 @@ describe("executeDispatchTool", () => {
             markdown: ["## Where", ...live].join("\n\n"),
             token: "sha256:live",
             version: 4,
+            ...(liveAsks === undefined ? {} : { asks: liveAsks }),
           });
         }
         // An issue's document lists its asks under the issue: the artifact route refuses it.
@@ -8959,7 +9065,8 @@ describe("executeDispatchTool", () => {
 
     // Once the fleet runs one build, a person's answer is held on the ask's node alone and no
     // version records a block's state, so the server's read of the ask judges the block: its own
-    // ask from the asks list, a copy's source from the live text, which renders it from the store.
+    // ask from the asks list, a copy's source from the live text's asks, or, from a Dispatch of the
+    // release before, which sends none, from the copy's opening line in the live text.
     const liveText = "/api/v1/artifacts/artifact-42/text";
     const copyOf = (block: string, state: string) =>
       `:::ask{#${block} urgency="med" multiple="false" state="${state}" copied_from="ask-source" copied_from_document="dispatch://DSP-42/artifact/plan"}\nQuestion of ${block}?\n:::`;
@@ -8996,7 +9103,7 @@ describe("executeDispatchTool", () => {
       expect(posts).toEqual([]);
     });
 
-    test("a copy the version records no state for is taken once the live text shows its source answered", async () => {
+    test("a copy the version records no state for is taken once the live text of the release before shows its source answered", async () => {
       const { outcome, posts, requests } = await requestOver(
         ["b-1"],
         [stateless("b-1")],
@@ -9011,7 +9118,7 @@ describe("executeDispatchTool", () => {
       expect(posts).toEqual(["/api/v1/artifacts/artifact-42/approval-requests"]);
     });
 
-    test("a copy the version records no state for is refused while the live text shows its source open, naming the source", async () => {
+    test("a copy the version records no state for is refused while the live text of the release before shows its source open, naming the source", async () => {
       const { outcome, posts, requests } = await requestOver(
         ["b-1", "b-2"],
         [stateless("b-1"), stateless("b-2")],
@@ -9029,6 +9136,61 @@ describe("executeDispatchTool", () => {
         "- block b-2, whose ask Dispatch has not opened yet",
       ]);
       // One read of the live text serves every copy.
+      expect(requests.filter((path) => path === liveText)).toHaveLength(1);
+      expect(posts).toEqual([]);
+    });
+
+    test("a copy the version records no state for is taken once the live text's asks show its source answered", async () => {
+      const { outcome, posts, requests } = await requestOver(
+        ["b-1"],
+        [stateless("b-1")],
+        [],
+        [stateless("b-1")],
+        [
+          {
+            block_id: "b-1",
+            state: "answered",
+            answered_by: "alice",
+            answered_at: "2026-10-09T09:00:00Z",
+            selected: [],
+            answer: "eu-west-1",
+            copied_from: "ask-source",
+            copied_from_document: "dispatch://DSP-42/artifact/plan",
+          },
+        ]
+      );
+
+      expect((await outcome).text).toStartWith("Approval requested for spec.md");
+      expect(requests.filter((path) => path === liveText)).toHaveLength(1);
+      expect(posts).toEqual(["/api/v1/artifacts/artifact-42/approval-requests"]);
+    });
+
+    test("a copy the version records no state for is refused while the live text's asks show its source open, naming the source", async () => {
+      const { outcome, posts, requests } = await requestOver(
+        ["b-1", "b-2"],
+        [stateless("b-1"), stateless("b-2")],
+        [],
+        [stateless("b-1"), stateless("b-2")],
+        [
+          {
+            block_id: "b-1",
+            state: "open",
+            copied_from: "ask-source",
+            copied_from_document: "dispatch://DSP-42/artifact/plan",
+          },
+          // No ask stands behind b-2 anywhere yet: its entry carries no state.
+          { block_id: "b-2" },
+        ]
+      );
+
+      const refusal = await outcome.then(
+        () => "",
+        (error: Error) => error.message
+      );
+      expect(refusal.split("\n").slice(1, 3)).toEqual([
+        "- block b-1, a copy of ask dispatch://DSP-42/ask/ask-source, which is open on DSP-42 plan: answer it there",
+        "- block b-2, whose ask Dispatch has not opened yet",
+      ]);
       expect(requests.filter((path) => path === liveText)).toHaveLength(1);
       expect(posts).toEqual([]);
     });

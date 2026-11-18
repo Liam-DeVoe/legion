@@ -607,7 +607,7 @@ func TestAnAskBlockPastedWithNullServerAttributesIsTaken(t *testing.T) {
 	if len(asks) != 1 || asks[0].BlockID == nil || *asks[0].BlockID != "pasted" || asks[0].State != "open" {
 		t.Fatalf("after the paste's settlement, asks = %s; want one open ask under %q", describeAsks(asks), "pasted")
 	}
-	requireLiveText(t, handler, issue.PrimaryArtifactID, `#pasted urgency="med" multiple="false" state="open"`)
+	requireLiveText(t, handler, issue.PrimaryArtifactID, `#pasted state="open"`)
 	var markdown string
 	if err := database.Pool.QueryRow(context.Background(), `
 		select markdown from artifact_versions where artifact_id = $1 order by number desc limit 1

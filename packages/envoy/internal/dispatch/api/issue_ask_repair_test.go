@@ -258,7 +258,7 @@ func TestRepairWithdrawsTheOpenAsksOfAnIssueClosedWithoutWithdrawing(t *testing.
 			t.Fatalf("seeded ask %s = %s, want open on the closed issue", ask, got.State)
 		}
 	}
-	requireLiveText(t, f.handler, issue.PrimaryArtifactID, `#close-decision urgency="med" multiple="false" state="open"`)
+	requireLiveText(t, f.handler, issue.PrimaryArtifactID, `#close-decision state="open"`)
 
 	started := time.Now()
 	repair := repairNow(t, f)
@@ -285,7 +285,7 @@ func TestRepairWithdrawsTheOpenAsksOfAnIssueClosedWithoutWithdrawing(t *testing.
 	if approval := readApproval(t, f.handler, issue.PrimaryArtifactID).Approval; approval != nil && approval.State == "awaiting" {
 		t.Fatalf("the spec's approval = %#v, want no request awaiting", approval)
 	}
-	requireLiveText(t, f.handler, issue.PrimaryArtifactID, `#close-decision urgency="med" multiple="false" state="resolved"`)
+	requireLiveText(t, f.handler, issue.PrimaryArtifactID, `#close-decision state="resolved"`)
 
 	// The repair's write of the blocks left the document owing a settlement, which runs on the
 	// closed issue; it is done before the second repair's snapshot, which counts that repair's
@@ -319,7 +319,7 @@ func TestRepairWithdrawsTheOpenAsksOfAnIssueClosedWithoutWithdrawing(t *testing.
 			t.Fatalf("restoration of %s credited to %#v, want the reopener", ask, actor)
 		}
 	}
-	requireLiveText(t, f.handler, issue.PrimaryArtifactID, `#close-decision urgency="med" multiple="false" state="open"`)
+	requireLiveText(t, f.handler, issue.PrimaryArtifactID, `#close-decision state="open"`)
 }
 
 // Two repairs started together serialise on the issue's row: each ask is withdrawn once.
@@ -440,7 +440,7 @@ func TestRepairRestoresTheWithdrawnAsksOfAnIssueReopenedWithoutRestoring(t *test
 	if got, want := openAskIDs(readIssueDetail(t, f.handler, issue.Key)), sorted(asks); !reflect.DeepEqual(got, want) {
 		t.Fatalf("open asks after the repair = %v, want %v", got, want)
 	}
-	requireLiveText(t, f.handler, issue.PrimaryArtifactID, `#close-decision urgency="med" multiple="false" state="open"`)
+	requireLiveText(t, f.handler, issue.PrimaryArtifactID, `#close-decision state="open"`)
 
 	// The restoration writes no block on a fleet of one build (dispatch://INFRA-1150 R3) and marks
 	// the document owing the settlement that reconciles the restored ask's block, which it arms
@@ -507,7 +507,7 @@ func TestRepairSweepsAClosedIssuesDocumentWrittenByAnotherProcess(t *testing.T) 
 	if repair.Swept != 1 || repair.Withdrawn != 0 || repair.Restored != 0 {
 		t.Fatalf("repair = %+v, want one block swept", repair)
 	}
-	requireLiveText(t, f.handler, swept.PrimaryArtifactID, `#other-room urgency="low" multiple="false" state="resolved"`)
+	requireLiveText(t, f.handler, swept.PrimaryArtifactID, `#other-room state="resolved"`)
 	awaitSettled(t, f.database, swept.PrimaryArtifactID)
 	if id := findBlockAsk(t, f.handler, swept.Key, swept.PrimaryArtifactID, "other-room"); id != "" {
 		t.Fatalf("the other room's block is ask %s on a closed issue", id)
@@ -572,10 +572,11 @@ func TestAnIntervalRepairSweepsOnlyTheDocumentsMarkedSinceItsLastPass(t *testing
 	}
 	requireLiveTree(t, f.documents, fresh.PrimaryArtifactID, `#other-room urgency="low" multiple="false" state="resolved"`)
 	// The stale document's block is left as the browser wrote it, with no state: the bounded pass
-	// did not sweep it, and no settlement indexed it. The text an agent reads renders it resolved
-	// all the same, from its issue's close (docs.TextWithAnswers), so its live tree is read.
+	// did not sweep it, and no settlement indexed it. The asks member of the text an agent reads
+	// holds it resolved all the same, from its issue's close (docs.TextWithAsks), so its live tree
+	// is read.
 	requireLiveTree(t, f.documents, stale.PrimaryArtifactID, `#other-room urgency="low" multiple="false"}`)
-	requireLiveText(t, f.handler, stale.PrimaryArtifactID, `#other-room urgency="low" multiple="false" state="resolved"`)
+	requireLiveText(t, f.handler, stale.PrimaryArtifactID, `#other-room state="resolved"`)
 
 	if repair := repairNow(t, f); repair.Swept != 1 {
 		t.Fatalf("full repair = %+v, want the stale document's block swept", repair)
@@ -601,7 +602,7 @@ func TestARepairThatChangesNothingAppendsNoUpdateAndMarksNoDocument(t *testing.T
 	if response := dispatchRequest(t, f.handler, http.MethodPatch, "/api/v1/issues/"+closed.Key, map[string]string{"status": "done"}, "alice"); response.Code != http.StatusOK {
 		t.Fatalf("close %s: status=%d body=%s", closed.Key, response.Code, response.Body.String())
 	}
-	requireLiveText(t, f.handler, closed.PrimaryArtifactID, `#close-decision urgency="med" multiple="false" state="resolved"`)
+	requireLiveText(t, f.handler, closed.PrimaryArtifactID, `#close-decision state="resolved"`)
 	plainAsk := createSessionAsk(t, f.handler, older.Key, "Which region?")
 	peer := connectBrowserPeer(t, f.documents, older.PrimaryArtifactID)
 	stored := storedUpdateCount(t, f.database, older.PrimaryArtifactID)
@@ -625,7 +626,7 @@ func TestARepairThatChangesNothingAppendsNoUpdateAndMarksNoDocument(t *testing.T
 		t.Fatalf("first repair = %+v, want the plain ask withdrawn and the unindexed block swept", first)
 	}
 	requireWithdrawn(t, f.handler, older.Key, plainAsk, closer)
-	requireLiveText(t, f.handler, older.PrimaryArtifactID, `#browser-decision urgency="low" multiple="false" state="resolved"`)
+	requireLiveText(t, f.handler, older.PrimaryArtifactID, `#browser-decision state="resolved"`)
 	documents := []string{closed.PrimaryArtifactID, older.PrimaryArtifactID}
 	for _, document := range documents {
 		awaitOwedSettlement(t, f.database, document)
@@ -769,7 +770,7 @@ func TestTheBlockIndexAfterTheBootRepairIndexesAClosedIssuesDocument(t *testing.
 	awaitSettled(t, f.database, issue.PrimaryArtifactID)
 	closer := repairActor("session-older-closer")
 	closeWithoutWithdrawing(t, f, issue.Key, &closer, time.Now().Add(-time.Hour))
-	requireLiveText(t, f.handler, issue.PrimaryArtifactID, `#close-decision urgency="med" multiple="false" state="open"`)
+	requireLiveText(t, f.handler, issue.PrimaryArtifactID, `#close-decision state="open"`)
 
 	ctx := context.Background()
 	// Migration 0121: no block is indexed, and every document is owed its block index.
@@ -794,7 +795,7 @@ func TestTheBlockIndexAfterTheBootRepairIndexesAClosedIssuesDocument(t *testing.
 		t.Fatalf("boot repair = %+v, want the ask block's ask withdrawn", repair)
 	}
 	requireWithdrawn(t, f.handler, issue.Key, ask, closer)
-	requireLiveText(t, f.handler, issue.PrimaryArtifactID, `#close-decision urgency="med" multiple="false" state="resolved"`)
+	requireLiveText(t, f.handler, issue.PrimaryArtifactID, `#close-decision state="resolved"`)
 
 	leases := storetest.Leases(t, f.database.Pool)
 	loopCtx, stopLoop := context.WithCancel(ctx)

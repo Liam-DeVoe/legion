@@ -157,6 +157,12 @@ func rollWindowAskWrite(ask model.Ask, copied string, words bool) func(*pmdoc.No
 	}
 }
 
+// answerWords are the attributes of an ask block that carry an answer's caller text: the options
+// it selects, whose labels are the asker's text, and its words. Who answered and when are the
+// server's, and stay on a block whose answer the document has no room for
+// (rollWindowAskAttributesWithheld).
+var answerWords = [...]string{"selected", "answer"}
+
 // holdsAnswerWords reports whether node, an ask block, carries an answer's words (answerWords).
 func holdsAnswerWords(node *pmdoc.Node) bool {
 	for _, name := range answerWords {
@@ -170,7 +176,7 @@ func holdsAnswerWords(node *pmdoc.Node) bool {
 // grownBy is document, the rendering of a document holding the block from, grown by what to, the
 // same block with other attributes, adds to the block's own rendering. An answer's words lengthen
 // the block's directive line, which carries every attribute quoted, and make no element, so the
-// document is measured as it was (answersWithRoom weighs the text routes' answers so too).
+// document is measured as it was.
 func grownBy(document rendering, from, to *pmdoc.Node) (rendering, error) {
 	was, err := renderTree(&pmdoc.Node{Type: "doc", Children: []*pmdoc.Node{from}})
 	if err != nil {

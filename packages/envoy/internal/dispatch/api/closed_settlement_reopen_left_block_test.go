@@ -156,7 +156,7 @@ func TestAWithdrawnAsksBlockRewordedInsideTheCloseMarginRewordsItsAskAtTheReopen
 		t.Fatalf("the reopened issue's newest version reads:\n%s\nwant the block asking %q, not %q", version, rewordedQuestion, askedQuestion)
 	}
 	requireNoAnswerAttributes(t, "the reopened issue's newest version", version)
-	requireLiveText(t, f.handler, f.spec, `#rewording-decision urgency="med" multiple="false" state="open"`, rewordedQuestion)
+	requireLiveText(t, f.handler, f.spec, `#rewording-decision state="open"`, rewordedQuestion)
 }
 
 // The rewording a person gives a withdrawn ask's block inside the close margin reaches the ask

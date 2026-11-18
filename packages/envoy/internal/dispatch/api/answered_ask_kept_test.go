@@ -97,7 +97,7 @@ func TestAnAgentCannotDropAnAnsweredAsk(t *testing.T) {
 				}
 
 				before := documentMarkdown(t, handler, issue.PrimaryArtifactID)
-				requireAnswerInSpec(t, "before the agent's "+write.name, before)
+				requireAnswerInSpec(t, handler, issue.PrimaryArtifactID, "before the agent's "+write.name)
 				versions := len(documentVersions(t, handler, issue.PrimaryArtifactID))
 				refused := sessionRequest(t, handler, http.MethodPost, path, body)
 				if refused.Code != http.StatusConflict {
@@ -115,7 +115,7 @@ func TestAnAgentCannotDropAnAnsweredAsk(t *testing.T) {
 				if after != before {
 					t.Fatalf("the agent's refused %s changed the spec to %q, want it as it was, %q", write.name, after, before)
 				}
-				requireAnswerInSpec(t, "after the agent's refused "+write.name, after)
+				requireAnswerInSpec(t, handler, issue.PrimaryArtifactID, "after the agent's refused "+write.name)
 				if ask := readBlockAsk(t, handler, askID); ask.State != "answered" || ask.Answer == nil || ask.Answer.User != "alice" {
 					t.Fatalf("the ask after the agent's refused %s = state %q answer %#v, want alice's answer", write.name, ask.State, ask.Answer)
 				}
@@ -133,13 +133,14 @@ func TestAnAgentCannotDropAnAnsweredAsk(t *testing.T) {
 	}
 }
 
-// requireAnswerInSpec fails t unless the spec, as GET .../text reads it, holds the person's
-// answer on its ask block.
-func requireAnswerInSpec(t *testing.T, when, spec string) {
+// requireAnswerInSpec fails t unless the spec, as GET .../text reads it, holds its ask block chosen,
+// and its asks member holds the person's answer on that block.
+func requireAnswerInSpec(t *testing.T, handler http.Handler, spec, when string) {
 	t.Helper()
-	for _, want := range []string{`:::ask{#chosen `, `state="answered"`, `answered_by="alice"`, `answer="` + keptAskAnswer + `"`} {
-		if !strings.Contains(spec, want) {
-			t.Fatalf("the spec %s = %q, want the answer on its ask block, holding %s", when, spec, want)
+	text := agentText(t, handler, spec)
+	for _, want := range []string{`:::ask{#chosen `, `#chosen state="answered" answered_by="alice"`, ` answer="` + keptAskAnswer + `"`} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("the spec %s = %q, want its ask block chosen answered, holding %s", when, text, want)
 		}
 	}
 }

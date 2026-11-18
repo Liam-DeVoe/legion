@@ -3435,9 +3435,9 @@ func TestApplyOpsMovingAnOpenAskBlockKeepsItsAsk(t *testing.T) {
 }
 
 // Moving an answered ask's block keeps its answer: the ask stays answered, with no retraction,
-// reopen or repair, and the text an agent reads shows the answer on the block at its new place
-// (TextWithAnswers). The ask is answered as the answer route answers it, on its node and its row
-// alone (asks.Settle): no byte of the document holds the answer (dispatch://INFRA-1150 R3), so
+// reopen or repair, and the asks member an agent reads beside the text answers the block at its
+// new place (TextWithAsks). The ask is answered as the answer route answers it, on its node and its
+// row alone (asks.Settle): no byte of the document holds the answer, so
 // the document reads the same before and after it.
 func TestApplyOpsMovingAnAnsweredAskBlockKeepsItsAnswer(t *testing.T) {
 	service, artifactID, askID, settle, askEvents := blockAskHarness(t)
@@ -3445,17 +3445,17 @@ func TestApplyOpsMovingAnAnsweredAskBlockKeepsItsAnswer(t *testing.T) {
 	change := asks.Answered(model.AskAnswer{User: "alice", Selected: []string{"REST"}, At: answeredAt})
 	change.Who, change.At = model.Actor{Kind: "user", ID: "alice"}, answeredAt
 	settleTheDocumentsAsk(t, service, artifactID, change)
-	const answeredAsk = ":::ask{#decision urgency=\"high\" multiple=\"false\" state=\"answered\" answered_by=\"alice\" answered_at=\"2026-09-15T17:37:34Z\" selected=\"[&#x22;REST&#x22;]\"}\nWhich transport?\n:::\n"
+	const answered = `#decision state="answered" answered_by="alice" answered_at="2026-09-15T17:37:34Z" selected=["REST"]` + "\n"
 	settle()
 	waitForDocumentText(t, service, artifactID, askFixture+"\nContext ends with no drift.\n")
-	waitForAnswersText(t, service, artifactID, answeredAsk+"\nContext ends with no drift.\n")
+	waitForAgentText(t, service, artifactID, askFixture+"\nContext ends with no drift.\n", answered)
 
 	if _, err := joinedApplyOps(service, artifactID, []model.EditOp{{Op: "move", Block: "decision", After: "no drift."}}, editingSession, nil); err != nil {
 		t.Fatalf("move ask block: %v", err)
 	}
 	waitForDocumentText(t, service, artifactID, "Context ends with no drift.\n\n"+askFixture)
 	settle()
-	waitForAnswersText(t, service, artifactID, "Context ends with no drift.\n\n"+answeredAsk)
+	waitForAgentText(t, service, artifactID, "Context ends with no drift.\n\n"+askFixture, answered)
 	if state, _ := askRowState(t, service, askID); state != "answered" {
 		t.Fatalf("moved ask state = %q, want answered", state)
 	}

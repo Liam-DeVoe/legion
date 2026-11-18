@@ -79,12 +79,7 @@ import { FRAGMENT_NAME } from "./roots";
 import { DocumentRuntime } from "./runtime";
 import { compiledBlockSchema, compiledSchemaCreatable } from "./schema";
 import { readLineText, useSpecMarks } from "./spec-marks";
-import {
-  type AskBlockHost,
-  renderedAskOf,
-  type ServedAsk,
-  servedAskOf,
-} from "./typed-block-drawing";
+import { type AskBlockHost, liveAskOf, type ServedAsk, servedAskOf } from "./typed-block-drawing";
 import { VersionView } from "./VersionView";
 
 /** The one block of `root` whose id starts with `prefix`, or undefined where none does or two
@@ -400,7 +395,7 @@ export function ProofDocument({
   const blocksReadOnly = isClosed || schemaReadOnly;
   const [askBlockHosts, setAskBlockHosts] = useState<readonly AskBlockHost[]>([]);
   // The server's read of the ask the block `blockId` shows: its row among the owner's asks, else
-  // what the live text renders on the block from the store, which is the one read of a copy's
+  // what the live text answers for the block in its asks, which is the one read of a copy's
   // source on a project document: the document's own asks hold no row of another document's.
   const servedAsk = (blockId: string): ServedAsk | undefined =>
     servedAskOf(
@@ -408,7 +403,7 @@ export function ProofDocument({
       artifact.id,
       blockId,
       owner.kind === "issue" ? undefined : owner.project
-    ) ?? renderedAskOf(liveTextQuery.data?.markdown, blockId);
+    ) ?? liveAskOf(liveTextQuery.data, blockId);
   // The server's read of the ask each mounted block shows, by block id, read once per render for
   // the cards below and for the editor's refusal of a reading in an open ask, which reads the
   // answer states at each edit: a ref, so the editor made once reads the latest asks read.

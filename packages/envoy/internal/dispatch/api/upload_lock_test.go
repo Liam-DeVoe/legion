@@ -234,8 +234,9 @@ func awaitLockWaits(t *testing.T, ctx context.Context, database *store.Store, ne
 	}
 }
 
-// awaitCopyShows waits for the text of copy as an agent reads it, which renders each ask block's
-// state from the store (docs.TextWithAnswers), to hold want, with no document owing a settlement.
+// awaitCopyShows waits for the text of copy as an agent reads it (agentText), whose asks member
+// shows each ask block's state, read from the store, to hold want, with no document owing a
+// settlement.
 func awaitCopyShows(t *testing.T, ctx context.Context, handler http.Handler, database *store.Store, copy, want string) {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
@@ -244,7 +245,7 @@ func awaitCopyShows(t *testing.T, ctx context.Context, handler http.Handler, dat
 		if err := database.Pool.QueryRow(ctx, `select count(*) from doc_settlements_pending`).Scan(&pending); err != nil {
 			t.Fatalf("count the owed settlements: %v", err)
 		}
-		text, _ := documentTexts(t, handler, copy)
+		text := agentText(t, handler, copy)
 		if strings.Contains(text, want) && pending == 0 {
 			return
 		}

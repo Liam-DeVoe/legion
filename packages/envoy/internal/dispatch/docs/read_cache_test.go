@@ -753,15 +753,16 @@ func (s *historyDecodeCountingStore) Load(ctx context.Context, room string) (per
 	return s.VersionedStore.Load(ctx, room)
 }
 
-// The text an agent reads renders each ask's answer on the tree of the read that served the text
-// (TextWithAnswers): for a document no room holds, the tree the cold read folded, which the read
-// cache keeps beside its rendering for a document holding an ask block. So the first read of a
-// stored state folds its history once and loads it no other way, every later read of that state,
-// with its blocks or without, decodes nothing, and each read carries the answer. The cached read
-// is the document's text even where its stored history no longer decodes - an update below the
-// head, whose row the stamp does not name, replaced by bytes no load decodes - so the read serves
-// the text and its answer still, and fails no room.
-func TestAnAgentsTextReadOfAColdDocumentRendersItsAnswersOnTheCachedRead(t *testing.T) {
+// The text an agent reads takes the server-owned attributes off each ask block, and reads each
+// ask block's answer from the store, on the tree of the read that served the text (TextWithAsks):
+// for a document no room holds, the tree the cold read folded, which the read cache keeps beside
+// its rendering for a document holding an ask block. So the first read of a stored state folds its
+// history once and loads it no other way, every later read of that state, with its blocks or
+// without, decodes nothing, and each read carries the answer in its asks. The cached read is the
+// document's text even where its stored history no longer decodes - an update below the head,
+// whose row the stamp does not name, replaced by bytes no load decodes - so the read serves the
+// text and its answer still, and fails no room.
+func TestAnAgentsTextReadOfAColdDocumentReadsItsAsksOnTheCachedRead(t *testing.T) {
 	database := storetest.Open(t)
 	persistence := &historyDecodeCountingStore{VersionedStore: NewPgVersioned(database)}
 	artifactID := createDocument(t, database, "before")
@@ -783,15 +784,16 @@ func TestAnAgentsTextReadOfAColdDocumentRendersItsAnswersOnTheCachedRead(t *test
 	persistence.folds.Store(0)
 	persistence.loads.Store(0)
 
-	const answered = `#ask-1 urgency="med" multiple="false" state="answered" answered_by="alice" answered_at="2026-11-17T09:00:00Z" selected="[&#x22;Yes&#x22;]"}`
+	const answered = `#ask-1 state="answered" answered_by="alice" answered_at="2026-11-17T09:00:00Z" selected=["Yes"]` + "\n"
 	read := func(what string, withBlocks bool) {
 		t.Helper()
-		markdown, token, blocks, err := service.TextWithAnswers(context.Background(), artifactID, withBlocks)
+		text, err := service.TextWithAsks(context.Background(), artifactID, withBlocks)
 		if err != nil {
-			t.Fatalf("%s: read the text with its answers: %v", what, err)
+			t.Fatalf("%s: read the text with its asks: %v", what, err)
 		}
-		if !strings.Contains(markdown, "Context, edited") || !strings.Contains(markdown, answered) || token == "" || withBlocks != (len(blocks) > 0) {
-			t.Fatalf("%s: the text reads %q with token %q and %d blocks, want the edit and the answer %s", what, markdown, token, len(blocks), answered)
+		requireNoAskServerAttributes(t, artifactID, text.Markdown)
+		if asks := askLines(text.Asks); !strings.Contains(text.Markdown, "Context, edited") || asks != answered || text.Token == "" || withBlocks != (len(text.Blocks) > 0) {
+			t.Fatalf("%s: the text reads %q with token %q, %d blocks and the asks %q, want the edit and the answer %s", what, text.Markdown, text.Token, len(text.Blocks), asks, answered)
 		}
 	}
 	read("the first cold read", false)

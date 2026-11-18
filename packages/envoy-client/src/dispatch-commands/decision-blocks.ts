@@ -1,4 +1,4 @@
-import type { ArtifactBlock, AskWithTrees, EditOp } from "@legion/contracts";
+import type { ArtifactBlock, AskWithTrees, EditOp, TextAsk } from "@legion/contracts";
 import { typedBlockIdAttribute } from "@legion/contracts";
 import { commandName } from "../dispatch-command";
 import type { DispatchClient } from "../dispatch-http";
@@ -9,6 +9,7 @@ import {
   parseDispatchRef,
 } from "../dispatch-owner";
 import type { ResolvedArtifact } from "./context";
+import { liveTextAsks } from "./text-asks";
 
 /** The asks of the document's `ask` blocks. An issue lists them under the issue, since the artifact
  * route refuses an issue document; an unlinked document lists its own. */
@@ -45,8 +46,9 @@ function askOpeners(lines: readonly string[], blockId: string): string[] {
  * release writes records no state on a block's opening line, and such a block is judged by the
  * server's read of its ask: it is open while its ask is open. A block copied from another
  * document's ask has no ask of its own and is judged by that source, whose state, id and document
- * the live text renders on the copy's opening line from the store (`GET /artifacts/{id}/text`,
- * read only for such a copy). A version the release before wrote records the state settlement
+ * the live text (`GET /artifacts/{id}/text`, read only for such a copy) answers in its `asks`
+ * member, or, from a Dispatch of the release before, which sends none, writes on the copy's
+ * opening line (liveTextAsks). A version the release before wrote records the state settlement
  * wrote into the block, and is read as it was written: a block it shows open counts as open even
  * when its ask is already answered or closed, since while that release serves its settlement
  * writes the answer into the text, which reaches a version when the document settles, about two
@@ -78,8 +80,8 @@ export async function refuseOpenDecisionBlocks(
   ]);
   const asks = new Map(documentAsks.map((ask) => [ask.block_id, ask]));
   const lines = version.markdown.split("\n");
-  // The live text, read once, the first time a copy needs its source's state.
-  let liveLines: string[] | undefined;
+  // The live text's asks, read once, the first time a copy needs its source's state.
+  let liveAsks: Promise<readonly TextAsk[]> | undefined;
   const stateOf = (line: string): string | undefined => /\bstate="(\w+)"/.exec(line)?.[1];
   // Only a version the release before wrote shows open a block whose ask is answered or closed.
   // While that release serves, its settlement writes an answer into the block, which settles into
@@ -88,17 +90,15 @@ export async function refuseOpenDecisionBlocks(
     state === "answered"
       ? `${named}, answered but still open in version ${latest}: it settles into a version on its own in about two seconds; wait for that version`
       : `${named}, ${state} but still open in version ${latest}: write the decision into the text with dispatch doc-edit, which writes a version that carries it`;
-  // A block copied from another document's ask opens none: settlement names that ask in
-  // `copied_from` and its document in `copied_from_document`, so the source is where it is
+  // A block copied from another document's ask opens none: settlement names that ask and its
+  // document, as the copy's `copied_from` and `copied_from_document`, so the source is where it is
   // answered. The document is named as the dashboard's decision card names it, its issue key and
   // slug or its project's `<project>/<slug>`, so the ask's address is the line's one link.
-  const openCopy = (named: string, openers: readonly string[]): string => {
-    const attribute = (name: string): string | undefined =>
-      openers
-        .map((line) => new RegExp(`\\b${name}="([^"]+)"`).exec(line)?.[1])
-        .find((value) => value !== undefined);
-    const sourceId = attribute("copied_from");
-    const document = attribute("copied_from_document");
+  const openCopy = (named: string, copies: readonly TextAsk[]): string => {
+    const sourceId = copies.map((copy) => copy.copied_from).find((value) => value !== undefined);
+    const document = copies
+      .map((copy) => copy.copied_from_document)
+      .find((value) => value !== undefined);
     if (sourceId === undefined || document === undefined) {
       return `${named}, whose ask Dispatch has not opened yet`;
     }
@@ -127,19 +127,17 @@ export async function refuseOpenDecisionBlocks(
     if (states.length === 0) return `${named}, which version ${latest} does not hold yet`;
     // The release before wrote the block's state into the version, which shows it open.
     if (states.includes("open")) {
-      if (ask === undefined) return openCopy(named, openers);
+      if (ask === undefined) return openCopy(named, liveTextAsks({ markdown: openers.join("\n") }));
       return ask.state === "open" ? named : stillOpen(named, ask.state);
     }
     if (states.every((state) => state !== undefined)) return undefined;
     // A line opening the block records no state: the server's read of its ask judges it.
     if (ask !== undefined) return ask.state === "open" ? named : undefined;
-    liveLines ??= (await client.docRead(artifact.id)).markdown.split("\n");
-    const served = askOpeners(liveLines, block.id);
-    const sourceStates = served.map(stateOf);
+    liveAsks ??= client.docRead(artifact.id).then(liveTextAsks);
+    const served = (await liveAsks).filter((copy) => copy.block_id === block.id);
     const settled =
-      sourceStates.length > 0 &&
-      !sourceStates.includes("open") &&
-      sourceStates.every((state) => state !== undefined);
+      served.length > 0 &&
+      served.every((copy) => copy.state !== undefined && copy.state !== "open");
     return settled ? undefined : openCopy(named, served);
   };
   const open: string[] = [];

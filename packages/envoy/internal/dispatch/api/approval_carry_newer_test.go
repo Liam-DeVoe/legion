@@ -120,8 +120,8 @@ func TestAVersionWhoseApprovedVersionHoldsNewerContentIsWrittenByABuildThatReads
 	ctx := context.Background()
 	issue := createInteractionIssue(t, handler, "TEST", "Approved newer content", "Context\n\n"+regionAsk)
 	asks := indexedDecisionBlocks(t, handler, issue.Key, issue.PrimaryArtifactID, map[string]string{"region": "Which region goes first?"})
-	awaitDocumentText(t, handler, issue.PrimaryArtifactID, "the block written in step with its open ask",
-		contains(`:::ask{#region urgency="low" multiple="false" state="open"}`), nil)
+	awaitVersionText(t, handler, issue.PrimaryArtifactID, "the block written in step with its open ask",
+		contains(`:::ask{#region urgency="low" multiple="false" state="open"}`))
 	awaitSettled(t, database, issue.PrimaryArtifactID)
 	approved := latestVersion(t, database, issue.PrimaryArtifactID).Number
 	approveVersion(t, handler, issue.PrimaryArtifactID, "alice", approved)

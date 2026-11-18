@@ -622,10 +622,11 @@ func attributesOf(node *pmdoc.Node) *pmdoc.Node {
 	return &pmdoc.Node{Type: node.Type, Attrs: attributes}
 }
 
-// withoutAskServerAttributes is attributeRemovalCase's neutral: a copy of tree with every ask
-// block's server-owned attributes (askServerAttributeNames) taken off, and whether any block held
-// one. Each container on the way and each such block is a fresh node; every other node is the
-// tree's own, which nothing here changes (withAskBlocksChanged).
+// withoutAskServerAttributes is attributeRemovalCase's neutral, and the tree the text routes
+// render (TextWithAsks): a copy of tree with every ask block's server-owned attributes
+// (askServerAttributeNames) taken off, and whether any block held one. Each container on the way
+// and each such block is a fresh node; every other node is the tree's own, which nothing here
+// changes (withAskBlocksChanged).
 func withoutAskServerAttributes(tree *pmdoc.Node) (*pmdoc.Node, bool) {
 	return withAskBlocksChanged(tree, func(node *pmdoc.Node) (*pmdoc.Node, bool) {
 		var stripped pmdoc.Attrs

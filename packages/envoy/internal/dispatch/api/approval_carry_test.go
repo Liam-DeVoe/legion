@@ -811,7 +811,7 @@ func TestADeletedAndRestoredAnsweredBlockIsApprovedOnceItsTextIsTheApprovedText(
 		t.Fatalf("the block's ask after the delete and the insert = state %q answer %#v, want alice's answer kept", ask.State, ask.Answer)
 	}
 	awaitTextShows(t, handler, issue.PrimaryArtifactID, "the row's answer on the restored block",
-		contains(`:::ask{#region urgency="low" multiple="false" state="answered" answered_by="alice"`), nil)
+		contains(`:::ask{#region urgency="low" multiple="false"}`, `#region state="answered" answered_by="alice"`), nil)
 	requireReviewCarriedWith(t, handler, issue.PrimaryArtifactID, 3, 1, restoreSentence(1), nil)
 	requireNoVersionPast(t, handler, database, issue.PrimaryArtifactID, 3)
 	if carried := documentReviews(t, handler, issue.PrimaryArtifactID); len(carried) != 2 || carried[0].Version != 3 || carried[1].Version != 1 {

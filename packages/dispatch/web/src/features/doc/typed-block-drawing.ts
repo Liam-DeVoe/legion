@@ -1,7 +1,7 @@
 import { parseBlockPointerValue, typedBlockIdAttribute } from "@legion/contracts";
 import type { DOMOutputSpec, Node as ProseMirrorNode } from "prosemirror-model";
 
-import type { Ask, AskOption, AskUrgency, BlockTypeSchema } from "../../api/types";
+import type { Ask, AskOption, AskUrgency, BlockTypeSchema, TextAsk } from "../../api/types";
 import {
   askBlockTint,
   askUrgencyAccent,
@@ -197,8 +197,9 @@ export interface AskBlockFacts {
  * block's own ask on its document, or, for a copy of an ask on another document of the same owner
  * (the same block id, asking the same), that source ask and the `dispatch://` address of the
  * document it is on (`copiedFrom`), from `GET /api/v1/issues/{key}/asks` or a project document's
- * asks (`servedAskOf`). Otherwise what the document's live text renders on the block's opening
- * line from the store (`rendered`, `renderedAskOf`): a copy on a project document reads its source
+ * asks (`servedAskOf`). Otherwise what the document's live text answers for the block in its
+ * `asks` member, or, from a Dispatch of the release before, which sends none, renders on the
+ * block's opening line (`rendered`, `liveAskOf`): a copy on a project document reads its source
  * there, since no route lists the asks of a project's other documents. A person's answer is held
  * on the ask alone, so a block reads its state and answer from here.
  */
@@ -283,10 +284,10 @@ function servedAnswer({ ask, copiedFrom }: Extract<ServedAsk, { ask: Ask }>): An
 }
 
 /** The answer a block's attributes record, as a version written before the answer left the
- *  document holds it, or as the live text renders it (`renderedAskOf`). A block that records no
- *  state is open: the server writes an ask's state into a block or nobody does, and the editor's
- *  schema gives the attribute no default, so a block it was never written into, or that settlement
- *  took it off, holds none. */
+ *  document holds it, or as the live text of a Dispatch of the release before renders it
+ *  (`renderedAskOf`). A block that records no state is open: the server writes an ask's state into
+ *  a block or nobody does, and the editor's schema gives the attribute no default, so a block it
+ *  was never written into, or that settlement took it off, holds none. */
 function recordedAnswer(attrs: Readonly<Record<string, unknown>>): AnswerFacts {
   return {
     answerText: typeof attrs.answer === "string" ? attrs.answer.trim() : "",
@@ -363,13 +364,13 @@ function askOpenerSource(blockId: string): string {
 
 /**
  * The ask the block `blockId` shows, as `markdown`, a document's live text (`GET
- * /api/v1/artifacts/{id}/text`), renders it on the block's opening line: the server writes there,
- * from the store, the state, answer, answerer and time of the block's own ask, or of the ask on
- * another document of the owner the block is a copy of, with that ask's id and document
- * (`copied_from`, `copied_from_document`). It is where a copy on a project document reads its
- * source, which no read the page makes lists. Undefined where the text renders the block no state,
- * or holds no line opening it, or more than one: a line quoting the opener (in code, say) cannot be
- * told from the block's own.
+ * /api/v1/artifacts/{id}/text`) from a Dispatch of the release before, renders it on the block's
+ * opening line: that server writes there, from the store, the state, answer, answerer and time of
+ * the block's own ask, or of the ask on another document of the owner the block is a copy of,
+ * with that ask's id and document (`copied_from`, `copied_from_document`). A Dispatch of this
+ * release writes none of them into the text and answers them in its `asks` (`liveAskOf`).
+ * Undefined where the text renders the block no state, or holds no line opening it, or more than
+ * one: a line quoting the opener (in code, say) cannot be told from the block's own.
  */
 export function renderedAskOf(
   markdown: string | undefined,
@@ -395,6 +396,43 @@ export function renderedAskOf(
     }
   }
   return attributes.state === undefined ? undefined : { rendered: recordedAnswer(attributes) };
+}
+
+/**
+ * The ask the block `blockId` shows in `text`, a document's live text (`GET
+ * /api/v1/artifacts/{id}/text`): the entry of its `asks` member for the block, which the server
+ * reads from the block's own ask, or from the ask on another document of the owner the block is a
+ * copy of, with that ask's id and document. It is where a copy on a project document reads its
+ * source, which no read the page makes lists. A Dispatch of the release before sends no `asks`
+ * and renders the same on the block's opening line, which is read instead (`renderedAskOf`).
+ * Undefined where the text has no entry for the block with a state - a block no ask stands
+ * behind yet - or more than one entry for it.
+ */
+export function liveAskOf(
+  text: { readonly markdown: string; readonly asks?: readonly TextAsk[] | null } | undefined,
+  blockId: string
+): ServedAsk | undefined {
+  if (text?.asks === undefined || text.asks === null) {
+    return renderedAskOf(text?.markdown, blockId);
+  }
+  const entries = text.asks.filter((entry) => entry.block_id === blockId);
+  const entry = entries.length === 1 ? entries[0] : undefined;
+  if (entry?.state === undefined) {
+    return undefined;
+  }
+  return {
+    rendered: {
+      answerText: entry.answer?.trim() ?? "",
+      answeredAt: entry.answered_at,
+      answeredBy: entry.answered_by ?? "",
+      copiedFrom:
+        entry.copied_from === undefined || entry.copied_from_document === undefined
+          ? undefined
+          : { ask: entry.copied_from, document: entry.copied_from_document },
+      selected: entry.selected ?? [],
+      state: entry.state,
+    },
+  };
 }
 
 /**

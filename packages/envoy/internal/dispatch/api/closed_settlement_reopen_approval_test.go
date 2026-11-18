@@ -613,7 +613,7 @@ func TestAnApprovalGivenBetweenTheReopenAndItsSettlementStaysApproved(t *testing
 	if closed := latestVersion(t, database, spec).Number; closed != before {
 		t.Fatalf("the closed issue's settlement left the spec at version %d, want %d: the close's withdrawal changes no byte of it", closed, before)
 	}
-	requireLiveText(t, handler, spec, `#reopen-decision urgency="med" multiple="false" state="resolved"`)
+	requireLiveText(t, handler, spec, `#reopen-decision state="resolved"`)
 
 	if reopened := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]string{"status": "todo"}, "alice"); reopened.Code != http.StatusOK {
 		t.Fatalf("reopen: status=%d body=%s", reopened.Code, reopened.Body.String())
@@ -629,7 +629,7 @@ func TestAnApprovalGivenBetweenTheReopenAndItsSettlementStaysApproved(t *testing
 	if reopened := latestVersion(t, database, spec).Number; reopened != before {
 		t.Fatalf("the reopened issue's settlement left the spec at version %d, want %d: the reopen's restoration changes no byte of it", reopened, before)
 	}
-	requireLiveText(t, handler, spec, `#reopen-decision urgency="med" multiple="false" state="open"`)
+	requireLiveText(t, handler, spec, `#reopen-decision state="open"`)
 	if read := readApproval(t, handler, spec); read.Approval == nil || read.Approval.State != "approved" || read.Approval.LatestVersion != before ||
 		read.Approval.Version == nil || *read.Approval.Version != before || read.Approval.By == nil || read.Approval.By.ID != "alice" {
 		t.Fatalf("the spec's approval after the reopen's settlement = %s, want approved by alice at version %d", describeApproval(read), before)

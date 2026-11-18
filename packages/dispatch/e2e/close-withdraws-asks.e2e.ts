@@ -36,12 +36,13 @@ const decisionBlock =
  *  off it, since an ask's state lives on the ask alone (dispatch://INFRA-1150 R3, R10). */
 const storedDecision = ':::ask{#decision urgency="high" multiple="false"}\n';
 
-/** The decision block as the text routes render it once the close has withdrawn its ask: they
- *  render each ask's state from the ask on read. */
-const resolvedDecision = ':::ask{#decision urgency="high" multiple="false" state="resolved"';
-
-/** The decision block as the text routes render it once the reopen has brought its ask back. */
-const openDecision = ':::ask{#decision urgency="high" multiple="false" state="open"';
+/** The decision block's state as the text routes answer it, in their `asks` member, read from
+ *  the ask: their markdown holds no ask's state. */
+async function decisionState(artifactId: string): Promise<string | undefined> {
+  const text = await getArtifactText(artifactId);
+  expect(text.markdown).toContain(storedDecision);
+  return text.asks?.find((entry) => entry.block_id === "decision")?.state;
+}
 
 /** The number of the newest version the document has saved. */
 async function newestVersion(artifactId: string): Promise<number> {
@@ -218,11 +219,9 @@ test("a person's Close withdraws the issue's asks and writes no byte of the docu
     // The room's load for the reconnect above arms a settlement of the closed issue's document,
     // which runs 250 ms later (`DISPATCH_TEST_SETTLE_DELAY`, `e2e/run-server.sh`) and saves a
     // version only where the document's bytes changed. The close changed none, so it saves none;
-    // the text routes render the decision's state from its ask on read, so an agent reading the
-    // document reads the decision resolved.
-    await expect
-      .poll(async () => (await getArtifactText(seeded.artifactId)).markdown, PROBE)
-      .toContain(resolvedDecision);
+    // the text routes answer the decision's state from its ask in their asks, so an agent reading
+    // the document reads the decision resolved.
+    await expect.poll(() => decisionState(seeded.artifactId), PROBE).toBe("resolved");
     expect(await newestVersion(seeded.artifactId)).toBe(before);
     await page.getByRole("button", { name: "Reopen" }).click();
     await expect(page.getByRole("button", { name: "Close issue" })).toBeVisible();
@@ -251,7 +250,7 @@ test("a person's Close withdraws the issue's asks and writes no byte of the docu
     await expectOpenDecision(decision);
     // Neither the close nor the reopen, nor the settlements their rooms' loads ran, saved a
     // version: the text routes read the decision open again from its ask.
-    expect((await getArtifactText(seeded.artifactId)).markdown).toContain(openDecision);
+    expect(await decisionState(seeded.artifactId)).toBe("open");
     expect(await newestVersion(seeded.artifactId)).toBe(before);
   } finally {
     await page.context().close();

@@ -543,7 +543,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description A document's canonical markdown, its whole-document token and its version. With ?blocks=true the answer carries the document's blocks as well, each as GET /api/v1/artifacts/{id}/blocks reports it, rendered from the one tree the markdown and the token come from: a listing read this way cannot be split by another session's write. */
+    /** @description A document's canonical markdown, its whole-document token, its version and its asks. The markdown holds no server-owned attribute on any ask block (state, answered_by, answered_at, selected, answer, invalid, copied_from, copied_from_document), whatever the live document or its stored versions hold, so the text uploads back unchanged; a version's own text (GET /api/v1/artifacts/{id}/versions/{number}) keeps the stored bytes. asks answers each ask block of the markdown in document order, read from the ask that answers for it, under the names those attributes carried: {block_id, state?, answered_by?, answered_at?, selected?, answer?, copied_from?, copied_from_document?}. state is the ask's, a copy's source's (copied_from naming the source ask and copied_from_document its document's dispatch:// address), resolved for a block of a closed issue's document no settlement has indexed, and absent for any other block no ask indexes yet, a question nobody has opened; who answered, when, the options chosen and the words stand on an answered ask alone. A document with no ask block answers []. With ?blocks=true the answer carries the document's blocks as well, each as GET /api/v1/artifacts/{id}/blocks reports it, rendered from the one tree the markdown and the token come from, so their byte ranges index the markdown served: a listing read this way cannot be split by another session's write. */
     get: operations["getApiV1ArtifactsByIdText"];
     put?: never;
     post?: never;
@@ -1452,7 +1452,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description An issue document's canonical markdown, whole-document token and version, by slug or unambiguous filename; ?blocks=true carries its blocks beside them, from the one tree. */
+    /** @description An issue document's canonical markdown, whole-document token, version and asks, by slug or unambiguous filename, as GET /api/v1/artifacts/{id}/text answers them: no server-owned ask attribute in the markdown, and each ask block's state and answer in asks; ?blocks=true carries its blocks beside them, from the one tree. */
     get: operations["getApiV1IssuesByKeyArtifactsBySlugText"];
     put?: never;
     post?: never;
@@ -2572,7 +2572,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description A project document's canonical markdown, whole-document token and version, by slug or unambiguous filename; ?blocks=true carries its blocks beside them, from the one tree. */
+    /** @description A project document's canonical markdown, whole-document token, version and asks, by slug or unambiguous filename, as GET /api/v1/artifacts/{id}/text answers them: no server-owned ask attribute in the markdown, and each ask block's state and answer in asks; ?blocks=true carries its blocks beside them, from the one tree. */
     get: operations["getApiV1ProjectsByKeyArtifactsBySlugText"];
     put?: never;
     post?: never;
@@ -3407,6 +3407,7 @@ export interface components {
       version: number;
     };
     ArtifactText: {
+      asks?: components["schemas"]["TextAsk"][];
       blocks?: components["schemas"]["ArtifactBlock"][];
       markdown: string;
       /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
@@ -6280,6 +6281,17 @@ export interface components {
     };
     TestHookOK: {
       ok: boolean;
+    };
+    TextAsk: {
+      answer?: string;
+      answered_at?: string;
+      answered_by?: string;
+      block_id: string;
+      copied_from?: string;
+      copied_from_document?: string;
+      selected?: string[];
+      /** @enum {string} */
+      state?: "open" | "answered" | "resolved";
     };
     ThreadReadInput: {
       read_through: null | string;
@@ -14431,6 +14443,7 @@ export type SupersededApprovalGate = components["schemas"]["SupersededApprovalGa
 export type TablePosition = components["schemas"]["TablePosition"];
 export type TargetCandidate = components["schemas"]["TargetCandidate"];
 export type TestHookOK = components["schemas"]["TestHookOK"];
+export type TextAsk = components["schemas"]["TextAsk"];
 export type ThreadReadInput = components["schemas"]["ThreadReadInput"];
 export type TimeToRestore = components["schemas"]["TimeToRestore"];
 export type TmuxPlace = components["schemas"]["TmuxPlace"];

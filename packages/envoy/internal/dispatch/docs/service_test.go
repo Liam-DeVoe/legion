@@ -6161,14 +6161,15 @@ func waitForDocumentText(t *testing.T, service *Service, artifactID, want string
 	t.Fatalf("document text = %q (%v), want %q", got, err, want)
 }
 
-// waitForAnswersText waits for the document as an agent reads it (TextWithAnswers), each ask block
-// carrying its ask's answer state and answer rendered on read from the ask, to be want.
-func waitForAnswersText(t *testing.T, service *Service, artifactID, want string) {
+// waitForAgentText waits for the document as an agent reads it (TextWithAsks) to be markdown, with
+// asks the lines of its asks member (askLines).
+func waitForAgentText(t *testing.T, service *Service, artifactID, markdown, asks string) {
 	t.Helper()
 	read := func() (string, error) {
-		text, _, _, err := service.TextWithAnswers(context.Background(), artifactID, false)
-		return text, err
+		text, err := service.TextWithAsks(context.Background(), artifactID, false)
+		return text.Markdown + "\nasks:\n" + askLines(text.Asks), err
 	}
+	want := markdown + "\nasks:\n" + asks
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
 		if got, err := read(); err == nil && got == want {
@@ -6177,7 +6178,7 @@ func waitForAnswersText(t *testing.T, service *Service, artifactID, want string)
 		time.Sleep(5 * time.Millisecond)
 	}
 	got, err := read()
-	t.Fatalf("document text with its asks' answers = %q (%v), want %q", got, err, want)
+	t.Fatalf("document text with its asks = %q (%v), want %q", got, err, want)
 }
 
 func waitForDocumentVersion(t *testing.T, database *store.Store, artifactID string, number int) model.Version {

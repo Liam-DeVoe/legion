@@ -192,15 +192,15 @@ func TestASettlementAfterACloseChangesNoAsk(t *testing.T) {
 	}
 	requireWithdrawn(t, handler, issue.Key, withdrawn, alice)
 	// An ask's state is held on its node, not in the document (dispatch://INFRA-1150 R3): the
-	// newest version holds none of the seven attributes, and the text an agent reads renders the
-	// withdrawn decision resolved and the answered one answered from their rows, and the block
-	// with no row resolved from the issue's close, since it opens no ask while the issue is closed
-	// (docs.TextWithAnswers).
+	// newest version holds none of the seven attributes, and the asks member of the text an agent
+	// reads holds the withdrawn decision resolved and the answered one answered from their rows,
+	// and the block with no row resolved from the issue's close, since it opens no ask while the
+	// issue is closed (docs.TextWithAsks).
 	requireNoAnswerAttributes(t, "the newest version", version)
 	text := awaitTextShows(t, handler, spec, "the decisions as the close left them", contains(
-		`#withdrawn-decision urgency="med" multiple="false" state="resolved"`,
-		`#answered-decision urgency="med" multiple="false" state="answered"`,
-		`#late-decision urgency="low" multiple="false" state="resolved"}`,
+		`#withdrawn-decision state="resolved"`,
+		`#answered-decision state="answered"`,
+		`#late-decision state="resolved"`+"\n",
 	), nil)
 	if !strings.Contains(text, "Written after the close's sweep?") {
 		t.Fatalf("the document's text reads:\n%s\nwant it to hold the block written after the close", text)
@@ -212,8 +212,8 @@ func TestASettlementAfterACloseChangesNoAsk(t *testing.T) {
 // reopen through PATCH makes it an open ask credited to its author (R2). alice's browser,
 // connected before the close, writes the block. The resumption settles the document on the closed
 // issue: the version holds the block with no state, since on a fleet of one build no stored
-// version holds an ask's state (dispatch://INFRA-1150 R3), the text an agent reads renders it
-// resolved from the issue's close (docs.TextWithAnswers), no ask row names it, and
+// version holds an ask's state, the asks member of the text an agent
+// reads holds it resolved from the issue's close (docs.TextWithAsks), no ask row names it, and
 // doc_ask_block_authors records its author. The document holds no block of an ask the close
 // withdrew, so the reopen's ask-state write leaves the document's own markdown, as the writes to
 // its live tree left it (liveTree), and its stored updates as they were, and the reopen marks it
@@ -249,7 +249,7 @@ func TestAnAskBlockWithNoRowIsResolvedWhileClosedAndOpensAtTheReopen(t *testing.
 	if recorded, ok := recordedAskAuthor(t, database, spec, "closed-decision"); !ok || !recorded.SameAs(author) {
 		t.Fatalf("the block's recorded author is %+v (recorded %t), want %+v, whose browser wrote it", recorded, ok, author)
 	}
-	requireLiveText(t, handler, spec, `#closed-decision urgency="med" multiple="false" state="resolved"}`)
+	requireLiveText(t, handler, spec, `#closed-decision state="resolved"`+"\n")
 	live := liveTree(t, documentService, spec)
 
 	updates := storedUpdateCount(t, database, spec)
@@ -283,5 +283,5 @@ func TestAnAskBlockWithNoRowIsResolvedWhileClosedAndOpensAtTheReopen(t *testing.
 	if !opened.Author.SameAs(author) {
 		t.Fatalf("the block's ask is credited to %+v, want %+v, its recorded author", opened.Author, author)
 	}
-	requireLiveText(t, handler, spec, `#closed-decision urgency="med" multiple="false" state="open"`)
+	requireLiveText(t, handler, spec, `#closed-decision state="open"`)
 }

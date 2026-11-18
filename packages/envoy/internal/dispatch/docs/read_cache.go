@@ -89,10 +89,11 @@ var coldReadTimeout = 60 * time.Second
 // table's size.
 //
 // tree is the tree it was rendered from, kept only for a document holding an ask block: the text
-// an agent reads renders each ask's answer on it from the store (TextWithAnswers), which a read
-// taking the cached rendering would otherwise have to decode the stored history again for. It is
-// shared with every read of the stored head as the rest is, so no reader writes into it; the
-// answers are rendered on a copy of the path to each block they change (withAskBlocks).
+// an agent reads takes the server-owned attributes off each ask block of it and reads each ask
+// block's answer from the store (TextWithAsks), which a read taking the cached rendering would
+// otherwise have to decode the stored history again for. It is shared with every read of the
+// stored head as the rest is, so no reader writes into it; the attributes are taken off a copy of
+// the path to each block that holds one (withoutAskServerAttributes).
 type documentRead struct {
 	artifactID string
 	stamp      DocumentStamp
