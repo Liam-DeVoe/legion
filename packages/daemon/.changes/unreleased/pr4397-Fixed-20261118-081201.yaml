@@ -1,0 +1,5 @@
+kind: Fixed
+body: A push to a pull request's base asks for the merge-state read of each open pull request on it whose issue is in testing, reviewing, accepting, retro or merging, so a head that the push turns conflicting sends its issue back to implementing in each of those phases, not only in reviewing with an approval standing. Each read GitHub answers is logged at Info with the issue, the read's number on the ladder and the answer.
+time: 2026-11-18T08:12:01.899221436Z
+custom:
+    Issue: pr4397
