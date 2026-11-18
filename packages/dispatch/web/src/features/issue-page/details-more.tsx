@@ -1,4 +1,3 @@
-import { useQueries } from "@tanstack/react-query";
 import {
   type FocusEvent,
   type ReactNode,
@@ -11,31 +10,27 @@ import {
 } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 
-import { api } from "../../api/client";
 import { primarySpec } from "../../api/issue-cache";
-import { issueCoverageQuery, issueResultsQuery } from "../../api/queries";
 import type { IssueDetails, UserState } from "../../api/types";
 import { pageInkText, pageRowBorder } from "../../theme/classes";
-import { issueDecisionsQuery } from "../doc/spec-marks";
 import { stateForIssue } from "../issue/pins";
 import { SubscribedAgents } from "../issue/SubscribedAgents";
-import { refetchFailedOnFocus } from "../refs/reference-target";
 import { buildIssuePath, type IssueRoute, parseIssuePath } from "../refs/routes";
 import { useKeymap } from "../shell/keymap";
 import { ownScrollMark, rewatch, watchedIn } from "../shell/ViewportAnchor";
-import { useAddressFallback, useAddressTarget } from "./address-target";
+import { outlineItemRoute, useAddressFallback, useAddressTarget } from "./address-target";
 import { DetailsErrorLine, useSaidFailure } from "./details-error";
 import { DETAILS_ROW_ATTRIBUTE, type DetailsRow, useOpenDetailsAt } from "./details-rows";
 import { FocusedNodeFacts } from "./FocusedNodeFacts";
 import { type FocusedNode, useFocusedNode } from "./focused-node";
 import { IssueCollaboratorList } from "./IssueCollaboratorList";
 import { HISTORY_HEADING_LANDED_EVENT, IssueHistory } from "./IssueHistory";
-import { type IssueAddress, issueAddress, outlineItemRoute } from "./issue-address";
+import { type IssueAddress, issueAddress } from "./issue-address";
 import { DETAILS_ATTRIBUTE, useMarginDrawer } from "./margin-slot";
+import { useOutlineReads } from "./outline-reads";
 import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS, issueStatusWord, STATE_LINES } from "./page-words";
 import { useIssueSubscribers } from "./useIssueSubscribers";
-import { useIssueTree } from "./useIssueTree";
 
 /** What each of Details' three places below is handed: the issue as the details slot reads it,
  *  and the reader's own state of every issue. */
@@ -353,21 +348,14 @@ interface AgentsTurn {
   readonly id: string;
 }
 
-/** What each read the outline lands by takes, as `slots/body.tsx` reads them: events keep a
- *  read fresh and its age never does, and window focus fetches again only a read in error. */
-const OUTLINE_READ = {
-  refetchOnWindowFocus: refetchFailedOnFocus,
-  staleTime: Number.POSITIVE_INFINITY,
-} as const;
-
 /**
  * Tells `onTurn` the turn of a thread only agents wrote in that `address` names, for `arrival`,
  * as the outline lands on it: the outline's own decision (`address-target.ts`'s
- * `useAddressFallback`, its `agents-only` kind), over the same tree and the same reads
- * `slots/body.tsx` hands it, so it is told once every read the tree is built from has answered,
- * as the outline lands on the turn's nearest drawn ancestor, and taken back as the outline lets
- * go of it. Every read is under the outline's own key and with its options, so this costs no
- * request of its own.
+ * `useAddressFallback`, its `agents-only` kind), over the tree and the reads `slots/body.tsx`
+ * hands it (`useOutlineReads`), so it is told once every read the tree is built from has
+ * answered, as the outline lands on the turn's nearest drawn ancestor, and taken back as the
+ * outline lets go of it. Those reads are the outline's own, under its keys and with its
+ * freshness, so this costs no request of its own.
  *
  * Drawn only while the address names an ask, a comment or a message of the outline, the only
  * address that can name such a turn, so the tree is built here only then. It draws nothing.
@@ -387,39 +375,13 @@ function AgentsOnlyTurn({
   route: IssueRoute;
   search: string;
 }): null {
-  const key = issue.key;
-  const { blocksHeld, root } = useIssueTree(issue);
-  // Whether every read the tree's nodes come from holds its answer, as `slots/body.tsx` reads it
-  // for its landing: until then the turn's thread may not have arrived.
-  const reads = useQueries({
-    combine: (answers) => {
-      const [, , , asks, comments, messages] = answers;
-      return {
-        asks: asks.data,
-        comments: comments.data,
-        held: answers.every((answer) => answer.data !== undefined),
-        messages: messages.data,
-      };
-    },
-    queries: [
-      { ...issueCoverageQuery(key), ...OUTLINE_READ },
-      { ...issueDecisionsQuery(key, true), ...OUTLINE_READ },
-      { ...issueResultsQuery(key), ...OUTLINE_READ },
-      { queryFn: () => api.listIssueAsks(key, "all"), queryKey: ["asks", key], ...OUTLINE_READ },
-      { queryFn: () => api.listComments(key), queryKey: ["comments", key], ...OUTLINE_READ },
-      {
-        queryFn: () => api.listIssueMessages(key),
-        queryKey: ["issue-messages", key],
-        ...OUTLINE_READ,
-      },
-    ],
-  });
+  const { reads, readsHeld, root } = useOutlineReads(issue);
   const { reveal } = useAddressTarget(root, address);
   const fallback = useAddressFallback({
     address,
     issue,
     reads,
-    readsHeld: reads.held && blocksHeld,
+    readsHeld,
     reveal,
     root,
     route,
