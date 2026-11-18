@@ -1777,7 +1777,7 @@ test("the Agents page loads through one dropped request for its agents", async (
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
-    const first = await holdFirstRequest(page, /\/api\/v1\/agents$/u);
+    const first = await holdFirstRequest(page, /\/api\/v2\/agents(\?|$)/u);
     await page.goto("/agents");
     await (await first.held).abort("connectionreset");
     // Well inside the page's 15 s poll, which would bring the list back without a retry.

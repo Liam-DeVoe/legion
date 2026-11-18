@@ -400,8 +400,7 @@ test("a listener refilling from the first read shows every view refilling", asyn
   // What every view below reads: Dispatch's own refilling answer, not an unreachable listener.
   expect(await agentsAnswer()).toEqual({ code: "ENVOY_REFILLING", retryAfter: "5", status: 503 });
   expect(await getIssue(fixture.issueKey)).toMatchObject({
-    route_status: "unknown",
-    route_status_reason: "refilling",
+    reach: { route_status: "unknown", route_status_reason: "refilling" },
   });
   const alice = await asUser(browser, "alice");
   try {
@@ -446,8 +445,7 @@ test("a listener that cannot answer reads as unreachable on every view, never as
       status: 503,
     });
     expect(await getIssue(fixture.issueKey)).toMatchObject({
-      route_status: "unknown",
-      route_status_reason: "unreachable",
+      reach: { route_status: "unknown", route_status_reason: "unreachable" },
     });
 
     const page = await alice.newPage();

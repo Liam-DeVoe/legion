@@ -32,7 +32,7 @@ async function postPayload(page: Page): Promise<Record<string, unknown>> {
   const response = page.waitForResponse(
     (candidate) =>
       candidate.request().method() === "POST" &&
-      /\/api\/v1\/issues\/[^/]+\/comments$/.test(candidate.url())
+      /\/api\/v2\/issues\/[^/]+\/comments$/.test(candidate.url())
   );
   await page
     .getByRole("form", { name: "Comment composer" })
