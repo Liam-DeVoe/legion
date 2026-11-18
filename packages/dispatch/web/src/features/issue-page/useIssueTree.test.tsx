@@ -5161,6 +5161,23 @@ function pressRetry(rig: Rig): void {
   });
 }
 
+/** A write of the page held until the row lets it go, under `mutationKey` - none where it is
+ *  undefined, as most of the page's writes are pressed (`useKeyedWrite` with no key, the comment
+ *  actions' `useCommentActionQueue.ts`) - built and run as `held-sends.ts`' `hold` runs a send. */
+function holdKeyedWrite(rig: Rig, mutationKey: readonly string[] | undefined): () => void {
+  const answer = Promise.withResolvers<void>();
+  rig.client
+    .getMutationCache()
+    .build(rig.client, {
+      ...(mutationKey === undefined ? {} : { mutationKey }),
+      mutationFn: () => answer.promise,
+      networkMode: "always",
+    })
+    .execute(undefined)
+    .catch(() => {});
+  return answer.resolve;
+}
+
 /** A write held while the row's way runs, begun as `start` begins it, and a step `during` it:
  *  `during` reads the row's query `whileOut` times before the write settles, and the write then
  *  settles. */
@@ -5362,6 +5379,24 @@ const WAYS = {
     (rig) => holdWrite(rig),
     async (rig) => pressRetry(rig),
     1
+  ),
+  eventDuringOwnWrite: duringWrite(
+    "an event of the issue while a write of it is out, the write then settling",
+    (rig) => holdWrite(rig),
+    commentsEvent,
+    0
+  ),
+  eventDuringOtherWriteOnPage: duringWrite(
+    "an event of the issue while a write naming another issue, pressed on the page, is out, the write then settling",
+    (rig) => holdWrite(rig, { of: OTHER_KEY }),
+    commentsEvent,
+    0
+  ),
+  eventDuringUnkeyedWriteOnPage: duringWrite(
+    "an event of the issue while a write with no mutation key, pressed on the page, is out, the write then settling",
+    (rig) => holdKeyedWrite(rig, undefined),
+    commentsEvent,
+    0
   ),
   retryDuringOtherWriteOnPage: duringWrite(
     "the reader's Retry while a write naming another issue, pressed on the page, is out, the write then settling",
@@ -6095,8 +6130,23 @@ const READ_RULES: readonly ReadRule[] = [
   { read: "tree", state: "refusedHeld", observed: true, way: "retryDuringOwnWrite", now: 2 },
   { read: "spec", state: "refused", observed: true, way: "retryDuringOwnWrite", now: 2 },
   { read: "spec", state: "refusedHeld", observed: true, way: "retryDuringOwnWrite", now: 2 },
+  // An event while a write of the issue is out: read once, as the write settles.
+  { read: "tree", state: "answered", observed: true, way: "eventDuringOwnWrite", now: 1 },
+  { read: "tree", state: "refused", observed: true, way: "eventDuringOwnWrite", now: 1 },
+  { read: "tree", state: "refusedHeld", observed: true, way: "eventDuringOwnWrite", now: 1 },
+  { read: "spec", state: "answered", observed: true, way: "eventDuringOwnWrite", now: 1 },
+  { read: "spec", state: "refused", observed: true, way: "eventDuringOwnWrite", now: 1 },
+  { read: "spec", state: "refusedHeld", observed: true, way: "eventDuringOwnWrite", now: 1 },
+  { read: "tree", state: "refused", observed: false, way: "eventDuringOwnWrite", now: 0, back: 1 },
+  { read: "spec", state: "refused", observed: false, way: "eventDuringOwnWrite", now: 0, back: 1 },
   // A write that names another issue, or none, pressed while the page draws the tree, is a write
-  // of this issue: a Retry or a first press is read once more as it settles.
+  // of this issue: an event waits for it, and a Retry or a first press is read once more as it
+  // settles.
+  { read: "tree", state: "answered", observed: true, way: "eventDuringOtherWriteOnPage", now: 1 },
+  { read: "tree", state: "refused", observed: true, way: "eventDuringOtherWriteOnPage", now: 1 },
+  { read: "spec", state: "answered", observed: true, way: "eventDuringOtherWriteOnPage", now: 1 },
+  { read: "tree", state: "answered", observed: true, way: "eventDuringUnkeyedWriteOnPage", now: 1 },
+  { read: "spec", state: "refused", observed: true, way: "eventDuringUnkeyedWriteOnPage", now: 1 },
   { read: "tree", state: "refused", observed: true, way: "retryDuringOtherWriteOnPage", now: 2 },
   { read: "spec", state: "refused", observed: true, way: "retryDuringOtherWriteOnPage", now: 2 },
   {
