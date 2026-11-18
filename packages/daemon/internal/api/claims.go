@@ -370,7 +370,8 @@ func (s *server) turnOutcomeBySecret(w http.ResponseWriter, r *http.Request, cal
 // the claim's machine: the report is written onto the claim's row alone
 // (store.Store.PutClaimActivity, reached through Options.ClaimActivity), where a machine's own
 // write never carries it and a launch's write clears it, and where a report older than the one
-// recorded is dropped rather than written. It is written onto the launch whose secret
+// recorded is dropped rather than written. It is dated by the moment this route received it, on
+// the daemon's clock, never by the session's own. It is written onto the launch whose secret
 // authenticated it — the generation read with the capability check — and nowhere else.
 //
 // It refuses exactly as its siblings do — a blank field with the field's name, a claim this
@@ -408,7 +409,7 @@ func (s *server) activity(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, errorBody("the daemon has no store to record session activity in"))
 		return
 	}
-	known, err := s.claimActivity.PutClaimActivity(r.Context(), req.ClaimToken, held.Generation, req.Activity)
+	known, err := s.claimActivity.PutClaimActivity(r.Context(), req.ClaimToken, held.Generation, req.Activity, s.now())
 	if err != nil {
 		s.logRequestFailure(r, err, "api: a session's activity report was not recorded", "claim", req.ClaimToken,
 			"session", req.SessionID)

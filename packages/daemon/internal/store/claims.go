@@ -88,7 +88,7 @@ func (s *Store) PutClaim(ctx context.Context, c supervise.Claim) error {
 	return nil
 }
 
-// PutClaimActivity writes the four activity columns of token's claim row and nothing else: what
+// PutClaimActivity writes the five activity columns of token's claim row and nothing else: what
 // that claim's session last reported of what it is doing (INFRA-945). The report is no part of
 // the claim's machine state — it arrives between a machine's writes, and the machine's in-memory
 // claim does not carry it — so one write of the whole row would erase every report sent since
@@ -103,7 +103,8 @@ func (s *Store) PutClaim(ctx context.Context, c supervise.Claim) error {
 //
 // A report older than the one recorded is dropped rather than written: a session fires its
 // reports without an in-flight guard, so an earlier reading can land after a later one, and the
-// pod would then be released on a reading the session has already replaced.
+// pod would then be released on a reading the session has already replaced. Older is by the
+// session's own clock (activity_sent_at), the one clock that orders its readings.
 //
 // It answers whether the store held the claim at generation when the statement began, which is
 // not always whether it wrote. The answer is the outer select's, read from the snapshot the
@@ -115,12 +116,18 @@ func (s *Store) PutClaim(ctx context.Context, c supervise.Claim) error {
 // reads again is at the next generation, and is answered known all the same, so the route
 // answers it 204. A report dropped as older than the one recorded is answered known too.
 //
-// The report's own clock is bounded to the daemon's, as the listener's is (decodeListenerWake):
-// the session chooses every field of what it sends, and one reading dated ahead of the daemon's
-// clock — a session whose host stepped its clock forward, corrected back afterwards — would
-// drop every honest report after it under that same ordering guard, while the stale reading it
-// left behind went on counting as current, background work and all.
-func (s *Store) PutClaimActivity(ctx context.Context, token claim.Token, generation uint64, a claim.SessionActivity) (bool, error) {
+// The report is dated by received, the moment the daemon received it on its own clock (the
+// route's, api's claims/activity), never by the session's clock, which the rules that read the
+// report compare with the daemon's own times: a pod whose clock runs more than 20 minutes behind
+// would otherwise send reports that read as 20 minutes old the moment they arrive, and the
+// relaunch guard's turn report rule would let a relaunch cut a turn whose process still runs
+// (supervise.RelaunchGuard). The session's own time orders its reports alone (activity_sent_at),
+// and is bounded to the receipt, as the listener's is (decodeListenerWake): the session chooses
+// every field of what it sends, and one reading dated ahead of the daemon's clock — a session
+// whose host stepped its clock forward, corrected back afterwards — would drop every honest report
+// after it under that ordering guard, while the stale reading it left behind went on counting as
+// current, background work and all.
+func (s *Store) PutClaimActivity(ctx context.Context, token claim.Token, generation uint64, a claim.SessionActivity, received time.Time) (bool, error) {
 	if generation > math.MaxInt64 {
 		// No row holds it (putClaim refuses one), so no launch of the claim is this.
 		return false, nil
@@ -130,20 +137,21 @@ func (s *Store) PutClaimActivity(ctx context.Context, token claim.Token, generat
 		at := a.Phase.NextReminderAt.UTC()
 		reminder = &at
 	}
-	at := a.At.UTC()
-	if received := time.Now().UTC(); at.After(received) {
-		at = received
+	received = received.UTC()
+	sent := a.At.UTC()
+	if sent.After(received) {
+		sent = received
 	}
 	var known bool
 	err := s.pool.QueryRow(ctx, `with reported as (
-		update claims set activity_at = $2, activity_background = $3, activity_kinds = $4,
+		update claims set activity_at = $2, activity_sent_at = $7, activity_background = $3, activity_kinds = $4,
 			activity_next_reminder_at = $5, updated_at = now()
-		where token = $1 and generation = $6 and (activity_at is null or activity_at <= $2) returning token)
+		where token = $1 and generation = $6 and (activity_sent_at is null or activity_sent_at <= $7) returning token)
 		select exists (select 1 from claims where token = $1 and generation = $6)`,
 		// Only the three known kinds are kept (claim.BackgroundWork.KnownKinds): they reach the
 		// architect's worker-background-stalled notice and the daemon's log.
-		string(token), at, a.BackgroundWork.Running,
-		strings.Join(a.BackgroundWork.KnownKinds(), ","), reminder, int64(generation),
+		string(token), received, a.BackgroundWork.Running,
+		strings.Join(a.BackgroundWork.KnownKinds(), ","), reminder, int64(generation), sent,
 	).Scan(&known)
 	if err != nil {
 		return false, fmt.Errorf("put the activity of claim %s: %w", token, err)
@@ -512,7 +520,7 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		relaunched_at = greatest(claims.relaunched_at, excluded.relaunched_at),
 		relaunch_generation = case when excluded.relaunched_at is null or excluded.relaunched_at < claims.relaunched_at
 			then claims.relaunch_generation else excluded.relaunch_generation end,
-		-- The four activity columns (activity_at, activity_background, activity_kinds,
+		-- The five activity columns (activity_at, activity_sent_at, activity_background, activity_kinds,
 		-- activity_next_reminder_at) and the eight step columns (step_at, turn_started_at,
 		-- step_tool, step_call_id, step_args_bytes, step_args_hash, step_started_at,
 		-- step_ended_at) are no part of a claim's write: PutClaimActivity and PutClaimStep own
@@ -527,6 +535,8 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		-- This is the one place the rule lives: no reader of the columns checks anything.
 		activity_at = case when claims.generation <> excluded.generation
 			then null else claims.activity_at end,
+		activity_sent_at = case when claims.generation <> excluded.generation
+			then null else claims.activity_sent_at end,
 		activity_background = case when claims.generation <> excluded.generation
 			then false else claims.activity_background end,
 		activity_kinds = case when claims.generation <> excluded.generation

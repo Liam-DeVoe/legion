@@ -1,0 +1,25 @@
+-- 20261118134019_claim_activity_sent_at.up.sql — a session's activity report is dated by the daemon
+-- that received it, and ordered by the session that sent it.
+--
+-- claims.activity_at was the time the session read the report, by the session's own clock, capped
+-- only against a time ahead of the daemon's. A pod whose clock ran more than 20 minutes behind
+-- then sent reports that read as 20 minutes old the moment they arrived, which turned the relaunch
+-- guard's turn report rule off (R5): a relaunch could cut a turn whose process was still running.
+-- From this version activity_at is the moment the daemon received the report, on the daemon's own
+-- clock, which every rule that reads it compares with the daemon's times.
+--
+-- activity_sent_at is the session's own time of the report, bounded to its receipt, which only
+-- the guard that drops an earlier reading arriving after a later one reads (store's
+-- PutClaimActivity): a session sends its reports without an in-flight guard, so the order they
+-- arrive in is not the order it read them in. The launch's write that clears the other activity
+-- columns clears it too. Every existing row takes null, which that guard reads as no report yet,
+-- so the next report of each claim is written.
+--
+-- Rolling the image back needs no statement: the release before this one names no such column,
+-- so its daemon writes activity_at by the session's clock again and leaves activity_sent_at as it
+-- stands, and a daemon rolled forward again orders by it from its next report on. A launch that
+-- release made does not clear the column, so the launched process's first reports are dropped
+-- until its own clock passes the time the process before it last reported at.
+--
+-- There is no down file: migrations here are forward-only.
+alter table claims add column activity_sent_at timestamptz;

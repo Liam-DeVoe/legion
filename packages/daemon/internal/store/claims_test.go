@@ -883,8 +883,9 @@ func TestClaimUnretiredIsEveryStoredStateButRetired(t *testing.T) {
 	}
 }
 
-// storedActivity is the four activity columns of token's claim row, which no claim read carries:
-// the report lives on the row alone, and only the idle view reads it back.
+// storedActivity is four of the activity columns of token's claim row, which no claim read
+// carries: the report lives on the row alone, and only the idle view reads it back. at is the
+// daemon's receipt of the report.
 func storedActivity(t *testing.T, store *Store, token claim.Token) (at time.Time, background bool, kinds string, reminder time.Time) {
 	t.Helper()
 	var read, due *time.Time
@@ -894,6 +895,18 @@ func storedActivity(t *testing.T, store *Store, token claim.Token) (at time.Time
 		t.Fatalf("read the activity of %s: %v", token, err)
 	}
 	return orZero(read), background, kinds, orZero(due)
+}
+
+// storedSentAt is the session's own time of the report token's claim row holds, which orders its
+// reports (activity_sent_at).
+func storedSentAt(t *testing.T, store *Store, token claim.Token) time.Time {
+	t.Helper()
+	var sent *time.Time
+	if err := store.Pool().QueryRow(context.Background(), `select activity_sent_at from claims where token = $1`,
+		string(token)).Scan(&sent); err != nil {
+		t.Fatalf("read the activity's sent time of %s: %v", token, err)
+	}
+	return orZero(sent)
 }
 
 // A session fires its reports without an in-flight guard — pi-legion's five-second timer and its
@@ -915,26 +928,26 @@ func TestAnActivityReportNeverOverwritesANewerOne(t *testing.T) {
 		BackgroundWork: claim.BackgroundWork{Running: true, Kinds: []string{"async-job"}},
 		Phase:          claim.PhaseActivity{NextReminderAt: &due},
 	}
-	if known, err := store.PutClaimActivity(ctx, c.Token, c.Generation, newest); err != nil || !known {
+	if known, err := store.PutClaimActivity(ctx, c.Token, c.Generation, newest, newest.At); err != nil || !known {
 		t.Fatalf("PutClaimActivity of the newest report = %t, %v", known, err)
 	}
 
 	// The reading taken before the job started, which the five-second timer sent first and which
 	// arrives second.
 	stale := claim.SessionActivity{At: at(9)}
-	if known, err := store.PutClaimActivity(ctx, c.Token, c.Generation, stale); err != nil || !known {
+	if known, err := store.PutClaimActivity(ctx, c.Token, c.Generation, stale, newest.At.Add(time.Second)); err != nil || !known {
 		t.Fatalf("PutClaimActivity of the stale report = %t, %v", known, err)
 	}
-	gotAt, background, kinds, reminder := storedActivity(t, store, c.Token)
-	if !gotAt.Equal(newest.At) || !background || kinds != "async-job" || !reminder.Equal(due) {
-		t.Fatalf("after the stale report the row reads %s, background %t, kinds %q, reminder %s; want the newest report kept",
-			gotAt, background, kinds, reminder)
+	_, background, kinds, reminder := storedActivity(t, store, c.Token)
+	if sent := storedSentAt(t, store, c.Token); !sent.Equal(newest.At) || !background || kinds != "async-job" || !reminder.Equal(due) {
+		t.Fatalf("after the stale report the row reads sent %s, background %t, kinds %q, reminder %s; want the newest report kept",
+			sent, background, kinds, reminder)
 	}
 
 	// A report of the same instant is the same reading sent twice, and is written: a retry must
 	// not be refused.
 	same := claim.SessionActivity{At: at(10)}
-	if known, err := store.PutClaimActivity(ctx, c.Token, c.Generation, same); err != nil || !known {
+	if known, err := store.PutClaimActivity(ctx, c.Token, c.Generation, same, same.At); err != nil || !known {
 		t.Fatalf("PutClaimActivity of the repeated report = %t, %v", known, err)
 	}
 	if _, background, kinds, reminder = storedActivity(t, store, c.Token); background || kinds != "" || !reminder.IsZero() {
@@ -944,19 +957,19 @@ func TestAnActivityReportNeverOverwritesANewerOne(t *testing.T) {
 
 	// A newer one is written whole, the armed reminder cleared with the rest.
 	newer := claim.SessionActivity{At: at(11)}
-	if known, err := store.PutClaimActivity(ctx, c.Token, c.Generation, newer); err != nil || !known {
+	if known, err := store.PutClaimActivity(ctx, c.Token, c.Generation, newer, newer.At); err != nil || !known {
 		t.Fatalf("PutClaimActivity of the newer report = %t, %v", known, err)
 	}
-	if gotAt, _, _, _ = storedActivity(t, store, c.Token); !gotAt.Equal(newer.At) {
-		t.Fatalf("activity_at = %s after the newer report, want %s", gotAt, newer.At)
+	if sent := storedSentAt(t, store, c.Token); !sent.Equal(newer.At) {
+		t.Fatalf("activity_sent_at = %s after the newer report, want %s", sent, newer.At)
 	}
 }
 
 // A session chooses the time it reports. One dated ahead of the daemon's clock — a host whose
 // clock stepped forward and was corrected back afterwards — would, under the ordering guard
 // above, drop every honest report after it while the reading it left stood as current,
-// background work and all. It is bounded to the daemon's receipt time, as the listener's report
-// is (intake.decodeListenerWake).
+// background work and all. Its own time is bounded to the daemon's receipt, as the listener's
+// report is (intake.decodeListenerWake), and the report is dated by that receipt.
 func TestAnActivityReportDatedAheadOfTheDaemonIsBoundedToItsReceipt(t *testing.T) {
 	ctx := context.Background()
 	store := migratedStore(t)
@@ -965,27 +978,21 @@ func TestAnActivityReportDatedAheadOfTheDaemonIsBoundedToItsReceipt(t *testing.T
 		t.Fatalf("put claim: %v", err)
 	}
 
-	before := time.Now().UTC()
-	ahead := claim.SessionActivity{At: before.Add(2 * time.Hour),
+	received := at(30)
+	ahead := claim.SessionActivity{At: received.Add(2 * time.Hour),
 		BackgroundWork: claim.BackgroundWork{Running: true, Kinds: []string{"async-job"}}}
-	if known, err := store.PutClaimActivity(ctx, c.Token, c.Generation, ahead); err != nil || !known {
+	if known, err := store.PutClaimActivity(ctx, c.Token, c.Generation, ahead, received); err != nil || !known {
 		t.Fatalf("PutClaimActivity of the report dated ahead = %t, %v", known, err)
 	}
-	after := time.Now().UTC()
 	stored, _, _, _ := storedActivity(t, store, c.Token)
-	// The receipt the row kept is a timestamptz, which holds microseconds, so the stored
-	// instant is the Go instant of the receipt with its nanoseconds dropped: it can sit up to
-	// a microsecond below the window's own lower bound, which is what the window is truncated
-	// for. The report's time, two hours ahead, is outside the window either way, so this still
-	// fails on a report that was stored unbounded.
-	if stored.Before(before.Truncate(time.Microsecond)) || stored.After(after) {
-		t.Fatalf("a report dated %s was stored as %s, want the daemon's receipt time between %s and %s",
-			ahead.At, stored, before, after)
+	if sent := storedSentAt(t, store, c.Token); !stored.Equal(received) || !sent.Equal(received) {
+		t.Fatalf("a report dated %s and received at %s was stored at %s, sent at %s; want both the receipt",
+			ahead.At, received, stored, sent)
 	}
 
 	// The session's next honest report is written, which is what the unbounded time cost.
-	honest := claim.SessionActivity{At: time.Now().UTC()}
-	if known, err := store.PutClaimActivity(ctx, c.Token, c.Generation, honest); err != nil || !known {
+	honest := claim.SessionActivity{At: received.Add(time.Minute)}
+	if known, err := store.PutClaimActivity(ctx, c.Token, c.Generation, honest, honest.At); err != nil || !known {
 		t.Fatalf("PutClaimActivity of the honest report = %t, %v", known, err)
 	}
 	if _, background, kinds, _ := storedActivity(t, store, c.Token); background || kinds != "" {
@@ -994,12 +1001,46 @@ func TestAnActivityReportDatedAheadOfTheDaemonIsBoundedToItsReceipt(t *testing.T
 	}
 }
 
+// A session's clock can run behind the daemon's. Its report is written at the moment the daemon
+// received it, so a report of a turn the claim is still in, sent by a session whose clock runs 25
+// minutes behind, still says the process runs that turn, and the relaunch guard refuses to cut it
+// (R5's turn report rule, supervise.RelaunchGuard).
+func TestAReportFromASessionClockBehindTheDaemonStillHoldsTheTurnReportGuard(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	c := tmuxClaim("legion-LEGION-211-implementer")
+	now := time.Now().UTC()
+	c.State, c.LastTurnEnd, c.LastTurnStart = supervise.StateWorking, now.Add(-time.Hour), now.Add(-time.Minute)
+	if err := store.PutClaim(ctx, c); err != nil {
+		t.Fatalf("put claim: %v", err)
+	}
+
+	received := time.Now().UTC()
+	behind := claim.SessionActivity{At: received.Add(-25 * time.Minute)}
+	if known, err := store.PutClaimActivity(ctx, c.Token, c.Generation, behind, received); err != nil || !known {
+		t.Fatalf("PutClaimActivity of the report from a clock 25 minutes behind = %t, %v", known, err)
+	}
+	claims, err := store.Claims(ctx)
+	if err != nil {
+		t.Fatalf("read the claims: %v", err)
+	}
+	i := slices.IndexFunc(claims, func(read supervise.Claim) bool { return read.Token == c.Token })
+	if i < 0 {
+		t.Fatalf("the claims read back hold no %s", c.Token)
+	}
+	why := supervise.RelaunchGuard(claims[i], time.Time{}, time.Now())
+	if !strings.Contains(why, "still runs that turn") {
+		t.Fatalf("the relaunch guard of a claim whose session reported in its turn a moment ago, by a clock 25 minutes behind, answers %q; want it refused by the turn report rule (activity at %s, turn begun at %s)",
+			why, claims[i].ActivityAt, claims[i].LastTurnStart)
+	}
+}
+
 // A report for a claim the daemon has forgotten is nothing to record, and says so: the route
 // answers it as it answers a wrong secret. A report the ordering guard drops is not that.
 func TestAnActivityReportOfAnUnknownClaimIsNotRecorded(t *testing.T) {
 	ctx := context.Background()
 	store := migratedStore(t)
-	known, err := store.PutClaimActivity(ctx, "legion-LEGION-999-implementer", 1, claim.SessionActivity{At: at(1)})
+	known, err := store.PutClaimActivity(ctx, "legion-LEGION-999-implementer", 1, claim.SessionActivity{At: at(1)}, at(1))
 	if err != nil {
 		t.Fatalf("PutClaimActivity: %v", err)
 	}
@@ -1047,7 +1088,7 @@ func TestAnActivityReportOfAnEarlierProcessIsNoReportToAnyReader(t *testing.T) {
 	if known, err := st.PutClaimActivity(ctx, token, worker.Generation, claim.SessionActivity{At: dead.at,
 		BackgroundWork: claim.BackgroundWork{Running: true, Kinds: dead.kinds},
 		Phase:          claim.PhaseActivity{NextReminderAt: &dead.reminder},
-	}); err != nil || !known {
+	}, dead.at); err != nil || !known {
 		t.Fatalf("report the worker's background work = %t, %v", known, err)
 	}
 
@@ -1149,13 +1190,15 @@ func TestAnActivityReportOfAnEarlierProcessIsNoReportToAnyReader(t *testing.T) {
 
 	// The replacement's first report is dated before the dead process's — a host clock behind
 	// the old pod's — and is written whole: the dead report is gone, and with it the ordering
-	// guard it would have held over every report dated before it.
-	first := activityReport{at: dead.at.Add(-time.Minute), background: true, kinds: []string{"async-job", "subagent"}}
-	first.reminder = first.at.Add(5 * time.Minute)
-	if known, err := st.PutClaimActivity(ctx, token, worker.Generation, claim.SessionActivity{At: first.at,
+	// guard it would have held over every report dated before it. Every reader reads it as the
+	// daemon received it, a minute after the dead process's.
+	sent := dead.at.Add(-time.Minute)
+	first := activityReport{at: dead.at.Add(time.Minute), background: true, kinds: []string{"async-job", "subagent"}}
+	first.reminder = sent.Add(5 * time.Minute)
+	if known, err := st.PutClaimActivity(ctx, token, worker.Generation, claim.SessionActivity{At: sent,
 		BackgroundWork: claim.BackgroundWork{Running: true, Kinds: first.kinds},
 		Phase:          claim.PhaseActivity{NextReminderAt: &first.reminder},
-	}); err != nil || !known {
+	}, first.at); err != nil || !known {
 		t.Fatalf("report the replacement's background work = %t, %v", known, err)
 	}
 	whole(t, first, "after the replacement's first report")
@@ -1184,7 +1227,7 @@ func TestAnActivityReportOfALaunchThatIsGoneIsRefused(t *testing.T) {
 
 	dead := claim.SessionActivity{At: time.Now().UTC().Add(-time.Minute),
 		BackgroundWork: claim.BackgroundWork{Running: true, Kinds: []string{"claude-background-task"}}}
-	known, err := store.PutClaimActivity(ctx, c.Token, old, dead)
+	known, err := store.PutClaimActivity(ctx, c.Token, old, dead, dead.At)
 	if err != nil {
 		t.Fatalf("PutClaimActivity of the old launch's report: %v", err)
 	}
@@ -1198,7 +1241,7 @@ func TestAnActivityReportOfALaunchThatIsGoneIsRefused(t *testing.T) {
 
 	// The new launch's own report is written.
 	current := claim.SessionActivity{At: time.Now().UTC().Add(-time.Second)}
-	if known, err := store.PutClaimActivity(ctx, c.Token, c.Generation, current); err != nil || !known {
+	if known, err := store.PutClaimActivity(ctx, c.Token, c.Generation, current, current.At); err != nil || !known {
 		t.Fatalf("PutClaimActivity of the current launch's report = %t, %v", known, err)
 	}
 	if at, _, _, _ := storedActivity(t, store, c.Token); at.IsZero() {
@@ -1220,7 +1263,7 @@ func TestAnActivityReportKeepsOnlyTheKnownKinds(t *testing.T) {
 
 	named := claim.SessionActivity{At: at(10), BackgroundWork: claim.BackgroundWork{Running: true,
 		Kinds: []string{"subagent", "<b>urgent</b>", "async-job", "", "claude-background-task", "async-job,evil"}}}
-	if known, err := store.PutClaimActivity(ctx, c.Token, c.Generation, named); err != nil || !known {
+	if known, err := store.PutClaimActivity(ctx, c.Token, c.Generation, named, named.At); err != nil || !known {
 		t.Fatalf("PutClaimActivity of the report naming unknown kinds = %t, %v", known, err)
 	}
 	if _, background, kinds, _ := storedActivity(t, store, c.Token); !background || kinds != "subagent,async-job,claude-background-task" {
@@ -1230,7 +1273,7 @@ func TestAnActivityReportKeepsOnlyTheKnownKinds(t *testing.T) {
 
 	unknown := claim.SessionActivity{At: at(11), BackgroundWork: claim.BackgroundWork{Running: true,
 		Kinds: []string{"shell"}}}
-	if known, err := store.PutClaimActivity(ctx, c.Token, c.Generation, unknown); err != nil || !known {
+	if known, err := store.PutClaimActivity(ctx, c.Token, c.Generation, unknown, unknown.At); err != nil || !known {
 		t.Fatalf("PutClaimActivity of the report naming only an unknown kind = %t, %v", known, err)
 	}
 	if _, background, kinds, _ := storedActivity(t, store, c.Token); !background || kinds != "" {

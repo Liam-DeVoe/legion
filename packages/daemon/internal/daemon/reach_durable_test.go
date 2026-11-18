@@ -155,7 +155,8 @@ func (d *durableReach) claim(token claim.Token) supervise.Claim {
 // report writes a quiet activity report of token's launch generation, as its session sends one.
 func (d *durableReach) report(token claim.Token, generation uint64) {
 	d.t.Helper()
-	if known, err := d.st.PutClaimActivity(context.Background(), token, generation, claim.SessionActivity{At: reachBoot.Add(-50 * time.Minute)}); err != nil || !known {
+	reported := reachBoot.Add(-50 * time.Minute)
+	if known, err := d.st.PutClaimActivity(context.Background(), token, generation, claim.SessionActivity{At: reported}, reported); err != nil || !known {
 		d.t.Fatalf("report the activity of %s at generation %d = %t, %v", token, generation, known, err)
 	}
 }

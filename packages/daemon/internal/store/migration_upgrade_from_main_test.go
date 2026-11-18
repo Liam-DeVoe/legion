@@ -76,8 +76,9 @@ import (
 // so a database that recorded 20261116165926 before it keeps its pending publications when it
 // applies it. The cutover of the update ask's mark (20261117200337) is applied after it and
 // touches no outbox_kind_check: it clears a claim's ask mark where that claim's ask is still
-// queued. The fleet alert lines (20261118133133) are applied last and touch no outbox_kind_check
-// either: they create a table of their own.
+// queued. The fleet alert lines (20261118133133) and the activity report's sent time
+// (20261118134019) are applied last and touch no outbox_kind_check either: the first creates a
+// table of its own and the second adds a column to claims.
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
@@ -86,7 +87,7 @@ var thisBranchsMigrations = []int{
 	20261111214351, 20261111225552, 20261112070503, 20261112180548, 20261113082214, 20261113082415,
 	20261113090512, 20261113110610, 20261113181500, 20261113182000, 20261114020537, 20261114031356,
 	20261114061900, 20261116012459, 20261116082000, 20261116092312, 20261116164153, 20261116165926,
-	20261117200337, 20261118133133,
+	20261117200337, 20261118133133, 20261118134019,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -226,10 +227,11 @@ const mainsLatestMigration = 20261117200337
 
 // migrationsMainLacks are the versions this branch adds that a database at main's newest
 // migration (mainsLatestMigration) has not recorded: the unreachable claims' four, each of which
-// stands below that version, and the fleet alert lines above it. Every embedded version above
-// main's newest has to be named here too, as thisBranchsMigrations does for the older main, so the
-// test below holds the list against the embedded set.
-var migrationsMainLacks = []int{20261116012459, 20261116082000, 20261116092312, 20261116164153, 20261118133133}
+// stands below that version, and the fleet alert lines and the activity report's sent time above
+// it. Every embedded version above main's newest has to be named here too, as
+// thisBranchsMigrations does for the older main, so the test below holds the list against the
+// embedded set.
+var migrationsMainLacks = []int{20261116012459, 20261116082000, 20261116092312, 20261116164153, 20261118133133, 20261118134019}
 
 // mainsRoleHoldersKindCheck is the constraint main's own 20261116165926 wrote, which is what a
 // database at main's newest migration carries. The embedded copy of that migration is the merged
