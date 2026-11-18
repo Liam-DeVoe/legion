@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, type Mock, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, expect, type Mock, mock, spyOn, test } from "bun:test";
 import { type ArtifactRebuildReport, MAX_ISSUE_ADVANCES } from "@legion/contracts";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -22,7 +22,6 @@ import type {
   Artifact,
   ArtifactApproval,
   ArtifactReview,
-  ArtifactText,
   Ask,
   AskRead,
   ClaimHolderLiveness,
@@ -78,6 +77,7 @@ import {
   doc,
   draw,
   GONE_SESSION,
+  holdsItsLine,
   idlePriorityWrite,
   LIVE_SESSION,
   listed,
@@ -1320,24 +1320,12 @@ test("inRow draws the claim as a sentence that wraps between words", async () =>
   expect(drawn).toEqual(want);
 });
 
-/** What keeps a piece of a line whole on it (`shared-controls.tooltips.test.tsx`'s
- *  `HOLDS_ITS_LINE`): `shrink-0` and `flex-none` keep its width in a flex row,
- *  `whitespace-nowrap`, `text-nowrap` and `whitespace-pre` keep its words on one line, and
- *  `truncate` cuts what does not fit. */
-const HOLDS_WHOLE = [
-  "flex-none",
-  "shrink-0",
-  "text-nowrap",
-  "truncate",
-  "whitespace-nowrap",
-  "whitespace-pre",
-];
-
 // At a phone's 320 px the claim in a row of Details wraps word by word: inside `NoTooltips`, drawn
 // with the most words the chip draws (an unresponsive holder, the heartbeat it was last seen at
 // and the moment it comes free, each instant a `<time>`), no piece of the claim carries a class of
-// `HOLDS_WHOLE` or an inline `flex-shrink: 0`. The separators between the pieces are hidden from a
-// reader and hold no word, and `AgentName`'s state mark is a dot with no word in it.
+// `HOLDS_ITS_LINE` or an inline `flex-shrink: 0` (`holdsItsLine`). The separators between the
+// pieces are hidden from a reader and hold no word, and `AgentName`'s state mark is a dot with no
+// word in it.
 test("in Details' row every word of the claim wraps, and none is held whole against the row", async () => {
   const read = await readClaim("waiting", "inside", true, (chip) => ({
     held: [chip, ...chip.querySelectorAll("*")]
@@ -1346,16 +1334,12 @@ test("in Details' row every word of the claim wraps, and none is held whole agai
           element.getAttribute("aria-hidden") !== "true" &&
           !element.matches("[data-agent-name] > [role='img']")
       )
-      .flatMap((element) => {
-        const held = classOf(element).filter((token) => HOLDS_WHOLE.includes(token));
-        if (element instanceof HTMLElement && element.style.flexShrink === "0") {
-          held.push("flex-shrink: 0");
-        }
-        return held.map(
+      .flatMap((element) =>
+        holdsItsLine(element).map(
           (token) =>
             `<${element.tagName.toLowerCase()} class="${element.getAttribute("class") ?? ""}">${element.textContent}: ${token}`
-        );
-      }),
+        )
+      ),
     times: chip.querySelectorAll("time").length,
     unresponsive: chip.querySelector("[data-testid='issue-claim-unresponsive']") !== null,
   }));
@@ -3424,52 +3408,6 @@ test("Escape in the priority's form closes the form alone and returns the focus 
   }
 });
 
-// The same ruling, for the third way the form closes, outside `NoTooltips`: Add's write disables
-// the add control until the write settles, as on `main`, and a disabled control holds no focus, so
-// the focus waits on the body and moves to the add control once the write settles. A focus the
-// reader put elsewhere in between stays where the reader put it. Inside `NoTooltips` the add
-// control is refused with `aria-disabled` and holds the focus all along, which the case after
-// this one asserts.
-test("outside NoTooltips Add in the priority's form returns the focus to its add control once its write settles", async () => {
-  const user = userEvent.setup();
-  for (const reader of ["waits", "moves on"] as const) {
-    const patchIssue = answerIssuePatches();
-    const written = Promise.withResolvers<Issue>();
-    patchIssue.mockImplementation(() => written.promise);
-    const view = draw(
-      <>
-        <button type="button">Elsewhere</button>
-        {addablePriorityLine("outside")}
-      </>,
-      "outside"
-    );
-    try {
-      addControlOf(view, "outside").focus();
-      await user.keyboard("{Enter}");
-      const picker = await pickerOf(view);
-      await waitFor(() => expect(within(picker).getAllByRole("option")).toHaveLength(3));
-      await user.selectOptions(picker, "evals-now");
-      await user.click(within(view.container).getByRole("button", { name: "Add" }));
-      await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
-      // While the write is out the add control is disabled and holds no focus.
-      expect(pickerShown(view)).toBe(false);
-      expect(addControlOf(view, "outside")).toBeDisabled();
-      expect(document.activeElement).toBe(document.body);
-      const elsewhere = within(view.container).getByRole("button", { name: "Elsewhere" });
-      if (reader === "moves on") elsewhere.focus();
-      written.resolve({} as Issue);
-      await waitFor(() => expect(addControlOf(view, "outside")).not.toBeDisabled());
-      await settleReads();
-      expect(document.activeElement).toBe(
-        reader === "waits" ? addControlOf(view, "outside") : elsewhere
-      );
-    } finally {
-      patchIssue.mockRestore();
-      undraw(view);
-    }
-  }
-});
-
 // Add closes the priority's form and draws the add control in its place, refused while Add's
 // write is out, and inside `NoTooltips` until the read of the issue after it is drawn as well:
 // there the write returns its reads, and it stops pending only once they land. Inside, the add
@@ -3522,7 +3460,7 @@ test("inside NoTooltips Add in the priority form keeps the focus on the add cont
         if (reader === "moves on") elsewhere.focus();
 
         // The write lands, and the read after it is held.
-        const release = await landHeldRead(reads, () => {
+        const answerReread = await landHeld(reads.read, () => {
           reads.advances = ["evals-now"];
           written.resolve({} as Issue);
         });
@@ -3534,11 +3472,13 @@ test("inside NoTooltips Add in the priority form keeps the focus on the add cont
           expect(pickerShown(view)).toBe(false);
           expectRefusedHoldingFocus(add);
         } else if (surface === "outside") {
-          // The write stopped pending as it landed, before its read.
+          // The write stopped pending as it landed, before its read, and a focus left on the body
+          // moved to the add control then.
           expect(add.hasAttribute("disabled")).toBe(false);
+          expect(document.activeElement).toBe(reader === "waits" ? add : elsewhere);
         }
 
-        release();
+        answerReread(reads.answer());
         await scope.findByRole("link", { name: "P1 Evals collecting data now" });
         await settleReads();
         expect(add.isConnected).toBe(true);
@@ -3596,7 +3536,7 @@ test("inside NoTooltips the priority form's Add is refused while a Remove's writ
       expectRefusedHoldingFocus(submit);
 
       // The write lands, and the read after it is held: a press then sends nothing either.
-      const release = await landHeldRead(reads, () => {
+      const answerReread = await landHeld(reads.read, () => {
         reads.advances = [];
         written.resolve({} as Issue);
       });
@@ -3606,7 +3546,7 @@ test("inside NoTooltips the priority form's Add is refused while a Remove's writ
       expect(pickerShown(view)).toBe(true);
       expectRefusedHoldingFocus(submit);
 
-      release();
+      answerReread(reads.answer());
       await waitFor(() => expect(remove.isConnected).toBe(false));
       await settleReads();
       expect(document.activeElement).toBe(submit);
@@ -3679,18 +3619,24 @@ function specReview(state: ArtifactReview["state"], reason: string | null = null
   };
 }
 
-/** Lands `written` with `review` while every read of the document from here on is held, and waits
- *  until the read the review's invalidation makes has started. Returns what answers the held
- *  reads. */
-async function landHeld(
-  written: { resolve: (review: ArtifactReview) => void },
-  review: ArtifactReview
-): Promise<(answer: Artifact) => void> {
-  const reads = stubs.getArtifact.mock.calls.length;
-  const reread = Promise.withResolvers<Artifact>();
-  stubs.getArtifact.mockImplementation(() => reread.promise);
-  written.resolve(review);
-  await waitFor(() => expect(stubs.getArtifact).toHaveBeenCalledTimes(reads + 1));
+/** A read a case holds, answering `Answer`: a `spyOn` of an `api` read, or the `read` of
+ *  `IssueReads` or `AskReads`. */
+interface ReadStub<Answer> {
+  readonly mock: { readonly calls: readonly unknown[] };
+  mockImplementation(read: () => Promise<Answer>): unknown;
+}
+
+/** Lets a write `land` while every call of `read` from here on is held, and waits until the read
+ *  the write's invalidation makes has started. Returns what answers the held reads. */
+async function landHeld<Answer>(
+  read: ReadStub<Answer>,
+  land: () => void
+): Promise<(answer: Answer) => void> {
+  const made = read.mock.calls.length;
+  const reread = Promise.withResolvers<Answer>();
+  read.mockImplementation(() => reread.promise);
+  land();
+  await waitFor(() => expect(read).toHaveBeenCalledTimes(made + 1));
   await settleReads();
   return reread.resolve;
 }
@@ -3747,7 +3693,9 @@ test("inside NoTooltips Approve pressed by Enter keeps the focus until the appro
       }
 
       // The approval lands, and the read after it is held.
-      const answerReread = await landHeld(written, specReview("approved"));
+      const answerReread = await landHeld(stubs.getArtifact, () =>
+        written.resolve(specReview("approved"))
+      );
       expect(approve.isConnected).toBe(true);
       if (surface === "inside") {
         // A press while the read is out sends no second approval, and Approve is still refused.
@@ -3850,7 +3798,9 @@ test("inside NoTooltips Approve leaves a focus the reader moved elsewhere where 
       const elsewhere = scope.getByRole("button", { name: "Elsewhere" });
       elsewhere.focus();
 
-      const answerReread = await landHeld(written, specReview("approved"));
+      const answerReread = await landHeld(stubs.getArtifact, () =>
+        written.resolve(specReview("approved"))
+      );
       expect(document.activeElement).toBe(elsewhere);
       answerReread(approved);
       await scope.findByRole("button", { name: "Approved v2" });
@@ -3943,7 +3893,9 @@ test("inside NoTooltips the Request changes dialog keeps its focus until the cha
 
       // The change request lands, and the read after it is held.
       submit.focus();
-      const answerReread = await landHeld(written, specReview("changes_requested", reason));
+      const answerReread = await landHeld(stubs.getArtifact, () =>
+        written.resolve(specReview("changes_requested", reason))
+      );
       expect(scope.queryByRole("dialog")).not.toBeNull();
       // A press while the read is out sends no second change request, and the dialog's Request
       // changes is still refused.
@@ -4065,7 +4017,9 @@ test("inside NoTooltips Escape closes the Request changes dialog while its chang
 
       // The change request lands, and the read after it is held: both are still refused.
       requestChanges.focus();
-      const answerReread = await landHeld(written, specReview("changes_requested", reason));
+      const answerReread = await landHeld(stubs.getArtifact, () =>
+        written.resolve(specReview("changes_requested", reason))
+      );
       await user.keyboard("{Enter}");
       await settleReads();
       expect(scope.queryByRole("dialog")).toBeNull();
@@ -4251,7 +4205,9 @@ test("inside NoTooltips Request changes opens no dialog while Approve's write is
       expectRefusedHoldingFocus(requestChanges);
 
       // The approval lands and the read after it is held: a press then opens no dialog either.
-      const answerReread = await landHeld(written, specReview("approved"));
+      const answerReread = await landHeld(stubs.getArtifact, () =>
+        written.resolve(specReview("approved"))
+      );
       expect(document.activeElement).toBe(requestChanges);
       await user.keyboard("{Enter}");
       await settleReads();
@@ -4361,7 +4317,9 @@ test("inside NoTooltips a change request whose dialog was closed hands the focus
       await settleReads();
       expect(document.activeElement).toBe(requestChanges);
 
-      const answerReread = await landHeld(written, specReview("changes_requested", reason));
+      const answerReread = await landHeld(stubs.getArtifact, () =>
+        written.resolve(specReview("changes_requested", reason))
+      );
       answerReread(changesRequested);
       const chip = await scope.findByRole("button", { name: "Changes requested" });
       await waitFor(() => expect(requestChanges.isConnected).toBe(false));
@@ -4578,53 +4536,25 @@ function ReadPriorityLine({
   );
 }
 
-/** CORE-1's reads, as `ReadPriorityLine` makes them (`read`). Each answers the issue advancing,
- *  as its own, what `advances` holds as it answers; `made` counts them. `hold` holds every read
- *  from there on and returns what answers them. */
+/** CORE-1's reads, as `ReadPriorityLine` makes them (`read`). Until `landHeld` holds `read`, each
+ *  answers `answer()`: the issue advancing, as its own, what `advances` holds as it answers. */
 interface IssueReads {
   advances: readonly string[];
-  readonly hold: () => () => void;
-  readonly made: () => number;
-  readonly read: () => Promise<Pick<Issue, "advances" | "advances_revision" | "key">>;
+  readonly answer: () => Pick<Issue, "advances" | "advances_revision" | "key">;
+  readonly read: Mock<() => Promise<Pick<Issue, "advances" | "advances_revision" | "key">>>;
 }
 
 function issueReads(advances: readonly string[]): IssueReads {
-  let made = 0;
-  let held: Promise<void> | undefined;
   const reads: IssueReads = {
     advances,
-    hold: () => {
-      const gate = Promise.withResolvers<void>();
-      held = gate.promise;
-      return () => {
-        held = undefined;
-        gate.resolve();
-      };
-    },
-    made: () => made,
-    read: async () => {
-      made += 1;
-      await held;
-      return {
-        advances: reads.advances.map((id) => ({ id, inherited: false })),
-        advances_revision: 1,
-        key: "CORE-1",
-      };
-    },
+    answer: () => ({
+      advances: reads.advances.map((id) => ({ id, inherited: false })),
+      advances_revision: 1,
+      key: "CORE-1",
+    }),
+    read: mock(async () => reads.answer()),
   };
   return reads;
-}
-
-/** Lets the line's write `land` while every read of the issue from here on is held, and waits
- *  until the read the write's invalidation makes has started. Returns what answers the held
- *  read. */
-async function landHeldRead(reads: IssueReads, land: () => void): Promise<() => void> {
-  const made = reads.made();
-  const release = reads.hold();
-  land();
-  await waitFor(() => expect(reads.made()).toBe(made + 1));
-  await settleReads();
-  return release;
 }
 
 /** Has the priorities read name a third priority, `P3 Lean proofs checked`, after the
@@ -4689,7 +4619,7 @@ test("inside NoTooltips a priority's Remove pressed by Enter keeps the focus unt
 
           // The write lands, or fails, and the read after it is held.
           const sent = patchIssue.mock.calls[calls]?.[1].advances ?? [];
-          const release = await landHeldRead(reads, () => {
+          const answerReread = await landHeld(reads.read, () => {
             if (write === "fails") {
               written.reject(new Error("the connection dropped"));
               return;
@@ -4711,7 +4641,7 @@ test("inside NoTooltips a priority's Remove pressed by Enter keeps the focus unt
             expect(document.activeElement).toBe(document.body);
           }
 
-          release();
+          answerReread(reads.answer());
           if (write === "lands") {
             await waitFor(() => expect(remove.isConnected).toBe(false));
           } else {
@@ -4785,12 +4715,12 @@ test("inside NoTooltips a priority's Remove leaves a focus the reader moved else
       const elsewhere = scope.getByRole("button", { name: "Elsewhere" });
       elsewhere.focus();
 
-      const release = await landHeldRead(reads, () => {
+      const answerReread = await landHeld(reads.read, () => {
         reads.advances = ["rocq-lean"];
         written.resolve({} as Issue);
       });
       expect(document.activeElement).toBe(elsewhere);
-      release();
+      answerReread(reads.answer());
       await waitFor(() => expect(remove.isConnected).toBe(false));
       await settleReads();
       expect(document.activeElement).toBe(elsewhere);
@@ -4909,12 +4839,9 @@ test("inside NoTooltips Rebuild keeps its focus until the rebuilt document is re
           if (reader === "moves on") elsewhere.focus();
 
           // The rebuild lands, and the read of the document's text after it is held.
-          const reads = stubs.getArtifactText.mock.calls.length;
-          const reread = Promise.withResolvers<ArtifactText>();
-          stubs.getArtifactText.mockImplementation(() => reread.promise);
-          rebuilt.resolve(rebuiltReport);
-          await waitFor(() => expect(stubs.getArtifactText).toHaveBeenCalledTimes(reads + 1));
-          await settleReads();
+          const answerReread = await landHeld(stubs.getArtifactText, () =>
+            rebuilt.resolve(rebuiltReport)
+          );
           expect(rebuild.isConnected).toBe(true);
           if (surface === "inside" && reader === "waits") {
             // A press while the read is out asks nothing and sends no second rebuild, and
@@ -4933,7 +4860,7 @@ test("inside NoTooltips Rebuild keeps its focus until the rebuilt document is re
             expect(rebuild.textContent).toBe("Rebuild from the latest version");
           }
 
-          reread.resolve({
+          answerReread({
             markdown: "The live document",
             token: "sha256:spec-text",
             version: null,
@@ -5512,30 +5439,14 @@ test("inside NoTooltips AskCard's Answer leaves a focus the reader moved elsewhe
   }
 });
 
-/** The reads of an ask's thread a case answers itself: each is answered at once with the open
- *  ask's read until `hold`, and each from then on waits until `release` answers it. */
+/** The reads of an ask's thread a case answers itself (`read`): until `landHeld` holds `read`,
+ *  each answers the open ask's read at once. */
 interface AskReads {
-  /** How many reads the card has made. */
-  readonly count: () => number;
-  readonly hold: () => void;
-  readonly read: (id: string) => Promise<AskRead>;
-  readonly release: (read: AskRead) => void;
+  readonly read: Mock<() => Promise<AskRead>>;
 }
 
 function askReads(ask: Ask): AskReads {
-  let count = 0;
-  let held: { promise: Promise<AskRead>; resolve: (read: AskRead) => void } | undefined;
-  return {
-    count: () => count,
-    hold: () => {
-      held = Promise.withResolvers<AskRead>();
-    },
-    read: async () => {
-      count += 1;
-      return held === undefined ? threadOf(ask) : held.promise;
-    },
-    release: (read) => held?.resolve(read),
-  };
+  return { read: mock(async () => threadOf(ask)) };
 }
 
 /** Each element the focus lands on from `start` until `stop`. */
@@ -5555,21 +5466,6 @@ function recordFocusMoves(): FocusMoves {
     start: () => document.addEventListener("focusin", record),
     stop: () => document.removeEventListener("focusin", record),
   };
-}
-
-/** Lands a write of the card with `land` while every read of its ask from then on is held, and
- *  waits until the read the landing starts is out. The focus is recorded from the landing on. */
-async function landWithAskReadHeld(
-  reads: AskReads,
-  focus: FocusMoves,
-  land: () => void
-): Promise<void> {
-  const before = reads.count();
-  reads.hold();
-  focus.start();
-  land();
-  await waitFor(() => expect(reads.count()).toBeGreaterThan(before));
-  await settleReads();
 }
 
 /** Once the ask is read again, the focus moved once, to `row`, inside `NoTooltips`, and not at
@@ -5616,7 +5512,8 @@ test("inside NoTooltips an answer that lands with no answer body keeps the ask c
       }
 
       // The answer lands with no body, and the read of the ask after it is held.
-      await landWithAskReadHeld(reads, focus, () =>
+      focus.start();
+      const answerReread = await landHeld(reads.read, () =>
         answered.reject(new ApiError(409, { code: "KEY_COMMITTED", error: "made" }))
       );
       expect(answer.isConnected).toBe(true);
@@ -5635,7 +5532,7 @@ test("inside NoTooltips an answer that lands with no answer body keeps the ask c
       }
       expect(focus.moved).toHaveLength(0);
 
-      reads.release(threadOf(answeredWith(ask, answerAsk.mock.calls[0]?.[1])));
+      answerReread(threadOf(answeredWith(ask, answerAsk.mock.calls[0]?.[1])));
       await scope.findByText(/Answered by/);
       await settleReads();
       expect(answer.isConnected).toBe(false);
@@ -5685,7 +5582,8 @@ test("inside NoTooltips Ask back keeps the focus until the ask is read again", a
       }
 
       // The clarification lands and empties the box, and the read of the ask after it is held.
-      await landWithAskReadHeld(reads, focus, () => said.resolve({} as Comment));
+      focus.start();
+      const answerReread = await landHeld(reads.read, () => said.resolve({} as Comment));
       expect(answerBoxOf(scope).value).toBe("");
       if (surface === "inside") {
         expectRefusedHoldingFocus(askBack);
@@ -5699,7 +5597,7 @@ test("inside NoTooltips Ask back keeps the focus until the ask is read again", a
       }
       expect(focus.moved).toHaveLength(0);
 
-      reads.release(threadOf(ask));
+      answerReread(threadOf(ask));
       await waitFor(() => expect(askBack.hasAttribute("disabled")).toBe(true));
       await settleReads();
       expect(askBack.hasAttribute("aria-disabled")).toBe(false);
@@ -5747,7 +5645,8 @@ test("inside NoTooltips Ask back instead keeps the focus until the ask is read a
       }
 
       // The clarification lands and closes the choice, and the read of the ask after it is held.
-      await landWithAskReadHeld(reads, focus, () => said.resolve({} as Comment));
+      focus.start();
+      const answerReread = await landHeld(reads.read, () => said.resolve({} as Comment));
       expect(answerBoxOf(scope).value).toBe("");
       if (surface === "inside") {
         expect(anyway.isConnected).toBe(true);
@@ -5764,7 +5663,7 @@ test("inside NoTooltips Ask back instead keeps the focus until the ask is read a
       }
       expect(focus.moved).toHaveLength(0);
 
-      reads.release(threadOf(ask));
+      answerReread(threadOf(ask));
       await waitFor(() => expect(instead.isConnected).toBe(false));
       await settleReads();
       expect(anyway.isConnected).toBe(false);

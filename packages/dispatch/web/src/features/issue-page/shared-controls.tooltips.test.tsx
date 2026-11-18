@@ -73,6 +73,7 @@ import {
   doc,
   draw,
   GONE_SESSION,
+  holdsItsLine,
   idlePriorityWrite,
   LIVE_SESSION,
   listed,
@@ -2062,18 +2063,6 @@ const LONG_VALUES: ReadonlyMap<Mount, Mount> = new Map([
   }),
 ]);
 
-/** What holds an element at its width or on one line: `shrink-0` and `flex-none` keep its width
- *  in a flex row, `whitespace-nowrap`, `text-nowrap` and `whitespace-pre` keep its words on one
- *  line, and `truncate` cuts what does not fit. */
-const HOLDS_ITS_LINE = [
-  "flex-none",
-  "shrink-0",
-  "text-nowrap",
-  "truncate",
-  "whitespace-nowrap",
-  "whitespace-pre",
-];
-
 /** What lets a value break inside a word: `[overflow-wrap:anywhere]`, the one spelling the shared
  *  controls use for it inside `NoTooltips`. Unlike `break-words` (`overflow-wrap: break-word`),
  *  it also lets the value's min-content width shrink below its longest word. */
@@ -2125,14 +2114,6 @@ function drawnValues(mount: Mount, drawn: readonly Element[], missing: string[])
 /** An element as the wrap case names it: its tag and class, and the start of its text. */
 function described(element: Element): string {
   return `<${element.tagName.toLowerCase()} class="${element.getAttribute("class") ?? ""}">${(element.textContent ?? "").slice(0, 32)}`;
-}
-
-/** What of `HOLDS_ITS_LINE` an element carries, its inline `flex-shrink: 0` among them. */
-function holdsItsLine(element: Element): string[] {
-  const held = classOf(element).filter((token) => HOLDS_ITS_LINE.includes(token));
-  return element instanceof HTMLElement && element.style.flexShrink === "0"
-    ? [...held, "flex-shrink: 0"]
-    : held;
 }
 
 /** Why `value` cannot wrap inside its row: it does not break anywhere (`BREAKS_ANYWHERE`), it
