@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -422,22 +423,16 @@ func TestATriggerPointsOnlyAtALensInvokedBefore(t *testing.T) {
 	spec := strings.TrimPrefix(place[0], graphstore.KindArtifact+"/")
 	move := func(fromKind, fromID, toKind, toID string) {
 		t.Helper()
-		tx, err := rig.database.Pool.Begin(ctx)
-		if err != nil {
-			t.Fatalf("begin the move of A: %v", err)
-		}
-		defer tx.Rollback(ctx)
 		moved := graphstore.Tuple{
 			FromKind: graphstore.KindLens, FromID: a.ID, Kind: graphstore.TuplePartOf, ToKind: fromKind, ToID: fromID,
 			At: time.Now().UTC(), Who: model.Actor{Kind: "user", ID: "alice"}, SourceEvent: graphstore.NoEvent,
 		}
 		placed := moved
 		placed.ToKind, placed.ToID, placed.Asserted = toKind, toID, true
-		if err := graphstore.Write(ctx, tx, nil, []graphstore.Tuple{moved, placed}); err != nil {
+		if err := pgx.BeginFunc(ctx, rig.database.Pool, func(tx pgx.Tx) error {
+			return graphstore.Write(ctx, tx, nil, []graphstore.Tuple{moved, placed})
+		}); err != nil {
 			t.Fatalf("move A from %s %s to %s %s: %v", fromKind, fromID, toKind, toID, err)
-		}
-		if err := tx.Commit(ctx); err != nil {
-			t.Fatalf("commit the move of A: %v", err)
 		}
 	}
 	move(graphstore.KindArtifact, spec, refs.BlockNodeKind, rig.requirementNode)
@@ -534,15 +529,15 @@ func TestALensChainOfSixtyIsCutAtFifty(t *testing.T) {
 
 // TestABackwardLensChainOfAHundredAndTwentyAnswersFiftyInAll: a hundred and twenty lenses on the
 // paragraph, invoked in order, each but the last then triggered by the one invoked after it. The
-// store takes no such tuple (graphstore's pointerRules), so the test writes them into graph_tuples
-// by SQL, as a store may hold them from before that rule. The chain's triggers run back against
-// the order invoked, and its one root, the lens triggered by no other on the paragraph, is the
-// last. Its walk lists the last fifty and stops at the seventieth. No lens but a root begins a
-// walk, so the first lens, whose walk would list fifty lenses and meet none the root's walk
-// visited, begins no chain: the read answers one chain, fifty lenses in all, and names where it
-// stopped. TestALensChainOfSixtyIsCutAtFifty holds the same bound where the root is the first lens
-// invoked; here the lenses past the cut come first in the order the read walks the lenses on the
-// node, so only the rule that a root alone begins a chain keeps them out.
+// store refuses such a tuple (graphstore's pointerRules), so the test writes them into
+// graph_tuples by SQL, to test on its own the walk's rule that a root alone begins a chain. The
+// chain's triggers run back against the order invoked, and its one root, the lens triggered by no
+// other on the paragraph, is the last. Its walk lists the last fifty and stops at the seventieth.
+// No lens but a root begins a walk, so the first lens, whose walk would list fifty lenses and meet
+// none the root's walk visited, begins no chain: the read answers one chain, fifty lenses in all,
+// and names where it stopped. TestALensChainOfSixtyIsCutAtFifty holds the same bound where the
+// root is the first lens invoked; here the lenses past the cut come first in the order the read
+// walks the lenses on the node, so only the rule that a root alone begins a chain keeps them out.
 func TestABackwardLensChainOfAHundredAndTwentyAnswersFiftyInAll(t *testing.T) {
 	rig := newReasoningRig(t)
 	invoked := make([]lensInvoked, 0, 120)
@@ -555,10 +550,10 @@ func TestABackwardLensChainOfAHundredAndTwentyAnswersFiftyInAll(t *testing.T) {
 	}
 	if _, err := rig.database.Pool.Exec(context.Background(), `
 		insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event, asserted)
-		select $1, pair.from_id, $2, $1, pair.to_id, now(), '{"kind":"user","id":"alice"}', 0, true
+		select $1, pair.from_id, $2, $1, pair.to_id, now(), '{"kind":"user","id":"alice"}', $5, true
 		from unnest($3::text[], $4::text[]) with ordinality as pair(from_id, to_id, position)
 		order by pair.position
-	`, graphstore.KindLens, graphstore.TupleTriggeredBy, from, to); err != nil {
+	`, graphstore.KindLens, graphstore.TupleTriggeredBy, from, to, graphstore.NoEvent); err != nil {
 		t.Fatalf("point each lens but the last at the one invoked after it: %v", err)
 	}
 	read := rig.lenses(rig.paragraph, "alice")

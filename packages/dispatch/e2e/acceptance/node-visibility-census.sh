@@ -336,7 +336,7 @@ take_census() {
 # for a server it hands a NATS (DISPATCH_E2E_NATS_URLS), and that publisher is the one writer of a
 # role's node and its page beside the row that addresses the role (outbox.deliveredGraph).
 start_nats() {
-  local pid
+  local pid line
   mkdir -p "$work/bin" "$work/nats-store"
   go -C "$tree/packages/envoy" build -o "$work/bin/natsd" ./internal/testnats/cmd/natsd >"$work/natsd-build.log" 2>&1 ||
     fail setup "build packages/envoy's ./internal/testnats/cmd/natsd" "go build exited non-zero: $(tail -n 20 "$work/natsd-build.log")"

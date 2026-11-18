@@ -305,12 +305,10 @@ func invokedBefore(a, b *lensRow) int {
 		}
 		return 1
 	}
-	if a.invoked != nil {
-		if order := cmp.Compare(*a.invoked, *b.invoked); order != 0 {
-			return order
-		}
+	if a.invoked == nil {
+		return strings.Compare(a.id, b.id)
 	}
-	return strings.Compare(a.id, b.id)
+	return cmp.Or(cmp.Compare(*a.invoked, *b.invoked), strings.Compare(a.id, b.id))
 }
 
 // lensAddresses is the address of each lens ids names.

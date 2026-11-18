@@ -370,6 +370,7 @@ func (s *server) invokeLens(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := uuid.NewString()
+	address := lensAddress(id)
 	lens := reasoningNode{
 		kind: graphstore.KindLens, id: id, visibility: input.Visibility,
 		parentKind: onEnd.kind, parentID: onEnd.id,
@@ -384,8 +385,9 @@ func (s *server) invokeLens(w http.ResponseWriter, r *http.Request) {
 		lens.attributes = map[string]any{graphstore.AttributeVerdict: *verdict}
 	}
 	var triggeredBy *string
-	// The ends a refusal of the lens's triggered_by names: the lens, then the lens it names.
-	ends := []namedEnd{{storedEnd: storedEnd{kind: graphstore.KindLens, id: id}, address: lensAddress(id)}}
+	// The lens a refusal of the lens's triggered_by names after the lens; a lens invoked with no
+	// trigger leaves it the zero end, whose empty address NamedAt reads as not named.
+	var triggerNamed namedEnd
 	if input.TriggeredBy != nil {
 		trigger, triggerEnd, err := findEndUnderIssue(ctx, tx, reader, key, *input.TriggeredBy)
 		if err != nil {
@@ -397,7 +399,7 @@ func (s *server) invokeLens(w http.ResponseWriter, r *http.Request) {
 			ToKind: triggerEnd.kind, ToID: triggerEnd.id,
 		})
 		triggeredBy = &trigger.Ref
-		ends = append(ends, namedEnd{storedEnd: triggerEnd, address: trigger.Ref})
+		triggerNamed = namedEnd{storedEnd: triggerEnd, address: trigger.Ref}
 	}
 	nodes := []reasoningNode{lens}
 	for _, text := range input.Findings {
@@ -407,7 +409,8 @@ func (s *server) invokeLens(w http.ResponseWriter, r *http.Request) {
 		reasoningCaller: caller, issue: key, at: at, nodes: nodes,
 	})
 	if err != nil {
-		refusal, _ := refusalNamed(err, ends...)
+		// The ends a refusal of the lens's triggered_by names: the lens, then the lens it names.
+		refusal, _ := refusalNamed(err, namedEnd{storedEnd: storedEnd{kind: graphstore.KindLens, id: id}, address: address}, triggerNamed)
 		s.writeHandlerError(w, refusal)
 		return
 	}
@@ -417,7 +420,7 @@ func (s *server) invokeLens(w http.ResponseWriter, r *http.Request) {
 	}
 	invoked := written[0]
 	answer := lensInvoked{
-		Address: lensAddress(id), ID: id, Kind: kind.ID, On: cmp.Or(on.Ref, input.On),
+		Address: address, ID: id, Kind: kind.ID, On: cmp.Or(on.Ref, input.On),
 		Verdict: verdict, TriggeredBy: triggeredBy, Author: writtenAuthor(invoked),
 		CreatedAt: invoked.MadeAt, State: invoked.State, Visibility: invoked.Visibility,
 		Findings: make([]lensFinding, 0, len(input.Findings)),

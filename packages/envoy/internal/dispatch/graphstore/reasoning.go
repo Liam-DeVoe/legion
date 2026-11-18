@@ -390,7 +390,8 @@ type invocation struct {
 }
 
 // before is whether a lens at a was invoked before a lens at b; a lens at the same place as
-// another, which only the lens itself is, was not.
+// another - the lens itself, or two lenses neither the store nor the write places (seq 0, written
+// -1) - was not, so before answers false both ways.
 func (a invocation) before(b invocation) bool {
 	if a.seq > 0 || b.seq > 0 {
 		return a.seq > 0 && (b.seq == 0 || a.seq < b.seq)
@@ -789,8 +790,7 @@ func (e pointerEnds) breach(rule *pointerRule, tuple *Tuple, far string) error {
 // at an address names it by instead (InvalidPointerError.NamedAt). That route read the far end for
 // its caller before the write, so the refusal names nothing the caller may not see.
 func (e pointerEnds) acrossProjects(rule *pointerRule, tuple *Tuple, near, far string) error {
-	foreign := keyedEnd{kind: tuple.ToKind, id: tuple.ToID, far: true,
-		before: "the " + e.word(rule.to, tuple.ToKind, tuple.ToID) + " ", after: " of project " + far}
+	foreign := e.keyedFar(rule, tuple, " of project "+far)
 	return &InvalidPointerError{
 		Kind: tuple.Kind, From: e.named(rule.from, tuple.FromKind, tuple.FromID) + " of project " + near,
 		To: foreign.named(tuple.ToID), Rule: rule.allowed() + " of the same project", keyed: []keyedEnd{foreign},
@@ -802,13 +802,20 @@ func (e pointerEnds) acrossProjects(rule *pointerRule, tuple *Tuple, near, far s
 // end by the id the store keys it by, which the route that read it at an address names it by
 // instead (InvalidPointerError.NamedAt), as acrossProjects does.
 func (e pointerEnds) inRetiredDocument(rule *pointerRule, tuple *Tuple) error {
-	retired := keyedEnd{kind: tuple.ToKind, id: tuple.ToID, far: true,
-		before: "the " + e.word(rule.to, tuple.ToKind, tuple.ToID) + " ", after: " of a retired document"}
+	retired := e.keyedFar(rule, tuple, " of a retired document")
 	return &InvalidPointerError{
 		Kind: tuple.Kind, From: e.named(rule.from, tuple.FromKind, tuple.FromID), To: retired.named(tuple.ToID),
 		Rule:  rule.allowed() + " of a document that is not retired, since nobody runs a retired document's checks",
 		keyed: []keyedEnd{retired},
 	}
+}
+
+// keyedFar is the far end of tuple as a refusal under rule names it, by the id the store keys it
+// by: "the ", the far end's word (word), the id, and then after - " of project FAR" for
+// acrossProjects, " of a retired document" for inRetiredDocument.
+func (e pointerEnds) keyedFar(rule *pointerRule, tuple *Tuple, after string) keyedEnd {
+	return keyedEnd{kind: tuple.ToKind, id: tuple.ToID, far: true,
+		before: "the " + e.word(rule.to, tuple.ToKind, tuple.ToID) + " ", after: after}
 }
 
 // notInvokedBefore is the refusal of tuple, whose rule holds its far end to a lens invoked before

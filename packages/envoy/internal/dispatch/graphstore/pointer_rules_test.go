@@ -445,24 +445,8 @@ func TestTheStoreHoldsARisksCheckToTheRisksProject(t *testing.T) {
 	fixture := newPointerFixture(t)
 	database := fixture.database
 	ctx := context.Background()
-	// checkOf is the check block chk of the spec of a new issue of project, number number in it.
-	checkOf := func(project string, number int) string {
-		t.Helper()
-		if project != pointerProject {
-			if _, err := database.Pool.Exec(ctx,
-				`insert into projects (key, name, default_assignee) values ($1, 'Elsewhere', 'alice')`, project); err != nil {
-				t.Fatalf("create the project %s: %v", project, err)
-			}
-		}
-		issue := fmt.Sprintf("%s-%d", project, number)
-		artifact, refKey := pointerSpec(t, ctx, database, project, issue, number, "A check of its own")
-		check := pointerNode(blockKind, refKey+"#chk")
-		check.Project = project
-		writeInOneTransaction(t, ctx, database.Pool, []Node{check}, nil, "the check of "+issue)
-		pointerBlockRow(t, ctx, database, artifact, "chk", check.ID, BlockTypeCheck)
-		return check.ID
-	}
-	ownProjects, foreign := checkOf(pointerProject, 2), checkOf("FAR", 1)
+	_, ownProjects := checkOf(t, ctx, database, pointerProject, 2)
+	_, foreign := checkOf(t, ctx, database, "FAR", 1)
 	const (
 		refused = "the prevented_by tuple from a risk of project " + pointerProject + " at the check block %s of project FAR " +
 			"breaks its type rule: prevented_by points from a risk at a check block of the same project"
@@ -491,27 +475,7 @@ func TestTheStoreHoldsARisksCheckToTheRisksProject(t *testing.T) {
 		}},
 	} {
 		t.Run(write.name, func(t *testing.T) {
-			tx, err := database.Pool.Begin(ctx)
-			if err != nil {
-				t.Fatalf("begin: %v", err)
-			}
-			defer tx.Rollback(ctx)
-			err = write.write(ctx, tx)
-			requirePointerRefused(t, err, fmt.Sprintf(refused, foreign))
-			var refusal *InvalidPointerError
-			errors.As(err, &refusal)
-			if named, ok := refusal.NamedAt(blockKind, foreign, address); !ok || named.Error() != fmt.Sprintf(refused, address) {
-				t.Errorf("the refusal named at %s reads %v (named %t), want %q", address, named, ok, fmt.Sprintf(refused, address))
-			}
-			if other, ok := refusal.NamedAt(blockKind, ownProjects, address); ok {
-				t.Errorf("the refusal named at another far end reads %q, want it not named", other.Error())
-			}
-			if err := tx.Rollback(ctx); err != nil {
-				t.Fatalf("roll the refused write back: %v", err)
-			}
-			if after := countTuples(t, ctx, database); after != before {
-				t.Errorf("the log holds %d tuples after the refused write, %d before it", after, before)
-			}
+			requireCheckRefused(t, ctx, database, write.write, refused, foreign, address, ownProjects, before)
 		})
 	}
 	requireNoNode(t, ctx, database, KindRisk, "risk-astray-project")
@@ -660,11 +624,8 @@ func TestTheStoreHoldsARisksCheckToADocumentThatIsNotRetired(t *testing.T) {
 	fixture := newPointerFixture(t)
 	database := fixture.database
 	ctx := context.Background()
-	artifact, refKey := pointerSpec(t, ctx, database, pointerProject, pointerProject+"-3", 3, "A document that is retired")
-	check := pointerNode(blockKind, refKey+"#chk")
-	writeInOneTransaction(t, ctx, database.Pool, []Node{check}, nil, "the check of the document retired below")
-	pointerBlockRow(t, ctx, database, artifact, "chk", check.ID, BlockTypeCheck)
-	standing := pointerTuple(KindRisk, riskAstray, TuplePreventedBy, blockKind, check.ID)
+	artifact, check := checkOf(t, ctx, database, pointerProject, 3)
+	standing := pointerTuple(KindRisk, riskAstray, TuplePreventedBy, blockKind, check)
 	writeInOneTransaction(t, ctx, database.Pool, nil, []Tuple{standing}, "a risk prevented by the check before its document is retired")
 	requireHolds(t, ctx, database, standing)
 	// The document retired as docs.RetireDocument retires it, its retired_at set and its role
@@ -687,39 +648,19 @@ func TestTheStoreHoldsARisksCheckToADocumentThatIsNotRetired(t *testing.T) {
 		write func(context.Context, pgx.Tx) error
 	}{
 		{"Write, a stored risk at a check of a retired document",
-			tuplesOnly(pointerTuple(KindRisk, riskPlaced, TuplePreventedBy, blockKind, check.ID))},
+			tuplesOnly(pointerTuple(KindRisk, riskPlaced, TuplePreventedBy, blockKind, check))},
 		{"Write, a risk written with its check of a retired document", func(ctx context.Context, tx pgx.Tx) error {
 			return Write(ctx, tx, []Node{pointerNode(KindRisk, "risk-astray-retired")}, []Tuple{
 				pointerTuple(KindRisk, "risk-astray-retired", TuplePartOf, KindLens, lensPreMortem),
-				pointerTuple(KindRisk, "risk-astray-retired", TuplePreventedBy, blockKind, check.ID),
+				pointerTuple(KindRisk, "risk-astray-retired", TuplePreventedBy, blockKind, check),
 			})
 		}},
 		{"Retarget, from the risk's check to one of a retired document", func(ctx context.Context, tx pgx.Tx) error {
-			return Retarget(ctx, tx, held, blockKind, check.ID)
+			return Retarget(ctx, tx, held, blockKind, check)
 		}},
 	} {
 		t.Run(write.name, func(t *testing.T) {
-			tx, err := database.Pool.Begin(ctx)
-			if err != nil {
-				t.Fatalf("begin: %v", err)
-			}
-			defer tx.Rollback(ctx)
-			err = write.write(ctx, tx)
-			requirePointerRefused(t, err, fmt.Sprintf(refused, check.ID))
-			var refusal *InvalidPointerError
-			errors.As(err, &refusal)
-			if named, ok := refusal.NamedAt(blockKind, check.ID, address); !ok || named.Error() != fmt.Sprintf(refused, address) {
-				t.Errorf("the refusal named at %s reads %v (named %t), want %q", address, named, ok, fmt.Sprintf(refused, address))
-			}
-			if other, ok := refusal.NamedAt(blockKind, fixture.check, address); ok {
-				t.Errorf("the refusal named at another far end reads %q, want it not named", other.Error())
-			}
-			if err := tx.Rollback(ctx); err != nil {
-				t.Fatalf("roll the refused write back: %v", err)
-			}
-			if after := countTuples(t, ctx, database); after != before {
-				t.Errorf("the log holds %d tuples after the refused write, %d before it", after, before)
-			}
+			requireCheckRefused(t, ctx, database, write.write, refused, check, address, fixture.check, before)
 		})
 	}
 	requireNoNode(t, ctx, database, KindRisk, "risk-astray-retired")
@@ -729,6 +670,56 @@ func TestTheStoreHoldsARisksCheckToADocumentThatIsNotRetired(t *testing.T) {
 // tuplesOnly is a write of tuples alone, through Write.
 func tuplesOnly(tuples ...Tuple) func(context.Context, pgx.Tx) error {
 	return func(ctx context.Context, tx pgx.Tx) error { return Write(ctx, tx, nil, tuples) }
+}
+
+// checkOf makes issue number number of project, whose spec holds the check block chk with the
+// document_blocks row its type is read off, and answers the spec's id and the check's: a project
+// other than pointerProject is made first.
+func checkOf(t *testing.T, ctx context.Context, database *store.Store, project string, number int) (artifact, check string) {
+	t.Helper()
+	if project != pointerProject {
+		if _, err := database.Pool.Exec(ctx,
+			`insert into projects (key, name, default_assignee) values ($1, 'Elsewhere', 'alice')`, project); err != nil {
+			t.Fatalf("create the project %s: %v", project, err)
+		}
+	}
+	issue := fmt.Sprintf("%s-%d", project, number)
+	artifact, refKey := pointerSpec(t, ctx, database, project, issue, number, "A check of its own")
+	node := pointerNode(blockKind, refKey+"#chk")
+	node.Project = project
+	writeInOneTransaction(t, ctx, database.Pool, []Node{node}, nil, "the check of "+issue)
+	pointerBlockRow(t, ctx, database, artifact, "chk", node.ID, BlockTypeCheck)
+	return artifact, node.ID
+}
+
+// requireCheckRefused runs write in a transaction of its own and fails unless the store refuses
+// it before anything is appended: an InvalidPointerError reading refused (a format of one %s) at
+// the check block check, which NamedAt names at address, naming no other far end, other, there,
+// and the log holding before tuples once the write is rolled back.
+func requireCheckRefused(t *testing.T, ctx context.Context, database *store.Store, write func(context.Context, pgx.Tx) error,
+	refused, check, address, other string, before int) {
+	t.Helper()
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	err = write(ctx, tx)
+	requirePointerRefused(t, err, fmt.Sprintf(refused, check))
+	var refusal *InvalidPointerError
+	errors.As(err, &refusal)
+	if named, ok := refusal.NamedAt(blockKind, check, address); !ok || named.Error() != fmt.Sprintf(refused, address) {
+		t.Errorf("the refusal named at %s reads %v (named %t), want %q", address, named, ok, fmt.Sprintf(refused, address))
+	}
+	if named, ok := refusal.NamedAt(blockKind, other, address); ok {
+		t.Errorf("the refusal named at another far end reads %q, want it not named", named.Error())
+	}
+	if err := tx.Rollback(ctx); err != nil {
+		t.Fatalf("roll the refused write back: %v", err)
+	}
+	if after := countTuples(t, ctx, database); after != before {
+		t.Errorf("the log holds %d tuples after the refused write, %d before it", after, before)
+	}
 }
 
 func retracted(tuple Tuple) Tuple {

@@ -459,6 +459,22 @@ func IndexBlocks(
 	return moved, true, write, nil
 }
 
+// CurrentPreventionsSQL is the read of every prevented_by tuple the store asserts now at a block
+// whose id is one of the SQL array blocks, each a check that covers a risk, as checked: the newest
+// tuple of each relation into those blocks, kept while it asserts (graphstore.CurrentTupleRead).
+// columns is what it answers, written over checked's from_kind, from_id, kind, to_kind and to_id.
+// The index pass retracts those tuples at the blocks a version drops (retractGonePointers), and a
+// retirement at the blocks of the document it retires (docs' retiredPreventions).
+func CurrentPreventionsSQL(columns, blocks string) string {
+	return `select ` + columns + `
+		from (
+			` + graphstore.CurrentTupleRead(`t.to_kind, t.to_id, t.kind, t.from_kind, t.from_id`,
+		`t.from_kind, t.from_id, t.kind, t.to_kind, t.to_id, t.asserted`,
+		`t.to_kind = '`+BlockNodeKind+`' and t.to_id = any(`+blocks+`) and t.kind = '`+graphstore.TuplePreventedBy+`'`) + `
+		) checked
+		where checked.asserted`
+}
+
 // retractGonePointers is the retraction of every pointer tuple a block the version no longer holds
 // leaves behind (spec requirement r-constraint-risk): each asserted prevented_by whose
 // far end is one of the blocks at addresses, a check that covered a risk, and each asserted
@@ -477,12 +493,7 @@ func retractGonePointers(ctx context.Context, tx pgx.Tx, addresses []string, at 
 	}
 	const columns = `t.from_kind, t.from_id, t.kind, t.to_kind, t.to_id, t.asserted`
 	rows, err := tx.Query(ctx, `
-		select checked.from_kind, checked.from_id, checked.kind, checked.to_kind, checked.to_id, checked.to_id
-		from (
-			`+graphstore.CurrentTupleRead(`t.to_kind, t.to_id, t.kind, t.from_kind, t.from_id`, columns,
-		`t.to_kind = '`+BlockNodeKind+`' and t.to_id = any($1) and t.kind = '`+graphstore.TuplePreventedBy+`'`)+`
-		) checked
-		where checked.asserted
+		`+CurrentPreventionsSQL(`checked.from_kind, checked.from_id, checked.kind, checked.to_kind, checked.to_id, checked.to_id`, `$1`)+`
 		union all
 		select held.from_kind, held.from_id, held.kind, held.to_kind, held.to_id, held.from_id
 		from (

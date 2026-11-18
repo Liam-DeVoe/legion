@@ -2450,10 +2450,9 @@ export const dispatchToolSpecs = [
       "risk, of any issue of the issue's project " +
       "(dispatch://KEY-1/artifact/verification-md#b-<id>); a block that is no check, a check " +
       "of another project and a check of a retired document are 400 INVALID_POINTER, the last " +
-      "two naming the check. Add a " +
-      "second check, or move one, with dispatch pointer. A lens outside the issue, and a lens " +
-      "or a check you may not see, are 404 NOT_FOUND. The result names the risk's " +
-      "dispatch://risk/<uuid> address. " +
+      "two naming the check. Add a second check, or move one, with dispatch pointer. A lens " +
+      "outside the issue, and a lens or a check you may not see, are 404 NOT_FOUND. The result " +
+      "names the risk's dispatch://risk/<uuid> address. " +
       `${REASONING_WRITE_RULE} ${ISSUE_REFERENCE}`,
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE),
@@ -2538,23 +2537,21 @@ export const dispatchToolSpecs = [
       "Append, retract or retarget one pointer out of a node of an issue. kind is has_kind (a " +
       "lens to its kind, from and to being lens_kind ids such as trade-off), triggered_by (a " +
       "lens to a lens of the issue invoked before it, whose finding asked for it), " +
-      "constrained_by (a requirement " +
-      "block of the issue's spec to a constraint of the issue or of the catalogue, " +
-      "dispatch://constraint/<uuid>) or prevented_by (a risk to a check block that covers it, " +
-      "of any issue of the issue's project). action append adds a pointer at to, retract " +
-      "removes the one at to, and retarget moves the one at from to to in one write. node is " +
-      "the dispatch:// address of the node the pointer goes out of. Dispatch holds every " +
-      "pointer to its type rule: a far end of the wrong type, a prevented_by at a check of " +
+      "constrained_by (a requirement block of the issue's spec to a constraint of the issue or " +
+      "of the catalogue, dispatch://constraint/<uuid>) or prevented_by (a risk to a check block " +
+      "that covers it, of any issue of the issue's project). action append adds a pointer at to, " +
+      "retract removes the one at to, and retarget moves the one at from to to in one write. " +
+      "node is the dispatch:// address of the node the pointer goes out of. Dispatch holds " +
+      "every pointer to its type rule: a far end of the wrong type, a prevented_by at a check of " +
       "another project or of a retired document (naming the check), a triggered_by at the lens " +
       "itself or at a lens invoked after it (naming both lenses), so no trigger closes a " +
-      "cycle, and a lens left with no " +
-      "kind are refused with 400 INVALID_POINTER, and a second has_kind on a lens, or a " +
-      "retarget of a pre-mortem's kind away from pre-mortem, with 409 POINTER_ALREADY_ASSERTED. " +
-      "A node outside the issue, a far end outside it (but a has_kind's lens_kind, a " +
-      "constrained_by's constraint of the catalogue, which stand under no issue, and a " +
-      "prevented_by's check of another issue of the project), one you may not see, and a " +
-      "pointer to retract or retarget that the node does not hold are 404 NOT_FOUND. No " +
-      `pointer moves a node to another parent. ${REASONING_WRITE_RULE} ${ISSUE_REFERENCE}`,
+      "cycle, and a lens left with no kind are refused with 400 INVALID_POINTER, and a second " +
+      "has_kind on a lens, or a retarget of a pre-mortem's kind away from pre-mortem, with 409 " +
+      "POINTER_ALREADY_ASSERTED. A node outside the issue, a far end outside it (but a " +
+      "has_kind's lens_kind, a constrained_by's constraint of the catalogue, which stand under " +
+      "no issue, and a prevented_by's check of another issue of the project), one you may not " +
+      "see, and a pointer to retract or retarget that the node does not hold are 404 NOT_FOUND. " +
+      `No pointer moves a node to another parent. ${REASONING_WRITE_RULE} ${ISSUE_REFERENCE}`,
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE),
       node: z.string({ min: 1 }).describe(`The node the pointer goes out of: ${NODE_UNDER_ISSUE}.`),
@@ -2708,11 +2705,10 @@ export const dispatchToolSpecs = [
       "with 400 ARTIFACT_INPUT, naming the entry by its position from 1 and its risk number, " +
       "and an entry naming a check of another project or of a retired document with 400 " +
       "INVALID_POINTER, naming the entry, its risk and the check, with preview as without it; " +
-      "nothing is written. " +
-      "preview answers what the conversion would write and writes nothing; run it first. A " +
-      "document converted already is answered as such, naming its lens, and nothing is " +
-      "written. The result names the lens's dispatch://lens/<uuid> address and each risk's " +
-      "dispatch://risk/<uuid> address. The conversion appends one event, the document's " +
+      "nothing is written. preview answers what the conversion would write and writes nothing; " +
+      "run it first. A document converted already is answered as such, naming its lens, and " +
+      "nothing is written. The result names the lens's dispatch://lens/<uuid> address and each " +
+      "risk's dispatch://risk/<uuid> address. The conversion appends one event, the document's " +
       "document.retired, whose reason names the lens; a refused call stores nothing. " +
       ISSUE_REFERENCE,
     arguments: (z) => ({

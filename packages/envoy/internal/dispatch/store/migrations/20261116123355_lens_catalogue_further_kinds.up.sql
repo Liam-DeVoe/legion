@@ -8,18 +8,20 @@
 -- the kind's source (`standard`) and that source's `reference`. A kind no source it read supports
 -- is not here. The pull request body gives the reading, kind by kind, with each source.
 --
--- `chestertons-fence` is the kind the lens design cited Chesterton's fence for under `second-order`:
--- the passage is about knowing why a thing is there before it is removed, which is a kind of its
--- own, so `second-order` took Bastiat (20261116123354) and Chesterton stands here.
+-- `chestertons-fence` is the kind that the lens research the catalogue is seeded from (a record
+-- outside this repository) cited Chesterton's fence for under `second-order`: the passage is about
+-- knowing why a thing is there before it is removed, which is a kind of its own, so `second-order`
+-- took Bastiat (20261116123354) and Chesterton stands here.
 --
 -- Every catalogue constraint is the far end of exactly one constrained_by tuple from a lens_kind
--- node, and this writes no other constraint node, so the closed-project work's project clause reads
--- every node here as the catalogue, which every viewer sees. Every node is project-visible and
--- live, in no project and between no parties, made by the catalogue's writer, and each
--- constraint's id is a uuid fixed here, so running this file again writes the same rows: each node
--- upsert moves every column but `made_at` and `made_by`, and each tuple insert appends only a fact
--- the node does not already carry. No event records it, so every tuple carries the sentinel 0. No
--- type node moves, so the block schema the server installs does not.
+-- node, and this writes no other constraint node, so cybermonklabs/legion#4177's project clause
+-- (the catalogue list of its refs/catalogue.go) reads every node here as the catalogue, which every
+-- viewer sees. Every node is project-visible and live, in no project and between no parties, made
+-- by the catalogue's writer, and each constraint's id is a uuid fixed here, so running this file
+-- again writes the same rows: each node upsert moves every column but `made_at` and `made_by`, and
+-- each tuple insert appends only a fact the node does not already carry. No event records it, so
+-- every tuple carries the sentinel 0. No type node moves, so the block schema the server installs
+-- does not.
 with change as (
   select now() as at, '{"kind": "system", "id": "lens-catalogue"}'::jsonb as writer
 ),

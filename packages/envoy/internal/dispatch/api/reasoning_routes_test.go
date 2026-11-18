@@ -594,12 +594,7 @@ func TestARetiredDocumentsChecksPreventNoRisk(t *testing.T) {
 		t.Fatalf("before the retirement the lens read answers the risks prevented by %v", got)
 	}
 
-	var document string
-	if err := rig.database.Pool.QueryRow(ctx, `select id::text from artifacts where ref_key = $1`,
-		strings.TrimSuffix(rig.otherIssueCheckNode, "#k9")).Scan(&document); err != nil {
-		t.Fatalf("read the second issue's Verification document: %v", err)
-	}
-	retirement := retireTestDocument(t, rig.database, document)
+	retirement := retireTestDocument(t, rig.database, rig.otherIssueDocumentID)
 
 	if got := rig.current(graphstore.KindRisk, retiring.ID, graphstore.TuplePreventedBy); len(got) != 0 {
 		t.Errorf("after the retirement %s is prevented by %v, want nothing", retiring.Address, got)

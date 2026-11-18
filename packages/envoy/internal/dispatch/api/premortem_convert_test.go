@@ -130,8 +130,9 @@ type premortemRig struct {
 	// documentID the id of its artifacts row.
 	slug, refKey, address, documentID string
 	// otherIssueCheck is a check of the second issue, a dispatch:// address, and each node id the
-	// id a prevented_by tuple names its check by.
-	otherIssueCheck                                 string
+	// id a prevented_by tuple names its check by; otherIssueDocumentID is the id of the artifacts
+	// row of the second issue's Verification document, which holds that check.
+	otherIssueCheck, otherIssueDocumentID           string
 	checkNode, secondCheckNode, otherIssueCheckNode string
 }
 
@@ -154,7 +155,7 @@ func newPremortemRig(t *testing.T) premortemRig {
 	otherVerification := uploadDocument(t, rig.handler, "/api/v1/issues/"+rig.otherIssue, "verification.md",
 		checkServing("k9", refs.BlockRef("dispatch://"+rig.otherIssue+"/spec", "r9")))
 	rig.otherIssueCheck = refs.BlockRef("dispatch://"+rig.otherIssue+"/artifact/"+otherVerification.Artifact.Slug, "k9")
-	rig.otherIssueCheckNode = otherVerification.Artifact.RefKey + "#k9"
+	rig.otherIssueCheckNode, rig.otherIssueDocumentID = otherVerification.Artifact.RefKey+"#k9", otherVerification.Artifact.ID
 	premortem := uploadDocument(t, rig.handler, "/api/v1/issues/"+rig.issue, "graph-premortem.md", rig.capture.Document.Markdown)
 	rig.slug, rig.refKey, rig.documentID = premortem.Artifact.Slug, premortem.Artifact.RefKey, premortem.Artifact.ID
 	rig.address = "dispatch://" + rig.issue + "/artifact/" + rig.slug

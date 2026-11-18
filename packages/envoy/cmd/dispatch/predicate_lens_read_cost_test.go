@@ -981,10 +981,10 @@ const predicateCostStoreMigration = "packages/envoy/internal/dispatch/store/migr
 // store against a base from before it.
 func predicateCostBaseHoldsTheStore(t *testing.T) {
 	t.Helper()
-	root := gitOutput(t, ".", "rev-parse", "--show-toplevel")
 	commit := testbaseline.Commit(t)
 	named := fmt.Sprintf("the commit %s=%s names", testbaseline.Variable, strings.TrimSpace(os.Getenv(testbaseline.Variable)))
-	if err := exec.Command("git", "-C", root, "cat-file", "-e", commit+":"+predicateCostStoreMigration).Run(); err != nil {
+	// git reads <commit>:<path> from the repository's root whatever directory it runs in.
+	if err := exec.Command("git", "cat-file", "-e", commit+":"+predicateCostStoreMigration).Run(); err != nil {
 		t.Fatalf("the base %s (%s) holds no migration %s (graph_store), so it is a build with no store and c-read-cost would measure nothing this child changed: set %s to the release this branch lands after, the merge base with the branch of cybermonklabs/legion#4173",
 			commit, named, predicateCostStoreMigration, testbaseline.Variable)
 	}

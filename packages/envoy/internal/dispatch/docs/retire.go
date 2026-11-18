@@ -130,28 +130,24 @@ func RetireDocument(ctx context.Context, tx pgx.Tx, artifactID string, actor mod
 }
 
 // retiredPreventions is the retraction of every prevented_by tuple the store asserts at a block of
-// the document artifactID, stored at refKey (spec requirement r-constraint-risk): nobody
-// runs a retired document's checks, so no risk stays prevented by one, as the index pass retracts
-// each prevented_by at a block a version drops (refs' retractGonePointers). The blocks are those
-// the document's document_blocks rows name, which a retirement keeps; a block a version dropped
-// took its pointers with it then. A constrained_by out of a requirement of the document stays:
-// what the requirement was held to is the record of the document, which stays readable. Each
-// retraction is dated at and signed by actor, the retirement's own time and writer, and rides with
-// the facts the retirement states under its document.retired event (writeRetiredNode,
-// graphstore.Caused), in the retirement's transaction.
+// the document artifactID, stored at refKey (spec requirement r-constraint-risk): nobody runs a
+// retired document's checks, so no risk stays prevented by one, as the index pass retracts each
+// prevented_by at a block a version drops (refs' retractGonePointers), through the same read
+// (refs.CurrentPreventionsSQL). The blocks are those the document's document_blocks rows name,
+// which a retirement keeps; a block a version dropped took its pointers with it then. A
+// constrained_by out of a requirement of the document stays: what the requirement was held to is
+// the record of the document, which stays readable. Each retraction is dated at and signed by
+// actor, the retirement's own time and writer, and rides with the facts the retirement states
+// under its document.retired event (writeRetiredNode, graphstore.Caused), in the retirement's
+// transaction.
 //
 // It logs how many it retracts, with the document's address, and answers the number to no reader:
 // the risk a check covered may be one only its author may see, and a count served beside the
 // document would tell another reader it is there.
 func retiredPreventions(ctx context.Context, tx pgx.Tx, artifactID, refKey string, at time.Time, actor model.Actor) ([]graphstore.Tuple, error) {
 	rows, err := tx.Query(ctx, `
-		select checked.from_kind, checked.from_id, checked.to_id
-		from (
-			`+graphstore.CurrentTupleRead(`t.to_kind, t.to_id, t.kind, t.from_kind, t.from_id`, `t.from_kind, t.from_id, t.to_id, t.asserted`,
-		`t.to_kind = '`+refs.BlockNodeKind+`' and t.kind = '`+graphstore.TuplePreventedBy+`'
-				and t.to_id = any(array(select held.node_id from document_blocks held where held.artifact_id = $1::uuid))`)+`
-		) checked
-		where checked.asserted
+		`+refs.CurrentPreventionsSQL(`checked.from_kind, checked.from_id, checked.to_id`,
+		`array(select held.node_id from document_blocks held where held.artifact_id = $1::uuid)`)+`
 		order by checked.to_id, checked.from_kind, checked.from_id
 	`, artifactID)
 	if err != nil {

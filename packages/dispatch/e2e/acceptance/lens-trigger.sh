@@ -270,15 +270,13 @@ refused_trigger() {
   pointer "lens/$node_id" "$(jq -cn --arg t "$to" '{kind: "triggered_by", action: "append", to: $t}')"
   cp "$work/body" "$work/refusal.json"
   refused_status="$status"
-  person_send GET "/api/v1/references?from=$(q "$node")&kind=triggered_by"
-  want_status 200 "$section" "read the triggered_by tuples out of $node after $what"
+  tuples_of "$section" "read the tuples out of $node after $what" "$node" "$work/tuples-after.json"
   stored="$(jq -c --arg n "$node" --arg h "$held" \
-    '[.edges[] | select(.node.ref != $h) | {kind, from: $n, to: .node.ref, created_at}]' "$work/body")" ||
-    fail "$section" "read the triggered_by tuples out of $node after $what" "unreadable: $(body)"
+    '[.edges[] | select(.kind == "triggered_by" and .node.ref != $h) | {kind, from: $n, to: .node.ref, created_at}]' "$work/body")" ||
+    fail "$section" "read the tuples out of $node after $what" "unreadable: $(body)"
   [[ "$stored" == "[]" ]] ||
     fail "$section" "$what is refused" \
       "the tuple was stored: $stored (HTTP $refused_status: $(<"$work/refusal.json"))"
-  tuples_of "$section" "read the tuples out of $node after $what" "$node" "$work/tuples-after.json"
   cmp -s "$work/tuples-before.json" "$work/tuples-after.json" ||
     fail "$section" "after $what the store holds no tuple more out of $node" \
       "before: $(<"$work/tuples-before.json") after: $(<"$work/tuples-after.json")"

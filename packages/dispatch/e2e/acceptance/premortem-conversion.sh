@@ -88,7 +88,8 @@ readonly fixture
 stamp="$(date +%s)-$$"
 readonly stamp
 readonly session="premortem-conversion-$stamp"
-# The ten kinds the lens design records, which the catalogue's migration seeds.
+# The ten kinds the catalogue's migration seeds, those of the lens research the catalogue is seeded
+# from (a record outside this repository).
 readonly seeded_kinds='["best-practice","boring-solution","botec","conway","first-principles","inversion","pre-mortem","reversibility","second-order","trade-off"]'
 readonly lens_kind=dispatch://lens_kind/pre-mortem
 

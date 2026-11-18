@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -69,16 +71,10 @@ func TestARetirementRetractsThePreventedByOfItsChecks(t *testing.T) {
 	}
 	write := func(what string, nodes []graphstore.Node, tuples []graphstore.Tuple) {
 		t.Helper()
-		tx, err := database.Pool.Begin(ctx)
-		if err != nil {
-			t.Fatalf("begin %s: %v", what, err)
-		}
-		defer tx.Rollback(ctx)
-		if err := graphstore.Write(ctx, tx, nodes, tuples); err != nil {
+		if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+			return graphstore.Write(ctx, tx, nodes, tuples)
+		}); err != nil {
 			t.Fatalf("write %s: %v", what, err)
-		}
-		if err := tx.Commit(ctx); err != nil {
-			t.Fatalf("commit %s: %v", what, err)
 		}
 	}
 	write("the blocks, the risks and the constraint", []graphstore.Node{
@@ -102,17 +98,13 @@ func TestARetirementRetractsThePreventedByOfItsChecks(t *testing.T) {
 		tuple(refs.BlockNodeKind, requirement, graphstore.TupleConstrainedBy, graphstore.KindConstraint, constraint),
 	})
 
-	tx, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the retirement: %v", err)
-	}
-	defer tx.Rollback(ctx)
-	retirement, err := RetireDocument(ctx, tx, retiredID, alice, "The test retires the document that holds the check.")
-	if err != nil {
+	var retirement Retirement
+	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+		var err error
+		retirement, err = RetireDocument(ctx, tx, retiredID, alice, "The test retires the document that holds the check.")
+		return err
+	}); err != nil {
 		t.Fatalf("retire the document: %v", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit the retirement: %v", err)
 	}
 	var retiredAt time.Time
 	if err := database.Pool.QueryRow(ctx, `select retired_at from artifacts where id = $1::uuid`, retiredID).Scan(&retiredAt); err != nil {

@@ -577,12 +577,10 @@ func TestSettlingAProposedNodeIsOneWriteByAPersonOrItsAuthor(t *testing.T) {
 		asAliceSecond(http.MethodPost, settlePath(requirement("r-alice")), map[string]any{}), model.Actor{Kind: "session", ID: aliceSecondSession})
 
 	// alice writes a Verification document whose one check serves r-live, and marks the check
-	// proposed: a question still open, which serves no requirement yet. The check's address names
-	// its document under /artifact/; its store id is the document's ref_key, `<issue>/<slug>`, and
-	// its block id.
+	// proposed: a question still open, which serves no requirement yet.
 	verification := uploadDocument(t, rig.handler, "/api/v1/issues/"+issue.Key, "verification.md", checkServing("k-live", requirement("r-live")))
 	check := refs.BlockRef("dispatch://"+issue.Key+"/artifact/"+verification.Artifact.Slug, "k-live")
-	checkNode := issue.Key + "/" + verification.Artifact.Slug + "#k-live"
+	checkNode := verification.Artifact.RefKey + "#k-live"
 	if response := writeStateAs(t, rig.handler, issue.Key, check, graphstore.StateProposed, "alice"); response.Code != http.StatusOK {
 		t.Fatalf("alice marks her check %s proposed: status=%d body=%s", check, response.Code, response.Body.String())
 	}

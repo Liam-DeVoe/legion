@@ -144,27 +144,54 @@ ends() {
   done
 }
 
-# refused_far SECTION WHAT WHEN HELD: the pointer write just sent, WHAT, which asked for a
-# prevented_by tuple from the second risk at the check of another project, stored nothing - a
-# tuple the store holds there is printed first - and left both ends as they were, read after WHEN:
-# the risk prevented by HELD alone, or by nothing where HELD is empty, and no risk in the
-# backlinks of any other check. It was refused 400 INVALID_POINTER, naming that check.
+# refused_far SECTION WHAT WHEN HELD CHECK WORDS CHECKS…: the pointer write just sent, WHAT, which
+# asked for a prevented_by tuple from the second risk at CHECK, WORDS ("a check of …"), stored
+# nothing - a tuple the store holds there is printed first - and left both ends as they were, read
+# after WHEN (ends): the risk prevented by HELD alone, or by nothing where HELD is empty, and no
+# risk in the backlinks of any other of CHECKS. It was refused 400 INVALID_POINTER, naming CHECK.
 refused_far() {
-  local section="$1" what="$2" when="$3" held="$4" refused_status="$status" stored
+  local section="$1" what="$2" when="$3" held="$4" check="$5" words="$6" refused_status="$status" stored
+  shift 6
   cp "$work/body" "$work/refusal.json"
   references "$section" "read the second risk's prevented_by tuples after $what" from "$risk2" prevented_by
-  stored="$(jq -c --arg c "$far_check" --arg r "$risk2" \
+  stored="$(jq -c --arg c "$check" --arg r "$risk2" \
     '[.edges[] | select(.node.ref == $c) | {kind, from: $r, to: .node.ref, block_id: .node.block_id, created_at}]' \
     "$work/body")" || fail "$section" "read the second risk's prevented_by tuples after $what" "unreadable: $(body)"
   [[ "$stored" == "[]" ]] ||
     fail "$section" "$what is refused" \
-      "the tuple at $far_check, a check of $other_project, was stored: $stored (HTTP $refused_status: $(<"$work/refusal.json"))"
-  ends "$section" "$when" "$held" "$second_check" "$third_check" "$far_check"
+      "the tuple at $check, $words, was stored: $stored (HTTP $refused_status: $(<"$work/refusal.json"))"
+  ends "$section" "$when" "$held" "$@"
   cp "$work/refusal.json" "$work/body"
   status="$refused_status"
   want_status 400 "$section" "$what is refused"
-  expect "$section" "the refusal is INVALID_POINTER, naming the check $far_check" \
-    '{"code":"INVALID_POINTER","names_the_check":true}' --arg c "$far_check" '{code, names_the_check: (.error | contains($c))}'
+  expect "$section" "the refusal is INVALID_POINTER, naming the check $check" \
+    '{"code":"INVALID_POINTER","names_the_check":true}' --arg c "$check" '{code, names_the_check: (.error | contains($c))}'
+}
+
+# refused_risk SECTION CHECK WORDS: a risk the risk route writes under the pre-mortem, prevented by
+# CHECK, WORDS ("a check of …"), stores nothing - a risk the lens holds besides its two is printed
+# first - and leaves no risk in the backlinks of CHECK. It is refused 400 INVALID_POINTER, naming
+# CHECK.
+refused_risk() {
+  local section="$1" check="$2" words="$3" refused_status stored
+  write_risk "$section" "A risk prevented by $words" "$lens" "$check"
+  cp "$work/body" "$work/refusal.json"
+  refused_status="$status"
+  references "$section" "read the lens's backlinks after the write of a risk prevented by $check" to "$lens"
+  stored="$(jq -c --arg a "$risk1" --arg b "$risk2" \
+    '[.edges[] | select(.kind == "part_of" and .node.kind == "risk") | .node.ref] - [$a, $b]' "$work/body")" ||
+    fail "$section" "read the lens's backlinks" "unreadable: $(body)"
+  [[ "$stored" == "[]" ]] ||
+    fail "$section" "a risk prevented by $check, $words, is refused" \
+      "the risk $stored was stored under $lens (HTTP $refused_status: $(<"$work/refusal.json"))"
+  references "$section" "read the backlinks of $check after the write of a risk prevented by it" to "$check"
+  expect "$section" "after the refusal the backlinks of $check hold no risk" '[]' \
+    '[.edges[] | select(.node.kind == "risk") | [.kind, .node.ref]]'
+  cp "$work/refusal.json" "$work/body"
+  status="$refused_status"
+  want_status 400 "$section" "a risk prevented by $check, $words, is refused"
+  expect "$section" "the refusal is INVALID_POINTER, naming the check $check" \
+    '{"code":"INVALID_POINTER","names_the_check":true}' --arg c "$check" '{code, names_the_check: (.error | contains($c))}'
 }
 
 # --- the catalogue ------------------------------------------------------------------------------
@@ -513,7 +540,7 @@ ends P8 "after the retarget" "$third_check" "$second_check" "$third_check" "$far
 pointer "risk/$risk2_id" "$(jq -cn --arg f "$third_check" --arg t "$far_check" \
   '{kind: "prevented_by", action: "retarget", from: $f, to: $t}')"
 refused_far P8 "a retarget of the second risk's prevented_by tuple to $far_check, a check of $other_project," \
-  "after the refused retarget" "$third_check"
+  "after the refused retarget" "$third_check" "$far_check" "a check of $other_project" "$second_check" "$third_check" "$far_check"
 
 pointer "risk/$risk2_id" "$(jq -cn --arg t "$third_check" '{kind: "prevented_by", action: "retract", to: $t}')"
 want_status 200 P8 "retract the second risk's prevented_by tuple to $third_check"
@@ -521,29 +548,13 @@ ends P8 "after the retract" "" "$second_check" "$third_check" "$far_check"
 
 pointer "risk/$risk2_id" "$(jq -cn --arg t "$far_check" '{kind: "prevented_by", action: "append", to: $t}')"
 refused_far P8 "an append of a prevented_by tuple from the second risk to $far_check, a check of $other_project," \
-  "after the refused append" ""
+  "after the refused append" "" "$far_check" "a check of $other_project" "$second_check" "$third_check" "$far_check"
 
-write_risk P8 "A risk prevented by a check of another project" "$lens" "$far_check"
-cp "$work/body" "$work/refusal.json"
-refused_status="$status"
-references P8 "read the lens's backlinks after the write of a risk prevented by $far_check" to "$lens"
-stored="$(jq -c --arg a "$risk1" --arg b "$risk2" \
-  '[.edges[] | select(.kind == "part_of" and .node.kind == "risk") | .node.ref] - [$a, $b]' "$work/body")" ||
-  fail P8 "read the lens's backlinks" "unreadable: $(body)"
-[[ "$stored" == "[]" ]] ||
-  fail P8 "a risk prevented by $far_check, a check of $other_project, is refused" \
-    "the risk $stored was stored under $lens (HTTP $refused_status: $(<"$work/refusal.json"))"
+refused_risk P8 "$far_check" "a check of $other_project"
+references P8 "read the lens's backlinks after the refused risk" to "$lens"
 expect P8 "after the refusal the lens's backlinks hold its two risks alone" \
   "$(jq -cn --arg a "$risk1" --arg b "$risk2" '[$a, $b] | sort')" \
   '[.edges[] | select(.kind == "part_of" and .node.kind == "risk") | .node.ref] | sort'
-references P8 "read the backlinks of $far_check after the write of a risk prevented by it" to "$far_check"
-expect P8 "after the refusal the backlinks of $far_check hold no risk" '[]' \
-  '[.edges[] | select(.node.kind == "risk") | [.kind, .node.ref]]'
-cp "$work/refusal.json" "$work/body"
-status="$refused_status"
-want_status 400 P8 "a risk prevented by $far_check, a check of $other_project, is refused"
-expect P8 "the refusal is INVALID_POINTER, naming the check $far_check" \
-  '{"code":"INVALID_POINTER","names_the_check":true}' --arg c "$far_check" '{code, names_the_check: (.error | contains($c))}'
 
 # --- P9: the check of a retired document --------------------------------------------------------
 
@@ -596,11 +607,7 @@ expect P9 "the pre-mortem document's block pm1 is a check" '["check"]' '[.[] | s
 
 pointer "risk/$risk2_id" "$(jq -cn --arg t "$retired_check" '{kind: "prevented_by", action: "append", to: $t}')"
 want_status 200 P9 "append a prevented_by tuple from the second risk to $retired_check, the pre-mortem document's check"
-references P9 "read the second risk's prevented_by tuples before the retirement" from "$risk2" prevented_by
-expect P9 "before the retirement the second risk is prevented by $retired_check" "[\"$retired_check\"]" '[.edges[] | .node.ref]'
-references P9 "read the backlinks of $retired_check before the retirement" to "$retired_check"
-expect P9 "before the retirement the backlinks of $retired_check hold the second risk" "[[\"prevented_by\",\"$risk2\"]]" \
-  '[.edges[] | select(.node.kind == "risk") | [.kind, .node.ref]]'
+ends P9 "before the retirement" "$retired_check" "$retired_check"
 
 send POST "/api/v1/issues/$key/artifacts/$premortem_slug/premortem-convert" "$(jq -cn --argjson a "$(actor)" \
   '{prevented_by: [{risk: 0, checks: [], reason: "No check of the issue covers a second representation."},
@@ -613,52 +620,15 @@ want_status 200 P9 "read the issue's documents after the conversion"
 expect P9 "$premortem_doc is retired: the issue's documents hold it no longer" '[]' \
   --arg s "$premortem_slug" '[.[] | select(.slug == $s) | .slug]'
 
-references P9 "read the second risk's prevented_by tuples after the retirement" from "$risk2" prevented_by
-expect P9 "after the retirement the second risk reads prevented by nothing" '[]' '[.edges[] | .node.ref]'
+ends P9 "after the retirement" "" "$retired_check"
 lenses_on P9 "read the pre-mortem after the retirement" "$lens"
 expect P9 "after the retirement the pre-mortem answers the second risk prevented by nothing" '[]' \
   --arg r "$risk2" '.lens.risks[] | select(.address == $r) | .prevented_by'
-references P9 "read the backlinks of $retired_check after the retirement" to "$retired_check"
-expect P9 "after the retirement $retired_check reads preventing no risk" '[]' \
-  '[.edges[] | select(.node.kind == "risk") | [.kind, .node.ref]]'
 
 pointer "risk/$risk2_id" "$(jq -cn --arg t "$retired_check" '{kind: "prevented_by", action: "append", to: $t}')"
-cp "$work/body" "$work/refusal.json"
-refused_status="$status"
-references P9 "read the second risk's prevented_by tuples after the append at $retired_check" from "$risk2" prevented_by
-stored="$(jq -c --arg c "$retired_check" --arg r "$risk2" \
-  '[.edges[] | select(.node.ref == $c) | {kind, from: $r, to: .node.ref, block_id: .node.block_id, created_at}]' \
-  "$work/body")" || fail P9 "read the second risk's prevented_by tuples" "unreadable: $(body)"
-[[ "$stored" == "[]" ]] ||
-  fail P9 "a prevented_by tuple at $retired_check, a check of a retired document, is refused" \
-    "the tuple at $retired_check was stored: $stored (HTTP $refused_status: $(<"$work/refusal.json"))"
-expect P9 "after the refused append the second risk reads prevented by nothing" '[]' '[.edges[] | .node.ref]'
-references P9 "read the backlinks of $retired_check after the refused append" to "$retired_check"
-expect P9 "after the refused append $retired_check reads preventing no risk" '[]' \
-  '[.edges[] | select(.node.kind == "risk") | [.kind, .node.ref]]'
-cp "$work/refusal.json" "$work/body"
-status="$refused_status"
-want_status 400 P9 "a prevented_by tuple at $retired_check, a check of a retired document, is refused"
-expect P9 "the refusal is INVALID_POINTER, naming the check $retired_check" \
-  '{"code":"INVALID_POINTER","names_the_check":true}' --arg c "$retired_check" '{code, names_the_check: (.error | contains($c))}'
+refused_far P9 "an append of a prevented_by tuple from the second risk to $retired_check, a check of a retired document," \
+  "after the refused append" "" "$retired_check" "a check of a retired document" "$retired_check"
 
-write_risk P9 "A risk prevented by a check of a retired document" "$lens" "$retired_check"
-cp "$work/body" "$work/refusal.json"
-refused_status="$status"
-references P9 "read the lens's backlinks after the write of a risk prevented by $retired_check" to "$lens"
-stored="$(jq -c --arg a "$risk1" --arg b "$risk2" \
-  '[.edges[] | select(.kind == "part_of" and .node.kind == "risk") | .node.ref] - [$a, $b]' "$work/body")" ||
-  fail P9 "read the lens's backlinks" "unreadable: $(body)"
-[[ "$stored" == "[]" ]] ||
-  fail P9 "a risk prevented by $retired_check, a check of a retired document, is refused" \
-    "the risk $stored was stored under $lens (HTTP $refused_status: $(<"$work/refusal.json"))"
-references P9 "read the backlinks of $retired_check after the write of a risk prevented by it" to "$retired_check"
-expect P9 "after the refused risk $retired_check reads preventing no risk" '[]' \
-  '[.edges[] | select(.node.kind == "risk") | [.kind, .node.ref]]'
-cp "$work/refusal.json" "$work/body"
-status="$refused_status"
-want_status 400 P9 "a risk prevented by $retired_check, a check of a retired document, is refused"
-expect P9 "the refusal is INVALID_POINTER, naming the check $retired_check" \
-  '{"code":"INVALID_POINTER","names_the_check":true}' --arg c "$retired_check" '{code, names_the_check: (.error | contains($c))}'
+refused_risk P9 "$retired_check" "a check of a retired document"
 
 pass "$driver" complete
