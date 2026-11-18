@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -121,27 +122,38 @@ func copiesNothing(t *testing.T, pairs []pair) {
 // byte that is not UTF-8 after a U+FFFD that starts the value.
 //
 // The second row compares the two on seeded values of 6 to 64 bytes, to each limit from 0 to 70.
-// The seed is fixed, so a failure repeats. The third puts a byte that is not UTF-8 at each place
-// of a value of 2,001 characters, and cuts the value at each limit from one character before that
-// place to two after it, and at 2,000. A guard that reads only the first N runes or the first N
-// bytes of the value fails the third row for each N under 2,000; the second row fails the first
-// guard only for N up to 24, and the second for N up to 61. Both rows also want no allocation for
-// each of their pairs whose answer is, by the reference, the value's own first bytes, a value
-// returned unchanged among them, as the shape rows below want for the pairs of the first row.
+// The seed is fixed, so a failure repeats. The third puts each of six kinds of character at each
+// place of a value of 2,001 characters (a byte that is not UTF-8, U+FFFD, é, 界, U+1F54C and a
+// combining mark), and cuts the value at each limit from one character before that place to two
+// after it, and at 2,000. A guard that reads only the first N runes or the first N bytes of the
+// value fails the third row for each N under 2,000; the second row fails the first guard only for
+// N up to 24, and the second for N up to 61. Both rows also want no allocation for each of their
+// pairs whose answer is, by the reference, the value's own first bytes, a value returned
+// unchanged among them, as the shape rows below want for the pairs of the first row.
 //
-// The fourth row cuts before each code point but the surrogates, after each of seven characters:
-// a letter, the same code point, and five that a rule of grapheme clusters joins with what
-// follows (an emoji that takes a skin-tone modifier, that emoji with a zero-width joiner, a
-// regional indicator, a Hangul leading consonant, and a Devanagari consonant with its virama). So
-// a count that keeps a code point with one of these seven before it fails the row, whatever the
-// code point and its length: a character is one code point, not a grapheme cluster.
+// The fourth row cuts before each code point but the surrogates, after the same code point and
+// after each of 44 characters, and wants the cut to leave the code point out. The characters are
+// a letter, an emoji that takes a skin-tone modifier, and the left side of each rule of Unicode
+// Standard Annex #29 (Unicode 18.0) that keeps two code points in one grapheme cluster: for each
+// kind the left side names, the first character of each script that the Unicode Character
+// Database gives that kind. They are CR (GB3); the Hangul L, V, T, LV and LVT, and the Kirat Rai V
+// (GB6 to GB8); the Prepend of 11 scripts (GB9b); the linker of 21 scripts, the virama of a
+// conjunct, each after a consonant of its script (GB9c); two pictographs, each with a zero-width
+// joiner (GB11); and a regional indicator (GB12 and GB13). The row also cuts before each combining
+// mark after each letter of its block of 128 code points (those that share all but the mark's
+// last seven bits). So a count that keeps a code point with one of these before it fails the row,
+// whatever the code point and its length: a character is one code point, not a grapheme cluster.
+// A count keyed on another character of the same kind and script, or on one pair of code points,
+// can pass it.
 //
 // An answer that is, by the reference, the value's own first bytes is a slice of the value, and
 // HeadRunes copies nothing for it. One row for each shape of such a pair (shapeOf) cuts every
-// pair of that shape and wants no allocation, so a copy of any one pair fails its row. The last
-// rows hold values longer than five bytes, each cut to a slice with no copy. Among them, a cut
-// after characters outside the BMP fails a count of UTF-16 units, and a cut before a combining
-// mark fails a count that keeps a mark with its letter.
+// pair of that shape and wants no allocation, so a copy of any one pair fails its row, and one row
+// cuts a value of each length from 0 to 8,001 bytes to its own length and to one short. The last
+// rows hold values longer than five bytes, each cut to a slice with no copy, up to 32,000
+// characters, the most an embedding input keeps. Among them, a cut after characters outside the
+// BMP fails a count of UTF-16 units, and a cut before a combining mark fails a count that keeps a
+// mark with its letter.
 func TestHeadRunesCutsAtARuneAndCopiesNothing(t *testing.T) {
 	const longest, limits = 5, 6
 	var values []string
@@ -221,30 +233,32 @@ func TestHeadRunesCutsAtARuneAndCopiesNothing(t *testing.T) {
 		copiesNothing(t, sliced)
 	})
 
-	t.Run("a byte that is not UTF-8 at each place of 2,001 characters agrees with the reference, and copies nothing where its answer is a slice", func(t *testing.T) {
+	t.Run("each of six kinds of character at each place of 2,001 characters agrees with the reference, and copies nothing where its answer is a slice", func(t *testing.T) {
 		const characters = 2001
 		differ, cuts := 0, 0
 		var sliced []pair
-		for place := range characters {
-			value := strings.Repeat("a", place) + "\xff" + strings.Repeat("a", characters-1-place)
-			around := []int{place - 1, place, place + 1, place + 2, characters - 1}
-			for i, limit := range around {
-				if limit < 0 || slices.Contains(around[:i], limit) {
-					continue
+		for _, kind := range []string{"\xff", "\uFFFD", "é", "界", "\U0001F54C", "\u0301"} {
+			for place := range characters {
+				value := strings.Repeat("a", place) + kind + strings.Repeat("a", characters-1-place)
+				around := []int{place - 1, place, place + 1, place + 2, characters - 1}
+				for i, limit := range around {
+					if limit < 0 || slices.Contains(around[:i], limit) {
+						continue
+					}
+					cuts++
+					got, want := HeadRunes(value, limit), headRunesReference(value, limit)
+					if strings.HasPrefix(value, want) {
+						sliced = append(sliced, pair{value, limit})
+					}
+					if got == want {
+						continue
+					}
+					if differ < 10 {
+						from := min(max(0, place-5), len(got), len(want))
+						t.Errorf("%+q at character %d, cut to %d: HeadRunes kept %d bytes, %.20q... from byte %d, want %d bytes, %.20q...", kind, place, limit, len(got), got[from:], from, len(want), want[from:])
+					}
+					differ++
 				}
-				cuts++
-				got, want := HeadRunes(value, limit), headRunesReference(value, limit)
-				if strings.HasPrefix(value, want) {
-					sliced = append(sliced, pair{value, limit})
-				}
-				if got == want {
-					continue
-				}
-				if differ < 10 {
-					from := min(max(0, place-5), len(got), len(want))
-					t.Errorf("a byte that is not UTF-8 at character %d, cut to %d: HeadRunes kept %d bytes, %.20q... from byte %d, want %d bytes, %.20q...", place, limit, len(got), got[from:], from, len(want), want[from:])
-				}
-				differ++
 			}
 		}
 		if differ > 0 {
@@ -253,16 +267,37 @@ func TestHeadRunesCutsAtARuneAndCopiesNothing(t *testing.T) {
 		copiesNothing(t, sliced)
 	})
 
-	t.Run("a cut before each code point leaves it out, after each of seven characters", func(t *testing.T) {
-		// Six of the seven characters; the seventh is the code point itself, which the first cut
-		// of each code point puts before it.
-		befores := []string{"a", "\U0001F44D", "\U0001F44D\u200D", "\U0001F1E6", "\u1100", "\u0915\u094D"}
+	t.Run("a cut before each code point leaves it out, after each of 45 characters, and before each mark after a letter of its block", func(t *testing.T) {
+		// 44 of the 45 characters; the 45th is the code point itself, which the first cut of each
+		// code point puts before it.
+		befores := []string{
+			// Any character (GB9, GB9a), and an emoji that takes a skin-tone modifier.
+			"a", "\U0001F44D",
+			// GB3: CR. GB6: L. GB7: the V of Hangul and of Kirat Rai, and LV. GB8: T and LVT.
+			"\r", "\u1100", "\u1160", "\U00016D63", "\uAC00", "\u11A8", "\uAC01",
+			// GB9b: the first Prepend of Arabic, Common, Syriac, Malayalam, Kaithi, Sharada,
+			// Tulu-Tigalari, Dives Akuru, Soyombo, Masaram Gondi and Kawi.
+			"\u0600", "\u0605", "\u070F", "\u0D4E", "\U000110BD", "\U000111C2", "\U000113D1", "\U0001193F", "\U00011A84", "\U00011D46", "\U00011F02",
+			// GB9c: the first linker of Devanagari, Bengali, Gujarati, Oriya, Telugu, Malayalam,
+			// Myanmar, Khmer, Tai Tham, Balinese, Sundanese, Common (a Vedic sign), Javanese, Meetei
+			// Mayek, Kharoshthi, Chakma, Tulu-Tigalari, Dives Akuru, Zanabazar Square, Soyombo and
+			// Kawi, each after the first consonant of its script (Devanagari's for the Vedic sign).
+			"\u0915\u094D", "\u0995\u09CD", "\u0A95\u0ACD", "\u0B15\u0B4D", "\u0C15\u0C4D", "\u0D15\u0D4D", "\u1000\u1039",
+			"\u1780\u17D2", "\u1A20\u1A60", "\u1B0B\u1B44", "\u1B83\u1BAB", "\u0915\u1CF5", "\uA989\uA9C0", "\uAAE0\uAAF6",
+			"\U00010A00\U00010A3F", "\U00011103\U00011133", "\U00011380\U000113D0", "\U00011900\U0001193E",
+			"\U00011A00\U00011A3A", "\U00011A50\U00011A99", "\U00011F04\U00011F42",
+			// GB11: a pictograph and a zero-width joiner. GB12 and GB13: a regional indicator.
+			"\u00A9\u200D", "\U0001F44D\u200D", "\U0001F1E6",
+		}
+		// Each value of this row is UTF-8, so by the definition its cut is the characters before
+		// the code point: cut wants HeadRunes(kept+rest) to keep kept.
 		differ, cuts := 0, 0
-		cut := func(value string, limit int) {
+		cut := func(kept, rest string) {
 			cuts++
-			if got, want := HeadRunes(value, limit), headRunesReference(value, limit); got != want {
+			value, limit := kept+rest, utf8.RuneCountInString(kept)
+			if got := HeadRunes(value, limit); got != kept {
 				if differ < 10 {
-					t.Errorf("HeadRunes(%+q, %d) = %+q, want %+q", value, limit, got, want)
+					t.Errorf("HeadRunes(%+q, %d) = %+q, want %+q", value, limit, got, kept)
 				}
 				differ++
 			}
@@ -272,14 +307,31 @@ func TestHeadRunesCutsAtARuneAndCopiesNothing(t *testing.T) {
 				continue
 			}
 			character := string(r)
-			cut(character+character+character, 2)
+			rest := character + "a"
+			cut(character+character, character)
 			for _, before := range befores {
-				cut(before+character+"a", utf8.RuneCountInString(before))
+				cut(before, rest)
+			}
+			if unicode.Is(unicode.M, r) {
+				for letter := r &^ 0x7F; letter < r&^0x7F+0x80; letter++ {
+					if unicode.IsLetter(letter) {
+						cut(string(letter), rest)
+					}
+				}
 			}
 		}
 		if differ > 0 {
-			t.Errorf("%d of %d cuts before a code point differ from the reference", differ, cuts)
+			t.Errorf("%d of %d cuts before a code point keep more than the characters before it", differ, cuts)
 		}
+	})
+
+	t.Run("a value of each length up to 8,001 bytes, unchanged or cut one short, copies nothing", func(t *testing.T) {
+		long := strings.Repeat("a", 8001)
+		var pairs []pair
+		for n := range len(long) + 1 {
+			pairs = append(pairs, pair{long[:n], n}, pair{long[:n], max(n-1, 0)})
+		}
+		copiesNothing(t, pairs)
 	})
 
 	shapes := map[string][]pair{}
@@ -306,6 +358,11 @@ func TestHeadRunesCutsAtARuneAndCopiesNothing(t *testing.T) {
 		{name: "100 pairs of a letter and U+FFFD are cut at 50", value: strings.Repeat("a\uFFFD", 100), limit: 50, want: strings.Repeat("a\uFFFD", 25)},
 		{name: "a byte that is not UTF-8 past the cut is left out", value: strings.Repeat("界", 10) + "\xff", limit: 5, want: strings.Repeat("界", 5)},
 		{name: "a combining mark after the cut is left out", value: strings.Repeat("a\u0301", 10), limit: 3, want: "a\u0301a"},
+		{name: "2,001 Chinese characters are returned unchanged", value: strings.Repeat("界", 2001), limit: 2001, want: strings.Repeat("界", 2001)},
+		{name: "32,000 letters are returned unchanged", value: strings.Repeat("a", 32000), limit: 32000, want: strings.Repeat("a", 32000)},
+		{name: "32,000 Chinese characters are returned unchanged", value: strings.Repeat("界", 32000), limit: 32000, want: strings.Repeat("界", 32000)},
+		{name: "32,001 letters are cut at 32,000", value: strings.Repeat("a", 32001), limit: 32000, want: strings.Repeat("a", 32000)},
+		{name: "32,001 Chinese characters are cut at 32,000", value: strings.Repeat("界", 32001), limit: 32000, want: strings.Repeat("界", 32000)},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			allocations := testing.AllocsPerRun(100, func() { sink = HeadRunes(row.value, row.limit) })
