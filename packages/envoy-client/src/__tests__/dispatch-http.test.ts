@@ -909,6 +909,48 @@ describe("DispatchClient", () => {
     }
   });
 
+  // M4 (the review of 99b1e438db): a DPoP token after `Authorization: DPoP` or `DPoP` is redacted
+  // as a bearer's is, and so is the token the request was sent with when the credential names
+  // another by the time the answer comes (a renewal between the two): the excerpt redacts every
+  // token this client presented, not only the one `secret()` names now.
+  test("redacts a DPoP value and the token a request was sent with, after the credential renewed", async () => {
+    const sent = fixtureSecret("sent");
+    const renewed = fixtureSecret("renewed");
+    let presentations = 0;
+    const credential: RequestCredential = {
+      scheme: "DPoP",
+      headers: () => {
+        presentations += 1;
+        return { Authorization: `DPoP ${sent}`, DPoP: "proof" };
+      },
+      // The renewal landed while the request was out: the credential names the next token.
+      secret: () => (presentations === 0 ? sent : renewed),
+    };
+    const echo =
+      `<html><body><h1>502 Bad Gateway</h1><pre>Authorization: DPoP ${sent}\r\n` +
+      `X-Echo: DPoP ${sent.slice(2)}\r\nX-Raw: ${sent}</pre></body></html>`;
+    const { fetchImpl } = fakeFetch([
+      new Response(echo, {
+        status: 502,
+        statusText: "Bad Gateway",
+        headers: { "Content-Type": "text/html" },
+      }),
+    ]);
+    const client = new DispatchClient("http://dispatch.test", credential, fetchImpl, {
+      retryNoRoute: false,
+    });
+
+    const message = await client.getIssue("DSP-1").then(
+      () => "",
+      (error: Error) => error.message
+    );
+
+    expect(message).toContain(
+      '("502 Bad Gateway Authorization: DPoP [redacted] X-Echo: DPoP [redacted] X-Raw: [redacted]")'
+    );
+    expect(message).not.toContain(sent.slice(-12));
+  });
+
   // A Dispatch URL may carry a user and a password: the config accepts such a URL, and the
   // requests go to it as configured. Every message that names the request or the Dispatch names
   // no part of the URL, only its fixed phrase, since the URL parser can split such a URL otherwise

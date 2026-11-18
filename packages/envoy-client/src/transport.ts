@@ -15,7 +15,7 @@ import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import { z } from "zod";
 import { credentialDeadline, type RequestCredential } from "./bearer";
 import { messageFor, reachedNothing } from "./errors";
-import { bodyForText, redirectOrigin } from "./excerpt";
+import { bodyForText, redirectOrigin, SentTokens, type Tokens } from "./excerpt";
 import { machineID } from "./machine";
 import { streamDeliversNothing } from "./stream-topics";
 import type { TmuxPlace } from "./tmux-place";
@@ -749,8 +749,9 @@ export class EnvoyApiError extends Error {
    * fields parse (a role's holder, `phase-reminder.ts`'s reason). The message names it only where
    * it is the listener's error JSON; any other body was written by something in the listener's
    * place, which can echo the request back, so the message names it through `bodyForText`: one
-   * line with `shown.token` (the credential's secret) and any `Authorization` or `Bearer` value
-   * redacted, and the origin a redirect pointed at (`shown.redirectTo`). Neither is kept.
+   * line with `shown.tokens` (the credential's secret, and the tokens the client presented lately)
+   * and any `Authorization`, `Bearer` or `DPoP` value redacted, and the origin a redirect pointed
+   * at (`shown.redirectTo`). Neither is kept.
    */
   constructor(
     readonly details: {
@@ -761,7 +762,7 @@ export class EnvoyApiError extends Error {
       readonly status: number;
       readonly responseBody: string;
     },
-    shown: { readonly token?: string; readonly redirectTo?: string | undefined } = {}
+    shown: { readonly tokens?: Tokens; readonly redirectTo?: string | undefined } = {}
   ) {
     let parsed: z.infer<typeof ErrorWireSchema> | undefined;
     try {
@@ -778,7 +779,7 @@ export class EnvoyApiError extends Error {
     // machine-readable why in what the session is shown, not only in the client's field.
     super(
       parsed === undefined
-        ? `${details.method} ${details.url} failed with ${details.status}${redirected}: ${bodyForText(details.responseBody, shown.token ?? "", "the listener's error JSON")}`
+        ? `${details.method} ${details.url} failed with ${details.status}${redirected}: ${bodyForText(details.responseBody, shown.tokens ?? "", "the listener's error JSON")}`
         : `${parsed.error}${parsed.reason === undefined ? "" : ` (reason: ${parsed.reason})`}${parsed.expected === undefined ? "" : ` (expected: ${parsed.expected.join(", ")})`}${refusalStateText(parsed)}`
     );
     this.expected = parsed?.expected;
@@ -936,6 +937,10 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
   const { timeoutMs, attempts, retryDelayMs } = resolveCallTiming(config);
 
   const credential = config.credential;
+  // The tokens this client presented lately, which every excerpt of an answer redacts beside the
+  // credential's secret now: a renewal can come between a request and its answer (`SentTokens`).
+  const sent = new SentTokens();
+  const tokens = (): readonly string[] => sent.with(credential?.secret() ?? "");
 
   /** `url` as a text names it: on a clean base, as built, and otherwise the base's phrase. */
   const shown = (url: string): string => requestForText(baseUrl, url, ENVOY_URL_SETTING);
@@ -947,7 +952,7 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
     try {
       return JSON.parse(raw);
     } catch {
-      const named = bodyForText(raw, credential?.secret() ?? "", "JSON");
+      const named = bodyForText(raw, tokens(), "JSON");
       throw new SyntaxError(`${method} ${shown(`${baseUrl}${path}`)} answered with ${named}`);
     }
   };
@@ -994,6 +999,7 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
       // Only the attempt's own deadline leaves nothing to send: the attempt sent nothing, and
       // fails in the credential's own words (a pending registration names its session).
       if (unminted !== undefined && deadline.aborted) return { notSent: unminted };
+      sent.note(presented);
       for (const [name, value] of Object.entries(presented ?? {})) headers.set(name, value);
       // No call follows a redirect: the listener answers none, so a 3xx is something in its
       // place, and followed it would turn a POST into a GET (301, 302, 303) or send it again to
@@ -1072,10 +1078,10 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
       if (response.ok) return body;
 
       // A body that is not the listener's error JSON was written by something in its place, which
-      // can echo the request back: the error names it in one redacted line with the secret this
-      // credential presents, and a redirect, which is never followed (`attemptOnce`), by the
-      // origin it pointed at (`EnvoyApiError`).
-      const secret = credential?.secret() ?? "";
+      // can echo the request back: the error names it in one redacted line with the tokens this
+      // client presents, and a redirect, which is never followed (`attemptOnce`), by the origin it
+      // pointed at (`EnvoyApiError`).
+      const redacted = tokens();
       const error = new EnvoyApiError(
         {
           method: init.method ?? "GET",
@@ -1083,7 +1089,7 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
           status: response.status,
           responseBody: body,
         },
-        { token: secret, redirectTo: redirectOrigin(response, url, secret) }
+        { tokens: redacted, redirectTo: redirectOrigin(response, url, redacted) }
       );
       if (response.status >= 500) {
         options.onUnanswered?.();

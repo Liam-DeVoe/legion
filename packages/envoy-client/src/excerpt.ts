@@ -19,39 +19,48 @@ const REDACTED = "[redacted]";
 export const EXCERPT_SCAN_LIMIT = 64 * 1024;
 
 /**
- * The shortest run of the client's bearer's characters an excerpt redacts wherever it stands. A
- * gateway that echoes the header can cut it short, split it with markup, or write it twice with the
- * copies overlapping (a bearer can end in its own first characters), so redacting only whole copies
- * leaves most of one behind; a bearer shorter than this is redacted only whole.
+ * The shortest run of a token's characters an excerpt redacts wherever it stands. A gateway that
+ * echoes the header can cut it short, split it with markup, or write it twice with the copies
+ * overlapping (a token can end in its own first characters), so redacting only whole copies leaves
+ * most of one behind; a token shorter than this is redacted only whole.
  */
 const BEARER_PIECE = 8;
 
+/** A token, or the tokens, an excerpt redacts: a client's credential's secret, and each token it
+ *  presented lately (`SentTokens`). */
+export type Tokens = string | readonly string[];
+
 /**
- * The first `EXCERPT_SCAN_LIMIT` characters of `text`, each run of `bearer`'s characters at least
- * `BEARER_PIECE` long replaced with one `REDACTED`. Every piece of that length starting inside the
- * limit is found (one that runs past it reads up to `BEARER_PIECE - 1` characters beyond), so a
- * run is redacted whole however the limit or another copy cuts it. Redaction changes the length,
- * so the text is cut to the limit only afterwards, and nothing from past the limit moves into it.
- * Each distinct piece is one native scan of that slice, and no two distinct pieces of one length
- * match at the same position, so the marking is bounded by the slice and the scans by the limit and
- * the bearer's length, whatever the size of the body. Searching again for a repeated piece would
- * mark the same matches again: a bearer of one character repeated would mark every position of the
- * slice once per piece.
+ * The first `EXCERPT_SCAN_LIMIT` characters of `text`, each run of any of `tokens`' characters at
+ * least `BEARER_PIECE` long (a token's whole length where it is shorter) replaced with one
+ * `REDACTED`. Every piece of that length starting inside the limit is found (one that runs past it
+ * reads up to `BEARER_PIECE - 1` characters beyond), so a run is redacted whole however the limit
+ * or another copy cuts it. Redaction changes the length, so the text is cut to the limit only
+ * afterwards, and nothing from past the limit moves into it. Each distinct piece is one native
+ * scan of that slice, and no two distinct pieces of one length match at the same position, so the
+ * marking is bounded by the slice and the scans by the limit and the tokens' lengths, whatever the
+ * size of the body. Searching again for a repeated piece would mark the same matches again: a
+ * token of one character repeated would mark every position of the slice once per piece.
  */
-function redactBearer(text: string, bearer: string): string {
-  if (bearer === "") return text.slice(0, EXCERPT_SCAN_LIMIT);
-  const length = Math.min(BEARER_PIECE, bearer.length);
-  const scanned = text.slice(0, EXCERPT_SCAN_LIMIT + length - 1);
+function redactTokens(text: string, tokens: readonly string[]): string {
+  const lengths = tokens.map((token) => Math.min(BEARER_PIECE, token.length));
+  const longest = Math.max(0, ...lengths);
+  if (longest === 0) return text.slice(0, EXCERPT_SCAN_LIMIT);
+  const scanned = text.slice(0, EXCERPT_SCAN_LIMIT + longest - 1);
   const covered = new Uint8Array(scanned.length);
-  const pieces = new Set<string>();
-  for (let at = 0; at + length <= bearer.length; at++) pieces.add(bearer.slice(at, at + length));
-  for (const piece of pieces) {
-    let found = scanned.indexOf(piece);
-    while (found !== -1) {
-      covered.fill(1, found, found + length);
-      found = scanned.indexOf(piece, found + 1);
+  tokens.forEach((token, index) => {
+    const length = lengths[index] ?? 0;
+    if (length === 0) return;
+    const pieces = new Set<string>();
+    for (let at = 0; at + length <= token.length; at++) pieces.add(token.slice(at, at + length));
+    for (const piece of pieces) {
+      let found = scanned.indexOf(piece);
+      while (found !== -1 && found < EXCERPT_SCAN_LIMIT) {
+        covered.fill(1, found, found + length);
+        found = scanned.indexOf(piece, found + 1);
+      }
     }
-  }
+  });
   let redacted = "";
   let kept = 0;
   for (let start = covered.indexOf(1); start !== -1; start = covered.indexOf(1, kept)) {
@@ -65,24 +74,26 @@ function redactBearer(text: string, bearer: string): string {
 /**
  * Text a gateway chose (a body, or the reason phrase) as one line of plain text safe to quote. A
  * misconfigured gateway echoes the request back, so two kinds of credential are redacted: first
- * every piece of the client's own bearer, trimmed as fetch sends it (`redactBearer`); then, after
- * scripts, styles and tags are dropped, the value after `Authorization:` (its scheme kept) or
- * `Bearer`. All of it runs before the cut to one line, so a cut never leaves a credential's first
- * characters behind. The text is the answerer's, and the excerpt is built on the host's event loop,
- * so only the first `EXCERPT_SCAN_LIMIT` characters are read and every pattern runs in linear time:
- * a tag holds no `<`, and a script or style block left open runs to the end.
+ * every piece of each of the client's own `tokens`, trimmed as fetch sends them (`redactTokens`);
+ * then, after scripts, styles and tags are dropped, the value after `Authorization:` (its scheme
+ * kept), `Bearer` or `DPoP`. All of it runs before the cut to one line, so a cut never leaves a
+ * credential's first characters behind. The text is the answerer's, and the excerpt is built on
+ * the host's event loop, so only the first `EXCERPT_SCAN_LIMIT` characters are read and every
+ * pattern runs in linear time: a tag holds no `<`, and a script or style block left open runs to
+ * the end.
  */
-export function excerpt(text: string, token: string): string {
-  const plain = redactBearer(text, token.trim())
+export function excerpt(text: string, tokens: Tokens): string {
+  const trimmed = (typeof tokens === "string" ? [tokens] : tokens).map((token) => token.trim());
+  const plain = redactTokens(text, trimmed)
     .replace(/<(script|style)\b[^<>]*>(?:[\s\S]*?<\/\1\s*>|[\s\S]*$)/gi, " ")
     .replace(/<[^<>]*>/g, " ");
   return textHead(
     plain
       .replace(
-        /(\bauthorization["']?\s*[:=]\s*["']?(?:(?:bearer|basic|digest|token)\s+)?)[^\s"'<>,;]+/gi,
+        /(\bauthorization["']?\s*[:=]\s*["']?(?:(?:bearer|basic|digest|token|dpop)\s+)?)[^\s"'<>,;]+/gi,
         `$1${REDACTED}`
       )
-      .replace(/(\bbearer\s+)[^\s"'<>,;]+/gi, `$1${REDACTED}`)
+      .replace(/(\b(?:bearer|dpop)\s+)[^\s"'<>,;]+/gi, `$1${REDACTED}`)
   );
 }
 
@@ -93,8 +104,8 @@ export function excerpt(text: string, token: string): string {
  * where the excerpt reads no text, the body's size and that it holds none (within the first
  * `EXCERPT_SCAN_LIMIT` characters where it runs past them). Never the body whole.
  */
-export function bodyForText(text: string, token: string, notWhat: string): string {
-  const quoted = excerpt(text, token);
+export function bodyForText(text: string, tokens: Tokens, notWhat: string): string {
+  const quoted = excerpt(text, tokens);
   if (quoted !== "") return `a body that is not ${notWhat} (${JSON.stringify(quoted)})`;
   if (text === "") return "an empty body";
   const within =
@@ -105,10 +116,14 @@ export function bodyForText(text: string, token: string, notWhat: string): strin
 
 /**
  * The origin a 3xx answer's `Location` names, read against `url`, the request it answers: scheme,
- * host and port, never a path, a query or user info, through `excerpt` so nothing of `token` is
+ * host and port, never a path, a query or user info, through `excerpt` so nothing of `tokens` is
  * printed. Undefined for any other status, and for a `Location` that is absent or does not parse.
  */
-export function redirectOrigin(response: Response, url: string, token: string): string | undefined {
+export function redirectOrigin(
+  response: Response,
+  url: string,
+  tokens: Tokens
+): string | undefined {
   if (response.status < 300 || response.status > 399) return undefined;
   const location = response.headers.get("Location");
   if (location === null || location.trim() === "") return undefined;
@@ -119,6 +134,44 @@ export function redirectOrigin(response: Response, url: string, token: string): 
     return undefined;
   }
   if (origin === "null") return undefined;
-  const shown = excerpt(origin, token);
+  const shown = excerpt(origin, tokens);
   return shown === "" ? undefined : shown;
+}
+
+/** How many of the tokens a client presented `SentTokens` keeps. A token renews long after it is
+ *  minted, so a request's answer meets at most one renewal; four leaves room for several. */
+const SENT_TOKENS_KEPT = 4;
+
+/**
+ * The tokens a client presented lately, newest first, so an excerpt of an answer redacts the token
+ * its request was sent with even where the credential has renewed since and its `secret()` names
+ * the next one (the review of 99b1e438db, M4). Each is the `Authorization` header's value after
+ * its scheme. Only this client's own tokens are kept, and only the last `SENT_TOKENS_KEPT`, so
+ * redacting all of them redacts nothing of anyone else's.
+ */
+export class SentTokens {
+  readonly #tokens: string[] = [];
+
+  /** Keeps the token `presented`'s `Authorization` header carries, if any. */
+  note(presented: Readonly<Record<string, string>> | undefined): void {
+    if (presented === undefined) return;
+    const header = Object.entries(presented).find(
+      ([name]) => name.toLowerCase() === "authorization"
+    )?.[1];
+    const token =
+      header
+        ?.trim()
+        .replace(/^\S+\s+/, "")
+        .trim() ?? "";
+    if (token === "" || this.#tokens[0] === token) return;
+    const known = this.#tokens.indexOf(token);
+    if (known !== -1) this.#tokens.splice(known, 1);
+    this.#tokens.unshift(token);
+    this.#tokens.length = Math.min(this.#tokens.length, SENT_TOKENS_KEPT);
+  }
+
+  /** `current` (the credential's secret now) and the tokens kept. */
+  with(current: string): readonly string[] {
+    return [current, ...this.#tokens];
+  }
 }

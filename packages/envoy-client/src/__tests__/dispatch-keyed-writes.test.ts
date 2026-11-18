@@ -160,14 +160,13 @@ const reset = () =>
 /** A connection nothing took: Bun 1.4's refused port. */
 const refused = () => Object.assign(new TypeError("Unable to connect"), { code: "ECONNREFUSED" });
 
-/** A credential whose write presentations after the first fail fast, as a broker credential does
- *  once its token lapsed and the broker is down; the `/healthz` probe's is answered. */
+/** A credential whose presentations after the first fail fast, as a broker credential does once
+ *  its token lapsed and the broker is down. The `/healthz` probe presents none. */
 function failingAfterFirst(): RequestCredential {
   let presented = 0;
   return {
     scheme: "Bearer",
-    headers: (_method, url) => {
-      if (url.endsWith("/healthz")) return { Authorization: "Bearer secret" };
+    headers: () => {
       presented += 1;
       if (presented > 1) throw new TradeRetryingError("the secrets broker answered 503");
       return { Authorization: "Bearer secret" };
@@ -176,14 +175,13 @@ function failingAfterFirst(): RequestCredential {
   };
 }
 
-/** A credential whose write presentations after the first wait until their signal ends, then
- *  reject with its reason, as a broker credential waiting on a broker that does not answer does. */
+/** A credential whose presentations after the first wait until their signal ends, then reject
+ *  with its reason, as a broker credential waiting on a broker that does not answer does. */
 function waitingAfterFirst(): RequestCredential {
   let presented = 0;
   return {
     scheme: "Bearer",
-    headers: (_method, url, _session, signal) => {
-      if (url.endsWith("/healthz")) return { Authorization: "Bearer secret" };
+    headers: (_method, _url, _session, signal) => {
       presented += 1;
       if (presented === 1) return { Authorization: "Bearer secret" };
       const { promise, reject } = Promise.withResolvers<Readonly<Record<string, string>>>();
@@ -1067,14 +1065,13 @@ describe("DispatchClient's writes", () => {
   test("a credential that fails after a silent attempt leaves the write unsettled, naming the credential", async () => {
     const { retry, stall } = stalling();
     const { fetchImpl, sent } = scripted([stall, replayed()]);
-    // The write's own presentations: the first goes out with attempt 1, every later one fails, as
-    // a fail-fast broker credential does once its token lapsed and the broker is down. The
-    // `/healthz` probe, which presents the credential too, is answered.
+    // The write's presentations: the first goes out with attempt 1, every later one fails, as a
+    // fail-fast broker credential does once its token lapsed and the broker is down. The
+    // `/healthz` probe presents none.
     let presented = 0;
     const credential: RequestCredential = {
       scheme: "Bearer",
-      headers: (_method, url) => {
-        if (url.endsWith("/healthz")) return { Authorization: "Bearer secret" };
+      headers: () => {
         presented += 1;
         if (presented > 1) {
           throw new TradeRetryingError(
@@ -1468,8 +1465,7 @@ describe("DispatchClient's writes", () => {
     let presented = 0;
     const credential: RequestCredential = {
       scheme: "DPoP",
-      headers: (_method, url) => {
-        if (url.endsWith("/healthz")) return { Authorization: "DPoP live" };
+      headers: () => {
         presented += 1;
         if (presented === 2) {
           throw new TradeRetryingError("the secrets broker answered 503 temporarily_unavailable");
@@ -1682,6 +1678,96 @@ describe("DispatchClient's writes", () => {
       posted
     );
     expect(sent).toHaveLength(1);
+  });
+
+  // A3 (the review of 99b1e438db): every Dispatch write answers JSON or a bodiless 204 or 205
+  // (`writeJSON`, `api/routes_shapes.go`), so a 2xx with an empty body or a body that is not JSON
+  // is something in Dispatch's place, a captive portal's 200 for one, whether or not this process
+  // knows the keyed layer: whether that sender passed the write on cannot be told, so the write
+  // ends unsettled with its key, never as a success.
+  test.each([
+    ["a portal's 200 page", () => page(200, "OK")],
+    [
+      "an empty 200 that says JSON",
+      () => new Response("", { status: 200, headers: { "Content-Type": "application/json" } }),
+    ],
+    ["a 201 in plain text", () => new Response("created", { status: 201 })],
+  ] as const)("%s, in a process that knows nothing of the keyed layer, leaves the write unsettled with its key", async (_, answer) => {
+    const { fetchImpl, sent, probes } = scripted([answer()], { echo: false });
+
+    const error = await failure(client(fetchImpl, pacing().retry).comment("DSP-1", comment));
+
+    expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
+    expect((error as DispatchWriteUnsettledError).key).toBe(
+      sent[0]?.headers["Idempotency-Key"] as string
+    );
+    expect((error as DispatchWriteUnsettledError).last.message).toContain(
+      "though every Dispatch write answers JSON, so something in Dispatch's place answered"
+    );
+    expect(sent).toHaveLength(1);
+    expect(probes).toHaveLength(0);
+  });
+
+  // F8 (the review of 99b1e438db): a 2xx whose body broke off still showed its headers, so what
+  // they said is kept: the echo says Dispatch's keyed layer answered, and `Retry-After` paces the
+  // resend. The write is asked again under its key without asking `/healthz`, which here answers
+  // with no layer, and the replay settles it.
+  test("a 201 whose body breaks off after echoing the key is asked again on its Retry-After, asking no /healthz", async () => {
+    const broken = (signal: AbortSignal | null | undefined) => {
+      const response = partBody("broken")(signal);
+      response.headers.set("Retry-After", "3");
+      return response;
+    };
+    const { fetchImpl, sent, probes } = scripted([broken, replayed()], {
+      health: { status: "ok" },
+    });
+    const { retry, pauses } = pacing();
+
+    await expect(client(fetchImpl, retry).comment("DSP-1", comment)).resolves.toEqual(posted);
+
+    expect(sent).toHaveLength(2);
+    expect(pauses).toEqual([3_000]);
+    expect(probes).toHaveLength(0);
+  });
+
+  // F11 (the review of 99b1e438db): Dispatch mounts `/healthz` outside its API chain
+  // (`dispatchHandler`, cmd/dispatch/main.go), so the probe presents no credential: a fail-fast
+  // credential failing at that moment cannot end the write at the probe.
+  test("the /healthz probe presents no credential, so a credential failing then does not end the write", async () => {
+    let presented = 0;
+    const credential: RequestCredential = {
+      scheme: "DPoP",
+      headers: (_method, url) => {
+        if (url.endsWith("/healthz")) {
+          throw new TradeRetryingError("the secrets broker answered 503 temporarily_unavailable");
+        }
+        presented += 1;
+        return { Authorization: "DPoP live", DPoP: "proof" };
+      },
+      secret: () => "live",
+    };
+    // The gateway's page echoes nothing, so only the probe can say the layer runs.
+    const dispatch = scripted([page(502, "Bad Gateway"), replayed()]);
+    const probeHeaders: Record<string, string>[] = [];
+    const recording = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith("/healthz")) {
+        probeHeaders.push({ ...(init?.headers as Record<string, string>) });
+      }
+      return dispatch.fetchImpl(input, init);
+    }) as typeof fetch;
+
+    await expect(
+      new DispatchClient("http://dispatch.test", credential, recording, {
+        writeRetry: pacing().retry,
+      }).comment("DSP-1", comment)
+    ).resolves.toEqual(posted);
+
+    expect(dispatch.sent).toHaveLength(2);
+    expect(presented).toBe(2);
+    expect(probeHeaders).toHaveLength(1);
+    expect(Object.keys(probeHeaders[0] ?? {}).map((name) => name.toLowerCase())).not.toContain(
+      "authorization"
+    );
   });
 
   // A credential refused for good (a sign-in its issuer ended) ends the write at once, in its own

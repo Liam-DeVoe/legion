@@ -643,37 +643,52 @@ that. How a write ends is one transition table (`write-outcome.ts`, `writeStep`)
 loop (`#write`) decides nothing else. A write is in one of two states: nothing sent, or may have
 landed. An attempt may have landed when it got a 5xx or `409 KEY_IN_FLIGHT`, was cut off for
 silence (an upload's included), failed in transport after it went out (a reset after Dispatch
-read it), or was ended by the deadline or the caller's stop while it was in flight; a refused
-connection or a name that did not resolve reached nothing. From "may have landed", only a 2xx or
-a refusal Dispatch's keyed layer judged for the key (the key echoed back) settles the write;
-every other end — a 3xx, a page something in Dispatch's place wrote, a refusal Dispatch's auth
-made before its keyed layer ran (a 401, `403 READ_ONLY_TOKEN`, a second `401
+read it), its answer's body broke off or was ended by the deadline or the caller's stop, or it was
+ended by either while it was in flight; a refused connection or a name that did not resolve
+reached nothing. Every answer's body is read inside its attempt, so a 2xx settles only once its
+body is read whole. From "may have landed", only such a 2xx or a refusal Dispatch's keyed layer
+judged for the key (the key echoed back) settles the write. A 2xx that is no answer of Dispatch's
+settles nothing from either state: one whose body is empty or not JSON (a captive portal's 200
+page; every Dispatch write answers JSON, or a bodiless 204 or 205), whatever the process knows,
+and one that carries no key back from a Dispatch this process knows runs the keyed layer. Every
+other end — a 3xx, a page something in Dispatch's place wrote, a refusal Dispatch's auth made
+before its keyed layer ran (a 401, `403 READ_ONLY_TOKEN`, a second `401
 BROKER_TOKEN_NOT_ACTIVE`), a credential that cannot present, no route to the end, the deadline,
-the caller's stop, or no attempt or time left — is `DispatchWriteUnsettledError`, with what ended
-it as its cause and the write's key as its `key`. Before anything may have landed, a write that
-ends is told that event's own error: the refusal (a 3xx included, which says nothing reached
-Dispatch), the transport's failure (a refused connection on every attempt is told as Dispatch
-being unreachable), the credential's, the deadline's or the stop's. When the write ends unsettled
-after this call saw the keyed layer judge it, the error says Dispatch finishes an attempt it
-received, and to read the write back before sending it again, since a new command sends it under
-a new key. A conversion that writes nothing (the markdown round trip) never leaves "nothing
-sent", so it keeps its own answers. `dispatch-write-outcomes.test.ts` drives the client through
-every (state, event) pair and every sequence of events up to its limits against that rule.
+the caller's stop, or no attempt or time left, a 5xx included — is `DispatchWriteUnsettledError`,
+with what ended it as its cause and the write's key as its `key`. Before anything may have landed,
+a write that ends is told that event's own error: the refusal (a 3xx included, which says nothing
+reached Dispatch), the transport's failure (a refused connection on every attempt is told as
+Dispatch being unreachable), the credential's, the deadline's or the stop's. A credential whose
+trade goes on (the broker credential's fail-fast `TradeRetryingError`) is presented again on the
+write's pacing, and a deadline or a stop that ends the wait after it ends the write with that
+credential's error; a trade still unanswered, a pod's registration still pending (each told only
+once the credential has waited out its share of the deadline) and a credential refused for good
+end the write at once. When the write ends unsettled after this call saw the keyed layer judge
+it, the error says Dispatch finishes an attempt it received, and to read the write back before
+sending it again, since a new command sends it under a new key. A conversion that writes nothing
+(the markdown round trip) never leaves "nothing sent", so it keeps its own answers.
+`dispatch-write-outcomes.test.ts` drives the client through every (state, event) pair and every
+sequence of events up to its limits against that rule.
 
-A write is asked again only against a Dispatch this process has lately seen run the keyed layer,
-since an earlier Dispatch ignores the header and would run a retried write a second time. A
-failing answer that echoes the request's key (`Idempotency-Key: <key>`) is that proof itself, so
-one of Dispatch's 5xx, 429 or `409 KEY_IN_FLIGHT` is resent at once. A transport failure, a
-silence cut and a gateway's answer carry no echo, so they rely on what an echo, or a
-`GET /healthz` answering `idempotency_keys: true`, showed for that origin within the last five
-minutes (`KEYED_LAYER_MEMORY_MS`), and otherwise read `/healthz` before the first resend, bounded
-at 5 s. Its status is not read, since Dispatch answers 503 while its database or NATS is down and
-still says `idempotency_keys`; a probe that fails, times out, answers no JSON or lacks the field
-means no resend, and the attempt's own failure is the call's. Only a yes is remembered, and only
-for those five minutes, so a rollback to a Dispatch without the layer is noticed within that
-bound. Dispatch's own refusal that carries no echo says its layer did not judge the request, so
-it sets the memory aside and `/healthz` decides afresh. The probe runs only after a write has
-already failed, so the ordinary path makes no request of its own.
+A write that may have landed is asked again only against a Dispatch this process has lately seen
+run the keyed layer, since an earlier Dispatch ignores the header and would run a retried write a
+second time; before anything may have landed (a refused connection, a 408 or 429, a credential
+that could not present), a repeat is no second write, and nothing is asked first. A failing
+answer that echoes the request's key (`Idempotency-Key: <key>`) is that proof itself, a 2xx whose
+body then broke off included, so one of Dispatch's 5xx, 429 or `409 KEY_IN_FLIGHT` is resent
+without a probe, paced by the `Retry-After` its headers carried. A transport failure, a silence cut and a
+gateway's answer carry no echo, so they rely on what an echo, or a `GET /healthz` answering
+`idempotency_keys: true`, showed for that origin within the last five minutes
+(`KEYED_LAYER_MEMORY_MS`), and otherwise read `/healthz` before the first resend, bounded at 5 s.
+The probe presents no credential: Dispatch serves `/healthz` outside its API, and a credential
+failing at that moment would otherwise end a write the keyed layer could take again. Its status
+is not read, since Dispatch answers 503 while its database or NATS is down and still says
+`idempotency_keys`; a probe that fails, times out, answers no JSON or lacks the field means no
+resend, and the attempt's own failure is the call's. Only a yes is remembered, and only for those
+five minutes, so a rollback to a Dispatch without the layer is noticed within that bound.
+Dispatch's own refusal that carries no echo says its layer did not judge the request, so it sets
+the memory aside and `/healthz` decides afresh. The probe runs only after a write has already
+failed, so the ordinary path makes no request of its own.
 
 The `dispatch` command runs each call in a process of its own, so it carries that memory in its
 session's `state.json` (`keyedLayer`: each origin with the wall-clock time of its last sighting,
@@ -695,9 +710,11 @@ that URL's fixed phrase otherwise (`requestForText`, `@legion/contracts/log-text
 bearer, which is a header), the status and reason phrase, a one-line plain-text excerpt of the
 body, and what asking again can do. The excerpt
 drops scripts, styles and tags, reads at most the body's first 64 KiB in linear time, and, like the
-reason phrase, has the value after `Authorization:` or `Bearer` redacted, and every run of 8 or more
-of the client's bearer's characters (a shorter bearer only whole), so a copy cut short, split by
-markup or overlapping another leaves no such piece. A body none of whose read part is text is named
+reason phrase, has the value after `Authorization:`, `Bearer` or `DPoP` redacted, and every run of 8
+or more of the characters of each token the client presented lately (its credential's now, and
+those it sent before a renewal: `SentTokens`, `excerpt.ts`; a shorter token only whole), so a copy
+cut short, split by markup or overlapping another leaves no such piece. A body none of whose read
+part is text is named
 by its size in bytes; only a body with nothing in it is "an empty body". A status that cannot clear
 answers the same until the Dispatch URL, or whatever
 answers in its place, is fixed. A 5xx, 408 or 429 may clear: a GET may succeed on a retry, and so
@@ -709,17 +726,15 @@ request, such as `dispatch issue-update`'s close path, give its own advice inste
 reads a status as Dispatch's meaning (a 404 as no linked issue, no such document, or a server
 without the route) only when `fromDispatch` is true.
 
-A write whose attempts run out is thrown as the last attempt's own error, with its usual message,
-except where that last answer alone would say the write never took effect while an earlier attempt
-may have reached Dispatch: a gateway's 408 or 429, Dispatch's own 429, and `409 KEY_IN_FLIGHT`.
-Those are a `DispatchWriteUnsettledError`, deliberately not a `DispatchServiceError`, since a
-caller reads one as a refusal Dispatch decided: its message is the last answer, the number of
+`DispatchWriteUnsettledError` is deliberately not a `DispatchServiceError`, since a caller reads
+one as a refusal Dispatch decided: its message is the last answer or failure, the number of
 attempts, whether an earlier attempt may have reached Dispatch or Dispatch was still running one,
 and that the write may or may not have taken effect, so check before running it again - a new
-command is a new key. A write that ends with no answer at all is one too, naming the request: its
-last attempt cut off for silence ("made no progress for 20 s, so it was cut off"), or the call's
-deadline ending it while an attempt was out or after one that may have reached Dispatch ("had no
-definitive answer when its deadline ended it"); `last` is the cut or the timeout. A write Dispatch
+command is a new key. `key` is the key every attempt carried and `last` what ended the write. A
+write that ends with no answer at all names the request: its last attempt cut off for silence
+("made no progress for 20 s, so it was cut off"), or the call's deadline ending it while an
+attempt was out or after one that may have reached Dispatch ("had no definitive answer when its
+deadline ended it"). A write Dispatch
 made whose answer is gone is a `DispatchWriteLandedError` (`code`, an `IdempotencyLandedCode`, and
 `status`): `409 KEY_COMMITTED`, a write that landed before its answer was lost, which Dispatch will
 not run again, or a replayed 2xx (`Idempotency-Replayed: ?1`) reading `ANSWER_NOT_KEPT`, a first

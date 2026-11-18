@@ -103,6 +103,9 @@ interface Kind {
   readonly at: "attempt" | "credential" | "wait";
   /** Whether the answer carries the request's key back, as Dispatch's keyed layer answers. */
   readonly echoed?: boolean;
+  /** Whether it is a 2xx whose body is empty or not JSON-typed: no answer Dispatch writes to a
+   *  keyed write, whatever the process knows of the layer. */
+  readonly notJson?: boolean;
   /** Whether it can come after Dispatch committed the write: a 5xx, `KEY_IN_FLIGHT`, a silence
    *  cut, a reset after the request went out, a 2xx whose body did not arrive whole. */
   readonly followsCommit?: boolean;
@@ -234,7 +237,17 @@ const KINDS: readonly Kind[] = [
     role: "applied",
     at: "attempt",
     echoed: false,
+    notJson: true,
     respond: () => page(200, "OK"),
+  },
+  {
+    name: "200 empty",
+    role: "applied",
+    at: "attempt",
+    echoed: false,
+    notJson: true,
+    respond: () =>
+      new Response("", { status: 200, headers: { "Content-Type": "application/json" } }),
   },
   {
     name: "201 body outlives deadline",
@@ -253,6 +266,7 @@ const KINDS: readonly Kind[] = [
     role: "repeatable",
     at: "attempt",
     followsCommit: true,
+    echoed: true,
     respond: (key, init, run) => partBody(key, init, run, "broken"),
   },
   {
@@ -260,6 +274,7 @@ const KINDS: readonly Kind[] = [
     role: "repeatable",
     at: "attempt",
     followsCommit: true,
+    echoed: true,
     respond: (key) =>
       new Response(JSON.stringify(posted).slice(0, 11), {
         status: 201,
@@ -566,9 +581,9 @@ function oracle(events: readonly Kind[]): Decision[] {
     if (event.at === "credential") credentialFailed = event.role === "repeatable";
     switch (event.role) {
       case "applied":
-        // A 2xx without the key, from a Dispatch known to answer every keyed write with it, is
-        // not Dispatch's answer to this write.
-        if (!event.echoed && known) return end(UNSETTLED);
+        // A 2xx whose body is empty or not JSON is no answer of Dispatch's; nor is one without
+        // the key from a Dispatch known to answer every keyed write with it.
+        if (event.notJson || (!event.echoed && known)) return end(UNSETTLED);
         return end({ as: "resolved" });
       case "refusal":
         if (event.echoed) return end(refusal);
@@ -631,8 +646,7 @@ async function drive(script: readonly Kind[]): Promise<{ run: Run; error?: unkno
   };
   const credential: RequestCredential = {
     scheme: "DPoP",
-    headers: async (_method, url) => {
-      if (url.endsWith("/healthz")) return { Authorization: "DPoP live" };
+    headers: async () => {
       const waited = waitStep(run);
       if (waited !== undefined) throw waited;
       const next = run.script[run.cursor];
@@ -840,6 +854,7 @@ const ENDINGS: readonly Kind[] = [
   kind("201"),
   kind("201 un-echoed"),
   kind("200 portal page"),
+  kind("200 empty"),
   kind("201 body outlives deadline"),
   kind("201 body stopped"),
   kind("422 KEY_REUSED"),

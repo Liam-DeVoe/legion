@@ -1693,6 +1693,43 @@ describe("EnvoyClient", () => {
     expect(message.length).toBeLessThan(400);
   });
 
+  // M4 (the review of 99b1e438db): a page that echoes the request's `Authorization: DPoP` back is
+  // redacted as a bearer's is, and so is the token the request was sent with when the credential
+  // names another by the time the answer comes (a renewal between the two).
+  test("a page that echoes a DPoP token sent before a renewal prints none of it", async () => {
+    const sent = fixtureSecret("sent");
+    const renewed = fixtureSecret("renewed");
+    let presentations = 0;
+    const credential: RequestCredential = {
+      scheme: "DPoP",
+      headers: () => {
+        presentations += 1;
+        return { Authorization: `DPoP ${sent}`, DPoP: "proof" };
+      },
+      secret: () => (presentations === 0 ? sent : renewed),
+    };
+    const page =
+      `<html><body><h1>502 Bad Gateway</h1><pre>Authorization: DPoP ${sent}\n` +
+      `X-Echo: DPoP ${sent.slice(2)}\nX-Raw: ${sent}</pre></body></html>`;
+    const client = createEnvoyClient({
+      baseUrl: "http://listener",
+      credential,
+      retry: false,
+      fetch: (async () =>
+        new Response(page, {
+          status: 502,
+          headers: { "Content-Type": "text/html" },
+        })) as unknown as typeof fetch,
+    });
+    const error = await client.getInterest("ses_sender").catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(EnvoyApiError);
+    const message = (error as EnvoyApiError).message;
+    expect(message).toContain(
+      '("502 Bad Gateway Authorization: DPoP [redacted] X-Echo: DPoP [redacted] X-Raw: [redacted]")'
+    );
+    expect(message).not.toContain(sent.slice(-12));
+  });
+
   // A refused connection, or a name that does not resolve, reached no listener, so nothing was
   // stored: the send is refused, in the transport's own words, never "may or may not have
   // arrived" with a resend to make.

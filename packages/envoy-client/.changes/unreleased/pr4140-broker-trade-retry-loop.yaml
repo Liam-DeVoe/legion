@@ -36,10 +36,13 @@ body: |-
   flight; a refused connection or a name that did not resolve reached nothing. A 2xx's body is
   read inside its attempt: a body the deadline or the caller's stop ends is that stop in flight,
   and a body that breaks off or is not the JSON its `Content-Type` says is asked again under the
-  key. Once an attempt may have landed, only a 2xx whose body was read whole, or a refusal
-  Dispatch's keyed layer judged for the key, settles the write; a 2xx that carries no key back
-  from a Dispatch this process knows runs the keyed layer is no answer of Dispatch's (a captive
-  portal's page) and settles nothing, wherever it comes. Every other end — a 3xx, a gateway's
+  key, paced by the `Retry-After` its headers carried and with the key they echoed read as
+  Dispatch's keyed layer. Once an attempt may have landed, only a 2xx whose body was read whole,
+  or a refusal Dispatch's keyed layer judged for the key, settles the write. A 2xx that is no
+  answer of Dispatch's settles nothing, wherever it comes: one whose body is empty or not JSON
+  (a captive portal's 200 page; every Dispatch write answers JSON, or a bodiless 204 or 205),
+  whatever the process knows, and one that carries no key back from a Dispatch this process
+  knows runs the keyed layer. Every other end — a 3xx, a gateway's
   page, Dispatch's auth refusal (a 401, `403 READ_ONLY_TOKEN`, a second `401
   BROKER_TOKEN_NOT_ACTIVE`), a credential that cannot present, no route to the end, the deadline,
   the caller's stop, or no attempt or time left, a 5xx included — is
@@ -54,17 +57,22 @@ body: |-
   before anything landed, the write ends with the credential's error, not the wait's. Before
   anything of a write may have landed (a refused connection, a 408 or 429, a credential that could
   not present), it is asked again without asking `/healthz` first, since a repeat then is no second
-  write; before, the probe came first, and a fail-fast credential, which fails the probe's
-  presentation too, ended the write there. No Dispatch or Envoy request follows a redirect any
+  write; before, the probe came first, and a fail-fast credential, which failed the probe's
+  presentation too, ended the write there. The `/healthz` probe now presents no credential, since
+  Dispatch serves it outside its API, so a credential failing at that moment no longer ends a
+  write the keyed layer could take again. No Dispatch or Envoy request follows a redirect any
   more (`redirect: "manual"`): a 301, 302 or 303 turned a write's POST into a GET whose 2xx read
   as the write's answer, and a 307 or 308 sent it again to another origin. A 3xx is now the
   answer, and its error names the origin its `Location` points at, never its path, query or user
   info; on a first attempt it says nothing reached Dispatch. Every body that is not the server's
-  own is named in one line with the bearer and any `Authorization` or `Bearer` value redacted
-  (`bodyForText`, the new `@legion/envoy-client/excerpt`), as the Dispatch client names a
+  own is named in one line with the bearer and any `Authorization`, `Bearer` or `DPoP` value
+  redacted (`bodyForText`, the new `@legion/envoy-client/excerpt`), as the Dispatch client names a
   gateway's page: the Envoy client's error for an answer that is not the listener's error JSON,
   and for a 2xx whose body is not JSON (no longer the parser's message, which quotes the word it
-  stopped at), where it printed the body whole. The broker credential's pool identity follows no
+  stopped at), where it printed the body whole. Each client redacts every token it presented
+  lately as well as the one its credential holds now, so a page that echoes a token sent before
+  a renewal prints none of it, and a `DPoP` token is redacted as a bearer's is, where the value
+  after `Authorization: DPoP` was left in. The broker credential's pool identity follows no
   redirect either: a 307 or
   308 from Google's security token service would have sent the projected token in its body on to
   another origin. The dead token's re-send happens once per write call. The markdown round-trip,
