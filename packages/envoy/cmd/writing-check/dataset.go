@@ -160,6 +160,7 @@ steps:
   pack         put the snapshot, the verdicts and the seed into one bundle that build --from reads
   sessions     check the session export's parts and give each case its place in its writer session
   owner-texts  write each text the owner wrote himself, with its time, from the snapshot build reads
+  followups    write what the owner did after each case's text, and the question cases' explanations as answer cases
   named        build plain cases of the development part from the document versions --doc lists, read from the live Dispatch
 
 writing-check dataset <step> -h lists its flags.
@@ -183,6 +184,8 @@ func runDataset(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		return runDatasetSessions(args[1:], stdout, stderr)
 	case "owner-texts":
 		return runDatasetOwnerTexts(args[1:], stdout, stderr)
+	case "followups":
+		return runDatasetFollowups(args[1:], stdout, stderr)
 	case "named":
 		return runDatasetNamed(ctx, args[1:], stdout, stderr)
 	case "-h", "--help", "help":
@@ -2755,11 +2758,7 @@ func buildDataset(in dsInputs, out string) (dsBuildResult, error) {
 	ownerText := func(t *dsText) *dsCaseText {
 		ct := ix.caseText(t)
 		if v, ok := verdictOf[t]; ok {
-			words := v.Words
-			if words == nil {
-				words = []string{}
-			}
-			ct.Verdict = &dsCaseVerdict{Verdict: v.Verdict, Words: words, Model: v.Model, PromptSHA256: v.PromptSHA256}
+			ct.Verdict = caseVerdict(v)
 		}
 		return &ct
 	}
