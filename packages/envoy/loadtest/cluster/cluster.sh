@@ -1194,6 +1194,9 @@ sampler_wait() {
   note "sampler: $why; stopping every role loop with its kubectl exec, and exiting"
   rm -f -- "$RUN_DIR/sampler.pid"
   trap '' TERM
+  # no-wait: the sampler's own last act. Every role loop takes TERM at its default, so none of
+  # them runs again once this kill has returned, and the run's next command reads only the
+  # pidfile removed above.
   kill -TERM -- "-$$" 2>/dev/null || true
   exit 0
 }
@@ -1384,12 +1387,15 @@ pg_disk_write() {
 # no sleep of its own behind.
 pg_disk_watch() {
   local name=$1 dir=$2 job=$3 file=$4 pid=$5 start=$6 nap="" guard stopped=0 committed=0 recorded=0
+  # no-wait: the nap is this watcher's own sleep, which takes TERM at its default and which
+  # nothing reads again; the watcher leaves at its next check.
   trap 'stopped=1; [ -z "$nap" ] || kill -- "$nap" 2>/dev/null' TERM
   while :; do
     ((stopped == 0)) || return 0
     sleep "$PG_DISK_POLL_SECONDS" &
     nap=$!
     # A TERM between the fork and that assignment found no nap to end, so it is ended here.
+    # no-wait: the watcher returns, and nothing reads its nap again.
     ((stopped == 0)) || { kill -- "$nap" 2>/dev/null; return 0; }
     wait "$nap" || true
     nap=""
@@ -1682,6 +1688,9 @@ runner_stop() {
   copy_is_ours "the runner job $1 in the runner pod" || guard=$?
   ((guard == 0)) || return "$guard"
   # The signal is this shell's, everything else the runner's sh expands.
+  # no-wait: the job's end is read where the runner's sh records it, its .rc, which runner_wait
+  # polls: every job this stops is one a runner_wait is waiting on (the wait's own stop, the
+  # disk watcher's during a step) or waits on next (typing_stop).
   kube_for 300 exec runner -c runner -- \
     sh -c "pid=\$(cat \"/work/logs/\$1.pid\" 2>/dev/null); kill -${2:-TERM} \"\$pid\" 2>/dev/null; exit 0" sh "$1" >/dev/null ||
     return 3

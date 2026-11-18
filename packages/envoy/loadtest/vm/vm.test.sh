@@ -135,16 +135,19 @@
 # the end size when the load has ended, and taking the credential all of it is read with away
 # with the step; (aa) a step stopped by SIGTERM or SIGINT takes its remote work with it: no
 # loadgen run left on the load machine, no profiling tunnel, no sampler, no collector and no
-# pid file of any of them; and
+# pid file of any of them;
 # (bb) a reset whose database still carries the sessions its
 # stopped containers left behind waits out the ones that are going by themselves, ends the rest
 # over pg_stat_activity and drops it all the same, the seed's rename of that database does the
 # same, a drop the instance refuses even so refuses the reset by name with the sessions it saw,
 # and the same reset against the drop the series died on -- `with (force)` and nothing before
-# it -- is refused by the server with those sessions attached; and (cc) up tells a psql that did
+# it -- is refused by the server with those sessions attached; (cc) up tells a psql that did
 # not answer from an instance that answered it holds no database: a psql that fails refuses up
 # by name, with what psql said, and no create database of that database is run, while a psql
-# that answers with no row has up make it once.
+# that answers with no row has up make it once; and (dd) each kill of the load machine -- the
+# step's tunnel, the step's load, the stub embedder -- returns only once the process it ended is
+# gone from that machine's process table, reaped by its parent however late, and returns 1,
+# naming the process and keeping its pid file, when its wait runs out first.
 set -euo pipefail
 # Nothing here is read from this test's own standard input, and the fake ssh reads a pipe it is
 # given as ssh does, so the suite runs with /dev/null under it: whatever the caller's standard
@@ -172,6 +175,7 @@ export LOADTEST_VM_ROOT=$tmp/root
 # -- are under $tmp, and this test's own process is not, so the pattern reaches neither it nor
 # anything of another run.
 cleanup() {
+  # no-wait: the suite's own exit; nothing reads these processes after it.
   pkill -f "$tmp/" 2>/dev/null || true
   "$REAL_RM" -rf -- "$tmp"
 }
@@ -651,19 +655,13 @@ case $cmd in
     # up of a deployment whose first stub is still running meets. FAKE_DIR/stub-port is that
     # port: the stub claims it, writes its certificate, and serves until it is killed or until
     # the fakes' own directory goes with the case that started it, so no stub outlives its case.
-    # The claim waits a moment for a live holder, because vm.sh's own stop sends that holder a
-    # TERM just before this start and a port is freed by the exit that follows, not by the
-    # signal.
+    # The claim is refused at once while its holder's pid is still there, as a bind is: vm.sh's
+    # own stop has to wait for the holder to be gone before it starts the next stub.
     lock=$FAKE_DIR/stub-port
-    waited=0
-    while [ -f "$lock" ] && kill -0 "$(cat "$lock" 2>/dev/null)" 2>/dev/null; do
-      if ((waited >= 50)); then
-        printf 'fake stub-embed: listen tcp %s: bind: address already in use\n' "$(flag listen)" >&2
-        exit 1
-      fi
-      "$REAL_SLEEP" 0.1
-      waited=$((waited + 1))
-    done
+    if [ -f "$lock" ] && kill -0 "$(cat "$lock" 2>/dev/null)" 2>/dev/null; then
+      printf 'fake stub-embed: listen tcp %s: bind: address already in use\n' "$(flag listen)" >&2
+      exit 1
+    fi
     printf '%s\n' "$$" >"$lock"
     printf -- '-----FAKE CERT-----\n' >"$(flag cert-out)"
     release() { [ "$(cat "$lock" 2>/dev/null)" != "$$" ] || rm -f -- "$lock"; exit 0; }
@@ -3281,6 +3279,7 @@ for signal in TERM INT; do
   waited=0
   while kill -0 "$step_pid" 2>/dev/null; do
     ((waited < 900)) || {
+      # no-wait: the case fails on the next line, and the suite's cleanup ends what is left.
       kill -KILL "$step_pid" 2>/dev/null || true
       fail "the step was still running 90 s after SIG$signal: a script with no trap for the signal waits on the ssh in front of it, which has ten minutes to go"
     }
@@ -3330,5 +3329,105 @@ for signal in TERM INT; do
 done
 rm -f "$fake/run-hangs"
 pass "a step stopped by SIGTERM or SIGINT takes its remote work with it: no loadgen run on the load machine, no profiling tunnel, no sampler and no collector left, and no pid file of any of them"
+
+# ---- (dd) a process ended on the load machine is gone when its kill returns ------------------
+
+# SIGKILL ends a process when the kernel next runs it, and its pid answers kill -0 until its
+# parent has reaped it. The three kills of the load machine -- the step's tunnel, the step's load
+# and the stub embedder -- returned as soon as the KILL was sent, so a check made at once could
+# still find the pid: case (aa) failed that way on a loaded machine, with its tunnel's pid still
+# there, and a second up's stub could meet its predecessor still on the port. Each kill also sends
+# the KILL here, because the fake sleep makes the ten seconds of grace after the TERM pass at once.
+#
+# This case makes the slow parent on purpose. The process each kill ends ignores TERM, so only the
+# KILL ends it, and its parent is stopped, so it is reaped only when this case continues that
+# parent. A kill that returns while the pid is still there is caught every time: the parent is
+# still stopped then, so nothing else can have reaped it. A kill that waits is still running
+# while the parent is stopped, and returns once the parent, continued, has reaped the process. And
+# a kill whose wait runs out says so: it returns 1, names the pid and keeps the pid file, which
+# still names a live process.
+
+# dd_victim FILE: a process that ignores TERM, its pid in FILE and in DD_VICTIM, under a parent of
+# this case's own whose pid is in DD_HOLDER. Only that parent reaps it.
+dd_victim() {
+  rm -f -- "$1" "$tmp/dd-victim"
+  mkdir -p -- "$(dirname -- "$1")"
+  # Its standard error goes nowhere: it would only say that the stand-in was killed.
+  bash -c '(trap "" TERM; exec "$1" 300) & echo "$!" >"$2"; wait' _ "$REAL_SLEEP" "$tmp/dd-victim" 2>/dev/null &
+  DD_HOLDER=$!
+  local waited=0
+  until [ -s "$tmp/dd-victim" ]; do
+    ((waited < 100)) || fail "the stand-in process wrote no pid within 10 s"
+    "$REAL_SLEEP" 0.1
+    waited=$((waited + 1))
+  done
+  DD_VICTIM=$(cat "$tmp/dd-victim")
+  printf '%s\n' "$DD_VICTIM" >"$1"
+}
+
+# dd_fail MESSAGE: fail, with the stand-in and its parent ended first, so neither outlives the case.
+dd_fail() {
+  # no-wait: the case fails below, and its parent, continued next, reaps the stand-in.
+  kill -KILL "$DD_VICTIM" 2>/dev/null || true
+  kill -CONT "$DD_HOLDER" 2>/dev/null || true
+  fail "$@"
+}
+
+reset_fake
+for kill_case in "tunnel_kill $remote/work/pprof-tunnel.pid" \
+  "load_kill $remote/work/runs/$fn_run/loadgen-run.pid" \
+  "stub_embed_stop $remote/work/stub-embed.pid"; do
+  read -r fn pid_file <<<"$kill_case"
+  dd_victim "$pid_file"
+  kill -STOP "$DD_HOLDER"
+  rm -f -- "$tmp/dd-rc"
+  (
+    run_fn "$fn"
+    printf '%s\n' "$RC" >"$tmp/dd-rc"
+  ) &
+  kill_job=$!
+  # The KILL has landed when the stand-in is a zombie: dead, and not reaped, its parent stopped.
+  waited=0
+  until [ "$(awk '{print $3}' "/proc/$DD_VICTIM/stat" 2>/dev/null)" = Z ]; do
+    ((waited < 600)) || dd_fail "$fn sent no KILL that ended the stand-in (pid $DD_VICTIM) within 60 s: $(cat "$tmp/out")"
+    "$REAL_SLEEP" 0.1
+    waited=$((waited + 1))
+  done
+  # A kill that waits is still running two seconds on, while the parent stays stopped.
+  waited=0
+  while kill -0 "$kill_job" 2>/dev/null && ((waited < 20)); do
+    "$REAL_SLEEP" 0.1
+    waited=$((waited + 1))
+  done
+  kill -0 "$kill_job" 2>/dev/null ||
+    dd_fail "$fn returned while the process it ended (pid $DD_VICTIM) was still in the load machine's process table, its parent not yet having reaped it: $(cat "$tmp/out")"
+  kill -CONT "$DD_HOLDER"
+  wait "$kill_job" || true
+  wait "$DD_HOLDER" || true
+  [ "$(cat "$tmp/dd-rc" 2>/dev/null)" = 0 ] ||
+    fail "$fn ended with $(cat "$tmp/dd-rc" 2>/dev/null || echo nothing), not 0, although the process it ended was reaped: $(cat "$tmp/out")"
+  ! kill -0 "$DD_VICTIM" 2>/dev/null || fail "$fn returned with the process it ended (pid $DD_VICTIM) still there"
+  [ ! -e "$pid_file" ] || fail "$fn left its pid file $pid_file on the load machine"
+done
+pass "the tunnel's, the load's and the stub embedder's kills each return only once the process they ended is gone from the load machine's process table, reaped by its parent"
+
+# The same parent, never continued while the kill runs: the kill's wait, cut to a second here,
+# runs out, and the kill says which process it could not end.
+for kill_case in "tunnel_kill $remote/work/pprof-tunnel.pid" \
+  "load_kill $remote/work/runs/$fn_run/loadgen-run.pid" \
+  "stub_embed_stop $remote/work/stub-embed.pid"; do
+  read -r fn pid_file <<<"$kill_case"
+  dd_victim "$pid_file"
+  kill -STOP "$DD_HOLDER"
+  run_fn REMOTE_GONE_SECONDS=1 "$fn"
+  ((RC == 1)) || dd_fail "$fn ended with $RC, not 1, with the process it ended (pid $DD_VICTIM) still there: $(cat "$tmp/out")"
+  grep -qF "(pid $DD_VICTIM) is still in the generator VM's process table 1 s after its SIGKILL" "$tmp/out" ||
+    dd_fail "$fn did not name the process it could not end (pid $DD_VICTIM): $(cat "$tmp/out")"
+  [ "$(cat "$pid_file" 2>/dev/null)" = "$DD_VICTIM" ] ||
+    dd_fail "$fn removed its pid file $pid_file, which still names a live process"
+  kill -CONT "$DD_HOLDER"
+  wait "$DD_HOLDER" || true
+done
+pass "a kill whose process is still in the load machine's process table when its wait runs out returns 1, names the process and keeps the pid file that names it"
 
 printf 'PASS: packages/envoy/loadtest/vm/vm.test.sh\n'

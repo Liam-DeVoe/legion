@@ -44,6 +44,8 @@ pids=()
 cleanup() {
   local pid
   for pid in "${pids[@]}"; do
+    # no-wait: the suite's own exit. The wait below reaps this shell's children, and nothing
+    # reads the rest after it.
     kill -TERM "$pid" 2>/dev/null || true
   done
   wait 2>/dev/null || true

@@ -188,12 +188,14 @@ cleanup() {
   for f in "$tmp"/root*/*/heartbeat.pid "$tmp"/root*/*/sampler.pid; do
     # A daemon that stopped since the glob took its pidfile with it.
     pid=$(cat -- "$f" 2>/dev/null) || continue
+    # no-wait: the suite's own exit; nothing reads these daemons after it.
     kill -TERM -- "-$pid" 2>/dev/null || true
   done
   # A case that failed before its assertions could see the step end leaves the step shell (w)
   # killed, its disk watcher and its wait on the runner job behind; a cluster.sh that passes (w)
   # ends all three itself.
   while read -r pid _; do
+    # no-wait: the suite's own exit; nothing reads these steps after it.
     kill -TERM -- "$pid" 2>/dev/null || true
   done < <(own_steps)
   rm -rf -- "$tmp"
@@ -2590,9 +2592,11 @@ pidns_dir=$LOADTEST_CLUSTER_ROOT/$pidns_run
 jq '.pid_ns = "pid:[1]"' "$pidns_dir/state.json" >"$tmp/pidns-state.json"
 mv "$tmp/pidns-state.json" "$pidns_dir/state.json"
 chmod 600 "$pidns_dir/state.json"
+# Each daemon is gone before the step runs, so nothing of a dying one reaches the run it reads.
 for d in heartbeat sampler; do
   pidns_pid=$(<"$pidns_dir/$d.pid")
   kill -TERM -- "-$pidns_pid" 2>/dev/null || true
+  await_gone "$pidns_pid" || fail "the run's $d (pid $pidns_pid) did not end within 300 s of its SIGTERM"
   rm -f "$pidns_dir/$d.pid"
 done
 rm -rf "$pidns_dir/commands"
@@ -3312,8 +3316,12 @@ stop_watchdog() {
   (
     sleep "$1" &
     nap=$!
+    # no-wait: the guard's own nap, which takes TERM at its default; the guard exits with it,
+    # and nothing reads the nap after.
     trap 'kill "$nap" 2>/dev/null; exit 0' TERM
     wait "$nap"
+    # no-wait: what waits on $2 is the code this guards (pg_disk_watch_stop, or the case's own
+    # wait on it), and stop-late, written next, is what the case reads.
     kill -KILL "$2" 2>/dev/null || true
     : >"$fake/stop-late"
   ) &

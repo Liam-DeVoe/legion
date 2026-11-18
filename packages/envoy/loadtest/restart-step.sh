@@ -158,6 +158,8 @@ end_step() {
   local rc=$?
   if ((rc != 0)) && [ -n "${step:-}" ] && kill -0 "$step" 2>/dev/null; then
     note "ending the step: this script failed with $rc"
+    # no-wait: the wait below is on the step itself, the run-step.sh whose loadgen run this ends,
+    # which returns once it has handled that run's end.
     pkill -TERM -f "loadgen run -name $name -out $out" || true
     wait "$step" || true
   fi

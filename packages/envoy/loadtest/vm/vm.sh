@@ -299,6 +299,13 @@ STUB_EMBED_SECONDS=60
 # long between two reads through it.
 TUNNEL_SECONDS=60
 TUNNEL_POLL_SECONDS=2
+# How long a process this script ends on the load machine -- a step's load, its profiling tunnel,
+# the stub embedder -- is given to leave on SIGTERM, in naps of a second, and then how long its pid
+# is given to leave that machine's process table after the SIGKILL that follows (remote_kill). The
+# second bound is read off the machine's clock rather than counted in naps, so it holds whatever a
+# nap costs.
+REMOTE_TERM_SECONDS=10
+REMOTE_GONE_SECONDS=10
 # The port the tunnel listens on, on the load machine, and the command that opens it there. Both
 # are the deployment file's to change (ports.pprof_tunnel, pprof_tunnel_command): that machine's
 # own ssh may need a jump host or a port of its own, and a test server stands in for it. What
@@ -730,6 +737,50 @@ on_vm_for() {
   timeout "$seconds" "${SSH[@]}" "$(vm_ssh "$vm")" "$(remote_argv "$@")"
 }
 
+# remote_kill WHAT FILE: the process whose pid FILE holds on the load machine ended there and gone
+# from that machine's process table, and FILE removed. TERM first; KILL when the pid is still
+# there REMOTE_TERM_SECONDS later; then a wait, of up to REMOTE_GONE_SECONDS, for the pid to leave
+# the table. The wait is what a kill that only sends signals lacks: SIGKILL ends a process when the
+# kernel next runs it, and its pid answers kill -0 until its parent -- the machine's init, or the
+# sshd of the ssh that started it, never the sh below -- has reaped it. A caller that starts the
+# next process on the same port, or reads the table, at once meets that moment: vm.test.sh found a
+# stopped step's tunnel still there that way, on a loaded machine. Gone from the table is dead and
+# reaped.
+#
+# It returns 1 when the pid is still there at that bound, naming WHAT and the pid, and keeps FILE,
+# which still names a live process. A failure to reach the machine is not raised: a step that
+# cannot ssh has already failed on something louder than this.
+remote_kill() {
+  local what=$1 file=$2 pid rc=0
+  # shellcheck disable=SC2016 # expanded by the load machine's sh
+  pid=$(on_vm "$LOAD_VM" sh -c '
+    pid=$(cat "$1" 2>/dev/null)
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      kill -TERM "$pid" 2>/dev/null
+      i=0
+      while kill -0 "$pid" 2>/dev/null && [ "$i" -lt "$2" ]; do
+        sleep 1
+        i=$((i + 1))
+      done
+      if kill -0 "$pid" 2>/dev/null; then
+        kill -KILL "$pid" 2>/dev/null
+        end=$(($(date +%s) + $3))
+        while kill -0 "$pid" 2>/dev/null; do
+          if [ "$(date +%s)" -ge "$end" ]; then
+            echo "$pid"
+            exit 3
+          fi
+          sleep 1
+        done
+      fi
+    fi
+    rm -f "$1"
+    exit 0' sh "$file" "$REMOTE_TERM_SECONDS" "$REMOTE_GONE_SECONDS" 2>/dev/null) || rc=$?
+  ((rc == 3)) || return 0
+  note "$what (pid $pid) is still in the $LOAD_VM VM's process table $REMOTE_GONE_SECONDS s after its SIGKILL; $file there still names it"
+  return 1
+}
+
 # put_file VM FILE DEST [MODE]: FILE written on VM as DEST, mode 600 by default, its directory
 # made first. The file goes over ssh's standard input, so a credential in it never reaches a
 # command line. It is written beside DEST and renamed onto it, because a plain write onto a file
@@ -1121,9 +1172,10 @@ stub_embed_start() {
   on_vm "$LOAD_VM" mkdir -p -- "$work" || die "making $work on the $LOAD_VM VM failed"
   # A stub embedder an earlier up left running still holds the port, so this one would answer
   # "address already in use" and write no certificate. up is idempotent everywhere else; it is
-  # here too: whatever the last start recorded is ended first, and the wait below then sees this
-  # start's own certificate rather than the one before it.
-  stub_embed_stop
+  # here too: whatever the last start recorded is ended first, and gone before this one binds,
+  # and the wait below then sees this start's own certificate rather than the one before it.
+  stub_embed_stop ||
+    die "the stub embedder an earlier up started on the $LOAD_VM VM did not end, and it holds the port this one needs"
   key_file=$(remote_secret embed-key "$(cfg .secrets.embed_key)")
   # shellcheck disable=SC2016 # expanded by the load machine's sh
   on_vm "$LOAD_VM" sh -c 'rm -f "$3"; nohup setsid "$1" stub-embed -key-file "$2" -listen "$4" -cert-out "$3" -host "$5" >"$6/stub-embed.log" 2>&1 </dev/null & echo "$!" >"$6/stub-embed.pid"' \
@@ -1143,12 +1195,9 @@ stub_embed_start() {
   note "the stub embedder serves $(stub_embed_url) on the $LOAD_VM VM; its certificate is $(cert_path) on the $DISPATCH_VM VM"
 }
 
-# stub_embed_stop: the stub embedder ended by the pid it recorded.
-stub_embed_stop() {
-  # shellcheck disable=SC2016 # expanded by the load machine's sh
-  on_vm "$LOAD_VM" sh -c 'pid=$(cat "$1/stub-embed.pid" 2>/dev/null); kill -TERM "$pid" 2>/dev/null; exit 0' \
-    sh "$(remote_work)" >/dev/null 2>&1 || true
-}
+# stub_embed_stop: the stub embedder ended by the pid it recorded, and gone (remote_kill). It
+# returns 1 when it is not gone.
+stub_embed_stop() { remote_kill "the stub embedder" "$(remote_work)/stub-embed.pid"; }
 
 # ---- Postgres -----------------------------------------------------------------------------------
 
@@ -2104,27 +2153,10 @@ pprof_tunnel_url() { printf 'http://127.0.0.1:%s\n' "$(pprof_tunnel_port)"; }
 pprof_tunnel_pid_file() { printf '%s/pprof-tunnel.pid\n' "$(remote_work)"; }
 pprof_tunnel_log() { printf '%s/pprof-tunnel.log\n' "$(remote_work)"; }
 
-# tunnel_kill: whatever the pid file on the load machine names, ended there, and the file
-# removed. TERM first, KILL after 10 s, so no step leaves an ssh of its own behind holding the
-# port the next step needs. A failure to reach the machine is not raised: a step that cannot ssh
-# has already failed on something louder than this.
-tunnel_kill() {
-  # shellcheck disable=SC2016 # expanded by the load machine's sh
-  on_vm "$LOAD_VM" sh -c '
-    pid=$(cat "$1" 2>/dev/null)
-    if [ -n "$pid" ]; then
-      kill -TERM "$pid" 2>/dev/null
-      i=0
-      while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 10 ]; do
-        sleep 1
-        i=$((i + 1))
-      done
-      kill -KILL "$pid" 2>/dev/null
-    fi
-    rm -f "$1"
-    exit 0' sh "$(pprof_tunnel_pid_file)" >/dev/null 2>&1 || true
-  return 0
-}
+# tunnel_kill: whatever the pid file on the load machine names, ended there and gone, and the file
+# removed (remote_kill), so no step leaves an ssh of its own behind holding the port the next step
+# needs. It returns 1 when that ssh is not gone.
+tunnel_kill() { remote_kill "the profiling tunnel" "$(pprof_tunnel_pid_file)"; }
 
 # tunnel_identity: the run's own OS Login private key on the load machine, in a file of mode 600
 # under the run's directory there, its path there printed. The tunnel is the generator's own
@@ -2173,7 +2205,10 @@ tunnel_start() {
   # and the load machine has never met them either, so there is nothing to have known
   # beforehand, and a machine replaced mid-series is still refused.
   identity=$(tunnel_identity)
-  tunnel_kill
+  if ! tunnel_kill; then
+    TUNNEL_REFUSAL="the profiling tunnel an earlier step left on the $LOAD_VM VM did not end, and it holds port $port there."
+    return 1
+  fi
   TUNNEL_OPEN=1
   # shellcheck disable=SC2016 # expanded by the load machine's sh
   if ! on_vm "$LOAD_VM" sh -c 'pid_file=$1 log=$2; shift 2; rm -f "$pid_file"; nohup "$@" >"$log" 2>&1 </dev/null & echo "$!" >"$pid_file"' \
@@ -2202,7 +2237,7 @@ tunnel_start() {
 tunnel_stop() {
   [ -n "${TUNNEL_OPEN:-}" ] || return 0
   TUNNEL_OPEN=""
-  tunnel_kill
+  tunnel_kill || true
   return 0
 }
 
@@ -2337,30 +2372,13 @@ load_stop() {
   fi
   [ -n "${LOAD_REMOTE:-}" ] || return 0
   LOAD_REMOTE=""
-  load_kill
+  load_kill || true
   return 0
 }
 
-# load_kill: whatever the step's pid file on the load machine names, ended there, and the file
-# removed -- TERM first, KILL after 10 s, as the tunnel's own kill does. A failure to reach the
-# machine is not raised: a step that cannot ssh has already failed on something louder than this.
-load_kill() {
-  # shellcheck disable=SC2016 # expanded by the load machine's sh
-  on_vm "$LOAD_VM" sh -c '
-    pid=$(cat "$1" 2>/dev/null)
-    if [ -n "$pid" ]; then
-      kill -TERM "$pid" 2>/dev/null
-      i=0
-      while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 10 ]; do
-        sleep 1
-        i=$((i + 1))
-      done
-      kill -KILL "$pid" 2>/dev/null
-    fi
-    rm -f "$1"
-    exit 0' sh "$(load_pid_file)" >/dev/null 2>&1 || true
-  return 0
-}
+# load_kill: whatever the step's pid file on the load machine names, ended there and gone, and the
+# file removed (remote_kill). It returns 1 when that process is not gone.
+load_kill() { remote_kill "the step's loadgen run" "$(load_pid_file)"; }
 
 # step_cleanup: everything a step started, ended, whatever ended the step -- the load on the load
 # machine with the ssh that carries it, the sampler, Postgres's collector, the step's credential
@@ -2750,7 +2768,7 @@ cmd_down() {
   use_run
   oslogin_ready
   local role
-  stub_embed_stop
+  stub_embed_stop || true
   # In the reverse of the start order, so Dispatch stops before what it talks to.
   for ((i = ${#CONTAINERS[@]} - 1; i >= 0; i--)); do
     role=${CONTAINERS[i]%% *}
