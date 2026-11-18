@@ -333,6 +333,56 @@ func TestAnAnnotatedTagsTaggerAndMessageAreRead(t *testing.T) {
 	}
 }
 
+// A header is its name and its value, and a commit or a tag object publishes both: a crafted
+// header whose name names a host, and one that is a name alone, land at a destination that runs
+// git's own check of what it receives (receive.fsckObjects). So the push reads the name too, and
+// refuses each, whatever label its report gives the line. The report never holds the text it
+// refused (refusal).
+func TestAHeaderWhoseNameNamesAHostIsRead(t *testing.T) {
+	home, root := t.TempDir(), t.TempDir()
+	repo := filepath.Join(root, "repo")
+	fixture := fixturegit.Isolated(t, home)
+	fixture.Run(root, fixturegit.InitWorkTree(repo, "main")...)
+	base := commitFiles(t, fixture, repo, map[string]string{"README.md": "one\n"}, "the commit the destination holds")
+	destination := destinationAt(t, fixture, repo, base+":refs/heads/main")
+	tree := fixture.Run(repo, "git", "rev-parse", base+"^{tree}")
+	const identity = "builder <builder@example.invalid> 1700000000 +0000"
+	for _, tc := range []struct {
+		name   string
+		kind   string
+		header string
+		ref    string
+	}{
+		{name: "a commit's header whose name names a host", kind: "commit", header: "x-" + theHost + " 1\n", ref: "refs/heads/pushed"},
+		{name: "a commit's header that is a name alone naming a host", kind: "commit", header: "x-" + theHost + "\n", ref: "refs/heads/pushed"},
+		{name: "a tag's header whose name names a host", kind: "tag", header: "x-" + theHost + " 1\n", ref: "refs/tags/pushed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			object := "tree " + tree + "\nparent " + base + "\nauthor " + identity + "\ncommitter " + identity + "\n"
+			if tc.kind == "tag" {
+				object = "object " + base + "\ntype commit\ntag x\ntagger " + identity + "\n"
+			}
+			pushed := fixture.Fed(repo, object+tc.header+"\na message of no interest\n", "git", "hash-object", "-t", tc.kind, "-w", "--stdin", "--literally")
+			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
+			err := guard.Push(bound(t), PushRequest{
+				Dir:     repo,
+				Remote:  "origin",
+				URL:     destination,
+				Updates: []Update{{LocalRef: tc.ref, LocalSHA: pushed, RemoteRef: tc.ref, RemoteSHA: noSHA}},
+			})
+			refused := refusal(t, err)
+			if len(refused.Lines) == 0 {
+				t.Fatalf("the refusal names no line: %v", err)
+			}
+			for _, line := range refused.Lines {
+				if !strings.HasSuffix(line, ": "+theClass) {
+					t.Errorf("the report line %q does not name the header's class, %q", line, theClass)
+				}
+			}
+		})
+	}
+}
+
 // A merge of a signed tag holds that whole tag object in its mergetag header, the tag's name, its
 // tagger, its message and its signature, which the merge publishes whether or not the tag itself
 // is pushed, so a push of the merge reads that header as a record labelled by the merge, as its
