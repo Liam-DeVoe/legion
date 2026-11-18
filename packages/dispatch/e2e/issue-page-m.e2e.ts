@@ -1361,18 +1361,19 @@ test("Load older pressed as the focus reaches it keeps the focus in view while t
 });
 
 // The reader's place in the history (`IssueHistory.tsx`'s `ViewportAnchor`) when a turn above it
-// shrinks by more than the history holds below Details' view. A turn is cut to six lines only
-// once it shows in Details' view (`clamp-measurer.ts`), so a long turn the reader jumped past is
-// still drawn whole above them. When it shows and is cut, the browser itself first pulls the
-// scroll back to the history's new end, by the room that was below the view, and the place
-// keeper took that scroll for one of the reader's own: it kept the moved place and put nothing
-// back, so the entries the reader is on moved up by that room. Found by the tester on a running
-// build of 23d42292 with a copy of a large real issue, on the third and last press of Load older
-// made as the focus reached it: a turn above was cut from 5,184 px to 190 px after the page
-// landed, the browser moved the scroll 3,143 px to the new end, the place keeper kept that, and
-// the focused time link went from 853 px to 455 px above Details' view at 1440 px, in three runs
-// of four. The place keeper now puts the row back where the reader last saw it when the browser
-// pulls the box back to its end (`ViewportAnchor.tsx`).
+// shrinks by more than the history holds below Details' view. A turn in view, wholly or in part,
+// keeps its whole length, and is cut to six lines once it lies wholly outside the view
+// (`clamp-measurer.ts`), so the reader here scrolls up until a long turn above them shows, whole,
+// and back down until it lies wholly above the view, where it is cut. As it is cut, the browser
+// itself first pulls the scroll back to the history's new end, by the room that was below the
+// view, and the place keeper took that scroll for one of the reader's own: it kept the moved
+// place and put nothing back, so the entries the reader is on moved up by that room. Found by the
+// tester on a running build of 23d42292 with a copy of a large real issue, on the third and last
+// press of Load older made as the focus reached it: a turn above was cut from 5,184 px to 190 px
+// after the page landed, the browser moved the scroll 3,143 px to the new end, the place keeper
+// kept that, and the focused time link went from 853 px to 455 px above Details' view at 1440 px,
+// in three runs of four. The place keeper now puts the row back where the reader last saw it when
+// the browser pulls the box back to its end (`ViewportAnchor.tsx`).
 test("the reader's place in the history holds when a turn above it is cut by more than the history holds below the view", async ({
   browser,
 }) => {
@@ -1411,11 +1412,27 @@ test("the reader's place in the history holds when a turn above it is cut by mor
       (whole?.height ?? 0) > 3_000 && (whole?.y ?? 0) + (whole?.height ?? 0) < view.top,
       "the long turn is cut already or shows in Details' view, so the row proves nothing"
     ).toBe(true);
-    // The reader scrolls up until the long turn's foot shows, with the pointer on the history.
-    // Their place once the scroll is done is the older turn nearest the middle of the view then:
-    // it is chosen, and its top read, before the scroll, since the cut follows the scroll within a
-    // frame. The scroll moves it down by exactly that distance.
-    const reveal = Math.round(view.top - ((whole?.y ?? 0) + (whole?.height ?? 0))) + 60;
+    // The reader scrolls up until the long turn's foot shows, with the pointer on the history. It
+    // is in view now, so it keeps its whole length.
+    const panel = await historyPanel(page).boundingBox();
+    await page.mouse.move((panel?.x ?? 0) + 40, (view.top + view.bottom) / 2);
+    await page.mouse.wheel(
+      0,
+      -(Math.round(view.top - ((whole?.y ?? 0) + (whole?.height ?? 0))) + 60)
+    );
+    await page.waitForTimeout(500);
+    await nextFrames(page);
+    const shown = await long.boundingBox();
+    expect(
+      (shown?.height ?? 0) > 3_000 && (shown?.y ?? 0) + (shown?.height ?? 0) > view.top,
+      "the long turn did not show in Details' view whole, so the row proves nothing"
+    ).toBe(true);
+    // Then the reader scrolls back down until the long turn lies wholly above the view, its foot
+    // 40 px above the window's top, which is the view a cut is measured against. Their place once
+    // the scroll is done is the older turn nearest the middle of the view then: it is chosen, and
+    // its top read, before the scroll, since the cut follows the scroll within a frame. The scroll
+    // moves it up by exactly that distance.
+    const away = Math.round((shown?.y ?? 0) + (shown?.height ?? 0)) + 40;
     const place = await page.evaluate(
       ({ top, bottom }) => {
         const middle = (top + bottom) / 2;
@@ -1433,61 +1450,70 @@ test("the reader's place in the history holds when a turn above it is cut by mor
         }
         return best;
       },
-      { bottom: view.bottom - reveal, top: view.top - reveal }
+      { bottom: view.bottom + away, top: view.top + away }
     );
     expect(place, "no older turn will show whole in Details' view after the scroll").toBeTruthy();
-    const below = await page.evaluate(() => {
-      const history = document.querySelector('[data-testid="issue-history"]');
-      let box = history?.parentElement ?? null;
-      while (box !== null && !/(auto|scroll)/.test(getComputedStyle(box).overflowY)) {
-        box = box.parentElement;
-      }
-      return box === null ? 0 : box.scrollHeight - box.clientHeight - box.scrollTop;
-    });
-    const panel = await historyPanel(page).boundingBox();
-    await page.mouse.move((panel?.x ?? 0) + 40, (view.top + view.bottom) / 2);
-    await page.mouse.wheel(0, -reveal);
+    const below =
+      (await page.evaluate(() => {
+        const history = document.querySelector('[data-testid="issue-history"]');
+        let box = history?.parentElement ?? null;
+        while (box !== null && !/(auto|scroll)/.test(getComputedStyle(box).overflowY)) {
+          box = box.parentElement;
+        }
+        return box === null ? 0 : box.scrollHeight - box.clientHeight - box.scrollTop;
+      })) - away;
+    expect(
+      below < (shown?.height ?? 0) - 400,
+      `the history holds ${Math.round(below)} px below the view after the scroll, more than the cut of the long turn takes, so the browser pulls nothing back and the row proves nothing`
+    ).toBe(true);
+    await page.mouse.wheel(0, away);
     await expect
       .poll(async () => (await long.boundingBox())?.height ?? 0, {
-        message: "the long turn was not cut once it showed",
+        message: "the long turn was not cut once it lay wholly above the view",
       })
       .toBeLessThan(400);
     await page.waitForTimeout(1_000);
     await nextFrames(page);
-    const expected = Math.round((place?.top ?? 0) + reveal);
+    const expected = Math.round((place?.top ?? 0) - away);
     const after = Math.round(
       (await historyPanel(page).locator(`[data-history-entry="${place?.id}"]`).boundingBox())?.y ??
         0
     );
     expect(
       Math.abs(after - expected),
-      `the entry the reader is on stood at ${expected} px once the scroll showed the long turn, and at ${after} px once that turn was cut, with ${Math.round(below + reveal)} px of the history below the view (Details' view ${Math.round(view.top)} to ${Math.round(view.bottom)})`
+      `the entry the reader is on stood at ${expected} px once the scroll took the long turn above the view, and at ${after} px once that turn was cut, with ${Math.round(below)} px of the history below the view (Details' view ${Math.round(view.top)} to ${Math.round(view.bottom)})`
     ).toBeLessThanOrEqual(1);
   } finally {
     await context.close();
   }
 });
 
-// The focus a control holds at the foot of a long agents' turn that has not shown yet. Load
-// older's own hand-on can give the focus to such a control: the first new control in view can be
-// a turn's Reply while the turn's head is above the view, the turn still drawn whole. Once the
-// turn shows it is cut to six lines (`clamp-measurer.ts`). The place keeper kept the turn's top
-// where it was, so its Reply rose with the cut, by thousands of pixels, out of Details' view.
-// Found by the tester on a running build of eed73c9a with a copy of a large real issue: the
-// second press of Load older, made as the focus reached it, put the focus on a turn's Reply at
-// 270 px, the turn was cut, and the Reply stood at -50 px above Details' view (53 to 900) at
-// 1440 px, in two runs of six. Here the focus goes to such a Reply as the hand-on puts it there.
-// The place keeper now keeps a focused control's own place when the focus is inside the row it
-// holds (`ViewportAnchor.tsx`).
+// The focus a control holds at the foot of a long agents' turn when that turn is cut. A turn in
+// view, wholly or in part, keeps its whole length, and is cut to six lines once it lies wholly
+// outside the view (`clamp-measurer.ts`), so the cut comes once the reader has scrolled past the
+// turn with the focus still inside it. The place keeper kept the turn's top where it was, so the
+// cut took the Reply that held the focus, and everything under it, up by thousands of pixels.
+// Found by the tester on a running build of eed73c9a with a copy of a large real issue, while a
+// turn was still cut as it showed: the second press of Load older, made as the focus reached it,
+// put the focus on a turn's Reply at 270 px, the turn was cut, and the Reply stood at -50 px
+// above Details' view (53 to 900) at 1440 px, in two runs of six. The place keeper now keeps a
+// focused control's own place when the focus is inside the row it holds (`ViewportAnchor.tsx`),
+// so the Reply stays where the reader left it. Here the reader puts the focus on the Reply,
+// scrolls on down with the wheel until the turn lies wholly above the view, and once it is cut
+// presses Page Up to go back to the control the focus is on: the focus is still in Details, and
+// the one press shows it. Tab then Shift+Tab would prove nothing here, as the browser scrolls to
+// the control they focus wherever the cut left it.
 test("a control at the foot of a long turn keeps the focus in view when the turn it is in is cut", async ({
   browser,
 }) => {
   test.setTimeout(240_000);
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "A long turn under the reader" });
-  // Oldest first: ten short turns, one long turn, thirty short turns. The history lists them
-  // newest first, so the long turn stands well below the first screen with ten turns under it.
-  for (let index = 0; index < 10; index += 1) {
+  // Oldest first: a hundred and thirty short turns, one long turn, thirty short turns. The history
+  // lists them newest first, so the long turn stands well below the first screen, with more of
+  // the history under it than its cut takes: the browser pulls nothing back, and the place keeper
+  // alone decides where the cut leaves the Reply.
+  for (let index = 0; index < 130; index += 1) {
     await createMessage(issue.key, { body: `Older turn ${index}` }, attentionSession);
   }
   const paragraph = "the agents read the history and wrote what they found ".repeat(6);
@@ -1508,26 +1534,49 @@ test("a control at the foot of a long turn keeps the focus in view when the turn
     await expect(turn).toHaveCount(1);
     const reply = historyPanel(page).locator(`[data-history-reply="${long.id}"]`);
     await expect(reply).toHaveCount(1);
-    // The focus goes straight to the turn's Reply, as Load older's hand-on gives it; the turn has
-    // never shown, so it is drawn whole, and its head stays above the view.
+    // The focus goes to the turn's Reply, which the browser brings into view, the turn's head
+    // above the view: the turn is in view, so it is drawn whole.
     await reply.focus();
     await nextFrames(page);
     const view = await historyViewport(page);
+    const whole = await turn.boundingBox();
+    expect(
+      (whole?.height ?? 0) > 3_000,
+      "the long turn is cut while its Reply holds the focus in view, so the row proves nothing"
+    ).toBe(true);
+    // The reader scrolls on down with the wheel, the pointer on the history, until the turn lies
+    // wholly above the view, its foot 40 px above the window's top, which is the view a cut is
+    // measured against. The focus is still on its Reply.
+    const panel = await historyPanel(page).boundingBox();
+    await page.mouse.move((panel?.x ?? 0) + 40, (view.top + view.bottom) / 2);
+    await page.mouse.wheel(0, Math.round((whole?.y ?? 0) + (whole?.height ?? 0)) + 40);
     await expect
       .poll(async () => (await turn.boundingBox())?.height ?? 0, {
-        message: "the long turn was not cut once its foot showed",
+        message: "the long turn was not cut once it lay wholly above the view",
       })
       .toBeLessThan(400);
     await page.waitForTimeout(1_000);
     await nextFrames(page);
     expect(
-      await reply.evaluate((button) => button === document.activeElement),
-      "the focus left the turn's Reply"
+      await marginShell(page).evaluate((details) => {
+        const active = document.activeElement;
+        return active !== null && active !== document.body && details.contains(active);
+      }),
+      "the cut of the turn the focus is in left the focus on the page, or outside Details"
     ).toBe(true);
-    const box = await reply.boundingBox();
+    // The reader goes back up to the control the focus is on by the keyboard, a page at a time.
+    await page.keyboard.press("PageUp");
+    await page.waitForTimeout(500);
+    await nextFrames(page);
+    const focused = await page.evaluate(() => {
+      const active = document.activeElement;
+      const box =
+        active === null || active === document.body ? undefined : active.getBoundingClientRect();
+      return box === undefined ? null : { bottom: box.bottom, top: box.top };
+    });
     expect(
-      (box?.y ?? -1) >= view.top - 1 && (box?.y ?? 0) + (box?.height ?? 0) <= view.bottom + 1,
-      `the cut of its own turn moved the focused Reply to ${Math.round(box?.y ?? 0)} px, out of Details' view (${Math.round(view.top)} to ${Math.round(view.bottom)})`
+      (focused?.top ?? -1) >= view.top - 1 && (focused?.bottom ?? 0) <= view.bottom + 1,
+      `a press of Page Up left the focused control at ${Math.round(focused?.top ?? 0)} px, out of Details' view (${Math.round(view.top)} to ${Math.round(view.bottom)}): the cut of its own turn moved it from where the reader left it`
     ).toBe(true);
   } finally {
     await context.close();
