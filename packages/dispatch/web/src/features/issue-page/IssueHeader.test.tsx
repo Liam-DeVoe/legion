@@ -26,6 +26,7 @@ import type {
 import { buildDispatchReference, DECISIONS_DOCUMENT_SLUG, parseIssuePath } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap, useKeymapScope } from "../shell/keymap";
+import { ACTION_WORDS } from "./approval-chip-box";
 import { CONTROL_LABELS } from "./page-words";
 import { HeaderSlot } from "./slots/header";
 
@@ -822,12 +823,18 @@ async function openRequestChanges(
   return { dialog, stateActions };
 }
 
-/** The chip's two actions the header draws. The dialog stands inside the same line, so its own
- *  Request changes is left out. */
+/** The chip's two actions the header draws, found as the header finds them: by the words each
+ *  draws (`ACTION_WORDS`), since a name may also say the document. The dialog stands inside the
+ *  same line, so its own Request changes is left out. */
 function headerReviewActions(stateActions: HTMLElement): HTMLElement[] {
+  const patterns = Object.values(ACTION_WORDS);
   return within(stateActions)
-    .queryAllByRole("button", { name: /^(Approve|Request changes)$/ })
-    .filter((button) => button.closest('[role="dialog"]') === null);
+    .queryAllByRole("button")
+    .filter(
+      (button) =>
+        patterns.some((pattern) => pattern.test(button.textContent ?? "")) &&
+        button.closest('[role="dialog"]') === null
+    );
 }
 
 /** The document's approval chip on the header's line of state controls. */
@@ -952,6 +959,46 @@ test.each([
 
     await waitFor(() => expect(dialog).not.toBeInTheDocument());
     await waitFor(() => expect(documentChip(stateActions)).toHaveFocus());
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
+
+// The keeper finds the document's chip from where the lost control stood (`chipOfLostAction`):
+// the box `ApprovalChip` draws the chip in holds only the chip, its two actions and the dialogs it
+// opens. The Status select stands on the same line but outside that box, so when the issue's read
+// turns closed and disables it, the focus goes on to "Issue actions", not to the chip, whether the
+// document's request still waits on the reader or not.
+test.each([
+  "waits on the reader",
+  "is answered",
+])("the Status select disabled as the issue turns closed while the document's request %s leaves the focus on Issue actions, not on the chip", async (request) => {
+  const open =
+    request === "is answered" ? answeredApprovalIssue("approved") : awaitingApprovalIssue();
+  const restore = stubHeader(open);
+  const queryClient = headerClient();
+  const view = renderHeader("/issues/CORE-1", queryClient);
+
+  try {
+    const stateActions = await screen.findByTestId("issue-state-actions");
+    const status = within(stateActions).getByRole("combobox", { name: "Status" });
+    const chip = documentChip(stateActions);
+    expect(headerReviewActions(stateActions).length).toBe(request === "is answered" ? 0 : 2);
+    act(() => status.focus());
+    act(() => {
+      queryClient.setQueryData<IssueDetails>(["issue", "CORE-1"], {
+        ...open,
+        closed_at: "2026-09-12T10:00:00Z",
+        status: "done",
+      });
+    });
+    await waitFor(() => expect(status).toBeDisabled());
+
+    const issueActions = screen.getByRole("button", { name: "Issue actions" });
+    await waitFor(() => expect(issueActions).toHaveFocus());
+    expect(chip).toBeInTheDocument();
+    expect(chip).not.toHaveFocus();
   } finally {
     view.unmount();
     restore();
