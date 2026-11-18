@@ -246,6 +246,9 @@ func TestAReviewAppReviewFromAnotherSessionDoesNotMoveTheReviewersCommit(t *test
 	pool := migratedPool(t)
 	seedReviewOf(t, pool, headOne, "green")
 	seedClaimSession(t, pool, "review-claim", "ses-reviewer")
+	// Each reviewing entry names the reviewer's own claim on its row (Engine.stepToken), whose
+	// session is the reviewer's too.
+	seedClaimSession(t, pool, claim.Token(token(t, "LEGION-208", claim.RoleReviewer)), "ses-reviewer")
 	engine := testEngine(config.DesignGateRootIssues, nil)
 	apply := applyFacts(t, pool, engine)
 	apply("reviewer-requests-changes", reviewAt(1, "changes_requested", headOne, reviewTestedAt))

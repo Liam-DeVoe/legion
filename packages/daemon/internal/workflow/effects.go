@@ -752,33 +752,59 @@ func startOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 // in (stepAt), from 1 for a step and 0 for the retro on the implementer's row and the merge on the
 // merger's, so the row's facts are the facts of that step's run. An issue with no plan rows keeps
 // no task and place 0 (R20), and the architect's entry is no step of the issue's task.
+//
+// A phase worker's raise writes the claim of the step's agent on the row (record.PhaseRow.Claim,
+// Engine.stepToken), which record.WorkerClaim reads back, and the entry rises across the rows of
+// that claim: it is the higher of the row's own entry plus one and one above the highest entry of
+// every row of the issue that names the claim. The steps of one key are one claim, whose given
+// entry is the last its agent was handed, so an entry numbered on the row alone would fall at or
+// below it and the queue would refuse the task of the agent's next step; and no entry falls below
+// its own row's, which a row the release before raised and no completion named a claim on keeps.
+// An issue with no plan rows has one row for each claim, so its entry is the row's own plus one.
 func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task string, movedBack, verbatim bool) (int64, error) {
-	row, err := e.phaseRow(ctx, tx, issue.Key, role)
+	rows, err := e.store.Phases(ctx, tx, issue.Key)
 	if err != nil {
 		return 0, err
 	}
-	row.Entry++
+	row := record.PhaseRowOf(rows, role)
+	row.Issue, row.Role = issue.Key, role
+	entry := row.Entry + 1
 	row.EntryTask, row.EntryVerbatim, row.EntryRaisedAt, row.EntryMovedBack = task, verbatim, e.now(), movedBack
 	worker := role != claim.RoleArchitect
 	var w Walk
+	var agent claim.Token
 	if worker {
 		if w, err = e.walk(ctx, tx, issue); err != nil {
 			return 0, err
 		}
-		if _, step, _, _, ok := stepAt(w, record.StandsAt(issue)); w.Stored && ok {
+		at := record.StandsAt(issue)
+		if _, step, _, _, ok := stepAt(w, at); w.Stored && ok {
 			row.StepTask, row.StepPlace = w.Task, step
 		}
+		if recordsSteps(issue) {
+			if place, ok := w.PlaceOf(at); ok {
+				agent, err = e.stepToken(issue, w, place, role)
+			} else {
+				agent, err = stepClaim(issue, issue.Key, role)
+			}
+			if err != nil {
+				return 0, err
+			}
+			for _, other := range rows {
+				if other.Claim == agent && other.Entry >= entry {
+					entry = other.Entry + 1
+				}
+			}
+			row.Claim = agent
+		}
 	}
+	row.Entry = entry
 	if err := e.store.PutPhase(ctx, tx, row); err != nil {
 		return 0, err
 	}
 	// Every entry a phase worker is handed is the start of a run of its step: a transition's start
 	// and the promotion's start of a mid-phase member (StartPromotedWorker).
 	if worker && recordsSteps(issue) {
-		agent, err := stepClaim(issue, issue.Key, role)
-		if err != nil {
-			return 0, err
-		}
 		if err := e.startStep(ctx, tx, issue, w, agent); err != nil {
 			return 0, err
 		}

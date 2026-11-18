@@ -35,7 +35,7 @@ func returnEngine() *Engine {
 
 // seedStepsPlan writes the plan key's owner gave for its run generation: version 2, one task a
 // whose steps are words, each `role` or `role:key`, with the type plan.BuiltinRoles gives its
-// role, waiting at no act.
+// role, each named as planGiven names a version's agents (record.NameAgents), waiting at no act.
 func seedStepsPlan(t *testing.T, pool *pgxpool.Pool, key string, generation uint64, words ...string) {
 	t.Helper()
 	v := record.PlanVersion{Issue: key, Generation: generation, Version: 2, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
@@ -49,7 +49,7 @@ func seedStepsPlan(t *testing.T, pool *pgxpool.Pool, key string, generation uint
 			AgentKey: key, Type: string(roles[role].Type)})
 	}
 	seedRecord(t, pool, func(tx pgx.Tx) error {
-		return record.NewStore().PutPlan(t.Context(), tx, v, []record.PlanTask{task}, steps)
+		return record.NewStore().PutPlan(t.Context(), tx, v, []record.PlanTask{task}, record.NameAgents(nil, steps))
 	})
 }
 

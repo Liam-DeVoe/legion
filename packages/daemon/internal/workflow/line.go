@@ -6,6 +6,7 @@ import (
 	"slices"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -85,6 +86,31 @@ func (w Walk) PlaceOf(p phase.Phase) (record.TaskPlace, bool) {
 		return record.TaskPlace{Kind: record.PlaceStep, Position: at + 1}, true
 	}
 	return record.TaskPlace{}, false
+}
+
+// AgentAt is the name of the agent that does the work of place on w (record.PlanStep.AgentName), the
+// one place the workflow names a step's agent: for a step, the agent of that step, so the steps of
+// one key name one agent; for the retro, the agent of the task's last step of the type
+// implementation, which runs it. It is "" for the merge, for a walk with no plan rows, for a step
+// of the key owner, whose claim is no name on the issue, and for a place the task does not hold:
+// there the role stands for the agent (Engine.stepToken).
+func (w Walk) AgentAt(place record.TaskPlace) claim.Agent {
+	if !w.Stored {
+		return ""
+	}
+	switch place.Kind {
+	case record.PlaceStep:
+		if place.Position >= 1 && place.Position <= len(w.Steps) {
+			return w.Steps[place.Position-1].AgentName()
+		}
+	case record.PlaceRetro:
+		for i := len(w.Steps) - 1; i >= 0; i-- {
+			if w.Steps[i].Type == string(plan.TypeImplementation) {
+				return w.Steps[i].AgentName()
+			}
+		}
+	}
+	return ""
 }
 
 // steps is the part of the line each step runs: all of it but the retro and the merge.

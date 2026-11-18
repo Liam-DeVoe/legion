@@ -10,6 +10,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
@@ -231,14 +232,14 @@ func (e *Engine) upgradedStart(ctx context.Context, tx pgx.Tx, issue record.Issu
 	if at == phase.Merging && row.EntryRaisedAt.IsZero() {
 		return "", time.Time{}, nil
 	}
-	agent, err := stepClaim(issue, issue.Key, worker)
+	agent, err := e.placeToken(ctx, tx, issue, at, worker)
 	return agent, row.EntryRaisedAt.UTC(), err
 }
 
 // startAgent is the agent a start of the step issue stands in at names: the tree architect for
 // accepting (open point 4 of the plan: a sub-architect's own claim is runtime state the record does
-// not hold), nobody for a merge GitHub has already made, where no merger starts, and the claim of
-// the phase's worker otherwise.
+// not hold), nobody for a merge GitHub has already made, where no merger starts, and the agent of
+// the step's place otherwise (placeToken).
 func (e *Engine) startAgent(ctx context.Context, tx pgx.Tx, issue record.Issue, at phase.Phase) (claim.Token, error) {
 	switch at {
 	case phase.Accepting:
@@ -251,7 +252,46 @@ func (e *Engine) startAgent(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 			return "", err
 		}
 	}
-	return stepClaim(issue, issue.Key, phase.RoleFor(at))
+	return e.placeToken(ctx, tx, issue, at, phase.RoleFor(at))
+}
+
+// placeToken is the claim token of the agent of the work issue stands in at, read on the walk of
+// issue's run (stepToken), and role's own token where the walk holds no place for at.
+func (e *Engine) placeToken(ctx context.Context, tx pgx.Tx, issue record.Issue, at phase.Phase, role claim.Role) (claim.Token, error) {
+	w, err := e.walk(ctx, tx, issue)
+	if err != nil {
+		return "", err
+	}
+	place, ok := w.PlaceOf(at)
+	if !ok {
+		return stepClaim(issue, issue.Key, role)
+	}
+	return e.stepToken(issue, w, place, role)
+}
+
+// stepToken is the claim token of the agent that does the work of place on w, issue's walk, whose
+// role is role: the one function that makes the token of a step's agent, which each entry takes
+// (enter) and writes to the step's phases row (record.PhaseRow.Claim) and to its step record
+// (startStep). A step of the key owner is the tree's architect's, as the accepting step's is
+// (startAgent). Where AgentAt names an agent, it is that agent's token (claim.AgentToken), so the
+// steps of one key are one claim; where it names none — the merge, and every place of a run with no
+// plan rows — it is the role's own token (R20).
+func (e *Engine) stepToken(issue record.Issue, w Walk, place record.TaskPlace, role claim.Role) (claim.Token, error) {
+	if w.Stored && place.Kind == record.PlaceStep && place.Position >= 1 && place.Position <= len(w.Steps) {
+		step := w.Steps[place.Position-1]
+		if plan.AgentOf(w.Task, place.Position, plan.Step{Role: step.Role, Key: step.AgentKey}).Owner() {
+			return stepClaim(issue, issue.Tree, claim.RoleArchitect)
+		}
+	}
+	name := w.AgentAt(place)
+	if name == "" {
+		return stepClaim(issue, issue.Key, role)
+	}
+	project, err := claim.ProjectToken(issue.Project)
+	if err != nil {
+		return "", err
+	}
+	return claim.AgentToken(project, issue.Key, name)
 }
 
 // stepClaim is the claim token of role on key, in issue's project.
