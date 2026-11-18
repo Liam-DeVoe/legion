@@ -89,18 +89,13 @@ history.
 ## The Go legion's version arguments and the command that prints its envoy packages
 
 The Go `legion`. The binary embeds its prompts (internal/prompts/roles and go), so a docs:
-commit there still releases. It also compiles in packages/envoy packages, so a change to one
-of them changes the binary. The notices scripts and the target list are runtime inputs of the
+commit there still releases. The notices scripts and the target list are runtime inputs of the
 release archives and worker image, so any change to one needs a new tag rather than a CI-only
 rebuild. The envoy packages below are every package `go list -deps ./cmd/legion` reaches
-through the module's `replace` on ../envoy — its seven public packages, and the internal ones
-they pull in with them: the splitter, parser, contracts, text reader and cache behind
-`dispatchbody`, the token client, its wire, its lock and the identity reader behind
-`brokerclient`, and the contracts behind `sessiontiming` and `subjectforms`, and `natsversion` — so a change to any
-of them changes the binary and must release one, and the envoy module's
-own go.mod and go.sum decide which versions of their dependencies it links. That list is
-written here by hand; this is the command that prints it, to be run from packages/daemon
-whenever what the binary links moves:
+through the module's `replace` on ../envoy, public and internal, so a change to any of them
+changes the binary and must release one, and the envoy module's own go.mod and go.sum decide
+which versions of their dependencies it links. That list is written here by hand; this is the
+command that prints it, to be run from packages/daemon whenever what the binary links moves:
   go list -deps ./cmd/legion | grep '^github.com/sjawhar/envoy' |
     sed 's#^github.com/sjawhar/envoy#packages/envoy#' | sort
 

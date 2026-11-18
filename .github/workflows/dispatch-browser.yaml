@@ -378,7 +378,7 @@ jobs:
           path: packages/dispatch/e2e/test-results
 
   # why: .github/ci-notes/dispatch-browser.md#the-visual-review-its-docker-run-and-its-budgets
-  # 240 + 314 = 554 s -> 10 min.
+  # 240 + 333 = 573 s -> 10 min.
   visual:
     if: inputs.lane == 'full'
     runs-on: ubuntu-24.04
