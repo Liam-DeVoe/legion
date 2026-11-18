@@ -1,10 +1,11 @@
-import { beforeAll, expect, spyOn, test } from "bun:test";
+import { beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { act, render, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
+import { jump, realClock } from "../../../__tests__/fake-clock";
 import {
   ApiError,
   api,
@@ -13,6 +14,7 @@ import {
   type WriteRequest,
 } from "../../../api/client";
 import { issueCoverageQuery } from "../../../api/queries";
+import { MIN_REFETCH_INTERVAL_MS } from "../../../api/query-refresh";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import type { TreeNode } from "../issue-tree";
 import { NodeRow } from "../NodeRow";
@@ -284,6 +286,38 @@ test("a 200 reads the tree again while the coverage read is marked stale", async
     expect(document.activeElement).toBe(drawn.row());
     await waitFor(() => expect(drawn.settle().textContent).toBe(CONTROL_LABELS.settle));
     expect(drawn.sentence()).toBeNull();
+  } finally {
+    drawn.unmount();
+  }
+});
+
+// The coverage is invalidated before the tree is asked for, so its read begins first. While the
+// settle's write is out the tree read's subscription holds the reads of the tree and of the views
+// it dropped, each owed one read once the write settles (`subscribeTreeFreshness`): the open view
+// is read once, not at the drop and again at the settle. The coverage's changed answer is no
+// newer than the tree read the settle owed, so nothing is read again for it, however long the
+// refresh scheduler's interval runs.
+test("a 200 that changes the coverage reads the coverage, the tree and the open view once each", async () => {
+  const user = userEvent.setup();
+  const landing = Promise.withResolvers<unknown>();
+  const drawn = drawRow(() => landing.promise, 0, {
+    requirements: [{ block_id: "r7", checks: 0, gaps: [], plan_tasks: 0, ref: REFERENCE }],
+  });
+  try {
+    await user.click(drawn.settle());
+    await waitFor(() => expect(drawn.sent).toHaveLength(1));
+    expect(drawn.reads).toEqual([]);
+    jest.useFakeTimers();
+    try {
+      await act(async () => landing.resolve(settled()));
+      await waitFor(() => expect(drawn.reads).toHaveLength(3));
+      await jump(MIN_REFETCH_INTERVAL_MS);
+      expect([...drawn.reads].sort()).toEqual(["coverage", "tree", "verification"]);
+      expect(drawn.reads[0], "the coverage was not read first").toBe("coverage");
+    } finally {
+      realClock();
+    }
+    await waitFor(() => expect(drawn.settle().textContent).toBe(CONTROL_LABELS.settle));
   } finally {
     drawn.unmount();
   }
