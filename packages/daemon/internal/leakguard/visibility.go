@@ -45,9 +45,12 @@ func (wallClock) Sleep(ctx context.Context, wait time.Duration) error {
 	}
 }
 
-// VisibilitySource says where a guard's answer came from: GitHub's REST API, the role's kept
-// answer, GitHub's GraphQL API, or git's ls-remote. The last two are the reads the guard makes
-// when the REST read is refused for a spent rate limit it does not wait for (Guard.Visibility).
+// VisibilitySource says where a guard's answer came from: GitHub's REST API through gh, the role's
+// kept answer, GitHub's GraphQL API, git's ls-remote, or GitHub's REST API through curl. GraphQL
+// and ls-remote are the reads the guard makes when the REST read is refused for a spent rate limit
+// it does not wait for (Guard.Visibility). curl and ls-remote are the reads it makes when gh's REST
+// read failed on its connection to GitHub (Guard.readWithoutGh); where curl meets a spent core
+// limit there, the GraphQL read through gh follows, as it follows gh's (readWithoutREST).
 type VisibilitySource string
 
 const (
@@ -55,6 +58,7 @@ const (
 	VisibilityFromCache    VisibilitySource = "kept"
 	VisibilityFromGraphQL  VisibilitySource = "graphql"
 	VisibilityFromLsRemote VisibilitySource = "ls-remote"
+	VisibilityFromCurl     VisibilitySource = "rest-curl"
 )
 
 // Visibility is what GitHub reports the repository slug ("owner/name") as. Public answers stay
@@ -64,7 +68,9 @@ const (
 // The REST read comes first (readVisibility). A read GitHub refuses for a rate limit, read with
 // internal/githubrest's model (rateLimitFrom), is read once more after the wait GitHub asks for,
 // where waitFits allows that wait. A limit still spent after it, and one not waited for, is read
-// another way (readWithoutREST). The answer is kept as gh's is.
+// another way (readWithoutREST). A gh read that failed on its connection to GitHub, with no answer
+// from GitHub (ghTransportFailure), is read without gh (readWithoutGh). The answer is kept as gh's
+// is.
 //
 // The header-bearing read is:
 //
@@ -109,8 +115,12 @@ func (g *Guard) visibility(ctx context.Context, slug string, kept bool) (Visibil
 		}
 	}
 	source := VisibilityFromGitHub
-	if errors.As(err, &limited) {
+	var unreached *transportError
+	switch {
+	case errors.As(err, &limited):
 		visibility, source, err = g.readWithoutREST(ctx, slug, limited)
+	case errors.As(err, &unreached):
+		visibility, source, err = g.readWithoutGh(ctx, slug, unreached)
 	}
 	if err != nil {
 		return "", err
@@ -123,13 +133,19 @@ func (g *Guard) visibility(ctx context.Context, slug string, kept bool) (Visibil
 }
 
 // waitFits is how long the guard waits before it makes the REST read again after GitHub refused
-// it for limited, and whether it waits at all. The wait is what GitHub asks for: until the reset
-// of a spent core limit, or a secondary limit's Retry-After, never its X-RateLimit-Reset, which is
-// the core limit's. It is made only where it is no more than rateLimitWaitBound, and where it and
-// then lsRemoteBound, the longest cap of the reads that can follow it (the retried REST read,
-// GraphQL and ls-remote), end before ctx's deadline, where ctx has one: a wait that leaves them
-// no room only makes the call refuse later. A core limit with no reset, or one already past, and
-// a secondary limit with no Retry-After are not waited for.
+// it for limited, and whether it waits at all. For a spent core limit the wait is until its reset.
+// For a secondary limit the guard waits only for a Retry-After: without one it reads the visibility
+// with ls-remote at once, which makes no API request, so it does not wait for the reset GitHub's
+// documentation asks a caller with no requests left to wait for before its next API request. A
+// wait is made only where it is no more than rateLimitWaitBound, and where it and then
+// lsRemoteBound end before ctx's deadline, where ctx has one: a wait that leaves the reads after
+// it no room only makes the call refuse later. lsRemoteBound is the cap of the longest one read
+// that can follow the wait, and it is more than the caps of the retried REST read (ghReadBound)
+// and the curl read (curlBound) together, so each read after the wait has room to start. The
+// reads after the wait can still take longer than lsRemoteBound in turn: the retried REST read,
+// then GraphQL and ls-remote after a rate limit, or curl and ls-remote after a failure on gh's
+// connection. Each stops at ctx's deadline, and the call is then refused. A core limit with no
+// reset, or one already past, and a secondary limit with no Retry-After are not waited for.
 func (g *Guard) waitFits(ctx context.Context, limited *rateLimitError) (time.Duration, bool) {
 	var wait time.Duration
 	switch {
@@ -151,13 +167,13 @@ func (g *Guard) waitFits(ctx context.Context, limited *rateLimitError) (time.Dur
 
 // readWithoutREST reads slug's visibility after GitHub refused the REST read for limited, where
 // the guard did not wait or was refused again after its wait. A core limit is read from GitHub's
-// GraphQL API (Guard.graphQLVisibility) with the repository's own token, whose budget is separate
-// from the core one, and its public, private or internal is taken as gh's is. A secondary limit is
-// not, because GraphQL requests count against the same secondary limit. For a secondary limit, and
-// where GraphQL refuses the read for a rate limit of its own, the visibility is read with git's
-// ls-remote and no credential (Guard.lsRemote), which answers public and nothing else. Every other
-// failure, an unauthenticated refusal of ls-remote included, refuses the call, naming the spent
-// limit and what the read said.
+// GraphQL API (Guard.graphQLVisibility) with the REST read's token, whose GraphQL budget is
+// separate from the core one, and its public, private or internal is taken as gh's is. A
+// secondary limit is not, because GraphQL requests count against the same secondary limit. For a
+// secondary limit, and where GraphQL refuses the read for a rate limit of its own, the visibility
+// is read with git's ls-remote and no credential (Guard.lsRemote), which answers public and
+// nothing else. Every other failure, an unauthenticated refusal of ls-remote included, refuses
+// the call, naming the spent limit and what the read said.
 func (g *Guard) readWithoutREST(ctx context.Context, slug string, limited *rateLimitError) (Visibility, VisibilitySource, error) {
 	also := ""
 	if !limited.secondary {
@@ -342,17 +358,30 @@ func ghReadEnv(slug string) []string {
 }
 
 // ghVisibility is the gh read itself, the guard's answer where a caller named no reader of its
-// own.
+// own. gh runs under a bound of the guard's own (ghReadContext), which leaves part of the caller's
+// bound to the read through curl. A rate limit is a *rateLimitError. A failure on gh's connection
+// to GitHub with no answer from GitHub is a *transportError: one gh reports (ghTransportFailure),
+// or a stop by the guard's own bound before GitHub sent a status line (ghStoppedByItsBound). A gh
+// that the caller's bound stopped is the *stoppedError run answers, since no bound is left for
+// another read.
 func (g *Guard) ghVisibility(ctx context.Context, slug string) (Visibility, error) {
-	status, printed, err := g.run(ctx, child{
+	bounded, cancel := ghReadContext(ctx)
+	defer cancel()
+	status, printed, err := g.run(bounded, child{
 		argv: append([]string{"gh"}, VisibilityReadWithHeadersArgs(slug)...),
 		env:  ghReadEnv(slug),
 	})
 	if err != nil {
+		if unreached := ghStoppedByItsBound(ctx, err, printed, slug); unreached != nil {
+			return "", unreached
+		}
 		return "", err
 	}
 	if limited := rateLimitFrom(printed); limited != nil {
 		return "", limited
+	}
+	if unreached := ghTransportFailure(status, printed, slug); unreached != nil {
+		return "", unreached
 	}
 	if status != 0 {
 		return "", fmt.Errorf("gh api repos/%s exited %d: %s", maskPath(slug), status, strings.TrimSpace(printed))
@@ -368,11 +397,12 @@ func (g *Guard) ghVisibility(ctx context.Context, slug string) (Visibility, erro
 // graphQLVisibility reads slug's visibility from GitHub's GraphQL API through gh, as the same
 // installation as the REST read and with the same variables (ghReadEnv), under the caller's
 // bound, and answers what graphQLAnswer reads of it. `legion gh` runs it with the token of the
-// repository VisibilityReadVar names, as it runs the REST read (its ghVisibilityRead). GraphQL's
-// budget is separate from the core REST one: at 2026-11-15T09:34:29Z `gh api rate_limit` showed
-// installation 171972716 with 12,221 of its 12,500 GraphQL points left, and GraphQL reads have
-// answered while core reads were refused. A gh that the caller's bound stops refuses the call:
-// no bound is left for another read.
+// repository VisibilityReadVar names, or with the caller's GH_TOKEN or GITHUB_TOKEN where one is
+// set, as it runs the REST read (its ghVisibilityRead). GraphQL's budget is separate from the
+// core REST one: at 2026-11-15T09:34:29Z `gh api rate_limit` showed installation 171972716 with
+// 12,221 of its 12,500 GraphQL points left, and GraphQL reads have answered while core reads were
+// refused. A gh that the caller's bound stops refuses the call: no bound is left for another
+// read.
 func (g *Guard) graphQLVisibility(ctx context.Context, slug string) (Visibility, error) {
 	var stderr bytes.Buffer
 	status, printed, err := g.run(ctx, child{
@@ -409,9 +439,6 @@ func (g *Guard) graphQLVisibility(ctx context.Context, slug string) (Visibility,
 //   - and its visibility must be exactly PUBLIC, PRIVATE or INTERNAL.
 func graphQLAnswer(status int, printed, stderr, slug string) (Visibility, error) {
 	body := visibilityBody(printed)
-	said := func() string {
-		return strings.ReplaceAll(strings.TrimSpace(strings.TrimSpace(body)+" "+strings.TrimSpace(stderr)), slug, maskPath(slug))
-	}
 	var answer struct {
 		Data *struct {
 			Repository *struct {
@@ -432,7 +459,7 @@ func graphQLAnswer(status int, printed, stderr, slug string) (Visibility, error)
 		whole = errors.Is(err, io.EOF)
 	}
 	if !whole {
-		return "", fmt.Errorf("gh api graphql for %s exited %d without one whole GraphQL answer: %s", maskPath(slug), status, said())
+		return "", fmt.Errorf("gh api graphql for %s exited %d without one whole GraphQL answer: %s", maskPath(slug), status, said(body, stderr, slug))
 	}
 	httpStatus, headers := responseHeaders(printed)
 	if len(answer.Errors) > 0 {
@@ -455,15 +482,15 @@ func graphQLAnswer(status int, printed, stderr, slug string) (Visibility, error)
 	}
 	switch {
 	case httpStatus == 0:
-		return "", fmt.Errorf("gh api graphql for %s printed no status line this reads: %s", maskPath(slug), said())
+		return "", fmt.Errorf("gh api graphql for %s printed no status line this reads: %s", maskPath(slug), said(body, stderr, slug))
 	case httpStatus != 200:
-		return "", fmt.Errorf("gh api graphql for %s answered the status %d: %s", maskPath(slug), httpStatus, said())
+		return "", fmt.Errorf("gh api graphql for %s answered the status %d: %s", maskPath(slug), httpStatus, said(body, stderr, slug))
 	}
 	if status != 0 {
-		return "", fmt.Errorf("gh api graphql for %s exited %d: %s", maskPath(slug), status, said())
+		return "", fmt.Errorf("gh api graphql for %s exited %d: %s", maskPath(slug), status, said(body, stderr, slug))
 	}
 	if answer.Data == nil || answer.Data.Repository == nil {
-		return "", fmt.Errorf("GraphQL answered no repository for %s: %s", maskPath(slug), said())
+		return "", fmt.Errorf("GraphQL answered no repository for %s: %s", maskPath(slug), said(body, stderr, slug))
 	}
 	if answered := answer.Data.Repository.NameWithOwner; !strings.EqualFold(answered, slug) {
 		return "", fmt.Errorf("GraphQL answered for the repository %q, not %s", maskPath(answered), maskPath(slug))
@@ -478,6 +505,13 @@ func graphQLAnswer(status int, printed, stderr, slug string) (Visibility, error)
 	default:
 		return "", fmt.Errorf("GraphQL answered %q as the visibility of %s, which is none GitHub defines", answer.Data.Repository.Visibility, maskPath(slug))
 	}
+}
+
+// said is what a visibility read of slug printed, as a refusal quotes it: the body of its answer
+// and its standard error, each trimmed and joined by a space, with slug masked (maskPath). The
+// GraphQL read (graphQLAnswer) and the curl read (curlAnswer) quote it.
+func said(body, stderr, slug string) string {
+	return strings.ReplaceAll(strings.TrimSpace(strings.TrimSpace(body)+" "+strings.TrimSpace(stderr)), slug, maskPath(slug))
 }
 
 // gitHubResponse is the status line and the headers gh's --include output printed, as an answer
@@ -498,10 +532,11 @@ const githubOrigin = "https://github.com"
 // lsRemote is what `git ls-remote <origin>/<slug>.git HEAD`, read with no credential, says of the
 // repository's visibility: public where git exits 0, listing the repository's HEAD (an empty
 // repository lists nothing and exits 0 all the same), and an error for anything else. origin is a
-// parameter so that a test can point the read at a server of its own; the guard's one caller
-// passes githubOrigin. That read goes through git's smart HTTP protocol, which GitHub does not
-// count against the REST rate limit: pushes refused for that limit have met `git ls-remote origin`
-// answering at the same moments.
+// parameter so that a test can point the read at a server of its own; the guard's two callers
+// (readWithoutREST, readWithoutGh) pass githubOrigin. That read goes through git's smart HTTP
+// protocol, which GitHub does not count against the REST rate limit: pushes refused for that limit
+// have met `git ls-remote origin` answering at the same moments. It uses no Go TLS either: git's
+// HTTPS is libcurl's.
 //
 // Public is the one answer because a refusal says nothing of the repository. GitHub answers an
 // anonymous read of a private repository, and of a name no repository has, with a 401; it also
@@ -622,8 +657,9 @@ func lsRemoteInherits(name string) bool {
 // rateLimitError is a read GitHub refused for a rate limit: whether it is GitHub's secondary
 // limit (githubrest.BudgetSecondary); for the core limit, when it resets (X-RateLimit-Reset),
 // zero where GitHub gave no reset; and for the secondary limit, the wait its Retry-After asks
-// for, zero where it gave none. A secondary limit's X-RateLimit-Reset is the core limit's, and
-// says nothing of it.
+// for, zero where it gave none. It keeps no reset for a secondary limit, since the guard waits
+// only for a Retry-After there and otherwise reads with ls-remote, which makes no API request
+// (Guard.waitFits).
 type rateLimitError struct {
 	secondary bool
 	reset     time.Time
@@ -648,7 +684,8 @@ func (e *rateLimitError) Error() string {
 // (githubrest.Limit): its status line, its headers and its body's message, never gh's own line.
 // A 429 is a limit, and so is a 403 with X-RateLimit-Remaining: 0, a Retry-After, or a message
 // naming the secondary limit or GitHub's abuse detection mechanism. The limit is the secondary
-// one where the response has a Retry-After or leaves requests, and the core limit otherwise.
+// one where the message names it, whatever X-RateLimit-Remaining says, or where the response has a
+// Retry-After or leaves requests, and the core limit otherwise.
 func rateLimitFrom(printed string) *rateLimitError {
 	status, headers := responseHeaders(printed)
 	var body struct {

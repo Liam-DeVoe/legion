@@ -511,6 +511,24 @@ const handoffValidation: NonNullable<DispatchToolSpec["validation"]> = {
   refusal: (value) => handoffProblem(value) ?? HANDOFF_RULE,
 };
 
+/** What a request for changes must carry. Dispatch requires it too (`recordArtifactReview` in
+ *  packages/envoy/internal/dispatch/api/reviews.go, which both review routes share, answers 400
+ *  REASON_REQUIRED without one), and `dispatch review` refuses such a call before it sends
+ *  anything. */
+const REVIEW_REASON_RULE =
+  "verdict changes_requested requires reason, a non-empty note saying what must change before the document can be approved.";
+
+const reviewValidation: NonNullable<DispatchToolSpec["validation"]> = {
+  check: (value) => {
+    const input = value as { readonly verdict?: unknown; readonly reason?: unknown };
+    return (
+      input.verdict !== "changes_requested" ||
+      (typeof input.reason === "string" && input.reason.trim() !== "")
+    );
+  },
+  message: REVIEW_REASON_RULE,
+};
+
 /** The five arguments a record of a result must carry. They are named here rather than taken as
  *  the head of the list below, because reading them by position makes a field inserted in the
  *  wrong place change what a record requires, with nothing to say so. */
@@ -601,8 +619,10 @@ export const PROJECT_KEY_RULE =
 /** A GitHub repository as `owner/name`, as `dispatch architecture-sync --repo` sends it in the
  *  path of `/api/v1/projects/{key}/architecture-sources/{owner}/{repo}/sync`. A name of `.` or
  *  `..` would resolve away as a path segment, so it is refused here rather than sent; the server
- *  holds the rest of GitHub's rule (`parseSourceRepo`). */
-const ARCHITECTURE_SOURCE_REPO_PATTERN = /^[A-Za-z0-9-]+\/(?!\.\.?$)[A-Za-z0-9._-]+$/;
+ *  holds the rest of GitHub's rule (`parseSourceRepo`). The owner takes an underscore, since a
+ *  managed user's login ends in `_<shortcode>` (`mona-cat_octo`): the server saves a source in
+ *  such an account, and a refusal here would leave it saved and never synced. */
+const ARCHITECTURE_SOURCE_REPO_PATTERN = /^[A-Za-z0-9_-]+\/(?!\.\.?$)[A-Za-z0-9._-]+$/;
 
 /** Issue lifecycle statuses the Dispatch server accepts (`model.IssueStatuses`), in lifecycle order. */
 export const ISSUE_STATUSES = [
@@ -659,7 +679,7 @@ export const dispatchToolSpecs = [
     name: "dispatch_issue",
     example: { project: "DSP", title: "Native workspace" },
     description:
-      "Create a native Dispatch issue for newly tracked work. Search first with dispatch search; if potentially duplicate issues exist, this returns 409 POSSIBLE_DUPLICATE unless --force is set after reading them. " +
+      "Create a native Dispatch issue for newly tracked work. Search first with dispatch search; if potentially duplicate issues exist, this returns 409 POSSIBLE_DUPLICATE unless --force is set after reading them, or, when the refusal cannot be recorded, creates the issue and names the near copy to read in the result. " +
       "When passing a spec, before calling, have a fresh read-only reader check it against the code and the human's words, then resolve every finding; a Legion architect uses `plan-gap-analyst`. " +
       "A spec holding an ask block whose body breaks its content rule (one or more question paragraphs, then at most one bullet list of options, last) is refused with 400 INVALID_ASK_BLOCK. " +
       `${CI_CHECK_RULE} ` +
@@ -713,7 +733,7 @@ export const dispatchToolSpecs = [
       repo: z
         .string()
         .describe(
-          "The repository the issue targets, owner/name, mapped to the issue's project in Settings; a child inherits its parent's when unset, and an issue with none on its parent chain takes the project's default."
+          "The repository the issue targets, owner/name. A child inherits its parent's when unset, and an issue with none on its parent chain takes the project's default."
         )
         .optional(),
     }),
@@ -833,7 +853,7 @@ export const dispatchToolSpecs = [
       repo: z
         .string()
         .describe(
-          "The repository the issue targets, owner/name, mapped to the issue's project in Settings; an empty string clears it, so the issue inherits its parent's or the project's default again."
+          "The repository the issue targets, owner/name. An empty string clears it, so the issue inherits its parent's or the project's default again."
         )
         .optional(),
       before: z
@@ -1558,6 +1578,53 @@ export const dispatchToolSpecs = [
         .number({ int: true, min: 1 })
         .describe("The plan version the review read and approved."),
     }),
+  },
+  {
+    name: "dispatch_review",
+    example: { issue: "DSP-1", version: 2, verdict: "approved" },
+    description:
+      "Approve one version of an issue's document, or request changes on it, as the person your " +
+      "token names: what the document header's Approve and Request changes record. A review " +
+      "records an approval or a changes request in the person's name at that version, so it " +
+      "works only with a token that names a person who holds approve; Dispatch refuses it to " +
+      "any other token, with 403 OAUTH_SCOPE_REQUIRED or 403 SIGN_IN_REQUIRED. --version is the " +
+      "version you read, sent in the review route's path, and it must be the version the review " +
+      "would record: the document's latest settled version, or, while an approval request is " +
+      "open on it, the version that request names for it. Any other is refused 409 " +
+      "REVIEW_VERSION_MOVED, which names the version to read, and nothing is recorded. A " +
+      "Dispatch build without the versioned review route answers no route and records nothing; " +
+      "the command then says so and names /healthz, which names the commit of the build that " +
+      "answers it when that build was stamped with one. With a request open the review answers " +
+      "it, and records the same verdict on every document the " +
+      "request names, each at the version the request names. A later version makes an approval " +
+      "stale. A review is the one browser action this command takes for a person; every other " +
+      "browser action is dispatch://INFRA-910's. " +
+      ISSUE_REFERENCE,
+    arguments: (z) => ({
+      issue: z.string().describe(ISSUE_REFERENCE),
+      artifact: z
+        .string()
+        .describe("Document artifact id, slug, or filename; the issue's spec by default.")
+        .optional(),
+      version: z
+        .number({ int: true, min: 1 })
+        .describe(
+          "The document version you read and review, sent as a segment of the review route's path: the version the review would record, or Dispatch refuses it 409 REVIEW_VERSION_MOVED naming the version to read."
+        ),
+      verdict: z
+        .enum(["approved", "changes_requested"])
+        .describe(
+          "approved records an approval; changes_requested records a request for changes and requires reason."
+        ),
+      reason: z
+        .string()
+        .describe(
+          "What must change before the document can be approved. changes_requested requires it; an approval may carry one."
+        )
+        .optional(),
+    }),
+    validation: reviewValidation,
+    strict: true,
   },
   {
     name: "dispatch_result",
