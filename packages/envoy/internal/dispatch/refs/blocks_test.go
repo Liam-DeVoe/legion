@@ -521,7 +521,8 @@ func TestABlockWhoseFootnoteShapedTextBecomesAReferenceTakesTheNewVersion(t *tes
 	}
 	body := markdown[blocks[0].From:blocks[0].To]
 	// The reference and the recorded literal read alone as one (TestReadsAsReadsAnotherSpellingOfTheSameTree),
-	// which is the case FragmentReadsAs refuses; the guard reads no pmdoc symbol the base lacks.
+	// which is the case FragmentReadsAs refuses. The guard calls no pmdoc function, so the test
+	// also compiles at a build without FragmentReadsAs, where it runs as its negative control.
 	if blocks[0].ID != paragraph || body != "Opening paragraph, see [^1] here." {
 		t.Fatalf("version 2's first block is %s written %q; the test needs paragraph %s written as a reference", blocks[0].ID, body, paragraph)
 	}

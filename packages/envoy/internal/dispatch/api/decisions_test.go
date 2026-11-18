@@ -623,7 +623,8 @@ func TestADecisionKeptAsFootnoteShapedTextWaitsOnceItCitesTheFootnote(t *testing
 	}
 	kept := strings.TrimSuffix(written.Text, reference) + literal
 	// That literal and the reference read alone as one (TestReadsAsReadsAnotherSpellingOfTheSameTree),
-	// which is the case FragmentReadsAs refuses; the guard reads no pmdoc symbol the base lacks.
+	// which is the case FragmentReadsAs refuses. The guard calls no pmdoc function, so the test
+	// also compiles at a build without FragmentReadsAs, where it runs as its negative control.
 	if !strings.Contains(stored, written.Text+"\n") {
 		t.Fatalf("version %d = %q; the test needs it to hold the decision as %q", version.Number, stored, written.Text)
 	}
