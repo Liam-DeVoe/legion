@@ -239,9 +239,14 @@ the kernel shows running as this user from that data directory with the mark's
 `postgres` for its program, and then the data and socket directories. It runs
 no program that a mark names. It leaves the Postgres of a process that still
 runs without a word, and it names each one it leaves, one line per kind. A
-removal that fails is one line, and the start goes on. A start whose own
-`TMPDIR` is gone still reads the containers and `/proc`, and names that
-`TMPDIR` on one line. The logs of a killed run stay in its directory.
+stack is not dead while a process it started still holds its directories: a
+harness killed while its `pg_ctl start`, `initdb` or `docker create` runs leaves
+that child running, and before a start removes a data or socket directory it
+reads every process of its user, and leaves the directory, with its mark, where
+a process's working directory, an open file or an argument names it. A later
+start judges it again. A removal that fails is one line, and the start goes on.
+A start whose own `TMPDIR` is gone still reads the containers and `/proc`, and
+names that `TMPDIR` on one line. The logs of a killed run stay in its directory.
 
 Two starts at once on one dead stack act on each of its parts once. A
 directory, and the postmaster that serves from a data directory, are claimed by
@@ -271,8 +276,17 @@ What a start leaves and names, and what you do to remove it by hand:
   From that namespace, or once you know it ended, stop the postmaster with its
   own binaries (`pg_ctl -D <data> -m immediate stop`) or remove the container,
   then the run directory.
+- A mark of another time namespace: a start cannot compare its process's start
+  with a clock of another namespace, so it judges none. Remove it from that
+  namespace, or by hand as above once you know its stack ended.
+- A mark of another user: its process belongs to that user, so remove it as
+  that user.
 - A mark from a machine with no `/proc`, such as macOS, carries no owner, and a
   start there judges no mark. Stop its Postgres the same way by hand.
+- A dead stack's directory that a process of this user still holds, such as a
+  `pg_ctl start` the stack began before it was killed: a start leaves it and its
+  mark, and names the process. Once that process has ended, the next start
+  removes what is left.
 - A run directory of another `TMPDIR` whose postmaster has already ended holds
   no running server, so no start finds it: remove that `dispatch-e2e-run-*`
   directory by hand. One whose postmaster still runs is removed as above, and

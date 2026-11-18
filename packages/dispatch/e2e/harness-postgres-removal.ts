@@ -40,8 +40,16 @@
  *  mark it leaves is named on one line per kind: what it cannot read (another user's run
  *  directory of mode 0700, a file that is not a mark, a label that is the mark of another
  *  container, a `docker ps` that failed), what it does not trust (a check of `whyUntrusted`,
- *  named), and what it cannot judge (another boot, PID namespace, time namespace or user, or no
- *  `/proc`).
+ *  named), what it cannot judge (another boot, PID namespace, time namespace or user, or no
+ *  `/proc`), and what a process of this user still holds.
+ *  A STACK IS NOT DEAD WHILE A PROCESS IT STARTED HOLDS ITS DIRECTORIES. A stack killed hard while
+ *  its `pg_ctl start`, its `initdb` or its `docker create` runs leaves that child running, and
+ *  the postmaster such a `pg_ctl` starts. So before a start removes a data or a socket
+ *  directory, it reads every process of this user that the kernel shows (`holdersOf`): one whose
+ *  working directory or an open file is in that directory, or one of whose arguments names it,
+ *  holds it, and the start leaves that directory with its mark and names it, and a later start
+ *  judges it again. The postmaster the start verified, and the processes it started, are not
+ *  counted: the start stops them itself, and waits for them to end before the removal.
  *  A line that says `removed` names only what that start itself removed and is gone. A removal
  *  that fails, or a postmaster that fails a check, is one line, keeps its mark for the next
  *  start, and never fails the start. Two starts that find one dead mark at once both try, and the
@@ -57,14 +65,11 @@
  *
  *  THE WINDOWS NO MARK COVERS. A stack killed between the `mkdtemp` of a socket directory and the
  *  rename of its mark, calls with no await between them, leaves that empty directory and at most
- *  a `.partial` file of the mark, which no start reads. A stack killed while its `pg_ctl start`,
- *  `docker create` or `docker start` is still running leaves that child running: a start in the
- *  moment before the postmaster writes `postmaster.pid`, or before Docker makes the container,
- *  finds neither and removes the directories, and a postmaster that comes up after that may run
- *  on with its data directory gone and no mark that names it. A container that comes up after
- *  that carries its label for the next start. A pid that a dead postmaster leaves can be taken by
- *  another process between the checks of that process and the signal, which only pid reuse
- *  within those milliseconds allows. */
+ *  a `.partial` file of the mark, which no start reads. A pid that a dead postmaster leaves can be
+ *  taken by another process between the checks of that process and the signal, which only pid
+ *  reuse within those milliseconds allows. A child a stack forked in the moment before it was
+ *  killed, and that has not run its program yet, names none of the stack's directories, and a
+ *  start in that moment does not see it. */
 import { execFile } from "node:child_process";
 import {
   lstatSync,
@@ -121,6 +126,9 @@ const postmasterQuitMs = 60_000;
 const postmasterKillMs = 10_000;
 /** How often a start reads `/proc` while it waits for a postmaster to end. */
 const postmasterPollMs = 50;
+/** How long the processes of a postmaster this start stopped may take to end after it: the 5 s a
+ *  postmaster that got SIGQUIT gives its children before it kills them. */
+const postmasterChildrenMs = 5_000;
 
 /** A postmaster as `postmasterOf` verified it: its pid, and its start in clock ticks since boot. */
 interface Postmaster {
@@ -204,8 +212,67 @@ export function servingPostmasters(run: string): string[] {
 }
 
 /** What `removeDirectory` did: removed the directory; found it gone, with no claim of it, when it
- *  looked; or found it claimed by another start, which removed it first. */
-type Removal = "removed" | "absent" | "lost";
+ *  looked; found it claimed by another start, which removed it first; or left it, since a process
+ *  of this user still holds it (`holdersOf`), named. */
+type Removal = "removed" | "absent" | "lost" | { readonly heldBy: readonly string[] };
+
+/** Whether `argument`, one argument of a process, names `path` whole: after its start or a space,
+ *  a `=`, a `:`, a `,` or a quote, and before its end, a `/` or one of those, as `postgres -D
+ *  <data>`, `pg_ctl`'s `-o "-k <sockets>"` and Docker's `--mount type=bind,source=<sockets>,…`
+ *  write it. */
+function names(argument: string, path: string): boolean {
+  for (let at = argument.indexOf(path); at !== -1; at = argument.indexOf(path, at + 1)) {
+    const before = argument[at - 1] ?? "";
+    const after = argument[at + path.length] ?? "";
+    if (/^[\s=:,'"]?$/.test(before) && /^[\s=:,'"/]?$/.test(after)) return true;
+  }
+  return false;
+}
+
+/** Each process of the user `uid` that still holds one of `paths`, the directories of a dead
+ *  stack's mark, as the kernel shows it: its working directory, or a file it holds open, is that
+ *  directory or in it, or one of its arguments names it (`names`). A process the stack started
+ *  that its death did not end holds them so: a `pg_ctl start` or an `initdb` still running, a
+ *  `docker create` that mounts the socket directory, the postmaster such a `pg_ctl` is starting.
+ *  A stack is not dead while one of them runs, so a start removes no directory it holds.
+ *  `postmaster` is the pid of the postmaster `postmasterOf` verified, which this start stops
+ *  itself, and neither it nor a process it started (its parent pid) is counted. A process that
+ *  ends while it is read, or whose links this user may not read, holds nothing here. Answers
+ *  "<program> <pid>" for each holder, in pid order. */
+function holdersOf(paths: readonly string[], uid: number, postmaster?: number): string[] {
+  const within = (target: string) =>
+    paths.some((path) => target === path || target.startsWith(`${path}/`));
+  const holders: string[] = [];
+  for (const pid of readdirSync("/proc").filter((entry) => /^\d+$/.test(entry))) {
+    try {
+      if (Number(pid) === postmaster || lstatSync(`/proc/${pid}`).uid !== uid) continue;
+      const parent = /^PPid:\s+(\d+)$/m.exec(readFileSync(`/proc/${pid}/status`, "utf8"))?.[1];
+      if (postmaster !== undefined && Number(parent) === postmaster) continue;
+      const holds =
+        within(readlinkSync(`/proc/${pid}/cwd`)) ||
+        readFileSync(`/proc/${pid}/cmdline`, "utf8")
+          .split("\0")
+          .some((argument) => paths.some((path) => names(argument, path))) ||
+        readdirSync(`/proc/${pid}/fd`).some((fd) => {
+          try {
+            return within(readlinkSync(`/proc/${pid}/fd/${fd}`));
+          } catch {
+            return false;
+          }
+        });
+      if (holds) holders.push(`${basename(readlinkSync(`/proc/${pid}/exe`))} ${pid}`);
+    } catch {
+      // A process that ended, or whose links this user may not read, holds nothing here.
+    }
+  }
+  return holders;
+}
+
+/** `path` as a line names a directory a process still holds: "<path>, which pg_ctl 67 still
+ *  holds". */
+function heldPhrase(path: string, holders: readonly string[]): string {
+  return `${path}, which ${listOf(holders)} still ${holders.length === 1 ? "holds" : "hold"}`;
+}
 
 /** What a claimed name holds between the name of the part and the claimer's pid and start. */
 const claimInfix = ".removing-";
@@ -323,19 +390,24 @@ export async function claimForRemoval(path: string, uid: number): Promise<Claim>
   }
 }
 
+/** Gives `path` back the name `claimForRemoval` took from it, so the mark names it again for the
+ *  next start; where that rename fails, the claim stays under this process's name, and a start
+ *  after this one claims it again once this process is gone. */
+function giveBack(claimed: string, path: string): void {
+  try {
+    renameSync(claimed, path);
+  } catch {
+    // The claim stays under this process's name, for a start after it (`claimForRemoval`).
+  }
+}
+
 /** Removes `claimed`, the name `claimForRemoval` gave `path` for this start. Where the removal
- *  fails it gives the name `path` back, so the mark names it again for the next start, and
- *  throws, naming `path`; where that rename fails too, the claim stays, and a start after this
- *  one claims it again once this process is gone. */
+ *  fails it gives the name `path` back (`giveBack`) and throws, naming `path`. */
 function removeClaimed(path: string, claimed: string): void {
   try {
     rmSync(claimed, { recursive: true, force: true });
   } catch (error) {
-    try {
-      renameSync(claimed, path);
-    } catch {
-      // The claim stays under this process's name, for a start after it (`claimForRemoval`).
-    }
+    giveBack(claimed, path);
     throw new Error(`${path} could not be removed: ${firstLine(error)}`);
   }
 }
@@ -349,15 +421,24 @@ function heldError(path: string, claim: string): Error {
 
 /** Removes the directory `path` where it is a directory of the user `uid`, and nothing where it
  *  is gone, under this start's claim (`claimForRemoval`): of two starts that both find it, one
- *  removes it, and the other says that another start removed it ("lost"). Throws, naming `path`,
- *  where it is anything else, since a file, a link or another user's directory is nothing a stack
- *  made, where another start's claim of it outlasts the wait, and where the removal fails, which
- *  gives the directory back under `path` for the next start. */
+ *  removes it, and the other says that another start removed it ("lost"). A directory that a
+ *  process of this user still holds (`holdersOf`) it gives back and leaves, naming each holder,
+ *  for a later start to judge again. Throws, naming `path`, where it is anything else, since a
+ *  file, a link or another user's directory is nothing a stack made, where another start's claim
+ *  of it outlasts the wait, and where the removal fails, which gives the directory back under
+ *  `path` for the next start. */
 async function removeDirectory(path: string, uid: number): Promise<Removal> {
   const claim = await claimForRemoval(path, uid);
   if (claim.kind === "absent") return "absent";
   if (claim.kind === "elsewhere") return "lost";
   if (claim.kind === "held") throw heldError(path, claim.claim);
+  // An argument names the directory by the name its mark holds; a working directory or an open
+  // file, by the claimed name the kernel shows now.
+  const heldBy = holdersOf([path, claim.path], uid);
+  if (heldBy.length > 0) {
+    giveBack(claim.path, path);
+    return { heldBy };
+  }
   removeClaimed(path, claim.path);
   return "removed";
 }
@@ -392,9 +473,11 @@ export async function stopPostmaster({ pid, start }: Postmaster, data: string): 
 /** Ends the postmaster of `data`, where one still serves it, and then removes `data`, under this
  *  start's claim of `data` (`claimForRemoval`), so only the start that holds it signals the
  *  postmaster. Answers whether this call's signal stopped a postmaster, and what came of the
- *  directory: a start that finds `data` claimed by another start stops nothing. Throws, giving
- *  `data` back under its name, where the postmaster fails a check of `postmasterOf` or still runs
- *  after its stop. */
+ *  directory: a start that finds `data` claimed by another start stops nothing. A directory that
+ *  another process of this user still holds (`holdersOf`), before the stop or after it, it gives
+ *  back and leaves, naming each holder: before the stop it stops nothing. Throws, giving `data`
+ *  back under its name, where the postmaster fails a check of `postmasterOf` or still runs after
+ *  its stop. */
 async function removePostmaster(
   bin: string,
   data: string,
@@ -408,14 +491,31 @@ async function removePostmaster(
   try {
     // The kernel names a working directory by its latest name, the claimed one.
     const postmaster = postmasterOf(claim.path, bin, uid);
+    const before = holdersOf([data, claim.path], uid, postmaster?.pid);
+    if (before.length > 0) {
+      giveBack(claim.path, data);
+      return { stopped, removal: { heldBy: before } };
+    }
     if (postmaster !== undefined) stopped = await stopPostmaster(postmaster, data);
   } catch (error) {
-    try {
-      renameSync(claim.path, data);
-    } catch {
-      // The claim stays under this process's name, for a start after it (`claimForRemoval`).
-    }
+    giveBack(claim.path, data);
     throw error;
+  }
+  // The processes of a postmaster end once it has: one that SIGQUIT reached waits for them
+  // first, and one that SIGKILL ended leaves them to see it gone. A start waits for that, at most
+  // as long as a postmaster gives them after SIGQUIT, and leaves a directory one still holds.
+  let after: string[] = [];
+  if (stopped) {
+    const deadline = Date.now() + postmasterChildrenMs;
+    after = holdersOf([data, claim.path], uid);
+    while (after.length > 0 && Date.now() < deadline) {
+      await sleep(postmasterPollMs);
+      after = holdersOf([data, claim.path], uid);
+    }
+  }
+  if (after.length > 0) {
+    giveBack(claim.path, data);
+    return { stopped, removal: { heldBy: after } };
   }
   removeClaimed(data, claim.path);
   return { stopped, removal: "removed" };
@@ -433,6 +533,8 @@ interface Left {
   readonly unread: string[];
   readonly untrusted: string[];
   readonly unjudged: string[];
+  /** A dead stack's directory that a process of this user still holds (`holdersOf`). */
+  readonly held: string[];
 }
 
 /** What the container sweep leaves the run directory sweep to read: the name of each container
@@ -583,14 +685,17 @@ async function removeContainers(self: Owner | null, left: Left): Promise<Contain
     }
     removed.add(name);
     try {
-      const andSockets =
-        sockets !== undefined && (await removeDirectory(sockets, verdict.uid)) === "removed"
-          ? ` and ${sockets}`
-          : "";
+      const socketRemoval =
+        sockets === undefined ? "absent" : await removeDirectory(sockets, verdict.uid);
+      const andSockets = socketRemoval === "removed" ? ` and ${sockets}` : "";
       console.error(
         `${named}: removed ${what} (${mark.container})${andSockets}, which ${by} left when it ` +
           `ended without stopping ${andSockets === "" ? "it" : "them"}`
       );
+      // The mark stays with the directory, for a later start (`sweepRun`).
+      if (sockets !== undefined && typeof socketRemoval === "object") {
+        left.held.push(`${what} (${heldPhrase(sockets, socketRemoval.heldBy)})`);
+      }
     } catch (error) {
       console.error(
         `${named}: removed ${what} (${mark.container}), which ${by} left when it ended without ` +
@@ -623,11 +728,10 @@ const servedFrom = /^(.+)\/(?:worker-\d+|template)\/pgdata(?:\.removing-\d+-\d+)
 const claimed = /\.removing-\d+-\d+$/;
 
 /** A postmaster the kernel shows serving from a run directory that this start's listing of its
- *  TMPDIR does not read. */
-interface Served {
+ *  TMPDIR does not read, with its pid and its start as the listing read them. */
+interface Served extends Postmaster {
   readonly run: string;
   readonly data: string;
-  readonly pid: number;
 }
 
 /** Each postmaster of the user `uid` that serves from a run directory that the listing of `real`,
@@ -652,6 +756,7 @@ function servedElsewhere(real: string, uid: number): Served[] {
   for (const pid of pids) {
     try {
       if (lstatSync(`/proc/${pid}`).uid !== uid) continue;
+      const start = startOf(readFileSync(`/proc/${pid}/stat`, "utf8"));
       if (basename(readlinkSync(`/proc/${pid}/exe`)) !== "postgres") continue;
       const data = readlinkSync(`/proc/${pid}/cwd`);
       const run = servedFrom.exec(data)?.[1];
@@ -660,7 +765,7 @@ function servedElsewhere(real: string, uid: number): Served[] {
       const status = readFileSync(`/proc/${pid}/status`, "utf8");
       const own = /^NSpid:.*?(\d+)[ \t]*$/m.exec(status)?.[1] ?? pid;
       if (Number.parseInt(readUnlinked(join(data, "postmaster.pid")), 10) === Number(own)) {
-        served.push({ run, data: data.replace(claimed, ""), pid: Number(pid) });
+        served.push({ run, data: data.replace(claimed, ""), pid: Number(pid), start });
       }
     } catch {
       // A process that ended, or whose links this user may not read, serves from nothing here.
@@ -725,6 +830,9 @@ async function sweepRun(
     // directory to its stack's place in the run and the socket directory to the run or /tmp.
     const { sockets, data } = markedPaths(mark);
     if (data !== undefined) read.add(data);
+    // A mark whose owner lives is left without a word, whatever this start can read of Docker.
+    const verdict = judge(mark.owner, self);
+    if (verdict.kind === "lives") continue;
     if (mark.container !== undefined) {
       if (containers === undefined) {
         left.unread.push(
@@ -742,8 +850,6 @@ async function sweepRun(
         continue;
       }
     }
-    const verdict = judge(mark.owner, self);
-    if (verdict.kind === "lives") continue;
     if (verdict.kind === "unjudged") {
       left.unjudged.push(`${file} (${verdict.why})`);
       continue;
@@ -767,26 +873,31 @@ async function sweepRun(
     // Each part this start removed itself, under its claim, which its line names, and each part
     // another start claimed and removed first (`claimForRemoval`): a line says "removed" of nothing
     // another start removed, and only the start that holds the data directory's claim signals its
-    // postmaster.
+    // postmaster. A part that a process of this user still holds (`holdersOf`) is left with the
+    // rest of the mark, which stays for a later start to judge again.
     const done: string[] = [];
     const lost: string[] = [];
+    const held: string[] = [];
     let failure: { readonly error: unknown } | undefined;
     try {
       if (mark.postmaster !== undefined && data !== undefined) {
         const { stopped, removal } = await removePostmaster(mark.postmaster.bin, data, verdict.uid);
-        if (removal === "removed")
-          done.push(...(stopped ? [`the postmaster of ${data}`, "that directory"] : [data]));
+        if (stopped) done.push(`the postmaster of ${data}`);
+        if (removal === "removed") done.push(stopped ? "that directory" : data);
         else if (removal === "lost") lost.push(data);
+        else if (removal !== "absent") held.push(heldPhrase(data, removal.heldBy));
       }
-      if (sockets !== undefined) {
+      if (sockets !== undefined && held.length === 0) {
         const removal = await removeDirectory(sockets, verdict.uid);
         if (removal === "removed") done.push(sockets);
         else if (removal === "lost") lost.push(sockets);
+        else if (removal !== "absent") held.push(heldPhrase(sockets, removal.heldBy));
       }
-      rmSync(file, { force: true });
+      if (held.length === 0) rmSync(file, { force: true });
     } catch (error) {
       failure = { error };
     }
+    if (held.length > 0) left.held.push(`${file} (${listOf(held)})`);
     const elsewhere = lost.length === 0 ? "" : `; another start removed ${listOf(lost)} first`;
     if (failure !== undefined) {
       const why = firstLine(failure.error);
@@ -814,7 +925,9 @@ async function sweepRun(
 
 /** Sweeps each run directory of `parent`, this start's TMPDIR, that the pool named, and each other
  *  run directory that a postmaster of this user serves from (`servedElsewhere`), by the same steps
- *  (`sweepRun`), and names each such postmaster that no mark of its run directory names. */
+ *  (`sweepRun`), and names each such postmaster that no mark of its run directory names and that
+ *  still runs once that sweep is done: one another start removed meanwhile is no Postgres this
+ *  start left. */
 async function removeRunDirectories(
   parent: string,
   self: Owner | null,
@@ -844,6 +957,9 @@ async function removeRunDirectories(
     const read = await sweepRun(run, uid, self, containers, left);
     if (read === undefined) continue;
     for (const postmaster of served.filter((each) => each.run === run && !read.has(each.data))) {
+      // Read again, by its pid and the start the listing read: another start may have removed
+      // that stack's mark, and stopped its postmaster, since the listing.
+      if (!stillRuns(postmaster.pid, postmaster.start)) continue;
       left.unjudged.push(
         `${postmaster.data} (postmaster ${postmaster.pid} serves it from a run directory this start does not list, and no mark there names it)`
       );
@@ -858,7 +974,7 @@ async function removeRunDirectories(
  *  the start goes on. */
 export async function removeLeftoverPostgres(): Promise<void> {
   const self = stackOwner();
-  const left: Left = { unread: [], untrusted: [], unjudged: [] };
+  const left: Left = { unread: [], untrusted: [], unjudged: [], held: [] };
   try {
     // The containers first, so a container goes before the socket directory it serves in.
     const containers = await removeContainers(self, left);
@@ -879,6 +995,11 @@ export async function removeLeftoverPostgres(): Promise<void> {
   if (left.unjudged.length > 0) {
     console.error(
       `${named}: left the Postgres of stacks whose process it cannot see: ${left.unjudged.join(", ")}`
+    );
+  }
+  if (left.held.length > 0) {
+    console.error(
+      `${named}: left the Postgres of stacks whose directories a process of this user still holds, for a later start to judge again: ${left.held.join(", ")}`
     );
   }
 }

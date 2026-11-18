@@ -18,9 +18,19 @@
  *  of another run on the machine. They need Linux (`/proc`). A mark another user wrote needs a
  *  second user, which a test run has none of, so the rows of `whyUntrusted`
  *  (`harness-postgres-marks.test.ts`) read owners from a stubbed `lstat`; these rows plant what
- *  one user can: a link, a program, a directory others may write. A stand-in process is one this file starts and records by its pid
- *  and start, and stops only while `/proc` still names it; a stand-in postmaster is a copy of
- *  `sleep` named `postgres`. */
+ *  one user can: a link, a program, a directory others may write. A stand-in process is one this
+ *  file starts and records by its pid and start, and stops only while `/proc` still names it; a
+ *  stand-in postmaster is a copy of `sleep` that serves from the data directory its
+ *  `postmaster.pid` names.
+ *
+ *  ANOTHER START BESIDE A ROW. A dead stack that a row plants is one every start must remove, and
+ *  any start of this user may run beside the row: another session's on the machine, or
+ *  `harness-stacks.test.ts`'s in the same `bun test --parallel` run. So each row plants its
+ *  stacks under a TMPDIR of its own, which no other start lists, and its stand-in postmasters run
+ *  a program that is not named `postgres` (`Seen`), which no other start's walk of the kernel's
+ *  processes reads: only the row's own starts find them. The rows of a run directory of another
+ *  TMPDIR, which a start finds by that walk alone, plant a `postgres` that every start finds, and
+ *  so decide on what any start did with the plant (`removedByAStart`). */
 
 import { expect, test } from "bun:test";
 import {
@@ -39,6 +49,7 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { Subprocess } from "bun";
 
 import * as marks from "../harness-postgres-marks";
 import { servingPostmasters, stopPostmaster } from "../harness-postgres-removal";
@@ -102,30 +113,46 @@ function leaveData(path: string, pid?: number): void {
   if (pid !== undefined) writeFileSync(join(path, "postmaster.pid"), `${pid}\n${path}\n`);
 }
 
-/** A stand-in postmaster of the cluster in `data`: a copy of `sleep` named `postgres` in `bin`,
- *  run with `data` for its working directory, which `data`'s `postmaster.pid` names. */
-function standInPostmaster(bin: string, data: string): StandIn {
+/** Who finds a stand-in postmaster: "its TMPDIR", the row's own starts alone, through the run
+ *  directory of their TMPDIR, since its program is `stand-in`, run through a link named
+ *  `postgres` (the program a mark's `bin` names); or "every start", whose walk of the kernel's
+ *  processes (`servedElsewhere`) reads a program named `postgres`, for a row of a run directory
+ *  that no start lists. */
+type Seen = "its TMPDIR" | "every start";
+
+/** Puts a copy of `program` in `bin` as the stand-in postmaster that `seen` names, and answers the
+ *  path to run it by, `bin/postgres`. */
+function postmasterProgram(bin: string, program: string, seen: Seen): string {
+  mkdirSync(bin, { recursive: true });
+  const postgres = join(bin, "postgres");
+  const copy = seen === "every start" ? postgres : join(bin, "stand-in");
+  copyFileSync(program, copy);
+  chmodSync(copy, 0o755);
+  if (copy !== postgres) symlinkSync(copy, postgres);
+  return postgres;
+}
+
+/** A stand-in postmaster of the cluster in `data`: a copy of `sleep` in `bin`
+ *  (`postmasterProgram`), run with `data` for its working directory, which `data`'s
+ *  `postmaster.pid` names. */
+function standInPostmaster(bin: string, data: string, seen: Seen): StandIn {
   const sleep = Bun.which("sleep");
   if (sleep === null) throw new Error("no sleep on PATH to stand in for a postmaster");
-  mkdirSync(bin, { recursive: true });
-  copyFileSync(sleep, join(bin, "postgres"));
-  chmodSync(join(bin, "postgres"), 0o755);
+  const postgres = postmasterProgram(bin, sleep, seen);
   mkdirSync(data, { recursive: true });
-  const postmaster = standIn(data, [join(bin, "postgres"), "600"]);
+  const postmaster = standIn(data, [postgres, "600"]);
   leaveData(data, postmaster.pid);
   return postmaster;
 }
 
 /** A stand-in postmaster of the cluster in `data` that writes one line to `signals` for each
- *  SIGQUIT it gets, and ends once it got one and `go` exists, or after 600 s: a copy of `bash`
- *  named `postgres` in `bin`, run with `data` for its working directory, which `data`'s
- *  `postmaster.pid` names. */
+ *  SIGQUIT it gets, and ends once it got one and `go` exists, or after 600 s: a copy of `bash` in
+ *  `bin` that only the row's own starts find (`postmasterProgram`), run with `data` for its
+ *  working directory, which `data`'s `postmaster.pid` names. */
 function signalCountingPostmaster(bin: string, data: string, signals: string, go: string): StandIn {
   const bash = Bun.which("bash");
   if (bash === null) throw new Error("no bash on PATH to stand in for a postmaster");
-  mkdirSync(bin, { recursive: true });
-  copyFileSync(bash, join(bin, "postgres"));
-  chmodSync(join(bin, "postgres"), 0o755);
+  const postgres = postmasterProgram(bin, bash, "its TMPDIR");
   mkdirSync(data, { recursive: true });
   const script = `quit=; trap 'echo QUIT >>"$1"; quit=1' QUIT
 end=$((SECONDS + 600))
@@ -133,7 +160,7 @@ while [ "$SECONDS" -lt "$end" ]; do
   if [ -n "$quit" ] && [ -e "$2" ]; then exit 0; fi
   sleep 0.05 & wait $!
 done`;
-  const postmaster = standIn(data, [join(bin, "postgres"), "-c", script, "postgres", signals, go]);
+  const postmaster = standIn(data, [postgres, "-c", script, "postgres", signals, go]);
   leaveData(data, postmaster.pid);
   return postmaster;
 }
@@ -403,16 +430,57 @@ test.skipIf(!onLinux)(
 );
 
 /** A run directory of another `TMPDIR` than the sweep's, with what a stack left there: a stand-in
- *  postmaster of stack 0 serving from its data directory, and the mark of `owner` beside it, or no
- *  mark where `owner` is undefined. */
-function leaveElsewhere(owner?: unknown) {
+ *  postmaster of stack 0 serving from its data directory, which every start finds, or only that
+ *  data directory where `serving` is false, and the mark of `owner` beside it, or no mark where
+ *  `owner` is undefined. */
+function leaveElsewhere(owner?: unknown, serving = true) {
   const other = mkdtempSync(join(tmpdir(), "marks-elsewhere-"));
   const run = mkdtempSync(join(other, runDirectoryPrefix));
   const bin = join(other, "bin");
   const data = join(realpathSync(run), "worker-0", "pgdata");
-  const postmaster = standInPostmaster(bin, data);
+  if (!serving) leaveData(data);
+  const postmaster = serving ? standInPostmaster(bin, data, "every start") : undefined;
   const file = owner === undefined ? undefined : writeMark(run, owner, data, bin);
-  return { other, run, data, postmaster, file };
+  return { other, run, bin, data, postmaster, file };
+}
+
+/** How long another start's removal of a plant may still take once the row's own start ended: a
+ *  start that found the plant claimed waited for that claim, so only the last steps of the other
+ *  start's removal, its stop of a stand-in and a few file removals, are left. */
+const settleMs = 60_000;
+
+/** What any start did with a plant that every start finds, `postmaster` serving from `data`, or
+ *  from `claimed` where a dead start claimed `data`, with its mark `file` (`leaveElsewhere`),
+ *  whose stack is gone: R3 asks each start to remove it, and the row's own start or another may
+ *  be the one. Waits until the postmaster has ended and `data`, `claimed` and `file` are gone, and
+ *  requires of `lines`, what one start printed, that each line naming `named` says this start
+ *  removed the postmaster of `data`, or that another start removed it first, or that this start
+ *  waits for another start's claim of it, and that at most one says this start removed it: none
+ *  says it left it. */
+async function removedByAStart(
+  lines: readonly string[],
+  plant: {
+    readonly postmaster?: StandIn;
+    readonly data: string;
+    readonly claimed?: string;
+    readonly file?: string;
+  },
+  named = plant.data
+): Promise<void> {
+  await until(
+    () =>
+      plant.postmaster?.alive() !== true &&
+      [plant.data, plant.claimed, plant.file].every(
+        (path) => path === undefined || !existsSync(path)
+      ),
+    "the end of the plant's postmaster, data directory and mark",
+    settleMs
+  );
+  const removed = `removed the postmaster of ${plant.data}`;
+  const naming = holding(lines, named);
+  const said = ["another start removed", "waits for another start's claim", removed];
+  expect(naming.filter((line) => !said.some((words) => line.includes(words)))).toEqual([]);
+  expect(holding(naming, removed).length).toBeLessThanOrEqual(1);
 }
 
 test.skipIf(!onLinux)(
@@ -421,18 +489,16 @@ test.skipIf(!onLinux)(
     const { tmp } = scratch();
     const left = leaveElsewhere(owners().gone);
     try {
-      const lines = await sweep(tmp);
-
-      expect(left.postmaster.alive()).toBe(false);
-      expect(existsSync(left.data)).toBe(false);
-      expect(left.file !== undefined && existsSync(left.file)).toBe(false);
-      expect(holding(lines, `removed the postmaster of ${left.data}`)).toHaveLength(1);
+      await removedByAStart(await sweep(tmp), left);
     } finally {
-      left.postmaster.stop();
+      left.postmaster?.stop();
       rmSync(left.other, { recursive: true, force: true });
       rmSync(tmp, { recursive: true, force: true });
     }
-  }
+  },
+  // The row waits for one start's sweep, a `bun` child, and then at most `settleMs` for what
+  // another start of the machine may still be removing of its plant.
+  300_000
 );
 
 test.skipIf(!onLinux)(
@@ -445,37 +511,39 @@ test.skipIf(!onLinux)(
     try {
       const lines = await sweep(gone, programs);
 
-      expect(left.postmaster.alive()).toBe(false);
-      expect(existsSync(left.data)).toBe(false);
-      expect(holding(lines, `removed the postmaster of ${left.data}`)).toHaveLength(1);
+      await removedByAStart(lines, left);
       expect(holding(lines, `left what it cannot read: ${gone} (ENOENT`)).toHaveLength(1);
     } finally {
-      left.postmaster.stop();
+      left.postmaster?.stop();
       rmSync(left.other, { recursive: true, force: true });
       rmSync(tmp, { recursive: true, force: true });
     }
-  }
+  },
+  // The row waits for one start's sweep, a `bun` child, and then at most `settleMs` for what
+  // another start of the machine may still be removing of its plant.
+  300_000
 );
+
+/** The mark of a container of the run directory `run`, whose owner is `owner`, beside its socket
+ *  directory: what the image provider writes for stack 0. Answers both paths and the name. */
+function leaveContainerMark(run: string, owner: unknown) {
+  const sockets = mkdtempSync(join(run, "pg-0-"));
+  const container = "dispatch-e2e-pg-no-docker-0";
+  mkdirSync(join(run, marksDirectory), { recursive: true });
+  const file = join(run, marksDirectory, "worker-0.json");
+  writeFileSync(
+    file,
+    JSON.stringify({ owner, run, identity: marks.identityOf(run), sockets, container })
+  );
+  return { sockets, container, file };
+}
 
 test.skipIf(!onLinux)(
   "v-no-leftover-postgres: a start with no docker on its PATH leaves the mark of a dead stack's container, with its socket directory, and names it: it cannot tell whether that container still runs",
   async () => {
     const { tmp, run } = scratch();
     try {
-      const sockets = mkdtempSync(join(run, "pg-0-"));
-      const container = "dispatch-e2e-pg-no-docker-0";
-      mkdirSync(join(run, marksDirectory), { recursive: true });
-      const file = join(run, marksDirectory, "worker-0.json");
-      writeFileSync(
-        file,
-        JSON.stringify({
-          owner: owners().gone,
-          run,
-          identity: marks.identityOf(run),
-          sockets,
-          container,
-        })
-      );
+      const { sockets, container, file } = leaveContainerMark(run, owners().gone);
 
       const lines = await sweep(tmp);
 
@@ -494,6 +562,23 @@ test.skipIf(!onLinux)(
 );
 
 test.skipIf(!onLinux)(
+  "v-no-leftover-postgres: a start with no docker on its PATH leaves the mark of a live stack's container without a word: it judges the owner before it reads Docker",
+  async () => {
+    const { tmp, run } = scratch();
+    try {
+      const { sockets, file } = leaveContainerMark(run, owners().runs);
+
+      const lines = await sweep(tmp);
+
+      expect([existsSync(sockets), existsSync(file)]).toEqual([true, true]);
+      expect(holding(lines, run)).toEqual([]);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  }
+);
+
+test.skipIf(!onLinux)(
   "v-no-leftover-postgres: a stack under another TMPDIR whose stack runs is not touched, and the start prints nothing of it",
   async () => {
     const { tmp } = scratch();
@@ -501,14 +586,14 @@ test.skipIf(!onLinux)(
     try {
       const lines = await sweep(tmp);
 
-      expect(left.postmaster.alive()).toBe(true);
+      expect(left.postmaster?.alive()).toBe(true);
       expect([
         existsSync(join(left.data, "PG_VERSION")),
         left.file !== undefined && existsSync(left.file),
       ]).toEqual([true, true]);
       expect(holding(lines, left.run)).toEqual([]);
     } finally {
-      left.postmaster.stop();
+      left.postmaster?.stop();
       rmSync(left.other, { recursive: true, force: true });
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -523,16 +608,16 @@ test.skipIf(!onLinux)(
     try {
       const lines = await sweep(tmp);
 
-      expect(left.postmaster.alive()).toBe(true);
+      expect(left.postmaster?.alive()).toBe(true);
       expect(existsSync(join(left.data, "PG_VERSION"))).toBe(true);
       expect(
         holding(
           lines,
-          `${left.data} (postmaster ${left.postmaster.pid} serves it from a run directory this start does not list, and no mark there names it)`
+          `${left.data} (postmaster ${left.postmaster?.pid} serves it from a run directory this start does not list, and no mark there names it)`
         )
       ).toHaveLength(1);
     } finally {
-      left.postmaster.stop();
+      left.postmaster?.stop();
       rmSync(left.other, { recursive: true, force: true });
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -555,7 +640,7 @@ test.skipIf(!onLinux)(
       const run = mkdtempSync(join(link, runDirectoryPrefix));
       const identity = marks.identityOf(run);
       const served = join(identity, "worker-0", "pgdata");
-      postmaster = standInPostmaster(join(tmp, "bin"), served);
+      postmaster = standInPostmaster(join(tmp, "bin"), served, "its TMPDIR");
       writeMark(run, owners().runs, join(run, "worker-0", "pgdata"), join(tmp, "bin"));
       // The link now leads to a copy of that run directory, marks and all, elsewhere.
       mkdirSync(moved);
@@ -668,10 +753,30 @@ setTimeout(() => process.exit(1), 600_000);
 console.log(JSON.stringify(await claimForRemoval(process.env.CLAIM_PATH, process.getuid())));
 `;
 
-/** Claims `path` in a child with the real `claimForRemoval`, and SIGKILLs the child once it printed
- *  its claim: what a start killed between its claim and its removal leaves. Answers the claimed
- *  name, which holds its claimer's pid and start, as the judge reads an owner. */
-async function claimAndDie(path: string): Promise<string> {
+/** SIGKILLs `child`, a child of this file, where it still runs, and waits for its end. */
+async function endChild(child: Subprocess): Promise<void> {
+  if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+  await child.exited;
+}
+
+/** What `child` printed up to its first line feed, or all it printed where it ended first. */
+async function firstLineOf(child: Subprocess<"ignore", "pipe", "ignore">): Promise<string> {
+  let printed = "";
+  const reader = child.stdout.getReader();
+  const decoder = new TextDecoder();
+  while (!printed.includes("\n")) {
+    const chunk = await reader.read();
+    if (chunk.done) break;
+    printed += decoder.decode(chunk.value, { stream: true });
+  }
+  reader.releaseLock();
+  return printed;
+}
+
+/** Claims `path` in a child with the real `claimForRemoval`, and answers once the child printed
+ *  its claim: the claimed name, which holds its claimer's pid and start, as the judge reads an
+ *  owner, and the claimer, which holds the claim until it is killed (`endChild`). */
+async function claimInChild(path: string): Promise<{ claimed: string; claimer: Subprocess }> {
   const claimer = Bun.spawn([process.execPath, "--eval", claimScript], {
     env: { ...process.env, CLAIM_PATH: path },
     stdout: "pipe",
@@ -679,20 +784,21 @@ async function claimAndDie(path: string): Promise<string> {
   });
   try {
     const claimed = `${path}.removing-${claimer.pid}-${marks.startOf(readFileSync(`/proc/${claimer.pid}/stat`, "utf8"))}`;
-    let printed = "";
-    const reader = claimer.stdout.getReader();
-    const decoder = new TextDecoder();
-    while (!printed.includes("\n")) {
-      const chunk = await reader.read();
-      if (chunk.done) break;
-      printed += decoder.decode(chunk.value, { stream: true });
-    }
+    const printed = await firstLineOf(claimer);
     expect(JSON.parse(printed)).toEqual({ kind: "claimed", path: claimed });
-    return claimed;
-  } finally {
-    if (claimer.exitCode === null && claimer.signalCode === null) claimer.kill("SIGKILL");
-    await claimer.exited;
+    return { claimed, claimer };
+  } catch (error) {
+    await endChild(claimer);
+    throw error;
   }
+}
+
+/** What a start killed between its claim of `path` and its removal leaves: `claimInChild`, and
+ *  the claimer SIGKILLed. Answers the claimed name. */
+async function claimAndDie(path: string): Promise<string> {
+  const { claimed, claimer } = await claimInChild(path);
+  await endChild(claimer);
+  return claimed;
 }
 
 test.skipIf(!onLinux)(
@@ -701,7 +807,7 @@ test.skipIf(!onLinux)(
     const { tmp, run } = scratch();
     const bin = join(tmp, "bin");
     const data = join(run, "worker-0", "pgdata");
-    const postmaster = standInPostmaster(bin, data);
+    const postmaster = standInPostmaster(bin, data, "its TMPDIR");
     const mark = writeMark(run, owners().gone, data, bin);
     try {
       const claimed = await claimAndDie(data);
@@ -726,39 +832,213 @@ test.skipIf(!onLinux)(
   600_000
 );
 
+// The claim comes before the postmaster here: until a postmaster serves from it, no start but
+// this row's own reads the run directory, so the claimed directory is there for the row to see.
 test.skipIf(!onLinux)(
   "v-no-leftover-postgres: what a start killed between its claim and its removal left in a run directory of another TMPDIR, a start of this TMPDIR finds by the claimed name the kernel shows: the postmaster ends, the directory and the mark go, and one line says so",
   async () => {
     const { tmp } = scratch();
-    const left = leaveElsewhere(owners().gone);
+    const left = leaveElsewhere(owners().gone, false);
+    let postmaster: StandIn | undefined;
     try {
       const claimed = await claimAndDie(left.data);
-      // The kernel names the postmaster's working directory by the claim's name now.
-      expect([existsSync(left.data), existsSync(claimed), left.postmaster.alive()]).toEqual([
-        false,
-        true,
-        true,
-      ]);
+      expect([existsSync(left.data), existsSync(claimed)]).toEqual([false, true]);
+      // The kernel names the postmaster's working directory by the claim's name.
+      postmaster = standInPostmaster(left.bin, claimed, "every start");
 
       const lines = await sweep(tmp);
 
-      expect(left.postmaster.alive()).toBe(false);
-      expect([existsSync(claimed), left.file !== undefined && existsSync(left.file)]).toEqual([
-        false,
-        false,
-      ]);
-      // One line names that stack, and it says the start removed it: none says it was left. The
-      // start prints the run directory's one spelling, the one its data directory is written in.
-      expect(holding(lines, dirname(dirname(left.data)))).toEqual([
-        expect.stringContaining(`removed the postmaster of ${left.data}`),
-      ]);
+      // A line that names that stack says a start removed it: none says it was left. The start
+      // prints the run directory's one spelling, the one its data directory is written in.
+      await removedByAStart(
+        lines,
+        { postmaster, data: left.data, claimed, file: left.file },
+        dirname(dirname(left.data))
+      );
     } finally {
-      left.postmaster.stop();
+      postmaster?.stop();
       rmSync(left.other, { recursive: true, force: true });
       rmSync(tmp, { recursive: true, force: true });
     }
   },
   // The row waits for a claimer, a `bun` child, to print its claim, and for one start's sweep,
-  // another `bun` child; a stuck child waits out its own 600 s at most.
+  // another `bun` child, and then at most `settleMs`; a stuck child waits out its own 600 s.
+  600_000
+);
+
+// Two starts at once. The first, Z, lists two postmasters of run directories it does not list,
+// and finds the data directory of the first claimed by a claimer that still runs, so it waits for
+// that claim. Meanwhile the second, X, removes the stack of the second run directory, which is in
+// its own TMPDIR. Once the claimer is killed, Z goes on to that second run directory, whose mark
+// and postmaster X removed, so that postmaster is no Postgres Z left.
+test.skipIf(!onLinux)(
+  "v-no-leftover-postgres: a start names as left only a postmaster that still runs once it has read its run directory: one it listed that another start removed meanwhile it does not name",
+  async () => {
+    const parent = mkdtempSync(join(tmpdir(), "marks-two-starts-"));
+    // `servedElsewhere` lists by data directory, so the held stack, in `a-held`, comes first.
+    const [heldTmp, otherTmp, startTmp] = ["a-held", "b-other", "c-start"].map((name) => {
+      mkdirSync(join(parent, name));
+      return join(parent, name);
+    }) as [string, string, string];
+    const plant = (tmp: string) => {
+      const run = mkdtempSync(join(tmp, runDirectoryPrefix));
+      const data = join(realpathSync(run), "worker-0", "pgdata");
+      const postmaster = standInPostmaster(join(tmp, "bin"), data, "every start");
+      return { data, postmaster, file: writeMark(run, owners().gone, data, join(tmp, "bin")) };
+    };
+    const held = plant(heldTmp);
+    const other = plant(otherTmp);
+    let claimer: Subprocess | undefined;
+    try {
+      ({ claimer } = await claimInChild(held.data));
+      const first = startSweep(startTmp);
+      await until(
+        () => first.stderr().includes(`waits for another start's claim of ${held.data}`),
+        "the first start's wait for the claim the claimer holds",
+        claimEventMs
+      );
+      const second = startSweep(otherTmp);
+      await until(() => !other.postmaster.alive(), "the second start's stop", claimEventMs);
+      await endChild(claimer);
+      const [firstLines, secondLines] = await Promise.all([first.lines, second.lines]);
+
+      expect(holding(firstLines, other.data).filter((line) => line.includes(" left "))).toEqual([]);
+      for (const lines of [firstLines, secondLines]) {
+        await removedByAStart(lines, held);
+        await removedByAStart(lines, other);
+      }
+    } finally {
+      if (claimer !== undefined) await endChild(claimer);
+      held.postmaster.stop();
+      other.postmaster.stop();
+      rmSync(parent, { recursive: true, force: true });
+    }
+  },
+  // The row waits for a claimer and two starts' sweeps, each a `bun` child, and for two events
+  // between them, each for at most `claimEventMs`; the sweeps then end in well under a second.
+  600_000
+);
+
+const marksModule = fileURLToPath(new URL("../harness-postgres-marks.ts", import.meta.url));
+
+/** A stack's harness, as `e2e/harness-postgres.ts` starts stack 0 of the binaries provider: it
+ *  marks its Postgres, makes its data directory and runs `HARNESS_BIN`'s `pg_ctl ... start` on it,
+ *  with the arguments the provider gives it, and prints that pg_ctl's pid. Then it waits to be
+ *  killed, which is the row's own SIGKILL, for at most 600 s. */
+const harnessScript = `
+import { spawn } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { markPostgres } from ${JSON.stringify(marksModule)};
+setTimeout(() => process.exit(1), 600_000);
+const { HARNESS_RUN: run = "", HARNESS_BIN: bin = "", HARNESS_SOCKETS: sockets = "" } = process.env;
+const data = join(run, "worker-0", "pgdata");
+markPostgres(run, "worker-0", { sockets, postmaster: { bin, data } });
+mkdirSync(data, { recursive: true });
+writeFileSync(join(data, "PG_VERSION"), "18\\n");
+const options = \`-c listen_addresses='' -k \${sockets}\`;
+const log = join(run, "worker-0", "postgres.log");
+const ctl = spawn(join(bin, "pg_ctl"), ["-D", data, "-l", log, "-o", options, "-w", "start"], {
+  stdio: "ignore",
+});
+console.log(ctl.pid);
+`;
+
+/** A stand-in of `pg_ctl -D <data> ... start` in `bin`, beside a stand-in postmaster that only
+ *  the row's own starts find (`postmasterProgram`): it waits for `go`, for at most 600 s, and then
+ *  starts that postmaster with `<data>` for its working directory, names it in `<data>`'s
+ *  `postmaster.pid` and ends, as `pg_ctl -w` ends once its server is up; where `<data>` is gone,
+ *  it fails, as `pg_ctl` does. It uses shell builtins and that postmaster alone. */
+function startingPgCtl(bin: string, go: string): void {
+  const sleep = Bun.which("sleep");
+  if (sleep === null) throw new Error("no sleep on PATH to stand in for a postmaster");
+  const postgres = postmasterProgram(bin, sleep, "its TMPDIR");
+  writeFileSync(
+    join(bin, "pg_ctl"),
+    `#!/usr/bin/env bash\nend=$((SECONDS + 600))\n` +
+      `until [ -e ${JSON.stringify(go)} ] || [ "$SECONDS" -ge "$end" ]; do sleep 0.05; done\n` +
+      // A command that a script runs in the background ignores SIGQUIT unless job control is
+      // on, and a start's stop of a postmaster sends SIGQUIT first.
+      `cd "$2" || exit 1\nset -m\n${JSON.stringify(postgres)} 600 </dev/null >/dev/null 2>&1 &\n` +
+      `echo "$!" >postmaster.pid\n`,
+    { mode: 0o755 }
+  );
+}
+
+// A stack killed hard while its `pg_ctl start` runs leaves that pg_ctl running, and the
+// postmaster it then starts. A start in between finds no postmaster.pid yet: it must leave the
+// directories that pg_ctl names, with the mark, and name them, and the next start after that
+// pg_ctl ended removes the postmaster it started.
+test.skipIf(!onLinux)(
+  "v-no-leftover-postgres: a start leaves the Postgres of a stack killed while its pg_ctl start runs, and names it in one line, since that pg_ctl still holds its directories; the next start after that pg_ctl ended removes the postmaster it started",
+  async () => {
+    const { tmp, run } = scratch();
+    const bin = join(tmp, "bin");
+    const go = join(tmp, "go");
+    const sockets = mkdtempSync(join(run, "pg-0-"));
+    const data = join(run, "worker-0", "pgdata");
+    const mark = join(run, marksDirectory, "worker-0.json");
+    startingPgCtl(bin, go);
+    const harness = Bun.spawn([process.execPath, "--eval", harnessScript], {
+      env: { ...process.env, HARNESS_RUN: run, HARNESS_BIN: bin, HARNESS_SOCKETS: sockets },
+      stdout: "pipe",
+      stderr: "ignore",
+    });
+    let pgCtl: { pid: number; start: string } | undefined;
+    let postmaster: { pid: number; start: string } | undefined;
+    const startOfPid = (pid: number) => marks.startOf(readFileSync(`/proc/${pid}/stat`, "utf8"));
+    try {
+      const pid = Number(await firstLineOf(harness));
+      // The harness's child runs pg_ctl once it has its arguments, which name the data directory.
+      await until(
+        () => readFileSync(`/proc/${pid}/cmdline`, "utf8").includes(data),
+        "the start of the stack's pg_ctl",
+        claimEventMs
+      );
+      pgCtl = { pid, start: startOfPid(pid) };
+      // The harness dies as a stack killed hard does: its pg_ctl runs on.
+      await endChild(harness);
+      expect(marks.stillRuns(pgCtl.pid, pgCtl.start)).toBe(true);
+
+      const first = await sweep(tmp);
+
+      expect([existsSync(data), existsSync(sockets), existsSync(mark)]).toEqual([true, true, true]);
+      expect(holding(first, "removed")).toEqual([]);
+      const left = holding(first, mark);
+      expect(left).toEqual([expect.stringContaining(`${mark} (${data}, which `)]);
+      expect(left[0]).toContain(` ${pgCtl.pid} still holds)`);
+
+      writeFileSync(go, "");
+      const ended = pgCtl;
+      await until(
+        () => !marks.stillRuns(ended.pid, ended.start),
+        "the end of the stack's pg_ctl",
+        claimEventMs
+      );
+      const served = Number.parseInt(readFileSync(join(data, "postmaster.pid"), "utf8"), 10);
+      postmaster = { pid: served, start: startOfPid(served) };
+      const second = await sweep(tmp);
+
+      expect(marks.stillRuns(postmaster.pid, postmaster.start)).toBe(false);
+      expect([existsSync(data), existsSync(sockets), existsSync(mark)]).toEqual([
+        false,
+        false,
+        false,
+      ]);
+      expect(
+        holding(second, `removed the postmaster of ${data}, that directory and ${sockets}`)
+      ).toHaveLength(1);
+    } finally {
+      await endChild(harness);
+      for (const each of [pgCtl, postmaster]) {
+        if (each !== undefined && marks.stillRuns(each.pid, each.start)) {
+          process.kill(each.pid, "SIGKILL");
+        }
+      }
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  },
+  // The row waits for a harness and two starts' sweeps, each a `bun` child, and for two events of
+  // a pg_ctl between them, each for at most `claimEventMs`; the sweeps end in under a second.
   600_000
 );
