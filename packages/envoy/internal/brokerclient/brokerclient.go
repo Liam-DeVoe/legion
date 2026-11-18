@@ -1,9 +1,10 @@
 // Package brokerclient is this repository's one Go client of the secrets broker's RFC 8693 token
 // exchange: a machine or a person trades the platform identity it already holds for one of the
 // broker's access tokens, which Dispatch and the Envoy listener read back at the broker's
-// introspection route. `agent-secrets`, `agent-secrets-helper` and `legion controller start` use
-// it; the TypeScript client of packages/broker-client is its other half, and the two are held to
-// one wire contract by the corpus in testdata/wire.json, which both suites replay.
+// introspection route. `agent-secrets`, `agent-secrets-helper`, `legion controller start` and the
+// Legion daemon's own Dispatch client (NewTokenTransport) use it; the TypeScript client of
+// packages/broker-client is its other half, and the two are held to one wire contract by the
+// corpus in testdata/wire.json, which both suites replay.
 //
 // What the exchange is: the caller presents the subject token its platform already gives it (a
 // Source), proves a key of its own with a DPoP proof (RFC 9449), and is answered an access token
@@ -326,6 +327,24 @@ func (c *Client) Token(ctx context.Context) (*Token, error) {
 	}
 	c.held = nil
 	return nil, err
+}
+
+// Drop forgets token when it is still the one this client holds, so the next Token trades afresh
+// rather than answering it again: for a caller a server has told that the token it presented is
+// no longer live, such as one the broker ended at a revoke before it lapsed (NewTokenTransport).
+// It clears the held token as the TypeScript client's drop() does
+// (packages/broker-client/src/token-client.ts), but only while that is the token named: a trade
+// that landed since the caller was answered holds a fresh token, and dropping it would cost the
+// next caller a trade for nothing.
+func (c *Client) Drop(token *Token) {
+	if token == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.held != nil && c.held.AccessToken == token.AccessToken {
+		c.held = nil
+	}
 }
 
 // Run keeps one token live until ctx ends, handing each one to onToken as it lands: the first

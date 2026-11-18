@@ -51,10 +51,10 @@ type variantInstructions struct {
 // runtime. prepare runs it first; CheckStart is it for `legion start --check-config`, so the check
 // refuses whatever boot refuses before its first write, with one exception: under
 // dispatch_token_broker, the identity variables boot trades with and its first trade at the
-// secrets broker are boot's alone, so a check reads the file and needs no identity
-// (dispatch://INFRA-4425 R1). What boot does after it is not a check's to do: create the state
-// directory, write the instructions copies and the Dispatch token file, read provider keys from
-// secretsd, and run the plugin gate or the image probe.
+// secrets broker are boot's alone (dispatchCredential), so a check reads the file and needs no
+// identity (dispatch://INFRA-4425 R1). What boot does after it is not a check's to do: create the
+// state directory, write the instructions copies and the Dispatch token file, read provider keys
+// from secretsd, and run the plugin gate or the image probe.
 func readBoot(cfg config.Config, lookup func(string) (string, bool), getenv func(string) string, hostOMP bool, log *slog.Logger) (bootReads, error) {
 	var r bootReads
 	var err error

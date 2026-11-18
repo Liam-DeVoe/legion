@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/sjawhar/envoy/brokerclient"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/sjawhar/legion/daemon/internal/agentsecrets"
@@ -215,9 +216,10 @@ type overrides struct {
 
 // Run is the daemon. It refuses what it cannot run on before it touches anything — the
 // configuration first, then, under tmux, the plugin gate, which holds the Oh My Pi plugin every
-// pane will load to this daemon's contract — then opens the store (refusing by the host it could
-// not reach), migrates, takes its API listener and its worker stream, builds the runtime (under
-// kubernetes, once Agent Sandbox's install check passes), proves the worker image under
+// pane will load to this daemon's contract, then the credential its Dispatch client presents
+// (dispatchCredential) — then opens the store (refusing by the host it could not reach),
+// migrates, takes its API listener and its worker stream, builds the runtime (under kubernetes,
+// once Agent Sandbox's install check passes), proves the worker image under
 // kubernetes, records the boot, supervises every claim the store holds, serves the API, and blocks
 // until ctx is done. Then it stops: it says so, cancels the decisions it makes itself, drains the
 // API and the decisions its routes asked for, ends the workflow and supervision, stamps the boot's
@@ -231,9 +233,9 @@ type overrides struct {
 // ctx decides one thing: how long the daemon serves. The boot record and its stamp are the
 // daemon's own bookkeeping and run on a context the shutdown did not cancel, so a signal that
 // arrives mid-startup still leaves a recorded, stamped boot rather than a row with no end. A
-// signal that arrives while the plugin gate, the repository mapping read, the GitHub App tokens'
-// mint, or the image probe waits ends the daemon there, cleanly: it has served nothing and records
-// nothing.
+// signal that arrives while the plugin gate, the Dispatch credential's trade or read, the
+// repository mapping read, the GitHub App tokens' mint, or the image probe waits ends the daemon
+// there, cleanly: it has served nothing and records nothing.
 //
 // listener, when not nil, is the API listener the daemon serves on in place of binding cfg's bind
 // and port: the socket `legion start` inherited (LEGION_LISTEN_FD), which it checked names both.
@@ -288,10 +290,27 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 			return err
 		}
 	}
+	// The credential every Dispatch call of the daemon's presents: the bearer dispatch_token_file
+	// names, or, under dispatch_token_broker, the daemon's own pod identity traded at the secrets
+	// broker, whose first trade and Dispatch's reading of it wait out a broker or a Dispatch that
+	// does not answer, which the boot budget does not bound, as it does not bound the plugin gate.
+	environ := o.environment()
+	dispatchTransport, dispatchBroker, err := dispatchCredential(ctx, cfg, plan.dispatchToken, func(name string) string {
+		value, _ := envValue(environ, name)
+		return value
+	}, log)
+	if err != nil {
+		if ctx.Err() != nil {
+			log.Info("legion daemon stopped before it settled its Dispatch credential", "project", cfg.Project)
+			return nil
+		}
+		return err
+	}
+	plan.dispatchBroker = dispatchBroker
 
-	// The boot's first budget starts once the plugin gate has passed, which no budget bounds
-	// (bootTimeout). The loops the boot starts take marks of their own, since they run beside each
-	// other (store.ForConcurrentWorker).
+	// The boot's first budget starts once the plugin gate and the Dispatch credential have passed,
+	// which no budget bounds (bootTimeout). The loops the boot starts take marks of their own, since
+	// they run beside each other (store.ForConcurrentWorker).
 	boot, cancelBoot := bootBudget(ctx)
 	defer cancelBoot()
 	// The cluster's refusals run before the store opens, so before any schema write, image probe or
@@ -348,7 +367,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	// served on the default branch the daemon holds or waited out (nameMapping), never a refused
 	// boot. The boot budget bounds none of them, as it does not bound the plugin gate or the image
 	// probe: the work after them has a budget of its own.
-	workflow, err := openWorkflow(ctx, cfg, st, plan.project, plan.dispatchToken, plan.hookPrompts, plan.repositories, log, o.workflowTokens, o.githubAPI, reserveWake)
+	workflow, err := openWorkflow(ctx, cfg, st, plan.project, dispatchTransport, plan.hookPrompts, plan.repositories, log, o.workflowTokens, o.githubAPI, reserveWake)
 	if err != nil {
 		st.Close()
 		if ctx.Err() != nil {
@@ -692,6 +711,154 @@ func closeStore(st *store.Store, log *slog.Logger) {
 	}
 }
 
+// dispatchCredentialLine is the boot's one line naming the credential the daemon's Dispatch client
+// presents (dispatchCredential): credential=broker and the session its token names, or
+// credential=file and the file, beside transitionFile where the configuration names one. It names
+// no token.
+const dispatchCredentialLine = "legion daemon's Dispatch credential"
+
+// dispatchCredential settles, at boot and before anything opens (run), the credential every
+// Dispatch call of the daemon's presents, as the transport openWorkflow's client sends through,
+// and under dispatch_token_broker the broker client that trades for it, which the daemon keeps
+// (plan.dispatchBroker). Without dispatch_url there is neither, and it logs nothing.
+//
+// Without dispatch_token_broker the transport presents dispatchToken, the bearer
+// dispatch_token_file names (readBoot), as the client always has (dispatch.BearerTransport). With
+// it, the daemon's own pod identity, which getenv names as it does for every machine client of the
+// broker (daemonBrokerClient), is traded at the secrets broker for a token of the session
+// legion-daemon:<PROJECT> (dispatch.DaemonSession), presented as `Authorization: DPoP` beside a
+// proof of the request's own URL and renewed ahead of its expiry with no restart
+// (brokerclient.NewTokenTransport). Those reads and the first trade are boot's alone, never
+// `--check-config`'s (readBoot; dispatch://INFRA-4425 R1).
+//
+// The first trade runs here, at the boot gate's pacing (readinessRetry): a refusal no retry cures
+// (brokerclient.RefusedError.Permanent) refuses the boot in the broker's words, and any other
+// failure is logged and tried again. Then Dispatch's reading of the token, GET /api/v1/whoami,
+// waited out as the boot waits out a Dispatch that does not answer (dispatch.Unreachable), must
+// name the daemon's session, its project and a person (checkDaemonCaller). After boot, a failed
+// trade is a failed Dispatch call that sent nothing (dispatch.TransientError), which the outbox
+// waits out as it waits out a Dispatch outage.
+//
+// The transition token dispatch_token_transition_file holds (readBoot's transitionToken) is never
+// this credential: it is the sandbox runtime's alone, for a launch into a pod built before the
+// setting.
+func dispatchCredential(ctx context.Context, cfg config.Config, dispatchToken string, getenv func(string) string, log *slog.Logger) (http.RoundTripper, *brokerclient.Client, error) {
+	switch {
+	case cfg.DispatchURL == "":
+		return nil, nil, nil
+	case !cfg.DispatchTokenBroker:
+		log.Info(dispatchCredentialLine, "credential", "file", "file", cfg.DispatchTokenFile)
+		return dispatch.BearerTransport(dispatchToken, http.DefaultTransport), nil, nil
+	}
+	client, broker, err := daemonBrokerClient(cfg, getenv, log)
+	if err != nil {
+		return nil, nil, err
+	}
+	session := dispatch.DaemonSession(cfg.Project)
+	err = bootprobe.Run(ctx, "daemon's Dispatch credential trade", readinessRetry, log, readinessAttempt(func(ctx context.Context) error {
+		_, err := client.Token(ctx)
+		return err
+	}, bootTimeout, tradeTransient))
+	if err != nil {
+		return nil, nil, fmt.Errorf("dispatch_token_broker: the daemon's Dispatch credential, a token of the session %s, cannot be traded at %s: %w", session, broker, err)
+	}
+	transport := brokerclient.NewTokenTransport(client, http.DefaultTransport)
+	daemonDispatch := dispatch.New(cfg.DispatchURL, transport)
+	var caller dispatch.Caller
+	err = bootprobe.Run(ctx, "Dispatch whoami of the daemon's credential", readinessRetry, log, readinessAttempt(func(ctx context.Context) error {
+		var err error
+		caller, err = daemonDispatch.Whoami(ctx)
+		return err
+	}, bootTimeout, dispatch.Unreachable))
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := checkDaemonCaller(caller, cfg.Project); err != nil {
+		return nil, nil, err
+	}
+	attrs := []any{"credential", "broker", "session", session}
+	if cfg.DispatchTokenTransitionFile != "" {
+		attrs = append(attrs, "transitionFile", cfg.DispatchTokenTransitionFile)
+	}
+	log.Info(dispatchCredentialLine, attrs...)
+	return transport, client, nil
+}
+
+// daemonBrokerClient is the broker client of the daemon's own pod identity, and the broker it
+// trades at: the identity getenv names as it does for every machine client of the broker
+// (brokerclient.MachineIdentity), at the broker AGENT_SECRETS_URL names, proving
+// brokerclient.MachineKey's key, under the daemon's session (dispatch.DaemonSession), and declining
+// the launcher credential, since the daemon enrols nothing with this identity. A variable the
+// identity needs and does not have is refused by name: AGENT_SECRETS_MACHINE_IDENTITY, the
+// variables the identity it names reads (MachineIdentity's own words), and AGENT_SECRETS_URL.
+func daemonBrokerClient(cfg config.Config, getenv func(string) string, log *slog.Logger) (*brokerclient.Client, string, error) {
+	identity, err := brokerclient.MachineIdentity(getenv)
+	if err != nil {
+		return nil, "", fmt.Errorf("dispatch_token_broker is set, so the daemon trades its own pod identity for its Dispatch credential: %w", err)
+	}
+	if identity == nil {
+		return nil, "", fmt.Errorf("dispatch_token_broker is set, so the daemon's Dispatch credential is its own pod identity traded at the secrets broker, and %s names none: a daemon pod sets it to %s, with %s naming its projected service-account token",
+			brokerclient.IdentityVar, brokerclient.IdentityKubernetes, brokerclient.MachineTokenFileVar)
+	}
+	broker := strings.TrimSpace(getenv(brokerclient.BrokerURLVar))
+	if broker == "" {
+		return nil, "", fmt.Errorf("dispatch_token_broker is set, so the daemon trades its own pod identity for its Dispatch credential, and %s names no secrets broker to trade it at",
+			brokerclient.BrokerURLVar)
+	}
+	key, err := brokerclient.MachineKey(getenv)
+	if err != nil {
+		return nil, "", fmt.Errorf("dispatch_token_broker: the key the daemon's trade proves: %w", err)
+	}
+	client, err := brokerclient.New(brokerclient.Config{
+		BrokerURL: broker, Key: key, Subject: identity, Session: dispatch.DaemonSession(cfg.Project),
+		NoLauncherCredential: true, HTTP: brokerclient.HTTPClient(), Log: log,
+	})
+	if err != nil {
+		return nil, "", fmt.Errorf("dispatch_token_broker: %w", err)
+	}
+	return client, broker, nil
+}
+
+// tradeTransient is every failed trade but a refusal no retry cures
+// (brokerclient.RefusedError.Permanent): a broker that did not answer or answered 5xx, its 429, a
+// DPoP refusal, a pod session it holds no registration for yet, and an identity this pod could not
+// read yet, such as a projected token the kubelet has not written.
+func tradeTransient(err error) bool {
+	var refused *brokerclient.RefusedError
+	return !(errors.As(err, &refused) && refused.Permanent())
+}
+
+// checkDaemonCaller refuses a broker token Dispatch takes for a caller whose every write it would
+// refuse: another session than the daemon's (403 ACTOR_SESSION_MISMATCH, every write of the
+// daemon's naming its own session as the actor), another project than the daemon's (403
+// PROJECT_SCOPE) or no person (SIGN_IN_REQUIRED). The outbox reads a 401 and a 403 as an outage
+// (dispatch.PermanentRefusal), so it would wait on each such write for ever; each is a fault of
+// the secrets broker's exchange entry for the daemon's own account, which the refusal names.
+func checkDaemonCaller(caller dispatch.Caller, project string) error {
+	session := dispatch.DaemonSession(project)
+	const entry = "the deployment must fix the secrets broker's exchange entry for the daemon's own account (BROKER_EXCHANGE_ACCOUNTS)"
+	switch {
+	case caller.Session == nil || *caller.Session != session:
+		return fmt.Errorf("GET /api/v1/whoami answers the session %s for the daemon's broker token, not %s, and Dispatch refuses every write the daemon makes as %s with it (403 ACTOR_SESSION_MISMATCH): %s so that it fixes the session %s",
+			whoamiValue(caller.Session), session, session, entry, session)
+	case caller.Project == nil || *caller.Project != project:
+		return fmt.Errorf("GET /api/v1/whoami answers the project %s for the daemon's broker token, not %s, and Dispatch refuses every write of the daemon's to %s with it (403 PROJECT_SCOPE): %s so that it names the project %s",
+			whoamiValue(caller.Project), project, project, entry, project)
+	case caller.Owner == nil:
+		return fmt.Errorf("GET /api/v1/whoami answers the owner null for the daemon's broker token, and Dispatch refuses every write of a token that acts for no person (SIGN_IN_REQUIRED): %s so that it names the person the daemon acts for",
+			entry)
+	}
+	return nil
+}
+
+// whoamiValue is a field of GET /api/v1/whoami's answer as a refusal quotes it: quoted, or null.
+func whoamiValue(value *string) string {
+	if value == nil {
+		return "null"
+	}
+	return strconv.Quote(*value)
+}
+
 // plan is what the daemon resolved from its configuration before touching anything.
 type plan struct {
 	// identity is the role's App bot identity for the owner whose installation holds the
@@ -745,8 +912,14 @@ type plan struct {
 	// carries its seed unless it is the pane seed.
 	nats         natsConnection
 	instructions string
-	// dispatchToken is the Dispatch bearer dispatch_token_file names; "" without Dispatch.
+	// dispatchToken is the Dispatch bearer dispatch_token_file names; "" without Dispatch, and
+	// under dispatch_token_broker, whose credential is the daemon's own (dispatchCredential).
 	dispatchToken string
+	// dispatchBroker is the broker client whose token every Dispatch call of the daemon's presents
+	// under dispatch_token_broker (dispatchCredential), set once boot has made its first trade; nil
+	// without the setting. The daemon's other callers of a service that takes its broker token
+	// take this same one.
+	dispatchBroker *brokerclient.Client
 	// hookPrompts are the words boot read for each hook whose `prompt_file` names a file, by
 	// hook name (readBoot): the engine is given words and never a path (engineConfig).
 	hookPrompts map[string]string

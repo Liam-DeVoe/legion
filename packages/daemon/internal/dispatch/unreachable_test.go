@@ -69,7 +69,7 @@ func TestTransportFailureClassifiesEachRealServerShape(t *testing.T) {
 				}))
 				t.Cleanup(server.Close)
 				// The default client trusts no certificate the test server minted for itself.
-				return New(server.URL, "test-token")
+				return New(server.URL, BearerTransport("test-token", nil))
 			},
 			wantTransient: false,
 		},
@@ -80,7 +80,7 @@ func TestTransportFailureClassifiesEachRealServerShape(t *testing.T) {
 					w.WriteHeader(http.StatusOK)
 				}))
 				t.Cleanup(server.Close)
-				return New("https://"+strings.TrimPrefix(server.URL, "http://"), "test-token")
+				return New("https://"+strings.TrimPrefix(server.URL, "http://"), BearerTransport("test-token", nil))
 			},
 			wantTransient: false,
 		},
@@ -93,7 +93,7 @@ func TestTransportFailureClassifiesEachRealServerShape(t *testing.T) {
 				}
 				addr := reserved.Addr().String()
 				reserved.Close() // nothing answers here now.
-				return New("http://"+addr, "test-token")
+				return New("http://"+addr, BearerTransport("test-token", nil))
 			},
 			wantTransient: true,
 		},

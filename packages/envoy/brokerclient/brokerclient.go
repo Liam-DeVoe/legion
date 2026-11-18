@@ -1,9 +1,10 @@
 // Package brokerclient is a public re-export of internal/brokerclient's token client, existing
 // solely so a module outside github.com/sjawhar/envoy — packages/daemon's `legion controller
-// start`, which mints its own Dispatch token — can use it: Go's internal-package rule refuses to
-// let any package whose own import path does not start with github.com/sjawhar/envoy import a
-// package under github.com/sjawhar/envoy/internal/..., however workspace-linked the two modules
-// are. packages/envoy/brokertest is the same facade for the broker's test rig, and says the same.
+// start`, which mints its own Dispatch token, and its daemon's own Dispatch client — can use it:
+// Go's internal-package rule refuses to let any package whose own import path does not start with
+// github.com/sjawhar/envoy import a package under github.com/sjawhar/envoy/internal/..., however
+// workspace-linked the two modules are. packages/envoy/brokertest is the same facade for the
+// broker's test rig, and says the same.
 //
 // This changes no behaviour — every type here is an alias for the internal package's own, and
 // every function forwards to it — so internal/brokerclient remains the one place the client's
@@ -73,4 +74,13 @@ func HTTPClient() *http.Client { return internal.HTTPClient() }
 // listener.
 func NewDPoPTransport(key *ecdsa.PrivateKey, base http.RoundTripper) http.RoundTripper {
 	return internal.NewDPoPTransport(key, base)
+}
+
+// NewTokenTransport forwards to internal/brokerclient.NewTokenTransport: a RoundTripper that
+// presents client's token as `Authorization: DPoP <token>` beside a proof of its key on each
+// request it sends through base, sending nothing when the trade fails, and has client drop a
+// token the server answers 401 BROKER_TOKEN_NOT_ACTIVE for (Client.Drop), so the next request
+// trades again.
+func NewTokenTransport(client *Client, base http.RoundTripper) http.RoundTripper {
+	return internal.NewTokenTransport(client, base)
 }

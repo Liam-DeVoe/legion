@@ -41,7 +41,7 @@ func TestOutboxMessageCrashRecoveryPostsOnceAgainstScratchDispatch(t *testing.T)
 
 	first := &outbox{
 		dispatchProject: "LEGION",
-		pool:            pool, records: crashAfterPostStore{Store: records}, dispatch: dispatch.New(baseURL, token),
+		pool:            pool, records: crashAfterPostStore{Store: records}, dispatch: dispatch.New(baseURL, dispatch.BearerTransport(token, nil)),
 		now: func() time.Time { return now },
 	}
 	if err := first.RunOnce(context.Background()); err != nil {
@@ -53,7 +53,7 @@ func TestOutboxMessageCrashRecoveryPostsOnceAgainstScratchDispatch(t *testing.T)
 
 	restarted := &outbox{
 		dispatchProject: "LEGION",
-		pool:            pool, records: records, dispatch: dispatch.New(baseURL, token),
+		pool:            pool, records: records, dispatch: dispatch.New(baseURL, dispatch.BearerTransport(token, nil)),
 		now: func() time.Time { return now.Add(outboxLease + time.Second) },
 	}
 	if err := restarted.RunOnce(context.Background()); err != nil {
@@ -63,7 +63,7 @@ func TestOutboxMessageCrashRecoveryPostsOnceAgainstScratchDispatch(t *testing.T)
 		t.Fatalf("outbox rows after recovery = %d, want finished row", remaining)
 	}
 
-	bodies, err := dispatch.New(baseURL, token).MessageBodiesSince(context.Background(), issue, now.Add(-time.Second))
+	bodies, err := dispatch.New(baseURL, dispatch.BearerTransport(token, nil)).MessageBodiesSince(context.Background(), issue, now.Add(-time.Second))
 	if err != nil {
 		t.Fatalf("read real Dispatch messages: %v", err)
 	}
@@ -101,7 +101,7 @@ func TestOutboxPostsALongPacketWholeAndOnceAgainstScratchDispatch(t *testing.T) 
 
 	first := &outbox{
 		dispatchProject: "LEGION", log: quietLogger(),
-		pool: pool, records: crashAfterPostStore{Store: records}, dispatch: dispatch.New(baseURL, token),
+		pool: pool, records: crashAfterPostStore{Store: records}, dispatch: dispatch.New(baseURL, dispatch.BearerTransport(token, nil)),
 		now: func() time.Time { return now },
 	}
 	if err := first.RunOnce(context.Background()); err != nil {
@@ -109,7 +109,7 @@ func TestOutboxPostsALongPacketWholeAndOnceAgainstScratchDispatch(t *testing.T) 
 	}
 	restarted := &outbox{
 		dispatchProject: "LEGION", log: quietLogger(),
-		pool: pool, records: records, dispatch: dispatch.New(baseURL, token),
+		pool: pool, records: records, dispatch: dispatch.New(baseURL, dispatch.BearerTransport(token, nil)),
 		now: func() time.Time { return now.Add(outboxLease + time.Second) },
 	}
 	if err := restarted.RunOnce(context.Background()); err != nil {
@@ -119,7 +119,7 @@ func TestOutboxPostsALongPacketWholeAndOnceAgainstScratchDispatch(t *testing.T) 
 		t.Fatalf("outbox rows after recovery = %d, want the row posted and finished", remaining)
 	}
 
-	bodies, err := dispatch.New(baseURL, token).MessageBodiesSince(context.Background(), issue, now.Add(-time.Second))
+	bodies, err := dispatch.New(baseURL, dispatch.BearerTransport(token, nil)).MessageBodiesSince(context.Background(), issue, now.Add(-time.Second))
 	if err != nil {
 		t.Fatalf("read real Dispatch messages: %v", err)
 	}
@@ -146,14 +146,14 @@ func TestOutboxFinishesAPostDispatchRefusesAndTellsTheArchitectAgainstScratchDis
 	enqueueOutbox(t, pool, records, mustOutboxRow(t, issue, over, now))
 	runner := &outbox{
 		dispatchProject: "LEGION", log: quietLogger(),
-		pool: pool, records: records, dispatch: dispatch.New(baseURL, token),
+		pool: pool, records: records, dispatch: dispatch.New(baseURL, dispatch.BearerTransport(token, nil)),
 		now: func() time.Time { return now },
 	}
 	if err := runner.RunOnce(context.Background()); err != nil {
 		t.Fatalf("run the outbox: %v", err)
 	}
 
-	bodies, err := dispatch.New(baseURL, token).MessageBodiesSince(context.Background(), issue, now.Add(-time.Second))
+	bodies, err := dispatch.New(baseURL, dispatch.BearerTransport(token, nil)).MessageBodiesSince(context.Background(), issue, now.Add(-time.Second))
 	if err != nil {
 		t.Fatalf("read real Dispatch messages: %v", err)
 	}
@@ -189,7 +189,7 @@ func TestOutboxSetsTheStatusOfAWriteWhoseReasonDispatchRefusesAgainstScratchDisp
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	issue := createScratchDispatchIssue(t, baseURL)
-	client := dispatch.New(baseURL, token)
+	client := dispatch.New(baseURL, dispatch.BearerTransport(token, nil))
 	before, err := client.GetIssue(context.Background(), issue)
 	if err != nil {
 		t.Fatalf("read the scratch issue: %v", err)
@@ -200,7 +200,7 @@ func TestOutboxSetsTheStatusOfAWriteWhoseReasonDispatchRefusesAgainstScratchDisp
 		record.OrdinaryStatusWrite("done", before.Status, reason), now))
 	runner := &outbox{
 		dispatchProject: "LEGION", log: quietLogger(),
-		pool: pool, records: records, dispatch: dispatch.New(baseURL, token),
+		pool: pool, records: records, dispatch: dispatch.New(baseURL, dispatch.BearerTransport(token, nil)),
 		now: func() time.Time { return now },
 	}
 	if err := runner.RunOnce(context.Background()); err != nil {
@@ -249,7 +249,7 @@ func TestRoleHoldersLandInScratchDispatch(t *testing.T) {
 	baseURL, token := startScratchDispatch(t)
 	issue := createScratchDispatchIssue(t, baseURL)
 	r := newRoleHoldersRig(t)
-	r.runner.dispatch = dispatch.New(baseURL, token)
+	r.runner.dispatch = dispatch.New(baseURL, dispatch.BearerTransport(token, nil))
 	logs := &syncBuffer{}
 	r.runner.log = slog.New(slog.NewTextHandler(logs, nil))
 	tester := r.seedClaim(issue, claim.RoleTester, "ses-tester", "ready", time.Minute)
