@@ -33,6 +33,7 @@ import { AgentName } from "../refs/AgentName";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
+import { ControlKeyHint, keyshortcutsOf } from "../shell/ShortcutHelp";
 import { useDialog } from "../shell/useDialog";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 
@@ -244,11 +245,34 @@ function RequestChangesDialog({
   );
 }
 
+/** The keys that press the chip's controls where its host binds them (the Inbox's `a` and
+ *  Shift+R, or the person's own): Approve, Request changes, and the pill, which opens the
+ *  reviews. */
+export interface ApprovalShortcutKeys {
+  readonly approve: readonly string[];
+  readonly requestChanges: readonly string[];
+  readonly showReviews: readonly string[];
+}
+
+/** The box each action of the reading pane's head stands in (`pane`, and the head's Dismiss): 44
+ *  px high, the height of the tallest control the head's place holds (the earlier approval's Show
+ *  diff), with the button centred in it. The place lines its controls up at their tops, so a pill
+ *  whose label wraps past that height grows the place downward and moves no action. */
+export const paneActionBox = "flex min-h-11 shrink-0 items-center";
+
 export interface ApprovalChipProps {
-  artifact: Artifact;
+  /** The document, once the page has read it. Only the reading pane's head (`pane`) draws the
+   *  chip before that: Approve and Request changes, held until the read returns; for any other
+   *  variant an unread document draws nothing. */
+  artifact: Artifact | undefined;
   /** `header`: shown on the document header, with an approval-state chip.
+   * `pane`: the header's chip and actions in the Inbox's reading-pane head, which draws the
+   * place they stand in at a fixed width from its first draw (`ReadingPaneHead`, R9): each
+   * action stands in its own box (`paneActionBox`), compact like the controls beside it, Approve
+   * keeps the one label it is drawn with before the read (never `Approve v<latest>`; the pill and
+   * its title name the versions), and the pill takes only the room the actions leave.
    * `list` (default): shown in a compact list row. */
-  variant?: "header" | "list";
+  variant?: "header" | "list" | "pane";
   /** The issue header exposes review actions only after an approval request exists. */
   showActions?: boolean;
   /** `contents` lets a parent flex group place the state chip and actions independently. */
@@ -256,6 +280,10 @@ export interface ApprovalChipProps {
   /** Called beside the chip's own refreshes once the server has recorded the reader's review, so
    *  a host that selected the approval request learns it was reviewed here. */
   onReviewed?(): void;
+  /** The keys that press the pill and the two actions, where the host draws them: named in each
+   *  button's `aria-keyshortcuts`, and the first drawn inside it after its label
+   *  (`ControlKeyHint`). */
+  shortcutKeys?: ApprovalShortcutKeys;
 }
 
 /**
@@ -267,78 +295,128 @@ export interface ApprovalChipProps {
  * The two actions carry `data-approval-action` (`approve`, `request-changes`), which the keys
  * that press them find them by (the Inbox's `a` and Shift+R), and the badge `data-inbox-action`
  * (`show-reviews`), which the Inbox's command bar presses it by.
+ *
+ * In the reading pane's head (`pane`) one chip stands for one approval request from the head's
+ * first draw: the two actions it draws, held, before the document's read returns are the
+ * buttons it acts with once the read has returned, so neither moves, and a reader who reached
+ * one with Tab keeps the focus on it.
  */
 export function ApprovalChip({
   artifact,
   layout = "inline",
   onReviewed,
+  shortcutKeys,
   variant = "list",
-  showActions = variant === "header",
+  showActions = variant !== "list",
 }: ApprovalChipProps): ReactNode {
-  const { approval } = artifact;
+  const approval = artifact?.approval;
   const [reviewsOpen, setReviewsOpen] = useState(false);
   const [requestChangesOpen, setRequestChangesOpen] = useState(false);
   const queryClient = useQueryClient();
   const submitGuard = useSubmitGuard();
+  /** The document a review is written of. A review is pressed only once the read has given the
+   *  approval, which comes with the document: before that both actions are held. */
+  const reviewed = (): Artifact => {
+    if (artifact === undefined) {
+      throw new Error("A review is pressed only once the document has been read.");
+    }
+    return artifact;
+  };
 
   const review = useKeyedWrite({
     label: ({ input }: ReviewPress) =>
-      `${input.state === "approved" ? "Approval" : "Change request"} on ${artifact.name}`,
+      `${input.state === "approved" ? "Approval" : "Change request"} on ${reviewed().name}`,
     onError: (error) => {
       // The document moved after the page read it: the page reads it again, so the next press
       // reviews the version a review would now record, which the reader then has in front of
       // them, and never one they did not read.
       if (apiErrorCodeIn(error, VERSION_MOVED)) {
-        void queryClient.invalidateQueries({ queryKey: ["artifact", artifact.id] });
+        void queryClient.invalidateQueries({ queryKey: ["artifact", reviewed().id] });
       }
     },
     onSettled: () => submitGuard.release(),
     write: ({ input, version }, bounds) =>
-      api.createArtifactVersionReview(artifact.id, version, input, bounds),
+      api.createArtifactVersionReview(reviewed().id, version, input, bounds),
     onSuccess: () => {
+      const target = reviewed();
       setRequestChangesOpen(false);
       onReviewed?.();
-      void queryClient.invalidateQueries({ queryKey: ["artifact-reviews", artifact.id] });
-      void queryClient.invalidateQueries({ queryKey: ["artifact", artifact.id] });
+      void queryClient.invalidateQueries({ queryKey: ["artifact-reviews", target.id] });
+      void queryClient.invalidateQueries({ queryKey: ["artifact", target.id] });
       void queryClient.invalidateQueries({ queryKey: inboxQuery().queryKey });
-      if (artifact.issue_key === null) {
+      if (target.issue_key === null) {
         void queryClient.invalidateQueries({
-          queryKey: ["project", artifact.project, "artifacts"],
+          queryKey: ["project", target.project, "artifacts"],
         });
         void queryClient.invalidateQueries({
-          queryKey: ["artifact-ref", `${artifact.project}/${artifact.slug}`],
+          queryKey: ["artifact-ref", `${target.project}/${target.slug}`],
         });
         return;
       }
-      void queryClient.invalidateQueries({ queryKey: ["issue", artifact.issue_key] });
-      void queryClient.invalidateQueries({ queryKey: ["artifacts", artifact.issue_key] });
-      void queryClient.invalidateQueries({ queryKey: ["asks", artifact.issue_key] });
+      void queryClient.invalidateQueries({ queryKey: ["issue", target.issue_key] });
+      void queryClient.invalidateQueries({ queryKey: ["artifacts", target.issue_key] });
+      void queryClient.invalidateQueries({ queryKey: ["asks", target.issue_key] });
     },
   });
 
-  if (approval === undefined || approval.state === "draft") {
+  const pane = variant === "pane";
+  // An unread document draws nothing but in the reading pane's head, which holds its two actions
+  // there until the read returns; a document with no approval, or a draft, draws nothing at all.
+  if (artifact === undefined ? !pane : approval === undefined || approval.state === "draft") {
     return null;
   }
 
+  /** Held while a review is out, and in the pane's head until the read has given the approval. */
+  const held = review.isPending || approval === undefined;
   const approveLabel =
-    approval.state === "stale" ? `Approve v${approval.latest_version}` : "Approve";
+    !pane && approval?.state === "stale" ? `Approve v${approval.latest_version}` : "Approve";
   /** Sends the review of the version the page read: the latest, which Approve names when the
    *  approval it follows is stale, and which the reading pane draws. */
-  const send = (input: CreateArtifactReviewInput) =>
+  const send = (input: CreateArtifactReviewInput) => {
+    if (approval === undefined) return;
     submitGuard.guard(() => review.mutate({ input, version: approval.latest_version }));
+  };
   // An Approve the server refused because the version moved, in its words; the dialog shows its
   // own press's refusal itself.
   const movedRefusal =
     !requestChangesOpen && review.isError && apiErrorCodeIn(review.error, VERSION_MOVED)
       ? review.error.message
       : null;
-
-  return (
-    <div
-      className={layout === "contents" ? "contents" : "inline-flex flex-wrap items-center gap-2"}
+  // The pane's head draws its actions as compact as the controls beside them, so the two and the
+  // pill hold one line of the head's place.
+  const actionSize = pane ? "px-2 py-1 text-xs" : "px-3 py-2 text-sm md:py-1";
+  // One filled button per surface: approving is the action the header wants, and two outline
+  // buttons made a reader choose before reading either.
+  const approveButton = (
+    <button
+      aria-keyshortcuts={keyshortcutsOf(shortcutKeys?.approve)}
+      className={`min-h-11 rounded-lg font-medium md:min-h-8 ${actionSize} ${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}`}
+      data-approval-action="approve"
+      {...heldPress(held, () => send({ state: "approved" }))}
+      type="button"
     >
+      {approveLabel}
+      <ControlKeyHint keys={shortcutKeys?.approve} />
+    </button>
+  );
+  const requestChangesButton = (
+    <button
+      aria-keyshortcuts={keyshortcutsOf(shortcutKeys?.requestChanges)}
+      className={`min-h-11 rounded-lg border font-medium md:min-h-8 ${actionSize} ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
+      data-approval-action="request-changes"
+      {...heldPress(held, () => setRequestChangesOpen(true))}
+      type="button"
+    >
+      Request changes
+      <ControlKeyHint keys={shortcutKeys?.requestChanges} />
+    </button>
+  );
+
+  const pill =
+    approval === undefined ? null : (
       <button
         aria-haspopup="dialog"
+        aria-keyshortcuts={keyshortcutsOf(shortcutKeys?.showReviews)}
         className={approvalPillClassName(approval.state)}
         data-inbox-action="show-reviews"
         onClick={() => setReviewsOpen(true)}
@@ -350,29 +428,35 @@ export function ApprovalChip({
         type="button"
       >
         {approvalLabel(approval)}
+        <ControlKeyHint keys={shortcutKeys?.showReviews} />
       </button>
-      {variant === "header" && showActions ? (
+    );
+
+  return (
+    <div
+      className={layout === "contents" ? "contents" : "inline-flex flex-wrap items-center gap-2"}
+    >
+      {pane && pill !== null ? (
+        // In the pane's head the pill takes the room the two actions leave on their line, from
+        // none at all (`basis-0`), so a label of many documents wraps inside it and never takes
+        // an action off that line.
+        <span className="flex min-w-0 grow basis-0 justify-end self-center">{pill}</span>
+      ) : (
+        pill
+      )}
+      {variant !== "list" && showActions ? (
+        // In the pane's head each action stands in its own box.
         <>
-          {approval.state === "approved" ? null : (
-            // One filled button per surface: approving is the action the header wants, and
-            // two outline buttons made a reader choose before reading either.
-            <button
-              className={`min-h-11 rounded-lg px-3 py-2 text-sm font-medium md:min-h-8 md:py-1 ${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}`}
-              data-approval-action="approve"
-              {...heldPress(review.isPending, () => send({ state: "approved" }))}
-              type="button"
-            >
-              {approveLabel}
-            </button>
+          {approval?.state === "approved" ? null : pane ? (
+            <span className={paneActionBox}>{approveButton}</span>
+          ) : (
+            approveButton
           )}
-          <button
-            className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium md:min-h-8 md:py-1 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
-            data-approval-action="request-changes"
-            {...heldPress(review.isPending, () => setRequestChangesOpen(true))}
-            type="button"
-          >
-            Request changes
-          </button>
+          {pane ? (
+            <span className={paneActionBox}>{requestChangesButton}</span>
+          ) : (
+            requestChangesButton
+          )}
           {movedRefusal === null ? null : (
             <p className={`basis-full text-sm ${dangerText}`} role="alert">
               {movedRefusal}
@@ -380,7 +464,7 @@ export function ApprovalChip({
           )}
         </>
       ) : null}
-      {reviewsOpen ? (
+      {reviewsOpen && artifact !== undefined ? (
         <ReviewsDialog artifactId={artifact.id} onClose={() => setReviewsOpen(false)} />
       ) : null}
       {requestChangesOpen ? (

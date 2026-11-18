@@ -12,25 +12,34 @@ const MODIFIER =
 /** The one copy control for a node's `dispatch://` reference, shown wherever the node is. A click
  *  copies the reference. When the surface has a shorter identifier worth keeping one click away
  *  — the issue header's key — `primary` names it: a click copies `primary.value` and a
- *  Ctrl/Cmd-click copies the reference, and the button's name says so. */
+ *  Ctrl/Cmd-click copies the reference, and the button's name says so. `shortcutKeys` are the
+ *  keys that copy it where the host draws them on the button (the Inbox's `y`, `CopyButton`). */
 export function CopyRefButton({
   className,
   primary,
   route,
+  shortcutKeys,
 }: {
   className?: string;
   primary?: { label: string; value: string };
   route: DispatchReferenceRoute;
+  shortcutKeys?: readonly string[];
 }): ReactNode {
   const reference = buildDispatchReference(route);
   return (
     <span className="contents" data-copy-ref="">
       {primary === undefined ? (
-        <CopyButton className={className} value={reference} what="reference" />
+        <CopyButton
+          className={className}
+          shortcutKeys={shortcutKeys}
+          value={reference}
+          what="reference"
+        />
       ) : (
         <CopyButton
           className={className}
           label={`Copy ${primary.label} · ${MODIFIER}-click copies the reference`}
+          shortcutKeys={shortcutKeys}
           value={(event) => (event.metaKey || event.ctrlKey ? reference : primary.value)}
           what="reference"
         />

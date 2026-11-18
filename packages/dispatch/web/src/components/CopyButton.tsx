@@ -1,5 +1,6 @@
 import type { MouseEvent, ReactNode } from "react";
 
+import { ControlKeyHint, keyshortcutsOf } from "../features/shell/ShortcutHelp";
 import { useCopyFeedback } from "../hooks/useCopyFeedback";
 import { dangerText, linkHoverText, linkText, successText } from "../theme/classes";
 
@@ -13,12 +14,15 @@ import { dangerText, linkHoverText, linkText, successText } from "../theme/class
  *  `value` may be a function of the click, for a button whose modifier keys choose what it
  *  copies; such a button names itself through `label`, since the default `Copy <what> <value>`
  *  needs one value to print. `marks` are the host's own handles on the button, by which its
- *  keys find and press it (the Inbox's command bar, `data-inbox-action`). */
+ *  keys find and press it (the Inbox's command bar, `data-inbox-action`), and `shortcutKeys` the
+ *  keys that press it where the host draws them: named in its `aria-keyshortcuts`, the first
+ *  drawn inside it after the glyph (`ControlKeyHint`). */
 export function CopyButton({
   children,
   className,
   label,
   marks,
+  shortcutKeys,
   value,
   what,
 }: {
@@ -26,6 +30,7 @@ export function CopyButton({
   className?: string;
   label?: string;
   marks?: Readonly<Record<`data-${string}`, string>>;
+  shortcutKeys?: readonly string[];
   value: string | ((event: MouseEvent<HTMLButtonElement>) => string);
   what: string;
 }): ReactNode {
@@ -39,6 +44,7 @@ export function CopyButton({
   return (
     <>
       <button
+        aria-keyshortcuts={keyshortcutsOf(shortcutKeys)}
         aria-label={name}
         className={`inline-flex min-h-11 shrink-0 items-center rounded-lg md:min-h-8 ${shape} ${linkText} ${linkHoverText} ${className ?? ""}`}
         {...marks}
@@ -60,6 +66,7 @@ export function CopyButton({
             strokeWidth="1.5"
           />
         </svg>
+        <ControlKeyHint keys={shortcutKeys} />
       </button>
       {status === "idle" ? null : (
         <span

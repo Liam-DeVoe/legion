@@ -1500,8 +1500,13 @@ async function toggleAssignee(user: UserEvent, option: RegExp) {
   await user.click(await within(listbox).findByRole("option", { name: option }));
 }
 
+/** The list's band headings, in order. The reading column's own heading - the title of the item
+ *  it shows - is none of them. */
 function headings(): string[] {
-  return screen.getAllByRole("heading", { level: 2 }).map((heading) => heading.textContent ?? "");
+  return screen
+    .getAllByRole("heading", { level: 2 })
+    .filter((heading) => heading.closest('[data-testid="inbox-pane"]') === null)
+    .map((heading) => heading.textContent ?? "");
 }
 
 /** The rows' ask ids in DOM order: the order the reader sees. */

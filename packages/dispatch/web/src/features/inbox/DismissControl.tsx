@@ -4,6 +4,7 @@ import type { MyReplyRow } from "../../api/types";
 import { heldPress } from "../../components/held-press";
 import { linkHoverText, linkText } from "../../theme/classes";
 import type { InboxShow } from "../refs/routes";
+import { ControlKeyHint, keyshortcutsOf } from "../shell/ShortcutHelp";
 import { questionLine } from "./question-line";
 import { dismissThreadRow, type InboxDismissRow } from "./useInboxDismiss";
 
@@ -40,9 +41,14 @@ export const RowDismissContext = createContext<RowDismiss | undefined>(undefined
  * write is out (`heldPress`).
  */
 export function DismissControl({
+  shortcutKeys,
   shown = false,
   thread,
 }: {
+  /** The keys that press it, where the host draws them on the button (the reading pane's head:
+   *  `e`, or the person's own): named in its `aria-keyshortcuts`, the first drawn after its
+   *  label (`ControlKeyHint`). */
+  shortcutKeys?: readonly string[];
   /** Whether the control is drawn whatever the reader's hand is doing: the head's and the card's
    *  always are, and so is the selected row's. */
   shown?: boolean;
@@ -56,6 +62,7 @@ export function DismissControl({
   const live = dismiss.pending.has(named.id);
   return (
     <button
+      aria-keyshortcuts={keyshortcutsOf(shortcutKeys)}
       aria-label={`${label}: ${questionLine(thread.subject)}`}
       className={`min-h-11 shrink-0 text-sm font-medium md:min-h-8 ${linkText} ${linkHoverText} ${
         shown ? "" : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
@@ -65,6 +72,7 @@ export function DismissControl({
       type="button"
     >
       {live ? (restoring ? "Moving…" : "Dismissing…") : label}
+      <ControlKeyHint keys={shortcutKeys} />
     </button>
   );
 }

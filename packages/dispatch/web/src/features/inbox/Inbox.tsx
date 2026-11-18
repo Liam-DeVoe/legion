@@ -1384,12 +1384,13 @@ export function Inbox({
   const bulkPicker = () => bulkBarRef.current?.querySelector<HTMLElement>(BULK_PICKER_SELECTOR);
   /** The approval request's Approve, or its Request changes, that `a` and Shift+R press (R7).
    *  Beside the column it is the chip's own button in the column's head, which the head draws
-   *  once the document's read returns (`ReadingPaneHead`) and which counts only while it takes
-   *  a press; else - below the column's width, in the drawer, and in the card the column falls
-   *  back to where it cannot read the document - it is the request's own option of the card in
-   *  hand (`data-ask-approval`, `AskCard`). Null on any other item and before the read returns,
-   *  which the `?` help shows as not available. Inside an ask card in the column the reader is
-   *  answering that card, the rule Snooze holds to, so the keys stand down there. */
+   *  from its first draw and holds until the document's read returns (`ReadingPaneHead`), and
+   *  which counts only while it takes a press; else - below the column's width, in the drawer,
+   *  and in the card the column falls back to where it cannot read the document - it is the
+   *  request's own option of the card in hand (`data-ask-approval`, `AskCard`). Null on any
+   *  other item and before the read returns, which the `?` help shows as not available. Inside
+   *  an ask card in the column the reader is answering that card, the rule Snooze holds to, so
+   *  the keys stand down there. */
   const approvalControl = (action: AskApprovalAction): HTMLElement | null => {
     if (paneShown && !outsideAskCard()) return null;
     const enabled = ':not([aria-disabled="true"])';

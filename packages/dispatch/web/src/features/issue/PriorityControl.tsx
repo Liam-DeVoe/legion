@@ -25,14 +25,24 @@ export function PriorityControl({
   disabled,
   issueKey,
   priority,
+  shortcutKeys,
 }: {
   disabled?: boolean;
   issueKey: string;
   priority: IssuePriority | null;
+  /** The keys that open the menu, where the host draws them on the trigger (the Inbox's reading
+   *  pane's head: `p`, or the person's own). */
+  shortcutKeys?: readonly string[];
 }): ReactNode {
   const write = useIssuePriority(issueKey);
   return (
-    <PriorityEditor disabled={disabled} issueKey={issueKey} priority={priority} write={write} />
+    <PriorityEditor
+      disabled={disabled}
+      issueKey={issueKey}
+      priority={priority}
+      shortcutKeys={shortcutKeys}
+      write={write}
+    />
   );
 }
 
@@ -60,12 +70,15 @@ export function PriorityEditor({
   held = false,
   issueKey,
   priority,
+  shortcutKeys,
   write,
 }: {
   disabled?: boolean;
   held?: boolean;
   issueKey: string;
   priority: IssuePriority | null;
+  /** The keys that open the menu, named on its trigger and the first drawn inside it. */
+  shortcutKeys?: readonly string[];
   write: IssuePriorityWrite;
 }): ReactNode {
   const tone = priority === null ? badgeLow : priorityBadge[priority];
@@ -79,6 +92,7 @@ export function PriorityEditor({
         label={`Priority of ${issueKey}`}
         marks={{ "data-priority-menu": "" }}
         onChoose={(value) => write.submit(value === "" ? null : (Number(value) as IssuePriority))}
+        shortcutKeys={shortcutKeys}
         triggerClassName={badgeMenuTrigger}
       >
         <span className={`${badgeSelectBadge} ${tone.bg} ${tone.text}`}>

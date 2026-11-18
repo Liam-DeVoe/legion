@@ -23,6 +23,7 @@ import {
   createProjectDocument,
   editArtifact,
   editAsk,
+  getInbox,
   getIssueArtifactText,
   listIssueAsks,
   patchIssue,
@@ -41,6 +42,7 @@ import {
   inboxAt,
   restingColumn,
   SECTION_HEADING,
+  seedApprovalWithMarks,
   seedQuestionColumn,
   waitOutPlacement,
 } from "./inbox-pane-scroll";
@@ -2578,7 +2580,9 @@ test("k-approval-keys: beside the reading pane a approves the version the reques
   const sent = () => reviewCount(reviews) + questionAnswers.length;
   const step = (text: string) => `k-approval-keys: the reading pane: ${text}`;
   const head = inboxPane(page).locator("header").first();
-  const approve = head.getByRole("button", { exact: true, name: "Approve" });
+  // The Approve that takes a press: the head draws Approve from its first draw and holds it
+  // (`aria-disabled`) until the document's read returns.
+  const approve = head.getByRole("button", { disabled: false, exact: true, name: "Approve" });
   const dialog = page.getByRole("dialog", { name: "Request changes" });
 
   // The first request's document is read late, and `a` is pressed while that read is out.
@@ -2604,10 +2608,13 @@ test("k-approval-keys: beside the reading pane a approves the version the reques
   await page.keyboard.press("a");
   await expect(
     approve,
-    step("the head draws no Approve yet, so a was pressed before the document's read returned")
+    step("the head's Approve takes no press yet, so a was pressed before the read returned")
   ).toHaveCount(0);
   expect(sent(), step("a before the document's read returns sends nothing")).toBe(0);
-  await expect(approve, step("the read returns and the head draws Approve")).toBeVisible();
+  await expect(
+    approve,
+    step("the read returns and the head's Approve takes a press")
+  ).toBeVisible();
   await page.unroute(documentRead);
   await expect(firstRow, step("the focus is still on the request's row")).toBeFocused();
   await page.keyboard.press("a");
@@ -2623,7 +2630,7 @@ test("k-approval-keys: beside the reading pane a approves the version the reques
   // The second request: Shift+R opens Request changes with the focus in its reason, Escape closes
   // it sending nothing, and a reason sent with Ctrl+Enter is one change request.
   await selectRow(page, second.askId);
-  await expect(approve, step("the second request's head draws Approve")).toBeVisible();
+  await expect(approve, step("the second request's head's Approve takes a press")).toBeVisible();
   await page.keyboard.press("Shift+R");
   await expect(dialog, step("Shift+R opens Request changes")).toBeVisible();
   await expect(
@@ -2979,12 +2986,12 @@ async function nextItemReviewSteps(page: Page, place: InboxPlace): Promise<void>
   const pane = place === "the reading pane";
   const head = inboxPane(page).locator("header").first();
 
-  // `a` approves the first request once its document is read beside the column; a card draws
-  // its Approve at once.
+  // `a` approves the first request once its document is read beside the column, where the head
+  // holds its Approve until then; a card draws its Approve at once.
   await putOn(inbox, firstApproval.askId);
   await expect(
     pane
-      ? head.getByRole("button", { exact: true, name: "Approve" })
+      ? head.getByRole("button", { disabled: false, exact: true, name: "Approve" })
       : rowOf(inbox, firstApproval.askId).getByRole("radio", { name: /^Approve/ }),
     step("the first request draws its Approve")
   ).toBeVisible();
@@ -2999,7 +3006,7 @@ async function nextItemReviewSteps(page: Page, place: InboxPlace): Promise<void>
   // Shift+R on the second, a reason, and Ctrl+Enter.
   await expect(
     pane
-      ? head.getByRole("button", { exact: true, name: "Request changes" })
+      ? head.getByRole("button", { disabled: false, exact: true, name: "Request changes" })
       : rowOf(inbox, secondApproval.askId).getByRole("radio", { name: /^Request changes/ }),
     step("the second request draws its Request changes")
   ).toBeVisible();
@@ -3246,19 +3253,22 @@ const INBOX_ACTIONS: readonly (readonly [RegExp, InboxAction])[] = [
 ];
 
 /** The names of the buttons and menu triggers `scope` shows that take a press now: each one's
- *  `aria-label`, else its text. A disabled one - Ask back with nothing typed, Answer with nothing
- *  picked - is no action of the item in hand until it takes a press; the question the reader asks
- *  back on reads Ask back once it does. */
+ *  `aria-label`, else its text without what it hides from assistive tech (the key a control
+ *  draws beside its label in the pane's head). A disabled one - Ask back with nothing typed,
+ *  Answer with nothing picked - is no action of the item in hand until it takes a press; the
+ *  question the reader asks back on reads Ask back once it does. */
 function controlNames(scope: Locator): Promise<string[]> {
-  return scope
-    .locator('button, [role="button"]')
-    .evaluateAll((nodes) =>
-      nodes
-        .filter((node) => node.getClientRects().length > 0 && !node.matches(":disabled"))
-        .map((node) =>
-          (node.getAttribute("aria-label") ?? node.textContent ?? "").replace(/\s+/g, " ").trim()
-        )
-    );
+  return scope.locator('button, [role="button"]').evaluateAll((nodes) =>
+    nodes
+      .filter((node) => node.getClientRects().length > 0 && !node.matches(":disabled"))
+      .map((node) => {
+        const label = node.getAttribute("aria-label");
+        if (label !== null) return label.replace(/\s+/g, " ").trim();
+        const named = node.cloneNode(true) as Element;
+        for (const hidden of named.querySelectorAll('[aria-hidden="true"]')) hidden.remove();
+        return (named.textContent ?? "").replace(/\s+/g, " ").trim();
+      })
+  );
 }
 
 /** The labels of the `?` help's Inbox section, opened over the item in hand and closed again. */
@@ -3483,4 +3493,425 @@ test("k-every-action: on a project page the command bar goes to every page the n
       new RegExp(`${address === "/" ? "/$" : `${address}$`}`)
     );
   }
+});
+
+// ---------------------------------------------------------------------------
+// k-pane-head (R9): the controls of the reading pane's head in a row of their own above the
+// title, each in one place whatever the title's length and whenever the document's read returns,
+// and each showing its key.
+// ---------------------------------------------------------------------------
+
+/** A title of one character, and one of 300, the longest k-pane-head asks for (the server takes
+ *  1,000). */
+const SHORT_TITLE = "Q";
+const LONG_TITLE = `${"The mirror replays the ledger on a cold start, window by window, and hands the lease back. ".repeat(4).slice(0, 299)}.`;
+
+/** A box in the reading pane, in px from the pane's own top left corner. */
+interface PaneRect {
+  readonly bottom: number;
+  readonly left: number;
+  readonly right: number;
+  readonly top: number;
+}
+
+/** Where `box` stands in the reading pane: its own box, relative to the pane's. */
+function paneRectOf(box: Locator): Promise<PaneRect> {
+  return box.evaluate((node) => {
+    const pane = node.closest('[data-testid="inbox-pane"]');
+    if (pane === null) throw new Error("the box is not in the reading pane");
+    const own = node.getBoundingClientRect();
+    const frame = pane.getBoundingClientRect();
+    return {
+      bottom: own.bottom - frame.top,
+      left: own.left - frame.left,
+      right: own.right - frame.left,
+      top: own.top - frame.top,
+    };
+  });
+}
+
+/** A control of the pane's head: its name in the rows' messages, the key it shows where it has
+ *  one, and how the head draws it. */
+interface HeadControl {
+  readonly name: string;
+  readonly key?: string;
+  readonly find: (head: Locator) => Locator;
+}
+
+const APPROVE: HeadControl = {
+  find: (head) => head.getByRole("button", { exact: true, name: "Approve" }),
+  key: "a",
+  name: "Approve",
+};
+const REQUEST_CHANGES: HeadControl = {
+  find: (head) => head.getByRole("button", { exact: true, name: "Request changes" }),
+  key: "Shift+R",
+  name: "Request changes",
+};
+const OPEN_PAGE: HeadControl = {
+  find: (head) => head.getByRole("link", { exact: true, name: "Open page" }),
+  name: "Open page",
+};
+const PRIORITY: HeadControl = {
+  find: (head) => head.getByRole("button", { name: /^Priority of / }),
+  key: "p",
+  name: "the priority",
+};
+const SNOOZE: HeadControl = {
+  find: (head) => head.getByRole("button", { name: /^Snooze / }),
+  key: "b",
+  name: "Snooze",
+};
+const COPY_REFERENCE: HeadControl = {
+  find: (head) => head.getByRole("button", { name: /^Copy reference / }),
+  key: "y",
+  name: "Copy reference",
+};
+const DISMISS: HeadControl = {
+  find: (head) => head.getByRole("button", { name: /^Dismiss: / }),
+  key: "e",
+  name: "Dismiss",
+};
+
+/** The controls of an approval request's head, Approve first, which the check's negative control
+ *  names; of a question's; and of a reply thread's, whose Open page is what `o` opens. */
+const APPROVAL_CONTROLS = [APPROVE, REQUEST_CHANGES, OPEN_PAGE, PRIORITY, SNOOZE, COPY_REFERENCE];
+const QUESTION_CONTROLS = [OPEN_PAGE, PRIORITY, SNOOZE, COPY_REFERENCE];
+const THREAD_CONTROLS = [{ ...OPEN_PAGE, key: "o" }, COPY_REFERENCE, DISMISS];
+
+/** The reading pane's head, by the element it has been at every build. */
+function paneHead(page: Page): Locator {
+  return inboxPane(page).locator("header").first();
+}
+
+/** What a row reads of the head of the item the pane shows: the box of each control, by name,
+ *  and the title's heading, which the merge base does not draw. */
+interface HeadReading {
+  readonly controls: ReadonlyMap<string, PaneRect>;
+  readonly title:
+    | { readonly rect: PaneRect; readonly text: string; readonly whole: boolean }
+    | undefined;
+}
+
+async function readHead(page: Page, controls: readonly HeadControl[]): Promise<HeadReading> {
+  const head = paneHead(page);
+  const rects = new Map<string, PaneRect>();
+  for (const control of controls) {
+    rects.set(control.name, await paneRectOf(control.find(head)));
+  }
+  const title = await head.evaluate((node) => {
+    const heading = node.querySelector("h2");
+    const pane = node.closest('[data-testid="inbox-pane"]');
+    if (heading === null || pane === null) return undefined;
+    const own = heading.getBoundingClientRect();
+    const frame = pane.getBoundingClientRect();
+    // Whole: nothing in the heading is wider than its own box, and nothing draws an ellipsis.
+    const cut = [heading, ...heading.querySelectorAll("*")].some(
+      (element) =>
+        element.scrollWidth > element.clientWidth ||
+        getComputedStyle(element).textOverflow === "ellipsis"
+    );
+    return {
+      rect: {
+        bottom: own.bottom - frame.top,
+        left: own.left - frame.left,
+        right: own.right - frame.left,
+        top: own.top - frame.top,
+      },
+      text: heading.textContent ?? "",
+      whole: !cut,
+    };
+  });
+  return { controls: rects, title };
+}
+
+/** Holds each of `controls` to the same left and top, within 1 px, in two readings, for the step
+ *  `step`. */
+function expectSamePlaces(
+  before: HeadReading,
+  after: HeadReading,
+  controls: readonly HeadControl[],
+  step: (text: string) => string
+): void {
+  for (const { name } of controls) {
+    const was = before.controls.get(name);
+    const is = after.controls.get(name);
+    if (was === undefined || is === undefined) throw new Error(`${name} was not read twice`);
+    expect(Math.abs(is.left - was.left), step(`${name}'s left is the same`)).toBeLessThanOrEqual(1);
+    expect(Math.abs(is.top - was.top), step(`${name}'s top is the same`)).toBeLessThanOrEqual(1);
+  }
+}
+
+/** Holds a reading's title to a heading of its own holding `title` whole, under every control
+ *  read with it, for the step `step`. */
+function expectTitleWhole(
+  reading: HeadReading,
+  title: string,
+  step: (text: string) => string
+): void {
+  const heading = reading.title;
+  expect(heading, step("the title is a heading of its own")).toBeDefined();
+  if (heading === undefined) return;
+  expect(heading.text, step("the heading holds the whole title")).toContain(title);
+  expect(heading.whole, step("the title is drawn whole, with nothing cut or elided")).toBe(true);
+  for (const [name, rect] of reading.controls) {
+    expect(rect.bottom, step(`${name} is above the title`)).toBeLessThanOrEqual(
+      heading.rect.top + 1
+    );
+  }
+}
+
+/** Holds each of `controls` that has a key to showing it, for the step `step`. */
+async function expectKeysShown(
+  page: Page,
+  controls: readonly HeadControl[],
+  step: (text: string) => string
+): Promise<void> {
+  for (const { find, key, name } of controls) {
+    if (key === undefined) continue;
+    await expect(find(paneHead(page)).locator("kbd"), step(`${name} shows ${key}`)).toHaveText(key);
+  }
+}
+
+/** Opens the item `id` in the reading pane and waits for `drawn`, the control that says its head
+ *  is the one the row reads. */
+async function openInPane(
+  page: Page,
+  id: string,
+  drawn: Locator,
+  step: (text: string) => string
+): Promise<void> {
+  await page.goto(inboxAt(id));
+  await expect(selectedRow(page), step("the item is selected")).toHaveAttribute(
+    "data-inbox-row",
+    id
+  );
+  await expect(drawn, step("its head is drawn")).toBeVisible();
+}
+
+/** The document an approval request the Inbox lists asks about. */
+async function approvalArtifactOf(askId: string): Promise<string> {
+  const row = (await getInbox()).find((listed) => listed.id === askId);
+  const artifactId = row?.approval?.artifact_id;
+  if (artifactId === undefined) throw new Error(`the Inbox lists no approval request ${askId}`);
+  return artifactId;
+}
+
+// SLOW(>=2s): five items seeded, each opened in the reading pane and its head read control by
+// control.
+test("k-pane-head: on approval requests and questions whose titles are 1 and 300 characters, and on a thread, each control of the head keeps one place above the whole title and shows its key", async ({
+  page,
+}) => {
+  expect(LONG_TITLE).toHaveLength(300);
+  await createProject({ key: "CORE", name: "Core" });
+  // Each pair shows the same controls: no issue has a priority, and each is the project's
+  // default assignee's, so neither draws Assign to me.
+  const approvals: string[] = [];
+  const questions: string[] = [];
+  for (const title of [SHORT_TITLE, LONG_TITLE]) {
+    const forApproval = await createIssue({
+      force: true,
+      project: "CORE",
+      spec: "# Rollout\n\nThe mirror hands the lease back.\n",
+      title,
+    });
+    const requested = withOpenedAsk(
+      await requestApproval(forApproval.primary_artifact_id, { summary: "The rollout." }, asker)
+    );
+    approvals.push(requested.ask.id);
+    const forQuestion = await createIssue({ force: true, project: "CORE", title });
+    questions.push(
+      (await createAsk(forQuestion.key, { question: "Which window does it replay?" }, asker)).id
+    );
+  }
+  const threadIssue = await createIssue({ force: true, project: "CORE", title: "Lease handover" });
+  const thread = replyRowId(
+    await seedCommentThread(threadIssue.key, "Who holds the lease?", "The mirror does.")
+  );
+  await page.setViewportSize(WIDE);
+  const head = paneHead(page);
+
+  let requestChangesRight: number | undefined;
+  for (const [what, ids, controls, drawn] of [
+    [
+      "the approval requests",
+      approvals,
+      APPROVAL_CONTROLS,
+      head.getByRole("button", { disabled: false, exact: true, name: "Request changes" }),
+    ],
+    ["the questions", questions, QUESTION_CONTROLS, SNOOZE.find(head)],
+  ] as const) {
+    const step = (text: string) => `k-pane-head: ${what}: ${text}`;
+    const [short, long] = ids;
+    if (short === undefined || long === undefined) throw new Error(`${what} were not seeded`);
+    await openInPane(page, short, drawn, step);
+    const shortHead = await readHead(page, controls);
+    await openInPane(page, long, drawn, step);
+    const longHead = await readHead(page, controls);
+    expectSamePlaces(shortHead, longHead, controls, (text) =>
+      step(`for the 1- and the 300-character title, ${text}`)
+    );
+    expectTitleWhole(shortHead, SHORT_TITLE, (text) => step(`the 1-character title: ${text}`));
+    expectTitleWhole(longHead, LONG_TITLE, (text) => step(`the 300-character title: ${text}`));
+    await expectKeysShown(page, controls, step);
+    requestChangesRight ??= longHead.controls.get(REQUEST_CHANGES.name)?.right;
+  }
+
+  // The thread draws Dismiss at the end of the row, where Request changes ends.
+  const step = (text: string) => `k-pane-head: the reply thread: ${text}`;
+  await openInPane(page, thread, DISMISS.find(head), step);
+  const threadHead = await readHead(page, THREAD_CONTROLS);
+  if (requestChangesRight === undefined) throw new Error("Request changes was not read");
+  expect(
+    Math.abs((threadHead.controls.get(DISMISS.name)?.right ?? 0) - requestChangesRight),
+    step("Dismiss's right edge is Request changes' right edge")
+  ).toBeLessThanOrEqual(1);
+  expectTitleWhole(threadHead, threadIssue.key, step);
+  await expectKeysShown(page, THREAD_CONTROLS, step);
+});
+
+// SLOW(>=2s): an approval request seeded, its document's read held while the head is read and
+// then let through.
+test("k-pane-head: no control of the head moves when the document's read of an approval request returns", async ({
+  page,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({
+    project: "CORE",
+    spec: "# Ledger handover\n\nThe plan.\n",
+    title: "Ledger handover",
+  });
+  const request = withOpenedAsk(
+    await requestApproval(issue.primary_artifact_id, { summary: "The handover." }, asker)
+  );
+  await page.setViewportSize(WIDE);
+  const head = paneHead(page);
+  const step = (text: string) => `k-pane-head: the late read: ${text}`;
+  const path = `/api/v1/artifacts/${issue.primary_artifact_id}`;
+  const release = await holdReads(page, [`**${path}`]);
+  const requested = page.waitForRequest((sent) => new URL(sent.url()).pathname === path);
+  await page.goto(inboxAt(request.ask.id));
+  await expect(selectedRow(page), step("the request is selected")).toHaveAttribute(
+    "data-inbox-row",
+    request.ask.id
+  );
+  await requested;
+  for (const control of [APPROVE, REQUEST_CHANGES]) {
+    await expect(
+      control.find(head),
+      step(`${control.name} is drawn before the read returns`)
+    ).toBeVisible();
+  }
+  const before = await readHead(page, APPROVAL_CONTROLS);
+  await release();
+  await expect(
+    head.getByRole("button", { disabled: false, exact: true, name: "Approve" }),
+    step("the read returns and Approve takes a press")
+  ).toBeVisible();
+  expectSamePlaces(before, await readHead(page, APPROVAL_CONTROLS), APPROVAL_CONTROLS, step);
+});
+
+// SLOW(>=2s): a request of a document approved before seeded, its document's read held while the
+// head is read and then answered as approved at its latest version.
+test("k-pane-head: on a request of a document approved at its latest version, the place at the row's end keeps its box and no other control moves when the read returns", async ({
+  page,
+}) => {
+  // A request of version 2 of a document approved at version 1, which the row's read then
+  // answers as approved at version 2: no route of the API leaves an open request of a version
+  // already approved.
+  const approved = await seedApprovalWithMarks();
+  const path = `/api/v1/artifacts/${await approvalArtifactOf(approved.approvalAskId)}`;
+  await page.setViewportSize(WIDE);
+  const head = paneHead(page);
+  const step = (text: string) => `k-pane-head: the approved document: ${text}`;
+  const held = Promise.withResolvers<void>();
+  await page.route(`**${path}`, async (route) => {
+    await held.promise;
+    // A read the page gave up on while it was held is answered already, and nobody waits on it.
+    await route
+      .fetch()
+      .then(async (response) => {
+        const read = (await response.json()) as { approval?: { latest_version: number } };
+        await route.fulfill({
+          json:
+            read.approval === undefined
+              ? read
+              : {
+                  ...read,
+                  approval: {
+                    ...read.approval,
+                    state: "approved",
+                    version: read.approval.latest_version,
+                  },
+                },
+          response,
+        });
+      })
+      .catch(() => undefined);
+  });
+  const requested = page.waitForRequest((sent) => new URL(sent.url()).pathname === path);
+  await page.goto(inboxAt(approved.approvalAskId));
+  await expect(selectedRow(page), step("the request is selected")).toHaveAttribute(
+    "data-inbox-row",
+    approved.approvalAskId
+  );
+  await requested;
+  const place = head.locator("[data-inbox-head-place]");
+  await expect(place, step("the head draws its place before the read returns")).toBeVisible();
+  const placeBefore = await paneRectOf(place);
+  const before = await readHead(page, APPROVAL_CONTROLS);
+  held.resolve();
+  await expect(
+    head.getByRole("button", { name: /^Approved v/ }),
+    step("the read returns the document approved at its latest version")
+  ).toBeVisible();
+  await expect(APPROVE.find(head), step("an approved document draws no Approve")).toHaveCount(0);
+  const placeAfter = await paneRectOf(place);
+  for (const side of ["left", "top", "right", "bottom"] as const) {
+    expect(
+      Math.abs(placeAfter[side] - placeBefore[side]),
+      step(`the place's ${side} edge is the same`)
+    ).toBeLessThanOrEqual(1);
+  }
+  const drawnBoth = APPROVAL_CONTROLS.filter((control) => control !== APPROVE);
+  expectSamePlaces(before, await readHead(page, drawnBoth), drawnBoth, step);
+});
+
+// SLOW(>=2s): a request whose version changed six paragraphs, its baseline's read held while the
+// head is read the first time.
+test("k-pane-head: no control drawn before Next change moves when Next change appears", async ({
+  page,
+}) => {
+  const seed = await seedApprovalWithMarks();
+  const artifactId = await approvalArtifactOf(seed.approvalAskId);
+  const step = (text: string) => `k-pane-head: Next change: ${text}`;
+  // The version the request is marked against: until it is read, nothing is marked.
+  const release = await holdReads(page, [`**/api/v1/artifacts/${artifactId}/versions/1`]);
+  await page.setViewportSize(WIDE);
+  const head = paneHead(page);
+  const nextChange = head.getByRole("button", { exact: true, name: "Next change" });
+  await openInPane(
+    page,
+    seed.approvalAskId,
+    head.getByRole("button", { disabled: false, exact: true, name: "Request changes" }),
+    step
+  );
+  await expect(nextChange, step("nothing is marked yet, so no Next change is drawn")).toHaveCount(
+    0
+  );
+  const before = await readHead(page, APPROVAL_CONTROLS);
+  await release();
+  await expect(nextChange, step("the version is marked and Next change appears")).toBeVisible();
+  const after = await readHead(page, APPROVAL_CONTROLS);
+  expectSamePlaces(before, after, APPROVAL_CONTROLS, step);
+  // It appears after the other controls, in reading order: on Copy reference's line to its
+  // right, or on a line below it. The controls of one line share their centre line.
+  const copy = after.controls.get(COPY_REFERENCE.name);
+  const appeared = await paneRectOf(nextChange);
+  if (copy === undefined) throw new Error("Copy reference was not read");
+  const below = (appeared.top + appeared.bottom) / 2 - (copy.top + copy.bottom) / 2;
+  expect(
+    below > 1 || (Math.abs(below) <= 1 && appeared.left > copy.right),
+    step("Next change comes after Copy reference")
+  ).toBe(true);
 });

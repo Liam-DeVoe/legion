@@ -5,6 +5,7 @@ import { QueryError } from "../../components/QueryError";
 import { badgeLow, secondaryButtonCompact, textMutedOnCanvas } from "../../theme/classes";
 import { badgeMenuTrigger, badgeSelectBadge } from "../issue/badge-select";
 import { Timestamp } from "../refs/Timestamp";
+import { ControlKeyHint, keyshortcutsOf } from "../shell/ShortcutHelp";
 import { InboxHandOffContext } from "./pane-selection";
 import { isIndefinite, snoozeChoices, snoozeOf } from "./snooze";
 import { type SnoozeSettled, useAskSnooze } from "./useAskSnooze";
@@ -32,15 +33,23 @@ export function SnoozeControl({
   askId,
   label,
   onLive,
+  shortcutKeys,
   snoozedUntil,
+  unsnoozeKeys,
 }: {
   askId: string;
   label: string;
   /** Registers this row while its write is in flight or failed; unregistered once it settles
    *  cleanly or the control unmounts. */
   onLive: (askId: string, live: boolean) => void;
+  /** The keys that open the menu, where the host draws them on the trigger (the reading pane's
+   *  head: `b` and `h`, or the person's own). */
+  shortcutKeys?: readonly string[];
   /** The row's own snooze while its moment is still ahead; null on an ordinary row. */
   snoozedUntil: string | null;
+  /** The keys that press Un-snooze, where the host draws them on it (the reading pane's head,
+   *  with a key a person gave it). */
+  unsnoozeKeys?: readonly string[];
 }): ReactNode {
   const write = useAskSnooze(askId);
   const handOff = useContext(InboxHandOffContext);
@@ -100,6 +109,7 @@ export function SnoozeControl({
       )}
       {snoozedUntil === null ? null : (
         <button
+          aria-keyshortcuts={keyshortcutsOf(unsnoozeKeys)}
           aria-label={`Un-snooze ${label}`}
           className={secondaryButtonCompact}
           data-inbox-action="unsnooze"
@@ -107,6 +117,7 @@ export function SnoozeControl({
           type="button"
         >
           {pendingLabel ?? "Un-snooze"}
+          <ControlKeyHint keys={unsnoozeKeys} />
         </button>
       )}
       <ChoiceMenu
@@ -117,6 +128,7 @@ export function SnoozeControl({
           const until = snoozeOf(choice, new Date());
           write.submit(until, handingOn(until));
         }}
+        shortcutKeys={shortcutKeys}
         triggerClassName={badgeMenuTrigger}
       >
         <span className={`${badgeSelectBadge} ${badgeLow.bg} ${badgeLow.text}`}>

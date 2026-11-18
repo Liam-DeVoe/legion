@@ -10,6 +10,7 @@ import {
 } from "react";
 
 import { focusOnDocument } from "../features/shell/roving";
+import { ControlKeyHint, keyshortcutsOf } from "../features/shell/ShortcutHelp";
 import {
   borderDefault,
   card,
@@ -50,6 +51,10 @@ interface ChoiceMenuProps<V extends string> {
    *  `data-priority-menu`, `data-status-menu`). */
   readonly marks: Readonly<Record<`data-${string}`, string>>;
   readonly triggerClassName: string;
+  /** The keys that also press the trigger where its host binds them and draws them (the
+   *  Inbox's `b` and `p`, in the reading pane's head): named in the trigger's
+   *  `aria-keyshortcuts`, and the first drawn inside it after what it draws (`ControlKeyHint`). */
+  readonly shortcutKeys?: readonly string[];
   /** What the trigger draws: the badge or the pill that shows the value. */
   readonly children: ReactNode;
 }
@@ -121,6 +126,7 @@ export function ChoiceMenu<V extends string>({
   label,
   marks,
   onChoose,
+  shortcutKeys,
   triggerClassName,
 }: ChoiceMenuProps<V>): ReactNode {
   const id = useId();
@@ -274,6 +280,7 @@ export function ChoiceMenu<V extends string>({
         aria-disabled={held || undefined}
         aria-expanded={open}
         aria-haspopup="menu"
+        aria-keyshortcuts={keyshortcutsOf(shortcutKeys)}
         aria-label={label}
         className={triggerClassName}
         {...marks}
@@ -292,6 +299,7 @@ export function ChoiceMenu<V extends string>({
         <span className="contents" id={faceId}>
           {children}
         </span>
+        <ControlKeyHint keys={shortcutKeys} />
       </button>
       {open ? (
         <AnchoredPanel

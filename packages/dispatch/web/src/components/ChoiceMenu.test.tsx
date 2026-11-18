@@ -436,3 +436,44 @@ test("the element a pick hands the focus back to is kept in view as the write mo
     view.unmount();
   }
 });
+
+// Where its host draws its keys (the Inbox's reading pane), the trigger names each of them to
+// assistive tech and draws the first inside it for the eye, outside what it is called and what
+// it says it holds.
+test("a trigger given its keys names them all and draws the first, outside its name and description", () => {
+  const view = render(
+    <ChoiceMenu
+      checked="P2"
+      choices={[{ label: "P2", value: "P2" }]}
+      label="Priority of CORE-1"
+      marks={{}}
+      onChoose={() => {}}
+      shortcutKeys={["p", "Shift+P"]}
+      triggerClassName=""
+    >
+      <span>P2</span>
+    </ChoiceMenu>
+  );
+  try {
+    const trigger = screen.getByRole("button", { name: "Priority of CORE-1" });
+    expect(trigger).toHaveAttribute("aria-keyshortcuts", "P Shift+P");
+    expect(trigger).toHaveAccessibleDescription("P2");
+    expect(Array.from(trigger.querySelectorAll("kbd"), (kbd) => kbd.textContent)).toEqual(["p"]);
+    expect(trigger.querySelector("kbd")?.closest('[aria-hidden="true"]')).not.toBeNull();
+    view.rerender(
+      <ChoiceMenu
+        choices={CHOICES}
+        label="Priority of CORE-1"
+        marks={{}}
+        onChoose={() => {}}
+        triggerClassName=""
+      >
+        <span>P2</span>
+      </ChoiceMenu>
+    );
+    expect(trigger).not.toHaveAttribute("aria-keyshortcuts");
+    expect(trigger.querySelector("kbd")).toBeNull();
+  } finally {
+    view.unmount();
+  }
+});

@@ -11,6 +11,7 @@ import {
 } from "../../theme/classes";
 import {
   ALT_KEY_LABEL,
+  ariaKeyshortcuts,
   type KeyBindingDescription,
   type KeymapScope,
   MOD_KEY_LABEL,
@@ -230,4 +231,32 @@ export function KeyHints({ keys }: { keys: readonly string[] }): ReactNode {
       ))}
     </span>
   );
+}
+
+/**
+ * The first key of the action a control runs, drawn inside the control beside its label (the
+ * reading pane's head, R9), so a reader sees which key also presses it: the person's own key as
+ * the host reads it (`useActionKeys`), and nothing for an action with no key. It is for the eye
+ * alone: the control names each of its keys in its `aria-keyshortcuts` (`keyshortcutsOf`), so the
+ * hint is hidden from assistive tech and stays out of the control's accessible name.
+ */
+export function ControlKeyHint({ keys }: { keys: readonly string[] | undefined }): ReactNode {
+  const first = keys?.[0];
+  if (first === undefined) return null;
+  return (
+    <span aria-hidden="true" className="ml-1.5 inline-flex shrink-0 items-center gap-1">
+      {keyTokens(first).map(({ key, token }) => (
+        <kbd className={kbdClass} key={key}>
+          {token}
+        </kbd>
+      ))}
+    </span>
+  );
+}
+
+/** The `aria-keyshortcuts` of a control that `keys` also press, or nothing where no key does:
+ *  the attribute with an empty value names no key, so it is left off. */
+export function keyshortcutsOf(keys: readonly string[] | undefined): string | undefined {
+  const named = keys === undefined ? "" : ariaKeyshortcuts(keys);
+  return named === "" ? undefined : named;
 }

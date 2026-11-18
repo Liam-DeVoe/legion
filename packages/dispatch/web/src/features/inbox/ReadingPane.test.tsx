@@ -27,11 +27,16 @@ import type { CreateEditor, EditorHandle } from "../doc/editor";
 import { DocumentRuntime } from "../doc/runtime";
 import { MarginProvider } from "../margin/margin-context";
 import { loadedEngine, warmMarkdownRenderer } from "../refs/markdown-engine";
+import { KeymapProvider } from "../shell/KeymapProvider";
+import { setActionKeys } from "../shell/keymap-keys";
+import { userPreferenceStorageKey } from "../shell/userPreference";
 import { plannerAgentRow } from "../threads/replies-fixture";
+import { RowDismissContext } from "./DismissControl";
 import { AskHandOnLiveContext } from "./hand-on-live";
 import { installInboxApiMocks, issueAsk, mockAskReads } from "./inbox-fixture";
 import { PANE_READER_MOVE } from "./pane-placement";
 import { ReadingPane } from "./ReadingPane";
+import { ReadingPaneHead, ThreadPaneHead } from "./ReadingPaneHead";
 
 installInboxApiMocks();
 
@@ -1140,6 +1145,246 @@ test("a document that cannot be read falls back to the card, with Open page at t
   }
 });
 
+// ---------------------------------------------------------------------------------------------
+// The head itself (R9): the controls in a row of their own, the place at the row's end that an
+// approval request and a thread draw from their first draw, the title whole under them, and the
+// key each control shows.
+// ---------------------------------------------------------------------------------------------
+
+const ALICE_KEYS = userPreferenceStorageKey("alice", "shell.keymap");
+
+/** The head of `ask` as the column draws it, with `artifact` what the document's read has given
+ *  so far, under the keys of the signed-in `alice`. */
+function renderHead(ask: InboxRow, artifact?: Artifact, readFailed = false) {
+  const client = createQueryClient();
+  const tree = (read: Artifact | undefined, failed: boolean) => (
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <KeymapProvider login="alice">
+          <ReadingPaneHead
+            artifact={read}
+            ask={ask}
+            onAnswered={() => {}}
+            onNextChange={undefined}
+            onSkipToAnswer={undefined}
+            onSnoozeLive={() => {}}
+            readFailed={failed}
+            sectionBlockId={undefined}
+            viewer="alice"
+          />
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  const view = render(tree(artifact, readFailed));
+  const place = () => {
+    const found = view.container.querySelector<HTMLElement>("[data-inbox-head-place]");
+    if (found === null) throw new Error("the head drew no place at its row's end");
+    return found;
+  };
+  return {
+    place,
+    rerender: (read: Artifact | undefined) => view.rerender(tree(read, readFailed)),
+    view,
+  };
+}
+
+/** The key a control draws for the eye, inside it and hidden from assistive tech. */
+function keyHintOf(control: HTMLElement): string | null | undefined {
+  return control.querySelector('[aria-hidden="true"] kbd')?.textContent;
+}
+
+/** Whether `later` is drawn after `earlier` in the document's order. */
+function drawnAfter(earlier: Node, later: Node): boolean {
+  return (earlier.compareDocumentPosition(later) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+}
+
+test("the head draws its controls in a row of their own and the title whole under them, each control with its key", () => {
+  // 300 characters: a title long enough to take several lines of the column.
+  const title = "The ledger hands the lease to the mirror. ".repeat(8).slice(0, 300).trim();
+  // Nobody holds the issue, so the head draws Assign to me too: the fixture names the project's
+  // default, which this row then drops.
+  const { view } = renderHead({
+    ...issueAsk({ issue: { assignee: null, key: "CORE-1", title } }),
+    waiting_on_person: undefined,
+  });
+  try {
+    const heading = screen.getByRole("heading", { level: 2 });
+    // The title is the owner link `o` follows, drawn whole: nothing in it is cut to one line.
+    const owner = within(heading).getByRole("link");
+    expect(owner).toHaveAttribute("data-inbox-owner", "");
+    expect(owner.textContent).toBe(`CORE-1${title}`);
+    expect(heading.querySelector(".truncate")).toBeNull();
+    const open = screen.getByRole("link", { name: "Open page" });
+    const priority = screen.getByRole("button", { name: "Priority of CORE-1" });
+    const assign = screen.getByRole("button", { name: "Assign CORE-1 to me" });
+    const snooze = screen.getByRole("button", { name: "Snooze CORE-1: Which approach?" });
+    const copy = screen.getByRole("button", { name: /^Copy reference / });
+    // In the fixed order, every one above the title.
+    const drawn = Array.from(view.container.querySelectorAll("a, button, h2"));
+    const at = [open, priority, assign, snooze, copy, heading].map((node) => drawn.indexOf(node));
+    expect(at.includes(-1)).toBe(false);
+    expect(at).toEqual([...at].sort((left, right) => left - right));
+    // Each control that has a key draws its first key and names every key it has.
+    for (const [control, shortcuts, hint] of [
+      [priority, "P", "p"],
+      [snooze, "B H", "b"],
+      [copy, "Y", "y"],
+    ] as const) {
+      expect(control).toHaveAttribute("aria-keyshortcuts", shortcuts);
+      expect(keyHintOf(control)).toBe(hint);
+    }
+    // A control with no key draws none.
+    for (const control of [open, assign]) {
+      expect(control).not.toHaveAttribute("aria-keyshortcuts");
+      expect(control.querySelector("kbd")).toBeNull();
+    }
+    // A question that is no approval request draws no place at the row's end.
+    expect(view.container.querySelector("[data-inbox-head-place]")).toBeNull();
+  } finally {
+    view.unmount();
+  }
+});
+
+test("the head shows the key the person gave an action in place of its default", () => {
+  setActionKeys("alice", "inbox.snooze", ["Shift+B", "h"]);
+  const { view } = renderHead(issueAsk());
+  try {
+    const snooze = screen.getByRole("button", { name: "Snooze CORE-1: Which approach?" });
+    expect(snooze).toHaveAttribute("aria-keyshortcuts", "Shift+B H");
+    expect(keyHintOf(snooze)).toBe("Shift+B");
+  } finally {
+    view.unmount();
+    window.localStorage.removeItem(ALICE_KEYS);
+  }
+});
+
+// A control whose action has no key by default draws none, and draws the key a person gives it.
+test("the head shows a key the person gave an action that has none by default, on its control", () => {
+  // Keys no Inbox action takes, so the check that refuses a taken key keeps each of them.
+  setActionKeys("alice", "inbox.assign-to-me", ["m"]);
+  setActionKeys("alice", "inbox.open-at-section", ["Shift+U"]);
+  setActionKeys("alice", "inbox.show-reviews", ["Shift+W"]);
+  const { place, view } = renderHead(
+    { ...approvalAsk(), waiting_on_person: undefined },
+    document({ approval: { latest_version: 4, state: "awaiting" }, versions: [version(4)] })
+  );
+  try {
+    for (const [control, shortcuts, hint] of [
+      [screen.getByRole("button", { name: "Assign CORE-1 to me" }), "M", "m"],
+      [screen.getByRole("link", { name: "Open page" }), "Shift+U", "Shift+U"],
+      [within(place()).getByRole("button", { name: "Awaiting approval" }), "Shift+W", "Shift+W"],
+    ] as const) {
+      expect(control).toHaveAttribute("aria-keyshortcuts", shortcuts);
+      expect(keyHintOf(control)).toBe(hint);
+    }
+  } finally {
+    view.unmount();
+    window.localStorage.removeItem(ALICE_KEYS);
+  }
+});
+
+test("an approval request's place holds Approve and Request changes from the first draw, held until the read returns, and the same two act then", async () => {
+  const user = userEvent.setup();
+  const createReview = spyOn(api, "createArtifactVersionReview").mockResolvedValue({
+    actor: { id: "alice", kind: "user" },
+    artifact_id: "artifact-1",
+    ask_id: "ask-a",
+    content_sha256: null,
+    content_sha256_source: null,
+    created_at: "2026-10-12T00:00:00Z",
+    id: "review-1",
+    kind: "person",
+    reason: null,
+    state: "approved",
+    version: 4,
+  });
+  const { place, rerender, view } = renderHead(approvalAsk());
+  try {
+    const approve = within(place()).getByRole("button", { name: "Approve" });
+    const requestChanges = within(place()).getByRole("button", { name: "Request changes" });
+    for (const [control, shortcuts, hint] of [
+      [approve, "A", "a"],
+      [requestChanges, "Shift+R", "Shift+R"],
+    ] as const) {
+      expect(control).toHaveAttribute("aria-disabled", "true");
+      expect(control).toHaveAttribute("aria-keyshortcuts", shortcuts);
+      expect(keyHintOf(control)).toBe(hint);
+    }
+    // Before the read there is no state to show, and a press does nothing.
+    expect(within(place()).getAllByRole("button")).toEqual([approve, requestChanges]);
+    await user.click(approve);
+    await user.click(requestChanges);
+    expect(createReview).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+
+    // The read returns an approval that went stale: the same two buttons take a press, and
+    // Approve keeps its one label, so its box is the box it was drawn in.
+    rerender(
+      document({
+        approval: { latest_version: 4, state: "stale", version: 3 },
+        versions: [version(3), version(4)],
+      })
+    );
+    expect(within(place()).getByRole("button", { name: "Approve" })).toBe(approve);
+    expect(within(place()).getByRole("button", { name: "Request changes" })).toBe(requestChanges);
+    expect(approve).not.toHaveAttribute("aria-disabled");
+    expect(requestChanges).not.toHaveAttribute("aria-disabled");
+    const pill = within(place()).getByRole("button", { name: "Approved v3 · changed since" });
+    expect(drawnAfter(pill, approve)).toBe(true);
+    await user.click(approve);
+    await waitFor(() => expect(createReview).toHaveBeenCalledTimes(1));
+    expect(createReview.mock.calls[0]?.slice(0, 3)).toEqual([
+      "artifact-1",
+      4,
+      { state: "approved" },
+    ]);
+  } finally {
+    view.unmount();
+    createReview.mockRestore();
+  }
+});
+
+test("an approval request whose document cannot be read keeps the head's place, with no action in it", () => {
+  const { place, view } = renderHead(approvalAsk(), undefined, true);
+  try {
+    // The card the column falls back to carries the approval's own options.
+    expect(place().querySelector("button")).toBeNull();
+  } finally {
+    view.unmount();
+  }
+});
+
+test("an approved document's Show diff stands in the head's place, and the approval it follows and its diff under the title", async () => {
+  const user = userEvent.setup();
+  const getArtifactVersion = spyOn(api, "getArtifactVersion").mockImplementation(
+    () => new Promise(() => {})
+  );
+  const { place, view } = renderHead(
+    approvalAsk(EARLIER_APPROVAL),
+    document({
+      approval: { latest_version: 4, state: "approved", version: 4 },
+      versions: [version(3), version(4)],
+    })
+  );
+  try {
+    const toggle = within(place()).getByRole("button", { name: "Show diff" });
+    expect(within(place()).queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
+    expect(within(place()).getByRole("button", { name: "Request changes" })).toBeDefined();
+    const heading = screen.getByRole("heading", { level: 2 });
+    const sentence = screen.getByText(/^Approved at version 3 on/);
+    expect(drawnAfter(heading, sentence)).toBe(true);
+    expect(place().contains(sentence)).toBe(false);
+    await user.click(toggle);
+    expect(toggle).toHaveAccessibleName("Hide diff");
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(drawnAfter(heading, screen.getByText("Loading versions to compare…"))).toBe(true);
+  } finally {
+    view.unmount();
+    getArtifactVersion.mockRestore();
+  }
+});
+
 test("a document the editor is refused admission to leaves the column on the card, with no prompt", async () => {
   // The column's own read of the text was answered from the cache (seeded below) and the read
   // the document makes for its own admission is the one the server refuses. Two things then say
@@ -1334,6 +1579,44 @@ test("an Agent row shows the session's name and reads that session's messages", 
     view.unmount();
     listAgentMessages.mockRestore();
     listAgents.mockRestore();
+  }
+});
+
+test("a thread's head draws Open page and Copy ref, Dismiss in the place at the row's end, and the owner whole under them, each with its key", () => {
+  const thread = threadRow({ issue: { key: "CORE-1", title: "Fix the thing" } });
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={createQueryClient()}>
+        <KeymapProvider login="alice">
+          <RowDismissContext value={{ dismiss: () => {}, pending: new Set(), show: "inbox" }}>
+            <ThreadPaneHead thread={thread} />
+          </RowDismissContext>
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    // `o` opens the thread's own page here, so Open page carries the owner mark and its key.
+    const open = screen.getByRole("link", { name: "Open page" });
+    expect(open).toHaveAttribute("data-inbox-owner", "");
+    const copy = screen.getByRole("button", { name: /^Copy reference / });
+    const place = view.container.querySelector<HTMLElement>("[data-inbox-head-place]");
+    if (place === null) throw new Error("the thread's head drew no place at its row's end");
+    const dismiss = within(place).getByRole("button", { name: "Dismiss: The retry budget" });
+    for (const [control, shortcuts, hint] of [
+      [open, "O", "o"],
+      [copy, "Y", "y"],
+      [dismiss, "E", "e"],
+    ] as const) {
+      expect(control).toHaveAttribute("aria-keyshortcuts", shortcuts);
+      expect(keyHintOf(control)).toBe(hint);
+    }
+    const heading = screen.getByRole("heading", { level: 2 });
+    expect(within(heading).getByText("CORE-1")).toBeDefined();
+    expect(heading.querySelector(".truncate")).toBeNull();
+    expect(drawnAfter(dismiss, heading)).toBe(true);
+  } finally {
+    view.unmount();
   }
 });
 

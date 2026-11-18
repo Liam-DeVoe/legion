@@ -26,15 +26,24 @@ export function ChevronIcon({ expanded }: { expanded: boolean }): ReactNode {
  * page's `Inactive (N)` sessions and `Show N older` exchanges, a component's `Show N done`
  * issues). `textClassName` is the text tone of the surface it sits on: the canvas by default,
  * `textSecondaryOnSurface` inside a card. `marks` are the host's own handles on the button, by
- * which its keys find and press it (the Inbox's command bar, `data-inbox-action`). */
+ * which its keys find and press it (the Inbox's command bar, `data-inbox-action`).
+ *
+ * A host that draws the keys that press it passes them ready: `keyshortcuts`, the button's
+ * `aria-keyshortcuts`, and `keyHint`, drawn after the chevron (`ControlKeyHint`). The control
+ * reads no keymap of its own, because modules outside the app import the ones that draw it (the
+ * browser rows read `InboxGroups`), and the keymap's module runs only inside the app's build. */
 export function DisclosureToggle({
   expanded,
+  keyHint,
+  keyshortcuts,
   label,
   marks,
   onToggle,
   textClassName = textSecondaryOnCanvas,
 }: {
   expanded: boolean;
+  keyHint?: ReactNode;
+  keyshortcuts?: string;
   label: string;
   marks?: Readonly<Record<`data-${string}`, string>>;
   onToggle: () => void;
@@ -43,6 +52,7 @@ export function DisclosureToggle({
   return (
     <button
       aria-expanded={expanded}
+      aria-keyshortcuts={keyshortcuts}
       className={`flex min-h-11 items-center gap-1 text-sm font-medium ${textClassName}`}
       {...marks}
       onClick={onToggle}
@@ -52,6 +62,7 @@ export function DisclosureToggle({
       <span className={disclosureButtonText}>
         <ChevronIcon expanded={expanded} />
       </span>
+      {keyHint}
     </button>
   );
 }

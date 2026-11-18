@@ -8,6 +8,7 @@ import {
   secondaryButtonText,
 } from "../../theme/classes";
 import { useIssueAssignee } from "../issue/useIssueAssignee";
+import { ControlKeyHint, keyshortcutsOf } from "../shell/ShortcutHelp";
 
 /** Takes an issue nobody holds for the viewer: one PATCH through the shared assignee write, so
  *  the row is theirs at once and rolls back if the server refuses. Under the Unassigned filter
@@ -23,6 +24,7 @@ export function AssignToMe({
   askId,
   issueKey,
   onLive,
+  shortcutKeys,
   viewer,
 }: {
   /** The row this control sits in; liveness is registered per row, never per issue, so a
@@ -32,6 +34,10 @@ export function AssignToMe({
   /** Registers this row while its write is in flight or failed; unregistered once it settles
    *  cleanly or the control unmounts. */
   onLive: (askId: string, live: boolean) => void;
+  /** The keys that press it, where the host draws them on the button (the reading pane's head,
+   *  with a key a person gave it): named in its `aria-keyshortcuts`, the first drawn after its
+   *  label (`ControlKeyHint`). */
+  shortcutKeys?: readonly string[];
   viewer: string;
 }): ReactNode {
   const write = useIssueAssignee(issueKey);
@@ -44,6 +50,7 @@ export function AssignToMe({
   return (
     <>
       <button
+        aria-keyshortcuts={keyshortcutsOf(shortcutKeys)}
         aria-label={`Assign ${issueKey} to me`}
         className={`min-h-11 shrink-0 rounded-lg px-2 py-1 text-xs font-medium md:min-h-8 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
         data-inbox-action="assign-to-me"
@@ -51,6 +58,7 @@ export function AssignToMe({
         type="button"
       >
         {write.pending ? "Assigning…" : "Assign to me"}
+        <ControlKeyHint keys={shortcutKeys} />
       </button>
       {write.failed ? (
         <div className="basis-full">

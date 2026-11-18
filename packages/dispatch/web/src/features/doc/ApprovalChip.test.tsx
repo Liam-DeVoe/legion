@@ -25,7 +25,11 @@ function artifact(approval: ArtifactApproval | undefined): Artifact {
   };
 }
 
-function renderChip(target: Artifact, variant?: "header" | "list", onReviewed?: () => void) {
+function renderChip(
+  target: Artifact,
+  variant?: "header" | "list" | "pane",
+  onReviewed?: () => void
+) {
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
   });
@@ -144,6 +148,62 @@ test("the header's Approve reads the latest version for a stale approval", () =>
   const view = renderChip(artifact({ latest_version: 4, state: "stale", version: 2 }), "header");
   try {
     expect(screen.getByRole("button", { name: "Approve v4" })).not.toBeNull();
+  } finally {
+    view.unmount();
+  }
+});
+
+test("an unread document draws nothing but in the reading pane's head, which holds its two actions", () => {
+  for (const variant of ["list", "header"] as const) {
+    const view = render(
+      <QueryClientProvider client={new QueryClient()}>
+        <ApprovalChip artifact={undefined} variant={variant} />
+      </QueryClientProvider>
+    );
+    try {
+      expect(view.container.firstChild).toBeNull();
+    } finally {
+      view.unmount();
+    }
+  }
+  const view = render(
+    <QueryClientProvider client={new QueryClient()}>
+      <ApprovalChip
+        artifact={undefined}
+        shortcutKeys={{ approve: ["a"], requestChanges: ["Shift+R"], showReviews: [] }}
+        variant="pane"
+      />
+    </QueryClientProvider>
+  );
+  try {
+    // Both drawn and held, each in its box with its key, and no state to show yet.
+    const buttons = screen.getAllByRole("button");
+    expect(buttons.map((button) => button.getAttribute("data-approval-action"))).toEqual([
+      "approve",
+      "request-changes",
+    ]);
+    for (const button of buttons) {
+      expect(button).toHaveAttribute("aria-disabled", "true");
+      expect(button.parentElement?.tagName).toBe("SPAN");
+    }
+    expect(screen.getByRole("button", { name: "Approve" })).toHaveAttribute(
+      "aria-keyshortcuts",
+      "A"
+    );
+    expect(screen.getByRole("button", { name: "Request changes" })).toHaveAttribute(
+      "aria-keyshortcuts",
+      "Shift+R"
+    );
+  } finally {
+    view.unmount();
+  }
+});
+
+test("the reading pane's Approve keeps one label for a stale approval", () => {
+  const view = renderChip(artifact({ latest_version: 4, state: "stale", version: 2 }), "pane");
+  try {
+    expect(screen.getByRole("button", { name: "Approve" })).not.toHaveAttribute("aria-disabled");
+    expect(screen.queryByRole("button", { name: "Approve v4" })).not.toBeInTheDocument();
   } finally {
     view.unmount();
   }
