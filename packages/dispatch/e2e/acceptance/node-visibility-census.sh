@@ -5,13 +5,19 @@
 # lose the same row, so the driver starts before the migration and holds both products to an
 # inventory of its own:
 #
-#   B1  The base build, booted through lib-baseline.sh, which builds it from BASELINE_SHA (unset,
-#       `git merge-base origin/main HEAD`) and stamps it with that commit, over the run's empty
-#       database, which it migrates; the driver keeps the versions schema_migrations holds then as
-#       a file. Its /healthz names that commit as its own and as its fleet_commit, the build
-#       processes.Live reads every live process as serving. Through its own API three people each
-#       ask the command bar, and the driver reads each run's stream to its terminal frame; the
-#       server stops, so nothing appends a frame after the inventory is read.
+#   B1  The base build, booted through lib-baseline.sh, which builds it from BASELINE_SHA and
+#       stamps it with that commit, over the run's empty database, which it migrates; the driver
+#       keeps the versions schema_migrations holds then as a file. BASELINE_SHA is the release this
+#       child lands after: c-census's run sets it, unless its caller did, to
+#       `git merge-base origin/legion/INFRA-1150 HEAD`, as this driver does when it is unset, and
+#       once legion/INFRA-1150 merges the implementer sets it to the first parent of its merge
+#       commit on main. Before anything is built, the driver refuses a base whose tree lacks the
+#       migration 20261109013400_graph_store, which creates the store, naming the base: over a
+#       build that holds no store no two-build sentence of c-census can pass. Its /healthz names
+#       that commit as its own and as its fleet_commit, the build processes.Live reads every live
+#       process as serving. Through its own API three people each ask the command bar, and the
+#       driver reads each run's stream to its terminal frame; the server stops, so nothing appends
+#       a frame after the inventory is read.
 #       With psql it writes one run row a day ahead that holds no frame, and one run for each row
 #       of the identity table below, each a day ahead too and each form straight into
 #       going_requests.author, since the older server's sign-in stores a login in its canonical
@@ -33,11 +39,14 @@
 #       existing requirement block under the header of one of alice's runs, whose ends_at psql first
 #       sets a day ahead on both sides in one transaction, so the run's window decides no result,
 #       and one lens on the shared bearer e2e-token whose body names a session no other row names.
-#       It keeps an inventory of those writes. Before any further backfill the census reads the
-#       person and the session kinds at zero differences: the shared bearer proves no author, so
-#       that lens is the project's and settles nothing, yet it names the session its body names as
-#       its writer through authored_by and its write stated that session's node (spec v46 R12),
-#       so the session is on both sides; the driver reads that authored_by tuple.
+#       It keeps an inventory of those writes. Last, alice routes the issue to a role and comments
+#       on it, one message addressed to that role, whose node and page this head's events outbox
+#       writes, publishing through the run's NATS. Before any further backfill the census, run
+#       whole, exits 0 and reads the person, the session, the role and the page kinds at zero
+#       differences: the shared bearer proves no author, so that lens is the project's and settles
+#       nothing, yet it names the session its body names as its writer through authored_by and its
+#       write stated that session's node (spec v46 R12), so the session is on both sides; the
+#       driver reads that authored_by tuple.
 #   B2  The base build again, as in a rollback, through run-server.sh, booted beside this head's
 #       server, which still serves: two builds serve the one database at once, each on a port of
 #       its own, and both sign cookies with the run's one dev sign-in key. While both serve, alice
@@ -57,21 +66,23 @@
 #   H3  This head again. Each boot wrote one announcement once processes.Live read every live
 #       process as its build - the base build of B2, booted beside this head, once this head
 #       stopped - so they name the base build, this head, the base build and this head, in order:
-#       two builds. Before the backfill, a census beside a planted instance: it names the new run,
-#       a row with no node, and the terminal frame of the run row written by hand, a row with no
-#       frame value. Then the backfill again: a node for the new run, a frame value for each frame
-#       that build appended, and the run whose row it deleted at state gone. alice moves her
-#       pre-mortem to proposed, the finding to settled and her risk to overtaken. Only then the
-#       census, the store-to-projection comparison, which is reported apart from the inventory's: a
-#       run the migration lost shows in the first and never in the second. It reads zero
-#       differences for the interaction and frame kinds, for both block projections of
-#       dispatch://INFRA-1149, for person and session, and for the visibility and state of every
-#       node of this child's kinds, each kind having checked more than zero rows, the moved nodes
-#       counted as live ones are, and every interaction at `author`. Then, with psql, one
-#       interaction node no going_requests row projects, a copy of bob's run's node under an id no
-#       row names, and one frame value no going_events row projects, of the run row written by hand
-#       at the sequence after its one frame's: the census reads each as one difference of its kind
-#       naming its run, two in all, and once both are deleted, exactly as planted, zero again.
+#       two builds. Before the backfill, a census beside a planted instance, which exits 1 on its
+#       differences: it names the new run, a row with no node, and the terminal frame of the run row
+#       written by hand, a row with no frame value. Then the backfill again: a node for the new run,
+#       a frame value for each frame that build appended, and the run whose row it deleted at state
+#       gone. alice moves her pre-mortem to proposed, the finding to settled and her risk to
+#       overtaken. Only then the census, the store-to-projection comparison, which is reported
+#       apart from the inventory's: a run the migration lost shows in the first and never in the
+#       second. Run whole, it exits 0, every kind of the store checked and none read apart, and it
+#       reads zero differences for the interaction and frame kinds, for both block projections of
+#       dispatch://INFRA-1149, for comment, person, session, role and page, and for the visibility
+#       and state of every node of this child's kinds, each kind having checked more than zero
+#       rows, the moved nodes counted as live ones are, and every interaction at `author`. Then,
+#       with psql, one interaction node no going_requests row projects, a copy of bob's run's node
+#       under an id no row names, and one frame value no going_events row projects, of the run row
+#       written by hand at the sequence after its one frame's: the census exits 1 and reads each as
+#       one difference of its kind naming its run, two in all, and once both are deleted, exactly
+#       as planted, it exits 0 and reads zero again.
 #   S   The store-only kinds (lens, finding, risk, constraint, lens_kind) and their constrained_by,
 #       has_kind, triggered_by and prevented_by tuples against the inventory of the routes' writes
 #       and the migration's seed, node for node and tuple for tuple.
@@ -87,7 +98,8 @@
 #   E   With no server running, `envoy-dispatch erase --node interaction:<uuid>` of the run the edit
 #       was made under, as dispatch://INFRA-1149's erase runs: a listing, then --confirm with its
 #       digest. The block's changed_by_run tuple blocks nothing and goes with the node; no row and no
-#       node of the run is left, the backfill writes none back, and the census reads zero again.
+#       node of the run is left, the backfill writes none back, and the census, run whole, exits 0
+#       and reads zero again.
 #
 # The identity table is written into this driver by a person, and no code the server runs produces
 # it: each row is a form a record can hold of a person's identity, the node its run's authored_by
@@ -96,14 +108,18 @@
 #
 # Inputs: DATABASE_URL (an empty database on this machine that the run created and drops; every
 # server here migrates and serves it, and this driver reads and writes its rows), and optionally
-# BASELINE_SHA (lib-baseline.sh's: the base commit; while a branch this child builds on is unmerged,
-# a commit holding every such branch), DISPATCH_E2E_SERVER_BIN (this head's envoy-dispatch, which
-# serves and runs backfill-graph-store, census, lens-kind-add and erase, default
-# $TMPDIR/bin/envoy-dispatch) and LEGION_WORKSPACE (lib-baseline.sh's checkout). It starts the two
-# fakes run-server.sh needs, the fake Envoy and the fake GitHub, and every server (lib-processes.sh),
-# and stops each when it exits, also when a check fails, so the run can drop its database. Each
-# unmet input is exit 2. No BASELINE_BINARY is read: the base is always built here and stamped with
-# its commit.
+# BASELINE_SHA (the base commit, read in LEGION_WORKSPACE's checkout or else this one and handed to
+# lib-baseline.sh in full; unset, `git merge-base origin/legion/INFRA-1150 HEAD`; a base whose tree
+# lacks the migration 20261109013400_graph_store is refused, exit 2, naming it),
+# DISPATCH_E2E_SERVER_BIN (this head's envoy-dispatch, which serves and runs backfill-graph-store,
+# census, lens-kind-add and erase, default $TMPDIR/bin/envoy-dispatch) and LEGION_WORKSPACE
+# (lib-baseline.sh's checkout). It starts the two fakes run-server.sh needs, the fake Envoy and the
+# fake GitHub, a NATS server with JetStream, packages/envoy's natsd (internal/testnats/cmd/natsd),
+# which it builds and which this head's boots alone are handed (run-server.sh's
+# DISPATCH_E2E_NATS_URLS, boot_head), so this head's events outbox publishes, and every server
+# (lib-processes.sh), and stops each when it exits, also when a check fails, so the run can drop
+# its database. Each unmet input is exit 2. No BASELINE_BINARY is read: the base is always built
+# here and stamped with its commit.
 #
 # Each passing check prints `PASS: <section> <what>`; the first failing one prints
 # `FAIL: <section> <what>: <observed>` and the script exits 1. The first PASS line after this head's
@@ -124,7 +140,8 @@ Usage: DATABASE_URL=postgres://user@127.0.0.1:5433/infra_1950_census?sslmode=dis
          [BASELINE_SHA=<commit>] [DISPATCH_E2E_SERVER_BIN=$TMPDIR/bin/envoy-dispatch] \
          node-visibility-census.sh
        (DATABASE_URL names an empty database on this machine, which the run created and drops;
-       BASELINE_SHA unset is git merge-base origin/main HEAD)
+       BASELINE_SHA unset is git merge-base origin/legion/INFRA-1150 HEAD, and a base whose tree
+       lacks the migration 20261109013400_graph_store is refused)
 USAGE
 }
 
@@ -152,6 +169,42 @@ DISPATCH_TOKEN="$token"
 # The tree this driver is part of, whose sources G greps and whose migrations M reads.
 tree="$(cd -- "$e2e_dir/../../.." && pwd)"
 readonly tree
+# The base, read before anything is built. BASELINE_SHA names it, the release this child lands
+# after; c-census's run sets it, when its caller has not, to the merge base with
+# legion/INFRA-1150, and so does this driver when it is unset: lib-baseline.sh's own default, the
+# merge base with origin/main, is a commit that holds no store. It is read in the checkout
+# lib-baseline.sh builds it from, LEGION_WORKSPACE or else this tree, and handed to
+# lib-baseline.sh in full, so the commit built is the commit read here. A base whose tree lacks
+# the migration that creates the store is refused, named: over a build that holds no store, no
+# sentence of c-census that reads two builds can pass.
+readonly base_repo="${LEGION_WORKSPACE:-$tree}"
+readonly store_migration=packages/envoy/internal/dispatch/store/migrations/20261109013400_graph_store.up.sql
+base_named="${BASELINE_SHA:-}"
+if [[ -z "$base_named" ]]; then
+  base_named="$(git -C "$base_repo" merge-base origin/legion/INFRA-1150 HEAD 2>/dev/null)" || {
+    printf 'BASELINE_SHA is unset, and its default, git merge-base origin/legion/INFRA-1150 HEAD, found no commit in %s: set BASELINE_SHA to the base commit\n' \
+      "$base_repo" >&2
+    usage
+    exit 2
+  }
+fi
+readonly base_named
+BASELINE_SHA="$(git -C "$base_repo" rev-parse --verify --quiet "${base_named}^{commit}")" || {
+  printf "BASELINE_SHA '%s' names no commit of %s\n" "$base_named" "$base_repo" >&2
+  usage
+  exit 2
+}
+git -C "$base_repo" cat-file -e "$BASELINE_SHA:$store_migration" 2>/dev/null || {
+  printf '%s: the base %s (BASELINE_SHA %s) lacks the migration 20261109013400 (graph_store): its tree holds no %s, so it is a build with no store, over which no two-build sentence of c-census can pass\n' \
+    "$driver" "$BASELINE_SHA" "$base_named" "$store_migration" >&2
+  usage
+  exit 2
+}
+printf '%s: the base %s (BASELINE_SHA %s) holds the migration 20261109013400 (graph_store): %s\n' \
+  "$driver" "$BASELINE_SHA" "$base_named" "$store_migration"
+# The run's NATS reaches this head's boots alone (boot_head); one a caller's shell exported reaches
+# no server here, the base build's boots included.
+unset DISPATCH_E2E_NATS_URLS
 stamp="$(date +%s)-$$"
 readonly stamp
 # The session every bearer write names, the session the identity table says the server proved
@@ -166,6 +219,9 @@ readonly project=CENSUS
 readonly alice=alice bob=bob carol=carol twin=karol third=dave
 readonly nobody="nobody-$stamp"
 readonly added_kind="census-$stamp"
+# The role the one message addressed to a role is addressed to (H2): a name roleRoutePattern
+# admits (lower case, digits and hyphens) that no other row names.
+readonly role="census-role-$stamp"
 # How long each of the two waits below may take: the owed block versions, and the older build's
 # sweep.
 readonly wait_limit=600
@@ -250,17 +306,66 @@ backfill() {
   pass "$1" "envoy-dispatch backfill-graph-store ran over the run's database"
 }
 
-# take_census SECTION NAME: runs envoy-dispatch census --store and keeps its report in
-# $work/census.NAME. It exits 0 or 1, by whether the report refuses; what this driver reads of it is
-# each kind's line and the total of differences.
+# take_census SECTION NAME EXIT: runs envoy-dispatch census --store, whole, keeps its report in
+# $work/census.NAME and prints each kind's line, the store-only and project lines, the total of
+# differences and the verdict. The command exits 0 when nothing refuses, 1 when the report refuses
+# and 2 when it could not take the census (cmd/dispatch's census), and the report refuses on a
+# difference, a project finding, a far end that does not resolve or a kind that checked no row
+# (graphcensus's StoreReport.Refused). EXIT is 0 for a census of the store as its writers left it,
+# every kind of it checked, whose verdict is `census: store ok`, and 1 for a census beside a
+# planted difference, whose verdict is `census: store REFUSED (<n> difference(s))`, the reason the
+# report names first.
 take_census() {
+  local verdict want
   run_cli "$1" "run envoy-dispatch census --store" census --store
   cp "$work/cli.out" "$work/census.$2"
-  grep -E '^census: store (kind=[a-z_]+ nodes=|rows_checked=|ok|REFUSED|absent)|^census: store kind=[a-z_]+ (difference|and )' \
+  grep -E '^census: store (kind=[a-z_]+ (nodes|tuples)=|rows_checked=|ok|REFUSED|absent)|^census: store kind=[a-z_]+ (difference|and |holds no row|checked no row)|^census: (store-only|project) ' \
     "$work/census.$2" >"$work/census.$2.lines" ||
     fail "$1" "envoy-dispatch census --store prints its report" "it printed no census line (exit $cli_code): $(<"$work/census.$2")"
   sed 's/^/  /' "$work/census.$2.lines"
-  pass "$1" "envoy-dispatch census --store read the store (exit $cli_code)"
+  verdict="$(grep -E '^census: store (ok|REFUSED|absent)' "$work/census.$2" | tail -n 1)" || verdict=""
+  if [[ "$3" == 0 ]]; then
+    want='^census: store ok$'
+  else
+    want='^census: store REFUSED \([0-9,]+ difference\(s\)\)$'
+  fi
+  [[ "$cli_code" == "$3" ]] ||
+    fail "$1" "envoy-dispatch census --store, run whole, exits $3" "it exited $cli_code: ${verdict:-it printed no verdict}"
+  [[ "$verdict" =~ $want ]] ||
+    fail "$1" "envoy-dispatch census --store, run whole, ends on the verdict /$want/" "its verdict reads: ${verdict:-none}"
+  pass "$1" "envoy-dispatch census --store, run whole, exited $3: $verdict"
+}
+
+# start_nats: builds natsd, packages/envoy's one nats-server for a shell script
+# (internal/testnats/cmd/natsd, the nats-server its go.mod pins, with JetStream on 127.0.0.1), as
+# scripts/e2e/dispatch-claimant-delivery.sh builds it for its Dispatch, and starts it on a port the
+# kernel picks (-p -1), its store under $work. It sets $nats_url, and its pid joins the fakes'
+# (pids), so stop_processes stops it with them. run-server.sh starts a server's events outbox only
+# for a server it hands a NATS (DISPATCH_E2E_NATS_URLS), and that publisher is the one writer of a
+# role's node and its page beside the row that addresses the role (outbox.deliveredGraph).
+start_nats() {
+  local pid
+  mkdir -p "$work/bin" "$work/nats-store"
+  go -C "$tree/packages/envoy" build -o "$work/bin/natsd" ./internal/testnats/cmd/natsd >"$work/natsd-build.log" 2>&1 ||
+    fail setup "build packages/envoy's ./internal/testnats/cmd/natsd" "go build exited non-zero: $(tail -n 20 "$work/natsd-build.log")"
+  "$work/bin/natsd" -p -1 -store_dir "$work/nats-store" >"$work/nats.log" 2>&1 &
+  pid="$!"
+  pids+=("$pid")
+  await_line setup "start the NATS server" "$pid" "$work/nats.log" 'Server is ready'
+  line="$(grep -m 1 -E 'Listening for client connections on 127\.0\.0\.1:[0-9]+$' "$work/nats.log")" ||
+    fail_with_log setup "start the NATS server" "it logged no client port" "$work/nats.log"
+  nats_url="nats://127.0.0.1:${line##*:}"
+  [[ "$nats_url" =~ ^nats://127\.0\.0\.1:[0-9]+$ ]] || fail setup "start the NATS server" "its line reads: $line"
+  readonly nats_url
+  printf '%s: natsd, a NATS server with JetStream, listens on %s (pid %s)\n' "$driver" "$nats_url" "$pid"
+}
+
+# boot_head SECTION NAME: boots this head's server (boot_server) with the run's NATS as its
+# DISPATCH_E2E_NATS_URLS, which run-server.sh hands it as NATS_URLS, so its events outbox
+# publishes and writes what a delivery states in the store, as a deployment's does. The base build
+# boots with none, in B1 through lib-baseline.sh and in B2 through boot_server.
+boot_head() {
+  DISPATCH_E2E_NATS_URLS="$nats_url" boot_server "$1" "$2" "$server_bin"
 }
 
 # fleet_reads SECTION COMMIT: the server serving now answers /healthz with COMMIT as the commit it
@@ -458,6 +563,7 @@ readonly identities
 pass setup "the identity table holds ${#identities[@]} forms: four of $carol and one of $twin, one character from her"
 
 start_fakes
+start_nats
 
 # --- B1: the base build, its three runs, the hand-written row, the identity table, the inventory -
 
@@ -591,7 +697,7 @@ pass B1 "kept the inventory of $inventory_size runs, each its id, author, words 
 
 # --- H1: this head over the same database, its migrations and backfill, against the inventory ----
 
-boot_server H1 "this head's server" "$server_bin"
+boot_head H1 "this head's server"
 seeded_catalogue
 
 registered_commit H1 "read this head's row of server_processes"
@@ -789,10 +895,48 @@ want_value H2 "the lens on the shared bearer is made by the session its body nam
 jq -r 'to_entries[] | "  inventory of writes: \(.key) \(.value | length)"' "$work/writes.json"
 pass H2 "kept the inventory of this build's writes in $work/writes.json"
 
-# Straight after those writes, before any further backfill.
-take_census H2 h2
+# The one message addressed to a role (Verification v55): the census refuses a kind it checked no
+# row of (dispatch://INFRA-1149), and no row of this run addressed a role, so without it the census
+# refuses the role and the page kinds. alice routes $key to the role $role through this head and
+# writes a comment on it, as dispatch://INFRA-1149's census test addresses its role
+# (addressTheRole, packages/envoy/cmd/dispatch/store_census_test.go): the route is the role's row,
+# which issues.route holds now and the issue.updated event names (graphcensus's addressedRoles),
+# and the comment is a message that route addresses to the role, which the events outbox's
+# publisher resolves as a destination. The publisher is the one writer of a role's node and its
+# page beside the row that addresses the role (outbox.deliveredGraph), and this head publishes
+# through the run's NATS (boot_head), so the driver waits, 60 s at most, until the store holds both
+# nodes, and reads that the publisher wrote them: no backfill runs before H3.
+request "cookie:$alice" PATCH "/api/v1/issues/$key" "$(jq -cn --arg r "role:$role" '{route: $r}')"
+want_status 200 H2 "$alice routes $key to the role $role through this head"
+request "cookie:$alice" POST "/api/v1/issues/$key/comments" \
+  "$(jq -cn --arg b "A comment on $key, which is routed to the role $role." '{body: $b}')"
+want_status 201 H2 "$alice writes a comment on $key, a message its route addresses to the role $role"
+readonly role_sql="select (select count(*) from issues where key = '$key' and route = 'role:$role') || '|'
+  || (select count(*) from graph_nodes where kind = 'role' and id = '$role') || '|'
+  || (select count(*) from graph_nodes where kind = 'page' and id = 'role/$role')"
+query H2 "read the role $role's route, node and page" "$role_sql"
+waited=0
+until [[ "$answer" == "1|1|1" ]]; do
+  [[ "$waited" -lt 60 ]] ||
+    fail_with_log H2 "this head's events outbox writes the node of the role $role and its page, role/$role, within 60 s" \
+      "issues routed to it|role nodes|page nodes read $answer" "$work/this head's server.log"
+  sleep 1
+  waited=$((waited + 1))
+  query H2 "read the role $role's route, node and page" "$role_sql"
+done
+want_value H2 "the node of the role $role and its page, role/$role, are made by the events outbox's publisher" \
+  "system:dispatch-outbox system:dispatch-outbox" \
+  "select string_agg((made_by->>'kind') || ':' || (made_by->>'id'), ' ' order by kind desc)
+   from graph_nodes where (kind = 'role' and id = '$role') or (kind = 'page' and id = 'role/$role')"
+pass H2 "$key is routed to the role $role, and this head's events outbox wrote the role's node and its page, role/$role (waited ${waited} s)"
+
+# Straight after those writes, before any further backfill: the census, run whole, exits 0.
+take_census H2 h2 0
 census_zero H2 h2 person
 census_zero H2 h2 session
+census_zero H2 h2 role
+census_zero H2 h2 page
+census_differences H2 h2
 # The census's session node side is every session node (graphcensus's session kind), so were
 # $bearer_session not on its row side, its node, which the lens's check above read, would be a node
 # without a row, on which census_zero fails: the session is on both sides.
@@ -952,7 +1096,7 @@ stop_server B2 "the base build"
 
 # --- H3: this head and the backfill again, and the census ---------------------------------------
 
-boot_server H3 "this head's server again" "$server_bin"
+boot_head H3 "this head's server again"
 registered_commit H3 "read this head's row of server_processes"
 [[ "$answer" == "$head_commit" ]] || fail H3 "this head serves the database again" "its row names '$answer', want $head_commit"
 pass H3 "this head serves the database again at $base, stamped with $head_commit"
@@ -980,7 +1124,7 @@ want_value H3 "before the backfill, run $run_new holds its row and no interactio
           || (select count(*) from graph_nodes where kind = 'interaction' and id = '$run_new') || '|'
           || (select count(*) from going_events where request_id = '$run_ahead' and sequence = $ahead_frame) || '|'
           || (select count(*) from graph_tuples where from_kind = 'interaction' and from_id = '$run_ahead' and kind = 'frame')"
-take_census H3 planted
+take_census H3 planted 1
 grep -Fqx "census: store kind=interaction difference at interaction $run_new: the row names a node the store does not hold" \
   "$work/census.planted" ||
   fail H3 "the census names run $run_new, a row with no node, a difference of the kind interaction" \
@@ -1042,13 +1186,16 @@ move_state H3 "$finding" "$finding_store" live proposed
 move_state H3 "$finding" "$finding_store" proposed settled
 move_state H3 "$risk" "risk/$risk_id" live overtaken
 
-take_census C h3
+take_census C h3 0
+census_zero C h3 comment
 census_zero C h3 interaction
 census_zero C h3 frame
 census_zero C h3 block
 census_zero C h3 block_ref
 census_zero C h3 person
 census_zero C h3 session
+census_zero C h3 role
+census_zero C h3 page
 for kind in interaction lens finding risk constraint lens_kind; do
   census_zero C h3 "${kind}_visibility_state"
 done
@@ -1150,7 +1297,7 @@ IFS='|' read -r planted_frame_seq planted_frame <<<"$answer"
 readonly planted_frame_seq planted_frame
 pass C "planted the interaction node $planted_run, a copy of run $run_bob's node under an id no row names, and a frame value of run $run_ahead at sequence $planted_frame, which no going_events row holds"
 
-take_census C plants
+take_census C plants 1
 census_kind "$work/census.plants" interaction ||
   fail C "the census reads the kind interaction" "no line of it in: $(<"$work/census.plants")"
 found="$(grep -E '^census: store kind=interaction difference at ' "$work/census.plants" || true)"
@@ -1192,7 +1339,7 @@ want_value C "no node and no tuple names the planted run $planted_run, and run $
                                                    or (to_kind = 'interaction' and to_id = '$planted_run')) || '|'
           || (select count(distinct t.to_id) from graph_tuples t
               where t.from_kind = 'interaction' and t.from_id = '$run_ahead' and t.kind = 'frame' and t.to_kind = 'value' and t.asserted)"
-take_census C unplanted
+take_census C unplanted 0
 census_zero C unplanted interaction
 census_zero C unplanted frame
 census_zero C unplanted interaction_visibility_state
@@ -1408,13 +1555,16 @@ want_value E "each edited block, ${changed_blocks[*]}, stands live, its changed_
   "select count(*) from graph_nodes where kind = 'block' and state = 'live' and id in (${changed_ids%,})"
 backfill E
 want_value E "the backfill writes no node of the erased run back" "0|0|0|0" "$erased_sql"
-take_census E erased
+take_census E erased 0
+census_zero E erased comment
 census_zero E erased interaction
 census_zero E erased frame
 census_zero E erased block
 census_zero E erased block_ref
 census_zero E erased person
 census_zero E erased session
+census_zero E erased role
+census_zero E erased page
 for kind in interaction lens finding risk constraint lens_kind; do
   census_zero E erased "${kind}_visibility_state"
 done
