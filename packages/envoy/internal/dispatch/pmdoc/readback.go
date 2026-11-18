@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"slices"
 	"sort"
+	"strings"
 )
 
 // skip names what a comparison leaves aside: the attributes it names, or all of them, and with
@@ -45,6 +46,36 @@ type WrittenReadBack struct {
 func ReadBack(doc *Node) (*Node, error) {
 	written, err := readBackWritten(doc, maxSpanCells)
 	return written.Tree, err
+}
+
+// RenderingOf is what this build renders stored as, stored being a document's markdown that any
+// build of the store may have written, an older renderer version's among them: the tree stored
+// reads as (ParseRendering), rendered as the store renders a document (Render, the markdown
+// RenderWithBlockOffsets writes). read is false where stored reads as no document, and then
+// nothing was rendered; err is the refusal of the read or of the render.
+func RenderingOf(stored string) (rendering string, read bool, err error) {
+	tree, err := ParseRendering(stored)
+	if err != nil {
+		return "", false, err
+	}
+	rendering, err = Render(tree)
+	return rendering, true, err
+}
+
+// SameRendering reports whether a and b are one rendering: equal once each is taken without the
+// line feeds it ends in, so a fragment cut from a document - a decision, a block - compares with
+// its own slice of the document's rendering.
+func SameRendering(a, b string) bool {
+	return strings.TrimRight(a, "\n") == strings.TrimRight(b, "\n")
+}
+
+// ReadsAs reports whether stored, markdown that any build of the store may have written, reads as
+// rendering: this build reads stored and renders it again (RenderingOf), and the two are one
+// rendering (SameRendering). Stored text that reads as no document, or whose tree does not
+// render, reads as nothing.
+func ReadsAs(stored, rendering string) bool {
+	again, _, err := RenderingOf(stored)
+	return err == nil && SameRendering(again, rendering)
 }
 
 // readBack is what doc's markdown, its tables' spans adding at most spanCells cells (render),

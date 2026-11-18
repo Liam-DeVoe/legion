@@ -272,3 +272,40 @@ func documentBesideSpannedTable(width, rows int) *Node {
 func documentAdding(doc, block *Node) *Node {
 	return &Node{Type: "doc", Children: append(slices.Clone(doc.Children), block)}
 }
+
+// A version's stored markdown keeps the spelling of the renderer that wrote it, so a stored text
+// reads as a rendering where this build reads it and renders it again as that rendering: renderer
+// version 1's loose list, two blank lines between its items, reads as the one blank line this build
+// writes. The line feeds either side ends in do not count, so a fragment cut from a document
+// compares with its own slice. Other text reads as another rendering, and a stored text this build
+// reads as no document reads as nothing, not even as its own bytes: nothing was rendered of it.
+func TestReadsAsReadsAnotherSpellingOfTheSameTree(t *testing.T) {
+	const unclosed = ":::callout{#b7 kind=\"note\" title=\"T\"}\nBody.\n"
+	const unknown = ":::future_block{#b1}\nBody.\n:::\n"
+	for _, test := range []struct {
+		name              string
+		stored, rendering string
+		reads             bool
+	}{
+		{"renderer version 1's loose list", "- a\n\n\n- b\n", "- a\n\n- b\n", true},
+		{"a loose list whose first items stand together", "- a\n- b\n\n- c\n", "- a\n\n- b\n\n- c\n", true},
+		{"this build's own rendering", "- a\n\n- b\n", "- a\n\n- b\n", true},
+		{"other text", "- a\n\n\n- c\n", "- a\n\n- b\n", false},
+		{"a stored text with no final line feed", "- a\n\n\n- b", "- a\n\n- b\n", true},
+		{"a rendering with more final line feeds", "- a\n\n\n- b\n", "- a\n\n- b\n\n\n", true},
+		{"a rendering with none", "- a\n\n\n- b\n\n", "- a\n\n- b", true},
+		{"an unclosed typed block", unclosed, unclosed, false},
+		{"a typed block the schema does not name", unknown, unknown, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := ReadsAs(test.stored, test.rendering); got != test.reads {
+				t.Fatalf("ReadsAs(%q, %q) = %t, want %t", test.stored, test.rendering, got, test.reads)
+			}
+		})
+	}
+	for _, stored := range []string{unclosed, unknown} {
+		if rendering, read, err := RenderingOf(stored); read || err == nil || rendering != "" {
+			t.Errorf("RenderingOf(%q) = %q, read %t, %v; want nothing read and the refusal", stored, rendering, read, err)
+		}
+	}
+}

@@ -1422,20 +1422,27 @@ func (s *Service) SnapshotVersion(ctx context.Context, artifactID string, actor 
 	if err != nil {
 		return VersionResult{}, err
 	}
-	if latest.markdown == rendered.markdown {
+	if latest.holds(rendered.markdown) {
 		return VersionResult{Version: latest.Version}, nil
 	}
-	// Another build may have rendered the latest version: during a release two builds serve one
-	// database, and their renderers can write one document differently. As settlement does, a
-	// snapshot writes no version when no update since the latest one changed the content
-	// (contentChangedSinceVersion). An edit the room holds that its persistence has not stored yet
-	// is in no update row, so the latest version's markdown must also read as this rendering.
-	changed, err := contentChangedSinceVersion(ctx, tx, artifactID, latest.docUpdateVersion)
-	if err != nil {
-		return VersionResult{}, err
-	}
-	if !changed && readsAs(latest.markdown, rendered.markdown) {
-		return VersionResult{Version: latest.Version}, nil
+	// A latest version another renderer version wrote holds that renderer's spelling of the
+	// document: during a release two builds serve one database, and a renderer change
+	// (pmdoc.RendererVersion) leaves every version stored before it in the spelling it had. Such a
+	// version, and one no renderer version stamps, holds this rendering where its markdown reads as
+	// it (holds, readsAs), whatever changed since, so an edit typed and undone after it writes no
+	// version of a render change alone. A latest version this renderer version wrote holds it where
+	// no update since changed the content (contentChangedSinceVersion), as settlement's test has
+	// it, and its markdown reads as this rendering too, since an edit the room holds that its
+	// persistence has not stored yet is in no update row. Either way the line feeds the two end in
+	// no longer count (pmdoc.SameRendering).
+	if !anotherRenderer(latest.rendererVersion) {
+		changed, err := contentChangedSinceVersion(ctx, tx, artifactID, latest.docUpdateVersion)
+		if err != nil {
+			return VersionResult{}, err
+		}
+		if !changed && readsAs(latest.markdown, rendered.markdown) {
+			return VersionResult{Version: latest.Version}, nil
+		}
 	}
 	mergeAuthor(capture.authors, actor)
 	// The owner's lock holds the issue's state under this write, and a closed issue refuses it -
@@ -1462,14 +1469,22 @@ func (s *Service) SnapshotVersion(ctx context.Context, artifactID string, actor 
 }
 
 // readsAs reports whether stored, a version's markdown that any build may have rendered, reads as
-// the document whose rendering is markdown: this build parses it and renders it as markdown.
+// the document whose rendering is markdown, by pmdoc.ReadsAs's rule: this build reads stored and
+// renders it again (pmdoc.RenderingOf), and the two are one rendering (pmdoc.SameRendering). The
+// render it makes is recorded as every render of a whole document is (countDocumentRender).
 func readsAs(stored, markdown string) bool {
-	tree, err := pmdoc.ParseRendering(stored)
-	if err != nil {
-		return false
+	again, read, err := pmdoc.RenderingOf(stored)
+	if read {
+		countDocumentRender(again)
 	}
-	again, err := documentMarkdown(tree)
-	return err == nil && again == markdown
+	return err == nil && pmdoc.SameRendering(again, markdown)
+}
+
+// anotherRenderer reports whether stamp, a version's renderer_version, names a renderer other
+// than this build's (pmdoc.RendererVersion): another renderer version's, or none, for a version
+// written before versions were stamped or with no render stamp (RenderStamp).
+func anotherRenderer(stamp *int) bool {
+	return stamp == nil || *stamp != pmdoc.RendererVersion
 }
 
 // prevalidateLiveOperations performs database-backed table-anchor checks
@@ -2240,22 +2255,35 @@ func (s *Service) storedWithUpdates(ctx context.Context, artifactID string, unst
 	return treeOf(doc)
 }
 
-func latestVersion(ctx context.Context, tx pgx.Tx, artifactID string) (struct {
+// latestVersionRow is a document's latest version as a write reads it to decide whether to write
+// the next: the version, its stored markdown, the update its write recorded (doc_update_version),
+// and the renderer version that wrote that markdown (renderer_version), nil where no write
+// stamped one.
+type latestVersionRow struct {
 	model.Version
 	markdown         string
 	docUpdateVersion int64
-}, error) {
-	var version struct {
-		model.Version
-		markdown         string
-		docUpdateVersion int64
-	}
+	rendererVersion  *int
+}
+
+// holds reports whether the version holds rendering, the document as this build renders it:
+// byte for byte, or, for a version another renderer version wrote or none stamped, as markdown
+// this build reads as that rendering (readsAs). A version a renderer change alone left in another
+// spelling of the same tree is unchanged by that rule, so no version is written for the change.
+// The read is made only for such a version and only once the bytes differ, so a document whose
+// latest version this renderer version wrote pays nothing for it.
+func (v latestVersionRow) holds(rendering string) bool {
+	return v.markdown == rendering || anotherRenderer(v.rendererVersion) && readsAs(v.markdown, rendering)
+}
+
+func latestVersion(ctx context.Context, tx pgx.Tx, artifactID string) (latestVersionRow, error) {
+	var version latestVersionRow
 	var authors []byte
 	if err := tx.QueryRow(ctx, `
-		select v.number, v.named, v.summary, v.authors, v.created_at, `+model.VersionSize+`, v.markdown, v.doc_update_version
+		select v.number, v.named, v.summary, v.authors, v.created_at, `+model.VersionSize+`, v.markdown, v.doc_update_version, v.renderer_version
 		from artifact_versions v where v.artifact_id = $1
 		order by v.number desc limit 1
-	`, artifactID).Scan(&version.Number, &version.Named, &version.Summary, &authors, &version.CreatedAt, &version.Size, &version.markdown, &version.docUpdateVersion); err != nil {
+	`, artifactID).Scan(&version.Number, &version.Named, &version.Summary, &authors, &version.CreatedAt, &version.Size, &version.markdown, &version.docUpdateVersion, &version.rendererVersion); err != nil {
 		return version, fmt.Errorf("read latest document version: %w", err)
 	}
 	if err := json.Unmarshal(authors, &version.Authors); err != nil {
