@@ -1,6 +1,6 @@
 -- 20261117093000_check_results_commit_repo.up.sql
 --
--- #4065: the repository a result's commit is taken to be of, where that is not the repository
+-- #4426: the repository a result's commit is taken to be of, where that is not the repository
 -- the check's issue resolves to (api/results.go, recordCheckResult).
 --
 --   commit_repo   the canonical `owner/repo` of a repository the check's issue links a pull
