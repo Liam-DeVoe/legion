@@ -64,8 +64,6 @@ export async function plansCommand(context: CommandContext): Promise<DispatchToo
     since: optionalString(args, "since"),
     until: optionalString(args, "until"),
   });
-  // The generated shape lets each list be null; Dispatch writes `[]`, and null reads the same, here
-  // and in each part of an issue's line.
   const issues = read.issues ?? [];
   return {
     text: [`${read.project}: ${issues.length} finished issues`, ...issues.map(issueLine)].join(

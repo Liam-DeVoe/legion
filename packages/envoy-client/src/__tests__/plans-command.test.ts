@@ -410,7 +410,7 @@ describe("dispatch plans", () => {
     ]);
   });
 
-  // The generated shape lets each list be null; Dispatch writes `[]`, and null reads the same.
+  // Each generated list is nullable, including a plan's tasks; null reads as an empty list.
   test("a null list reads as an empty one: no issue, no rating, no task", async () => {
     const empty: readonly ProjectPlans[] = [
       { project: "INFRA", issues: [] },
