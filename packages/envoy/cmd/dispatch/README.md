@@ -4314,7 +4314,7 @@ Each item below names a path with its method and identity, then its purpose.
   Each check carries `compared_with`, every commit and branch its results are compared with in the order they are asked about, `compared_nothing` where it has none, and `pass_stands`.
   Each result carries `commit_stands`, where its own commit stands against those, `check_words_moved`, and `retracted` where a retraction stands against it.
 
-  - A `before_merge` check is compared with every head Dispatch holds for the check's own issue: the head of an `open` pull request, and the final head of a `merged` one, attributed to that issue.
+  - A `before_merge` check is compared with every head Dispatch holds for the check's own issue: the head of an `open` pull request, and the final head of a `merged` one, attributed to that issue; the basis of a merged one carries `merged: true`.
     After them, in name order, it is compared with the head of each branch that a result a CI job recorded on that issue names, `{kind: "branch_head", branch, commit}`, where `commit` is the branch's head as GitHub answers it on that read (`GET /repos/{owner}/{repo}/git/ref/heads/{branch}`, under a 10-second deadline):
     a CI job runs on a push of its change's branch, so its pass stands at that branch's head before any pull request opens.
     A branch whose head a pull request head already names adds nothing, and a branch GitHub no longer holds, deleted once its change merged, adds no basis.

@@ -1221,18 +1221,23 @@ A default-branch result is compared with the default branch alone.
   );
   if (atOwnHead !== "at_basis") return `the result at A2 stands ${atOwnHead} before any read`;
 
-  // The command, with no commit named. Its head line is where it names the bases.
+  // The command, with no commit named. Under the before check it prints the line of each open
+  // head, #21 and #22, and one line that counts the merged #23, which decides nothing while one is
+  // open; the head lines of the after and branch checks name their branches.
   const printed = await resultsCommand(basesIssue);
   for (const line of commandHeadLines(printed)) note(`dispatch results: ${line}`);
   const wantedLines = [
-    `the head of pull request #21 at ${commits.comparedHeadA}`,
-    `the head of pull request #22 at ${commits.comparedHeadA2}`,
-    `the head of pull request #23 at ${commits.comparedMergedHead}`,
+    `  - #21 at ${commits.comparedHeadA}: `,
+    `  - #22 at ${commits.comparedHeadA2}: `,
+    "  The 1 merged pull request decides nothing while one is open.",
     "branch release/old",
     "branch main",
   ];
   for (const wanted of wantedLines) {
-    if (!printed.includes(wanted)) return `the command named no ${wanted}`;
+    if (!printed.includes(wanted)) return `the command printed no ${wanted.trim()}`;
+  }
+  if (printed.includes(`#23 at ${commits.comparedMergedHead}`)) {
+    return "the command printed a line of the merged #23, which decides nothing while #21 and #22 are open";
   }
 
   // The API, with no commit named: the same bases, each with its pull request's number and the

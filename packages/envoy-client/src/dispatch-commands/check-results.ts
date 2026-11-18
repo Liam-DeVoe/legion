@@ -3,11 +3,15 @@ import type {
   CheckBasis,
   CheckBlock,
   CheckCI,
-  CheckPassStands,
   CheckResult,
   IssueCheckResults,
 } from "@legion/contracts";
-import { checkWithNewerFields } from "@legion/contracts";
+import {
+  checkWithNewerFields,
+  mergedPullRequestsWords,
+  subjectPlace,
+  subjectStateWords,
+} from "@legion/contracts";
 import { actorText } from "../actor-text";
 import { printableStrings } from "../runner-log";
 
@@ -95,39 +99,55 @@ function checkWordsText(check: CheckBlock, result: CheckResult): string {
     : `The check's words did not move after this result (${versions})`;
 }
 
-/** What one subject of a check holds where no pass stands there. */
-function subjectReasonText(reason: string | undefined): string {
-  if (reason === "fail") return "a fail";
-  if (reason === "pass_and_fail") return "a pass and a fail of CI";
-  return "no result";
-}
-
-/** Each subject of a check where no pass stands, with what it holds, or "" where there is none. */
-function openSubjectsText(pass: CheckPassStands): string {
-  return (pass.subjects ?? [])
-    .filter((subject) => subject.answer !== "yes")
-    .map((subject) => `${basisText(subject.basis)} holds ${subjectReasonText(subject.reason)}`)
-    .join("; ");
-}
-
-/** R5 for one check: whether a pass of it stands, and from which roles; where none does, each
- *  head a pass must stand at that holds none, and what it holds instead. */
-function passStandsText(pass: CheckPassStands | undefined): string {
+/** R5 and R12 for one check: whether a pass of it stands, and from which roles. A check with
+ *  subjects, the heads a pass must stand at, says how many of them read yes where the answer is
+ *  not yes; each head's own line follows (`subjectLines`). A check compared with a branch names the
+ *  newest result that decided it, or the one Dispatch could not place on a branch, whose commit
+ *  comes from that result among the check's results. */
+function passStandsText(check: CheckBlock): string {
+  const pass = check.pass_stands;
   if (pass === undefined)
     return "Whether a pass stands is not known: this Dispatch server does not say";
-  if (pass.answer === "yes") {
-    const roles = pass.roles ?? [];
-    return roles.length === 0
-      ? "A pass stands: yes"
-      : `A pass stands: yes, from ${roles.join(", ")}`;
+  const roles = pass.roles ?? [];
+  const yes =
+    roles.length === 0 ? "A pass stands: yes" : `A pass stands: yes, from ${roles.join(", ")}`;
+  const subjects = pass.subjects ?? [];
+  if (subjects.length > 0) {
+    if (pass.answer === "yes") return yes;
+    const read = `${subjects.filter((subject) => subject.answer === "yes").length} of ${subjects.length} heads read yes`;
+    return pass.answer === "no"
+      ? `A pass stands: no, as ${read}`
+      : `A pass stands: not known, as ${read}`;
   }
-  const open = openSubjectsText(pass);
-  if (pass.answer === "no")
-    return open === "" ? "A pass stands: no" : `A pass stands: no, as ${open}`;
-  if (open !== "") return `A pass stands: not known, as ${open}`;
+  const decidedID = pass.results?.[0];
+  const decided = (check.results ?? []).find((result) => result.id === decidedID);
+  if (decided !== undefined) {
+    const named = `${decided.verdict} ${decided.id} at ${decided.commit_sha}`;
+    if (pass.answer === "unknown") {
+      return `A pass stands: not known, as Dispatch could not place ${named} on a branch`;
+    }
+    return `${pass.answer === "yes" ? yes : "A pass stands: no"}, as the newest result is ${named}`;
+  }
+  if (pass.answer === "yes") return yes;
+  if (pass.answer === "no") return "A pass stands: no";
   return pass.reason === "pass_and_fail"
-    ? "A pass stands: not known, as CI holds a pass and a fail at one commit"
+    ? "A pass stands: not known, as a pass and a fail count at one commit"
     : "A pass stands: not known";
+}
+
+/** R9 to R11 under a check's head line: the line of each head a pass of the check must stand at,
+ *  `  - <place> at <commit>: <state>` in the words the Verification tab shows too
+ *  (`subjectStateWords`), each followed, on a check CI proves, by the pull-request body line of
+ *  that head; then, where an open pull request's head is one, the line that counts the merged pull
+ *  requests the check compared with, which decide nothing while one is open and get no line of
+ *  their own. */
+function subjectLines(check: CheckBlock): string[] {
+  const lines = (check.pass_stands?.subjects ?? []).flatMap((subject) => [
+    `  - ${subjectPlace(subject.basis)} at ${subject.basis.commit ?? "an unnamed commit"}: ${subjectStateWords(subject)}`,
+    ...(subject.ci === undefined ? [] : [`    Pull request line: ${subject.ci.line}`]),
+  ]);
+  const merged = mergedPullRequestsWords(check);
+  return merged === undefined ? lines : [...lines, `  ${merged}`];
 }
 
 /** The line of the reading one role recorded, under the line of its result at `indent`. The
@@ -172,24 +192,40 @@ function resultLines(check: CheckBlock, result: CheckResult, brief: boolean): st
 const CI_RESULT_ID_PREFIX = "ci-run:";
 
 /** A check CI proves, which Dispatch marks with `ci`: no role records its result. Its derived
- *  result, the one whose id begins with `ci-run:` wherever the API serves it, reads as one line
- *  with the check: its verdict, its commit, the producer `ci`, the run and the conclusion that
- *  decided it, and where that commit stands, as a recorded result's line says it; a check the run
- *  did not decide says why, in the sentence Dispatch wrote. The check's words end the line.
- *  Whether a pass stands follows, from the same `pass_stands` and in the same words as a recorded
- *  check's head line, so the gate reads both kinds alike. The pull-request body line Dispatch
- *  wrote for the check follows, which the implementer copies, except for an issue with no pull
- *  request head (`no_head`), which has no body to write it in; then the run's reading: its
- *  conclusion, output and URL. Each result the CI job recorded follows, in the order the API
- *  serves them, as a recorded result prints (`resultLines`). */
+ *  result at the head `ci` was read at, the one whose id begins with `ci-run:` wherever the API
+ *  serves it, reads as one line with the check: its verdict, its commit, the producer `ci`, the
+ *  run and the conclusion that decided it, and where that commit stands, as a recorded result's
+ *  line says it; a check the run did not decide says why, in the sentence Dispatch wrote. The
+ *  check's words end the line. Whether a pass stands follows, from the same `pass_stands` and in
+ *  the same words as a recorded check's head line, so the gate reads both kinds alike, then the
+ *  line of each head (`subjectLines`), each with the pull-request body line Dispatch wrote for
+ *  that head, which the implementer copies into that pull request's body. A server that names no
+ *  read at each head gets the one body line of `ci` under the pass line instead, and so does no
+ *  issue with no pull request head (`no_head`), which has no body to write it in. Then the run's
+ *  reading: its conclusion, output and URL. Each other result follows, the derived results at
+ *  the other heads and each the CI job recorded, in the order the API serves them, as a recorded
+ *  result prints (`resultLines`). */
 function ciCheckLines(check: CheckBlock, ci: CheckCI, brief: boolean): string[] {
   const results = check.results ?? [];
-  const derived = results.find((result) => result.id.startsWith(CI_RESULT_ID_PREFIX));
+  const subjects = check.pass_stands?.subjects ?? [];
+  // `ci` is the read of one head, the open pull request of the highest number; the subject that
+  // carries the same read is that head, so the head line names the result derived there.
+  const ciHeads = subjects
+    .filter((subject) => subject.ci?.line === ci.line)
+    .map((subject) => subject.basis.commit);
+  const derived = results.find(
+    (result) =>
+      result.id.startsWith(CI_RESULT_ID_PREFIX) &&
+      (ciHeads.length === 0 || ciHeads.includes(result.commit_sha))
+  );
   const recorded = results
     .filter((result) => result !== derived)
     .flatMap((result) => resultLines(check, result, brief));
-  const passStandsLine = `  ${passStandsText(check.pass_stands)}.`;
-  const pullRequestLine = ci.case === "no_head" ? [] : [`  Pull request line: ${ci.line}`];
+  const passStandsLine = `  ${passStandsText(check)}.`;
+  const perHead = subjects.some((subject) => subject.ci !== undefined);
+  const pullRequestLine =
+    perHead || ci.case === "no_head" ? [] : [`  Pull request line: ${ci.line}`];
+  const heads = subjectLines(check);
   if (derived === undefined) {
     // A pass the CI job recorded may stand where the run derives nothing, so the head line says
     // so rather than "no result" above a line that says a pass stands.
@@ -200,6 +236,7 @@ function ciCheckLines(check: CheckBlock, ci: CheckCI, brief: boolean): string[] 
     return [
       `- ${check.block_id} (${check.when}): ${head}: ${ci.detail} ${check.text}`,
       passStandsLine,
+      ...heads,
       ...pullRequestLine,
       ...recorded,
     ];
@@ -208,27 +245,37 @@ function ciCheckLines(check: CheckBlock, ci: CheckCI, brief: boolean): string[] 
   return [
     `- ${check.block_id} (${check.when}): ${derived.verdict} at ${derived.commit_sha} by ${derived.role} (CI run ${ci.run}, ${ci.case}), ${stands.charAt(0).toLowerCase()}${stands.slice(1)}. ${check.text}`,
     passStandsLine,
+    ...heads,
     ...pullRequestLine,
     readingLine(derived, brief, "  "),
     ...recorded,
   ];
 }
 
-/** One check: a head line naming what it compared with and whether a pass of it stands, the
- *  check's own words once, then every result recorded against it. */
+/** One check: a head line naming what it compared with and whether a pass of it stands, the line
+ *  of each head a pass must stand at (`subjectLines`), the check's own words once, then every
+ *  result recorded against it. Where an open pull request's head is a subject, the head line
+ *  counts the open pull requests in place of naming each basis, since each head has its own
+ *  line and the merged ones have a line of count. */
 function checkLines(check: CheckBlock, brief: boolean): string[] {
   if (check.ci !== undefined) return ciCheckLines(check, check.ci, brief);
   const bases = check.compared_with ?? [];
   const reason = check.compared_nothing;
+  const open = (check.pass_stands?.subjects ?? []).filter(
+    (subject) => subject.basis.kind === "pull_request" && subject.basis.merged !== true
+  ).length;
   const compared =
-    bases.length > 0
-      ? `Compared with ${bases.map(basisText).join(", ")}`
-      : reason === undefined
-        ? "Compared with nothing, and this Dispatch server does not say why"
-        : `Compared with nothing: ${COMPARISON_REASONS[reason]}`;
+    open > 0
+      ? `Compared with the heads of ${open} open ${open === 1 ? "pull request" : "pull requests"}`
+      : bases.length > 0
+        ? `Compared with ${bases.map(basisText).join(", ")}`
+        : reason === undefined
+          ? "Compared with nothing, and this Dispatch server does not say why"
+          : `Compared with nothing: ${COMPARISON_REASONS[reason]}`;
   const results = check.results ?? [];
   return [
-    `- ${check.block_id} (${check.when}). ${compared}. ${passStandsText(check.pass_stands)}.`,
+    `- ${check.block_id} (${check.when}). ${compared}. ${passStandsText(check)}.`,
+    ...subjectLines(check),
     `  The check's words: ${check.text}`,
     ...(results.length === 0
       ? ["  No result is recorded for this check."]

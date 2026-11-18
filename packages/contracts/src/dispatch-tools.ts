@@ -1855,6 +1855,21 @@ export const dispatchToolSpecs = [
       "from which roles. A pass stands when its commit is one of the commits the check " +
       "compared with, the check's words did not move after the result was recorded, and no " +
       "retraction stands against it. " +
+      "A before_merge check with an open pull request prints `- <id> (before_merge). Compared " +
+      "with the heads of <n> open pull requests. A pass stands: <answer>.`, where the answer is " +
+      "`yes, from <roles>`, or `no` or `not known`, as <k> of <n> heads read yes. A pass stands " +
+      "only where each head reads yes. One line for each head follows, `  - #<number> at " +
+      "<commit>: <state>`: `yes, from <roles>. Pass <id> decides it.`; `no, as fail <id> counts " +
+      "there.`; `no, as it holds no result.`; `not known, as pass <id> and fail <id> count at " +
+      "this commit.`, which a later pass does not end and a retraction of the wrong one does; " +
+      "or `not known, as Dispatch could not read CI run <run> there.`. A merged pull request's " +
+      "head prints as `#<number> (merged)` and a branch head as `branch <name>`. A reviewer and " +
+      "a tester read the line of their own head. Then `  The <m> merged pull requests decide " +
+      "nothing while one is open.`, where an open head and a merged one are both compared with. " +
+      "An after_merge or default_branch check takes its newest result that counts on a branch: " +
+      "`A pass stands: <yes, from <roles>|no>, as the newest result is <verdict> <id> at " +
+      "<commit>`, or `A pass stands: not known, as Dispatch could not place <verdict> <id> at " +
+      "<commit> on a branch`, so a later fail cancels an earlier pass. " +
       "The check's own words print once, under the check. Each result then prints its verdict, " +
       "its role, its whole 40-character commit, where that commit stands, whether the check's " +
       "words moved after it was recorded, the time, its id, and the reading the role recorded. " +
@@ -1862,23 +1877,28 @@ export const dispatchToolSpecs = [
       "the reason and the caller that retracted it. A check with no result says so. " +
       `${CHECK_PROVED_BY_CI}: ` +
       "no role records its result. Dispatch derives one result from the run that its ci_check " +
-      "names, which it reads from GitHub at the head of the issue's open pull request of the " +
-      "highest number, else at the head of its merged one of the highest number. A run of that " +
+      "names at each head it reads from GitHub: the head of each open pull request of the " +
+      "issue, each in that pull request's own repository, else the head of its merged one of " +
+      "the highest number. A run of that " +
       "CI job on a push of the change's branch also records its own result, at the commit it " +
-      "tested. The derived result prints as `- <id> (before_merge): <verdict> at " +
+      "tested. The derived result at the open pull request of the highest number prints as " +
+      "`- <id> (before_merge): <verdict> at " +
       "<commit> by ci (CI run <name>, <conclusion>), <where that commit stands>. <the check's " +
-      "words>`, then the `A pass stands:` line a recorded check prints, then `Pull request line:` " +
-      "and the line to write into the pull-request body unchanged, then the reading: the " +
+      "words>`, then the `A pass stands:` line a recorded check prints, then the line of each " +
+      "head, each followed by `    Pull request line:` and the line to write into that pull " +
+      "request's body unchanged, then the reading: the " +
       "conclusion, the run's output title and summary, and its URL. A run that proves nothing " +
       "prints `- <id> (before_merge): no result:`, the sentence that names why, and the check's " +
-      "words, then the `A pass stands:` line, then `Pull request line:` and `- Check <id> " +
+      "words, then the `A pass stands:` line, then the line of each head with its `Pull request " +
+      "line:`, such as `- Check <id> " +
       "(before_merge): CI run <name> has no result (<case>)`. That is a run that has not " +
       "concluded, one that concluded neutral, skipped or cancelled, one absent at the head, an " +
       "issue with no pull request head, or GitHub not read, with what GitHub answered. An issue " +
       "with no pull request head prints no `Pull request line:`, since it has no pull-request " +
-      "body to write it in. Each result that the CI job recorded prints after these lines as a " +
-      "recorded result prints, with `on branch <branch>` after `by ci`, in the order Dispatch " +
-      "serves them. " +
+      "body to write it in. Each other result, a derived one at another head or one that the CI " +
+      "job recorded, prints after these lines as a " +
+      "recorded result prints, with `on branch <branch>` after `by ci` for the job's, in the " +
+      "order Dispatch serves them. " +
       "A push that moves a pull request's head leaves a result at the commit before it, with " +
       "no write of anyone's: record the check again at the new head. A check CI proves is read " +
       "again at the new head by itself. " +
@@ -1917,7 +1937,7 @@ export const dispatchToolSpecs = [
       at: z
         .string()
         .describe(
-          "One commit of 40 lowercase hex characters. It becomes the only thing every check is compared with. Dispatch reads GitHub for none of it, except the check runs of a check CI proves, which it reads at the issue's newest pull request head as on every read, so that check's result stands at this commit only where it is that head."
+          "One commit of 40 lowercase hex characters. It becomes the only thing every check is compared with. Dispatch reads GitHub for none of it, except the check runs of a check CI proves, which it reads at the issue's open pull request heads, or its newest merged one, as on every read, so that check's result stands at this commit only where it is one of those heads."
         )
         .optional(),
       brief: z

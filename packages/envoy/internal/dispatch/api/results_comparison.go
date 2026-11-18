@@ -421,13 +421,14 @@ func (c *comparisonReader) branchHeadOf(ctx context.Context, repo, branch string
 }
 
 // headBasis is one stored pull request head as the surface names it: the commit, the pull
-// request's number, and when Dispatch last learned that head with the kind of time it is. The
-// later of the two times wins, so a head a webhook moved after the last complete read prints
-// GitHub's own update time, named model.BasisLearnedUpdatedAt, and never an older read time. A
-// row carrying neither time names none.
+// request's number, whether it merged (its row is not open, so the commit is its final head),
+// and when Dispatch last learned that head with the kind of time it is. The later of the two
+// times wins, so a head a webhook moved after the last complete read prints GitHub's own update
+// time, named model.BasisLearnedUpdatedAt, and never an older read time. A row carrying neither
+// time names none.
 func headBasis(head delivery.AttributedHead) model.CheckBasis {
 	number := head.Number
-	basis := model.CheckBasis{Kind: model.CheckBasisPullRequest, Commit: head.HeadSHA, PullRequest: &number}
+	basis := model.CheckBasis{Kind: model.CheckBasisPullRequest, Commit: head.HeadSHA, PullRequest: &number, Merged: !head.Open}
 	switch {
 	case head.EventAt != nil && (head.CheckedAt == nil || head.EventAt.After(*head.CheckedAt)):
 		basis.LearnedAt = &model.BasisLearnedAt{At: *head.EventAt, Kind: model.BasisLearnedUpdatedAt}

@@ -8714,8 +8714,9 @@ describe("executeDispatchTool", () => {
     expect(JSON.parse(read.text)).toEqual(served);
   });
 
-  // Where no pass of a check stands, the line names each head a pass must stand at that holds
-  // none, and what it holds: the merge gate reads this line for the head it reviews.
+  // Where no pass of a check stands, the pass line counts the heads that read yes, and the line of
+  // each head names its state and the results that decide it: the merge gate reads the line of the
+  // head it reviews.
   test("dispatch_results names each head where no pass of a CI check stands, and why", async () => {
     const head = "4444444444444444444444444444444444444444";
     const served = ciCheckRead(
@@ -8741,12 +8742,16 @@ describe("executeDispatchTool", () => {
             basis: { kind: "pull_request", commit: head, pull_request: 70 },
             answer: "no",
             reason: "fail",
+            results: ["ci-run:91"],
           },
         ],
       })
     );
     expect(failed.text).toContain(
-      `  A pass stands: no, as the head of pull request #70 at ${head} holds a fail.`
+      [
+        "  A pass stands: no, as 0 of 1 heads read yes.",
+        `  - #70 at ${head}: no, as fail ci-run:91 counts there.`,
+      ].join("\n")
     );
 
     const conflicted = await readCICheck(
@@ -8758,12 +8763,16 @@ describe("executeDispatchTool", () => {
             basis: { kind: "branch_head", branch: "legion/DSP-42", commit: head },
             answer: "unknown",
             reason: "pass_and_fail",
+            results: ["job-1", "ci-run:91"],
           },
         ],
       })
     );
     expect(conflicted.text).toContain(
-      `  A pass stands: not known, as the head of branch legion/DSP-42 at ${head} holds a pass and a fail of CI.`
+      [
+        "  A pass stands: not known, as 0 of 1 heads read yes.",
+        `  - branch legion/DSP-42 at ${head}: not known, as pass job-1 and fail ci-run:91 count at this commit. A later pass does not end this. A retraction of the wrong one ends it, and so does a change of the check's words. A new head of the pull request gets a state of its own.`,
+      ].join("\n")
     );
   });
 

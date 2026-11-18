@@ -1369,12 +1369,15 @@ const (
 
 // CheckBasis is one commit or branch a check's results are compared with. Commit is set for a
 // `named`, a `pull_request` and a `branch_head` basis, Branch for a `branch` and a `branch_head`
-// one, and PullRequest is the number of the pull request whose head the commit is.
+// one, and PullRequest is the number of the pull request whose head the commit is. Merged is
+// set on a `pull_request` basis whose pull request merged, whose commit is its final head: a
+// reader tells it from an open pull request's head, and counts it apart.
 type CheckBasis struct {
 	Kind        string          `json:"kind" enum:"named,pull_request,branch,branch_head"`
 	Commit      string          `json:"commit,omitempty"`
 	Branch      string          `json:"branch,omitempty"`
 	PullRequest *int            `json:"pull_request,omitempty"`
+	Merged      bool            `json:"merged,omitempty"`
 	LearnedAt   *BasisLearnedAt `json:"learned_at,omitempty"`
 }
 

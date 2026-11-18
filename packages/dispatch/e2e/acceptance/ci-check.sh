@@ -395,21 +395,22 @@ no_line() {
 
 # derived SECTION WHAT ID VERDICT SHA CASE NUMBER WORDS [RUN]: the last output holds the derived
 # result of check ID, VERDICT at SHA by ci from RUN (contracts) concluded CASE, at the head of pull
-# request NUMBER, and its pull-request body line, which names the run and no recorder.
+# request NUMBER, and, under the line of that head, its pull-request body line, which names the run
+# and no recorder.
 derived() {
   local run_name="${9:-contracts}"
   line "$1" "$2" \
     "- $3 (before_merge): $4 at $5 by ci (CI run $run_name, $6), that commit is the head of pull request #$7. $8"
   line "$1" "$3's pull-request body line names CI run $run_name" \
-    "  Pull request line: - Check $3 (before_merge): $4 at $5, from CI run $run_name. $8"
+    "    Pull request line: - Check $3 (before_merge): $4 at $5, from CI run $run_name. $8"
 }
 
 # unconcluded SECTION WHAT ID CASE DETAIL WORDS: the last output says check ID, proved by the run
 # contracts, has no result for CASE, in DETAIL, and prints neither a pass nor a fail for it.
 unconcluded() {
   line "$1" "$2" "- $3 (before_merge): no result: $5 $6"
-  line "$1" "$3's pull-request body line says its run has no result ($4)" \
-    "  Pull request line: - Check $3 (before_merge): CI run contracts has no result ($4)"
+  line "$1" "$3's pull-request body line, under the line of its head, says its run has no result ($4)" \
+    "    Pull request line: - Check $3 (before_merge): CI run contracts has no result ($4)"
   no_line "$1" "$3 prints neither a pass nor a fail" "- $3 (before_merge): pass at"
   no_line "$1" "$3 prints no fail either" "- $3 (before_merge): fail at"
 }
@@ -716,7 +717,7 @@ derived k3 "a conclusion R3 does not name prints a fail, naming it as GitHub wro
 
 # unread SECTION WHAT WORDS: the last output says GitHub could not be read for c-ci at k3's head,
 # with WORDS from what GitHub answered, prints neither a pass nor a fail, and says it is not known
-# whether a pass stands.
+# whether a pass stands, since the one head, #301, reads not known.
 unread() {
   local said
   said="$(grep -F -- "- c-ci (before_merge): no result: GitHub could not be read for the check runs of $driven_repo at $k3_sha: " "$work/out")" ||
@@ -724,9 +725,11 @@ unread() {
   [[ "$said" == *"$3"* ]] || fail "$1" "$2" "the line does not carry \"$3\": $said"
   pass "$1" "$2: $said"
   line "$1" "c-ci says it is not known whether a pass stands, since the read failed" \
-    "  A pass stands: not known."
+    "  A pass stands: not known, as 0 of 1 heads read yes."
+  line "$1" "the line of #301 says Dispatch could not read the run there" \
+    "  - #301 at $k3_sha: not known, as Dispatch could not read CI run contracts there."
   line "$1" "c-ci's pull-request body line says its run has no result (github_unreadable)" \
-    "  Pull request line: - Check c-ci (before_merge): CI run contracts has no result (github_unreadable)"
+    "    Pull request line: - Check c-ci (before_merge): CI run contracts has no result (github_unreadable)"
   no_line "$1" "c-ci prints neither a pass nor a fail" " by ci (CI run "
 }
 
