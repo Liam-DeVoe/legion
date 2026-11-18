@@ -33,7 +33,7 @@
       "role": "merger",
       "kind": "a conversation on GPT-6.1 with reasoning and a tool call, suspended",
       "harness": "omp",
-      "model": "openai/gpt-6.1-sol",
+      "model": "openai/openai/gpt-6.1-sol",
       "thinking": "high",
       "task": "Record this merge finding and keep it: the merge waits on the license scan, tracked under the marker LICENSE-TEAL-207. First make exactly one tool call: run `pwd` with your bash tool. Then weigh in one sentence whether the license scan alone holds the merge or another merge gate could hold it too. Then reply with one short paragraph restating what the merge waits on and the marker."
     }

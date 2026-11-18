@@ -146,7 +146,7 @@ check_boot_without_answers() {
 # Sonnet 5.5, whichever harness names it, and GPT-6.1; null for any other model.
 cost_price='def cost_price: (.model // "") as $m
   | if ($m | test("claude-sonnet-5-5")) then [3, 15, 3.75, 0.3]
-    elif $m == "openai/gpt-6.1-sol" then [2, 10, 2.5, 0.1]
+    elif $m == "openai/openai/gpt-6.1-sol" then [2, 10, 2.5, 0.1]
     else null end; '
 # bad_cost_lines LINES: the `answers: answered` LINES (one JSON object a line) of a model cost_price
 # prices whose costUSD is not the price of the tokens they report, cache writes and cache reads
