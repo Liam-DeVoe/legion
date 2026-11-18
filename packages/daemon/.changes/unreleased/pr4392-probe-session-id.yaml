@@ -2,11 +2,14 @@ kind: Added
 custom:
   Issue: pr4392
 body: |-
-  `legion probe-image` prints two more marks on its OK line: `omp-version`, the first line of the
-  image's `omp --version`, and `omp-session-id`, which says whether `omp --help` lists the
-  `--session-id` flag (`taken`, `absent`, or `unread` when the probe could not read the help).
+  `legion probe-image` prints two more marks on its OK line: `omp-version`, the first non-blank
+  line of the image's `omp --version`, and `omp-session-id`, which says whether `omp --help` lists
+  the `--session-id` flag (`taken`, `absent`, or `unread` when the probe could not read the help).
   With `runtime.kubernetes.agent_secrets.exchange_audience` set, each new Oh My Pi role starts with
   `--session-id <id>`, so the daemon's boot and `legion probe-boot` refuse a worker image whose
-  mark is not `taken`, naming the Oh My Pi version, the flag and the setting; an image whose
-  `legion` is older than this release prints no mark and is refused too. Without the setting
-  nothing changes.
+  mark is not `taken`. The refusal names the flag and the setting, and the Oh My Pi version where
+  the line carries one. An image whose `legion` is older than this release is refused for its
+  daemon API contract before this check, and this check refuses an image of this contract that
+  prints no `omp-session-id` mark. The Oh My Pi that this release's `.omp-pin` names does not take
+  the flag (the cybermonklabs/oh-my-pi releases from v18.18.6-sami.20261117-074351 do), so with
+  the setting a worker image built on that pin is refused. Without the setting nothing changes.

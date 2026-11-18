@@ -1761,11 +1761,15 @@ describe("dispatch api", () => {
   }, 20_000);
 
   // Dispatch's no-route answer carries a `hint` beside its error, saying where every route is
-  // listed, and a caller who wrote a wrong path needs that line most.
+  // listed, and a caller who wrote a wrong path needs that line most. The read is one GET, not
+  // sent again.
   test("prints the hint Dispatch gives beside its no-route error", async () => {
     const { code, stdout } = await run(["api", "--path", "/api/v1/issuez/DSP-1"], session);
     expect(code).toBe(1);
     expect(stdout).toContain("GET /api/v1 lists every route");
+    expect(asked).toEqual([
+      { method: "GET", path: "/api/v1/issuez/DSP-1", authorization: "Bearer test-token" },
+    ]);
   });
 });
 

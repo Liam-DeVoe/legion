@@ -177,10 +177,10 @@ const (
 	ModelFallbackUnread = "unread"
 )
 
-// ompVersionMark carries, on the OK line, the first line the image's `<omp> --version` printed
-// (capabilities.ReadOmpVersion), as one token (OKLine), or OmpVersionUnread when the probe could
-// not read it. It names which Oh My Pi the image carries, and says nothing of what that Oh My Pi
-// takes: every release of the fork's 18.18.6 line prints `omp/18.18.6`, those that take
+// ompVersionMark carries, on the OK line, the first non-blank line the image's `<omp> --version`
+// printed (capabilities.ReadOmpVersion), as one token (OKLine), or OmpVersionUnread when the probe
+// could not read it. It names which Oh My Pi the image carries, and says nothing of what that Oh
+// My Pi takes: every release of the fork's 18.18.6 line prints `omp/18.18.6`, those that take
 // --session-id and those that do not (sessionIDFlagMark).
 const ompVersionMark = "omp-version="
 
@@ -216,9 +216,9 @@ const (
 // daemon's probe Sandbox passes the image only on a line that confirms the daemon's own contract
 // (ConfirmedContract) with the extensions mark (ExtensionsDiscovered), the agents' models resolved
 // (AgentModels), the whole capability list checked (Capabilities: CapabilitiesAll) and, under an
-// exchange audience, --session-id taken (SessionIDFlag: SessionIDFlagTaken), and keeps the
-// model-fallback, omp-version and omp-session-id marks (ModelFallback, OmpVersion, SessionIDFlag)
-// in its ImageReport.
+// exchange audience, --session-id taken (SessionIDFlag: SessionIDFlagTaken). It keeps the
+// model-fallback mark (ModelFallback) in its ImageReport, and logs the omp-version and
+// omp-session-id marks (OmpVersion, SessionIDFlag) with the pass.
 func OKLine(omp string, contract int, agentModels, capabilities, modelFallback, ompVersion, sessionIDFlag string) string {
 	if ompVersion = strings.Join(strings.Fields(ompVersion), "_"); ompVersion == "" {
 		ompVersion = OmpVersionUnread
@@ -227,7 +227,7 @@ func OKLine(omp string, contract int, agentModels, capabilities, modelFallback, 
 		capabilitiesMark, capabilities, modelFallbackMark, modelFallback, ompVersionMark, ompVersion, sessionIDFlagMark, sessionIDFlag, contract)
 }
 
-// ImageReport is what the daemon keeps of a passed probe: what its OK line said of the image, and
+// ImageReport is what the daemon keeps of a passed probe: its OK line's model-fallback mark, and
 // what the run itself saw of the pool on the way to that line.
 type ImageReport struct {
 	// ModelFallback is the line's model-fallback mark, ModelFallbackOn, ModelFallbackOff, or
@@ -235,14 +235,6 @@ type ImageReport struct {
 	// Oh My Pi, under the operator's configuration, falls back to another model when an agent's
 	// own is unavailable, or that it could not say.
 	ModelFallback string
-	// OmpVersion is the line's omp-version mark: the first line the image's `<omp> --version`
-	// printed, or OmpVersionUnread when the probe could not read it; "" from a CLI that predates
-	// the mark.
-	OmpVersion string
-	// SessionIDFlag is the line's omp-session-id mark: SessionIDFlagTaken, SessionIDFlagAbsent, or
-	// SessionIDFlagUnread; "" from a CLI that predates the mark. A pass under an exchange audience
-	// carries SessionIDFlagTaken alone, since the probe Sandbox refuses every other.
-	SessionIDFlag string
 	// CapacityWaits is how many attempts ended waiting on capacity (Outcome.Waiting: a probe pod
 	// the pool had no room for) before one scheduled and passed; zero when the first attempt's pod
 	// scheduled. Not the OK line's: the run that reads the line counts them itself

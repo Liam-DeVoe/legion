@@ -801,7 +801,9 @@ such as one a revoke ended before it lapsed. `DispatchClient` then tells the cre
 more time. A write goes again under the same `Idempotency-Key`. It does this once for each send:
 a second such answer is the call's refusal, but a request Dispatch answers with no route is sent
 again (a release may be rolling out), and each of those sends may be sent once more after such an
-answer of its own. If the broker refuses the new trade, the call fails in the broker's words.
+answer of its own. `dispatch api`'s read is the exception: its GET is one send, which Dispatch's
+answer of no route does not repeat, and the command prints that refusal as it came. If the broker
+refuses the new trade, the call fails in the broker's words.
 
 A sign-in reaches the sessions that start after it. The broker holds a session name for one
 identity for 90 days after the name's last token. So a session that traded as the machine cannot
@@ -966,4 +968,5 @@ session's own credential as every command presents it, and prints Dispatch's JSO
 refuses, before anything is sent, a path that does not begin `/api/v1`, one that holds a space, a
 backslash, a `#` or a character outside printable ASCII, and one with a `.` or `..` segment,
 plain or percent-encoded, since a URL parser would resolve any of those out of `/api/v1`. A
-refusal of the read is Dispatch's error with its code, exit 1.
+refusal of the read is Dispatch's error with its code and, where Dispatch gives one, its hint,
+exit 1.

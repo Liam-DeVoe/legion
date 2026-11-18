@@ -126,9 +126,9 @@ func ReadModelFallback(ctx context.Context, img Image) (string, error) {
 	return bootprobe.ModelFallbackOff, nil
 }
 
-// ReadOmpVersion runs `<Launch> --version` under img and answers the first line it printed on
-// stdout, trimmed: which Oh My Pi the image carries. It cannot say whether that Oh My Pi takes
-// --session-id (ReadSessionIDFlag): every release of the fork's 18.18.6 line prints
+// ReadOmpVersion runs `<Launch> --version` under img and answers the first non-blank line it
+// printed on stdout, trimmed: which Oh My Pi the image carries. It cannot say whether that Oh My
+// Pi takes --session-id (ReadSessionIDFlag): every release of the fork's 18.18.6 line prints
 // `omp/18.18.6`, those with the flag and those without it. An error names the command and its
 // output.
 func ReadOmpVersion(ctx context.Context, img Image) (string, error) {

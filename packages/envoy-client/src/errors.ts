@@ -1,28 +1,19 @@
 /**
- * The code of the refusal `error` carries, or undefined for an error carrying none.
+ * The `code` or the `hint` of the refusal `error` carries, or undefined for an error carrying none
+ * (or an empty one).
  *
  * A refusal Dispatch decided (`DispatchServiceError`, and the gateway answer that stands in for
  * one) carries the code of the first rule the call broke beside its message, and `fromDispatch`
  * is what tells such an error from a Node errno error, which carries a `code` of its own (ENOENT,
- * EPERM, …) that says nothing about what Dispatch decided. The check is structural rather than an
- * `instanceof`, because those classes live in `dispatch-http.ts`, which reads this module's
- * neighbours.
+ * EPERM, …) that says nothing about what Dispatch decided. Only Dispatch's answer to a path no
+ * route serves carries a hint ("GET /api/v1 lists every route"). The check is structural rather
+ * than an `instanceof`, because those classes live in `dispatch-http.ts`, which reads this
+ * module's neighbours.
  */
-function dispatchCode(error: Error): string | undefined {
-  if (!("fromDispatch" in error) || !("code" in error)) return undefined;
-  const code = error.code;
-  return typeof code === "string" && code !== "" ? code : undefined;
-}
-
-/**
- * The `hint` Dispatch gave beside its refusal `error`, or undefined for an error carrying none.
- * Only Dispatch's answer to a path no route serves carries one ("GET /api/v1 lists every route").
- * Structural like `dispatchCode`, for the same reason.
- */
-function dispatchHint(error: Error): string | undefined {
-  if (!("fromDispatch" in error) || !("hint" in error)) return undefined;
-  const hint = error.hint;
-  return typeof hint === "string" && hint !== "" ? hint : undefined;
+function dispatchField(error: Error, field: "code" | "hint"): string | undefined {
+  if (!("fromDispatch" in error)) return undefined;
+  const value: unknown = Reflect.get(error, field);
+  return typeof value === "string" && value !== "" ? value : undefined;
 }
 
 /**
@@ -37,12 +28,12 @@ function dispatchHint(error: Error): string | undefined {
  */
 export function messageFor(error: unknown): string {
   if (!(error instanceof Error)) return String(error);
-  const code = dispatchCode(error);
+  const code = dispatchField(error, "code");
   const message =
     code === undefined || error.message.startsWith(code)
       ? error.message
       : `${code}: ${error.message}`;
-  const hint = dispatchHint(error);
+  const hint = dispatchField(error, "hint");
   return hint === undefined ? message : `${message}; ${hint}`;
 }
 

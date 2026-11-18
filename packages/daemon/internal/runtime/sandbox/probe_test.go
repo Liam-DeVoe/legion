@@ -501,13 +501,6 @@ func ompLine(version, sessionID string) string {
 // omp-session-id marks: every mark the probe otherwise requires, and neither of those two.
 const lineBeforeTheOmpMarks = "probe-image: OK (/opt/omp/bin/omp) session-storage=probed extensions=discovered agent-models=resolved capabilities=checked model-fallback=off daemon-api-version=3"
 
-// withExchangeAudience enrolls the runtime's pods with the broker under an exchange audience
-// (runtime.kubernetes.agent_secrets.exchange_audience), under which every new Oh My Pi role starts
-// with --session-id.
-func withExchangeAudience() rigOption {
-	return withOptions(func(o *Options) { o.AgentSecrets = exchangeEnrolled() })
-}
-
 // Under an exchange audience every new Oh My Pi role starts with --session-id, so the probe passes
 // only an image whose OK line says its Oh My Pi takes it: a help that lists no such flag, a help
 // the probe could not read, and an older image's line, which carries neither omp mark, are each
@@ -534,7 +527,7 @@ func TestProbeImageRefusesAnOhMyPiWithoutSessionIDUnderAnExchangeAudience(t *tes
 			"Succeeded, but its legion CLI predates the omp-session-id mark and reports no Oh My Pi version, so nothing shows that its Oh My Pi takes --session-id"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
-			g := newProbeRig(t, nil, withExchangeAudience())
+			g := newProbeRig(t, nil, exchangeKeyed())
 			g.succeeds(testCase.log + "\n")
 
 			err := g.probe(probeOptions(t))
@@ -547,11 +540,11 @@ func TestProbeImageRefusesAnOhMyPiWithoutSessionIDUnderAnExchangeAudience(t *tes
 	}
 }
 
-// An image whose Oh My Pi takes --session-id passes under an exchange audience, and the report and
-// the pass's log line carry what the line says of that Oh My Pi. With no exchange audience nothing
-// starts a role with the flag, so the mark is kept and never judged: a help that lists no such
-// flag passes, under an enrollment with no exchange audience as with none, and so does an older
-// image's line with neither mark, reporting none.
+// An image whose Oh My Pi takes --session-id passes under an exchange audience, and the pass's log
+// line carries what the line says of that Oh My Pi. With no exchange audience nothing starts a role
+// with the flag, so the mark is never judged: a help that lists no such flag passes, under an
+// enrollment with no exchange audience as with none, and so does an older image's line with
+// neither mark, whose pass logs none.
 func TestProbeImagePassesAnOhMyPiThatTakesSessionIDOrNoExchangeAudience(t *testing.T) {
 	for _, testCase := range []struct {
 		name               string
@@ -559,7 +552,7 @@ func TestProbeImagePassesAnOhMyPiThatTakesSessionIDOrNoExchangeAudience(t *testi
 		log                string
 		version, sessionID string
 	}{
-		{"--session-id taken under an exchange audience", withExchangeAudience(), ompLine("omp/18.18.6", bootprobe.SessionIDFlagTaken), "omp/18.18.6", bootprobe.SessionIDFlagTaken},
+		{"--session-id taken under an exchange audience", exchangeKeyed(), ompLine("omp/18.18.6", bootprobe.SessionIDFlagTaken), "omp/18.18.6", bootprobe.SessionIDFlagTaken},
 		{"no --session-id and no agent secrets", withOptions(func(*Options) {}), ompLine("omp/18.18.6", bootprobe.SessionIDFlagAbsent), "omp/18.18.6", bootprobe.SessionIDFlagAbsent},
 		{"no --session-id under an enrollment with no exchange audience", withOptions(func(o *Options) {
 			o.AgentSecrets = &AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour}
@@ -576,8 +569,8 @@ func TestProbeImagePassesAnOhMyPiThatTakesSessionIDOrNoExchangeAudience(t *testi
 			if err != nil {
 				t.Fatalf("ProbeImage = %v, want a pass", err)
 			}
-			if report.OmpVersion != testCase.version || report.SessionIDFlag != testCase.sessionID || report.ModelFallback != "off" {
-				t.Errorf("report = %+v, want omp-version %q, omp-session-id %q and model-fallback off", report, testCase.version, testCase.sessionID)
+			if report.ModelFallback != "off" {
+				t.Errorf("report.ModelFallback = %q, want off", report.ModelFallback)
 			}
 			passed := fmt.Sprintf("model-fallback=off omp-version=%s omp-session-id=%s log=", testCase.version, testCase.sessionID)
 			if testCase.version == "" {
