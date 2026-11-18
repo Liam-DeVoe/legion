@@ -1,6 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { type Envelope, legacyDispatchIssueSubject } from "@legion/contracts";
+import {
+  type Envelope,
+  isLegionRole,
+  legacyDispatchIssueSubject,
+  legionControllerNoticeSubject,
+  roleToken,
+  roleTopic,
+} from "@legion/contracts";
 import { decode, encode } from "@toon-format/toon";
 import { bearerCredential } from "../bearer";
 import { type DispatchDelivery, postDeliveryReply, renderInbound, senderLabel } from "../delivery";
@@ -2189,9 +2196,14 @@ describe("what a card carries", () => {
     };
   }
 
-  /** A notice or a role message as the daemon publishes it: an object under the summary
-   *  `<kind> on <KEY>`, with no session. */
-  function daemonMessage(topic: string, summary: string, payload: unknown): string {
+  /** A notice or a role message as the daemon publishes it: its payload as JSON under the summary
+   *  `<kind> on <KEY>`, with no session, at `urgency`. */
+  function daemonMessage(
+    topic: string,
+    summary: string,
+    payload: unknown,
+    urgency = "med"
+  ): string {
     return JSON.stringify({
       event_id: "c2f0e1a4b7d94c3e8a1f5b6d9e0c7a28",
       source: "agent",
@@ -2199,7 +2211,7 @@ describe("what a card carries", () => {
       topic,
       dedupe_key: "legion-outbox:41",
       issued_at: Date.parse("2026-11-14T21:05:01Z"),
-      urgency: "med",
+      urgency,
       payload_summary: summary,
       payload: JSON.stringify(payload),
       trace_id: "trace-daemon",
@@ -2723,5 +2735,265 @@ describe("what a card carries", () => {
     expect(card.envoy.reply_with).toEqual({
       command: "dispatch comment --issue DSP-1 --body ... --reply-to comment-1",
     });
+  });
+
+  /** One sample of the daemon's golden file of every text (`goldenSample`,
+   *  packages/daemon/internal/daemon/texts_golden_test.go). */
+  interface GoldenSample {
+    readonly kind: string;
+    readonly variant: string;
+    readonly sample: number;
+    readonly reader: string;
+    readonly form: "task" | "notice" | "controller-notice" | "role-message";
+    readonly urgency: string;
+    readonly issue: string;
+    /** A task: its text, and the spans of R1's blocks and of the sentences R8 keeps in it. */
+    readonly text?: string;
+    readonly spans?: readonly GoldenSpan[];
+    /** A notice or a role message: its summary, and the payload the daemon publishes: an object,
+     *  or the hook prompt's text. */
+    readonly summary?: string;
+    readonly payload?: string | GoldenPayload;
+  }
+
+  /** A payload the daemon publishes as an object; its `words` names each field that holds another
+   *  author's words by its path in the payload. */
+  interface GoldenPayload {
+    readonly words?: Readonly<Record<string, GoldenWords>>;
+    readonly [field: string]: unknown;
+  }
+
+  /** A part of a task's text, from `start` to `end` in UTF-16 units: a block, or a kept sentence. */
+  interface GoldenSpan {
+    readonly part: "block" | "kept";
+    readonly name?: string;
+    readonly start: number;
+    readonly end: number;
+  }
+
+  /** The author and the time of the words of one field, as a payload's `words` object names them. */
+  interface GoldenWords {
+    readonly by: string;
+    readonly at: string;
+    readonly rest?: number;
+    readonly more?: boolean;
+  }
+
+  /** The objects that hold the field at `keys` in `value`, from `value` to the field's own object. */
+  function holdersOf(
+    value: unknown,
+    keys: readonly (string | number)[]
+  ): Readonly<Record<string, unknown>>[] {
+    const holders: Readonly<Record<string, unknown>>[] = [];
+    let at = value;
+    for (const key of keys) {
+      if (typeof at !== "object" || at === null) break;
+      // A JSON value here: an object, or a list that a number indexes.
+      const fields = at as Readonly<Record<string | number, unknown>>;
+      if (!Array.isArray(at)) holders.push(fields);
+      at = fields[key];
+    }
+    return holders;
+  }
+
+  /** `value` less each field whose payload path is in `paths`. */
+  function without(value: unknown, paths: ReadonlySet<string>, path = ""): unknown {
+    if (Array.isArray(value)) {
+      return value.map((item, index) => without(item, paths, `${path}[${index}]`));
+    }
+    if (typeof value !== "object" || value === null) return value;
+    return Object.fromEntries(
+      Object.entries(value).flatMap(([key, item]): [string, unknown][] => {
+        const at = path === "" ? key : `${path}.${key}`;
+        return paths.has(at) ? [] : [[key, without(item, paths, at)]];
+      })
+    );
+  }
+
+  /** A key as TOON's encoder writes it: a bare name, or a quoted one. */
+  const KEY = String.raw`(?:[A-Za-z_][\w.]*|"(?:[^"\\]|\\.)*")`;
+  /** `key: value`, or `key:` that opens an object on the lines below it. */
+  const FIELD_LINE = new RegExp(`^${KEY}:(?: .+)?$`);
+  /** A list's header: `key[n]:`, its items on the line or below it, or `key[n]{fields}:`, its rows
+   *  below it. */
+  const LIST_HEADER = new RegExp(`^${KEY}\\[(\\d+)\\](\\{[^}]+\\})?:(?: .+)?$`);
+  /** A `\n` escape in a quoted value: a backslash and `n` after no backslash or after escaped ones. */
+  const ESCAPED_NEW_LINE = /(?<!\\)(?:\\\\)*\\n/;
+
+  /** Each of `lines` that is of no form TOON's encoder writes: a key: value line, a list's header,
+   *  or a list's row or item. */
+  function notEncoderLines(lines: readonly string[]): string[] {
+    const odd: string[] = [];
+    // The indent of the last table's header, and how many of its rows are still to come.
+    let tableIndent = 0;
+    let rows = 0;
+    for (const line of lines) {
+      const indent = line.length - line.trimStart().length;
+      const text = line.slice(indent);
+      if (rows > 0 && indent > tableIndent && text !== "") {
+        rows -= 1;
+        continue;
+      }
+      const item = text.startsWith("- ") ? text.slice(2) : undefined;
+      const header = LIST_HEADER.exec(item ?? text);
+      if (header?.[2] !== undefined) {
+        tableIndent = indent;
+        rows = Number(header[1]);
+      }
+      if (header === null && item === undefined && !FIELD_LINE.test(text)) odd.push(line);
+    }
+    return odd;
+  }
+
+  test("a daemon card renders the golden payloads", () => {
+    // Every task, notice and role message of the daemon, in each variant of its builders, twice,
+    // with hostile values in titles, words and check names (TestEveryKindOnTheListStatesItsFields
+    // writes the file).
+    const golden = JSON.parse(
+      readFileSync(
+        new URL("../../../daemon/internal/daemon/testdata/texts.golden.json", import.meta.url),
+        "utf8"
+      )
+    ) as { readonly samples: readonly GoldenSample[] };
+    const cards = new Set<string>();
+    let keptDecisions = 0;
+
+    for (const sample of golden.samples) {
+      const label = `${sample.kind}/${sample.variant}/${sample.sample}`;
+      if (sample.form === "task") {
+        // A task is TOON, R1's blocks and the sentences R8 keeps aside: each of those is whole
+        // lines, and what is left decodes and encodes again to the same text.
+        const text = sample.text ?? "";
+        const outside: string[] = [];
+        let from = 0;
+        for (const span of [...(sample.spans ?? [])].sort((a, b) => a.start - b.start)) {
+          const marked = text.slice(span.start, span.end);
+          const opensLine = span.start === 0 || text[span.start - 1] === "\n";
+          const endsLine = span.end === text.length || text[span.end] === "\n";
+          expect(opensLine && endsLine, `${label}: ${marked}`).toBe(true);
+          if (span.part === "block") {
+            expect(marked, label).toStartWith(`<${span.name}`);
+            expect(marked, label).toEndWith(`</${span.name}>`);
+          }
+          outside.push(text.slice(from, span.start));
+          from = span.end;
+        }
+        outside.push(text.slice(from));
+        const fields = outside
+          .map((part) => part.replace(/^\n|\n$/g, ""))
+          .filter((part) => part !== "")
+          .join("\n");
+        expect(encode(decode(fields)), label).toBe(fields);
+        continue;
+      }
+
+      // The daemon publishes to its reader's topic: a role's lane, or the controller's.
+      cards.add(sample.kind);
+      const project = sample.issue.replace(/-\d+$/, "").toLowerCase();
+      const topic = isLegionRole(sample.reader)
+        ? roleTopic(roleToken(project, sample.issue, sample.reader))
+        : legionControllerNoticeSubject(project);
+      const content = renderInbound(
+        daemonMessage(topic, sample.summary ?? "", sample.payload, sample.urgency),
+        reader,
+        topic
+      ).content;
+      // The reader throws where anything but blocks follows the first block.
+      const { head, blocks } = splitWordsBlocks(content);
+      const { envoy } = decode(head) as { readonly envoy: Record<string, unknown> };
+      expect(envoy.from, label).toBe("agent");
+      expect(envoy.urgency, label).toBe(sample.urgency);
+      expect(envoy.summary, label).toBe(`${sample.kind} on ${sample.issue}`);
+      expect(head, label).not.toMatch(ESCAPED_NEW_LINE);
+
+      if (typeof sample.payload === "string") {
+        // The hook prompt, published as its text: the `Legion hook` first line, a blank line, the
+        // hook's words as written, a blank line, and its facts as lines of the encoder. The card
+        // draws the text after its fields, whole and unescaped, its parts in that order.
+        const text = sample.payload;
+        const first = text.slice(0, text.indexOf("\n\n"));
+        const facts = text.slice(text.lastIndexOf("\n\n") + 2);
+        const words = text.slice(first.length + 2, text.length - facts.length - 2);
+        expect(first, label).toStartWith(`Legion hook `);
+        expect(first, label).toContain(` on ${sample.issue}: work went back from `);
+        expect(first, label).not.toContain("\n");
+        expect(words, label).not.toBe("");
+        expect(decode(facts), label).toMatchObject({ count: expect.any(Number) });
+        expect(envoy, label).not.toHaveProperty("message");
+        expect(
+          blocks.map(({ name, text }) => ({ name, text })),
+          label
+        ).toEqual([{ name: "message", text }]);
+        let from = head.length;
+        for (const [part, said] of [
+          ["first line", first],
+          ["words", words],
+          ["facts", facts],
+        ] as const) {
+          const index = content.indexOf(said, from);
+          expect(index, `${label}: ${part}`).toBeGreaterThanOrEqual(from);
+          from = index + said.length;
+        }
+        continue;
+      }
+
+      // A payload published as an object: its fields as lines under `message:`, less `words` and
+      // less each field whose words `words` names, which is drawn in a block after the fields.
+      if (sample.payload === undefined) throw new Error(`${label}: the sample has no payload`);
+      const named = sample.payload.words ?? {};
+      const paths = Object.keys(named);
+      const shown = without(sample.payload, new Set(["words", ...paths]));
+      expect(envoy.message, label).toEqual(shown);
+      const lines = head.split("\n");
+      const opens = lines.indexOf("  message:");
+      const closes = lines.findIndex((line, index) => index > opens && !line.startsWith("    "));
+      const fields = lines.slice(opens + 1, closes < 0 ? lines.length : closes);
+      expect(notEncoderLines(fields), label).toEqual([]);
+      expect(["  message:", ...fields].join("\n"), label).toBe(
+        encode({ message: shown })
+          .split("\n")
+          .map((line) => `  ${line}`)
+          .join("\n")
+      );
+
+      expect(blocks.map(({ name, field }) => field ?? name).sort(), label).toEqual(paths.sort());
+      for (const [path, entry] of Object.entries(named)) {
+        const where = `${label}: ${path}`;
+        // The keys of the path, such as `catch_up.kept.decisions[1].answer`, an index a number.
+        const keys = Array.from(path.matchAll(/([^.[\]]+)|\[(\d+)\]/g), ([, key, index]) =>
+          key === undefined ? Number(index) : key
+        );
+        const name = String(keys.at(-1));
+        const block = blocks.find((said) => (said.field ?? said.name) === path);
+        expect(block?.name, where).toBe(name);
+        expect(block?.field, where).toBe(path === name ? undefined : path);
+        expect<unknown>(block?.text, where).toBe(holdersOf(sample.payload, keys).at(-1)?.[name]);
+        expect(block?.rest, where).toBe(entry.rest);
+        expect(block?.more, where).toBe(entry.more === true ? true : undefined);
+        // The author and the time of these words, from their own entry in `words`: on the block,
+        // or as a field of an object that holds the words, such as the kept decision's own row.
+        const held = holdersOf(envoy.message, keys)
+          .flatMap((holder) => Object.values(holder))
+          .filter((value): value is string => typeof value === "string");
+        expect(block?.by ?? held.find((value) => value === entry.by), where).toBe(entry.by);
+        const time = Date.parse(entry.at);
+        expect(time, where).not.toBeNaN();
+        const at =
+          block?.at ??
+          held.find((value) => /^\d{4}-\d{2}-\d{2}T/.test(value) && Date.parse(value) === time);
+        expect(at === undefined ? undefined : Date.parse(at), where).toBe(time);
+      }
+      if (sample.kind === "catch-up") {
+        const kept = paths.filter((path) =>
+          /^catch_up\.kept\.decisions\[\d+\]\.answer$/.test(path)
+        );
+        keptDecisions = Math.max(keptDecisions, kept.length);
+      }
+    }
+
+    expect([...cards]).toEqual(
+      expect.arrayContaining(["catch-up", "tick", "ci-settled", "update-ask", "hook-prompt"])
+    );
+    expect(keptDecisions).toBe(2);
   });
 });

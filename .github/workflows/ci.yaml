@@ -3439,7 +3439,7 @@ jobs:
               - 'packages/broker-client/src/**'
               # src/__tests__ import @legion/test-fixtures.
               - 'packages/test-fixtures/src/**'
-              # src/__tests__/delivery.test.ts:17 and dispatch-text.test.ts:128 read the first,
+              # src/__tests__/delivery.test.ts:19 and dispatch-text.test.ts:128 read the first,
               # dispatch-config.test.ts:5 the second.
               - 'packages/contracts/fixtures/dispatch-targeted-delivery.json'
               - 'packages/contracts/fixtures/dispatch-public-url.json'
@@ -3481,6 +3481,12 @@ jobs:
               # which topics reach a private stream subject, the file
               # packages/envoy/internal/bus's TestReachesPrivateStreamSubjectBoundsInterests reads.
               - 'packages/envoy/internal/bus/testdata/private-stream-subjects.json'
+              # src/__tests__/delivery.test.ts's `a daemon card renders the golden payloads` reads
+              # the daemon's golden file of every text by relative path, the file
+              # packages/daemon's TestEveryKindOnTheListStatesItsFields writes, and decodes and
+              # encodes its task texts with the TOON that bun.lock pins (the bun_install anchor
+              # above names it), so a new golden file or a TOON bump must start this job.
+              - 'packages/daemon/internal/daemon/testdata/texts.golden.json'
             # The shared race job: the closure of `go test -race` over delivery, the Dispatch
             # store, the bus, the listener, the registry store, the session cache and kvwatch (`go
             # list -deps -test -race` in packages/envoy), and every .md file under packages/envoy,
