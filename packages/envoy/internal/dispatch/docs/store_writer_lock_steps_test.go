@@ -119,11 +119,15 @@ type docsStep struct {
 	order docsOrderStep
 	// names is, for a projection row, the node step whose node the row's foreign key names.
 	names string
-	// caused says the step appends tuples that carry the event the path appends.
+	// caused says the step appends tuples that carry the event the path appends, and cause names
+	// the event step whose event they carry, in a path that appends more than one event.
 	caused bool
+	cause  string
 	// fenced says the step writes part of what a version's block index states about the
-	// document, which a writer under the revision fence writes only once it holds the fence's row.
+	// document, which a writer under the revision fence writes only once it holds the fence's row,
+	// and fence names the fence step whose row that is, in a path that writes several documents.
 	fenced bool
+	fence  string
 	// hold takes, in holder, what the step takes, so the write waits for holder at this step.
 	hold func(t *testing.T, ctx context.Context, holder pgx.Tx, run docsRun)
 	// at is the head of the statement that takes the step, the one the write waits at.
@@ -139,6 +143,13 @@ type docsWriter struct {
 	steps []docsStep
 	// ready writes what one run needs and answers the run, not yet started.
 	ready func(t *testing.T, ctx context.Context) docsRun
+	// projectKeyShare says the path writes its issue's row a second time - a second event of the
+	// issue, whose append moves the row's last_seq again - and Postgres checks again the foreign
+	// key into projects of a row its own transaction wrote, which takes the project's row
+	// `for key share`. That shows in pg_locks as the row share mode on projects and conflicts with
+	// no lock an event's project is taken with, so only a write of projects counts against such a
+	// path.
+	projectKeyShare bool
 }
 
 // docsRun is one run of a write path.
@@ -561,7 +572,10 @@ func holdDocsBlockNode(t *testing.T, ctx context.Context, holder pgx.Tx, run doc
 // it, the event before every step appending tuples that carry it, and the revision fence's row
 // before every step of the block statement it guards. A path skips the steps it does not take, and
 // is checked on the order of those it does. Several nodes of one write in ascending (kind, id) is
-// graphstore's own (writeNodes, WriteArms): every node step here is one statement.
+// graphstore's own (writeNodes, WriteArms): every node step here is one statement. A step of a
+// path that appends several events names the one its tuples carry (docsStep.cause), and a step of
+// a path that writes several documents the fence it is under (docsStep.fence); a step that names
+// none is held to the path's one event or fence.
 func requireTheDocsOrderAdmits(t *testing.T, writer docsWriter) {
 	t.Helper()
 	position := make(map[string]int, len(writer.steps))
@@ -575,24 +589,37 @@ func requireTheDocsOrderAdmits(t *testing.T, writer docsWriter) {
 			fence = index
 		}
 	}
+	// named is where the step a step names stands, which has to be a step of order want; a step
+	// naming none is held to fallback, the path's one step of that order.
+	named := func(step docsStep, name string, want docsOrderStep, fallback int) (int, bool) {
+		if name == "" {
+			return fallback, true
+		}
+		at, listed := position[name]
+		if !listed || writer.steps[at].order != want {
+			t.Errorf("%s's %s names %q, which is no step of its kind", writer.name, step.name, name)
+			return 0, false
+		}
+		return at, true
+	}
 	for index, step := range writer.steps {
 		if step.order == docsOwnerStep && index != 0 {
 			t.Errorf("%s takes the owner row as its step %d: the owner row comes first", writer.name, index+1)
 		}
 		if step.order == docsProjectionStep && step.names != "" {
-			node, listed := position[step.names]
-			switch {
-			case !listed || writer.steps[node].order != docsNodeStep:
-				t.Errorf("%s's %s names %q, which is no node step of it", writer.name, step.name, step.names)
-			case node > index:
+			if node, ok := named(step, step.names, docsNodeStep, -1); ok && node > index {
 				t.Errorf("%s takes %s before %s, the node its foreign key names", writer.name, step.name, step.names)
 			}
 		}
-		if step.caused && (event < 0 || event > index) {
-			t.Errorf("%s takes %s, whose tuples carry its event, before it appends that event", writer.name, step.name)
+		if step.caused {
+			if cause, ok := named(step, step.cause, docsEventStep, event); ok && (cause < 0 || cause > index) {
+				t.Errorf("%s takes %s, whose tuples carry its event, before it appends that event", writer.name, step.name)
+			}
 		}
-		if step.fenced && (fence < 0 || fence > index) {
-			t.Errorf("%s takes %s, which the revision fence guards, before it takes the fence's document_block_versions row", writer.name, step.name)
+		if step.fenced {
+			if guard, ok := named(step, step.fence, docsFenceStep, fence); ok && (guard < 0 || guard > index) {
+				t.Errorf("%s takes %s, which the revision fence guards, before it takes the fence's document_block_versions row", writer.name, step.name)
+			}
 		}
 	}
 }
@@ -601,7 +628,8 @@ func requireTheDocsOrderAdmits(t *testing.T, writer docsWriter) {
 // the stopped write to the statement that takes the step and to the locks of exactly the steps
 // before it, as api's requireEachStepIsWaitedAtInTurn does. A lock several steps show is read for
 // the first of them, the one that takes it. Every event these paths append is an issue's, so none
-// of them takes a lock on projects.
+// of them takes a lock on projects but the key share of a path that writes its issue's row twice
+// (docsWriter.projectKeyShare).
 func requireEachDocsStepIsWaitedAtInTurn(t *testing.T, ctx context.Context, rig *docsWriterRig, writer docsWriter) {
 	t.Helper()
 	first := map[docsTableLock]int{}
@@ -643,7 +671,9 @@ func requireEachDocsStepIsWaitedAtInTurn(t *testing.T, ctx context.Context, rig 
 				}
 			}
 		}
-		if slices.ContainsFunc(held, func(lock docsTableLock) bool { return lock.table == "projects" }) {
+		if slices.ContainsFunc(held, func(lock docsTableLock) bool {
+			return lock.table == "projects" && (lock.mode != docsRowShareMode || !writer.projectKeyShare)
+		}) {
 			t.Errorf("%s held at %s holds a lock on projects: it took the project of its event, which an issue's event does not name (it holds %v)",
 				writer.name, step.name, held)
 		}

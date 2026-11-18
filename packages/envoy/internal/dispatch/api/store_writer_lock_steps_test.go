@@ -164,10 +164,11 @@ type storeWriter struct {
 	// started.
 	ready func(t *testing.T, ctx context.Context) storeWriterRun
 	// projectKeyShare says the path writes a row whose foreign key names a project - a new
-	// document's artifacts row names the project it is in - and so holds that project's row
-	// `for key share`, which shows in pg_locks as the row share mode on projects and conflicts with
-	// no lock an event's project is taken with. Only a write of projects counts against such a path
-	// (eventProjectLocks).
+	// document's artifacts row names the project it is in, and an issue's row written a second time
+	// in one transaction has its foreign key into projects checked again - and so holds that
+	// project's row `for key share`, which shows in pg_locks as the row share mode on projects and
+	// conflicts with no lock an event's project is taken with. Only a write of projects counts
+	// against such a path (eventProjectLocks).
 	projectKeyShare bool
 }
 
