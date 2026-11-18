@@ -163,6 +163,8 @@ var readsWithoutAViewer = map[string]string{
 	"BlockEmbeddingStates": nodeDetail,
 	"BlockTargets":         serverWork + " - the write of a document checks the block pointers it holds against the blocks they name",
 	"BlockTextAt":          nodeDetail,
+	"BlockTexts": nodeDetail + " - the texts of many blocks in one read, each a block its caller has already " +
+		"resolved for the reader through TargetNames, which binds the block's predicate",
 	"CanonicalRepo":        noNode,
 	"CountedChanges":       serverWork + " - a write records what its own text cites, as the addresses that text already spells",
 	"CurrentBlockText":     nodeDetail,
@@ -308,6 +310,10 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 			_, err := BacklinkCounts(ctx, recorder, who, kind, []string{"no-such-node"}, nil)
 			return err
 		})
+		record("TargetNames", "TargetNames of kind "+kind, func() error {
+			_, err := TargetNames(ctx, recorder, who, []Target{{Kind: kind, ID: "no-such-node"}})
+			return err
+		})
 		// The batched half queues its statement rather than issuing it on a queryer: the
 		// statement recorded is the one queued, and the batch is sent so Postgres runs it.
 		record("QueueBacklinkCounts", "QueueBacklinkCounts of kind "+kind, func() error {
@@ -363,6 +369,19 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 			if errors.Is(err, pgx.ErrNoRows) {
 				return nil
 			}
+			return err
+		})
+	}
+	// ResolvePrefixes reads each kind of short id in a statement of its own, a pinned block's
+	// included, so each is recorded alone; a message is resolved within its issue alone.
+	for _, asked := range []ShortID{
+		{Kind: "ask"}, {Kind: "comment", Scope: Scope{IssueKey: "CORE-1"}}, {Kind: "message", Scope: Scope{IssueKey: "CORE-1"}},
+		{Kind: "artifact"}, {Kind: "block", Scope: Scope{Document: "CORE-1/spec"}},
+		{Kind: "block", Scope: Scope{Document: "CORE-1/spec", Version: 1}},
+	} {
+		asked.Prefix = "00000000"
+		record("ResolvePrefixes", fmt.Sprintf("ResolvePrefixes of kind %s in %+v", asked.Kind, asked.Scope), func() error {
+			_, _, err := ResolvePrefixes(ctx, recorder, who, []ShortID{asked})
 			return err
 		})
 	}
