@@ -29,8 +29,13 @@ the pushes, the pull request and every GitHub and Dispatch write. Read this whol
 - The audit: `/legion/scratch/tmp/infra-3686/audit.md`.
 - If a file is missing, fetch it again: `dispatch doc-read --issue INFRA-3686 --artifact plan-md --version 4`
   (and `--artifact spec`, `verification-md`, `decisions-md`, `notification-audit-md`), redirecting to the path above.
-- Progress notes of the earlier tasks, and the API of the `texts` package once T1 is done:
-  `local://progress.md` (read it if it exists).
+- Progress notes of the earlier tasks, and the API of the `texts` package:
+  `/legion/workspaces/cybermonklabs/legion/infra-3686/.infra-3686-notes/progress.md` (a tracked
+  file of the branch; read it first and add your own section at the end). Maps of main's code
+  that read-only scouts wrote: `.infra-3686-notes/kinds-map.md` (every daemon text builder) and
+  `.infra-3686-notes/dispatch-map.md` (listener and Dispatch outbox); copies of all of these are
+  in `/legion/scratch/tmp/infra-3686/`. The notes directory is deleted before review: never cite
+  it from code.
 
 ## Rules for the code
 
