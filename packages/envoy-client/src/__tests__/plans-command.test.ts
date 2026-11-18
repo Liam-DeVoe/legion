@@ -147,11 +147,11 @@ const neverRan: FinishedIssue = {
 /** A finished issue whose time Dispatch cannot count: a plan and a rating, a start and an end,
  *  and no time, since its latest end is before its earliest start. An older run, whose starts
  *  Dispatch never got, ended and was rated; the newer run, whose plan the line names, started
- *  after it and never ended. */
+ *  after it and never ended. A new run is a new generation, so that plan is generation 2's. */
 const uncountedTime: FinishedIssue = {
   ...ratedOnce,
   issue: "INFRA-10",
-  plan: defaultPlan("INFRA-10", "8d3b2e5a-4f6c-5a0d-9e2f-3c4d5e6f7a81"),
+  plan: { ...defaultPlan("INFRA-10", "8d3b2e5a-4f6c-5a0d-9e2f-3c4d5e6f7a81"), generation: 2 },
   closed_at: "2026-11-14T09:00:00Z",
   ratings: [
     {
