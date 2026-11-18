@@ -14,6 +14,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // opIndex is the batch position of the operation an error came from. The API renders these
@@ -985,7 +986,7 @@ func boundedReadBack(entries []string) string {
 			continue
 		}
 		if room := budget - used - separator; room > 0 {
-			kept = append(kept, entry[:characterOffset(entry, room)])
+			kept = append(kept, text.HeadRunes(entry, room))
 			characters -= room
 		}
 		cut = index
@@ -998,18 +999,6 @@ func boundedReadBack(entries []string) string {
 // test reads the line this package writes rather than a copy of its wording.
 func ReadBackCutLine(characters, blocks int) string {
 	return fmt.Sprintf("cut %d characters in %d blocks", characters, blocks)
-}
-
-// characterOffset is the byte offset in text at which its character at index n opens, or the
-// text's length when it holds n characters or fewer, so a cut there never splits one.
-func characterOffset(text string, n int) int {
-	for offset := range text {
-		if n == 0 {
-			return offset
-		}
-		n--
-	}
-	return len(text)
 }
 
 // batchTree is a tree an edit batch works on, beside the one validation it pays for: the first
