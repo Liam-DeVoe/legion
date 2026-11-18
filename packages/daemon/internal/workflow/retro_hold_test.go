@@ -351,7 +351,8 @@ func TestAParentWhoseSignOffIsNotItsLastStepIsHeldBeforeItsRetro(t *testing.T) {
 // A parent whose last step is of a role the deployment defines, `implementer checker`, passes it
 // while a child is in the workflow beneath it and is held before its retro. The child's leave starts
 // the implementer's retro once, with the report of the checker's step, the role of the task's last
-// step, as the pass into the retro would have given it: its commit and its verdict.
+// step, as the pass into the retro would have given it: its commit and its verdict, under the
+// checker's own name, not the tester's.
 func TestAHeldRetroAfterADeploymentStepGetsItsReport(t *testing.T) {
 	pool := migratedPool(t)
 	engine := returnEngine()
@@ -373,9 +374,12 @@ func TestAHeldRetroAfterADeploymentStepGetsItsReport(t *testing.T) {
 	if len(starts) != 1 {
 		t.Fatalf("the release wrote %d starts of the retro, want one", len(starts))
 	}
-	for _, says := range []string{" Handoff commit: " + sha + ".", " Tester's verdict: pass."} {
+	for _, says := range []string{" Handoff commit: " + sha + ".", " Step 2 (checker) reported: pass."} {
 		if !strings.Contains(starts[0].Task, says) {
 			t.Fatalf("the retro's task = %q, want it to say %q", starts[0].Task, says)
 		}
+	}
+	if strings.Contains(starts[0].Task, testerVerdictLabel) {
+		t.Fatalf("the retro's task = %q, want no %s: the report is the checker's", starts[0].Task, testerVerdictLabel)
 	}
 }

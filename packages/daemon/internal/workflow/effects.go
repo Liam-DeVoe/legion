@@ -834,10 +834,13 @@ const (
 // accepted, whatever was written to the phase since; a commit is named, as `Handoff commit:`,
 // whenever the completion reported one: the head the planner's, the implementer's, the tester's or
 // the reviewer's record names, and the commit retro and the merger stand on.
-// A handoff's verdict is always the tester's, since the daemon accepts one from no other role on
-// a phase completion (api/handoff.go, VERDICT_ROLE_FORBIDDEN; the implementer's check report is no
-// phase completion and starts nobody), so the line names the tester: the reviewer it starts on a
-// pass reads it as the tester's report, never as a field of its own completion.
+// A verdict of one of Legion's roles is always the tester's, since the daemon accepts one from no
+// other of them on a phase completion (api/handoff.go, VERDICT_ROLE_FORBIDDEN; the implementer's
+// check report is no phase completion and starts nobody), so the line names the tester: the
+// reviewer it starts on a pass reads it as the tester's report, never as a field of its own
+// completion. A role the deployment defines reports a verdict and writes no handoff record, so its
+// report is named by its own step and role, ` Step <i> (<role>) reported: <verdict>.`, with its
+// summary after it: <i> is the place of the step the row's entry was raised for (StepPlace).
 // reviewed is the commit the reviewer's last deciding review read (reviewedPart), "" for every
 // start but a later review round's; the part that names it (reviewedCommit.part) is placed after
 // the pull request and before the reason.
@@ -850,7 +853,14 @@ func task(issue record.Issue, at Standing, handoff record.PhaseRow, pr *record.P
 	if handoff.HandoffCommit != "" {
 		text += " Handoff commit: " + handoff.HandoffCommit + "."
 	}
-	if handoff.Verdict != "" {
+	switch {
+	case handoff.Verdict == "":
+	case handoff.Role != "" && !claim.IsBuiltin(handoff.Role):
+		text += fmt.Sprintf(" Step %d (%s) %s: %s.", handoff.StepPlace, handoff.Role, reportedLabel, handoff.Verdict)
+		if summary := strings.TrimSpace(handoff.Summary); summary != "" {
+			text += " " + sentence(summary)
+		}
+	default:
 		text += " " + testerVerdictLabel + ": " + handoff.Verdict + "."
 	}
 	if pr != nil && pr.Number != 0 {

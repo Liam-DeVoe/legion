@@ -280,6 +280,41 @@ func returnStep(issue record.Issue, w Walk, at record.TaskPlace, n int, act retu
 	return record.TaskPlace{Kind: record.PlaceStep, Position: n}, "", nil
 }
 
+// reviewFails says whether the step at w.Place, whose fail is the move, counts a review round
+// toward review_round_cap: a step of the type review whose agent is not the owner, since the
+// owner's own step reviews nothing another agent wrote.
+func (w Walk) reviewFails() bool {
+	if !w.Stored || w.Place.Kind != record.PlaceStep || w.Place.Position < 1 || w.Place.Position > len(w.Steps) {
+		return false
+	}
+	step := w.Steps[w.Place.Position-1]
+	return step.Type == string(plan.TypeReview) && step.AgentKey != "owner"
+}
+
+// RoleAt is the role that works the step of w's task at place: for a step, the worker of the
+// phase its role runs as (phase.RoleFor of plan.RunsAs: the architect for the owner's acceptance),
+// and the role itself where it runs as step, a role the deployment defines; the implementer at the
+// retro and the merger at the merge; and "" at no act or at a place the task does not hold. On a
+// task whose roles are Legion's own it answers phase.RoleFor of the phase the place derives.
+func (w Walk) RoleAt(place record.TaskPlace) claim.Role {
+	switch place.Kind {
+	case record.PlaceRetro:
+		return phase.RoleFor(phase.Retro)
+	case record.PlaceMerge:
+		return phase.RoleFor(phase.Merging)
+	case record.PlaceStep:
+		if place.Position < 1 || place.Position > len(w.Steps) {
+			return ""
+		}
+		role := w.Steps[place.Position-1].Role
+		if runs := plan.RunsAs(role); runs != phase.Step {
+			return phase.RoleFor(runs)
+		}
+		return claim.Role(role)
+	}
+	return ""
+}
+
 // placeOfRole is the place of the step of w's task whose role is role, ok false where none is: a
 // role runs at most one step of a task.
 func (w Walk) placeOfRole(role claim.Role) (record.TaskPlace, bool) {

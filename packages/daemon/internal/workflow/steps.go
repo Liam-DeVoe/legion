@@ -104,13 +104,14 @@ func stepAt(w Walk, site stepSite) (place record.StepPlace, step int, role, typ 
 }
 
 // endOf is how a transition on trigger ends the step it moves the issue out of. A move back a role
-// or a report asked for — the tester's fail, a review's request for changes, a role's or the
-// architect's backward move — ends it failed; a move back nobody asked for, a head that conflicts
-// with its base, ends it stopped. Both return the work to the step the issue moves into, which the
-// record names. Every other move ends the step passed and returns nowhere.
+// or a report asked for — the tester's fail, a review's request for changes, the fail of a step
+// that runs as step, a role's or the architect's backward move — ends it failed; a move back nobody
+// asked for, a head that conflicts with its base, ends it stopped. Both return the work to the step
+// the issue moves into, which the record names. Every other move ends the step passed and returns
+// nowhere.
 func endOf(trigger TriggerKind) (result string, returns bool) {
 	switch trigger {
-	case TriggerTesterFailed, TriggerReviewRejected, TriggerBackward:
+	case TriggerTesterFailed, TriggerReviewRejected, TriggerStepFailed, TriggerBackward:
 		return "failed", true
 	case TriggerConflict:
 		return "stopped", true

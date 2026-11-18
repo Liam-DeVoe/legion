@@ -895,8 +895,11 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	// issue has moved on without, the phase that role has left. For a task with plan rows such a
 	// completion is a report of a step whose run Legion ended, and late is its refusal
 	// (lateReport), which is answered after the lingering tree's, as the recording is.
+	// At step, a completion is current only from the role of the running step (Issue.StepRole):
+	// two steps of roles the deployment defines both run as step, and the other's report is of a
+	// step the task has left.
 	reported := phase.Of(fact.Role, issue.Phase)
-	current := reported == issue.Phase
+	current := reported == issue.Phase && (issue.Phase != phase.Step || fact.Role == issue.StepRole)
 	var late *intake.Refusal
 	if !current {
 		left, err := e.leftItsPhase(ctx, tx, *issue, fact.Role, fact.Claim)
@@ -1012,6 +1015,15 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	case phase.Reviewing:
 		_, err := e.settleRound(ctx, tx, *issue, row, pr, found, byCompletion)
 		return intake.Result{}, err
+	case phase.Step:
+		// A role the deployment defines reports pass or fail and writes no handoff record; its fail
+		// goes back to the step its returnTo names, or to the one its plan reads (returnTarget).
+		switch fact.Verdict {
+		case "fail":
+			return intake.Result{}, e.transition(ctx, tx, *issue, TriggerStepFailed, returnTo, row, pr, "")
+		case "pass":
+			return intake.Result{}, e.transition(ctx, tx, *issue, TriggerStepPassed, record.TaskPlace{}, row, pr, "")
+		}
 	case phase.Retro:
 		if err := e.transition(ctx, tx, *issue, TriggerRetroCompleted, record.TaskPlace{}, row, pr, ""); err != nil {
 			return intake.Result{}, err
@@ -1647,12 +1659,13 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// its own pair and a hook of the deployment stands on that pair (recordPass,
 	// fireWorkBackHooks), so a hook sees every way the work goes back and not the review's alone.
 	// The round is the review's alone — it counts the review rounds review_round_cap bounds, so
-	// only a review that requested changes moves it, and a send-back for anything else leaves it
-	// where it stands. The pull request goes with both because each reads it: a move made while
-	// the record holds this head as conflicting with its base is a conflict round, which
-	// review_round_cap does not count and no pair counts either (recordRound, recordPass). Both
-	// count on the walk's task: its plan_tasks row for an issue with plan rows, the implementer's
-	// phases row for an issue with none (record.Store.ReturnCounts).
+	// only a review that requested changes moves it, or the fail of a step of the type review that
+	// runs as step and whose agent is not the owner (Walk.reviewFails), and a send-back for
+	// anything else leaves it where it stands. The pull request goes with both because each reads
+	// it: a move made while the record holds this head as conflicting with its base is a conflict
+	// round, which review_round_cap does not count and no pair counts either (recordRound,
+	// recordPass). Both count on the walk's task: its plan_tasks row for an issue with plan rows,
+	// the implementer's phases row for an issue with none (record.Store.ReturnCounts).
 	//
 	// The same reading goes onto the entry the start below raises, in this transaction, because
 	// it is the one thing the entry fence cannot read from anywhere else: a phase re-entered by a
@@ -1669,7 +1682,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 			return err
 		}
 	}
-	if trigger == TriggerReviewRejected {
+	if trigger == TriggerReviewRejected || trigger == TriggerStepFailed && w.reviewFails() {
 		if err := e.recordRound(ctx, tx, issue, w.Task, pr); err != nil {
 			return err
 		}
@@ -1733,10 +1746,17 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		return err
 	}
 	e.logOnCommit(ctx, "workflow: phase changed", "issue", issue.Key, "tree", issue.Tree, "from", from, "to", row.To, "trigger", trigger, "status", issue.Status)
+	// The role the row moves the task to: on a task with plan rows the role of the step at the
+	// row's place (Walk.RoleAt), so the second of two steps that run as step starts its own role,
+	// and on an issue with none the role of the phase.
+	starting := phase.RoleFor(row.To)
+	if w.Stored {
+		starting = w.RoleAt(row.ToPlace)
+	}
 	if holds {
 		e.logOnCommit(ctx, "workflow: a parent is held before its retro for the issues beneath it", "issue", issue.Key, "tree", issue.Tree,
 			"task", w.Task, "beneath", beneath)
-	} else if err := e.clearHandoff(ctx, tx, issue.Key, phase.RoleFor(row.To)); err != nil {
+	} else if err := e.clearHandoff(ctx, tx, issue.Key, starting); err != nil {
 		return err
 	}
 	// The move out of admitted is where the run's work starts, and so where the plan it carries
@@ -1760,7 +1780,6 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// records - the head started conflicting with its base while the tester tested, or the reviewer
 	// reviewed a round it had not completed - starts the next role the same way: that role keeps
 	// its turn, its jobs, its process and its session, and the start waits for none of them.
-	starting := phase.RoleFor(row.To)
 	// A pull request GitHub has already merged leaves the merger nothing to merge, so no merger is
 	// started for it and the merge closes the issue the moment it reaches merging. The close is
 	// closeMergedTelling's rather than a second transition's because a root's close waits for the
