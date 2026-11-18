@@ -1,4 +1,4 @@
-import { afterEach, expect, jest, setSystemTime, spyOn, test } from "bun:test";
+import { afterEach, expect, jest, type Mock, setSystemTime, spyOn, test } from "bun:test";
 import { macBaseKeymap } from "@milkdown/kit/prose/commands";
 import { Schema } from "@milkdown/kit/prose/model";
 import { EditorState, TextSelection } from "@milkdown/kit/prose/state";
@@ -6,21 +6,21 @@ import { EditorView } from "@milkdown/kit/prose/view";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, waitFor } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
-import { type ReactNode, useEffect, useRef, useState } from "react";
-import { MemoryRouter, useLocation } from "react-router-dom";
+import { type CSSProperties, type ReactNode, useEffect, useRef, useState } from "react";
+import { MemoryRouter, type NavigateFunction, useLocation, useNavigate } from "react-router-dom";
 import { prosemirrorJSONToYXmlFragment } from "y-prosemirror";
 import * as Y from "yjs";
 
 import { jump, realClock } from "../../__tests__/fake-clock";
 import { userOnFakeClock } from "../../__tests__/user";
-import { api } from "../../api/client";
+import { ApiError, api } from "../../api/client";
 import { issueCoverageQuery, issueResultsQuery } from "../../api/queries";
-import type { Artifact, Decision, IssueDecisions, IssueDetails } from "../../api/types";
+import type { Artifact, Comment, Decision, IssueDecisions, IssueDetails } from "../../api/types";
 import { pageFocusedRow } from "../../theme/classes";
 import { bindRemoteMarks, createEditor, type EditorHandle } from "../doc/editor";
 import { compiledBlockSchema } from "../doc/schema";
 import { MarginProvider } from "../margin/margin-context";
-import { buildDispatchReference, buildIssuePath } from "../refs/routes";
+import { buildDispatchReference, buildIssuePath, parseIssuePath } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
 import { issueDetails } from "./decisions-filter/decisions-fixtures";
@@ -1250,8 +1250,8 @@ test("the row the reader is editing in places nothing of its own as it grows", a
 // room is left under it gets half the room, and the page is scrolled just far enough to show it.
 // The editor is made editable before it has read its document, and holds no block for the caret
 // or the box until then, so nothing is placed until it has drawn the document's blocks.
-// happy-dom lays nothing out, so the box, and the block 1,500 px down the document it scrolls,
-// are given, under a band of 60 px at the top and over a box of 100 px at the foot.
+// happy-dom lays nothing out, so the row, its box, and the block 1,500 px down the document it
+// scrolls, are given (`pageAroundEditingRow`), here a row that draws nothing over or under its box.
 test("the row's editor opens at the node's block, in a box that ends at the foot of the window", async () => {
   setViewport(1440);
   const user = userEvent.setup();
@@ -1264,29 +1264,9 @@ test("the row's editor opens at the node's block, in a box that ends at the foot
     id: KEY,
     type: "issue",
   });
-  const documentHeight = 3000;
-  let stands = 200;
-  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
-    this: HTMLElement
-  ) {
-    const box = this.closest<HTMLElement>(`[${EDITOR_BOX_ATTRIBUTE}]`);
-    if (box === null) return new DOMRect();
-    if (box === this) {
-      const cap = Number.parseFloat(box.style.maxHeight);
-      return new DOMRect(0, stands, 800, Number.isNaN(cap) ? documentHeight : cap);
-    }
-    return this.dataset.blockId === "r1"
-      ? new DOMRect(0, stands + 1500 - box.scrollTop, 800, 24)
-      : new DOMRect();
-  });
-  // The second look after the drawing above the block settles watches the editor's size.
-  const sizes = sizesByHand();
-  const scrolled = spyOn(window, "scrollBy").mockImplementation(() => {});
-  const published = document.documentElement.style;
-  published.setProperty(IDENTITY_HEIGHT_PROPERTY, "60px");
-  published.setProperty(FOOT_HEIGHT_PROPERTY, "100px");
-  const floor = window.innerHeight - 100;
-  const room = floor - 60;
+  const layout: RowLayout = { above: 0, below: 0, drawn: 3000, stands: 200 };
+  const page = pageAroundEditingRow(layout);
+  const { floor, room, scrolled } = page;
   try {
     const view = renderTree(root, {
       artifacts: [spec],
@@ -1329,7 +1309,7 @@ test("the row's editor opens at the node's block, in a box that ends at the foot
     await drawText();
     const box = await editorBox();
     expect(box.style.maxHeight, "the box does not end at the foot of the window").toBe(
-      `${floor - stands}px`
+      `${floor - layout.stands}px`
     );
     expect(box.scrollTop, "the box was not scrolled to the statement's block").toBe(1500);
     expect(scrolled, "the page around the row moved").not.toHaveBeenCalled();
@@ -1338,7 +1318,7 @@ test("the row's editor opens at the node's block, in a box that ends at the foot
     // Low on the screen, with less than half the room under it.
     await user.keyboard("{Escape}");
     await waitFor(() => expect(view.edited.at(-1)).toBeUndefined());
-    stands = floor - 40;
+    layout.stands = floor - 40;
     await user.keyboard("{Enter}");
     await drawText();
     const low = await editorBox();
@@ -1350,15 +1330,235 @@ test("the row's editor opens at the node's block, in a box that ends at the foot
     expect(
       (scrolled.mock.calls[0]?.[0] as ScrollToOptions | undefined)?.top ?? 0,
       "the page did not bring the low row's box over the foot"
-    ).toBeGreaterThanOrEqual(stands + cap - floor);
+    ).toBeGreaterThanOrEqual(layout.stands + cap - floor);
   } finally {
-    sizes.restore();
-    boxes.mockRestore();
-    scrolled.mockRestore();
-    published.removeProperty(IDENTITY_HEIGHT_PROPERTY);
-    published.removeProperty(FOOT_HEIGHT_PROPERTY);
+    page.restore();
   }
 });
+
+// The tester's red row `a row that edits a statement is no taller than the window, and the page
+// around it stays put`, its second half: the row's body - its facts, Keep open, Copy reference -
+// stands under its editor's box, and a box held to the room under its top alone left that body
+// under the window: a long statement the reader moved to and edited made a row of 971 px in a
+// window 900 px tall. The box is held so the whole row fits the room between the band and the
+// foot: a row whose top is at the band gets the room less what the row draws over and under its
+// box, and the page moves not at all.
+test("a row whose body stands under its editor's box is no taller than the room", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  // The row's top at the band, 60 px down: 2 px of it over the box, and a body of 120 px under it.
+  const layout: RowLayout = { above: 2, below: 120, drawn: 3000, stands: 62 };
+  const page = pageAroundEditingRow(layout);
+  try {
+    const { box } = await heldEditorBox(user, page);
+    expect(box.style.maxHeight, "the box leaves the row taller than the room").toBe(
+      `${page.room - layout.above - layout.below}px`
+    );
+    expect(page.scrolled, "the page around the row moved").not.toHaveBeenCalled();
+  } finally {
+    page.restore();
+  }
+});
+
+// Low on the screen, with less than half the room the row leaves its box under the box's top
+// once the body under it is counted: the box takes that half, and the page is scrolled just as
+// far as brings the whole row, its body too, over the foot's box.
+test("a low row whose body stands under its editor's box takes half the room the row leaves it, and is brought on screen whole", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const layout: RowLayout = { above: 2, below: 120, drawn: 3000, stands: 0 };
+  const page = pageAroundEditingRow(layout);
+  layout.stands = page.floor - 40;
+  try {
+    const { box } = await heldEditorBox(user, page);
+    const cap = Math.floor((page.room - layout.above - layout.below) / 2);
+    expect(box.style.maxHeight, "the box of a low row is not half the room the row leaves it").toBe(
+      `${cap}px`
+    );
+    expect(page.scrolled, "the page did not bring the low row on screen").toHaveBeenCalledTimes(1);
+    expect(
+      (page.scrolled.mock.calls[0]?.[0] as ScrollToOptions | undefined)?.top ?? 0,
+      "the page did not bring the low row's body over the foot"
+    ).toBeGreaterThanOrEqual(layout.stands + cap + layout.below - page.floor);
+  } finally {
+    page.restore();
+  }
+});
+
+// A body taller than the room leaves the box no room at all: the box still takes three of the
+// editor's lines (`node-caret.ts`'s `LEAST_BOX_LINES`), and the page, which shows that box
+// already, stays where it was.
+test("a row whose body is taller than the room still holds its editor's box to three of its lines", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const layout: RowLayout = { above: 2, below: 0, drawn: 3000, stands: 62 };
+  const page = pageAroundEditingRow(layout);
+  layout.below = page.room + 100;
+  try {
+    const { box } = await heldEditorBox(user, page);
+    expect(
+      box.style.maxHeight,
+      "the box under a body taller than the room is not three of the editor's lines"
+    ).toBe(`${3 * EDITOR_LINE}px`);
+    expect(page.scrolled, "the page moved though the box was on screen").not.toHaveBeenCalled();
+  } finally {
+    page.restore();
+  }
+});
+
+// A line height of `normal`, which a computed style keeps as the word rather than a length, is
+// read as 1.2 times the editor's font size (`node-caret.ts`'s `NORMAL_LINE_HEIGHT`): the box under
+// a body taller than the room takes three lines of 1.2 x 20 px.
+test("a box held to three of the editor's lines reads a line of normal height as 1.2 times the editor's font size", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const layout: RowLayout = { above: 2, below: 0, drawn: 3000, stands: 62 };
+  const page = pageAroundEditingRow(layout);
+  layout.below = page.room + 100;
+  try {
+    const { box } = await heldEditorBox(user, page, { fontSize: "20px", lineHeight: "normal" });
+    expect(
+      box.style.maxHeight,
+      "the box of an editor whose lines are of normal height is not three lines of 1.2 times its font size"
+    ).toBe("72px");
+  } finally {
+    page.restore();
+  }
+});
+
+// The body can grow after the editor opened, as the page's reads answer - a requirement's counts
+// come with the coverage read - and the second look after the editor's drawing settles holds the
+// box again, so the row still fits the room.
+test("a body grown by the time the editor's drawing settles is counted when the box is held again", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const layout: RowLayout = { above: 2, below: 120, drawn: 3000, stands: 62 };
+  const page = pageAroundEditingRow(layout);
+  try {
+    const { box, editable } = await heldEditorBox(user, page);
+    layout.below = 180;
+    layout.drawn = 3200;
+    await page.resized(editable);
+    await waitFor(
+      () =>
+        expect(box.style.maxHeight, "the box was not held again once the body grew").toBe(
+          `${page.room - layout.above - layout.below}px`
+        ),
+      { timeout: 2_000 }
+    );
+    expect(page.scrolled, "the page around the row moved").not.toHaveBeenCalled();
+  } finally {
+    page.restore();
+  }
+});
+
+/** Where the statement's row and its editor stand on the window, laid out by hand: the editor's
+ *  box `stands` px down the window, the row `above` px over the box's top and `below` px - its
+ *  body - under the box's foot, and the editor's drawing of the document `drawn` px tall, which
+ *  the box is as tall as until it is held to a height. A case moves them as it goes. */
+interface RowLayout {
+  above: number;
+  below: number;
+  drawn: number;
+  stands: number;
+}
+
+/** How tall a line of the editor `heldEditorBox` draws is. */
+const EDITOR_LINE = 24;
+
+/** The page around the statement's row while it holds its editor (`pageAroundEditingRow`). */
+interface EditingPage {
+  /** How far down the window the box at the foot starts. */
+  readonly floor: number;
+  /** Calls by hand the size observers watching `target`, or every one (`sizesByHand`). */
+  readonly resized: (target?: Element) => Promise<void>;
+  /** Puts back what the page was laid out by. */
+  readonly restore: () => void;
+  /** The room between the band at the top and the box at the foot. */
+  readonly room: number;
+  /** The page's scroll, which moves nothing. */
+  readonly scrolled: Mock<typeof window.scrollBy>;
+}
+
+/**
+ * The page around the statement's row while it holds its editor, by hand, since happy-dom lays
+ * nothing out and observes no size: the row, its editor's box, the editor's drawing and the
+ * statement's block 1,500 px down the document stand where `layout` says, and nothing else
+ * draws; the page's scroll is watched and moves nothing; its size observers are called by hand
+ * (`sizesByHand`), as the second look after the drawing above the block settles watches the
+ * editor's size; and a band of 60 px stands at the top, over a box of 100 px at the foot.
+ * Answers the line the foot's box starts at, the room between the two, the page's scroll, its
+ * size observers, and what puts it all back.
+ */
+function pageAroundEditingRow(layout: RowLayout): EditingPage {
+  const boxRect = (box: HTMLElement) => {
+    const cap = Number.parseFloat(box.style.maxHeight);
+    return new DOMRect(0, layout.stands, 800, Number.isNaN(cap) ? layout.drawn : cap);
+  };
+  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement
+  ) {
+    const held = this.matches("[data-node-row]")
+      ? this.querySelector<HTMLElement>(`[${EDITOR_BOX_ATTRIBUTE}]`)
+      : null;
+    if (held !== null) {
+      const box = boxRect(held);
+      return new DOMRect(0, box.top - layout.above, 800, layout.above + box.height + layout.below);
+    }
+    const box = this.closest<HTMLElement>(`[${EDITOR_BOX_ATTRIBUTE}]`);
+    if (box === null) return new DOMRect();
+    if (box === this) return boxRect(box);
+    if (this.matches('[contenteditable="true"]')) {
+      return new DOMRect(0, layout.stands - box.scrollTop, 800, layout.drawn);
+    }
+    return this.dataset.blockId === "r1"
+      ? new DOMRect(0, layout.stands + 1500 - box.scrollTop, 800, 24)
+      : new DOMRect();
+  });
+  const sizes = sizesByHand();
+  const scrolled = spyOn(window, "scrollBy").mockImplementation(() => {});
+  const published = document.documentElement.style;
+  published.setProperty(IDENTITY_HEIGHT_PROPERTY, "60px");
+  published.setProperty(FOOT_HEIGHT_PROPERTY, "100px");
+  const floor = window.innerHeight - 100;
+  return {
+    floor,
+    resized: sizes.resized,
+    restore: () => {
+      sizes.restore();
+      boxes.mockRestore();
+      scrolled.mockRestore();
+      published.removeProperty(IDENTITY_HEIGHT_PROPERTY);
+      published.removeProperty(FOOT_HEIGHT_PROPERTY);
+    },
+    room: floor - 60,
+    scrolled,
+  };
+}
+
+/** The statement's row on `page` with Enter pressed on it, once its editor - an editable drawn in
+ *  `style`, by default in lines of `EDITOR_LINE` px - has drawn the statement's document and the
+ *  row has held the editor's box to a height. The page's scroll is watched from the drawing on:
+ *  the move to the row before it placed the row as every move does. Answers the box and the
+ *  editable. */
+async function heldEditorBox(
+  user: UserEvent,
+  page: EditingPage,
+  style: CSSProperties = { lineHeight: `${EDITOR_LINE}px` }
+): Promise<{ readonly box: HTMLElement; readonly editable: HTMLElement }> {
+  const { editable } = await enterStatement(
+    user,
+    <div contentEditable style={style} suppressContentEditableWarning />
+  );
+  page.scrolled.mockClear();
+  await drawStatementBlocks(editable);
+  const box = editable.closest<HTMLElement>(`[${EDITOR_BOX_ATTRIBUTE}]`);
+  if (box === null) throw new Error("the row's editor stands in no box");
+  await waitFor(() =>
+    expect(box.style.maxHeight, "the row's editor was not held to the window").not.toBe("")
+  );
+  return { box, editable };
+}
 
 /** Blocks of the statement's document as its editor draws them, each by its `data-block-id` and
  *  its words: by default the words above the statement (`r0`), then the statement (`r1`). */
@@ -4424,6 +4624,92 @@ test("a zoom into a row taller than the window places its crumb line, and the ro
   }
 });
 
+// `.` zooms into a row of the outline's top level and `,` draws the whole outline again with the
+// focus still on that row: it took no new focus, so nothing of its own placed it, and a zoom back
+// out to the issue placed nothing either - at 1440 by 900 on a long issue the row stood 2,000 to
+// 40,000 px below the window until the next key. Once the outline is drawn the row is brought on
+// screen by the page's one rule and held there while the rows above it grow, as the cycle key's
+// row is. A row `,` moves the focus to - the zoom's own, from a row under it - places itself as it
+// takes the focus, and the zoom places it no second time. happy-dom lays nothing out, so the boxes
+// are given, moved by each scroll, and the size observers watching the page are called by hand.
+test(", from the row . zoomed into brings that row on screen and holds it there as the page grows", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  let scrolledTo = 0;
+  // The one row given a box: how tall it is, and where it stands down the page. Every other row
+  // is given none, which reads as whole on screen.
+  let given = { height: 40, id: "comment-2", top: 300 };
+  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement
+  ) {
+    return this.matches("[data-node-row]") && this.dataset.nodeId === given.id
+      ? new DOMRect(0, given.top - scrolledTo, 800, given.height)
+      : new DOMRect();
+  });
+  const scrolled = spyOn(window, "scrollBy").mockImplementation(((options: ScrollToOptions) => {
+    scrolledTo += options.top ?? 0;
+  }) as typeof window.scrollBy);
+  const sizes = sizesByHand();
+  try {
+    const view = renderTree(twoCommentsTree());
+    await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+    await user.keyboard("{End}");
+    await waitFor(() => expect(focusedRow(view.container)).toBe("comment-2"));
+    await user.keyboard(".");
+    await waitFor(() =>
+      expect(view.container.querySelector(`[data-crumb="${KEY}"]`)).not.toBeNull()
+    );
+    scrolled.mockClear();
+
+    // The whole outline drawn again puts the 40 px row 2,000 px below the window's foot.
+    given = { ...given, top: scrolledTo + window.innerHeight + 2000 };
+    await user.keyboard(",");
+    await waitFor(() => expect(view.container.querySelector("[data-crumb]")).toBeNull());
+    expect(focusedRow(view.container), "the key back out moved the focus off the row").toBe(
+      "comment-2"
+    );
+    // Its foot is brought 8 px clear of the screen's (`identity-block.ts`'s `bringOnScreen`).
+    expect(
+      scrolled,
+      "the key back out of the row . zoomed into left that row off screen"
+    ).toHaveBeenCalledWith({ top: 2000 + 40 + CLEARANCE });
+
+    // The rows above it grow by 500 px more, which puts it below the window's foot again.
+    given = { ...given, top: given.top + 500 };
+    await sizes.resized(document.body);
+    expect(
+      scrolled,
+      "the row was not held on screen as the rows above it grew"
+    ).toHaveBeenLastCalledWith({ top: 500 });
+
+    // `,` from the reply under the first comment's zoom moves the focus to the first comment,
+    // a row taller than the window, which places itself once: at its top just under the band.
+    await user.keyboard("{Home}");
+    await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+    await user.keyboard(".");
+    await waitFor(() =>
+      expect(view.container.querySelector(`[data-crumb="${KEY}"]`)).not.toBeNull()
+    );
+    await user.keyboard("j");
+    await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1a"));
+    scrolled.mockClear();
+    given = {
+      height: 2 * window.innerHeight,
+      id: "comment-1",
+      top: scrolledTo + window.innerHeight + 2000,
+    };
+    await user.keyboard(",");
+    await waitFor(() => expect(view.container.querySelector("[data-crumb]")).toBeNull());
+    expect(focusedRow(view.container)).toBe("comment-1");
+    expect(scrolled, "the row , moved the focus to was placed twice").toHaveBeenCalledTimes(1);
+    expect(scrolled).toHaveBeenCalledWith({ top: window.innerHeight + 2000 - CLEARANCE });
+  } finally {
+    sizes.restore();
+    boxes.mockRestore();
+    scrolled.mockRestore();
+  }
+});
+
 // The cycle key holds the focused row on screen while the bodies it draws above the row grow
 // (`holdOnScreen`), and a focus `f` left on a chip of the row is the row's own: the hold ended as
 // soon as the page grew with the focus on the chip rather than on the row itself, and the row was
@@ -6455,5 +6741,243 @@ test("the outline mounted again past 30 s reads none of the reads it waits on ag
   } finally {
     setSystemTime();
     for (const spy of [...reads, ...others]) spy.mockRestore();
+  }
+});
+
+/** A comment as the comments' read answers it, `at` the minute of the hour it was written in:
+ *  `reply_to` is the head of the thread it answers, and `author` alice where none is given. */
+function readComment(
+  id: string,
+  at: number,
+  reply_to: string | null = null,
+  author: Comment["author"] = { id: "alice", kind: "user" }
+): Comment {
+  return {
+    anchor: null,
+    answers: reply_to,
+    artifact_id: null,
+    ask_id: null,
+    author,
+    body: `The words of ${id}.`,
+    created_at: `2026-11-05T01:${String(at).padStart(2, "0")}:00Z`,
+    deliveries: [],
+    edited_at: null,
+    id,
+    issue_key: KEY,
+    mentions: [],
+    reply_block: null,
+    reply_to,
+    resolved: false,
+    resolved_at: null,
+    resolved_by: null,
+    suggestion: null,
+    turn: null,
+  };
+}
+
+/** Two threads of the issue, each a head and one reply under it. */
+const TWO_THREADS: readonly Comment[] = [
+  readComment("head-a", 1),
+  readComment("reply-a", 2, "head-a"),
+  readComment("head-b", 3),
+  readComment("reply-b", 4, "head-b"),
+];
+
+/** The page's body at the address the router holds, as the page's root draws it
+ *  (`IssueOutlinePage.tsx`): the route read from the address at every render. `held.navigate`
+ *  is what a link followed calls. */
+function AddressedBody({
+  held,
+  issue,
+}: {
+  held: { navigate?: NavigateFunction };
+  issue: IssueDetails;
+}): ReactNode {
+  const { pathname, search } = useLocation();
+  held.navigate = useNavigate();
+  const route = parseIssuePath(pathname, search) ?? ({ key: KEY, kind: "issue" } as const);
+  return (
+    <ProvidersSlot issue={issue} route={route}>
+      <IssueScope />
+      <BodySlot issue={issue} route={route} />
+    </ProvidersSlot>
+  );
+}
+
+/** The page's body opened at `path`, every read the tree is built from answered: the issue
+ *  holds `comments` and nothing else. `follow` follows a link to an address, as a row's link or
+ *  the router's does; `redraw` draws the same location again, as a read answering does. */
+function renderAddressedBody(path: string, comments: readonly Comment[]) {
+  const issue: IssueDetails = { ...issueDetails(), artifacts: [] };
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  client.setQueryData(["whoami"], { kind: "user", login: "alice" });
+  client.setQueryData(issueCoverageQuery(KEY).queryKey, { requirements: [] } as never);
+  client.setQueryData(issueResultsQuery(KEY).queryKey, { checks: [] } as never);
+  client.setQueryData(["decisions", KEY], { decisions: [], document: null, open_questions: [] });
+  client.setQueryData(["asks", KEY], []);
+  client.setQueryData(["comments", KEY], comments);
+  client.setQueryData(["issue-messages", KEY], []);
+  const held: { navigate?: NavigateFunction } = {};
+  const draw = () => (
+    <MemoryRouter initialEntries={[path]}>
+      <QueryClientProvider client={client}>
+        <KeymapProvider>
+          <MarginProvider>
+            <AddressedBody held={held} issue={issue} />
+          </MarginProvider>
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  const view = render(draw());
+  return {
+    follow: (to: string) =>
+      act(async () => {
+        await held.navigate?.(to);
+      }),
+    redraw: () => view.rerender(draw()),
+    view,
+  };
+}
+
+// The architect's rule for an address of a node of the issue: following a link to it opens the
+// branches above the node and puts the focus on its row. A zoom the reader held on another branch
+// drew no row for the node, and the landing gave up with nothing said: the focus stayed where it
+// was and the zoom stood. The following leaves a zoom the node is outside of.
+test("a comment's address followed while the reader is zoomed into another branch leaves the zoom and lands on the comment's row", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  try {
+    const body = renderAddressedBody(`/issues/${KEY}`, TWO_THREADS);
+    const { container } = body.view;
+    await waitFor(() => expect(focusedRow(container)).toBe("head-a"));
+    await user.keyboard(".");
+    await waitFor(() => expect(container.querySelector("[data-crumb]")).not.toBeNull());
+    expect(rowsFor(container, "reply-b"), "the zoom into head-a drew the other thread").toEqual([]);
+
+    await body.follow(buildIssuePath({ id: "reply-b", key: KEY, kind: "comment" }));
+    await waitFor(() =>
+      expect(
+        focusedRow(container),
+        "the comment's address, followed from a zoom into another branch, landed nowhere"
+      ).toBe("reply-b")
+    );
+    expect(
+      container.querySelector("[data-crumb]"),
+      "the zoom into the other branch stood after the following"
+    ).toBeNull();
+  } finally {
+    names.mockRestore();
+  }
+});
+
+// The landing was keyed on the node alone, so a link to the node the reader had moved away from,
+// followed again - the same address, a new following - landed nowhere. It is keyed on the
+// following too (the location's own key), and a tree drawn again at the same following - a read
+// answering - lands no more once the reader has moved.
+test("the same address followed twice lands both times, and a redraw of it after the reader moved lands no more", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const address = buildIssuePath({ id: "reply-b", key: KEY, kind: "comment" });
+  try {
+    const body = renderAddressedBody(address, TWO_THREADS);
+    const { container } = body.view;
+    await waitFor(() => expect(focusedRow(container)).toBe("reply-b"));
+    await user.keyboard("k");
+    await waitFor(() => expect(focusedRow(container)).not.toBe("reply-b"));
+    const moved = focusedRow(container);
+    expect(moved, "k left the focus on no row").toBeDefined();
+
+    await body.follow(address);
+    await waitFor(() =>
+      expect(focusedRow(container), "the same address followed a second time landed nowhere").toBe(
+        "reply-b"
+      )
+    );
+
+    await user.keyboard("k");
+    await waitFor(() => expect(focusedRow(container)).toBe(moved));
+    body.redraw();
+    await nextFrame();
+    await nextFrame();
+    expect(focusedRow(container), "a redraw of the same following landed on the node again").toBe(
+      moved
+    );
+  } finally {
+    names.mockRestore();
+  }
+});
+
+// A node the tree does not hold falls back to the address's own page, never to the page's body,
+// once every read the tree is built from has answered: for an id no item of the issue holds, the
+// old page's landing reads the item and finds none (`missing`), and the page says so where the
+// outline would be, with the focus on that line.
+test("an address naming an item no node holds draws the item's failure once the reads are held, with the focus on its line", async () => {
+  setViewport(1440);
+  const gone = "0b6e3f51-9c55-4d9e-8a3e-5b8cfa2c7d10";
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const read = spyOn(api, "getComment").mockRejectedValue(
+    new ApiError(404, { code: "NOT_FOUND", error: "no such comment" })
+  );
+  try {
+    const body = renderAddressedBody(
+      buildIssuePath({ id: gone, key: KEY, kind: "comment" }),
+      TWO_THREADS
+    );
+    const heading = await waitFor(() =>
+      body.view.getByRole("heading", { name: "Comment not found" })
+    );
+    expect(read).toHaveBeenCalledWith(gone);
+    await waitFor(() =>
+      expect(document.activeElement, "the failure's line does not hold the focus").toBe(heading)
+    );
+    expect(heading.parentElement?.textContent).toContain(
+      `That link doesn't name a comment on ${KEY} — it may have been deleted.`
+    );
+    expect(body.view.queryByRole("tree"), "the outline is drawn beside the failure").toBeNull();
+  } finally {
+    names.mockRestore();
+    read.mockRestore();
+  }
+});
+
+// A turn of a thread only agents wrote in is no node of the outline, on purpose (`agents-only.ts`):
+// its address is no missing item. It lands on the turn's nearest drawn ancestor - the issue here,
+// which is no row, so the outline's tab stop - and says at that row that the thread is the agents'
+// alone. The item is not read as the old page reads one: it is named as a kind of its own.
+test("an address naming a turn only agents wrote in lands on its nearest drawn ancestor and says there the thread is the agents' alone", async () => {
+  setViewport(1440);
+  const agent = { id: "session-1", kind: "session" } as const;
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const read = spyOn(api, "getComment");
+  try {
+    const body = renderAddressedBody(
+      buildIssuePath({ id: "agents-1", key: KEY, kind: "comment" }),
+      [...TWO_THREADS, readComment("agents-1", 5, null, agent)]
+    );
+    const { container } = body.view;
+    await waitFor(() =>
+      expect(rowReport(container), "no row says the thread is the agents' alone").toBe(
+        KEY_REPORTS.agents_thread
+      )
+    );
+    expect(focusedRow(container), "the landing is not on the outline's tab stop").toBe("head-a");
+    expect(
+      rowsFor(container, "head-a")[0]?.querySelector("[data-row-report]"),
+      "the report is not drawn at the row the address landed on"
+    ).not.toBeNull();
+    expect(rowsFor(container, "agents-1"), "the outline drew the agents' turn").toEqual([]);
+    expect(
+      read,
+      "the agents' turn was read as an item the issue may not hold"
+    ).not.toHaveBeenCalled();
+    expect(body.view.queryByRole("heading", { name: "Comment not found" })).toBeNull();
+  } finally {
+    names.mockRestore();
+    read.mockRestore();
   }
 });
