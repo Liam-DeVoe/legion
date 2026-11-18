@@ -4227,6 +4227,21 @@ The `roles` container ending — its PID 1 exiting, `OOMKilled`, an eviction
 When that reason is `OOMKilled`, each role whose turn the end cut off gets its task again behind a note that its pod ran out of memory and a pointer to `skill://legion-worker/references/tools.md` (`Observation.OutOfMemory`, then `outOfMemoryTask` in `internal/supervise/delivery.go`, kept on the delivery across a daemon restart);
 a role that was in no turn gets nothing, and neither an init container's end nor the controller's pod gives the note.
 
+A death the daemon charges for memory, or for the pod's own disk, is told in plain words with its number, before the runtime's own detail (`Observation.Cause`, read where the end is, then `plainCause` in `internal/supervise/plain_cause.go`):
+
+- a `roles` container that ended `OOMKilled` is told as `the pod's roles container, which runs every role of this issue, was killed because it used more than its <limit> memory limit`, with the container's memory limit as the pod's spec holds it;
+
+- an eviction for node memory pressure whose message names a container of the pod over its request ([The disk dies with its pod](#the-disk-dies-with-its-pod)) is told as `the kubelet evicted the pod for node memory pressure because its <container> container was using <use>, more than its <request> memory request`, with the use and the request the kubelet's message gives, since that pod passed its request and not its limit;
+
+- an eviction for the pod's own disk is told as `the kubelet evicted the pod because its container's own disk, outside $TMPDIR, passed its <limit> limit`, with the limit the kubelet's message gives, or the limit the pod's spec holds it to where the message gives none.
+
+Each size is in GiB or MiB, to two decimals with the zeros that end them dropped, so `9437188Ki` reads `9 GiB` and `16082620Ki` reads `15.34 GiB`.
+The role's next task carries the sentence where it says why its process ended, as `Your process ended because <sentence>. The runtime's detail: "<detail>".`, and for a disk eviction `Keep large files under $TMPDIR, on the issue's volume.` stands between the sentence and the detail.
+For a `roles` container killed for memory that sentence is the task's one statement that the pod ran out of memory: the note behind it keeps its guidance, that the work can be another role's and the pointer to the worker guide, and drops its own `Your pod ran out of memory.` and the sentence after it (`outOfMemoryNote`), which it still carries whole where the daemon names no limit.
+The claim's `lastDeathCause` opens with the same sentence, as `<sentence>. The runtime's detail: <detail>`.
+So when those deaths fail the claim, the hold notice its architect gets, the controller's copy of it and the `worker-died` beside them carry it as `failure.death`, and for the tree's own architect so does the `worker-died` the controller gets.
+A death of any other cause carries the runtime's detail alone, as before.
+
 Every container carries a reservation, a cpu and memory limit with a request no greater than it, and an ephemeral-storage limit over a smaller request:
 the `roles` container and both init containers the issue pod's one reservation (`runtime.kubernetes.resources.issue`, or the daemon's default), and the third init container, where the deployment names a `skills_repository`, that same reservation.
 At the default every request equals its limit and the pod is `Guaranteed`; a `cpu_request` or `memory_request` below its limit makes the pod `Burstable`.
@@ -5762,6 +5777,7 @@ Two readings say something outside the pod ended it:
 - the pod ended carrying a `DisruptionTarget` condition, which the control plane and the kubelet set on a pod they are ending, or with one of three reasons on its own status:
   `Terminated`, `NodeShutdown` or `Preempted` (`clusterEndedReasons`, `pod_end.go`).
   A pod whose status reason is `Evicted` is such an end only with the condition, which the kubelet sets when it evicts a pod because its node is under pressure.
+  An eviction for node memory pressure whose kubelet message names a container of the pod using more memory than it requested is not such an end, though it carries the condition (below).
 
 A pod already terminal, in the phase the kubelet sets on a pod it has ended, is read from its status alone, and a deletion timestamp counts only on a pod not yet terminal.
 So a failed pod the cluster did not end is charged whether the controller's delete of it reaches the daemon in the same event as the failure or in a later one, and a deletion the daemon saw first on the running pod stays an end from outside it when the pod then turns terminal.
@@ -5773,7 +5789,7 @@ An end of either reading costs its roles nothing, however often it comes.
 The daemon continues each role of that pod in that role's own session, charges no death and no launch failure, and sends each role the task it owed again.
 The turn each role was in is lost with the pod, and the task goes back to waiting until that session resumes.
 The daemon keeps no count of these ends, so the tenth in a row costs a role what the first did, whether its agent was ready or still starting and whatever work it held.
-So a pod whose own memory use drives its node into pressure restarts free each time, since that eviction carries `DisruptionTarget` exactly as a neighbour's does.
+So a pod evicted because a neighbour's memory use drove its node into pressure restarts free each time, since that eviction carries `DisruptionTarget` and its message names no container of the pod over its request.
 That is chosen: the role cannot fix a cause outside its pod, and charging such ends at a limit would only turn a loop of restarts into a claim that runs nothing.
 Such an end ends the turn it interrupted, as a charged death does, since the agent that turn belonged to is gone and never ends it, so a later death of the relaunched agent is not charged against that turn.
 Each claim writes its own line for what it got, at info:
@@ -5782,7 +5798,11 @@ Each claim writes its own line for what it got, at info:
 An end of neither reading is charged as a death exactly as before, so a pod that fails by itself still ends its claim once that claim's deaths run out ([Liveness rules](#liveness-rules)).
 `Evicted` with no `DisruptionTarget` condition is such an end:
 the kubelet gives that reason, and no condition, to a pod that went over its own ephemeral-storage limit, a container's ephemeral-storage limit or an `emptyDir`'s `sizeLimit`, and the pod that replaces it runs the same task into the same limit.
-A reason outside those three is such an end too, `UnexpectedAdmissionError` among them:
+An eviction for node memory pressure whose kubelet message names a container of the pod using more memory than it requested is such an end too, though it carries the condition:
+the kubelet evicts the pods using more than their request before any pod within its own, so that pressure was the pod's own memory use, and the pod that replaces it runs the same task into the same pressure (`memoryOverRequest`, `pod_end.go`).
+The message names each such container in the words `Container roles was using 9437188Ki, request is 8Gi, has larger consumption of memory.`, and an eviction whose message names no container of the pod's own spec is a neighbour's, read as an end from outside the pod and continued.
+An end the daemon itself started is its own whatever the pod's status says, so a pod the daemon is releasing that the kubelet then evicts continues no role.
+A reason outside the cluster's three is such an end too, `UnexpectedAdmissionError` among them:
 a node refused that pod before it ran, the pod that replaces it would meet the same refusal, and an end the daemon waived would be relaunched for ever.
 
 **What each kind of end loses and keeps.**

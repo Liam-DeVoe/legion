@@ -6,6 +6,8 @@ import (
 	"slices"
 	"strconv"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
 // EndedWork is the claim's record of what the last let-go of its process ended of the work its
@@ -148,8 +150,24 @@ const (
 	endStopped     = "its claim was stopped"
 )
 
-// endDied is a death's cause, with the runtime's own account of it (Claim.LastDeathCause), quoted.
-func endDied(cause string) string { return "the process died: " + strconv.Quote(cause) }
+// endDied is a death's cause. Where the runtime read a cause the daemon tells in plain words it is
+// that sentence (plainCause), the daemon's own and unquoted, then, for a disk eviction, where the
+// role's large files belong (diskTask), and then the runtime's own account of the death
+// (deathAccount), quoted; a death of any other cause is the account alone, quoted, behind "the
+// process died". The record's sentence carries it into the role's next task (RelaunchSentence,
+// interruptedTask), so that task reads what ended the process and its number before the runtime's
+// detail (dispatch://INFRA-1117 R9).
+func endDied(observation runtime.Observation) string {
+	account := strconv.Quote(deathAccount(observation))
+	switch plain := plainCause(observation.Cause); {
+	case plain == "":
+		return "the process died: " + account
+	case observation.Cause.Kind == runtime.DeathDiskLimit:
+		return plain + ". " + diskTask + " " + runtimeDetail + account
+	default:
+		return plain + ". " + runtimeDetail + account
+	}
+}
 
 // endStalled is the stall backstop's cause, with the bound the claim's last step passed. It names
 // a turn only where the stop finds one (inTurn: the claim reads working, endState). The daemon's
@@ -225,7 +243,12 @@ func endNeverReady(never string) string { return "its agent " + never + ", so th
 // It writes nothing itself: the record is a field of the claim, and the let-go's own write — the
 // launch's, the suspension's, the failure's, the retirement's, or the death's charge — carries
 // it, and the untelling with it. So it costs the relaunch one read and waits for nothing else.
-func (m *Machine) recordEnd(ctx context.Context, cause string) {
+//
+// keep says the record is kept whatever the let-go cut off: a death the daemon tells in plain
+// words of a claim that holds a task (keepsDeathRecord), which the death charges and whose next
+// task must say what killed the process (dispatch://INFRA-1117 R9), though no turn ran and nothing
+// was taken back. Every other let-go passes false and keeps the rule above.
+func (m *Machine) recordEnd(ctx context.Context, cause string, keep bool) {
 	m.untellInFlight()
 	if cause == noEnd || m.claim.Locator == nil {
 		return
@@ -262,7 +285,7 @@ func (m *Machine) recordEnd(ctx context.Context, cause string) {
 	// idle claim in working (sendPending's askFirst branch, answerAskFirstAfterDrop). A daemon
 	// restarted under a working claim reads the one the daemon before it stored.
 	ended.Reported = reported && !(ranTurn && report.At.Before(m.claim.LastTurnStart))
-	if !ended.Turn && !ended.TaskTurn && !ended.Background && (ended.Reported || !ranTurn) {
+	if !keep && !ended.Turn && !ended.TaskTurn && !ended.Background && (ended.Reported || !ranTurn) {
 		return
 	}
 	ended.At = m.deps.Clock.Now()
@@ -285,11 +308,12 @@ func (m *Machine) recordEnd(ctx context.Context, cause string) {
 // the id it gives the task (interrupted), and letGo clears it with the process. A take-back the
 // store refuses leaves the mark on the task it left confirmed, which no later let-go of this
 // process reads: the record of this launch already stands (EndedWork.Generation).
-func (m *Machine) recordGoneEnd(ctx context.Context, cause string) {
+// keep is recordEnd's.
+func (m *Machine) recordGoneEnd(ctx context.Context, cause string, keep bool) {
 	if p := m.claim.Pending; p != nil && !p.ConfirmedAt.IsZero() {
 		m.cutTurnOf = p.ID
 	}
-	m.recordEnd(ctx, cause)
+	m.recordEnd(ctx, cause, keep)
 }
 
 // endState is the claim's state as a let-go reads it for the turn it cuts off (recordEnd): the

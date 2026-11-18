@@ -357,14 +357,15 @@ func TestASuspendOverAProcessTheReadFoundGoneStopsTheDeadSessionAndKeepsTheEndsN
 					t.Errorf("the claim holds %+v, want the dead turn's task back under a new id, unconfirmed, interrupted and marked out of memory %v",
 						p, verdict.outOfMemory)
 				}
-				cause := deathCause(runtime.Observation{Kind: runtime.Gone})
+				read := runtime.Observation{Kind: runtime.Gone}
+				cause := deathCause(read)
 				if c := h.claim().LastDeathCause; c != cause {
 					t.Errorf("the claim records its last death as %q, want the read's own account %q", c, cause)
 				}
 				ended := h.claim().EndedWork
-				if ended.Cause != endDied(cause) || !ended.Turn || !ended.TaskTurn || !ended.Tells() {
+				if ended.Cause != endDied(read) || !ended.Turn || !ended.TaskTurn || !ended.Tells() {
 					t.Errorf("the claim records the let-go's end as %+v, want the read's death %q, with the dead turn and its task, untold",
-						ended, endDied(cause))
+						ended, endDied(read))
 				}
 				want := relaunchSentence(ended, true) + "\n\n" + held.Task
 				if verdict.outOfMemory {

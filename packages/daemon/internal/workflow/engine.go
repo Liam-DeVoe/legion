@@ -925,8 +925,10 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 // the four counts the failure left, each against the limit it ran out at (noticeFailure). The
 // worker-died of a role that does not work the issue's phase names it too, since that role's
 // architect decides whether to start it again on the same evidence. The tree architect's own
-// worker-died names none: nobody inside the tree is left to read it, and the operator who
-// relaunches that architect reads the claim's own record (api.ClaimFailureView).
+// worker-died names it as well, for the controller's copy: nobody inside the tree is left to read
+// it, and the controller deciding what to do about that architect is told what killed it, the
+// plain sentence of its last death's cause included (supervise's deathCause, dispatch://INFRA-1117
+// R9), as the operator who relaunches it reads the claim's own record (api.ClaimFailureView).
 //
 // A child's sub-architect works no phase and holds none: the operator starts it, and no transition
 // or admission ever starts an architect below the tree's root. Its claim failing holds nothing and
@@ -950,7 +952,8 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 		return intake.Result{}, err
 	}
 	if claim.IsTreeArchitect(fact.Role, issue.Key, issue.Tree) {
-		return intake.Result{}, e.noticeWithController(ctx, tx, issue.Key, record.Notice{Kind: "worker-died", Role: fact.Role, Phase: issue.Phase})
+		return intake.Result{}, e.noticeWithController(ctx, tx, issue.Key, record.Notice{Kind: "worker-died", Role: fact.Role, Phase: issue.Phase,
+			Failure: noticeFailure(fact)})
 	}
 	if fact.Role == claim.RoleArchitect {
 		return intake.Result{}, nil

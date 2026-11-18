@@ -151,8 +151,9 @@ func TestAFinishedRolesFailedClaimIsNoticedAndHoldsNothing(t *testing.T) {
 // The other three shapes of worker-died are here beside it, because the evidence each carries is
 // a decision of its own: the worker-died of a role that does not work the issue's phase names the
 // failure too, since that role's architect decides whether to start it again on the same
-// evidence; the tree architect's own names none, as R5 has it, and neither does the one that ends
-// a closed issue's production-check look, whose reason already names the cause.
+// evidence; the tree architect's own names it as well, since the controller's copy of it is all
+// the controller is told of what killed that architect (dispatch://INFRA-1117 R9); and the one
+// that ends a closed issue's production-check look names none, its reason already naming the cause.
 func TestTheHeldNoticeNamesTheFailure(t *testing.T) {
 	const sentence = "the planner's process died with its task outstanding, and its relaunches ran out"
 	failed := func(issue string, role claim.Role) intake.ClaimFailed {
@@ -208,16 +209,16 @@ func TestTheHeldNoticeNamesTheFailure(t *testing.T) {
 		}
 	})
 
-	t.Run("a tree architect's claim names none", func(t *testing.T) {
+	t.Run("a tree architect's claim names it to the controller", func(t *testing.T) {
 		pool := migratedPool(t)
 		seedIssue(t, pool, root)
 
 		if _, err := intake.ApplyFact(context.Background(), pool, "supervise", "architect-failed", failed(root.Key, claim.RoleArchitect), testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
 			t.Fatalf("ApplyFact the architect's failed claim: %v", err)
 		}
-		died := record.Notice{Kind: "worker-died", Role: claim.RoleArchitect, Phase: phase.Planning}
+		died := record.Notice{Kind: "worker-died", Role: claim.RoleArchitect, Phase: phase.Planning, Failure: named}
 		if got, want := noticeRows(t, pool), []record.OutboxPayload{died, record.ControllerNotice(died)}; !sameNotices(got, want) {
-			t.Fatalf("notice rows = %+v, want %+v, naming no failure", got, want)
+			t.Fatalf("notice rows = %+v, want %+v, the controller's copy naming the failure", got, want)
 		}
 	})
 

@@ -176,7 +176,8 @@ func TestKubernetesDocStatesTheTwoKindsOfWorkspaceCopy(t *testing.T) {
 
 // The two readings that earn an uncharged continue, the end reasons the second covers, the reason
 // that needs the condition, that no count of such ends is kept however often they come, and the
-// ends that are still charged as a death.
+// ends that are still charged as a death, the pod's own memory use under node pressure among them
+// though it carries the condition, and the daemon's own end whatever the kubelet wrote.
 func TestKubernetesDocStatesWhichPodEndsAreContinuedUnchargedAndWhichIsCharged(t *testing.T) {
 	const what = `docs/kubernetes.md's "An end from outside the pod" paragraph`
 	lines, region := testdoc.Region(t, workspaceCopyDocExtract, what, podEndReadingsStart, podEndReadingsEnd)
@@ -192,6 +193,12 @@ func TestKubernetesDocStatesWhichPodEndsAreContinuedUnchargedAndWhichIsCharged(t
 		{Fact: "that the kubelet's eviction with no condition is charged", Phrase: "`" + evictedReason + "` with no `DisruptionTarget` condition is such an end"},
 		{Fact: "the three limits that eviction is for", Phrase: "its own ephemeral-storage limit, a container's ephemeral-storage limit or an `emptyDir`'s `sizeLimit`"},
 		{Fact: "a reason outside the three, which is charged", Phrase: "UnexpectedAdmissionError"},
+		{Fact: "that an eviction naming a container of the pod over its memory request is charged",
+			Phrase: "An eviction for node memory pressure whose kubelet message names a container of the pod using more memory than it requested is such an end too"},
+		{Fact: "the sentence of the kubelet's message that names such a container", Phrase: "has larger consumption of memory."},
+		{Fact: "that a message naming no container of the pod is a neighbour's, which is continued",
+			Phrase: "names no container of the pod's own spec is a neighbour's"},
+		{Fact: "that an end the daemon itself started stays its own", Phrase: "An end the daemon itself started is its own whatever the pod's status says"},
 	})
 
 	bullets := testdoc.RegionBullets(lines)
@@ -219,6 +226,8 @@ func TestKubernetesDocStatesWhichPodEndsAreContinuedUnchargedAndWhichIsCharged(t
 	testdoc.RequireDocFacts(t, what+", its DisruptionTarget bullet", cluster, []testdoc.Fact{
 		{Fact: "that the kubelet's eviction reason earns the continue only with the condition",
 			Phrase: "`" + evictedReason + "` is such an end only with the condition"},
+		{Fact: "that the pod's own memory use earns no continue, with the condition or without",
+			Phrase: "is not such an end, though it carries the condition"},
 	})
 }
 

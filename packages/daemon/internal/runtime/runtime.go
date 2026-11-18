@@ -595,7 +595,9 @@ type PodEndReading string
 const (
 	// PodEndNotOurs: something outside the pod ended it. The cluster evicted, preempted or shut
 	// down the pod (its DisruptionTarget condition, or one of the reasons the cluster gives such
-	// an end; the kubelet's `Evicted` counts only with the condition), or the pod, not yet
+	// an end; the kubelet's `Evicted` counts only with the condition, and not when the kubelet's
+	// message names a container of the pod using more memory than it requested, which is the
+	// pod's own memory use and read neither way: DeathMemoryRequest), or the pod, not yet
 	// terminal, was deleted under a deletion timestamp that no intent of the daemon's accounts
 	// for; a pod already terminal is read from its status alone. The process did nothing the
 	// daemon can see wrong, so the supervisor continues each role of that pod in its own
@@ -611,6 +613,44 @@ const (
 	// suspended or released the claim before its pod goes.
 	PodEndOurs PodEndReading = "pod_end_ours"
 )
+
+// DeathCauseKind is which of the causes the daemon tells a role in plain words a runtime read of
+// the end of a process (DeathCause). Each is a death the role's own work can cause and can stop
+// causing, so the supervisor charges it and says what it was, with its numbers, in the role's next
+// task and in the notices of a claim it fails (supervise's deathCause, dispatch://INFRA-1117 R9).
+type DeathCauseKind string
+
+const (
+	// DeathMemoryLimit: the issue pod's one container, `roles`, ended OOMKilled, so it used more
+	// than its memory limit. DeathCause.Limit is that limit, as the pod's spec holds it.
+	DeathMemoryLimit DeathCauseKind = "memory_limit"
+	// DeathMemoryRequest: the kubelet evicted the pod for node memory pressure, and its message
+	// named a container of the pod using more memory than the container requested. A pod over its
+	// request is the one the kubelet evicts first, so the end is the pod's own memory use and not a
+	// neighbour's, though the pod was under its limit. DeathCause.Container, Use and Request are the
+	// container, its use and its request as that message gave them.
+	DeathMemoryRequest DeathCauseKind = "memory_request"
+	// DeathDiskLimit: the kubelet evicted the pod, with no DisruptionTarget condition, for passing
+	// a disk limit of its own: the pod's ephemeral-storage limit, a container's or an emptyDir's
+	// sizeLimit. DeathCause.Limit is that limit, from the kubelet's message or, where the message
+	// names none, from the pod's spec.
+	DeathDiskLimit DeathCauseKind = "disk_limit"
+)
+
+// DeathCause is what a runtime read of the cause of a process's end where it is one of the
+// DeathCauseKind causes, with the quantities that kind names, in bytes; the zero value, Kind "",
+// is every other end. The quantities are the runtime's parse of what the cluster wrote, never its
+// text, so the words the daemon builds from them are the daemon's own.
+type DeathCause struct {
+	Kind DeathCauseKind
+	// Limit is the memory limit of DeathMemoryLimit and the disk limit of DeathDiskLimit.
+	Limit int64
+	// Container, Use and Request are DeathMemoryRequest's: the container the kubelet's message
+	// named, which is a container of the pod's spec, and what the message gave as its use and its
+	// request.
+	Container    string
+	Use, Request int64
+}
 
 // Observation is one runtime fact about one process, with the moment it was observed and, for a
 // verdict that needs one, the detail an operator reads.
@@ -646,6 +686,13 @@ type Observation struct {
 	// the runtime logs for the pod's end; this field is what the supervisor decides on, a field
 	// rather than a shape of Detail for the reason Displaced is.
 	PodEnd PodEndReading
+	// Cause is what the runtime read of the cause of the end, on a Gone or a NotRecordedProcess,
+	// where that end is one the daemon tells a role in plain words (DeathCause), and the zero
+	// value on every other observation. Only the Sandbox runtime reports it. It is read where the
+	// end is (the container's terminated state, and the pod's end as the informer delivered it),
+	// so it is carried when the pod has left the store before the claim is checked, and it is a
+	// field rather than a shape of Detail for the reason Displaced is.
+	Cause DeathCause
 }
 
 // GitIdentity is the author a worker's commits carry.

@@ -13,10 +13,24 @@ body: |-
   A pod the cluster ends, by an eviction, a preemption, a node going down or a delete the daemon
   did not make, continues every role of the issue in its own session with no death and no launch
   failure charged, however often it happens and whether the role's agent was ready or still
-  starting. An end the daemon reads neither way is still charged as a death: an `Evicted` end with
-  no `DisruptionTarget` condition, such as a pod over its own disk limit, and a reason such as
-  `UnexpectedAdmissionError`. An end from outside the pod is told to the next process as an end
-  from outside the pod, not as the daemon's replacement of the pod.
+  starting. An end the daemon reads neither way is still charged as it is today: an `Evicted` end
+  with no `DisruptionTarget` condition, such as a pod over its own disk limit, and a reason such
+  as `UnexpectedAdmissionError`. So is an eviction for node memory pressure whose kubelet message
+  names a container of the pod using more memory than it requested, since that is the pod's own
+  memory use; one whose message names no container of the pod over its request is a neighbour's
+  and is continued. An end the daemon started itself stays its own whatever the kubelet writes. An
+  end from outside the pod is told to the next process as an end from outside the pod, not as the
+  daemon's replacement of the pod.
+
+  A death charged for memory or for the pod's own disk is told in plain words, with its number and
+  before the runtime's own detail, in the role's next task and in the claim's `lastDeathCause`: the
+  `roles` container's memory limit when it ended `OOMKilled`, the container's use and request when
+  node pressure evicted the pod for its own memory use, and the disk limit when the kubelet evicted
+  the pod for its own disk, where the task also says to keep large files under `$TMPDIR`. The
+  memory limit's sentence is the task's one statement that the pod ran out of memory: the
+  out-of-memory note behind it keeps only its guidance on heavy work. When those deaths fail
+  the claim, the hold notice and its copies carry the same words in `failure.death`, and the
+  `worker-died` of a tree's own architect now carries `failure` too, so the controller reads them.
 
   An issue pod whose CPU or memory request is below its limit no longer carries
   `cluster-autoscaler.kubernetes.io/safe-to-evict`, so such pods can share nodes and burst.

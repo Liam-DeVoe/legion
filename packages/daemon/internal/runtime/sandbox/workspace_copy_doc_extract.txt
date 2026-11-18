@@ -64,6 +64,7 @@ Two readings say something outside the pod ended it:
 - the pod ended carrying a `DisruptionTarget` condition, which the control plane and the kubelet set on a pod they are ending, or with one of three reasons on its own status:
   `Terminated`, `NodeShutdown` or `Preempted` (`clusterEndedReasons`, `pod_end.go`).
   A pod whose status reason is `Evicted` is such an end only with the condition, which the kubelet sets when it evicts a pod because its node is under pressure.
+  An eviction for node memory pressure whose kubelet message names a container of the pod using more memory than it requested is not such an end, though it carries the condition (below).
 
 A pod already terminal, in the phase the kubelet sets on a pod it has ended, is read from its status alone, and a deletion timestamp counts only on a pod not yet terminal.
 So a failed pod the cluster did not end is charged whether the controller's delete of it reaches the daemon in the same event as the failure or in a later one, and a deletion the daemon saw first on the running pod stays an end from outside it when the pod then turns terminal.
@@ -75,7 +76,7 @@ An end of either reading costs its roles nothing, however often it comes.
 The daemon continues each role of that pod in that role's own session, charges no death and no launch failure, and sends each role the task it owed again.
 The turn each role was in is lost with the pod, and the task goes back to waiting until that session resumes.
 The daemon keeps no count of these ends, so the tenth in a row costs a role what the first did, whether its agent was ready or still starting and whatever work it held.
-So a pod whose own memory use drives its node into pressure restarts free each time, since that eviction carries `DisruptionTarget` exactly as a neighbour's does.
+So a pod evicted because a neighbour's memory use drove its node into pressure restarts free each time, since that eviction carries `DisruptionTarget` and its message names no container of the pod over its request.
 That is chosen: the role cannot fix a cause outside its pod, and charging such ends at a limit would only turn a loop of restarts into a claim that runs nothing.
 Such an end ends the turn it interrupted, as a charged death does, since the agent that turn belonged to is gone and never ends it, so a later death of the relaunched agent is not charged against that turn.
 Each claim writes its own line for what it got, at info:
@@ -84,7 +85,11 @@ Each claim writes its own line for what it got, at info:
 An end of neither reading is charged as a death exactly as before, so a pod that fails by itself still ends its claim once that claim's deaths run out ([Liveness rules](#liveness-rules)).
 `Evicted` with no `DisruptionTarget` condition is such an end:
 the kubelet gives that reason, and no condition, to a pod that went over its own ephemeral-storage limit, a container's ephemeral-storage limit or an `emptyDir`'s `sizeLimit`, and the pod that replaces it runs the same task into the same limit.
-A reason outside those three is such an end too, `UnexpectedAdmissionError` among them:
+An eviction for node memory pressure whose kubelet message names a container of the pod using more memory than it requested is such an end too, though it carries the condition:
+the kubelet evicts the pods using more than their request before any pod within its own, so that pressure was the pod's own memory use, and the pod that replaces it runs the same task into the same pressure (`memoryOverRequest`, `pod_end.go`).
+The message names each such container in the words `Container roles was using 9437188Ki, request is 8Gi, has larger consumption of memory.`, and an eviction whose message names no container of the pod's own spec is a neighbour's, read as an end from outside the pod and continued.
+An end the daemon itself started is its own whatever the pod's status says, so a pod the daemon is releasing that the kubelet then evicts continues no role.
+A reason outside the cluster's three is such an end too, `UnexpectedAdmissionError` among them:
 a node refused that pod before it ran, the pod that replaces it would meet the same refusal, and an end the daemon waived would be relaunched for ever.
 
 from: An issue therefore holds up to two kinds of copy
