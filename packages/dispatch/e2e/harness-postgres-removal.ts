@@ -63,14 +63,18 @@
  *  renames wins and a start killed after it leaves nothing else behind, and a start renames only a
  *  directory no process holds. A container is claimed by Docker's own removal:
  *  one `docker rm` removes it, and a start whose `docker rm` prints no id says that another start
- *  removed it. While the other removal is in progress Docker refuses this one, and the start asks
- *  again until Docker answers: with no id once the other removal took it, which the start says,
- *  with what Docker said, or with its own removal where the other ended and left it. A container
- *  whose remover died is gone, or still listed with its label for the next start.
- *  A REMOVAL TAKES AS LONG AS DOCKER TAKES. A daemon that many sessions share can take minutes
- *  over one `docker rm` while it answers every other call at once, so a start bounds no removal
- *  by a time of its own: it gives one up only where Docker answers no ask while it runs
- *  (`removeOnce`), which is a daemon that hangs.
+ *  removed it. While the other removal is in progress Docker refuses this one, and the start sends
+ *  no `docker rm` again while Docker still removes it: it asks Docker every 5 s whether it still
+ *  lists the container and still removes it, and says that another start removed it once Docker
+ *  lists it no more, with what Docker said, or removes it itself where the other removal ended and
+ *  left it. A container whose remover died is gone, or still listed with its label for the next
+ *  start.
+ *  A REMOVAL TAKES AS LONG AS DOCKER TAKES, WITHIN A BOUND. A daemon that many sessions share can
+ *  take minutes over one `docker rm` while it answers every other call at once, so a start waits
+ *  for a removal while Docker answers each ask, a `docker ps` that exits 0 (`removeOnce`). Once
+ *  the removal has run 60 s it says so on one line, and it gives the removal up, and names the
+ *  container on one line, where an ask gets no answer (a daemon that hangs, or one it cannot
+ *  reach) or where the removal has run 10 minutes (`removalMs`); the sweep then goes on.
  *
  *  THE WINDOWS NO MARK COVERS. A stack killed between the `mkdtemp` of a socket directory and the
  *  rename of its mark, calls with no await between them, leaves that empty directory and at most
@@ -104,10 +108,12 @@ import {
   whyUntrusted,
 } from "./harness-postgres-marks";
 import {
+  type Holding,
   holdersOf,
   type Postmaster,
   postmasterOf,
   servedElsewhere,
+  statMs,
 } from "./harness-postgres-processes";
 
 const execFileAsync = promisify(execFile);
@@ -120,13 +126,29 @@ const named = "e2e/harness-postgres-removal.ts";
  *  so while it takes minutes over a removal. On a shared Linux machine on 2026-11-18, a start
  *  gave up its `docker rm` of a dead stack's container at the 60 s it then allowed, and the next
  *  `docker rm` of that row took 74 s; Docker had ended each container's process within 0.2 s, and
- *  answered each `docker create`, `start`, `logs` and `inspect` between them within a second. */
+ *  answered each `docker create`, `start`, `logs` and `inspect` between them within a second. A
+ *  removal that has run this long while Docker answers is one the start says it waits for. */
 const dockerMs = 60_000;
+/** How long a start waits in all for its removal of one container while Docker answers each ask:
+ *  10 minutes, about six times the slowest such removal seen, 91 s on a shared Linux machine on
+ *  2026-11-18, so a daemon that slow is waited for, while a removal Docker never ends holds a
+ *  start, and each start after it on the machine, no longer. At the bound the start leaves the
+ *  container, names it on one line, and goes on; a later start removes it. */
+const removalMs = 600_000;
 /** How long a removal of a start's own runs before the start asks whether Docker still answers,
  *  and how long between two such asks: a removal of a daemon that answers mostly ends sooner. */
 const dockerWatchMs = 5_000;
-/** How often a start asks Docker again to remove a container another start's removal holds. */
-const dockerPollMs = 200;
+
+/** The bounds of a start's removal of one container: how long one ask of Docker may go
+ *  unanswered, which is also how long the removal runs before the start says that it waits
+ *  (`answerMs`), and how long the start waits in all (`boundMs`). A start keeps `dockerMs` and
+ *  `removalMs`; a row sets them low to see each end. */
+export interface RemovalBounds {
+  readonly answerMs: number;
+  readonly boundMs: number;
+}
+const removalBounds: RemovalBounds = { answerMs: dockerMs, boundMs: removalMs };
+
 /** How long a dead stack's postmaster may take to end after SIGQUIT: as long as `pg_ctl`'s own
  *  wait for a stop, `PGCTLTIMEOUT`, 60 s by default. A postmaster that gets it ends its children,
  *  kills one that has not ended within 5 s, and exits. */
@@ -173,13 +195,29 @@ export function servingPostmasters(run: string): string[] {
 
 /** What `removeDirectory` did: removed the directory; found it gone, with no claim of it, when it
  *  looked; found it claimed by another start, which removed it first; or left it, since a process
- *  of this user still holds it (`holdersOf`), named. */
-type Removal = "removed" | "absent" | "lost" | { readonly heldBy: readonly string[] };
+ *  of this user still holds it, or may hold it, as a path it names did not answer (`holdersOf`),
+ *  named. */
+type Removal = "removed" | "absent" | "lost" | { readonly heldBy: Holding };
 
-/** `path` as a line names a directory a process still holds: "<path>, which pg_ctl 67 still
- *  holds". */
-function heldPhrase(path: string, holders: readonly string[]): string {
-  return `${path}, which ${listOf(holders)} still ${holders.length === 1 ? "holds" : "hold"}`;
+/** Whether a process holds the directory `holdersOf` read, or may hold it. */
+function held({ holders, unread }: Holding): boolean {
+  return holders.length > 0 || unread.length > 0;
+}
+
+/** `path` as a line names a directory a process still holds, or may hold: "<path>, which pg_ctl 67
+ *  still holds", "<path>, which bun 68 may hold, as it names /mnt/x/y, which answered no stat
+ *  within 10 s". */
+function heldPhrase(path: string, { holders, unread }: Holding): string {
+  const phrases = [
+    ...(holders.length > 0
+      ? [`${listOf(holders)} still ${holders.length === 1 ? "holds" : "hold"}`]
+      : []),
+    ...unread.map(
+      ({ process, path: named }) =>
+        `${process} may hold, as it names ${named}, which answered no stat within ${statMs / 1000} s`
+    ),
+  ];
+  return `${path}, which ${listOf(phrases)}`;
 }
 
 /** What a claimed name holds between the name of the part and the claimer's pid and start. */
@@ -202,7 +240,7 @@ export type Claim =
   | { readonly kind: "absent" }
   | { readonly kind: "elsewhere" }
   | { readonly kind: "held"; readonly claim: string }
-  | { readonly kind: "busy"; readonly heldBy: readonly string[] };
+  | { readonly kind: "busy"; readonly heldBy: Holding };
 
 /** Renames `from`, a directory of the user `uid`, to `to`, only where no process holds it:
  *  `holders` (`holdersOf`) reads that just before the rename, so a holder never finds its
@@ -210,12 +248,12 @@ export type Claim =
  *  renamed it first; or each holder, and then `from` keeps its name. Throws, naming `from`, where
  *  it is anything else than a directory of `uid`, since a file, a link or another user's directory
  *  is nothing a stack made, and where the rename fails otherwise. */
-function renameDirectory(
+async function renameDirectory(
   from: string,
   to: string,
   uid: number,
-  holders: (directory: string) => readonly string[]
-): "renamed" | "gone" | { readonly heldBy: readonly string[] } {
+  holders: (directory: string) => Promise<Holding>
+): Promise<"renamed" | "gone" | { readonly heldBy: Holding }> {
   let stat: Stats;
   try {
     stat = lstatSync(from);
@@ -226,8 +264,8 @@ function renameDirectory(
   if (!stat.isDirectory() || stat.uid !== uid) {
     throw new Error(`${from} is not a directory of user ${uid}, so it is left`);
   }
-  const heldBy = holders(from);
-  if (heldBy.length > 0) return { heldBy };
+  const heldBy = await holders(from);
+  if (held(heldBy)) return { heldBy };
   try {
     renameSync(from, to);
   } catch (error) {
@@ -279,7 +317,7 @@ function claimsOf(
 export async function claimForRemoval(
   path: string,
   uid: number,
-  holders: (directory: string) => readonly string[]
+  holders: (directory: string) => Promise<Holding>
 ): Promise<Claim> {
   const self = stackOwner();
   if (self === null) throw new Error(`${path} cannot be claimed: this machine has no /proc`);
@@ -288,26 +326,26 @@ export async function claimForRemoval(
   let sawClaim = false;
   let saidWait = false;
   // What the rename of `from` to this start's claim answers, or undefined where `from` was gone.
-  const take = (from: string): Claim | undefined => {
-    const taken = renameDirectory(from, mine, uid, holders);
+  const take = async (from: string): Promise<Claim | undefined> => {
+    const taken = await renameDirectory(from, mine, uid, holders);
     if (taken === "gone") return undefined;
     return taken === "renamed"
       ? { kind: "claimed", path: mine }
       : { kind: "busy", heldBy: taken.heldBy };
   };
   for (;;) {
-    const own = take(path);
+    const own = await take(path);
     if (own !== undefined) return own;
     const claims = claimsOf(path);
     if (claims.length === 0) {
       // A claimer whose removal failed gave the name back (`removeClaimed`) after this look.
-      return take(path) ?? (sawClaim ? { kind: "elsewhere" } : { kind: "absent" });
+      return (await take(path)) ?? (sawClaim ? { kind: "elsewhere" } : { kind: "absent" });
     }
     sawClaim = true;
     for (const claim of claims) {
       if (claim.path === mine) return { kind: "claimed", path: mine };
       const verdict = judge({ ...self, pid: claim.pid, start: claim.start }, self);
-      const taken = verdict.kind === "gone" ? take(claim.path) : undefined;
+      const taken = verdict.kind === "gone" ? await take(claim.path) : undefined;
       if (taken !== undefined) return taken;
     }
     if (Date.now() >= deadline) {
@@ -436,16 +474,16 @@ async function removePostmaster(
   // The processes of a postmaster end once it has: one that SIGQUIT reached waits for them
   // first, and one that SIGKILL ended leaves them to see it gone. A start waits for that, at most
   // as long as a postmaster gives them after SIGQUIT, and leaves a directory one still holds.
-  let after: string[] = [];
+  let after: Holding = { holders: [], unread: [] };
   if (stopped) {
     const deadline = Date.now() + postmasterChildrenMs;
-    after = holdersOf(claim.path, spellings, uid);
-    while (after.length > 0 && Date.now() < deadline) {
+    after = await holdersOf(claim.path, spellings, uid);
+    while (held(after) && Date.now() < deadline) {
       await sleep(postmasterPollMs);
-      after = holdersOf(claim.path, spellings, uid);
+      after = await holdersOf(claim.path, spellings, uid);
     }
   }
-  if (after.length > 0) {
+  if (held(after)) {
     giveBack(claim.path, data);
     return { stopped, removal: { heldBy: after } };
   }
@@ -486,38 +524,100 @@ function dockerSaid(error: unknown): string {
 }
 
 /** How one `docker rm` of a start ended: with Docker's answer, the containers it printed; with its
- *  refusal, in Docker's words; or with no answer, where Docker answered no ask while it ran. */
+ *  refusal, in Docker's words; or given up, where Docker answered no ask while it ran or the
+ *  removal reached its bound, with why. */
 type RemovalAnswer =
   | { readonly kind: "answered"; readonly stdout: string }
   | { readonly kind: "refused"; readonly reason: string }
-  | { readonly kind: "unanswered"; readonly reason: string };
+  | { readonly kind: "given up"; readonly reason: string };
 
-/** Whether Docker answers a `docker ps` of the container `id` within `answerMs`. Any end of the
- *  call is an answer, an error among them; so is the end of the removal it watches (`ended`),
- *  which stops it. Only the stop at `answerMs` is none. */
-async function dockerAnswers(id: string, answerMs: number, ended: AbortSignal): Promise<boolean> {
+/** What one ask of Docker found of the container `id`: a `docker ps` of it that exits 0 within
+ *  `answerMs` and lists it, or lists no such container; or no answer, with why: no end within
+ *  `answerMs`, or an exit status that is not 0, as a daemon the start cannot reach gives. The end
+ *  of `ended`, the removal the ask watches, stops the ask: that removal's own answer then
+ *  decides, and the ask answers "listed". */
+type Ask =
+  | { readonly kind: "listed" }
+  | { readonly kind: "gone" }
+  | { readonly kind: "none"; readonly reason: string };
+
+async function ask(id: string, answerMs: number, ended?: AbortSignal): Promise<Ask> {
   const late = new AbortController();
   const timer = setTimeout(() => late.abort(), answerMs);
   try {
-    await execFileAsync(
+    const { stdout } = await execFileAsync(
       "docker",
       ["ps", "--all", "--quiet", "--no-trunc", "--filter", `id=${id}`],
-      {
-        signal: AbortSignal.any([late.signal, ended]),
-      }
+      { signal: ended === undefined ? late.signal : AbortSignal.any([late.signal, ended]) }
     );
-  } catch {
-    // What the call said does not matter here: that it ended is the answer.
+    return stdout.trim() === "" ? { kind: "gone" } : { kind: "listed" };
+  } catch (error) {
+    if (ended?.aborted) return { kind: "listed" };
+    if (late.signal.aborted) {
+      return { kind: "none", reason: `Docker answered no docker ps within ${answerMs / 1000} s` };
+    }
+    return { kind: "none", reason: `docker ps failed (${dockerSaid(error)})` };
   } finally {
     clearTimeout(timer);
   }
-  return !late.signal.aborted || ended.aborted;
 }
 
-/** Runs `docker rm --force --volumes id` for as long as Docker takes over it. While it runs, the
- *  start asks Docker every `dockerWatchMs` whether it answers (`dockerAnswers`); where one ask
- *  gets no answer within `answerMs`, the daemon hangs, and the start stops its `docker rm`. */
-async function removeOnce(id: string, answerMs: number): Promise<RemovalAnswer> {
+/** Whether Docker still removes the container `id`, as `docker inspect` reads its state, answered
+ *  with exit status 0 within `answerMs`: "removing", or another state; "gone" where Docker knows
+ *  no such container; or no answer, with why. */
+async function removalState(
+  id: string,
+  answerMs: number
+): Promise<"removing" | "other" | "gone" | { readonly none: string }> {
+  try {
+    const { stdout } = await execFileAsync(
+      "docker",
+      ["inspect", "--format", "{{.State.Status}}", id],
+      { timeout: answerMs }
+    );
+    return stdout.trim() === "removing" ? "removing" : "other";
+  } catch (error) {
+    const said = dockerSaid(error);
+    if (/No such (object|container)/.test(said)) return "gone";
+    // `execFile` kills a call at its `timeout` and says so in `killed`.
+    if (typeof error === "object" && error !== null && "killed" in error && error.killed === true) {
+      return { none: `Docker answered no docker inspect within ${answerMs / 1000} s` };
+    }
+    return { none: `docker inspect failed (${said})` };
+  }
+}
+
+/** The wait of one start for its removal of a container: how long it may still wait (`left`), and
+ *  its one line (`tell`). */
+interface Wait {
+  left(): number;
+  tell(): void;
+}
+
+/** The wait of a removal of the container that `what` names on a line, which begins now: `tell`
+ *  prints its one line once the removal has run `answerMs` while Docker answered each ask. */
+function waitOf(what: string, { answerMs, boundMs }: RemovalBounds): Wait {
+  const began = Date.now();
+  let told = false;
+  return {
+    left: () => began + boundMs - Date.now(),
+    tell: () => {
+      const ran = Date.now() - began;
+      if (told || ran < answerMs) return;
+      told = true;
+      console.error(
+        `${named}: waits for Docker's removal of ${what}: the removal has run ${Math.floor(ran / 1000)} s and Docker answers each ask, so the start waits for it, at most ${boundMs / 1000} s in all`
+      );
+    },
+  };
+}
+
+/** Runs `docker rm --force --volumes id` for as long as Docker takes over it, within `boundMs` of
+ *  the start of the removal (`wait`). While it runs, the start asks Docker every `dockerWatchMs`
+ *  whether it still answers (`ask`), and says that it waits once the removal has run `answerMs`
+ *  (`wait`); where one ask gets no answer, the daemon hangs or cannot be reached, and where the
+ *  bound comes first, the removal is given up: the start stops its `docker rm`. */
+async function removeOnce(id: string, bounds: RemovalBounds, wait: Wait): Promise<RemovalAnswer> {
   const ended = new AbortController();
   const removal = execFileAsync("docker", ["rm", "--force", "--volumes", id], {
     signal: ended.signal,
@@ -526,19 +626,31 @@ async function removeOnce(id: string, answerMs: number): Promise<RemovalAnswer> 
     (error: unknown): RemovalAnswer => ({ kind: "refused", reason: dockerSaid(error) })
   );
   void removal.then(() => ended.abort());
+  let why: string;
   for (;;) {
-    await sleep(dockerWatchMs, undefined, { signal: ended.signal }).catch(() => undefined);
+    const left = wait.left();
+    if (left <= 0) {
+      why = `Docker did not end the removal within ${bounds.boundMs / 1000} s, while it answered each ask`;
+      break;
+    }
+    await sleep(Math.min(dockerWatchMs, left), undefined, { signal: ended.signal }).catch(
+      () => undefined
+    );
     if (ended.signal.aborted) return removal;
-    if (!(await dockerAnswers(id, answerMs, ended.signal))) break;
+    if (wait.left() <= 0) continue;
+    const asked = await ask(id, bounds.answerMs, ended.signal);
+    if (ended.signal.aborted) return removal;
+    if (asked.kind === "none") {
+      why = `${asked.reason} while this start removed it`;
+      break;
+    }
+    wait.tell();
   }
   ended.abort();
   const answer = await removal;
   // A removal that ended in the moment before the stop is Docker's answer still.
   if (answer.kind === "answered") return answer;
-  return {
-    kind: "unanswered",
-    reason: `Docker answered no docker ps within ${answerMs / 1000} s while this start removed it`,
-  };
+  return { kind: "given up", reason: why };
 }
 
 /** How a removal of a container ended: this start removed it; another start removed it, with
@@ -548,17 +660,58 @@ type ContainerRemoval =
   | { readonly kind: "elsewhere"; readonly reason: string }
   | { readonly kind: "failed"; readonly reason: string };
 
-/** Removes the container `id` with its anonymous volumes, however long Docker takes over it
- *  (`removeOnce`). `docker rm --force` prints each container it removed and nothing for one that
- *  is already gone, which another start removed first. Where another start's removal of it is in
- *  progress, Docker refuses this one, and the start asks again every `dockerPollMs` until Docker
- *  answers otherwise, so what it says of the container is what is true when it returns. It gives
- *  up only where Docker answers no ask within `answerMs`, a bound a row sets low to see that end. */
-export async function removeContainer(id: string, answerMs = dockerMs): Promise<ContainerRemoval> {
+/** Waits for another start's removal of the container `id`, for which Docker refused this start's
+ *  own (`refusal`): it sends no `docker rm` meanwhile, and asks Docker every `dockerWatchMs`
+ *  whether it still lists the container (`ask`) and still removes it (`removalState`), within the
+ *  bound of the start's removal (`wait`). Answers that another start removed it, in Docker's
+ *  words, once Docker lists it no more; that it is not removed, where an ask gets no answer or
+ *  the bound comes first; or undefined where Docker lists it and removes it no more, as after
+ *  another start's removal that failed, and this start then removes it itself. */
+async function otherRemoval(
+  id: string,
+  refusal: string,
+  bounds: RemovalBounds,
+  wait: Wait
+): Promise<ContainerRemoval | undefined> {
+  for (;;) {
+    const left = wait.left();
+    if (left <= 0) {
+      return {
+        kind: "failed",
+        reason: `${refusal}, and Docker still lists it ${bounds.boundMs / 1000} s after this start's removal began`,
+      };
+    }
+    await sleep(Math.min(dockerWatchMs, left));
+    const listed = await ask(id, bounds.answerMs);
+    if (listed.kind === "none")
+      return { kind: "failed", reason: `${refusal}, and then ${listed.reason}` };
+    if (listed.kind === "gone") return { kind: "elsewhere", reason: refusal };
+    const state = await removalState(id, bounds.answerMs);
+    if (state === "gone") return { kind: "elsewhere", reason: refusal };
+    if (typeof state === "object")
+      return { kind: "failed", reason: `${refusal}, and then ${state.none}` };
+    if (state === "other") return undefined;
+    wait.tell();
+  }
+}
+
+/** Removes the container `id` with its anonymous volumes, `what` as a line names it, however long
+ *  Docker takes over it while it answers each ask, within `boundMs` (`removeOnce`). `docker rm
+ *  --force` prints each container it removed and nothing for one that is already gone, which
+ *  another start removed first. Where another start's removal of it is in progress, Docker refuses
+ *  this one, and the start waits for that removal (`otherRemoval`), so what it says of the
+ *  container is what is true when it returns. It gives up where Docker answers no ask within
+ *  `answerMs`, or at `boundMs`, bounds a row sets low to see each end (`RemovalBounds`). */
+export async function removeContainer(
+  id: string,
+  what = `container ${id.slice(0, 12)}`,
+  bounds = removalBounds
+): Promise<ContainerRemoval> {
+  const wait = waitOf(what, bounds);
   let refusal: string | undefined;
   for (;;) {
-    const answer = await removeOnce(id, answerMs);
-    if (answer.kind === "unanswered") return { kind: "failed", reason: answer.reason };
+    const answer = await removeOnce(id, bounds, wait);
+    if (answer.kind === "given up") return { kind: "failed", reason: answer.reason };
     if (answer.kind === "answered") {
       // Printed after a refusal, the id is this start's removal of a container that the other
       // removal ended and left.
@@ -572,17 +725,23 @@ export async function removeContainer(id: string, answerMs = dockerMs): Promise<
       return { kind: "failed", reason: answer.reason };
     }
     refusal = answer.reason;
-    await sleep(dockerPollMs);
+    const other = await otherRemoval(id, refusal, bounds, wait);
+    if (other !== undefined) return other;
   }
 }
 
 /** Removes every container whose label marks a Postgres of a stack that is gone, with its socket
- *  directory, and answers what Docker lists then, or undefined where it cannot tell: where `docker
- *  ps` failed, which is one line, or where there is no `docker` on PATH, which says nothing here,
- *  since a start of the binaries provider needs none. A start that cannot list the containers
- *  leaves each mark of a container and names it (`sweepRun`): with no `docker` it cannot tell
- *  whether the container still runs, from a `docker` of another PATH. */
-async function removeContainers(self: Owner | null, left: Left): Promise<Containers | undefined> {
+ *  directory, one after another, each within `bounds` (`removeContainer`), and answers what Docker
+ *  lists then, or undefined where it cannot tell: where `docker ps` failed, which is one line, or
+ *  where there is no `docker` on PATH, which says nothing here, since a start of the binaries
+ *  provider needs none. A start that cannot list the containers leaves each mark of a container
+ *  and names it (`sweepRun`): with no `docker` it cannot tell whether the container still runs,
+ *  from a `docker` of another PATH. */
+async function removeContainers(
+  self: Owner | null,
+  left: Left,
+  bounds: RemovalBounds
+): Promise<Containers | undefined> {
   const listed = new Set<string>();
   const removed = new Set<string>();
   let lines: string;
@@ -637,7 +796,11 @@ async function removeContainers(self: Owner | null, left: Left): Promise<Contain
       continue;
     }
     const by = `stack ${verdict.pid}`;
-    const removal = await removeContainer(id);
+    const removal = await removeContainer(
+      id,
+      `${what} (${mark.container}), which ${by} left`,
+      bounds
+    );
     if (removal.kind === "failed") {
       console.error(
         `${named}: ${what} (${mark.container}), which ${by} left, is not removed: ${removal.reason}`
@@ -896,13 +1059,13 @@ async function removeRunDirectories(
  *  Docker lists with a mark, every mark in a run directory of `tmpdir()`, and every mark in a run
  *  directory elsewhere that a postmaster of this user serves from. Leaves every other one, and
  *  names what it left on one line per kind. Never throws: a removal that fails is one line, and
- *  the start goes on. */
-export async function removeLeftoverPostgres(): Promise<void> {
+ *  the start goes on. `bounds` are the start's own (`dockerMs`, `removalMs`) but for a row. */
+export async function removeLeftoverPostgres(bounds = removalBounds): Promise<void> {
   const self = stackOwner();
   const left: Left = { unread: [], untrusted: [], unjudged: [], held: [] };
   try {
     // The containers first, so a container goes before the socket directory it serves in.
-    const containers = await removeContainers(self, left);
+    const containers = await removeContainers(self, left, bounds);
     await removeRunDirectories(tmpdir(), self, containers, left);
   } catch (error) {
     console.error(
@@ -924,7 +1087,7 @@ export async function removeLeftoverPostgres(): Promise<void> {
   }
   if (left.held.length > 0) {
     console.error(
-      `${named}: left the Postgres of stacks whose directories a process of this user still holds, for a later start to judge again: ${left.held.join(", ")}`
+      `${named}: left the Postgres of stacks whose directories a process of this user still holds, or may hold, for a later start to judge again: ${left.held.join(", ")}`
     );
   }
 }

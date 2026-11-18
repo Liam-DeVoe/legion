@@ -23,6 +23,7 @@ import { fileURLToPath } from "node:url";
 import type { Subprocess } from "bun";
 
 import * as marks from "../harness-postgres-marks";
+import type { RemovalBounds } from "../harness-postgres-removal";
 import { type StandIn, standIn } from "./planted-marks";
 
 const { marksDirectory, runDirectoryPrefix, stackOwner } = marks;
@@ -184,19 +185,27 @@ while [ "$SECONDS" -lt "$end" ]; do read -r -t 0.05 -u 3 _; done`;
 
 const removalModule = fileURLToPath(new URL("../harness-postgres-removal.ts", import.meta.url));
 
-/** The start's sweep, as a child of this file runs it. */
+/** The start's sweep, as a child of this file runs it: within the start's own bounds of a
+ *  container's removal, or the row's (`RemovalBounds`), where `ANSWER_MS` and `BOUND_MS` give them. */
 const sweepScript = `
 import { removeLeftoverPostgres } from ${JSON.stringify(removalModule)};
-await removeLeftoverPostgres();
+const { ANSWER_MS, BOUND_MS } = process.env;
+await removeLeftoverPostgres(ANSWER_MS === undefined ? undefined : { answerMs: Number(ANSWER_MS), boundMs: Number(BOUND_MS) });
 `;
+
+/** The environment that gives a start's removal of a container in a child of this file the
+ *  row's `bounds`. */
+function boundsEnv({ answerMs, boundMs }: RemovalBounds): Record<string, string> {
+  return { ANSWER_MS: String(answerMs), BOUND_MS: String(boundMs) };
+}
 
 /** A start's sweep running in a child with `tmp` for its `TMPDIR` and `empty`, a directory with no
  *  program in it, for its `PATH`, so no row changes the environment of this process: what it
- *  printed so far, and the lines it printed once it ended. */
+ *  printed so far, the lines it printed once it ended, and the child, for a row to end. */
 export function startSweep(
   tmp: string,
   empty = mkdtempSync(join(tmp, "no-programs-"))
-): { stderr(): string; readonly lines: Promise<string[]> } {
+): { stderr(): string; readonly lines: Promise<string[]>; readonly child: Subprocess } {
   const child = Bun.spawn([process.execPath, "--eval", sweepScript], {
     env: { TMPDIR: tmp, PATH: empty },
     stdout: "ignore",
@@ -215,7 +224,7 @@ export function startSweep(
     if (code !== 0) throw new Error(`the sweep exited ${code}: ${stderr}`);
     return stderr.split("\n");
   })();
-  return { stderr: () => stderr, lines };
+  return { stderr: () => stderr, lines, child };
 }
 
 /** Runs the start's sweep in a child (`startSweep`), and answers the lines it printed. */
@@ -269,7 +278,7 @@ export function leaveContainerMark(run: string, owner: unknown) {
 const claimScript = `
 import { claimForRemoval } from ${JSON.stringify(removalModule)};
 setTimeout(() => process.exit(1), 600_000);
-console.log(JSON.stringify(await claimForRemoval(process.env.CLAIM_PATH, process.getuid(), () => [])));
+console.log(JSON.stringify(await claimForRemoval(process.env.CLAIM_PATH, process.getuid(), async () => ({ holders: [], unread: [] }))));
 `;
 
 /** SIGKILLs `child`, a child of this file, where it still runs, and waits for its end. */
@@ -382,13 +391,13 @@ export function holding(lines: readonly string[], text: string): string[] {
  *  2026-11-17, is the longest of them. */
 export const claimEventMs = 240_000;
 
-/** A start's removal of the container `CONTAINER_ID` (`removeContainer`) in a child of this file:
- *  it prints how the removal ended. `ANSWER_MS`, where it is set, is how long one ask of Docker
- *  may go unanswered; where it is not, the start's own bound holds. */
+/** A start's removal of the container `CONTAINER_ID` (`removeContainer`) in a child of this file,
+ *  within the row's bounds (`boundsEnv`): it prints how the removal ended, and its own lines on
+ *  stderr. */
 const removeScript = `
 import { removeContainer } from ${JSON.stringify(removalModule)};
-const answerMs = process.env.ANSWER_MS;
-console.log(JSON.stringify(await removeContainer(process.env.CONTAINER_ID, answerMs === undefined ? undefined : Number(answerMs))));
+const { CONTAINER_ID: id = "", ANSWER_MS, BOUND_MS } = process.env;
+console.log(JSON.stringify(await removeContainer(id, undefined, { answerMs: Number(ANSWER_MS), boundMs: Number(BOUND_MS) })));
 `;
 
 /** A directory in `tmp` with a stand-in `docker`, which runs no real one, so a row of it acts on
@@ -442,19 +451,14 @@ export function standInDocker(tmp: string, body: readonly string[]) {
   };
 }
 
-/** Removes the container `id` in a child (`removeScript`) whose `docker` is the one in `bin`,
- *  where one ask of Docker may go unanswered for `answerMs`, or for the start's own bound where
- *  it is not given. Answers how the removal ended and how many seconds the child took; kills the
- *  child and throws where it has not ended within `ms`. */
-export async function removeInChild(bin: string, id: string, ms: number, answerMs?: number) {
+/** Runs `script` in a child of this file with `env` over this process's own, and `bin`, a
+ *  directory of stand-ins, first on its `PATH`. Answers what it printed on stdout and stderr and
+ *  how many seconds it took; kills the child and throws where it has not ended within `ms`, and
+ *  where it exits other than 0. */
+async function inChild(script: string, bin: string, env: Record<string, string>, ms: number) {
   const started = Date.now();
-  const child = Bun.spawn([process.execPath, "--eval", removeScript], {
-    env: {
-      ...process.env,
-      PATH: `${bin}:${process.env.PATH ?? ""}`,
-      CONTAINER_ID: id,
-      ...(answerMs === undefined ? {} : { ANSWER_MS: String(answerMs) }),
-    },
+  const child = Bun.spawn([process.execPath, "--eval", script], {
+    env: { ...process.env, ...env, PATH: `${bin}:${process.env.PATH ?? ""}` },
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -465,9 +469,36 @@ export async function removeInChild(bin: string, id: string, ms: number, answerM
   const code = await Promise.race([child.exited, Bun.sleep(ms).then(() => undefined)]);
   if (code === undefined) {
     await endChild(child);
-    throw new Error(`the removal in a child did not end within ${ms / 1000} s`);
+    throw new Error(`the child did not end within ${ms / 1000} s`);
   }
   const [stdout, stderr] = await printed;
-  if (code !== 0) throw new Error(`the removal in a child exited ${code}: ${stderr}`);
-  return { removal: JSON.parse(stdout) as unknown, seconds: (Date.now() - started) / 1000 };
+  if (code !== 0) throw new Error(`the child exited ${code}: ${stderr}`);
+  return { stdout, stderr, seconds: (Date.now() - started) / 1000 };
+}
+
+/** Removes the container `id` in a child (`removeScript`) whose `docker` is the one in `bin`,
+ *  within `bounds`. Answers how the removal ended, the lines the start printed, and how many
+ *  seconds the child took; kills the child and throws where it has not ended within `ms`. */
+export async function removeInChild(bin: string, id: string, bounds: RemovalBounds, ms: number) {
+  const { stdout, stderr, seconds } = await inChild(
+    removeScript,
+    bin,
+    { CONTAINER_ID: id, ...boundsEnv(bounds) },
+    ms
+  );
+  return { removal: JSON.parse(stdout) as unknown, lines: stderr.split("\n"), seconds };
+}
+
+/** Runs the start's whole sweep (`sweepScript`) in a child with `tmp` for its `TMPDIR` and `bin`,
+ *  a directory holding a stand-in `docker`, first on its `PATH`, within `bounds`. Answers the lines
+ *  it printed and how many seconds it took; kills the child and throws where it has not ended
+ *  within `ms`. */
+export async function sweepInChild(tmp: string, bin: string, bounds: RemovalBounds, ms: number) {
+  const { stderr, seconds } = await inChild(
+    sweepScript,
+    bin,
+    { TMPDIR: tmp, ...boundsEnv(bounds) },
+    ms
+  );
+  return { lines: stderr.split("\n"), seconds };
 }

@@ -15,8 +15,9 @@
  *
  *  The rows run the start's own sweep, `removeLeftoverPostgres`, in a child of this file, under a
  *  `TMPDIR` of the row's own and a `PATH` that holds no `docker`, so the sweep reads no container
- *  of another run on the machine; two run a start's removal of one container (`removeContainer`)
- *  in a child instead, with a stand-in `docker` that runs no real one. They need Linux (`/proc`).
+ *  of another run on the machine; the rows of a container's removal run a start's removal of one
+ *  container (`removeContainer`), or its whole sweep, in a child instead, with a stand-in `docker`
+ *  that runs no real one. They need Linux (`/proc`).
  *  A mark another user wrote needs a second user, which a test run has none of, so the rows of
  *  `whyUntrusted` (`harness-postgres-marks.test.ts`) read owners from a stubbed `lstat`; these
  *  rows plant what one user can: a link, a program, a directory others may write. A stand-in
@@ -69,6 +70,7 @@ import {
   standInPostmaster,
   startSweep,
   sweep,
+  sweepInChild,
   until,
   writeMark,
 } from "./harness-postgres-removal-fixtures";
@@ -411,58 +413,81 @@ test.skipIf(!onLinux)(
   }
 );
 
-/** The id of the container the next two rows remove, which their stand-in `docker` alone answers
+/** The id of the container the next rows remove, which their stand-in `docker` alone answers
  *  for: it names no container of the machine. */
 const standInId = "0".repeat(64);
-/** How long the next row's stand-in `docker rm` takes: longer than the 5 s a start waits before
- *  its first ask of whether Docker answers, and than any bound a start could set a removal that
- *  is shorter than its asks' own. */
-const removalSeconds = 12;
+/** The bounds of a start's removal of a container in the next rows (`RemovalBounds`). One ask of
+ *  Docker may go unanswered for 10 s: a stand-in `docker`, a bash script, answers in well under a
+ *  second, so only a load that held one such script for 10 s could fail a row by it. The start
+ *  waits 90 s in all: longer than the 60 s a start once bounded its `docker rm` by, so a start
+ *  that bounds it so again gives the removal up before the bound, and the row that waits for the
+ *  bound fails. */
+const rowBounds = { answerMs: 10_000, boundMs: 90_000 };
+/** How long a row waits for its child: the child's start under load, which `claimEventMs` holds,
+ *  and then the whole bound of its removal. */
+const childMs = claimEventMs + rowBounds.boundMs;
+/** How long the next row's stand-in `docker rm` takes: three times as long as one ask may go
+ *  unanswered, so a start that bounds its removal by that time gives it up long before. */
+const removalSeconds = (3 * rowBounds.answerMs) / 1000;
+/** A stand-in `docker ps` of one container that lists it, as Docker lists a container while it
+ *  removes it: `docker ps --all --quiet --no-trunc --filter id=<id>` prints the id. */
+const listsIt = `  ps) echo "\${6#id=}" ;;`;
 
-// A daemon that many sessions share took 74 s over one `docker rm` while it answered every other
-// call within a second. The start here keeps its own bound of one ask, 60 s, so only a stand-in
-// `docker ps` that took longer than that to answer could fail the row.
+/** The lines of `lines` that say the start waits for its removal of the container `id`. */
+function waitLines(lines: readonly string[], id: string): string[] {
+  return holding(lines, `: waits for Docker's removal of container ${id.slice(0, 12)}`);
+}
+
+// A daemon that many sessions share took 74 s and 91 s over one `docker rm` while it answered
+// every other call within a second. The start waits while Docker answers each ask, says so once
+// the removal has run as long as one ask may go unanswered, and says it removed the container
+// once Docker ends the removal.
 test.skipIf(!onLinux)(
-  "v-no-leftover-postgres: a start waits for its removal of a dead stack's container as long as Docker takes over it while Docker answers, and then says it removed it",
+  "v-no-leftover-postgres: a start waits for its removal of a dead stack's container as long as Docker takes over it while Docker answers, says so once it has waited as long as one ask may take, and then says it removed it",
   async () => {
     const { tmp } = scratch();
     try {
       const docker = standInDocker(tmp, [
         'case "$1" in',
         `  rm) sleep ${removalSeconds}; echo "$4" ;;`,
-        "  ps) ;;",
+        listsIt,
         "esac",
       ]);
 
-      const { removal, seconds } = await removeInChild(docker.bin, standInId, claimEventMs);
+      const { removal, lines, seconds } = await removeInChild(
+        docker.bin,
+        standInId,
+        rowBounds,
+        childMs
+      );
 
       expect(removal).toEqual({ kind: "removed" });
       expect(seconds).toBeGreaterThan(removalSeconds);
-      expect(docker.calls()[0]).toBe(`rm --force --volumes ${standInId}`);
+      expect(docker.calls().filter((call) => call.startsWith("rm "))).toEqual([
+        `rm --force --volumes ${standInId}`,
+      ]);
+      expect(waitLines(lines, standInId)).toHaveLength(1);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
   },
-  // One `bun` child, which waits at most `claimEventMs` to start under load and then the 12 s of
-  // the stand-in's removal; a stuck child is killed at `claimEventMs`.
+  // One `bun` child, which `childMs` holds; its removal takes `removalSeconds`.
   600_000
 );
 
 // A daemon that hangs answers neither the removal nor the asks beside it: the start gives the
-// removal up at the first ask that goes unanswered, and stops both calls it made. The stand-in
-// never answers, so the 1 s an ask may go unanswered here only makes the start end sooner; the
-// row's bound on the whole removal is `claimEventMs`.
+// removal up at the first ask that goes unanswered, and stops both calls it made.
 test.skipIf(!onLinux)(
-  "v-no-leftover-postgres: a start gives up its removal of a dead stack's container only where Docker answers no ask while it runs, says so, and leaves no docker it started running",
+  "v-no-leftover-postgres: a start gives up its removal of a dead stack's container where Docker answers no ask while it runs, says so, and leaves no docker it started running",
   async () => {
     const { tmp } = scratch();
     const docker = standInDocker(tmp, ['exec -a "$0" sleep 600']);
     try {
-      const { removal } = await removeInChild(docker.bin, standInId, claimEventMs, 1_000);
+      const { removal } = await removeInChild(docker.bin, standInId, rowBounds, childMs);
 
       expect(removal).toEqual({
         kind: "failed",
-        reason: "Docker answered no docker ps within 1 s while this start removed it",
+        reason: "Docker answered no docker ps within 10 s while this start removed it",
       });
       // Each `docker` the start ran ends with the start's removal: the stand-in's `sleep`, which
       // keeps its path for a name, runs on where no signal reached it.
@@ -478,8 +503,148 @@ test.skipIf(!onLinux)(
       rmSync(tmp, { recursive: true, force: true });
     }
   },
-  // One `bun` child, which waits at most `claimEventMs` to start under load and then the 5 s
-  // before its ask and the 1 s that ask may go unanswered, and then the end of each `docker`.
+  // One `bun` child, which `childMs` holds, and then the end of each `docker` it ran.
+  600_000
+);
+
+// A `docker ps` that exits other than 0, as one gives where the daemon cannot be reached, is no
+// answer: the start gives its removal up at that ask and says why, and does not wait on.
+test.skipIf(!onLinux)(
+  "v-no-leftover-postgres: a start reads a docker ps that fails as no answer: it gives up its removal of a dead stack's container at that ask, says why, and leaves no docker it started running",
+  async () => {
+    const { tmp } = scratch();
+    const refused =
+      "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?";
+    const docker = standInDocker(tmp, [
+      'case "$1" in',
+      '  rm) exec -a "$0" sleep 600 ;;',
+      `  ps) echo ${JSON.stringify(refused)} >&2; exit 1 ;;`,
+      "esac",
+    ]);
+    try {
+      const { removal } = await removeInChild(docker.bin, standInId, rowBounds, childMs);
+
+      expect(removal).toEqual({
+        kind: "failed",
+        reason: `docker ps failed (${refused}) while this start removed it`,
+      });
+      await until(
+        () => docker.running().length === 0,
+        "the end of each docker the start ran",
+        claimEventMs
+      );
+    } finally {
+      for (const { pid, start } of [...docker.processes(), ...docker.running()]) {
+        if (marks.stillRuns(pid, start)) process.kill(pid, "SIGKILL");
+      }
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  },
+  // One `bun` child, which `childMs` holds, and then the end of each `docker` it ran.
+  600_000
+);
+
+// Another start's removal of the container, which Docker still runs: Docker refuses this start's
+// removal, and the start sends none again while Docker removes the container. It asks whether
+// Docker still lists it and still removes it, and says another start removed it once Docker lists
+// it no more. The stand-in lists it for three asks, which take 15 s and more.
+test.skipIf(!onLinux)(
+  "v-no-leftover-postgres: a start whose removal of a dead stack's container Docker refuses while another removal of it is in progress sends no docker rm again, waits for that removal while Docker answers, says so, and then says another start removed it",
+  async () => {
+    const { tmp } = scratch();
+    try {
+      const docker = standInDocker(tmp, [
+        'case "$1" in',
+        '  rm) echo "Error response from daemon: removal of container $4 is already in progress" >&2; exit 1 ;;',
+        `  ps) if [ "$(grep -c "^ps " "$(dirname "$0")/calls")" -le 3 ]; then echo "\${6#id=}"; fi ;;`,
+        "  inspect) echo removing ;;",
+        "esac",
+      ]);
+
+      const { removal, lines } = await removeInChild(docker.bin, standInId, rowBounds, childMs);
+
+      expect(removal).toEqual({
+        kind: "elsewhere",
+        reason: `Error response from daemon: removal of container ${standInId} is already in progress`,
+      });
+      const calls = docker.calls();
+      expect(calls.filter((call) => call.startsWith("rm "))).toHaveLength(1);
+      expect(calls.filter((call) => call.startsWith("ps "))).toHaveLength(4);
+      expect(waitLines(lines, standInId)).toHaveLength(1);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  },
+  // One `bun` child, which `childMs` holds; its four asks take 20 s and more.
+  600_000
+);
+
+// A removal that Docker never ends while it answers each ask, as of a container whose removal is
+// stuck in the daemon: the start says that it waits, gives the removal up at its bound on one line
+// that names the container, and goes on, to the next container and the run directories.
+test.skipIf(!onLinux)(
+  "v-no-leftover-postgres: a start whose removal of a dead stack's container Docker never ends, while Docker answers, says that it waits, gives the removal up at its bound on one line that names the container, and goes on to the next container and the run directories",
+  async () => {
+    const { tmp, run } = scratch();
+    const gone = owners().gone;
+    const stuck = { id: "1".repeat(64), name: "dispatch-e2e-pg-stuck-0" };
+    const next = { id: "2".repeat(64), name: "dispatch-e2e-pg-next-1" };
+    const listing = join(tmp, "listing");
+    writeFileSync(
+      listing,
+      [stuck, next]
+        .map(
+          ({ id, name }) =>
+            `${id} ${name} ${JSON.stringify(marks.containerMark(gone, run, name))}\n`
+        )
+        .join("")
+    );
+    const data = join(run, "worker-0", "pgdata");
+    leaveData(data);
+    const file = writeMark(run, gone, data, mkdtempSync(join(tmp, "no-bin-")));
+    const docker = standInDocker(tmp, [
+      'case "$1" in',
+      `  ps) if [[ " $* " == *" --format "* ]]; then cat ${JSON.stringify(listing)}; else echo "\${6#id=}"; fi ;;`,
+      `  rm) if [ "$4" = ${stuck.id} ]; then exec -a "$0" sleep 600; fi; echo "$4" ;;`,
+      "esac",
+    ]);
+    try {
+      const { lines } = await sweepInChild(tmp, docker.bin, rowBounds, childMs);
+
+      const by = `which stack ${gone.pid} left`;
+      expect(waitLines(lines, stuck.id)).toEqual([
+        expect.stringContaining(`container ${stuck.id.slice(0, 12)} (${stuck.name}), ${by}:`),
+      ]);
+      expect(holding(lines, `container ${stuck.id.slice(0, 12)} (`)).toContainEqual(
+        expect.stringContaining(
+          `: container ${stuck.id.slice(0, 12)} (${stuck.name}), ${by}, is not removed: Docker did not end the removal within 90 s, while it answered each ask`
+        )
+      );
+      expect(
+        holding(lines, `removed container ${next.id.slice(0, 12)} (${next.name})`)
+      ).toHaveLength(1);
+      const real = marks.identityOf(run);
+      expect([existsSync(data), existsSync(file)]).toEqual([false, false]);
+      expect(
+        holding(lines, `removed ${join(real, "worker-0", "pgdata")} and ${real}/pg-0-`)
+      ).toHaveLength(1);
+      expect(
+        docker.calls().filter((call) => call === `rm --force --volumes ${stuck.id}`)
+      ).toHaveLength(1);
+      await until(
+        () => docker.running().length === 0,
+        "the end of each docker the start ran",
+        claimEventMs
+      );
+    } finally {
+      for (const { pid, start } of [...docker.processes(), ...docker.running()]) {
+        if (marks.stillRuns(pid, start)) process.kill(pid, "SIGKILL");
+      }
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  },
+  // One `bun` child, which `childMs` holds: its removal of the stuck container takes the 90 s of
+  // the bound, and then the end of each `docker` it ran.
   600_000
 );
 

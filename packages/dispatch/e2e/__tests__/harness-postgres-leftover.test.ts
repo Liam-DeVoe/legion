@@ -135,24 +135,29 @@ function linesWith(stderr: string, text: string): string[] {
   return stderr.split("\n").filter((line) => line.includes(text));
 }
 
-/** The lines of a start's stderr that name the container `container`, by name or id. Each says
- *  that this start removed it, or that another start removed it first, or, for a container that
- *  another start removed, that this start removed the socket directory it served in, which is the
- *  run directory sweep's once Docker lists no such container (e2e/harness-postgres-removal.ts). At
- *  most one says that this start removed the container. A start names no container another start
- *  removed before it listed them. */
+/** The lines of a start's stderr that name the container `container`, by name or id, and say how
+ *  its removal ended. Each says that this start removed it, or that another start removed it
+ *  first, or, for a container that another start removed, that this start removed the socket
+ *  directory it served in, which is the run directory sweep's once Docker lists no such container
+ *  (e2e/harness-postgres-removal.ts). At most one says that this start removed the container. A
+ *  start names no container another start removed before it listed them. A removal that a shared
+ *  daemon takes a minute over has one line more, that the start waits for it, which is not
+ *  among them. */
 function removalLines(stderr: string, container: string): string[] {
   const lines = linesWith(stderr, container);
-  for (const line of lines) {
+  const waits = lines.filter((line) => line.includes(": waits for Docker's removal of container "));
+  expect(waits.length, stderr).toBeLessThanOrEqual(1);
+  const ended = lines.filter((line) => !waits.includes(line));
+  for (const line of ended) {
     expect(line).toMatch(
       /: removed container |another start removed first|its container \S+ is gone, as Docker lists no such container/
     );
   }
   expect(
-    lines.filter((line) => line.includes(": removed container ")).length,
+    ended.filter((line) => line.includes(": removed container ")).length,
     stderr
   ).toBeLessThanOrEqual(1);
-  return lines;
+  return ended;
 }
 
 for (const provider of [

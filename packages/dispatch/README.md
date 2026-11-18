@@ -247,7 +247,16 @@ its mark, where a process's working directory, an open file or a path that an
 argument names is that directory or in it. It judges a holder by the directory
 itself, its device and inode, whatever spells it: through a link, relative to
 where the process runs, or with a doubled `/`. A later start judges it again.
-A removal that fails is one line, and the start goes on.
+A removal that fails is one line, and the start goes on. A start waits for its
+`docker rm` of a container while Docker answers each ask, a `docker ps` every 5 s
+that exits 0 within 60 s: a daemon many sessions share took 91 s over one
+removal on 2026-11-18. Once the removal has run 60 s the start says on one line
+that it waits. It gives the removal up, and names the container on one line,
+where an ask gets no answer or exits other than 0, or where the removal has run
+10 minutes, and goes on. While another start's removal of the container is in
+progress, Docker refuses this start's, and the start waits for that removal the
+same way, sending no `docker rm` of its own until Docker removes the container
+no more.
 A start whose own `TMPDIR` is gone still reads the containers and `/proc`, and
 names that `TMPDIR` on one line. The logs of a killed run stay in its directory.
 
@@ -306,6 +315,10 @@ What a start leaves and names, and what you do to remove it by hand:
   or remove the container (`docker rm -f -v <id>`) and then the run directory.
 - A mark, or a path it names, that another user could have written or that a
   link leads through is never acted on: read who owns it before you remove it.
+- A container whose removal Docker did not end within 10 minutes, or whose
+  removal a start gave up because Docker answered no ask: the start names it
+  and keeps its label, and the next start removes it again. Once Docker answers,
+  read why with `docker inspect <id>`, or remove it (`docker rm -f -v <id>`).
 
 ```bash
 cd packages/dispatch

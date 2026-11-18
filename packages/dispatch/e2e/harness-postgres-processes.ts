@@ -3,15 +3,11 @@
  *  the postmaster that serves a data directory (`postmasterOf`), each process that still holds a
  *  directory (`holdersOf`), and each postmaster that serves from a run directory the sweep's own
  *  listing does not read (`servedElsewhere`). Every read is of `/proc` and of the paths it names;
- *  none signals, renames or removes anything. */
-import {
-  lstatSync,
-  readdirSync,
-  readFileSync,
-  readlinkSync,
-  realpathSync,
-  statSync,
-} from "node:fs";
+ *  none signals, renames or removes anything. The paths that the processes name are read in a
+ *  child, each within a bound (`identities`), since one on a mount whose server hangs never
+ *  answers. */
+import { spawn } from "node:child_process";
+import { lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join } from "node:path";
 
 import {
@@ -97,6 +93,115 @@ function pathsIn(argument: string): string[] {
   });
 }
 
+/** How long one path that a process names may go unanswered while a start reads whether it leads
+ *  into a directory (`holdersOf`): a stat of a path on a local file system answers within
+ *  microseconds, and one on a network or FUSE mount whose server hangs never answers, and would
+ *  hold the start in the kernel. Past this the start cannot judge that process, and leaves the
+ *  directory. */
+export const statMs = 10_000;
+/** How long the child that reads those paths (`statScript`) may take to start: a `bun` child took
+ *  more than 180 s once to start its sweep on a shared Linux machine under a load of 1,217, on
+ *  2026-11-17. */
+const statStartMs = 240_000;
+
+/** The child that reads where each path leads: `process.execPath`, Bun or Node, reads the paths
+ *  from its standard input, separated by NUL, says it is ready, and then writes one line for each
+ *  path in turn as soon as it has read it: its device and inode, or `-` where it names nothing. */
+const statScript = `
+const { readFileSync, statSync, writeSync } = require("node:fs");
+const paths = readFileSync(0, "utf8").split("\\0");
+writeSync(1, "ready\\n");
+for (const path of paths) {
+  let line = "-";
+  try {
+    const stats = statSync(path, { bigint: true });
+    line = stats.dev + ":" + stats.ino;
+  } catch {}
+  writeSync(1, line + "\\n");
+}
+`;
+
+/** Each path that answered no stat within `statMs` in this process: it is not asked again, since
+ *  a mount that hangs holds each later stat of it too. */
+const unanswered = new Set<string>();
+
+/** What one child (`statScript`) read of the paths it was given, in their order: whether it
+ *  started, and where each path it read leads, "<dev>:<ino>", or null where it names nothing. */
+interface ChildRead {
+  readonly started: boolean;
+  readonly read: readonly (string | null)[];
+}
+
+/** What one child (`statScript`) read of `paths` before it ended or was ended (`ChildRead`). It is
+ *  ended where it has not started within `statStartMs`, or has read no next path within `statMs`,
+ *  and nothing waits for a child that the kernel still holds after SIGKILL. */
+function statInChild(paths: readonly string[]): Promise<ChildRead> {
+  const { promise, resolve } = Promise.withResolvers<ChildRead>();
+  const child = spawn(process.execPath, ["-e", statScript], { stdio: ["pipe", "pipe", "ignore"] });
+  const read: (string | null)[] = [];
+  let started = false;
+  let pending = "";
+  let done = false;
+  let timer: Timer | undefined;
+  const end = (): void => {
+    if (done) return;
+    done = true;
+    clearTimeout(timer);
+    child.kill("SIGKILL");
+    child.stdin?.destroy();
+    child.stdout?.destroy();
+    child.unref();
+    resolve({ started, read });
+  };
+  timer = setTimeout(end, statStartMs);
+  child.stdout?.setEncoding("utf8");
+  child.stdout?.on("data", (chunk: string) => {
+    pending += chunk;
+    for (let at = pending.indexOf("\n"); at !== -1; at = pending.indexOf("\n")) {
+      const line = pending.slice(0, at);
+      pending = pending.slice(at + 1);
+      if (started) read.push(line === "-" ? null : line);
+      else started = line === "ready";
+      clearTimeout(timer);
+      timer = setTimeout(end, statMs);
+    }
+    if (read.length === paths.length) end();
+  });
+  child.on("error", end);
+  child.on("close", end);
+  // A child that ends before it read all of its input closes its end of the pipe.
+  child.stdin?.on("error", () => undefined);
+  child.stdin?.end(paths.join("\0"));
+  return promise;
+}
+
+/** Where each of `paths` leads, as children of this process read them (`statInChild`): its device
+ *  and inode, "<dev>:<ino>", or null where it names nothing. A path that answered no stat within
+ *  `statMs`, here or earlier in this process (`unanswered`), has no entry; each read after one is
+ *  read by a child of its own. A child that did not start leaves the paths it was given without
+ *  an entry too, and they are asked again at the next read. */
+async function identities(paths: readonly string[]): Promise<Map<string, string | null>> {
+  const found = new Map<string, string | null>();
+  let rest = paths.filter((path) => !unanswered.has(path));
+  while (rest.length > 0) {
+    const { started, read } = await statInChild(rest);
+    for (const [at, identity] of read.entries()) found.set(rest[at] ?? "", identity);
+    const hung = rest[read.length];
+    if (!started || hung === undefined) break;
+    unanswered.add(hung);
+    rest = rest.slice(read.length + 1).filter((path) => !unanswered.has(path));
+  }
+  return found;
+}
+
+/** What `holdersOf` read of a directory: each process that holds it, "<program> <pid>", and each
+ *  process it cannot judge, since a path that process names (`path`) answered no stat within
+ *  `statMs`. */
+export interface Holding {
+  readonly holders: readonly string[];
+  readonly unread: readonly { readonly process: string; readonly path: string }[];
+}
+
 /** Each process of the user `uid` that still holds `directory`, a directory of a dead stack's
  *  mark, as the kernel shows it: its working directory, a file it holds open, or a path one of its
  *  arguments names (`pathsIn`), read from its working directory where it is relative, is that
@@ -111,13 +216,16 @@ function pathsIn(argument: string): string[] {
  *  `postmaster` is the pid of the postmaster `postmasterOf` verified, which this start stops
  *  itself, and neither it nor a process it started (its parent pid) is counted. A process that
  *  ends while it is read, or whose links this user may not read, holds nothing here, and nothing
- *  holds a directory that is gone. Answers "<program> <pid>" for each holder, in pid order. */
-export function holdersOf(
+ *  holds a directory that is gone. `/proc` is read here; where each path leads is read in a child,
+ *  each path within `statMs` (`identities`), and a process none of whose paths leads into the
+ *  directory, but one of whose paths did not answer, is one the start cannot judge (`unread`).
+ *  Answers each holder and each process it cannot judge, in pid order (`Holding`). */
+export async function holdersOf(
   directory: string,
   spellings: readonly string[],
   uid: number,
   postmaster?: number
-): string[] {
+): Promise<Holding> {
   let target: string;
   try {
     const stats = lstatSync(directory, { bigint: true });
@@ -125,55 +233,83 @@ export function holdersOf(
   } catch {
     // A directory gone, or one whose identity this user cannot read, has no holder to read here;
     // the rename or the removal that follows says what it is.
-    return [];
+    return { holders: [], unread: [] };
   }
-  // Whether `path` is `directory` or in it, read once for each path in one call.
-  const known = new Map<string, boolean>();
-  const inside = (path: string): boolean => {
-    const seen = known.get(path);
-    if (seen !== undefined) return seen;
-    let answer = false;
-    try {
-      const stats = statSync(path, { bigint: true });
-      answer = `${stats.dev}:${stats.ino}` === target;
-    } catch {
-      // A path that names nothing, such as a file a process will write, is in its parent.
-    }
-    const parent = dirname(path);
-    answer ||= parent !== path && inside(parent);
-    known.set(path, answer);
-    return answer;
-  };
-  const holders: string[] = [];
+  // What each process names, from `/proc` alone: whether an argument spells the directory as the
+  // mark does, and each path it names, its working directory first.
+  const named: { readonly process: string; readonly spelt: boolean; readonly paths: string[] }[] =
+    [];
   for (const pid of readdirSync("/proc").filter((entry) => /^\d+$/.test(entry))) {
     try {
       if (Number(pid) === postmaster || lstatSync(`/proc/${pid}`).uid !== uid) continue;
       const parent = /^PPid:\s+(\d+)$/m.exec(readFileSync(`/proc/${pid}/status`, "utf8"))?.[1];
       if (postmaster !== undefined && Number(parent) === postmaster) continue;
       const cwd = readlinkSync(`/proc/${pid}/cwd`);
-      const holds =
-        inside(cwd) ||
-        readFileSync(`/proc/${pid}/cmdline`, "utf8")
-          .split("\0")
-          .some(
-            (argument) =>
-              spellings.some((path) => names(argument, path)) ||
-              pathsIn(argument).some((path) => inside(isAbsolute(path) ? path : `${cwd}/${path}`))
-          ) ||
-        readdirSync(`/proc/${pid}/fd`).some((fd) => {
-          try {
-            const open = readlinkSync(`/proc/${pid}/fd/${fd}`);
-            return isAbsolute(open) && inside(open);
-          } catch {
-            return false;
-          }
-        });
-      if (holds) holders.push(`${basename(readlinkSync(`/proc/${pid}/exe`))} ${pid}`);
+      const args = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0");
+      const open = readdirSync(`/proc/${pid}/fd`).flatMap((fd) => {
+        try {
+          const path = readlinkSync(`/proc/${pid}/fd/${fd}`);
+          return isAbsolute(path) ? [path] : [];
+        } catch {
+          return [];
+        }
+      });
+      named.push({
+        process: `${basename(readlinkSync(`/proc/${pid}/exe`))} ${pid}`,
+        spelt: args.some((argument) => spellings.some((path) => names(argument, path))),
+        paths: [
+          cwd,
+          ...args.flatMap(pathsIn).map((path) => (isAbsolute(path) ? path : `${cwd}/${path}`)),
+          ...open,
+        ],
+      });
     } catch {
       // A process that ended, or whose links this user may not read, holds nothing here.
     }
   }
-  return holders;
+  // Each path and each directory above it, read in one child: a path that names nothing, such as
+  // a file a process will write, is in its parent.
+  const every = new Set<string>();
+  for (const { paths } of named) {
+    for (let path of paths) {
+      while (!every.has(path)) {
+        every.add(path);
+        const parent = dirname(path);
+        if (parent === path) break;
+        path = parent;
+      }
+    }
+  }
+  const leads = await identities([...every]);
+  // Whether `path` is `directory` or in it, or undefined where a stat of it or of a directory
+  // above it did not answer and none above it is the directory.
+  const known = new Map<string, boolean | undefined>();
+  const inside = (path: string): boolean | undefined => {
+    if (known.has(path)) return known.get(path);
+    const parent = dirname(path);
+    const above = parent === path ? false : inside(parent);
+    const self = leads.has(path) ? leads.get(path) === target : undefined;
+    const answer =
+      self === true || above === true
+        ? true
+        : self === false && above === false
+          ? false
+          : undefined;
+    known.set(path, answer);
+    return answer;
+  };
+  const holders: string[] = [];
+  const unread: { process: string; path: string }[] = [];
+  for (const { process, spelt, paths } of named) {
+    const judged = paths.map(inside);
+    if (spelt || judged.includes(true)) {
+      holders.push(process);
+      continue;
+    }
+    const path = paths[judged.indexOf(undefined)];
+    if (path !== undefined) unread.push({ process, path });
+  }
+  return { holders, unread };
 }
 
 /** How a postmaster's working directory, its data directory, names the run directory it serves
