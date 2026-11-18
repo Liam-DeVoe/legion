@@ -5360,17 +5360,25 @@ HANDED_ON_RUN = ("which runs words its callers hand it or that it sets itself, a
 # shell runs there would be read by no rule (data_operand; dispatch://INFRA-1545, round 37).
 DATA_RUN = ("which is or may be a `.py` or a `.jq` directly in .github/scripts/, a file this "
             "check does not read as shell text")
+# unseen()'s three reasons, each written once, so that the reason a run is refused with and the
+# key its cure is found under cannot drift apart. A script named with no directory is found by
+# the shell that runs it: `sh x.sh` (dash) through the working directory alone, `bash x.sh`
+# through it and then PATH, and the command word `x.sh` through PATH (dispatch://INFRA-1545,
+# round 38).
+WRITTEN_RUN = "a file this text writes before it runs it"
+MOVED_RUN = ("the name of a file this text writes elsewhere, which a `cd` or a `pushd` this check "
+             "does not follow may make the file it runs")
+NO_DIRECTORY_RUN = ("which names a script with no directory, so the shell finds it through the "
+                    "working directory or `PATH`, neither of which this check follows")
 REASON_CURES = {
-    "a file this text writes before it runs it": (
+    WRITTEN_RUN: (
         "Run no file this text writes: write its commands in the step itself, or move them "
         "into a script under .github/scripts/ and run that by its literal path"),
-    "the name of a file this text writes elsewhere, which a `cd` or a `pushd` this check does "
-    "not follow may make the file it runs": (
+    MOVED_RUN: (
         "Run no file this text writes, from any directory: write its commands in the step "
         "itself, or move them into a script under .github/scripts/ and run that by its literal "
         "path from the repository root"),
-    "which names a script with no directory, so bash finds it through the working directory "
-    "or `PATH`, neither of which this check follows": (
+    NO_DIRECTORY_RUN: (
         "Write the script's path from the repository root, `.github/scripts/<name>.sh …`, with "
         "no `cd` and no `PATH` entry standing in for it"),
     HANDED_ON_RUN: (
@@ -5742,14 +5750,12 @@ def unnamed_runs(path: str, loops: Loops, sees_fetching: bool,
         if operand or "/" in target:
             files = {word for word, text in written.items() if operand or text}
             if os.path.normpath(target) in files:
-                return "a file this text writes before it runs it"
+                return WRITTEN_RUN
             if moved and os.path.basename(os.path.normpath(target)) in map(os.path.basename,
                                                                           files):
-                return ("the name of a file this text writes elsewhere, which a `cd` or a "
-                        "`pushd` this check does not follow may make the file it runs")
+                return MOVED_RUN
         if "/" not in target and target.endswith(".sh") and not expansions_in(target):
-            return ("which names a script with no directory, so bash finds it through the "
-                    "working directory or `PATH`, neither of which this check follows")
+            return NO_DIRECTORY_RUN
         return None
 
     def handed(words: list[str], placeholder: str | None, read: str) -> str | None:

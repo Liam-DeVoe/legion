@@ -13489,8 +13489,8 @@ for refusal in \
   "59	13h hand a function that runs a local copy of its argument	calls .r37_run., which runs the word it is handed, with .\$p., whose last path element is an expansion" \
   "63	13i pipe the path into xargs env	runs .xargs., which hands each word it reads to .env., which runs it as a command" \
   "67	13j run what find finds	runs .find. with .-exec., which runs each file it finds as a command" \
-  "71	13k run a script by its name after a cd	runs .r37-here\.sh. with .bash., which names a script with no directory, so bash finds it through the working directory or .PATH., neither of which this check follows" \
-  "75	13l run a script by its name through PATH	runs .r37-here\.sh. as a command, which names a script with no directory, so bash finds it through the working directory or .PATH., neither of which this check follows" \
+  "71	13k run a script by its name after a cd	runs .r37-here\.sh. with .bash., which names a script with no directory, so the shell finds it through the working directory or .PATH., neither of which this check follows" \
+  "75	13l run a script by its name through PATH	runs .r37-here\.sh. as a command, which names a script with no directory, so the shell finds it through the working directory or .PATH., neither of which this check follows" \
   "79	13m source a process substitution	runs .source., which reads the program it runs from a process substitution" \
   "83	13n run bash on a process substitution	runs .bash., which reads the program it runs from a process substitution"; do
   IFS=$'\t' read -r line step says <<<"$refusal"
