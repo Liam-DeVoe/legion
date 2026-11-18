@@ -44,7 +44,7 @@ export function PriorityPage(): ReactNode {
   const priorities = useQuery(prioritiesQuery());
   const work = useQuery({ ...advancesIssuesQuery({ advances: id }, true), enabled: id !== "" });
   const [open, setOpen] = useState(true);
-  const { canWrite, patch } = usePriorityWrites();
+  const { canWrite, describe, patch, rename } = usePriorityWrites();
   // The way out of this scope, in the issue table's own shape: the issues advancing this
   // priority, project by project, each as that project's table narrowed to them. The chip the
   // address raises there names this priority and gives the whole table back when it is removed.
@@ -102,16 +102,14 @@ export function PriorityPage(): ReactNode {
             <span className={`text-2xl font-semibold ${textMutedOnCanvas}`}>{item.order}</span>
             <h1 className={`min-w-64 flex-1 text-2xl font-semibold ${textPrimaryOnCanvas}`}>
               {canWrite ? (
+                // Keyed by the priority, as each field below is: the page stays mounted from one
+                // priority to the next, and a field holds what its priority's edit started from.
                 <InPlaceField
+                  key={id}
                   label="Title"
                   onSave={(next) => {
                     const named = next.trim();
-                    if (named === "" || named === title) return;
-                    patch.mutate({
-                      id,
-                      input: { title: named },
-                      label: `Rename the priority “${title}” to “${named}”`,
-                    });
+                    rename(id, named, title, `Rename the priority “${title}” to “${named}”`);
                   }}
                   value={title}
                 />
@@ -128,6 +126,7 @@ export function PriorityPage(): ReactNode {
                 <label htmlFor={OWNER_FIELD}>Owner</label>
                 <InPlaceField
                   id={OWNER_FIELD}
+                  key={id}
                   label="Owner"
                   onSave={(owner) =>
                     patch.mutate({
@@ -165,13 +164,10 @@ export function PriorityPage(): ReactNode {
             <PriorityDescription
               canWrite={canWrite}
               description={description}
+              key={id}
               label={`Description of ${item.order}`}
               onSave={(next) =>
-                patch.mutate({
-                  id,
-                  input: { description: next },
-                  label: `Description of the priority “${title}”`,
-                })
+                describe(id, next, description, `Description of the priority “${title}”`)
               }
             />
           ) : null}

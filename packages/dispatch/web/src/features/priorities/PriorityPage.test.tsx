@@ -4,8 +4,15 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { recordedEditors, selectText, writeAtEnd } from "../../__tests__/recorded-editors";
-import { api } from "../../api/client";
-import type { IssueSummary, Priorities, Priority, PriorityRow } from "../../api/types";
+import { answerRoute } from "../../__tests__/send-answers";
+import { api, type WriteBounds } from "../../api/client";
+import type {
+  IssueSummary,
+  PatchPriorityInput,
+  Priorities,
+  Priority,
+  PriorityRow,
+} from "../../api/types";
 import { DocumentRuntime } from "../doc/runtime";
 import { PriorityPage } from "./PriorityPage";
 
@@ -121,7 +128,11 @@ function page(id = "rocq-lean", issues: IssueSummary[] = [], writer = true) {
     ? { event_head: "0", kind: "user" as const, login: "alice" }
     : ({ event_head: "0", kind: "token", login: "ci" } as never);
   const viewer = spyOn(api, "whoAmI").mockResolvedValue(whoami);
-  const patch = spyOn(api, "patchPriority").mockImplementation(async (key) => saved(key));
+  // A change of a priority goes on its priority's line, made from its request alone
+  // (`priorityPatchRequest`), so it is answered on its route.
+  const patch = answerRoute<
+    (id: string, input: PatchPriorityInput, bounds: WriteBounds) => Promise<Priority>
+  >("PATCH", "/api/v1/priorities/*").mockImplementation(async (id) => saved(id));
   // The margin reads the priority's own history as soon as the page opens.
   const history = spyOn(api, "getPriorityHistory").mockResolvedValue([]);
   const descriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
@@ -212,6 +223,8 @@ test("the description is the documents' editor, with no action on a selection, a
   expect(patch.mock.calls[0]?.[0]).toBe("rocq-lean");
   expect(patch.mock.calls[0]?.[1]).toEqual({
     description: "# Rocq and Lean speed work restarted\n\nSpeedruns run again. **More**.\n",
+    // Named with the description the edit started from, as the server stores it.
+    expected: { description: "# Rocq and Lean speed work restarted\n\nSpeedruns run again." },
   });
   expect(screen.queryByRole("button", { name: /save/i })).toBeNull();
   // Leaving the editor writes nothing more: what it holds is written already.

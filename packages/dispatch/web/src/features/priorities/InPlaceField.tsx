@@ -1,6 +1,9 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import {
   borderDefault,
+  calloutWarningBg,
+  calloutWarningBorder,
+  calloutWarningText,
   focusVisibleRing,
   surfaceBg,
   textPrimaryOnCanvas,
@@ -8,16 +11,72 @@ import {
 
 /** How long the reader may stop typing before what they wrote is saved. Nothing else in
  *  Dispatch asks a person to press Save, so a priority's fields are saved as they are written:
- *  once the typing rests, and at once when the field is left. The description's editor keeps
- *  the same rule (`PriorityDescription`). */
+ *  once the typing rests, at once when the field is left, and as the page goes. The
+ *  description's editor keeps the same rule (`PriorityDescription`). */
 export const SAVE_AFTER_MS = 500;
+
+/**
+ * What a field of a priority shows beside itself while it holds another person's text and the
+ * reader's own text is not written: that text, and the reader's two choices. Using it puts it
+ * back and writes it at once, over the other person's text, which the write names as the text it
+ * goes over; keeping theirs lets the reader's text go. Nothing of either is dropped until the
+ * reader picks one. It is an alert, since the reader's text has just left the field they were
+ * writing in, and it is drawn in spans and buttons alone, since the title's field stands in the
+ * page's heading.
+ */
+export function ChangedMeanwhile({
+  label,
+  mine,
+  onKeepTheirs,
+  onUseMine,
+}: {
+  /** The field's own name, which names the notice. */
+  label: string;
+  /** The reader's text, drawn as written: every line of it, its spaces kept. */
+  mine: string;
+  onKeepTheirs: () => void;
+  onUseMine: () => void;
+}): ReactNode {
+  return (
+    <span
+      aria-label={`${label}, changed by another person`}
+      className={`mt-1 block space-y-1 rounded-lg border p-2 text-sm font-normal ${calloutWarningBorder} ${calloutWarningBg} ${calloutWarningText}`}
+      role="alert"
+    >
+      <span className="block">Another person changed this while you wrote. Your text:</span>
+      <span className="block whitespace-pre-wrap border-l-2 pl-2">{mine}</span>
+      <span className="flex flex-wrap gap-3">
+        <button className="font-semibold underline" onClick={onUseMine} type="button">
+          Use my text
+        </button>
+        <button className="underline" onClick={onKeepTheirs} type="button">
+          Keep their text
+        </button>
+      </span>
+    </span>
+  );
+}
+
+/** Stops the write waiting for the typing to rest, if one waits. */
+function stopTimer(timer: { current: number | undefined }): void {
+  if (timer.current !== undefined) window.clearTimeout(timer.current);
+  timer.current = undefined;
+}
 
 /**
  * A one-line field edited where it is read: no edit mode, no Save button. What the reader types
  * is kept here until it rests, then written once; leaving the field writes it immediately, and
- * Enter does both. The reader's own text stands until `value` itself changes, so a refresh of
- * the row underneath never pulls a half-typed word out from under them and the round trip of
- * their own write never shows them the old text again.
+ * Enter does both, as do the page going (`pagehide`) and the field leaving the page. Only a text
+ * that differs from the one the edit started from is written, so leaving a field the reader typed
+ * nothing into writes nothing. The texts compared are trimmed, since every field drawn here is
+ * stored trimmed (`internal/dispatch/api/priorities.go`), and what is written is trimmed.
+ *
+ * A change of `value` is the server's text moving under the field. The round trip of one of its
+ * own writes changes nothing the reader sees, so their text never seems undone while it
+ * travels. Another person's text is taken in at once - with the focus in the field or not -
+ * while the reader holds no unwritten typing and no write of theirs is out. Else it is taken in
+ * all the same, the waiting write is stopped, and the reader's text is kept beside the field
+ * (`ChangedMeanwhile`) until they use it again or let it go.
  */
 export function InPlaceField({
   id,
@@ -38,40 +97,79 @@ export function InPlaceField({
   value: string;
 }): ReactNode {
   const [draft, setDraft] = useState(value);
-  const [editing, setEditing] = useState(false);
+  // The reader's own text, kept beside the field while it shows another person's.
+  const [kept, setKept] = useState<string>();
   const timer = useRef<number | undefined>(undefined);
-  const latest = useRef({ draft, value, onSave });
-  latest.current = { draft, value, onSave };
+  // The server's text the reader's edit started from: the last one taken in, or the last text
+  // this field wrote, which the server holds once that write lands.
+  const base = useRef(value);
+  // The texts this field wrote that the server has not answered with yet, oldest first.
+  const sent = useRef<string[]>([]);
   const seen = useRef(value);
+  const latest = useRef({ draft, kept, onSave });
+  latest.current = { draft, kept, onSave };
 
-  // The server's text wins when it changes under a reader who is not holding the field:
-  // another writer's rename, or this writer's own write coming back. The draft stands until
-  // then, because leaving the field sends a write and the write is a round trip: resetting
-  // the draft while it is in flight would show the reader their own text being undone, and
-  // then written again when the answer lands.
+  const write = (text: string) => {
+    base.current = text;
+    sent.current.push(text);
+    latest.current.onSave(text);
+  };
+  const save = () => {
+    stopTimer(timer);
+    const typed = latest.current.draft.trim();
+    if (typed !== base.current) write(typed);
+  };
+  const saveNow = useRef(save);
+  saveNow.current = save;
+
   useEffect(() => {
     if (value === seen.current) return;
     seen.current = value;
-    if (!editing) setDraft(value);
-  }, [editing, value]);
+    const { draft: current, kept: mine } = latest.current;
+    const typed = current.trim();
+    // The server holds what the field holds: nothing is left to write.
+    if (value === typed) {
+      base.current = value;
+      sent.current = [];
+      if (mine?.trim() === value) setKept(undefined);
+      return;
+    }
+    // The answer to one of this field's own writes, and to each one sent before it.
+    const own = sent.current.indexOf(value);
+    if (own !== -1 || value === base.current) {
+      sent.current.splice(0, own + 1);
+      return;
+    }
+    // Another person's text. The reader's own, where they hold one, goes beside the field.
+    const holding = typed !== base.current || sent.current.length > 0;
+    const beside = holding ? current : mine;
+    stopTimer(timer);
+    setKept(beside?.trim() === value ? undefined : beside);
+    base.current = value;
+    sent.current = [];
+    setDraft(value);
+  }, [value]);
 
-  const stop = () => {
-    if (timer.current !== undefined) window.clearTimeout(timer.current);
-    timer.current = undefined;
+  // Leaving the page, or the field leaving it, leaves the field: what the reader typed is
+  // written now rather than lost with the timer. A write pressed as the page goes is kept for
+  // the reload to make (`features/writes/write-storage.ts`).
+  useEffect(() => {
+    const leave = () => saveNow.current();
+    window.addEventListener("pagehide", leave);
+    return () => {
+      window.removeEventListener("pagehide", leave);
+      leave();
+    };
+  }, []);
+
+  const takeMine = () => {
+    if (kept === undefined) return;
+    stopTimer(timer);
+    setKept(undefined);
+    setDraft(kept);
+    const text = kept.trim();
+    if (text !== base.current) write(text);
   };
-  const save = () => {
-    stop();
-    const { draft: typed, value: saved, onSave: write } = latest.current;
-    if (typed !== saved) write(typed);
-  };
-  // The timer is cleared through the ref the render that set it wrote to, so the unmount takes
-  // no dependency on this render's own `stop`.
-  useEffect(
-    () => () => {
-      if (timer.current !== undefined) window.clearTimeout(timer.current);
-    },
-    []
-  );
   // A plain bordered field: it is the text's one reading, written where it is read, so nothing
   // hides it until the reader hovers it.
   const listId = options === undefined ? undefined : `${label.replace(/\W+/g, "-")}-options`;
@@ -83,15 +181,14 @@ export function InPlaceField({
         id={id}
         list={listId}
         onBlur={() => {
-          setEditing(false);
           save();
+          setDraft((typed) => typed.trim());
         }}
         onChange={(event) => {
           setDraft(event.target.value);
-          stop();
+          stopTimer(timer);
           timer.current = window.setTimeout(save, SAVE_AFTER_MS);
         }}
-        onFocus={() => setEditing(true)}
         onKeyDown={(event) => {
           if (event.key !== "Enter") return;
           event.preventDefault();
@@ -108,6 +205,14 @@ export function InPlaceField({
             <option key={option} value={option} />
           ))}
         </datalist>
+      )}
+      {kept === undefined ? null : (
+        <ChangedMeanwhile
+          label={label}
+          mine={kept}
+          onKeepTheirs={() => setKept(undefined)}
+          onUseMine={takeMine}
+        />
       )}
     </>
   );

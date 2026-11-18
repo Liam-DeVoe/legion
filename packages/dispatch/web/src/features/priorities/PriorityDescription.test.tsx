@@ -145,8 +145,8 @@ test("closing the editor while a write waits for the typing to rest writes it", 
   expect(onSave.mock.calls).toEqual([["Speedruns run again. More.\n"]]);
 });
 
-test("the server's text replaces the editor's while the reader is not in it, and not while they are", async () => {
-  const { editor, onSave, rerender } = described("Speedruns run again.");
+test("the server's text replaces the editor's; under the reader's unwritten change it is shown, and theirs kept beside it until they use it", async () => {
+  const { editor, onSave, rerender, scope } = described("Speedruns run again.");
   const { box, handle } = await editor();
   rerender("Written elsewhere.");
   await waitFor(() => expect(box.textContent).toBe("Written elsewhere."));
@@ -154,9 +154,19 @@ test("the server's text replaces the editor's while the reader is not in it, and
   handle.view.focus();
   writeAtEnd(handle, " Mine.");
   rerender("Written elsewhere, again.");
-  expect(box.textContent).toBe("Written elsewhere. Mine.");
+  // The editor shows what the server holds, and the reader's text stands beside it.
+  expect(box.textContent).toBe("Written elsewhere, again.");
+  const notice = scope.getByRole("alert", { name: "Description of P1, changed by another person" });
+  expect(notice.textContent).toContain("Another person changed this while you wrote. Your text:");
+  expect(within(notice).getByText("Written elsewhere. Mine.")).toBeDefined();
+  // Leaving writes nothing: the editor holds the server's text.
   act(() => handle.view.dom.blur());
+  expect(onSave).not.toHaveBeenCalled();
+  // Using the reader's text puts it back and writes it at once.
+  await userEvent.setup().click(within(notice).getByRole("button", { name: "Use my text" }));
+  expect(box.textContent).toBe("Written elsewhere. Mine.");
   expect(onSave.mock.calls).toEqual([["Written elsewhere. Mine.\n"]]);
+  expect(scope.queryByRole("alert", { name: /changed by another person/ })).toBeNull();
   // The round trip of that write answers with what the editor wrote, which it holds already.
   rerender("Written elsewhere. Mine.\n");
   expect(box.textContent).toBe("Written elsewhere. Mine.");
@@ -178,6 +188,37 @@ test("leaving the editor with nothing written takes in the text written elsewher
   writeAtEnd(handle, " Mine.");
   act(() => handle.view.dom.blur());
   expect(onSave.mock.calls).toEqual([["Written elsewhere. Mine.\n"]]);
+});
+
+test("keeping the other person's text lets the reader's go, and writes nothing", async () => {
+  const { editor, onSave, rerender, scope } = described("Speedruns run again.");
+  const { box, handle } = await editor();
+  handle.view.focus();
+  writeAtEnd(handle, " Mine.");
+  rerender("Written elsewhere.");
+  const notice = scope.getByRole("alert", { name: "Description of P1, changed by another person" });
+  await userEvent.setup().click(within(notice).getByRole("button", { name: "Keep their text" }));
+  expect(scope.queryByRole("alert", { name: /changed by another person/ })).toBeNull();
+  expect(box.textContent).toBe("Written elsewhere.");
+  // Clicking the button left the editor, and the editor holds the server's text: nothing goes.
+  expect(onSave).not.toHaveBeenCalled();
+});
+
+test("the page going while a write waits for the typing to rest writes it, once", async () => {
+  const { editor, onSave } = described("Speedruns run again.");
+  const { handle } = await editor();
+  handle.view.focus();
+  await onFakeClock(async () => {
+    writeAtEnd(handle, " More.");
+    expect(onSave).not.toHaveBeenCalled();
+    act(() => {
+      window.dispatchEvent(new Event("pagehide"));
+    });
+    expect(onSave.mock.calls).toEqual([["Speedruns run again. More.\n"]]);
+    // That was the write waiting for the typing to rest: none goes once the typing has rested.
+    await jump(SAVE_AFTER_MS);
+  });
+  expect(onSave).toHaveBeenCalledTimes(1);
 });
 
 test("the keyboard reaches the editor as it reaches any field", async () => {

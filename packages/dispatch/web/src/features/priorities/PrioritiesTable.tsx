@@ -59,7 +59,7 @@ export function PrioritiesTable({
   const [openId, setOpenId] = useState<string>();
   const [dragging, setDragging] = useState<string>();
   const [openFilter, setOpenFilter] = useState<string>();
-  const { canWrite, patch } = usePriorityWrites();
+  const { canWrite, describe, patch, rename } = usePriorityWrites();
 
   const items = useMemo(() => buildPriorityItems(rows), [rows]);
   const order = useMemo(() => items.map((item) => item.priority.id), [items]);
@@ -88,12 +88,13 @@ export function PrioritiesTable({
   const onDragEnd = useCallback(() => setDragging(undefined), []);
   const onDescribe = useCallback(
     (item: PriorityItem, description: string) =>
-      patch.mutate({
-        id: item.priority.id,
-        input: { description },
-        label: `Description of the priority “${item.priority.title}”`,
-      }),
-    [patch.mutate]
+      describe(
+        item.priority.id,
+        description,
+        item.priority.description,
+        `Description of the priority “${item.priority.title}”`
+      ),
+    [describe]
   );
   const onMove = useCallback(
     (item: PriorityItem, by: -1 | 1) => {
@@ -123,14 +124,14 @@ export function PrioritiesTable({
   const onRename = useCallback(
     (item: PriorityItem, title: string) => {
       const next = title.trim();
-      if (next === "" || next === item.priority.title) return;
-      patch.mutate({
-        id: item.priority.id,
-        input: { title: next },
-        label: `Rename the priority “${item.priority.title}” to “${next}”`,
-      });
+      rename(
+        item.priority.id,
+        next,
+        item.priority.title,
+        `Rename the priority “${item.priority.title}” to “${next}”`
+      );
     },
-    [patch.mutate]
+    [rename]
   );
   // One object while nothing a row can do changes, since the column declarations are built
   // over it (`usePriorityColumns`) and the table is built over those.

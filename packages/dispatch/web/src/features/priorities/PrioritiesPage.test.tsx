@@ -5,8 +5,15 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { recordedEditors, writeAtEnd } from "../../__tests__/recorded-editors";
-import { api } from "../../api/client";
-import type { IssueSummary, Priorities, Priority, PriorityRow } from "../../api/types";
+import { answerRoute } from "../../__tests__/send-answers";
+import { api, type WriteBounds } from "../../api/client";
+import type {
+  IssueSummary,
+  PatchPriorityInput,
+  Priorities,
+  Priority,
+  PriorityRow,
+} from "../../api/types";
 import { DocumentRuntime } from "../doc/runtime";
 import { PrioritiesPage } from "./PrioritiesPage";
 
@@ -136,7 +143,11 @@ function page(answer: Priorities, issues: IssueSummary[] = [], writer = true) {
     : ({ event_head: "0", kind: "token", login: "ci" } as never);
   const viewer = spyOn(api, "whoAmI").mockResolvedValue(whoami);
   const create = spyOn(api, "createPriority").mockResolvedValue(saved("new"));
-  const patch = spyOn(api, "patchPriority").mockImplementation(async (id) => saved(id));
+  // A change of a priority goes on its priority's line, made from its request alone
+  // (`priorityPatchRequest`), so it is answered on its route.
+  const patch = answerRoute<
+    (id: string, input: PatchPriorityInput, bounds: WriteBounds) => Promise<Priority>
+  >("PATCH", "/api/v1/priorities/*").mockImplementation(async (id) => saved(id));
   // The unit DOM lays nothing out: give every table's box the height a window would.
   const descriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
   Object.defineProperty(HTMLElement.prototype, "clientHeight", {
@@ -445,7 +456,9 @@ test("a title is renamed where it is read, with no edit mode and no Save button"
   await waitFor(() => expect(patch).toHaveBeenCalledTimes(1));
   expect(patch.mock.calls[0]?.slice(0, 2)).toEqual([
     "linkage-closure",
-    { title: "Linkage closure, restarted" },
+    // Named with the title the edit started from, which the server refuses the write over if
+    // another person has written meanwhile.
+    { expected: { title: "Linkage closure eval" }, title: "Linkage closure, restarted" },
   ]);
   expect(screen.queryByRole("button", { name: /^Save/ })).toBeNull();
 });
@@ -464,7 +477,7 @@ test("a description is written on the open row: the empty editor under the promp
   await waitFor(() => expect(patch).toHaveBeenCalledTimes(1));
   expect(patch.mock.calls[0]?.slice(0, 2)).toEqual([
     "oss-verify",
-    { description: "What **it** is.\n" },
+    { description: "What **it** is.\n", expected: { description: "" } },
   ]);
   // The editor still holds what was written: there is no rendered block to give back.
   expect(box.textContent).toBe("What it is.");
