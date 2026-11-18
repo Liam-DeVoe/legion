@@ -121,8 +121,8 @@ export interface QuoteTarget {
 const targets = new WeakMap<Element, QuoteTarget | null>();
 
 /** Records `target` for the text drawn under `ref`, again on every commit so it reaches that
- *  render's state: `null` while its thread takes no reply (a decided suggestion's, a resolved
- *  ask's, one whose send is out). A selection is the innermost recorded text's that holds it. */
+ *  render's state: `null` while its thread takes no reply (a decided suggestion's, one whose
+ *  send is out). A selection is the innermost recorded text's that holds it. */
 export function useQuoteTarget(ref: RefObject<Element | null>, target: QuoteTarget | null): void {
   useLayoutEffect(() => {
     const element = ref.current;

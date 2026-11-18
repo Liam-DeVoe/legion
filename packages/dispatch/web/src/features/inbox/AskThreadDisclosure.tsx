@@ -33,8 +33,8 @@ interface AskThreadDisclosureProps {
   /** The order the thread reads in (`AskThread`), which also places this control and the
    *  composer it reveals: under the question in Newest first, at the foot in Oldest first. */
   order: ThreadOrder;
-  /** An answered ask's thread as a text of Quote reply (`AskThread`): a quote handed to its reply
-   *  box opens the box. */
+  /** An answered or resolved ask's thread as a text of Quote reply (`AskThread`): a quote handed
+   *  to its reply box opens the box. */
   quote?: { readonly key: MutationKey; readonly ref: QuoteRef };
   /** The ids of the replies the reader has not read (`AskThread`). */
   unread?: ReadonlySet<string>;

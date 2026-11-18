@@ -196,8 +196,8 @@ func (s *server) runReplay(ctx context.Context, replay heldReplay, held *heldPos
 }
 
 // serveMounted serves request on the routes the server mounts, as it serves one from outside. It
-// is the one call of the mounted routes a route makes, so the route guards stop here
-// (keyedWriteGuardStops) and walk each mounted route as a route of its own.
+// is the one call of the mounted routes a route makes, so the keyed-write guard stops here
+// (keyedWriteGuardStops) and walks each mounted route as a route of its own.
 func (s *server) serveMounted(answer http.ResponseWriter, request *http.Request) {
 	s.mux.ServeHTTP(answer, request)
 }

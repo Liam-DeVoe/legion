@@ -649,11 +649,10 @@ test("on a phone the bar stands at the foot of the screen, and its Quote reply q
   if (screen === null) throw new Error("the page has no viewport size");
   await expect(async () => {
     const placed = await bar(page).boundingBox();
-    expect(placed).not.toBeNull();
-    if (placed === null) return;
+    if (placed === null) throw new Error("the bar has no box");
     expect(Math.abs(screen.height - 12 - (placed.y + placed.height))).toBeLessThanOrEqual(1);
     expect(Math.abs(placed.x + placed.width / 2 - screen.width / 2)).toBeLessThanOrEqual(1);
-  }).toPass();
+  }).toPass({ timeout: 5_000 });
   await quoteButton(page).tap();
   await expectQuoted(card.locator("[data-ask-answer]"), ORDER_QUOTE);
 });

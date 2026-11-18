@@ -83,7 +83,7 @@ import { AskHandOnPicker } from "./AskHandOnPicker";
 import { AskChoiceRow } from "./AskOptionRow";
 import { AskRecipients } from "./AskRecipients";
 import { type AskMenuItem, AskSplitButton } from "./AskSplitButton";
-import { AskThread, takesReply } from "./AskThread";
+import { AskThread } from "./AskThread";
 import { AskThreadDisclosure } from "./AskThreadDisclosure";
 import {
   type AskCardActions,
@@ -636,7 +636,7 @@ export function AskCard({
   // An answered or resolved ask quotes into the reply box of its thread (`AskReplyComposer`),
   // from its record and its replies, while a reply is not out; this card's own box, named for this
   // card alone (`replyQuoteKey`), since the margin can draw another card of the same ask beside
-  // it. An ask open again takes no reply (`takesReply`), and a decision block's card none of
+  // it. Such an ask always takes a reply (`takesReply`), and a decision block's card offers no
   // Quote reply.
   const cardInstance = useId();
   const replyQuoteKey = useMemo<MutationKey>(
@@ -645,7 +645,7 @@ export function AskCard({
   );
   const { sending: replySending } = useSending(["ask-reply", displayedAsk.id]);
   const answeredQuoteRef = useQuoteTargetRef(
-    completed !== null && takesReply(currentAsk) && !inBlock && !replySending
+    completed !== null && !inBlock && !replySending
       ? { quote: (blocks) => quoteInto(replyQuoteKey, blocks) }
       : null
   );

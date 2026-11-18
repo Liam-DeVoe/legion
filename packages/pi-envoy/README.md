@@ -544,7 +544,10 @@ gated write only when it consumes one, so a write sent any other way is refused 
   the form to send, or, for a file that changed after the review, says to send the call again in a
   later message). In `warn` mode the CLI first records the write in the session's ledger, refuses
   it when the ledger cannot take that line, and then posts it with a `dispatch: warning:` line.
-  Either way pi-envoy records an `advisor-gate` entry with outcome `unmarked`. A record that cannot
+  Either way pi-envoy records an `advisor-gate` entry with outcome `unmarked`. The written rules
+  run before this check: a write they refuse keeps its marker for the call sent again, and in
+  `block` mode a write with no marker meets their refusal first, when they are on, and AskGate's
+  refusal, with its `unmarked` entry, at the call after. A record that cannot
   be read, or that names a store that is gone, is a refusal. A session no live record names needs
   no marker: a terminal, CI, Claude Code, a pod without pi-envoy, a session with no Dispatch and
   one with `askgate.enabled: false`.

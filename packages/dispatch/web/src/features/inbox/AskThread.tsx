@@ -277,7 +277,7 @@ export interface AskThreadProps {
   /** The order the thread reads in: the reader's own choice, which the card holds
    *  (`threads/thread-order.ts`). */
   order: ThreadOrder;
-  /** An answered ask's thread as a text of Quote reply (`AskCard`): `ref` records the thread's
+  /** An answered or resolved ask's thread as a text of Quote reply (`AskCard`): `ref` records the thread's
    *  replies as words a reader may quote, and `key` names the reply box their quote goes to. */
   quote?: { readonly key: MutationKey; readonly ref: QuoteRef };
   /** The ids of the replies the reader has not read (`unreadWrites` in

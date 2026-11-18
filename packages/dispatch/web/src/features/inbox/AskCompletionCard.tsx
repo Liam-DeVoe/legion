@@ -342,8 +342,8 @@ interface AskCompletionCardProps {
   /** Shown only to the person who gave the current, non-approval answer. */
   onChangeAnswer?: () => void;
   /** The record as a text of Quote reply (`useQuoteTargetRef` in `threads/quote-reply.ts`): the
-   *  card that draws the ask says what a quote of its words does, and that a resolved ask's
-   *  takes none. */
+   *  card that draws the ask says what a quote of its words does, which for an answered or a
+   *  resolved ask is a quote into its thread's reply box. */
   quoteRef?: QuoteRef;
 }
 
