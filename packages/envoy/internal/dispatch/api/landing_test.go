@@ -223,6 +223,39 @@ func TestLandingRefusesAPageItDoesNotKnow(t *testing.T) {
 	}
 }
 
+// A caller that asks for the display trees (`Dispatch-Trees: 1`, which the dashboard sends on
+// every read) gets them in the coverage part as the coverage route gives them: each requirement
+// registers its text with the issue page's reader, which the page resolves after the coverage
+// read (landingIssuePage). A landing that read the coverage with no reader would answer every
+// requirement with no text_tree, and the dashboard would draw it from its own parse.
+func TestLandingCoverageCarriesTheTreesTheCoverageRouteAnswers(t *testing.T) {
+	handler := newTestHandler(t)
+	createTestProject(t, handler, "LAND")
+	issue := createSpecIssue(t, handler, "LAND", "# Spec\n\nThe landing reads this document.\n\n"+twoRequirements)
+
+	target := "/api/v1/landing?page=issue&key=" + issue.Key
+	landing := landingFrom(t, target, treesRequest(t, handler, target, true))
+	route := treesRequest(t, handler, "/api/v1/issues/"+issue.Key+"/coverage", true).Body.Bytes()
+	assertSameJSON(t, "page.issue.coverage", landing.partOf(t, "issue")["coverage"], route)
+
+	var coverage struct {
+		Requirements []struct {
+			TextTree json.RawMessage `json:"text_tree"`
+		} `json:"requirements"`
+	}
+	if err := json.Unmarshal(route, &coverage); err != nil {
+		t.Fatalf("decode the coverage route's answer %s: %v", route, err)
+	}
+	if len(coverage.Requirements) != 2 {
+		t.Fatalf("the coverage route answered %d requirements, want the spec's 2", len(coverage.Requirements))
+	}
+	for i, requirement := range coverage.Requirements {
+		if len(requirement.TextTree) == 0 || string(requirement.TextTree) == "null" {
+			t.Errorf("requirement %d of the coverage route has no text_tree, so the comparison above proves nothing", i)
+		}
+	}
+}
+
 // An issue key that is no issue leaves the issue's own parts null rather than refusing the whole
 // landing: the shell is still what every page draws, and the dashboard reads the issue itself,
 // which answers the 404 it already draws. The decisions part is no exception to that rule: its
