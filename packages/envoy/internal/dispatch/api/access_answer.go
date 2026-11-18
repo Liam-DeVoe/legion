@@ -13,9 +13,9 @@ import (
 // token's list: one project's owner, visibility and repositories, and whether one person sees it,
 // one person's member kind, and every private project's Slack channels. It is plain data read
 // outside any transaction. Only a Kubernetes service account the deployment names in
-// DISPATCH_ACCESS_ACCOUNTS reads it, with its own projected token; every other caller, a person
-// included, is 403 ACCESS_ACCOUNT_REQUIRED before anything is read. A deployment that names no
-// such account answers every caller so.
+// DISPATCH_ACCESS_ACCOUNTS reads it, with its own projected token. Before anything is read, a
+// caller with no credential is 401 NO_IDENTITY, and every other caller, a person included, is 403
+// ACCESS_ACCOUNT_REQUIRED. A deployment that names no such account answers every caller so.
 
 // accessAccountOf answers the service-account subject a request's verified projected token names,
 // and false for every other credential: a broker-issued token that names a fleet as its service
