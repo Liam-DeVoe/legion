@@ -188,6 +188,14 @@ test("a caret label that would pass the end of its box hangs back from the caret
           ).toBe(true);
         } finally {
           view.destroy();
+          for (const peer of [bob, carol, awareness]) peer.destroy();
+          // y-prosemirror hands each change it hears to the view in a 0 ms timeout it queues
+          // (`setMeta`), and in CI one such task ran after this window was gone, with no
+          // `document` (`document is not defined` in upstream's `installCollabCursorStyles`).
+          // Timeouts of one delay run in the order they were set, so a 0 ms timeout set after
+          // the view and the peers are gone runs after every task they queued: the window
+          // outlives them. No fake clock can stand in: the task is y-prosemirror's own.
+          await new Promise<void>((resolve) => setTimeout(resolve, 0));
         }
       });
     });
