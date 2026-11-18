@@ -163,6 +163,24 @@ func TestThePlansParserReadsOnlyWhatTheCommandPrints(t *testing.T) {
 	}
 }
 
+// The printed read holds an issue whose run started before the release that writes each run's
+// plan (ratedWant.unplanned) to `plan none`, as the read by project holds it to no plan
+// (plansHold); the control is the same issue printed with the default plan, which must fail.
+func TestThePrintedReadHoldsAnUnplannedIssueToNoPlan(t *testing.T) {
+	var steps stepRecordsRead
+	if err := json.Unmarshal([]byte(`{"tasks":[{"task":"default","steps":[{"started_at":"2026-11-17T00:00:00Z","ended_at":"2026-11-17T00:01:00Z"}]}]}`), &steps); err != nil {
+		t.Fatal(err)
+	}
+	want := []ratedWant{{walkIssue: walkIssue{key: "SR1-1"}, steps: steps, unplanned: true}}
+	printed := plansPrintedWith("none")
+	if _, err := plansPrintedHold("SR1", strings.Replace(printed, "plan "+defaultPlanPrinted(), "plan none", 1), want); err != nil {
+		t.Errorf("the unplanned issue printed with `plan none`: %v, want it held", err)
+	}
+	if _, err := plansPrintedHold("SR1", printed, want); err == nil || !strings.Contains(err.Error(), "want plan none") {
+		t.Errorf("control: the unplanned issue printed with the default plan = %v, want an error saying it wants plan none", err)
+	}
+}
+
 // failedStepsPrinted is how plansPrintedHold names an issue whose printed count of failed steps is
 // got, not want.
 func failedStepsPrinted(issue string, got, want int) string {
@@ -170,11 +188,11 @@ func failedStepsPrinted(issue string, got, want int) string {
 }
 
 // plansPrintedHold says whether out, the output of `dispatch plans --project project`, lists exactly
-// the issues of want, in want's order, which is newest close first, each with the default plan,
-// its rating with its reason (or none), its time, the hours and minutes from the earliest start to
-// the latest end of its records, and its count of failed steps. It answers the lines it held, so
-// the line in each place is the issue of want's in that place, or an error naming the first issue
-// that is missing or wrong.
+// the issues of want, in want's order, which is newest close first, each with the default plan, or
+// `none` for an unplanned one, its rating with its reason (or none), its time, the hours and
+// minutes from the earliest start to the latest end of its records, and its count of failed steps.
+// It answers the lines it held, so the line in each place is the issue of want's in that place, or
+// an error naming the first issue that is missing or wrong.
 func plansPrintedHold(project, out string, want []ratedWant) ([]planLine, error) {
 	lines, err := parsePlans(project, out)
 	if err != nil {
@@ -194,8 +212,11 @@ func plansPrintedHold(project, out string, want []ratedWant) ([]planLine, error)
 		}
 		before = closed
 	}
-	plan := defaultPlanPrinted()
 	for place, w := range want {
+		plan := defaultPlanPrinted()
+		if w.unplanned {
+			plan = "none"
+		}
 		got := lines[place]
 		if got.issue != w.key {
 			return nil, fmt.Errorf("`dispatch plans` prints %s in place %d, want %s: want's order is newest close first", got.issue, place+1, w.key)
