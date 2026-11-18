@@ -243,6 +243,24 @@ jobs:
               gh workflow run ci.yaml --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF_NAME"
           done <<<"$tokens"
 YAML
+  # The loop over the go-envoy-infra entries a fill supersedes, main's #4253's step, which the
+  # merge of main 6ef60ff0 priced with a DECLARED_LOOPS entry of its own: that entry matches
+  # nothing in a tree without the step, so every fixture carries it, as it carries the others.
+  cat > "$root/.github/workflows/ci-caches.yaml" <<'YAML'
+name: CI caches
+on: [push]
+jobs:
+  envoy-infra-prune:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Delete this ref's go-envoy-infra entries the new one supersedes
+        timeout-minutes: 6
+        run: |
+          . .github/scripts/ci-retry.sh
+          while read -r id; do
+            retry_fetch "the deletion of go-envoy-infra entry $id" 30 -- gh cache delete "$id"
+          done <<<"$ids"
+YAML
   cat > "$root/.github/scripts/check-pr-text.sh" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
