@@ -469,14 +469,14 @@ The guards and their readings, each read up to the date its item names or up to 
 
 - `daemon-go`, "Test the Go daemon": 15 minutes, against `internal/store`'s 342.597 s; the race step: 30 minutes, against `internal/daemon`'s 833.358 s under `-race`; both over the 15 green merge-group runs of the `test` job, which carried both steps until #2945, from 2026-11-15T20:47Z, when main's memory guard (#4021) landed, to 2026-11-16T05:39Z.
 
-- `envoy-go`: 20 minutes for the unit step, against `cmd/broker`'s 477.995 s; 10 minutes for each plain run of what the race build cannot run, against `internal/dispatch/docs`'s 49.044 s; 10 and 5 minutes for natslive's `internal/testnats` and `internal/bus` (3.538 s and 5.029 s); 300 s for the integration step (7.683 s).
+- `envoy-go`: 30 minutes for the unit step, against `cmd/agent-secrets`'s 845.986 s (run 44267237201) over its 20 newest green merge-group runs up to 2026-11-18T08:56Z, which the 20 minutes it had before held only 1.4 times; 10 minutes for each plain run of what the race build cannot run, against `internal/dispatch/docs`'s 49.044 s; 10 and 5 minutes for natslive's `internal/testnats` and `internal/bus` (3.538 s and 5.029 s); 300 s for the integration step (7.683 s).
 
 - `envoy-go-race`: 30 minutes, against `internal/dispatch/store`'s 664.278 s.
   `envoy-go-race-api`: 60 minutes, against `internal/dispatch/api`'s 1508.156 s and its step's 1643 s, up to 2026-11-17T10:27Z.
-  `envoy-go-race-docs`: 65 minutes, against `internal/dispatch/docs`'s 1881.151 s.
+  `envoy-go-race-docs`: 80 minutes, against `internal/dispatch/docs`'s 2322.323 s (run 44244144085), over its 20 newest green merge-group runs up to 2026-11-18T07:34Z, which the 65 minutes it had before held only 1.7 times.
   `envoy-go-docs-finalizers`: 45 minutes, against `internal/dispatch/docs`'s 1261.698 s.
 
-- `dispatch-memory`: 70 minutes, against 1963.339 s; `dispatch-multiprocess`: 25 minutes, against 718.638 s; `dispatch-two-builds`: 30 minutes, against 575.933 s over its 8 green merge-group runs; `broker-multiprocess`: 20 minutes, against 60.731 s; `listener-server-change`: 15 minutes, against 152.28 s.
+- `dispatch-memory`: 70 minutes, against 1963.339 s; `dispatch-multiprocess`: 35 minutes, against 940.253 s (run 44172328284) over its 20 newest green merge-group runs up to 2026-11-18T07:39Z, which the 25 minutes it had before held only 1.6 times; `dispatch-two-builds`: 30 minutes, against 575.933 s over its 8 green merge-group runs; `broker-multiprocess`: 20 minutes, against 60.731 s; `listener-server-change`: 15 minutes, against 152.28 s.
 
 - `envoy-infra-go`: 10 minutes for the unit step, against `gcp`'s 28.059 s, and 30 for each natslive call, against `core`'s 124.22 s on a restored cache, since a cold cache installs four tools first.
   `envoy-smoke`: 5 minutes for the smoke test (16.133 s) and 15 for the live tests (145.791 s).
@@ -488,13 +488,13 @@ Each `bun test` step of a job of `ci.yaml` that runs no package script passes th
 
 - `test`: claude-envoy's `tests/build-inputs.test.ts` 10,000 ms, against 2,992.78 ms; `scripts/third-party-notices.test.ts` 5,000 ms, against 396.72 ms; `scripts/semantic-line-breaks.test.ts` 5,000 ms, against 806.66 ms; `scripts/priorities-seed.test.ts` 5,000 ms, against 797.60 ms.
   `scripts/dispatch` 15,000 ms, against 5,190.57 ms; `scripts/approval-eval` 5,000 ms, against 196.24 ms.
-  `scripts/semantic-line-breaks.guides.test.ts` 15,000 ms, against 7,111.27 ms, read in a builds Job at `c8a44f97`.
+  `scripts/semantic-line-breaks.guides.test.ts` 35,000 ms, against 15,580.16 ms, read in a builds Job at the head `84270ff1` (`gf-bun-test-job`), past the 15,000 ms it had before.
 
-- `test`, `bun test scripts/e2e/lib`: 60,000 ms, against `held-port.test.ts`'s `beforeAll`, which builds the real envoy-listener, 21,991.12 ms on a warm Go cache, and the slowest row's 13,106.99 ms.
+- `test`, `bun test scripts/e2e/lib`: 65,000 ms, against `held-port.test.ts`'s `beforeAll`, which builds the real envoy-listener, 32,300.00 ms (20,570.00 ms in the second run) in a builds Job at the head `84270ff1` (`gf-bun-test-job`), and the slowest row's 13,192.88 ms; the 60,000 ms it had before held that hook only 1.86 times.
   Before dispatch://INFRA-3149 the step passed no `--timeout` and ran on Bun's default of 5,000 ms, which killed `scripts/e2e/lib/smoke-cleanup.test.ts`'s `smoke-main-clean` teardown row at 8.3 s in merge-group run 43708116445 (#4046's queue run, at `e21be234`).
   Over 60 `test` jobs on 2026-11-15, 08:14Z to 11:16Z, that file's 600 rows took 111 ms at the median, 241 ms at the 95th percentile and 8.3 s at the slowest, that row of run 43708116445.
   In a 2-CPU pod its slowest row took 4.5 s beside 8 busy loops and 7.4 s beside 16, and 20 of 20 runs of each passed under a 30 s limit while 5 of 20 failed at Bun's 5 s default (measured for dispatch://INFRA-3621).
-  The guard stays 60,000 ms, which the hook's 21,991.12 ms sets.
+  The hook's 32,300.00 ms sets the guard.
 
 - `conflicts-script`: `scripts/conflicts` 5,000 ms, against 1,986.02 ms.
 

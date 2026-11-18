@@ -968,7 +968,7 @@ go test -tags memory -count=1 -timeout 70m -v -run "$pattern" ./cmd/dispatch"""
 DISPATCH_MP_STEP = "Two-process tests of the Dispatch server"
 DISPATCH_MP_SCRIPT = f"""\
 pattern=$(../../{TAGGED_TESTS} multiprocess ./cmd/dispatch)
-go test -tags multiprocess -count=1 -timeout 25m -v -run "$pattern" ./cmd/dispatch"""
+go test -tags multiprocess -count=1 -timeout 35m -v -run "$pattern" ./cmd/dispatch"""
 # The two-build job's Go step, which runs only what the twobuild tag adds, as the two above do:
 # envoy-go's unit step runs ./cmd/dispatch's untagged tests, so a run of them here would be a
 # second one. The step is a gate of its own (dispatch_two_builds_go), so the TAG_RUNS pairing
@@ -1009,7 +1009,7 @@ AIRLOCK_AXIOMS_SCRIPT = f"{ENVOY}/scripts/airlock-lean-axioms.sh"
 # why), so its line is a shell assignment and a script, not a go command the simple form reduces.
 RACE_DOCS_STEP = "Race-test the document service"
 RACE_DOCS_SCRIPT = ("RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/race_memory.py "
-                    "go test -json -race -count=1 -timeout 65m ./internal/dispatch/docs/")
+                    "go test -json -race -count=1 -timeout 80m ./internal/dispatch/docs/")
 # The same package under Go's cleanup detector. GODEBUG is a GO* name, which is outside
 # ENV_ALLOWED wherever it is set, so this step too is pinned whole rather than reduced.
 FINALIZERS_STEP = "Test the document service under the cleanup detector"
@@ -1446,7 +1446,7 @@ ENVOY_RACE_LANE = (
                     RacePackage("internal/bus"), RacePackage("cmd/listener"), RacePackage("internal/store"),
                     RacePackage("internal/session"), RacePackage("internal/kvwatch", tree=True))),
     RaceJob("envoy-go-race-api", "Race-test the Dispatch API", "60m", (RacePackage("internal/dispatch/api"),)),
-    RaceJob("envoy-go-race-docs", "Race-test the document service", "65m", (RacePackage("internal/dispatch/docs"),)),
+    RaceJob("envoy-go-race-docs", "Race-test the document service", "80m", (RacePackage("internal/dispatch/docs"),)),
 )
 RACE_JOBS = {job.job: job for job in ENVOY_RACE_LANE}
 
@@ -1537,7 +1537,7 @@ if re.search(UNIT_TEST_PATTERN, f"/{WEB_FIXTURE_PACKAGE}"):
                      f"`grep -Ev` takes out, so that step does not run them and the -skip below skips nothing; "
                      f"name the step that runs that package now and move the -skip to it")
 UNIT_TEST_SCRIPT = (f"go list ./... | grep -Ev '{UNIT_TEST_PATTERN}' | "
-                    f"xargs go test -count=1 -timeout 20m -skip {WEB_FIXTURE_PATTERN}")
+                    f"xargs go test -count=1 -timeout 30m -skip {WEB_FIXTURE_PATTERN}")
 
 
 def hold_web_fixture_tests():
@@ -2348,9 +2348,9 @@ GATES = [
     # and the natsfloor command the pin scanner asks the NATS floor through.
     gate("test", "test", runs=[
         script_run("scripts/e2e/lib/held-port.test.ts", 'const build = Bun.spawnSync(["go", "build", "-o", listener, "./cmd/listener"], {',
-                   at("test", "bun test --preload @legion/test-fixtures/row-deadline --timeout 60000 scripts/e2e/lib"), ENVOY, ["./cmd/listener"], mode="build"),
+                   at("test", "bun test --preload @legion/test-fixtures/row-deadline --timeout 65000 scripts/e2e/lib"), ENVOY, ["./cmd/listener"], mode="build"),
         script_run("scripts/e2e/lib/nats-image.test.ts", 'const build = Bun.spawnSync(["go", "build", "-o", floor, "./natsversion/cmd/natsfloor"], {',
-                   at("test", "bun test --preload @legion/test-fixtures/row-deadline --timeout 60000 scripts/e2e/lib"), ENVOY, ["./natsversion/cmd/natsfloor"], mode="build"),
+                   at("test", "bun test --preload @legion/test-fixtures/row-deadline --timeout 65000 scripts/e2e/lib"), ENVOY, ["./natsversion/cmd/natsfloor"], mode="build"),
     ], reads=CLAUDE_ENVOY_BUILD + SCRIPT_TEST_READS + GUIDE_LAYOUT_READS + reads(
         ("scripts/third-party-notices.test.ts", at("test", "Test third-party notices")),
         ("packages/dispatch/web/src/fonts/inter/**", "scripts/third-party-notices.test.ts:102-105 resolves the font "
@@ -2361,11 +2361,11 @@ GATES = [
         ("scripts/semantic-line-breaks.ts", "scripts/semantic-line-breaks.test.ts:6,28 spawns it"),
         ("scripts/priorities-seed.test.ts", at("test", "Test the priorities seed")),
         ("scripts/priorities-seed.ts", "scripts/priorities-seed.test.ts:4 imports it"),
-        ("scripts/e2e/**", f"{at('test', 'bun test --preload @legion/test-fixtures/row-deadline --timeout 60000 scripts/e2e/lib')} (lib/script-functions.test.ts:105-108 scans scripts/e2e/*.sh and lib/*); "
+        ("scripts/e2e/**", f"{at('test', 'bun test --preload @legion/test-fixtures/row-deadline --timeout 65000 scripts/e2e/lib')} (lib/script-functions.test.ts:105-108 scans scripts/e2e/*.sh and lib/*); "
                            f"{at('test', 'Test the e2e proof selector')}: the selector reads scripts/e2e/*.sh"),
         (CONTRACTS_SRC, "scripts/e2e/lib/envoy-bridge.ts:9-10, session-settings-services.ts:6; scripts/dispatch/ask-census.ts:3-9 (tsc -p scripts/dispatch); "
                         "scripts/priorities-seed.ts:29"),
-        (TEST_FIXTURES_SRC, f"{at('test', 'bun test --preload @legion/test-fixtures/row-deadline --timeout 60000 scripts/e2e/lib')} and the other bun test steps import @legion/test-fixtures"),
+        (TEST_FIXTURES_SRC, f"{at('test', 'bun test --preload @legion/test-fixtures/row-deadline --timeout 65000 scripts/e2e/lib')} and the other bun test steps import @legion/test-fixtures"),
         # The envoy-client sources, and broker-client's with them, are the shared read below:
         # scripts/e2e/lib/nats-stream.ts:16-18, operator-dispatch.ts:17-22, envoy-bridge.ts:11
         # and scripts/dispatch/ask-census.ts:10-18 import @legion/envoy-client/*, and the
@@ -2998,7 +2998,7 @@ GATES = [
 
     gate("envoy_go_race_docs", "envoy-go-race-docs", runs=[ceiling_run("envoy-go-race-docs")], exact=[
         pinned_step("envoy-go-race-docs", RACE_DOCS_STEP, ENVOY, RACE_DOCS_SCRIPT, [
-            (ENVOY, ["./internal/dispatch/docs/"], "go test -race -count=1 -timeout 65m ./internal/dispatch/docs/", {"race": True}),
+            (ENVOY, ["./internal/dispatch/docs/"], "go test -race -count=1 -timeout 80m ./internal/dispatch/docs/", {"race": True}),
         ]),
     ], reads=reads(
         (".github/scripts/race_memory.py", f"{at('envoy-go-race-docs', RACE_DOCS_STEP)} runs the package under it"),

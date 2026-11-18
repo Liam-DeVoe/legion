@@ -34,17 +34,16 @@ jobs:
     runs-on: ubuntu-24.04
     # Each go test step's -timeout must fire before the runner cancels the job, so a hung test
     # prints the dump that names it. The limit is at least the job's sum over its 20 newest green
-    # merge-group runs up to 2026-11-15: its other steps at their longest, 137 s, 10 s of its clock
-    # over them, and each go test step's longest plus the -timeout of every command in it - the
-    # race-impossible step 166 s + 20 minutes (its two calls; the API's call, which that reading
-    # includes, is the text-check job's now), the unit step 1086 s + 20, natslive 13 s + 15 and
-    # the integration step 9 s + 5 - which is 5021 s; then the three steps main added after that
-    # reading, which no merge-group run has measured yet, each at its own limit: the store-form
-    # count's 5 minutes (two packages, which go test starts at once with -p at least 2, so its
-    # -timeout bounds the step), the database skip count's step limit of 25 minutes (its comment
-    # below says why 25), and 2 minutes for the moto vet, which compiles one package - 6941 s, or
-    # 116 minutes.
-    timeout-minutes: 120
+    # merge-group runs up to 2026-11-18T08:56Z (runs 44223105346 to 44267237201): its other steps
+    # at their longest, 138 s (the two vets' among them), 9 s of its clock over them, each go test
+    # step's longest plus the -timeout of every command in it - the race-impossible step 92 s + 20
+    # minutes (its two calls), the unit step 1210 s + 30, the store-form count 6 s + 5 (two
+    # packages, which go test starts at once with -p at least 2, so backend-count.sh's -timeout
+    # bounds the step), natslive 16 s + 15 and the integration step 6 s + 5 - and the database
+    # skip count's step limit of 25 minutes (its comment below says why 25): 7477 s, or 125
+    # minutes, which the 120 it had before did not hold once the unit step's -timeout went from 20
+    # to 30 minutes.
+    timeout-minutes: 125
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -142,9 +141,10 @@ jobs:
       # left out too: the database-skips step below runs them with -json and fails on a failed
       # test as on a skipped one, so this step ran each of them a second time (DATABASE_SKIPS_TREE
       # in ci_job_reads.py). What is left is the rest of the module, the two longest packages of
-      # it (the API's and the documents service's) now among the ones the lane runs. Its 20
-      # minutes are 2.5 times its slowest package over this job's 20 newest green merge-group runs
-      # up to 2026-11-15: cmd/broker, 477.995 s (run 43687633216). The two tests of the web app's
+      # it (the API's and the documents service's) now among the ones the lane runs. Its 30
+      # minutes are 2.1 times its slowest package over this job's 20 newest green merge-group runs
+      # up to 2026-11-18T08:56Z: cmd/agent-secrets, 845.986 s (run 44267237201), which the 20
+      # minutes it had before held only 1.4 times. The two tests of the web app's
       # display-tree fixture are skipped:
       # without `--check` TestWebDisplayFixture writes the committed fixture rather than checking
       # it, so a run here would ask nothing of it, and
@@ -153,7 +153,7 @@ jobs:
       # are built from the same list.
       - name: Unit test envoy Go package
         run: |
-          go list ./... | grep -Ev '/integration|/internal/textcheck$|/internal/dispatch/architecture/notes$|/internal/runnerlog$|/internal/dispatch/specgraph$|/cmd/architecture-check$|/cmd/spec-check$|/internal/broker($|/)|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/internal/dispatch/api$|/internal/dispatch/docs$' | xargs go test -count=1 -timeout 20m -skip '^(TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestWebDisplayFixture)$'
+          go list ./... | grep -Ev '/integration|/internal/textcheck$|/internal/dispatch/architecture/notes$|/internal/runnerlog$|/internal/dispatch/specgraph$|/cmd/architecture-check$|/cmd/spec-check$|/internal/broker($|/)|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/internal/dispatch/api$|/internal/dispatch/docs$' | xargs go test -count=1 -timeout 30m -skip '^(TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestWebDisplayFixture)$'
         working-directory: packages/envoy
       # Each named test runs once on each store backend as its `aws` and `gcp` subtests, and each
       # backend's rows run that backend's own code: the store forms against the GCP fake and the

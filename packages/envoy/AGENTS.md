@@ -935,7 +935,7 @@ the `docs` package's is `envoy-go-race-docs` and the `api` package's is `envoy-g
 The tests of those two packages that the race build cannot run, or runs smaller, have one plain run each:
 the `docs` package's few in `envoy-go`'s step "Test what the race build cannot run at all or at full size", and the API's source guards, which carry `//go:build !race`, in the `text-checks` job's step "Test the Dispatch API's source guards (no database)".
 Each race job runs only when a file its own filter in `.github/workflows/ci.yaml` names changes
-— `envoy_go_race_docs`, the closure of the `docs` package alone, whose job gives it a 65-minute deadline, and `envoy_go_race_api` for the API;
+— `envoy_go_race_docs`, the closure of the `docs` package alone, whose job gives it an 80-minute deadline (twice and more its slowest race run, 2322.323 s, over the job's 20 newest green merge-group runs up to 2026-11-18T07:34Z), and `envoy_go_race_api` for the API;
 see Critical conventions for what keeps those filters current.
 
 A cleanup this package registers captures nothing that reaches the document it is attached to.

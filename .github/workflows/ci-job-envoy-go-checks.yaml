@@ -39,10 +39,12 @@ jobs:
     # is the runner time this change exists to cut.
     #
     # The limit is at least the job's sum over its 20 newest green merge-group runs up to
-    # 2026-11-15: its other steps at their longest, 832 s (the cluster.sh test's 381 s and the
-    # vm.sh test's 185 s among them), 6 s of its clock over them, and its two go test steps'
-    # longest plus their -timeout, 9 s + 600 s and 8 s + 600 s: 2055 s, or 35 minutes.
-    timeout-minutes: 35
+    # 2026-11-18T10:19Z (runs 44234697866 to 44278918336): its other steps at their longest, 704 s
+    # (the vm.sh test's 245 s and main's darwin vet's 186 s among them), 7 s of its clock over
+    # them, and each guarded step's longest plus its guard - the two go test steps' 35 s + 600 s
+    # and 7 s + 600 s, and the cluster.sh suite's 358 s + its 12-minute step limit, 720 s: 3031 s,
+    # or 51 minutes, which the 35 it had before did not hold.
+    timeout-minutes: 51
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -180,7 +182,14 @@ jobs:
       - name: Lock test for loadtest/common.sh (inherited lock, refusals, holders in another PID namespace; no stack)
         run: bash loadtest/common.test.sh
         working-directory: packages/envoy
+      # The suite's one guard is this step's own limit, 12 minutes: its slowest green run over this
+      # job's 20 newest green merge-group runs up to 2026-11-18T08:57Z took 358 s (run
+      # 44254325647), twice which is 716 s. The whole suite under 8 busy loops on 2 CPUs passed in
+      # builds Jobs in 3,132.6 s at 84270ff1 (cl8-head) and 3,373.2 s at main 6ef60ff0ce (cl8-main),
+      # and neither log went 10 minutes without a line, so no case of it hangs; the limit is there
+      # to end one that does.
       - name: Test loadtest/cluster/cluster.sh (fakes kubectl, gh and curl; no cluster) and compare nats.yaml with a fresh render
+        timeout-minutes: 12
         run: bash loadtest/cluster/cluster.test.sh
         working-directory: packages/envoy
       - name: Test loadtest/vm/vm.sh, the load-test deployment's driver (fakes ssh, docker, curl, psql, nc and loadgen; no VMs)

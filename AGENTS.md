@@ -258,7 +258,7 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   packages/dispatch's recipe builds `@legion/contracts` before it runs a test, as its `e2e` recipe does:
   rows of `e2e/__tests__` list a Playwright configuration, and Playwright evaluates it under Node, which reads that package's build output rather than its sources.
 
-- `P='--preload @legion/test-fixtures/row-deadline'; bun test $P --timeout 5000 scripts/third-party-notices.test.ts && bun test $P --timeout 5000 scripts/semantic-line-breaks.test.ts && bun test $P --timeout 15000 scripts/dispatch && bun test $P --timeout 60000 scripts/e2e/lib && bun test $P --timeout 5000 scripts/conflicts`
+- `P='--preload @legion/test-fixtures/row-deadline'; bun test $P --timeout 5000 scripts/third-party-notices.test.ts && bun test $P --timeout 5000 scripts/semantic-line-breaks.test.ts && bun test $P --timeout 15000 scripts/dispatch && bun test $P --timeout 65000 scripts/e2e/lib && bun test $P --timeout 5000 scripts/conflicts`
 
   The Bun tests under `scripts/`, which is no workspace.
   Each passes the row-deadline preload and the `--timeout` its step of ci.yaml passes, which that step's comment gives with its reading: a bare `bun test` gives each row and hook 5,000 ms.

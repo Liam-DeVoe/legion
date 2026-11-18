@@ -254,9 +254,10 @@ jobs:
     # Each bare `bun test` step's --timeout must fire before the runner cancels the job, so a hung
     # row prints what it was waiting on; the two go test steps and the Stage 1 proof that carried
     # guards here are .github/workflows/ci-job-daemon-go.yaml's now. The limit is at least the
-    # job's sum over its 21 green merge-group runs from #2945 to 2026-11-16T17:33Z: the steps that
-    # run no guarded command at their longest, 337 s, and the eight bare `bun test` steps' longest,
-    # 183 s (scripts/e2e/lib's 168 s among them), plus their guards, 120 s: 640 s, or 11 minutes.
+    # job's sum over its 20 newest green merge-group runs up to 2026-11-18T08:58Z (runs
+    # 44228254232 to 44267237201): the steps that run no guarded command at their longest, 391 s,
+    # 6 s of its clock over them, and the eight bare `bun test` steps' longest, 174 s
+    # (scripts/e2e/lib's 159 s among them), plus their guards, 145 s: 716 s, or 12 minutes.
     # Thirty minutes leaves a slow runner room and still fails a hung harness inside the hour.
     timeout-minutes: 30
 
@@ -331,13 +332,13 @@ jobs:
       # test's Markdown parser needs (scripts/semantic-line-breaks.guides.test.ts:5-7). The
       # step has a filter of its own, guide_layout, naming the five guides the test reads and
       # the checker it spawns: no other step of this job reads one of them, so a run that
-      # changed none of them skips this step. Guard 15000 ms: the slowest row under 8 loops, "the
-      # root guide, the e2e README and the Kubernetes doc hold no raw HTML block, which the checker
-      # skips", took 7,111.27 ms (builds Job at c8a44f97, two runs, before this pull request added
-      # the preload, so the command ran without it), past Bun's 5,000 ms default.
+      # changed none of them skips this step. Guard 35000 ms: the slowest row under 8 busy loops on
+      # 2 CPUs in a builds Job at the head 84270ff1 (two runs, gf-bun-test-job), "the root guide,
+      # the e2e README and the Kubernetes doc hold no raw HTML block, which the checker skips",
+      # took 15,580.16 ms, past the 15000 ms it had before (read at c8a44f97, 7,111.27 ms).
       - name: Check the guides' semantic line breaks
         if: inputs.changes-result != 'success' || inputs.guide_layout == 'true'
-        run: bun test --preload @legion/test-fixtures/row-deadline --timeout 15000 scripts/semantic-line-breaks.guides.test.ts
+        run: bun test --preload @legion/test-fixtures/row-deadline --timeout 35000 scripts/semantic-line-breaks.guides.test.ts
 
       - name: Test the Bun pin check
         if: inputs.changes-result != 'success' || inputs.check_bun_version_test == 'true'
@@ -552,8 +553,11 @@ jobs:
           cache: false
 
       # After setup-go: held-port.test.ts builds the real envoy-listener and hands it a held socket.
-      # Guard 60000 ms: the slowest hook under 8 loops, held-port.test.ts's beforeAll, which runs
-      # that build, took 21,991.12 ms on a warm Go cache (the slowest row 13,106.99 ms); this job
+      # Guard 65000 ms: the slowest hook under 8 busy loops on 2 CPUs in a builds Job at the head
+      # 84270ff1 (two runs, gf-bun-test-job), held-port.test.ts's beforeAll, which runs that build,
+      # took 32,300.00 ms (20,570.00 ms in the second run; the slowest row, app-logins.test.ts's "a
+      # reader that falls behind before the exit does not buy an escaped descendant a second
+      # stall", 13,192.88 ms), which the 60000 ms it had before held only 1.86 times; this job
       # restores no Go cache at all, so the build here may be colder than that.
       # Before this guard the step ran on Bun's default of 5000 ms, which killed
       # scripts/e2e/lib/smoke-cleanup.test.ts's smoke-main-clean teardown row at 8.3 s in
@@ -561,10 +565,9 @@ jobs:
       # That file's 600 rows over 60 test jobs on 2026-11-15, 08:14Z to 11:16Z: median 111 ms, p95
       # 241 ms, slowest that 8.3 s. In a 2-CPU pod its slowest row took 4.5 s beside 8 busy loops
       # and 7.4 s beside 16; 20 of 20 runs of each passed under a 30 s limit, and 5 of 20 failed at
-      # Bun's 5 s default (measured for dispatch://INFRA-3621). The guard stays 60000 ms, which the
-      # hook's 21,991.12 ms sets.
+      # Bun's 5 s default (measured for dispatch://INFRA-3621).
       - name: Test the live proofs' libraries (the GitHub ingress bridge, the proof human's check, the model gateway key command, the design-gate verdict, the held-port helper)
-        run: bun test --preload @legion/test-fixtures/row-deadline --timeout 60000 scripts/e2e/lib
+        run: bun test --preload @legion/test-fixtures/row-deadline --timeout 65000 scripts/e2e/lib
 
       # After setup-go: its fixtures run go list over a scratch module.
       - name: Test the CI filter check

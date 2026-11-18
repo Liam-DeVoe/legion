@@ -924,13 +924,14 @@ own CI job (`dispatch-memory` in `.github/workflows/ci.yaml`), past `go test`'s
 default ten-minute deadline:
 
 ```sh
-env DISPATCH_TEST_DATABASE_URL=… go test -tags memory -count=1 -timeout 80m ./cmd/dispatch
+env DISPATCH_TEST_DATABASE_URL=… go test -tags memory -count=1 -timeout 90m ./cmd/dispatch
 ```
 
-That command runs the package's untagged tests beside the memory tests, so its 80 minutes are
-twice the two together over CI's 20 newest green merge-group runs up to 2026-11-15: 419.11 s in
-`envoy-go`'s unit step and 1963.339 s in `dispatch-memory`, whose own step runs the memory tests
-alone under 70 minutes.
+That command runs the package's untagged tests beside the memory tests, so its 90 minutes are
+twice the two together over CI's 20 newest green merge-group runs of each job up to
+2026-11-18T08:56Z: 517.930 s in `envoy-go`'s unit step (run 44228248957) and 2077.561 s in
+`dispatch-memory` (run 44228254232), 2595.491 s, which the 80 minutes it had before held only 1.85
+times; that job's own step runs the memory tests alone under 70 minutes.
 
 The `dispatch-memory` job runs only when a file its `dispatch_memory` filter in
 `.github/workflows/ci.yaml` names changes. `cmdtest.Build` builds `./cmd/dispatch`
@@ -955,13 +956,14 @@ under the `multiprocess` tag and run in their own CI job (`dispatch-multiprocess
 `.github/workflows/ci.yaml`), because two servers and their NATS take minutes rather than seconds:
 
 ```sh
-env DISPATCH_TEST_DATABASE_URL=… go test -tags multiprocess -count=1 -timeout 40m ./cmd/dispatch
+env DISPATCH_TEST_DATABASE_URL=… go test -tags multiprocess -count=1 -timeout 50m ./cmd/dispatch
 ```
 
-That command runs the package's untagged tests beside the two-process tests, so its 40 minutes
-are twice the two together over CI's 20 newest green merge-group runs up to 2026-11-15: 419.11 s
-in `envoy-go`'s unit step and 718.638 s in `dispatch-multiprocess`, whose own step runs the
-two-process tests alone under 25 minutes.
+That command runs the package's untagged tests beside the two-process tests, so its 50 minutes
+are twice the two together over CI's 20 newest green merge-group runs of each job up to
+2026-11-18T08:56Z: 517.930 s in `envoy-go`'s unit step (run 44228248957) and 940.253 s in
+`dispatch-multiprocess` (run 44172328284), 1458.183 s, which the 40 minutes it had before held
+only 1.65 times; that job's own step runs the two-process tests alone under 35 minutes.
 
 The `dispatch-multiprocess` job runs only when a file its `dispatch_multiprocess` filter in
 `.github/workflows/ci.yaml` names changes; `packages/envoy/AGENTS.md` (Critical
