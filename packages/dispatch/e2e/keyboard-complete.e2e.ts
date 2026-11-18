@@ -38,7 +38,7 @@ import {
   withOpenedAsk,
 } from "./api";
 import { recordClipboard } from "./clipboard";
-import { documentEditor, openSpec, placeCaret } from "./editor";
+import { barAction, documentEditor, openSpec, placeCaret, selectEditorText } from "./editor";
 import { drawer } from "./inbox-drawer";
 import { inboxPane, inboxRow, paneScroller, selectedRow, selectRow } from "./inbox-pane";
 import {
@@ -84,6 +84,7 @@ import {
 } from "./keyboard-complete";
 import { openIssue } from "./keyboard-issue";
 import type { KeyedWrite } from "./keyed-writes";
+import { commentWithBody } from "./margin-helpers";
 import { type BrowserContext, expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
@@ -5016,4 +5017,212 @@ test("k-threads: each comment, reply and message of an issue in the Inbox's read
       await expectTabReaches(page, row, expected, `in ${place}, in ${what}`);
     }
   }
+});
+
+// ---------------------------------------------------------------------------
+// k-comment-focus (R19): each new comment on a document, from Ctrl+Alt+M or the selection bar's
+// Comment, puts the caret in the margin's comment box - with a box already open on the document,
+// after the margin was hidden and shown again, and below 1280 px, where the margin is a modal
+// sheet the reader closes before the next comment. Escape in the empty box, and a sent comment,
+// put the caret back in the document inside the commented word; below 1280 px they close the
+// sheet too.
+// ---------------------------------------------------------------------------
+
+/** k-comment-focus' spec: three paragraphs, each with the word the rows comment on. */
+const FOCUS_PARAGRAPHS = [
+  ["The ledger keeps one clock for every mirror.", "clock"],
+  ["Each mirror replays the ledger after a cold start.", "replays"],
+  ["The lease returns to the ledger at noon.", "lease"],
+] as const;
+
+/** The word of each paragraph, in the spec's order. */
+const [[, FIRST_WORD], [, SECOND_WORD], [, THIRD_WORD]] = FOCUS_PARAGRAPHS;
+
+/** The width below 1280 px where the margin is a sheet over the document. */
+const SHEET_VIEWPORT = { height: 768, width: 1024 };
+
+/** An open issue of CORE whose spec holds `FOCUS_PARAGRAPHS`. */
+async function seedCommentFocus(): Promise<{ artifactId: string; key: string }> {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({
+    project: "CORE",
+    spec: `# Comment focus\n\n${FOCUS_PARAGRAPHS.map(([text]) => text).join("\n\n")}\n`,
+    title: "Comment focus",
+  });
+  return { artifactId: issue.primary_artifact_id, key: issue.key };
+}
+
+/** The margin's comment box. */
+function commentBox(page: Page): Locator {
+  return page.getByTestId("margin-sheet").getByRole("form", { name: "Comment composer" });
+}
+
+/** Waits until the caret is in the margin's comment box, under the quote of `word`. */
+async function expectCaretInBox(page: Page, word: string, message: string): Promise<void> {
+  const box = commentBox(page);
+  await expect(box.getByLabel("Comment"), message).toBeFocused();
+  await expect(box.locator("blockquote"), `${message}, under the quote of "${word}"`).toHaveText(
+    word
+  );
+}
+
+/** Selects `word` in the document and presses Ctrl+Alt+M: the caret is in the comment box. */
+async function commentByKey(page: Page, word: string, message: string): Promise<void> {
+  await selectEditorText(page, word);
+  await page.keyboard.press("Control+Alt+KeyM");
+  await expectCaretInBox(page, word, message);
+}
+
+/** Where the caret stands in the document's editor: the text of the paragraph it is in and the
+ *  span of that text it covers, or null while the focus or the selection is not in the editor. */
+interface DocumentCaret {
+  readonly end: number;
+  readonly paragraph: string;
+  readonly start: number;
+}
+
+function documentCaret(page: Page): Promise<DocumentCaret | null> {
+  return documentEditor(page).evaluate((root) => {
+    const selection = window.getSelection();
+    if (!root.contains(document.activeElement) || selection === null || selection.rangeCount === 0)
+      return null;
+    const range = selection.getRangeAt(0);
+    const node = range.startContainer;
+    const paragraph = (node instanceof Element ? node : node.parentElement)?.closest("p");
+    if (paragraph === null || paragraph === undefined || !root.contains(paragraph)) return null;
+    const before = document.createRange();
+    before.setStart(paragraph, 0);
+    before.setEnd(node, range.startOffset);
+    const start = before.toString().length;
+    return { end: start + range.toString().length, paragraph: paragraph.textContent ?? "", start };
+  });
+}
+
+/** Waits until the caret is in the document's editor, inside `word`. */
+async function expectCaretInDocument(page: Page, word: string, message: string): Promise<void> {
+  await expect(documentEditor(page), `${message}: the editor has the focus`).toBeFocused();
+  await expect
+    .poll(
+      async () => {
+        const caret = await documentCaret(page);
+        if (caret === null) return "no caret in the editor";
+        const at = caret.paragraph.indexOf(word);
+        return at >= 0 && caret.start >= at && caret.end <= at + word.length
+          ? `inside "${word}"`
+          : `at ${caret.start}-${caret.end} of "${caret.paragraph}"`;
+      },
+      { message: `${message}: the caret is inside "${word}"` }
+    )
+    .toBe(`inside "${word}"`);
+}
+
+// SLOW(>=2s): the spec opened and connected, four comments started on it, and one of them sent.
+test("k-comment-focus: at 1440x900 each new comment puts the caret in the margin's box, with a box open and after the margin was hidden, and Escape and a send put it back in the commented word", async ({
+  page,
+}) => {
+  const seed = await seedCommentFocus();
+  const step = (text: string) => `k-comment-focus: at 1440x900, ${text}`;
+  await page.setViewportSize(WIDE);
+  await openSpec(page, seed.key, FOCUS_PARAGRAPHS[2][0]);
+
+  await commentByKey(
+    page,
+    FIRST_WORD,
+    step("Ctrl+Alt+M on the first word puts the caret in the box")
+  );
+  await commentByKey(
+    page,
+    SECOND_WORD,
+    step("Ctrl+Alt+M on the second word with the box open puts the caret in the box again")
+  );
+  await page.keyboard.press("Escape");
+  await expect(commentBox(page), step("Escape in the empty box closes it")).toHaveCount(0);
+  await expectCaretInDocument(page, SECOND_WORD, step("Escape in the empty box"));
+
+  await selectEditorText(page, THIRD_WORD);
+  await barAction(page, "Comment");
+  await expectCaretInBox(page, THIRD_WORD, step("the bar's Comment puts the caret in the box"));
+  const body = "Why does the lease return at noon?";
+  await page.keyboard.type(body);
+  await page.keyboard.press("Control+Enter");
+  await expect(commentBox(page), step("a sent comment closes the box")).toHaveCount(0);
+  const sent = await commentWithBody(seed.key, seed.artifactId, body);
+  expect(sent.anchor?.quote, step("the comment is sent on the third word")).toBe(THIRD_WORD);
+  await expectCaretInDocument(page, THIRD_WORD, step("a sent comment"));
+
+  // Escape takes the focus out of the editor, where Shift+M would type a letter.
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Shift+M");
+  await expect(page.getByTestId("margin-rail"), step("Shift+M hides the margin")).toBeVisible();
+  await page.keyboard.press("Shift+M");
+  await expect(page.getByTestId("margin-rail"), step("Shift+M shows the margin")).toHaveCount(0);
+  await commentByKey(
+    page,
+    FIRST_WORD,
+    step("after the margin was hidden and shown, Ctrl+Alt+M puts the caret in the box")
+  );
+});
+
+// SLOW(>=2s): the spec opened and connected at a sheet's width, three comments started on it, the
+// sheet closed and opened four times, and one comment sent.
+test("k-comment-focus: at 1024x768, where the margin is a sheet, each new comment puts the caret in the box, and Escape in the empty box and a send close the sheet and put it back in the commented word", async ({
+  page,
+}) => {
+  const seed = await seedCommentFocus();
+  const step = (text: string) => `k-comment-focus: at 1024x768, ${text}`;
+  const sheet = page.getByTestId("margin-sheet");
+  await page.setViewportSize(SHEET_VIEWPORT);
+  await openSpec(page, seed.key, FOCUS_PARAGRAPHS[2][0]);
+
+  await commentByKey(
+    page,
+    FIRST_WORD,
+    step("Ctrl+Alt+M on the first word puts the caret in the box")
+  );
+  await expect(sheet, step("the comment opens the sheet")).toHaveAttribute("data-expanded", "true");
+  const draft = "Half a thought";
+  await page.keyboard.type(draft);
+  await page.getByRole("button", { name: /^Close review panel/ }).click();
+  await expect(sheet, step("the sheet's close control closes it")).toHaveAttribute(
+    "data-expanded",
+    "false"
+  );
+
+  await commentByKey(
+    page,
+    SECOND_WORD,
+    step("Ctrl+Alt+M on a word of another paragraph puts the caret in the box again")
+  );
+  await expect(sheet, step("the second comment opens the sheet")).toHaveAttribute(
+    "data-expanded",
+    "true"
+  );
+  const field = commentBox(page).getByLabel("Comment");
+  await expect(field, step("the box keeps its draft under the closed sheet")).toHaveValue(draft);
+  await page.keyboard.press("Control+A");
+  await page.keyboard.press("Backspace");
+  await expect(field, step("the draft is cleared")).toHaveValue("");
+  await page.keyboard.press("Escape");
+  await expect(sheet, step("Escape in the empty box closes the sheet")).toHaveAttribute(
+    "data-expanded",
+    "false"
+  );
+  await expect(commentBox(page), step("Escape in the empty box closes it")).toHaveCount(0);
+  await expectCaretInDocument(page, SECOND_WORD, step("Escape in the empty box"));
+
+  await commentByKey(
+    page,
+    THIRD_WORD,
+    step("Ctrl+Alt+M on the third word puts the caret in the box")
+  );
+  const body = "Why does the lease return at noon?";
+  await page.keyboard.type(body);
+  await page.keyboard.press("Control+Enter");
+  await expect(sheet, step("a sent comment closes the sheet")).toHaveAttribute(
+    "data-expanded",
+    "false"
+  );
+  const sent = await commentWithBody(seed.key, seed.artifactId, body);
+  expect(sent.anchor?.quote, step("the comment is sent on the third word")).toBe(THIRD_WORD);
+  await expectCaretInDocument(page, THIRD_WORD, step("a sent comment"));
 });

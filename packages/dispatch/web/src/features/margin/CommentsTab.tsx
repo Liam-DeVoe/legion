@@ -84,9 +84,10 @@ interface CommentsTabProps {
  *  the document whatever unmounts the composer. On a closed issue a comment compose - one the
  *  selection bar opened by quote, since the closed document takes no mark - shows and sends; a
  *  suggestion or ask compose shows only its send or its refusal. While a newer selection-bar
- *  action waits on its send, it says so. It takes focus the first time it is on screen: a compose
- *  mounts it before the margin has opened the compact sheet, left its rail or the Pinned tab for
- *  it, and a field out of sight takes no focus. */
+ *  action waits on its send, it says so. It takes focus for each comment request, by the
+ *  request's `seq`, once it is on screen: the slot keeps one composer for the document, so the
+ *  draft outlives a second selection, and a compose mounts it before the margin has opened the
+ *  compact sheet, left its rail or the Pinned tab for it, where a field takes no focus. */
 export function MarginComposerSlot({
   composer,
   hidden,
@@ -125,6 +126,7 @@ export function MarginComposerSlot({
         anchorRefusal={anchorRefusal}
         autoFocus={onScreen}
         closed={isClosed}
+        focusKey={composer.seq}
         frame="pt-3"
         kind={composer.kind}
         mutationKey={sendKey}

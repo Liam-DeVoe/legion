@@ -176,8 +176,9 @@ test("the phone shell traps focus, dismisses on Escape at the right nesting leve
     await expect(commentBody).toBeFocused();
 
     // D11: Escape on a non-empty draft shows an inline "Discard draft?" affordance (not a
-    // blocking confirm()); Escape again closes it. Only the composer closes — the phone
-    // sheet (if any) stays open, because the composer's own Escape handler claims it first.
+    // blocking confirm()); Escape again discards it. That ends the comment, so the composer
+    // closes, and on a phone the sheet it opened in closes with it and the caret goes back to the
+    // document (R19 of dispatch://INFRA-2160).
     await commentBody.fill("why?");
     await commentBody.press("Escape");
     await expect(page.getByText("Discard draft?")).toBeVisible();
@@ -185,8 +186,8 @@ test("the phone shell traps focus, dismisses on Escape at the right nesting leve
     await commentBody.press("Escape");
     await expect(commentComposer).toHaveCount(0);
     if (isPhone) {
-      await expect(page.getByRole("button", { name: /Close review panel/ })).toBeVisible();
-      await page.getByRole("button", { name: /Close review panel/ }).click();
+      await expect(page.getByRole("button", { name: /Open review panel/ })).toBeVisible();
+      await expect(documentEditor(page)).toBeFocused();
     }
 
     // D25: a pinned Conversation turn renders its own description, never the literal "Event <seq>".

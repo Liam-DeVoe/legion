@@ -33,6 +33,7 @@ function Composer({
   autoFocus?: boolean;
   closed?: boolean;
   edit?: { body: string; id: string };
+  focusKey?: number;
   inline?: boolean;
   kind: ComposerKind;
   onClose: () => void;
@@ -451,6 +452,56 @@ test("Escape after typing only an ask option prompts before discarding", async (
 
     await waitFor(() => expect(screen.getByText("Discard draft?")).toBeDefined());
     expect(closed).toBe(false);
+  } finally {
+    view.unmount();
+  }
+});
+
+// The margin keeps one composer for each document and shows it for each comment request: the
+// field takes the focus once it is on screen, again for each new request, and not when the
+// request ends with no new one.
+test("an auto-focused composer takes the focus again for each new focusKey, and for no absent one", () => {
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const owner = { key: "CORE-1", kind: "issue" } as const;
+  const anchor = { artifact: "document-1", mark_id: "mark-1", quote: "text" };
+  const shown = (autoFocus: boolean, focusKey: number | undefined) => (
+    <QueryClientProvider client={queryClient}>
+      <button type="button">Elsewhere</button>
+      <Composer
+        anchor={anchor}
+        autoFocus={autoFocus}
+        focusKey={focusKey}
+        kind="comment"
+        onClose={() => {}}
+        owner={owner}
+      />
+    </QueryClientProvider>
+  );
+  const view = render(shown(false, 1));
+
+  try {
+    const field = screen.getByLabelText("Comment");
+    const elsewhere = screen.getByRole("button", { name: "Elsewhere" });
+    expect(field).not.toHaveFocus();
+    view.rerender(shown(true, 1));
+    expect(field).toHaveFocus();
+
+    act(() => elsewhere.focus());
+    view.rerender(shown(true, 1));
+    expect(elsewhere).toHaveFocus();
+    view.rerender(shown(true, 2));
+    expect(field).toHaveFocus();
+
+    act(() => elsewhere.focus());
+    view.rerender(shown(true, undefined));
+    expect(elsewhere).toHaveFocus();
+    // Out of sight, a new request waits for the field to be on screen again.
+    view.rerender(shown(false, 3));
+    expect(elsewhere).toHaveFocus();
+    view.rerender(shown(true, 3));
+    expect(field).toHaveFocus();
   } finally {
     view.unmount();
   }

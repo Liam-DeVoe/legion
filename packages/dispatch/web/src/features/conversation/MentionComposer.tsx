@@ -481,9 +481,10 @@ interface MentionComposerProps {
    *  message, kept with the mark it answers, since the composer stays mounted when a newer compose
    *  replaces the anchor. */
   readonly anchorRefusal?: AnchorRefusal;
-  /** Focuses the field once, on the first render this is true. A host that keeps the composer
-   *  mounted out of sight - the margin's, under its collapsed sheet, its rail or the Pinned tab -
-   *  passes it once the composer is on screen, since a field out of sight takes no focus. */
+  /** Focuses the field on the first render this is true, and again for each new `focusKey`. A
+   *  host that keeps the composer mounted out of sight - the margin's, under its collapsed sheet,
+   *  its rail or the Pinned tab - passes it once the composer is on screen, since a field out of
+   *  sight takes no focus. */
   readonly autoFocus?: boolean;
   /** The owner's issue is closed. A closed issue takes comments and message replies, so a comment
    *  composer shows and sends as ever; its Suggest and Ask kinds are hidden, since a closed issue
@@ -500,6 +501,12 @@ interface MentionComposerProps {
    *  composer draws around itself, so the box goes with it: a closed or finishing composer with
    *  nothing of its own to show renders neither. */
   readonly frame?: string;
+  /** The request a host shows the composer for, where one composer serves many: the margin keeps
+   *  one composer for each document, so a draft outlives a second selection, and names each
+   *  comment request by its `seq`. While `autoFocus` holds, the field takes the focus again for
+   *  each new key. No key names no request, so a request that ends - its send takes it over -
+   *  moves no focus. */
+  readonly focusKey?: number;
   readonly edit?: { readonly body: string; readonly id: string };
   /** The channel's own mentions: seeded at mount, again by every reset (a send, Discard), and
    *  into the live draft whenever they change (`seededDraft`). */
@@ -544,6 +551,7 @@ export function MentionComposer({
   docked = false,
   finishing = false,
   frame,
+  focusKey,
   edit,
   seedMentions = [],
   inline = false,
@@ -750,12 +758,15 @@ export function MentionComposer({
       current = false;
     };
   }, [editBody, editId]);
-  const autoFocused = useRef(false);
+  // The request the field last took the focus for, once it has taken it.
+  const autoFocused = useRef<{ readonly key: number | undefined } | undefined>(undefined);
   useEffect(() => {
-    if (!autoFocus || autoFocused.current) return;
-    autoFocused.current = true;
+    if (!autoFocus) return;
+    const last = autoFocused.current;
+    if (last !== undefined && (focusKey === undefined || focusKey === last.key)) return;
+    autoFocused.current = { key: focusKey };
     textarea.current?.focus();
-  }, [autoFocus]);
+  }, [autoFocus, focusKey]);
   useEffect(() => {
     if (focusAddedOption.current) {
       optionLabelRefs.current[askOptions.length - 1]?.focus();

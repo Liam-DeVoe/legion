@@ -766,6 +766,10 @@ export function ProofDocument({
         setSearchHighlights(handle.view.dom, highlightTermRef.current);
         marginRef.current.registerDocument({
           artifactId: artifact.id,
+          // The margin calls it a frame after a comment ends, by when this editor may be gone.
+          focus: () => {
+            if (bound) handle.view.focus();
+          },
           focusBlock: (blockId) => {
             requestAnimationFrame(() => {
               if (bound) focusInEditor(() => handle.focusBlock(blockId));

@@ -154,6 +154,7 @@ export function stubDocumentBridge(
 ): DocumentBridge {
   return {
     artifactId,
+    focus: () => {},
     focusBlock: () => {},
     focusMark: () => {},
     removeMark: () => {},
