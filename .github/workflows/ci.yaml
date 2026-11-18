@@ -989,6 +989,7 @@ jobs:
               - '!packages/daemon/internal/daemon/claim_compaction_live_test.go'
               - '!packages/daemon/internal/daemon/conflict_no_takeover_live_test.go'
               - '!packages/daemon/internal/daemon/controller_sweep_live_test.go'
+              - '!packages/daemon/internal/daemon/dispatch_broker_live_test.go'
               - '!packages/daemon/internal/daemon/handoff_records_live_test.go'
               - '!packages/daemon/internal/daemon/late_completion_live_test.go'
               - '!packages/daemon/internal/daemon/live_agent_proof_test.go'
@@ -1039,14 +1040,10 @@ jobs:
               - *omp_install
               - 'packages/daemon/**'
               - *dispatch_server
-              - 'packages/envoy/natsgrant/*'
-              - 'packages/envoy/dispatchbody/*'
-              - 'packages/envoy/internal/testnats/*'
-              - 'packages/envoy/internal/testport/*'
-              - 'packages/envoy/sessiontiming/*'
-              - 'packages/envoy/subjectforms/*'
-              - 'packages/envoy/natsversion/*'
-              - 'packages/envoy/testnatsimages/*'
+              # The envoy packages internal/daemon's test closure compiles, the broker's test rig
+              # its broker-token tests drive among them (dispatchcredential_test.go,
+              # release_broker_test.go).
+              - *daemon_envoy_deps
               - 'packages/contracts/**'
               - 'packages/envoy-client/**'
               # The two plugins the tests pack and stage, the shared package their bundles
@@ -1084,6 +1081,7 @@ jobs:
               - '!packages/daemon/internal/daemon/claim_compaction_live_test.go'
               - '!packages/daemon/internal/daemon/conflict_no_takeover_live_test.go'
               - '!packages/daemon/internal/daemon/controller_sweep_live_test.go'
+              - '!packages/daemon/internal/daemon/dispatch_broker_live_test.go'
               - '!packages/daemon/internal/daemon/handoff_records_live_test.go'
               - '!packages/daemon/internal/daemon/late_completion_live_test.go'
               - '!packages/daemon/internal/daemon/live_agent_proof_test.go'
@@ -2096,6 +2094,10 @@ jobs:
               - 'packages/envoy/going/goingtest/*'
               - 'packages/envoy/internal/broker/oauthwire/*'
               - 'packages/envoy/internal/brokertoken/*'
+              # cmd/dispatch/main_test.go's proof-origin test signs with this stub's caller, which
+              # signs through internal/broker/proof.
+              - 'packages/envoy/internal/brokertoken/brokertokentest/*'
+              - 'packages/envoy/internal/broker/proof/*'
               - 'packages/envoy/internal/dispatch/**'
               - 'packages/envoy/internal/bus/*'
               - 'packages/envoy/internal/bus/bustest/*'
@@ -2330,6 +2332,13 @@ jobs:
               - 'packages/envoy/sessiontiming/*'
               - 'packages/envoy/subjectforms/*'
               - 'packages/envoy/natsversion/*'
+              # The daemon's own broker client under dispatch_token_broker (internal/daemon's
+              # dispatchCredential), through its public re-export.
+              - 'packages/envoy/brokerclient/*'
+              - 'packages/envoy/internal/brokerclient/*'
+              - 'packages/envoy/internal/broker/oauthwire/*'
+              - 'packages/envoy/internal/ctxlock/*'
+              - 'packages/envoy/internal/googleidentity/*'
               - *go_workspace
               # The guides and docs the skills guard sweeps (src/skills-guard.test.ts:143-148).
               - 'AGENTS.md'
