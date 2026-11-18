@@ -12,6 +12,7 @@ import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 
 import { graphNode } from "../../__tests__/graph-fixture";
+import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { artifact as specDocument } from "../../__tests__/proof-document";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
@@ -38,7 +39,7 @@ import { approvalPillClassName, LabelPill, Pill, StatusPill } from "../../compon
 import { PinButton } from "../../components/PinButton";
 import { RefusableButton } from "../../components/RefusableButton";
 import { withoutEllipsis } from "../../components/tooltips";
-import { pageHeaderControl, pageInkText } from "../../theme/classes";
+import { pageHeaderControl, pageInkText, pageQuietText } from "../../theme/classes";
 import { mentionOptions } from "../conversation/MentionComposer";
 import { ApprovalChip } from "../doc/ApprovalChip";
 import { ConnectionDot } from "../doc/ConnectionDot";
@@ -67,7 +68,7 @@ import { KeymapProvider } from "../shell/KeymapProvider";
 import { useDialog } from "../shell/useDialog";
 import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
 import { FormActions, type IssueField, IssueFieldForms } from "./IssueFieldForms";
-import { PROPERTY_LABELS } from "./page-structure";
+import { PAGE_CHROME_ATTRIBUTE, PROPERTY_LABELS } from "./page-structure";
 import { ANSWER_LINES, AUTHOR_KIND_WORDS, CONTROL_LABELS } from "./page-words";
 import {
   architecture,
@@ -1011,18 +1012,17 @@ test("inRow draws no label and the words of Details", async () => {
       `, ${CONTROL_LABELS.takeable_now}`
     );
 
-    // With nothing resolved the row draws `main`'s empty box, with its placeholder and a
-    // description in the page's words, and no word of its own such as "None".
+    // With nothing resolved the row reads "None", as every empty row of Details does: the page's
+    // word, with its mark and in its quiet words, on a control named by that word and by what it
+    // sets. No box is drawn until it is pressed.
     const noRepository = within(caseOf(view, "no repository"));
-    const emptyBox = noRepository.getByRole("combobox", {
-      description: CONTROL_LABELS.no_repository,
-      name: "Repository of CORE-1",
+    const none = noRepository.getByRole("button", {
+      name: `${CONTROL_LABELS.none}, Repository of CORE-1`,
     });
-    expect([(emptyBox as HTMLInputElement).value, emptyBox.getAttribute("placeholder")]).toEqual([
-      "",
-      "owner/name",
-    ]);
-    expect(noRepository.queryByText(CONTROL_LABELS.none)).toBeNull();
+    expect(none.textContent).toBe(CONTROL_LABELS.none);
+    expect(none.hasAttribute(PAGE_CHROME_ATTRIBUTE)).toBe(true);
+    expect(classOf(none)).toEqual(expect.arrayContaining(tokens(pageQuietText)));
+    expect(noRepository.queryByRole("combobox")).toBeNull();
     expect(
       within(caseOf(view, "repository")).getByRole("combobox", { name: "Repository of CORE-2" })
     ).toBeInTheDocument();
@@ -3443,6 +3443,99 @@ test("Escape in the priority's form closes the form alone and returns the focus 
     } finally {
       escapes.stop();
       document.removeEventListener("keydown", onDocument);
+      undraw(view);
+    }
+  }
+});
+
+// Inside `NoTooltips` a row of Details of an issue that resolves to no repository reads "None", as
+// every empty row of Details does, and the word is the control that draws the box: a press of it
+// by the pointer, by Enter or by Space draws the box in its place with the focus in it. Escape,
+// or leaving the box with nothing typed, draws "None" again, Escape with the focus on it; a
+// refused draft keeps the box; a repository written with Enter is written once, and the box
+// stays while its write is out and gives the row back to "None" once the write lands, since the
+// issue still resolves to none. Outside, the row is `main`'s box.
+test("inside NoTooltips the repository row with no repository reads None and opens the box", async () => {
+  const user = userEvent.setup();
+  const noneName = `${CONTROL_LABELS.none}, Repository of CORE-1`;
+  for (const surface of ["inside", "outside"] as const) {
+    const written = Promise.withResolvers<Issue>();
+    const patchIssue = answerIssuePatches().mockImplementation(() => written.promise);
+    const view = draw(
+      <>
+        <RepoControl inRow issueKey="CORE-1" project="CORE" repo={null} resolvedRepo={null} />
+        <button type="button">Elsewhere</button>
+      </>,
+      surface
+    );
+    try {
+      await settleReads();
+      const scope = within(view.container);
+      const box = () => scope.getByRole("combobox", { name: "Repository of CORE-1" });
+      const none = () => scope.getByRole("button", { name: noneName });
+      if (surface === "outside") {
+        expect(scope.queryByRole("button", { name: noneName })).toBeNull();
+        expect(scope.queryByText(CONTROL_LABELS.none)).toBeNull();
+        expect(scope.getByText("Repository:")).toBeInTheDocument();
+        expect(box()).toHaveAccessibleDescription("No repository");
+        expect(box().getAttribute("placeholder")).toBe("owner/name");
+        continue;
+      }
+
+      // "None" is a button that says the word it is named by first, and carries no title.
+      expect(none().textContent).toBe(CONTROL_LABELS.none);
+      expect(none().getAttribute("title")).toBeNull();
+      expect(scope.queryByRole("combobox")).toBeNull();
+
+      // A click draws the box, with its description and its placeholder, the focus in it.
+      await user.click(none());
+      expect(document.activeElement).toBe(box());
+      expect(box()).toHaveAccessibleDescription(CONTROL_LABELS.no_repository);
+      expect(box().getAttribute("placeholder")).toBe("owner/name");
+      expect(scope.queryByRole("button", { name: noneName })).toBeNull();
+
+      // Escape draws "None" again, with the focus on it.
+      await user.keyboard("{Escape}");
+      expect(scope.queryByRole("combobox")).toBeNull();
+      expect(document.activeElement).toBe(none());
+
+      // Enter on "None" draws the box; leaving it with nothing typed draws "None" again, and the
+      // focus stays where the reader put it.
+      await user.keyboard("{Enter}");
+      expect(document.activeElement).toBe(box());
+      await user.click(scope.getByRole("button", { name: "Elsewhere" }));
+      expect(scope.queryByRole("combobox")).toBeNull();
+      expect(document.activeElement).toBe(scope.getByRole("button", { name: "Elsewhere" }));
+
+      // Space on "None" draws the box too. A refused draft keeps it, and Escape gives it up.
+      await user.tab({ shift: true });
+      expect(document.activeElement).toBe(none());
+      await user.keyboard(" ");
+      expect(document.activeElement).toBe(box());
+      await user.keyboard("nope{Enter}");
+      expect(scope.getByRole("alert").textContent).toBe("Write the repository as owner/name.");
+      expect(document.activeElement).toBe(box());
+      await user.keyboard("{Escape}");
+      expect(scope.queryByRole("alert")).toBeNull();
+      expect(document.activeElement).toBe(none());
+
+      // A repository typed and written with Enter is written once; the box stays while the write
+      // is out, and once it lands with the issue still resolving to no repository the row reads
+      // "None" again, which takes the focus the box held.
+      await user.keyboard("{Enter}");
+      await user.keyboard("acme/api{Enter}");
+      await waitFor(() =>
+        expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: "acme/api" }, keyedAttempt)
+      );
+      expect(document.activeElement).toBe(box());
+      written.resolve({} as Issue);
+      await settleReads();
+      expect(scope.queryByRole("combobox")).toBeNull();
+      expect(document.activeElement).toBe(none());
+      expect(patchIssue).toHaveBeenCalledTimes(1);
+    } finally {
+      written.resolve({} as Issue);
+      patchIssue.mockRestore();
       undraw(view);
     }
   }

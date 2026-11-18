@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useId, useState } from "react";
+import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 
 import { api, apiErrorMessage } from "../../api/client";
 import { QueryError } from "../../components/QueryError";
@@ -14,9 +14,11 @@ import {
   pageInkText,
   pageMutedText,
   pagePaperBg,
+  pageQuietText,
   textSecondaryHoverToPrimary,
   textSecondaryOnSurface,
 } from "../../theme/classes";
+import { focusOnDocument } from "../shell/roving";
 import { useIssueRepo } from "./useIssueRepo";
 
 /** The grammar a repository GitHub could hold is written in, which is the grammar the server
@@ -47,14 +49,16 @@ const NOT_OWNER_NAME = "Write the repository as owner/name.";
  *  `NoTooltips`, where no control carries a `title`, that control's description. */
 const CLEAR_EXPLAINS = "Clear it, and the issue inherits a repository again";
 
-/** Inside `NoTooltips`, the new issue page's colours for the box and its clear control: the box
- *  as `AskCard`'s answer box draws them - the page's hairline rule, its paper and its ink, the
- *  repository the issue inherits (the placeholder) in the quiet grey, and `main`'s focus rule,
- *  the application's one focus indicator - and the clear control, drawn on the box's paper, in
- *  the muted grey that turns ink under the pointer. */
+/** Inside `NoTooltips`, the new issue page's colours for the box, its clear control and "None":
+ *  the box as `AskCard`'s answer box draws them - the page's hairline rule, its paper and its
+ *  ink, the repository the issue inherits (the placeholder) in the quiet grey, and `main`'s focus
+ *  rule, the application's one focus indicator - the clear control, drawn on the box's paper, in
+ *  the muted grey that turns ink under the pointer, and "None" in the quiet grey every empty row
+ *  of Details draws, which turns muted under the pointer as the page's quiet controls do. */
 const ON_PAGE = {
   box: `${pageHairBorder} ${pagePaperBg} ${pageInkText} placeholder:text-page-quiet ${focusBorder}`,
   clear: `${pageMutedText} hover:text-page-ink`,
+  none: `${pageQuietText} hover:text-page-muted`,
 } as const;
 
 /** The name the repository box answers to, in its words on every page: the property it sets
@@ -108,9 +112,18 @@ export function repoControlName(issueKey: string): string {
  * field, the repository the issue inherits (its placeholder) in the quiet grey; the clear control
  * is the muted grey that turns ink under the pointer; a refusal is the failed red; and the line is
  * the ink in a row of Details and the muted grey elsewhere. Nothing there keeps its width: the
- * line wraps, and the box, at most `main`'s 200 px, narrows to its line. The box is drawn whether
- * or not a repository resolves, so a row of Details with none shows the empty box, its
- * placeholder and a description saying `No repository`, and no word of its own such as "None".
+ * line wraps, and the box, at most `main`'s 200 px, narrows to its line.
+ *
+ * There a row of Details of an issue that resolves to no repository reads "None", as every empty
+ * row of Details does, in the page's quiet words with their mark: a button named
+ * `None, Repository of <KEY>`, its name beginning with the word it draws (WCAG 2.5.3), whose
+ * press draws the box above in its place with the focus in it. The box goes back to "None" when
+ * it is left, on Escape, and once a write made from it is no longer out while the issue still
+ * resolves to no repository; while it holds a draft, a refusal or a write that is out, it stays,
+ * and a write that gives the issue a repository leaves the box drawn, as for any issue with one.
+ * Whichever of the two takes the other's place takes the focus the other held, where that focus
+ * fell to the document with it. Outside a row of Details the box is drawn whether or not a
+ * repository resolves, and its description says `No repository` when none does.
  */
 export function RepoControl({
   disabled = false,
@@ -138,6 +151,10 @@ export function RepoControl({
   const [draft, setDraft] = useState<string | null>(null);
   /** Whether the draft was refused here, for not being `owner/name`. */
   const [refused, setRefused] = useState(false);
+  /** Inside `NoTooltips`, in a row of Details of an issue that resolves to no repository,
+   *  whether the reader has opened the box from "None" and has not since left it, pressed Escape
+   *  in it or made a write from it. */
+  const [opened, setOpened] = useState(false);
   const mappings = useQuery({
     enabled: wanted || resolvedRepo === null,
     queryKey: ["repo-projects"],
@@ -197,8 +214,26 @@ export function RepoControl({
     restore();
     if (typed !== (repo ?? "")) {
       write.submit(typed === "" ? null : typed);
+      setOpened(false);
     }
   };
+  // Inside `NoTooltips` a row of Details of an issue that resolves to no repository reads "None"
+  // until the reader opens the box from it, and the box stays while it holds something of theirs:
+  // a draft, refused or not, or a write that is out.
+  const showsNone =
+    inDetails && resolvedRepo === null && !opened && draft === null && !write.pending;
+  const noneControl = useRef<HTMLButtonElement>(null);
+  const box = useRef<HTMLInputElement>(null);
+  // Whether the focus is on "None" or in the box. Whichever of the two takes the other's place
+  // takes the focus the other held, which the one leaving the page drops to the document: a press
+  // of "None" leaves it in the box, and Escape, or a write that leaves the issue with no
+  // repository, on "None". Only a focus still on the document is taken (`focusOnDocument`):
+  // anywhere else, the reader put it there.
+  const focusHeld = useRef(false);
+  useEffect(() => {
+    if (!focusHeld.current || !focusOnDocument()) return;
+    (showsNone ? noneControl : box).current?.focus();
+  }, [showsNone]);
   return (
     <div
       className={`flex ${page === null ? "shrink-0" : "min-w-0 max-w-full flex-wrap"} items-center gap-2 text-sm ${lineText}`}
@@ -208,80 +243,113 @@ export function RepoControl({
           {`${page?.PROPERTY_LABELS.repository ?? "Repository"}:`}
         </span>
       )}
-      {/* `relative` is load-bearing: the description is `sr-only`, which is absolutely
-          positioned, and with no positioned ancestor it is laid out against the page and makes it
-          as wide as its own text at a phone width. */}
-      <span
-        className={`relative inline-flex ${page === null ? "shrink-0" : "w-[200px] min-w-0 max-w-full"} items-center`}
-      >
-        <input
-          aria-describedby={descriptionId}
-          aria-invalid={refused || undefined}
-          aria-label={repoControlName(issueKey)}
-          autoComplete="off"
-          className={`min-h-11 ${page === null ? "w-[200px]" : "w-full min-w-0"} rounded-sm border py-0.5 pl-1.5 font-mono text-xs outline-none focus-visible:ring-2 disabled:opacity-50 md:min-h-7 ${repo === null ? "pr-1.5" : "pr-8"} ${page === null ? inputClasses(false) : ON_PAGE.box} ${focusVisibleRing}`}
+      {showsNone ? (
+        <button
+          aria-label={`${page.CONTROL_LABELS.none}, ${repoControlName(issueKey)}`}
+          className={`min-h-11 rounded-sm outline-none focus-visible:ring-2 disabled:opacity-50 md:min-h-7 ${ON_PAGE.none} ${focusVisibleRing}`}
           disabled={disabled}
-          list={suggestionsId}
-          onBlur={commit}
-          onChange={(event) => {
-            setDraft(event.target.value);
-            setRefused(false);
+          onBlur={() => {
+            focusHeld.current = false;
           }}
-          onFocus={want}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") {
-              event.preventDefault();
-              commit();
-            } else if (event.key === "Escape") {
-              restore();
-            }
+          // A click focuses no button in some browsers, and the box takes the focus all the same.
+          onClick={() => {
+            focusHeld.current = true;
+            setOpened(true);
           }}
-          onMouseDown={(event) => event.stopPropagation()}
-          onPointerDown={(event) => event.stopPropagation()}
-          onPointerEnter={want}
-          onTouchStart={(event) => {
-            event.stopPropagation();
-            want();
+          onFocus={() => {
+            focusHeld.current = true;
           }}
-          pattern={ownerRepoPattern}
-          placeholder={resolvedRepo ?? "owner/name"}
-          spellCheck={false}
-          value={draft ?? repo ?? ""}
-        />
-        {repo === null ? null : (
-          <button
-            aria-describedby={page === null ? undefined : clearDescriptionId}
-            aria-label={`Clear the repository of ${issueKey}`}
-            className={`absolute inset-y-0 right-0 inline-flex w-8 items-center justify-center rounded-sm text-base outline-none focus-visible:ring-2 disabled:opacity-50 ${page === null ? textSecondaryHoverToPrimary : ON_PAGE.clear} ${focusVisibleRing}`}
+          ref={noneControl}
+          type="button"
+          {...page.pageChrome}
+        >
+          {page.CONTROL_LABELS.none}
+        </button>
+      ) : (
+        // `relative` is load-bearing: the description is `sr-only`, which is absolutely
+        // positioned, and with no positioned ancestor it is laid out against the page and makes
+        // it as wide as its own text at a phone width.
+        <span
+          className={`relative inline-flex ${page === null ? "shrink-0" : "w-[200px] min-w-0 max-w-full"} items-center`}
+        >
+          <input
+            aria-describedby={descriptionId}
+            aria-invalid={refused || undefined}
+            aria-label={repoControlName(issueKey)}
+            autoComplete="off"
+            className={`min-h-11 ${page === null ? "w-[200px]" : "w-full min-w-0"} rounded-sm border py-0.5 pl-1.5 font-mono text-xs outline-none focus-visible:ring-2 disabled:opacity-50 md:min-h-7 ${repo === null ? "pr-1.5" : "pr-8"} ${page === null ? inputClasses(false) : ON_PAGE.box} ${focusVisibleRing}`}
             disabled={disabled}
-            onClick={() => {
-              restore();
-              write.submit(null);
+            list={suggestionsId}
+            onBlur={() => {
+              focusHeld.current = false;
+              setOpened(false);
+              commit();
             }}
-            // A press here must not take focus from the box. The box writes what was typed
-            // when it is left, so the press would write a repository the reader is throwing
-            // away and the click after it would write the clear: two writes for one action.
-            onMouseDown={(event) => event.preventDefault()}
-            title={tooltips ? CLEAR_EXPLAINS : undefined}
-            type="button"
-          >
-            <span aria-hidden="true">×</span>
-          </button>
-        )}
-        <datalist id={suggestionsId}>
-          {mapped.map((candidate) => (
-            <option key={candidate} value={candidate} />
-          ))}
-        </datalist>
-        <span className="sr-only" id={descriptionId} {...page?.pageChrome}>
-          {shownDescription}
-        </span>
-        {page === null || repo === null ? null : (
-          <span className="sr-only" id={clearDescriptionId} {...page.pageChrome}>
-            {CLEAR_EXPLAINS}
+            onChange={(event) => {
+              setDraft(event.target.value);
+              setRefused(false);
+            }}
+            onFocus={() => {
+              focusHeld.current = true;
+              want();
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                commit();
+              } else if (event.key === "Escape") {
+                restore();
+                setOpened(false);
+              }
+            }}
+            onMouseDown={(event) => event.stopPropagation()}
+            onPointerDown={(event) => event.stopPropagation()}
+            onPointerEnter={want}
+            onTouchStart={(event) => {
+              event.stopPropagation();
+              want();
+            }}
+            pattern={ownerRepoPattern}
+            placeholder={resolvedRepo ?? "owner/name"}
+            ref={box}
+            spellCheck={false}
+            value={draft ?? repo ?? ""}
+          />
+          {repo === null ? null : (
+            <button
+              aria-describedby={page === null ? undefined : clearDescriptionId}
+              aria-label={`Clear the repository of ${issueKey}`}
+              className={`absolute inset-y-0 right-0 inline-flex w-8 items-center justify-center rounded-sm text-base outline-none focus-visible:ring-2 disabled:opacity-50 ${page === null ? textSecondaryHoverToPrimary : ON_PAGE.clear} ${focusVisibleRing}`}
+              disabled={disabled}
+              onClick={() => {
+                restore();
+                write.submit(null);
+              }}
+              // A press here must not take focus from the box. The box writes what was typed
+              // when it is left, so the press would write a repository the reader is throwing
+              // away and the click after it would write the clear: two writes for one action.
+              onMouseDown={(event) => event.preventDefault()}
+              title={tooltips ? CLEAR_EXPLAINS : undefined}
+              type="button"
+            >
+              <span aria-hidden="true">×</span>
+            </button>
+          )}
+          <datalist id={suggestionsId}>
+            {mapped.map((candidate) => (
+              <option key={candidate} value={candidate} />
+            ))}
+          </datalist>
+          <span className="sr-only" id={descriptionId} {...page?.pageChrome}>
+            {shownDescription}
           </span>
-        )}
-      </span>
+          {page === null || repo === null ? null : (
+            <span className="sr-only" id={clearDescriptionId} {...page.pageChrome}>
+              {CLEAR_EXPLAINS}
+            </span>
+          )}
+        </span>
+      )}
       {/* Inside `NoTooltips`, why the repository shown may not be the issue's own, in words beside
           the box. Hidden from assistive technology because the box's own description says the
           same thing, and nothing is said twice. */}
