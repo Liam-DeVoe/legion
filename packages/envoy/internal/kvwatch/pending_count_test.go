@@ -152,9 +152,12 @@ func TestARowTheLeaderCannotBeAskedAboutIsKeptAndTheReadFails(t *testing.T) {
 			closed := testnats.Connect(t, uri)
 			closed.Close()
 			failing := &atomic.Bool{}
-			failing.Store(true)
 			streams := leaderReadsThrough{JetStream: kv.Streams(), closed: closed, failing: failing, listGoesThrough: row.listGoesThrough, asked: &atomic.Int32{}}
+			// bus.NewKeyValue looks the connection up once, for the client that owns it, so the
+			// handle is built before the connection fails: the read's list is then the first
+			// lookup made while it fails.
 			handle := bus.NewKeyValue(kv.Legacy(), kv.WatchHandle(), streams)
+			failing.Store(true)
 			into := newSeen()
 			into.hold(heldByTheCopy)
 			timers := &pending{}
@@ -192,12 +195,14 @@ func TestARowTheLeaderCannotBeAskedAboutIsKeptAndTheReadFails(t *testing.T) {
 // closed: the list of the bucket's keys (bus.KeyValue.StoredKeys) and the leader's read of a key
 // (HeldFromLeader) build their requests on that connection, so they fail, while the read barrier,
 // every stream read and every watch go on as usual. With listGoesThrough, the first connection
-// asked for while failing is the live one, and the read's list is what asks for it first.
-// StoredKeys looks the connection up for each request it sends (bus.KeyValue.subjectsPageAt), and
-// the test bucket's list is one page, so the list makes one lookup and only the leader's reads
-// fail. A list of more pages would make its second lookup on the closed connection and fail as the
-// list, and each row checks that its read's WARN names the step that failed, so that would fail
-// the leader-read row rather than pass it for another reason.
+// asked for while failing is the live one, and the read's list is what asks for it first: the
+// test sets failing only once the handle is built, since bus.NewKeyValue looks the connection up
+// for the client that owns it. StoredKeys looks the connection up for each request it sends
+// (bus.KeyValue.subjectsPageAt), and the test bucket's list is one page, so the list makes one
+// lookup and only the leader's reads fail. A list of more pages would make its second lookup on
+// the closed connection and fail as the list, and each row checks that its read's WARN names the
+// step that failed, so that would fail the leader-read row rather than pass it for another
+// reason.
 type leaderReadsThrough struct {
 	jetstream.JetStream
 	closed          *natsgo.Conn
