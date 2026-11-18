@@ -2023,6 +2023,32 @@ describe("red_fixture", () => {
     ]);
   });
 
+  // Catches: a read of another commit's check runs, the base's among them, answered with the
+  // head's own red, so the base reads as failing the same test and a role takes the world's
+  // flake for a defect on the base that no re-run clears (red-at-the-head.md, "When the cause is
+  // another tree's"). The tester's round-9 batch at c0ace596 met it: trial-j-nos1-4 read main's
+  // check runs at 77671688…, was answered `test (notify)` failure, and pressed no re-run, giving
+  // that as its reason. Seven more runs of that batch and of round 6's read `commits/null/…` or
+  // `commits/trunk/…` and were answered the same red.
+  test("a read of a commit other than the head answers none of the head's red", async () => {
+    for (const world of ["a", "i", "j"]) {
+      const run = redFixture(world);
+      for (const commit of ["77671688867919aea744e874c2f9560e82e03569", "main", "null"]) {
+        const read = await gh(run, [
+          "api",
+          `repos/${RED_REPO}/commits/${commit}/check-runs`,
+          "--jq",
+          '.check_runs[] | select(.conclusion == "failure") | .name',
+        ]);
+        expect({ world, commit, failing: outputLines(read.stdout) }).toEqual({
+          world,
+          commit,
+          failing: [],
+        });
+      }
+    }
+  });
+
   // Catches: a title check whose output names another title than the pull request's own, which
   // the role reads as a red of some other change.
   test("the title check's output names the pull request's own title", async () => {
