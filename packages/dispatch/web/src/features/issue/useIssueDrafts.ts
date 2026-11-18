@@ -208,7 +208,10 @@ export function useIssueDrafts(issue: Issue, updateIssue: IssueUpdateMutation): 
     if (input.parent !== undefined && parentPendingRef.current === (input.parent ?? "")) {
       setPendingParent(null);
     }
-    if (titleRef.current.trim() === next.title) {
+    // A draft that is not changed takes the title the write lands with, a draft a discard put back
+    // while the write was out too: it is the issue's title, and marked changed it would send the
+    // old title over the new one.
+    if (!titleDirtyRef.current || titleRef.current.trim() === next.title) {
       applyServerTitle(next.title);
     }
     setTitleDraftDirty(titleRef.current.trim() !== next.title);

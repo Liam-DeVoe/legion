@@ -1471,10 +1471,10 @@ test("a title a switch sent and the reader writes back after another write chang
   }
 });
 
-// A switch's write can still be out as the reader comes back and presses Escape, which drops only
-// what they changed after that send. The heading then reads the title the switch sent, which is
-// the issue's once the write lands, and no title is sent again: not by the landing, and not by an
-// edit opened and ended with nothing typed.
+// A switch's write can still be out as the reader comes back and presses Escape, which puts back
+// the issue's title. The write's landing gives the draft the title the switch sent, which is then
+// the issue's, and no title is sent again: not by the landing, and not by an edit opened and ended
+// with nothing typed.
 test("an Escape while a switch's write of the title is out keeps the title it sent, and nothing sends a title again", async () => {
   const user = userEvent.setup();
   const restore = stubHeader(issue);
@@ -1492,6 +1492,54 @@ test("an Escape while a switch's write of the title is out keeps the title it se
     await waitFor(() => expect(editor).toHaveFocus());
     await user.keyboard("{Escape}");
     await waitFor(() => expect(heading).toHaveFocus());
+
+    await act(async () => {
+      landing.resolve({ ...issue, title: "Review the plan" });
+      await landing.promise;
+    });
+    await titleLanded(queryClient, "Review the plan");
+    expect(heading).toHaveTextContent(/^Review the plan$/);
+    expect(patchIssue).toHaveBeenCalledTimes(1);
+
+    await user.click(heading);
+    const reopened = await screen.findByRole("textbox", { name: "Issue title" });
+    await waitFor(() => expect(reopened).toHaveFocus());
+    expect(reopened).toHaveValue("Review the plan");
+    await endTitleEditByPress(user);
+    expect(heading).toHaveTextContent(/^Review the plan$/);
+    expect(patchIssue).toHaveBeenCalledTimes(1);
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
+// The reader can come back while a switch's write is out and type more, which makes the draft
+// theirs to send again, then press Escape, which drops it all and puts back the issue's title. The
+// write's landing then gives the draft the title the switch sent (decision 304): a draft marked
+// changed would leave the heading on the old title, and the next edit's end would send that title
+// over the new one.
+test("an Escape after the reader typed more while a switch's write of the title was out leaves the heading on the title that write lands with, and nothing sends a title again", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const landing = Promise.withResolvers<IssueDetails>();
+  const patchIssue = answerIssuePatches().mockImplementation(() => landing.promise);
+  const queryClient = headerClient();
+  const view = renderHeader("/issues/CORE-1", queryClient);
+
+  try {
+    const { editor, heading } = await editTitle(user, "Review the plan");
+    blurWindow(editor);
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    expect(patchIssue).toHaveBeenCalledWith("CORE-1", { title: "Review the plan" }, keyedAttempt);
+    returnToWindow();
+    await waitFor(() => expect(editor).toHaveFocus());
+    await user.keyboard(" today");
+    expect(editor).toHaveValue("Review the plan today");
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(heading).toHaveFocus());
+    expect(heading).toHaveTextContent(/^Review the spec$/);
 
     await act(async () => {
       landing.resolve({ ...issue, title: "Review the plan" });

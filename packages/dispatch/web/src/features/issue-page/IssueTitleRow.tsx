@@ -248,14 +248,8 @@ export function IssueTitleRow({
             // compositionend, with `isComposing` false and keyCode 229 (WebKit bug 165004).
             if (event.nativeEvent.isComposing || event.keyCode === 229) return;
             if (event.key === "Escape") {
-              // Escape drops only what the reader changed since this edit sent the draft. That
-              // send's write may still be out: a draft put back to the issue's title then would
-              // be marked changed as the write lands (`onIssueSuccess`), so the heading would read
-              // the old title and the next edit would send it over the new one. A draft that is
-              // not changed is the issue's title: the send landed, and another title may have
-              // come since.
-              if (sent.current === null || !drafts.titleDirty) drafts.discardTitle();
-              else drafts.writeTitle(sent.current);
+              // Puts back the issue's title, which a write still out replaces as it lands.
+              drafts.discardTitle();
               returning.current = true;
               setEditing(false);
               return;
