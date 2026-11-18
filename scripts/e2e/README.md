@@ -1432,7 +1432,7 @@ CI does not run it.
   A run with no workflow (no review App grant, so every answering criterion only waits) and a run narrowed past A3 build and install neither, and Dispatch then serves its API alone.
   Do not run `bun run build:web` or `bun run e2e` in this checkout while a run is live: either rewrites that directory under the Dispatch process.
 
-The daemon's `answers` block names each provider the loop calls at the model route's endpoint through the proxy, `anthropic` and `openai` (its `base_url` ending in `/v1`, since agentloop's OpenAI client appends `responses` to it), each keyed by the route's own key file or key command, with the prices (Anthropic's list prices, `claude-opus-5-5` 5/25/6.25/0.5 and `claude-sonnet-5-5` 3/15/3.75/0.3 USD per million input, output, cache-write and cache-read tokens, and `openai/openai/gpt-6.1-sol` 2/10/2.5/0.1, the model gateway's own `model_info` for it, `GET /model/info` on 2026-11-18) and the default bounds;
+The daemon's `answers` block names each provider the loop calls at the model route's endpoint through the proxy, `anthropic` and `openai` (its `base_url` ending in `/v1`, since agentloop's OpenAI client appends `responses` to it), each keyed by the route's own key file or key command, with the prices (Anthropic's list prices, `claude-opus-5-5` 5/25/6.25/0.5 and `claude-sonnet-5-5` 3/15/3.75/0.3 USD per million input, output, cache-write and cache-read tokens, and `gpt-6.1-sol` 2/10/2.5/0.1, the model gateway's own `model_info` for it, `GET /model/info` on 2026-11-18) and the default bounds;
 the postgres pass adds `runtime.tmux.session_store: postgres` with a `session_dsn_file` on the embedded Postgres.
 Where the model route serves GPT-6.1, every branch daemon's file also names the merger's overlay in `role_config_files` (below).
 
@@ -1456,12 +1456,12 @@ Each agent is stopped the way the spec's kinds are made:
   It is built once from a `git archive` of it, its three binaries and installed workspace kept in the cache under `base-<commit>`, with that commit's plugins in a profile of its own;
 
 - the GPT-6.1 merger, on a child, where the model route serves the model: suspended, as the pre-change reviewer is, since A10 answers and resumes it as it does that reviewer.
-  It is the branch daemon's one merger, so its model rides on `role_config_files.merger`, an overlay the run writes (`install_gpt_route`) that makes `openai/openai/gpt-6.1-sol` (Oh My Pi's provider `openai` and its model `openai/gpt-6.1-sol`, the name the model gateway lists and serves) the default role a pane starts on (`--model @default`) at `defaultThinkingLevel: high`, `questions.json`'s `agents.gpt`, with `enabledModels` naming `anthropic/*` and `openai/*`.
+  It is the branch daemon's one merger, so its model rides on `role_config_files.merger`, an overlay the run writes (`install_gpt_route`) that makes `openai/gpt-6.1-sol` the default role a pane starts on (`--model @default`) at `defaultThinkingLevel: high`, `questions.json`'s `agents.gpt`, with `enabledModels` naming `anthropic/*` and `openai/*`.
   Measured with Oh My Pi 18.18.6 (`/opt/omp/bin/omp`) in a Legion issue pod on 2026-11-18: the overlay merges into the profile's `modelRoles` key by key and replaces its lists whole, and `omp --model @default --mode rpc` under it, as a pane starts, writes the overlay's `defaultThinkingLevel` into its session as `thinking_level_change`
   (`medium` under an overlay naming `medium`, where the profile alone resolves `high`, the level the run's overlay names).
   The branch's profile gains the `openai` provider (`api: openai-responses`, its `baseUrl` the proxy's `/tag/agents-gpt/v1`, keyed by the same key command as the profile's `anthropic` provider), and `openai` joins its `disabledProviders`:
   a pane's subagents and retries choose from every enabled provider, and no pane but the merger may fall back to GPT-6.1.
-  The overlay names the profile's `disabledProviders` without `openai`, so the merger's pane resolves `openai/openai/gpt-6.1-sol` with the other providers still disabled, while a pane of the profile alone asked for that model is refused (`Provider "openai" is disabled`), as measured the same day.
+  The overlay names the profile's `disabledProviders` without `openai`, so the merger's pane resolves `openai/gpt-6.1-sol` with the other providers still disabled, while a pane of the profile alone asked for that model is refused (`Provider "openai" is disabled`), as measured the same day.
   The run reads what Oh My Pi resolves under the profile and under the overlay, and stops at bring-up when either differs from what it wrote.
   Its task has it run one `bash` call and then weigh, in one sentence, whether the license scan alone holds the merge before it restates the blocker and its marker, to give its transcript a tool call and reasoning to replay;
   the run notes the thinking level, the turns' provider, API and model, the failed turns, the tool calls and the reasoning items with encrypted content its transcript holds.
@@ -1564,7 +1564,7 @@ The answers to the asker and the controller notices land in `inbox.jsonl` under 
   A question then is answered from the compacted conversation, and the resumed architect's first request holds that exchange once.
 
 - A10 (GPT-6.1 clause, a row of its own), where the model route serves the model:
-  before any agent is made the run asks the route once, a `POST /v1/responses` for `openai/gpt-6.1-sol` with a one-line input and `store: false`, through the proxy as `gpt-preflight`, keyed as the loop keys an OpenAI call (`Authorization: Bearer`) with the route's own key (`gpt_preflight`).
+  before any agent is made the run asks the route once, a `POST /v1/responses` for `gpt-6.1-sol` with a one-line input and `store: false`, through the proxy as `gpt-preflight`, keyed as the loop keys an OpenAI call (`Authorization: Bearer`) with the route's own key (`gpt_preflight`).
   An answer that says nothing of the model — no answer at all, the proxy's own `502` for an upstream it cannot reach, `408`, `429` or another `5xx` — is asked again ten seconds later, up to three times.
   Any other answer but `200` with a `completed` response is the route's refusal of the model:
   the clause records WAITING, naming the route and what it answered
@@ -1678,7 +1678,7 @@ the reachability preflight counted as a model call, the agent's own words counte
 A criterion whose prerequisite is missing records WAITING naming it, each read from the run rather than assumed:
 the daemon's workflow, which carries the answer loop and boots only with two distinct role Apps (without the review App's grant every answering criterion and `boot` wait on it);
 the listener's hand-off, read from the boot's `404` on the heartbeat route;
-INFRA-448's registry routes, read from the checkout (A3); a model route that serves `openai/gpt-6.1-sol`, read from the route's own answer to the GPT-6.1 preflight (A10's GPT-6.1 clause); `LEGION_E2E_REPO_SECOND_OWNER` (A17).
+INFRA-448's registry routes, read from the checkout (A3); a model route that serves `gpt-6.1-sol`, read from the route's own answer to the GPT-6.1 preflight (A10's GPT-6.1 clause); `LEGION_E2E_REPO_SECOND_OWNER` (A17).
 Everything else that runs records PASS or FAIL, and the run exits non-zero on any FAIL.
 **Departure:** the review role cannot stand in as the implement App to boot the workflow without the review App:
 the daemon refuses it at boot (`the review App names bot login "<login>" and the implement App "<login>"; the workflow needs
@@ -1697,7 +1697,7 @@ The script carries this shell's `PATH`, `HOME`, XDG base directories and `DBUS_S
 Every model call runs it again and nothing is kept, so a token that expires mid-run is never served, and `prerequisites` runs it once before anything is created, refusing a command that fails or prints something no `Authorization` header can carry.
 The token is echoed nowhere and written to no evidence, and the recording proxy sends it on as `Authorization: Bearer <token>` ([`lib/recording-proxy.ts`](lib/recording-proxy.ts), `--api-key-as-bearer`), the header shape none of the three clients can be told to send itself.
 The run's OpenAI calls are keyed by the same key on either route:
-the GPT-6.1 merger's through the agents' key command, which the profile's `openai` provider names, the loop's answers to it through `answers.providers.openai`, and the preflight that asks the route whether it serves `openai/gpt-6.1-sol` at all.
+the GPT-6.1 merger's through the agents' key command, which the profile's `openai` provider names, the loop's answers to it through `answers.providers.openai`, and the preflight that asks the route whether it serves `gpt-6.1-sol` at all.
 
 The App inputs are [`lib/github-apps.sh`](#libgithub-appssh)'s, and both role Apps come from their own key commands:
 `LEGION_E2E_IMPLEMENT_APP_KEY_COMMAND` and `LEGION_E2E_REVIEW_APP_KEY_COMMAND`, each shell text that prints that App's PEM private key on stdout, are required and have no default.

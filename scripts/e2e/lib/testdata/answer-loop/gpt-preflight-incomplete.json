@@ -3,7 +3,7 @@
   "object": "response",
   "status": "incomplete",
   "incomplete_details": { "reason": "max_output_tokens" },
-  "model": "openai/gpt-6.1-sol",
+  "model": "gpt-6.1-sol",
   "output": [],
   "error": null
 }

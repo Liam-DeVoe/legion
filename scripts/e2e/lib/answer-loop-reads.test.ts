@@ -184,7 +184,7 @@ const gptLine = {
   level: "INFO",
   msg: "answers: answered",
   question: "q-gpt",
-  model: "openai/openai/gpt-6.1-sol",
+  model: "openai/gpt-6.1-sol",
   kind: "answer",
   fault: "",
   calls: 2,
@@ -686,10 +686,10 @@ describe("the stopped agents' conversations", () => {
     expect(read('omp_reasoning_items ""')).toEqual({ code: 0, text: "[]" });
     // Nor is the failed turn's tool call one the conversation holds.
     expect(read('omp_openai_summary "$(conversation_text gpt)"').text).toBe(
-      '{"turns":3,"failed":1,"models":["openai/openai-responses/openai/gpt-6.1-sol"],"tool_calls":1,"reasoning":2,"encrypted":2}'
+      '{"turns":3,"failed":1,"models":["openai/openai-responses/gpt-6.1-sol"],"tool_calls":1,"reasoning":2,"encrypted":2}'
     );
     expect(read('omp_openai_summary "$(conversation_text gpt_plain)"').text).toBe(
-      '{"turns":2,"failed":0,"models":["openai/openai-responses/openai/gpt-6.1-sol"],"tool_calls":1,"reasoning":1,"encrypted":0}'
+      '{"turns":2,"failed":0,"models":["openai/openai-responses/gpt-6.1-sol"],"tool_calls":1,"reasoning":1,"encrypted":0}'
     );
     // A conversation with no tool call: A10's GPT-6.1 clause fails it.
     expect(
@@ -999,7 +999,7 @@ describe("the recording proxy's records", () => {
     // The resumed merger's first model call, past its GET /v1/models listing.
     expect(
       read("evidence=$gpt_evidence; first_request_after agents-gpt 0 | jq -r .model").text
-    ).toBe("openai/gpt-6.1-sol");
+    ).toBe("gpt-6.1-sol");
     expect(read("evidence=$gpt_evidence; first_request_after agents-gpt 1").text).toBe("null");
   });
 
@@ -1020,11 +1020,11 @@ describe("the recording proxy's records", () => {
 
   test("calls_on_model, calls_efforts and efforts_all read every call's API, model and effort", () => {
     const first = `evidence=$gpt_evidence; calls=$(answer_calls daemon-files 'A10-gpt-1)' 'A10-gpt-2)')`;
-    expect(run(`${first}; calls_on_model "$calls" /v1/responses openai/gpt-6.1-sol`).code).toBe(0);
+    expect(run(`${first}; calls_on_model "$calls" /v1/responses gpt-6.1-sol`).code).toBe(0);
     expect(run(`${first}; calls_on_model "$calls" /v1/responses gpt-5`).code).toBe(1);
-    expect(run(`${first}; calls_on_model "$calls" /v1/messages openai/gpt-6.1-sol`).code).toBe(1);
-    expect(run("calls_on_model '[]' /v1/responses openai/gpt-6.1-sol").code).toBe(1);
-    expect(run("calls_on_model '' /v1/responses openai/gpt-6.1-sol").code).toBe(1);
+    expect(run(`${first}; calls_on_model "$calls" /v1/messages gpt-6.1-sol`).code).toBe(1);
+    expect(run("calls_on_model '[]' /v1/responses gpt-6.1-sol").code).toBe(1);
+    expect(run("calls_on_model '' /v1/responses gpt-6.1-sol").code).toBe(1);
     expect(read(`${first}; calls_efforts "$calls"`).text).toBe('["high","high"]');
     expect(run(`${first}; efforts_all "$calls" high`).code).toBe(0);
     expect(run(`${first}; efforts_all "$calls" medium`).code).toBe(1);

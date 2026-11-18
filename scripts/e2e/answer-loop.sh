@@ -131,7 +131,7 @@ claude_code_version=$(tr -d '[:space:]' <"$root/.claude-code-pin")
 # cache_creation_input_token_cost 2.5e-06 and cache_read_input_token_cost 1e-07 per token.
 answers_prices='    anthropic/claude-opus-5-5: { input: 5, output: 25, cache_write: 6.25, cache_read: 0.5 }
     anthropic/claude-sonnet-5-5: { input: 3, output: 15, cache_write: 3.75, cache_read: 0.3 }
-    openai/openai/gpt-6.1-sol: { input: 2, output: 10, cache_write: 2.5, cache_read: 0.1 }'
+    openai/gpt-6.1-sol: { input: 2, output: 10, cache_write: 2.5, cache_read: 0.1 }'
 repo=sjawhar/legion-smoke
 questions_file=$root/scripts/e2e/answer-loop/questions.json
 
@@ -161,12 +161,10 @@ gateway_token_helper=
 # command install_gpt_route keys the same profile's openai provider with.
 declare -A profile_key_command=()
 # A10's GPT-6.1 agent, the branch daemon's one merger: its model, as the conversation names it and
-# as its provider does (`openai/openai/gpt-6.1-sol`: Oh My Pi's provider `openai` and its model
-# `openai/gpt-6.1-sol`, the name the model gateway lists and serves), and the thinking level it
-# runs at (questions.json, agents.gpt); why the model route does not serve that model, empty
-# when it does (gpt_preflight); and the Oh My Pi overlay the merger's panes name in
-# PI_CONFIG_FILES (install_gpt_route, role_config_files.merger), written only when the route
-# serves the model.
+# as its provider does (`openai/gpt-6.1-sol`, `gpt-6.1-sol`), and the thinking level it runs at
+# (questions.json, agents.gpt); why the model route does not serve that model, empty when it does
+# (gpt_preflight); and the Oh My Pi overlay the merger's panes name in PI_CONFIG_FILES
+# (install_gpt_route, role_config_files.merger), written only when the route serves the model.
 gpt_model=
 gpt_model_id=
 gpt_level=
