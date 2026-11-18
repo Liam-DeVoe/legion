@@ -3021,6 +3021,38 @@ else
     case_failed "$count_case" "$(grep -E '^(PASS|FAIL) count-reruns' "$out/text" | head -2 | tr '\n' ' ')$RUN_LINE"
 fi
 
+# 113. A landed step's proof fails when the change it lands is taken out (test round 36). The
+# page 'Each review round's shortfall recorded as two grader rows' says the step makes the
+# `Thermo` line carry one row per half of the reviewer's pair, each naming its verdict and how
+# many of its findings stand, and its committed proof is
+# `(cd packages/pi-legion && bun test src/skills-guard.test.ts)`. At 9cdd6aa3 that guard test
+# holds no string of the two rows, pr-body.md's `- \`thermonuclear-deep-review\`: <verdict>; <n>
+# findings standing.` and its code-quality twin: with both lines taken out of pr-body.md the
+# test still passes and --landed passes all five assertions, so the proof shows nothing of the
+# step it proves. The case takes the two rows out of a fresh checkout of HEAD, after `bun
+# install --frozen-lockfile`, and runs that checkout's --landed, which must fail landed-proof
+# naming the page. It needs bun, git and Dispatch, and prints SKIP when bun is missing.
+if command -v bun >/dev/null 2>&1; then
+    rows_checkout="$WORK/rows-checkout"
+    git clone --quiet --shared --no-checkout "$(git -C "$IOC_ROOT" rev-parse --path-format=absolute --git-common-dir)" "$rows_checkout" &&
+        git -C "$rows_checkout" checkout --quiet --detach "$(git -C "$IOC_ROOT" rev-parse HEAD)" || {
+        printf 'FAIL the fresh checkout of HEAD could not be made\n'
+        exit 1
+    }
+    (cd "$rows_checkout" && bun install --frozen-lockfile >/dev/null 2>&1)
+    rows_body="$rows_checkout/skills/legion-worker/references/pr-body.md"
+    sed -i '/^- `thermonuclear-deep-review`: <verdict>; <n> findings standing\.$/d; /^- `thermonuclear-code-quality`: <verdict>; <n> findings standing\.$/d' "$rows_body"
+    if grep -qF 'findings standing' "$rows_body"; then
+        printf 'FAIL the two pair rows could not be taken out of the checkout'"'"'s pr-body.md\n'
+        exit 1
+    fi
+    case_result "the proof of the shortfall-rows step fails with the two pair rows it landed taken out of pr-body.md" \
+        'landed-proof: the committed proof of the page .Each review round.s shortfall recorded as two grader rows., .* exits non-zero' \
+        "$(IOC_ROOT="$rows_checkout" IOC_EVIDENCE="$rows_checkout/docs/research/internet-of-cognition" gate_run "$rows_checkout/docs/research/internet-of-cognition/check.sh" --landed)"
+else
+    printf 'SKIP the proof of the shortfall-rows step with its two rows taken out: bun is missing\n'
+fi
+
 # ==== the summary of check.test.sh begins below this line, where cases_copy cuts it ====
 # The summary, by the three endings and their precedence (check.sh's header): run_ending
 # reads every case this file counted, the ones that could not run among them, and this
