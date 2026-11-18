@@ -106,7 +106,6 @@ export function IssuePriorityLine({
   // is the issue's own or an ancestor's.
   const choices = rows.filter((row) => !advances.some((entry) => entry.id === row.id));
   const atCap = own.length >= MAX_ISSUE_ADVANCES;
-  const pickedLabel = picked === "" ? undefined : (labels.get(picked) ?? picked);
 
   const add = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -179,8 +178,11 @@ export function IssuePriorityLine({
             triggerClassName={`min-h-11 w-56 shrink-0 rounded-lg px-2 py-1 text-left text-sm md:min-h-8 ${inputClasses(true)}`}
             value={picked === "" ? undefined : picked}
           >
-            {pickedLabel ??
-              (priorities.data === undefined ? "Loading priorities…" : "Choose a priority")}
+            {picked === ""
+              ? priorities.data === undefined
+                ? "Loading priorities…"
+                : "Choose a priority"
+              : undefined}
           </MultiSelect>
           <button
             className={`min-h-11 rounded px-2 py-1 text-sm font-medium disabled:cursor-not-allowed md:min-h-8 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonDisabledText}`}

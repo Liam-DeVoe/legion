@@ -12,14 +12,9 @@ import {
   userHeaders,
 } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
+import { listTrigger } from "./filters";
 import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
-
-/** The trigger of the single-pick list named `label` (`components/MultiSelect.tsx`), found by a
- *  name that begins with the label: a trigger's name may go on to the value it shows. */
-function listTrigger(page: Page, label: string): Locator {
-  return page.getByRole("button", { name: new RegExp(`^${label}\\b`) });
-}
 
 /** The open list named `label`. It is portalled out of the page's sections, so it is found by
  *  its own name, `<label> options`. */
@@ -695,12 +690,9 @@ test("default assignee picks made while a save is out are superseded by the newe
       .getByRole("option", { exact: true, name: "bob" })
       .click();
     await expect.poll(() => wire).toEqual(["sent bob"]);
-    for (const pick of ["carol", "dave", "alice"]) {
-      await core.click();
-      await listOf(page, "Default assignee of CORE")
-        .getByRole("option", { exact: true, name: pick })
-        .click();
-      await expect(core).toHaveText(pick);
+    for (const login of ["carol", "dave", "alice"]) {
+      await pick(page, "Default assignee of CORE", login);
+      await expect(core).toHaveText(login);
     }
 
     held.resolve();
@@ -801,7 +793,6 @@ test("a default assignee the page has not read yet is never shown as Unassigned"
     await expect(core).toBeVisible();
     // Not read yet: the control says so and takes no pick.
     await expect(core).toBeDisabled();
-    await expect(core).not.toHaveText("");
     await expect(core).not.toHaveText(/Unassigned/);
     await expect(core).toHaveText("Loading…");
 
@@ -822,7 +813,6 @@ test("a default assignee the page has not read yet is never shown as Unassigned"
       )
       .toBe(1);
     await expect(core).toBeDisabled();
-    await expect(core).not.toHaveText("");
     await expect(core).toHaveText("Unavailable");
 
     read = "pass";

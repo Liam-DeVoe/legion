@@ -1,7 +1,7 @@
 import { expect, spyOn, test } from "bun:test";
 import { PROJECT_NAME_MAX } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-// biome-ignore lint/style/noRestrictedImports: the focus sites below reach the picker's people list without a press, which user-event has no form for
+// biome-ignore lint/style/noRestrictedImports: the focus site below reaches the picker's people list without a press, which user-event has no form for
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
@@ -685,8 +685,10 @@ test("default assignee picks made while one is saving show, and only the newest 
     // Nobody is listed until a reader reaches for the picker.
     expect(listUsers).not.toHaveBeenCalled();
 
-    // Reaching the control without pressing it: user-event has no form for focus alone.
+    // Reaching the control without pressing it: user-event has no form for focus alone. The
+    // focus alone starts the people read, before any press.
     fireEvent.focus(control);
+    await waitFor(() => expect(listUsers).toHaveBeenCalledTimes(1));
     const list = await listOffering(user, control, "carol@example.com");
     expect(offered(list)).toEqual(["alice@example.com", "bob@example.com", "carol@example.com"]);
 
@@ -749,8 +751,6 @@ test("a default assignee picked after Settings is remounted supersedes the pick 
   try {
     let control = await defaultAssigneeControl("CORE");
     await waitFor(() => expect(control.disabled).toBe(false));
-    // Reaching the control without pressing it: user-event has no form for focus alone.
-    fireEvent.focus(control);
     await listOffering(user, control, "dave@example.com");
 
     const release = server.hold();
@@ -764,9 +764,6 @@ test("a default assignee picked after Settings is remounted supersedes the pick 
     control = await defaultAssigneeControl("CORE");
     // The pick still waiting behind bob's held save is what the returning row shows.
     await waitFor(() => expect(control.textContent).toBe("carol@example.com"));
-    // Reaching the control without pressing it: user-event has no form for focus alone.
-    fireEvent.focus(control);
-    await listOffering(user, control, "dave@example.com");
 
     await pickPerson(user, control, "dave@example.com");
     await waitFor(() => expect(control.textContent).toBe("dave@example.com"));
@@ -808,9 +805,6 @@ test("a default assignee save refused while Settings is unmounted shows its reas
   try {
     let core = await defaultAssigneeControl("CORE");
     await waitFor(() => expect(core.textContent).toBe("alice@example.com"));
-    // Reaching the control without pressing it: user-event has no form for focus alone.
-    fireEvent.focus(core);
-    await listOffering(user, core, "bob@example.com");
     await pickPerson(user, core, "bob@example.com");
     await waitFor(() => expect(putDefault).toHaveBeenCalledTimes(1));
 
@@ -878,9 +872,6 @@ test("a refused default assignee puts the row back, shows the server's reason in
     const coreCell = within(core.closest("td") as HTMLElement);
     const opsCell = within(ops.closest("td") as HTMLElement);
     await waitFor(() => expect(core.disabled).toBe(false));
-    // Reaching the control without pressing it: user-event has no form for focus alone.
-    fireEvent.focus(core);
-    await listOffering(user, core, "bob@example.com");
 
     await pickPerson(user, core, "bob@example.com");
     await waitFor(() =>
@@ -931,7 +922,6 @@ test("a default assignee the page has not read is disabled and names nobody", as
     // Still reading: nobody knows yet which person CORE names. Disabled, the control opens no
     // list, and the one value it holds is what it shows.
     expect(control.disabled).toBe(true);
-    expect(control.textContent).not.toBe("");
     expect(control.textContent).toBe("Loading…");
 
     await act(async () => read.reject(new ApiError(500, { code: "INTERNAL", error: "boom" })));
@@ -939,7 +929,6 @@ test("a default assignee the page has not read is disabled and names nobody", as
       expect(section.getByRole("alert")).toHaveTextContent("Couldn't load the default assignees.")
     );
     expect(control.disabled).toBe(true);
-    expect(control.textContent).not.toBe("");
     expect(control.textContent).toBe("Unavailable");
 
     listDefaults.mockResolvedValue([{ assignee: "alice@example.com", project: "CORE" }]);

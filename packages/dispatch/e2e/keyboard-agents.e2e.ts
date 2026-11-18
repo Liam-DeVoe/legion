@@ -192,7 +192,11 @@ test.describe("agents page", () => {
       await expect(rows.nth(1)).toBeFocused();
 
       release?.();
-      await expect(issueSearchIn(rows.nth(0))).toBeVisible();
+      // The issues have landed, which is when the list decides whether to take the focus. Its
+      // text box is drawn at the open, before they land, so it cannot be what this waits on; the
+      // `<select>` the list replaced was drawn only once they had, which is what this row waited
+      // on.
+      await expect(issueOption(rows.nth(0), "CORE-1")).toBeVisible();
       await expect(rows.nth(1)).toBeFocused();
 
       // And the reader's next key is still a rove, not a write on the row they left.
@@ -369,7 +373,9 @@ test.describe("agents page", () => {
       await page.keyboard.type("still typing");
 
       release?.();
-      await expect(issueSearchIn(row)).toBeVisible();
+      // The issues have landed, which is when the list decides whether to take the focus; its
+      // text box is drawn at the open, before they land.
+      await expect(issueOption(row, "CORE-1")).toBeVisible();
       await expect(field).toBeFocused();
       await expect(field).toHaveValue("still typing");
       await expect(row.getByRole("button", { name: "Choose issue" })).toContainText("No issue");

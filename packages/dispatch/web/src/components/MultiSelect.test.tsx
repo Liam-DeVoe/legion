@@ -4,7 +4,7 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 
-import { panelOf } from "../__tests__/list-picks";
+import { panelOf, pickNamed } from "../__tests__/list-picks";
 import { type ListMarks, MultiSelect } from "./MultiSelect";
 
 function Host({ onCreate, options }: { onCreate?: (value: string) => void; options: string[] }) {
@@ -301,7 +301,7 @@ test("a single pick's listbox is not multiselectable, and only its current value
   const user = userEvent.setup();
   const view = render(<SingleHost initial="docs" options={["api", "docs", "frontend"]} />);
   try {
-    const trigger = screen.getByRole("button", { name: /^Epic\b/ });
+    const trigger = screen.getByRole("button", { name: pickNamed("Epic") });
     expect(trigger).toHaveTextContent("docs");
     await user.click(trigger);
     expect(screen.getByRole("listbox", { name: "Epic options" })).not.toHaveAttribute(
@@ -407,7 +407,7 @@ test("a trigger's text truncates in its own element before a hidden chevron, unl
     </>
   );
   try {
-    const single = screen.getByRole("button", { name: /^Epic\b/ });
+    const single = screen.getByRole("button", { name: pickNamed("Epic") });
     for (const trigger of [single, screen.getByRole("button", { name: "Labels" })]) {
       const chevron = trigger.querySelector("svg");
       expect(chevron).toHaveAttribute("aria-hidden", "true");
@@ -415,7 +415,7 @@ test("a trigger's text truncates in its own element before a hidden chevron, unl
     }
     expect(single.querySelector(".truncate")).toHaveAttribute("title", "docs");
 
-    const badge = screen.getByRole("button", { name: /^Assignee\b/ });
+    const badge = screen.getByRole("button", { name: pickNamed("Assignee") });
     expect(badge.querySelector("svg")).toBeNull();
     expect(badge.querySelector(".truncate")).toBeNull();
     expect(screen.getByTestId("badge").parentElement?.parentElement).toBe(badge);
@@ -461,7 +461,7 @@ test("Escape, Tab and an outside press close a single pick with nothing picked a
   const user = userEvent.setup();
   const view = render(<SingleHost initial="api" options={["api", "docs"]} />);
   try {
-    const trigger = screen.getByRole("button", { name: /^Epic\b/ });
+    const trigger = screen.getByRole("button", { name: pickNamed("Epic") });
     await user.click(trigger);
     await user.keyboard("{ArrowDown}");
     await user.keyboard("{Escape}");
@@ -530,7 +530,7 @@ test("where the engine still names a removed text box focused, Tab out of it put
   const restore = keepRemovedFocus();
   const view = render(<SingleHost initial="api" options={["api", "docs"]} />);
   try {
-    const trigger = screen.getByRole("button", { name: /^Epic\b/ });
+    const trigger = screen.getByRole("button", { name: pickNamed("Epic") });
     for (const shift of [false, true]) {
       await user.click(trigger);
       expect(screen.getByRole("combobox", { name: "Search epics" })).toHaveFocus();
@@ -583,7 +583,7 @@ test("a single pick opens with its picked value active, so Enter keeps it and th
   const user = userEvent.setup();
   const view = render(<SingleHost initial="docs" options={["api", "docs", "frontend"]} />);
   try {
-    const trigger = screen.getByRole("button", { name: /^Epic\b/ });
+    const trigger = screen.getByRole("button", { name: pickNamed("Epic") });
     await user.click(trigger);
     expect(screen.getByRole("combobox", { name: "Search epics" })).toHaveAttribute(
       "aria-activedescendant",
@@ -610,7 +610,7 @@ test("every close tells the host what closed the list: a pick, Escape, Tab, a pr
   const user = userEvent.setup();
   const view = render(<SingleHost initial="api" options={["api", "docs"]} />);
   try {
-    const trigger = screen.getByRole("button", { name: /^Epic\b/ });
+    const trigger = screen.getByRole("button", { name: pickNamed("Epic") });
     await user.click(trigger);
     await user.click(screen.getByRole("option", { name: "docs" }));
     await user.click(trigger);

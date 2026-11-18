@@ -57,7 +57,14 @@ import {
   setSignIns,
 } from "./fake-broker-helpers";
 import { seedFakeGithub } from "./fake-github-helpers";
-import { control, controlRow, displayChoice, openFilterPanel } from "./filters";
+import {
+  control,
+  controlRow,
+  displayChoice,
+  listOf,
+  listTrigger,
+  openFilterPanel,
+} from "./filters";
 import { nextFrames, settledScrollTop } from "./frames";
 import { drawer, peekTrigger, seedAsk } from "./inbox-drawer";
 import { assigneeFilter, assigneeOptions, openFilterFields } from "./inbox-filter";
@@ -4741,15 +4748,21 @@ test("a table that holds the keyboard focus scrolls freely, and the focus moves 
 // is portalled to the end of the body, outside the dialog it is opened in, so Tab from its last
 // control went past the end of the page and on to the page behind the search bar; and after
 // Shift+Tab out of the search bar's Project list every Escape was refused while the list stood
-// open, so the bar could not be closed from the keyboard. `@firefox` and `@webkit`: each engine
-// keeps a Tab order of its own - a stop for each field of a date box, one for a radio group - and
-// the panel follows the engine's, the clause of `playwright.config.ts` on the engine's own Tab
-// order.
+// open, so the bar could not be closed from the keyboard. And a list of the shared list's single
+// pick closed by Tab or Shift+Tab out of its text box leaves the focus on its trigger, on a page
+// and in a dialog (round 12). `@firefox` and `@webkit`: each engine keeps a Tab order of its own -
+// a stop for each field of a date box, one for a radio group - and the panel follows the engine's,
+// the clause of `playwright.config.ts` on the engine's own Tab order; and each engine takes the
+// focus out of a text box the close removes in its own way, the clause on how the engine takes
+// the focus out of one on Tab. The row reads where the focus ends, not which code put it there:
+// with the list's own hand-off to its trigger taken out (`focusLost` in `MultiSelect.tsx`'s close
+// effect read as a focus on the body), the page's rescue still put the focus on the trigger in
+// Firefox and WebKit, and this row passed in both (2026-11-18).
 test("Tab and Escape never leave a panel for the page behind it, in a dialog or on a page @firefox @webkit", async ({
   page,
 }) => {
   await page.setViewportSize({ height: 900, width: 1440 });
-  await seedAsk("Which lease holds?");
+  const { issueKey } = await seedAsk("Which lease holds?");
   const main = page.getByTestId("main-content");
 
   /** Focuses `last`, the last control of its panel, and presses Tab until the focus has left it:
@@ -4814,12 +4827,14 @@ test("Tab and Escape never leave a panel for the page behind it, in a dialog or 
   // Filter, then Project, then Shift+Tab out of the list: three presses of Escape close what is
   // left, the search bar last.
   await barTrigger.click();
-  await page
-    .getByRole("dialog", { name: "Filter" })
-    .getByRole("button", { exact: true, name: "Project" })
-    .click();
+  const barProject = listTrigger(page.getByRole("dialog", { name: "Filter" }), "Project");
+  await barProject.click();
   await page.getByRole("combobox", { exact: true, name: "Search projects" }).focus();
   await page.keyboard.press("Shift+Tab");
+  await expect(
+    barProject,
+    "search bar: Shift+Tab out of the Project list's text box"
+  ).toBeFocused();
   await page.keyboard.press("Escape");
   await page.keyboard.press("Escape");
   await page.keyboard.press("Escape");
@@ -4827,6 +4842,20 @@ test("Tab and Escape never leave a panel for the page behind it, in a dialog or 
     palette,
     "the search bar is still open after Shift+Tab and three Escapes"
   ).toHaveCount(0);
+
+  // On a page: the issue header's Assignee list, which Tab out of its text box closes onto its
+  // trigger, the badge.
+  await page.goto(`/issues/${issueKey}`);
+  const assigneeTrigger = listTrigger(page, `Assignee of ${issueKey}`);
+  await assigneeTrigger.click();
+  const assigneeBox = page.getByRole("combobox", { exact: true, name: "Search people" });
+  await expect(assigneeBox).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(assigneeBox, "issue header: Tab left the Assignee list open").toHaveCount(0);
+  await expect(
+    assigneeTrigger,
+    "issue header: Tab out of the Assignee list's text box"
+  ).toBeFocused();
 });
 
 // SLOW(>=2s): the Delivery page opened four times, in each view, at two widths.
@@ -5237,26 +5266,6 @@ const TEXT_BOXES = [
   '[role="textbox"]',
 ].join(", ");
 
-/** The control labelled `label` that opens a list: the list's own button. A native select, which
- *  is what several of these lists were before each held a text box, is found by the same label, so
- *  a page that still draws one fails on that list by name rather than on a trigger not found. A
- *  label finds a trigger named by it alone or by it and then what the trigger shows, as a single
- *  pick's is (`MultiSelect`); a pattern finds a trigger whose name it matches. */
-function listTrigger(scope: Locator | Page, label: string | RegExp): Locator {
-  const name =
-    typeof label === "string"
-      ? new RegExp(`^${label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?: |$)`)
-      : label;
-  return scope.getByRole("button", { name }).or(scope.getByRole("combobox", { name }));
-}
-
-/** The panel a list's trigger names in `aria-controls` while the list stands open: the list is
- *  portalled out of its host, so it is found from its own trigger and from nothing page-wide, as
- *  `issueListOf` (`e2e/agents.ts`) finds the composer's. */
-function listOf(trigger: Locator): Locator {
-  return trigger.locator("xpath=id(./@aria-controls)");
-}
-
 /** One list of options R3 holds to a text box, as the row below drives it at one width. */
 interface PickList {
   /** The list as a failure names it: its page, and its trigger's words. */
@@ -5385,12 +5394,12 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
   const advance = listTrigger(page, "Priority to advance");
   const createIssueDialog = page.getByRole("dialog", { name: "Create issue" });
   const dialogProject = listTrigger(createIssueDialog, "Project");
-  // The Settings page's lists, each found by a name that begins with its label. The New project
-  // form's Default assignee is the one whose label does not go on with " of <KEY>".
-  const opsDefault = listTrigger(page, /^Default assignee of OPS\b/);
+  // The Settings page's lists. The New project form's Default assignee is the one whose label
+  // does not go on with " of <KEY>".
+  const opsDefault = listTrigger(page, "Default assignee of OPS");
   const newProjectDefault = listTrigger(page, /^Default assignee(?! of )/);
-  const mappingProject = listTrigger(page, /^Project\b/);
-  const sourceProject = listTrigger(page, /^Source project\b/);
+  const mappingProject = listTrigger(page, "Project");
+  const sourceProject = listTrigger(page, "Source project");
   // Each width's pick is a change: the first hands the issue from alice to bob, the second from
   // bob to carol, and OPS's default from carol to bob and back; the first gives the issue
   // acme/gadgets of its own, the second takes it back to the default it inherits.
@@ -5625,20 +5634,21 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
 // picks the option the word left - the trigger shows it with the focus back on it, or where the
 // pick takes the trigger away the panel hands the focus on. A list that holds no text box is
 // named and the row goes on, so one run names every such list.
-// `@firefox` and `@webkit`: the keys a text box takes - the typed word, Enter, Escape and Tab - as
-// each engine delivers them, the clause of `playwright.config.ts` the composer's Issue list is run
-// under; and the close a Tab makes, which an engine that moves the focus off a removed element
-// only at its next rendering update answers while it still names the text box the close took away
-// as focused (`focusLost`, `components/focus-place.ts`).
-test("every list of options a reader picks from holds a text box that narrows it, at 1440 and 390 @firefox @webkit", async ({
+// It runs in Chromium alone. What an engine decides here is one component's, the same in every
+// list, and two rows read it in Firefox and WebKit at a fraction of this row's cost: the keys the
+// list's text box takes, as each engine delivers them, in `keyboard-agents-picker`'s rows of the
+// composer's Issue list, and where a Tab or Shift+Tab out of the text box leaves the focus - on
+// the trigger - on a page and in a dialog, in the row that Tab and Escape never leave a panel for
+// the page behind it. This row in Firefox read no more than that one: with the list's own hand-off
+// to its trigger taken out, it passed there too (2026-11-18). In both engines it took 2.1 min of
+// its shard (full-lane run 44206548149), which put that shard over its 9-minute step.
+test("every list of options a reader picks from holds a text box that narrows it, at 1440 and 390", async ({
   page,
 }) => {
   // Seven page loads and a dialog at each width, with the lists read between them. Measured in an
-  // issue pod (two cores) while the row read fourteen lists on eight page loads, each list opened
-  // three times: it took 2.9 min in Chromium and 3.4 min in Firefox, which six minutes keeps
-  // under two thirds of the budget; with eighteen lists on nine page loads it took 2.3 min in
-  // Chromium (2026-11-17), and Firefox has not been run with them. WebKit, which no pod runs, is
-  // given the same.
+  // issue pod (two cores) while the row read eighteen lists on nine page loads, each list opened
+  // three times: the row took 2.3 min in Chromium (2026-11-17), and 41.9 s in CI's Chromium
+  // (full-lane run 44206548149). Six minutes keeps the pod's time under two thirds of the budget.
   test.setTimeout(360_000);
   const seed = await seedPickLists();
   /** The lists the row could not read: no trigger, a trigger that names no list of its own, or

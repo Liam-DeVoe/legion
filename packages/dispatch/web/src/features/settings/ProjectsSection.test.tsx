@@ -6,7 +6,7 @@ import userEvent from "@testing-library/user-event";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
-import { listOf, panelOf, textBoxes } from "../../__tests__/list-picks";
+import { listOf, panelOf, rows, textBoxes } from "../../__tests__/list-picks";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
 import type { AuthenticatedUser, DispatchUser, Project } from "../../api/types";
@@ -153,13 +153,7 @@ test("the New project form's Default assignee list holds a text box that narrows
       people.resolve([{ login: "alice" }, { login: "bob" }, { login: "carol" }]);
       await people.promise;
     });
-    await waitFor(() =>
-      expect(
-        within(list)
-          .getAllByRole("option")
-          .map((option) => option.textContent)
-      ).toEqual(["carol"])
-    );
+    await waitFor(() => expect(rows(list)).toEqual(["carol"]));
     await user.keyboard("{Enter}");
     expect(trigger).toHaveFocus();
     expect(trigger).toHaveTextContent("carol");
@@ -196,11 +190,7 @@ test("a project's Default assignee list holds a text box that narrows the people
     const list = listOf(own[0] as HTMLElement);
     await within(list).findByRole("option", { name: "carol" });
     await user.type(own[0] as HTMLElement, "bo");
-    expect(
-      within(list)
-        .getAllByRole("option")
-        .map((option) => option.textContent)
-    ).toEqual(["bob"]);
+    expect(rows(list)).toEqual(["bob"]);
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("listbox", { name: "Default assignee of CORE options" })).toBeNull();
     expect(trigger).toHaveFocus();

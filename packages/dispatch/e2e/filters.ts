@@ -96,3 +96,23 @@ export async function pickFilterOption(
   await page.keyboard.press("Escape");
   await expect(page.getByRole("listbox")).toHaveCount(0);
 }
+
+/** The control labelled `label` that opens a list: the list's own button. A native select, which
+ *  is what several of these lists were before each held a text box, is found by the same label, so
+ *  a page that still draws one fails on that list by name rather than on a trigger not found. A
+ *  label finds a trigger named by it alone or by it and then what the trigger shows, as a single
+ *  pick's is (`MultiSelect`); a pattern finds a trigger whose name it matches. */
+export function listTrigger(scope: Locator | Page, label: string | RegExp): Locator {
+  const name =
+    typeof label === "string"
+      ? new RegExp(`^${label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?: |$)`)
+      : label;
+  return scope.getByRole("button", { name }).or(scope.getByRole("combobox", { name }));
+}
+
+/** The panel a list's trigger names in `aria-controls` while the list stands open: the list is
+ *  portalled out of its host, so it is found from its own trigger and from nothing page-wide, as
+ *  `issueListOf` (`e2e/agents.ts`) finds the composer's. */
+export function listOf(trigger: Locator): Locator {
+  return trigger.locator("xpath=id(./@aria-controls)");
+}
