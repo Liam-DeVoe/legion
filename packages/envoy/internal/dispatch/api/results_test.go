@@ -1108,10 +1108,12 @@ func TestResultAtACommitOfARepositoryTheIssueLinksAPullRequestIn(t *testing.T) {
 		name   string
 		links  []string
 		commit string
-		// refused is whether the result is refused 400 RESULT_COMMIT_UNKNOWN, and named and
-		// unnamed the repositories the refusal names and does not name.
+		// refused is whether the result is refused 400 RESULT_COMMIT_UNKNOWN, named and unnamed
+		// the repositories the refusal's first clause names as asked and does not, and unreadable
+		// the linked pull requests its clause on what Dispatch could not read names.
 		refused        bool
 		named, unnamed []string
+		unreadable     []string
 		// readThrough is the repository the read-through after the write asks, and every other
 		// repository is asked nothing; a refusal reads nothing through.
 		readThrough string
@@ -1160,12 +1162,12 @@ func TestResultAtACommitOfARepositoryTheIssueLinksAPullRequestIn(t *testing.T) {
 			// A link to a pull request of a repository the App is not installed on: GitHub
 			// answers the installation lookup 404, which is its answer about every pull request
 			// of that repository, so the repository does not count, no pull request of it is
-			// read, and the commit no repository holds is refused as it was before the issue
-			// carried that link. Read as a failure, it would store the result with that
-			// repository, where no read can ever place it.
+			// read, and the commit no repository holds is refused, the refusal naming that pull
+			// request as one Dispatch could not read. Read as a failure, it would store the result
+			// with that repository, where no read can ever place it.
 			name:  "a link to a pull request of a repository the App is not installed on lets no unheld commit through",
 			links: []string{"https://github.com/acme/elsewhere/pull/3"}, commit: nearHeadCommit, refused: true,
-			named: []string{"acme/widgets"}, unnamed: []string{"acme/elsewhere"},
+			named: []string{"acme/widgets"}, unnamed: []string{"acme/elsewhere"}, unreadable: []string{"acme/elsewhere#3"},
 		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
@@ -1187,14 +1189,22 @@ func TestResultAtACommitOfARepositoryTheIssueLinksAPullRequestIn(t *testing.T) {
 				if !strings.Contains(text, row.commit) {
 					t.Errorf("the refusal reads %q, want the commit %s named", text, row.commit)
 				}
+				// The first clause names the repositories asked about the commit; what follows
+				// its first "; " names what Dispatch could not read and what the bound left unread.
+				asked, _, _ := strings.Cut(text, "; ")
 				for _, repo := range row.named {
-					if !strings.Contains(text, repo) {
-						t.Errorf("the refusal reads %q, want %s named", text, repo)
+					if !strings.Contains(asked, repo) {
+						t.Errorf("the refusal reads %q, want %s named as a repository asked", text, repo)
 					}
 				}
 				for _, repo := range row.unnamed {
-					if strings.Contains(text, repo) {
-						t.Errorf("the refusal reads %q, want %s, which it never asked about the commit, not named", text, repo)
+					if strings.Contains(asked, repo) {
+						t.Errorf("the refusal reads %q, want %s, which it never asked about the commit, not named as asked", text, repo)
+					}
+				}
+				for _, pull := range row.unreadable {
+					if !strings.Contains(text, "Dispatch could not read the linked pull request "+pull) {
+						t.Errorf("the refusal reads %q, want %s named as a linked pull request Dispatch could not read", text, pull)
 					}
 				}
 				if stored != 0 {
@@ -4077,6 +4087,116 @@ func TestALinkedReadThatDidNotAnswerRefusesTheRecordForNow(t *testing.T) {
 			}
 			if rows := resultRowsOn(t, database, issue); rows != 0 {
 				t.Errorf("the refused result left %d check_results rows, want none", rows)
+			}
+		})
+	}
+}
+
+// A read of the issue's own repository that did not answer, beside a read of a linked pull
+// request that did not answer, refuses the record for now, as the linked read alone does where
+// GitHub proved the issue's own repository does not hold the commit
+// (TestALinkedReadThatDidNotAnswerRefusesTheRecordForNow): neither read showed any repository to
+// hold the commit, and acme/tools may hold it. So the record is 502 GITHUB_UNREADABLE naming
+// acme/tools, the commit and GitHub's message, and telling the caller to record the result
+// again, and nothing is stored. Stored under acme/widgets, as a record whose every linked read
+// answered is, the result would sit at a commit no read showed any repository to hold.
+func TestAnUnreadOwnRepositoryBesideALinkedReadThatDidNotAnswerRefusesTheRecordForNow(t *testing.T) {
+	// linkedCommit is a commit acme/tools holds and acme/widgets does not.
+	const linkedCommit = "9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f"
+	linked := &linkedGitHub{
+		held:     map[string][]string{"acme/widgets": {headCommit}, "acme/tools": {linkedCommit}},
+		pulls:    map[string]string{"acme/tools#7": "open"},
+		failing:  []string{"acme/widgets"},
+		erroring: []string{"acme/tools"},
+	}
+	handler, database := linkedRepositoriesGitHub(t, linked)
+	issue := issueInRepository(t, handler, "RELW", "acme/widgets", "Two reads that did not answer").Key
+	uploadDocument(t, handler, "/api/v1/issues/"+issue, "verification.md", twoChecks)
+	linkPullRequests(t, handler, issue, "https://github.com/acme/tools/pull/7")
+	eventsBefore := resultEventsOn(t, database, issue)
+
+	recorded := recordResult(t, handler, issue, resultBody("k1", "pass", linkedCommit, nil))
+
+	code, text := refusalOf(t, recorded)
+	if recorded.Code != http.StatusBadGateway || code != "GITHUB_UNREADABLE" {
+		t.Fatalf("status=%d body=%s, want 502 GITHUB_UNREADABLE", recorded.Code, recorded.Body.String())
+	}
+	for _, want := range []string{"acme/tools", linkedCommit, "status 500: Server Error",
+		"Nothing was recorded: record the result again"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the refusal reads %q, want it to say %q", text, want)
+		}
+	}
+	if stored := resultEventsOn(t, database, issue) - eventsBefore; stored != 0 {
+		t.Errorf("the refused result appended %d result.recorded events, want none", stored)
+	}
+	if rows := resultRowsOn(t, database, issue); rows != 0 {
+		t.Errorf("the refused result left %d check_results rows, want none", rows)
+	}
+}
+
+// A failed read of Dispatch's own list of the issue's links refuses the record, whatever GitHub
+// said of the issue's own repository: a linked repository may hold the commit and the record
+// cannot tell, so stored, the result would sit at a commit no read showed any repository to
+// hold, in the first row one GitHub proved acme/widgets does not hold. The record answers 500
+// INTERNAL and stores nothing, and the caller records the result again. The table of the links
+// is renamed out of the read's reach once the issue links acme/tools#7, so the record's read of
+// them fails as a read of a row the database cannot read does, and no linked pull request is
+// read from GitHub. Where GitHub answers for acme/widgets, a result at a commit it holds is still
+// stored, since the links are read only where GitHub does not say the issue's own repository
+// holds the commit: so nothing the record reads before the links fails on the renamed table.
+func TestAFailedReadOfTheLinkedRepositoriesRefusesTheRecord(t *testing.T) {
+	// linkedCommit is a commit acme/tools holds and acme/widgets does not.
+	const linkedCommit = "9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f"
+	for _, row := range []struct {
+		name string
+		// failing is the repositories whose commit reads GitHub fails with a 503.
+		failing []string
+		// ownCommitStored is whether a result at a commit acme/widgets holds is then stored,
+		// which holds where GitHub answers the read of acme/widgets.
+		ownCommitStored bool
+	}{
+		{name: "GitHub proved the issue's own repository does not hold the commit", ownCommitStored: true},
+		{name: "GitHub's read of the issue's own repository did not answer", failing: []string{"acme/widgets"}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			linked := &linkedGitHub{
+				held:    map[string][]string{"acme/widgets": {headCommit}, "acme/tools": {linkedCommit}},
+				pulls:   map[string]string{"acme/tools#7": "open"},
+				failing: row.failing,
+			}
+			handler, database := linkedRepositoriesGitHub(t, linked)
+			issue := issueInRepository(t, handler, "RELD", "acme/widgets", "A failed read of the links").Key
+			uploadDocument(t, handler, "/api/v1/issues/"+issue, "verification.md", twoChecks)
+			linkPullRequests(t, handler, issue, "https://github.com/acme/tools/pull/7")
+			if _, err := database.Pool.Exec(context.Background(),
+				`alter table issue_external_links rename to issue_external_links_unreadable`); err != nil {
+				t.Fatalf("make the issue's links unreadable: %v", err)
+			}
+			eventsBefore := resultEventsOn(t, database, issue)
+			stateReadsBefore, _ := linked.counts("acme/tools")
+
+			recorded := recordResult(t, handler, issue, resultBody("k1", "pass", linkedCommit, nil))
+
+			if code, _ := refusalOf(t, recorded); recorded.Code != http.StatusInternalServerError || code != "INTERNAL" {
+				t.Fatalf("status=%d body=%s, want 500 INTERNAL", recorded.Code, recorded.Body.String())
+			}
+			if stored := resultEventsOn(t, database, issue) - eventsBefore; stored != 0 {
+				t.Errorf("the refused result appended %d result.recorded events, want none", stored)
+			}
+			if rows := resultRowsOn(t, database, issue); rows != 0 {
+				t.Errorf("the refused result left %d check_results rows, want none", rows)
+			}
+			if stateReads, _ := linked.counts("acme/tools"); stateReads != stateReadsBefore {
+				t.Errorf("the record read the state of acme/tools' linked pull request %d times, want never",
+					stateReads-stateReadsBefore)
+			}
+			if !row.ownCommitStored {
+				return
+			}
+			if atOwn := recordResult(t, handler, issue, resultBody("k1", "pass", headCommit, nil)); atOwn.Code != http.StatusCreated {
+				t.Fatalf("a result at a commit acme/widgets holds, with the links unreadable: status=%d body=%s, want 201",
+					atOwn.Code, atOwn.Body.String())
 			}
 		})
 	}

@@ -1713,9 +1713,11 @@ export const dispatchToolSpecs = [
       "repository that the App is not installed on or cannot read does not count. Where a read of " +
       "a linked pull request or of a linked repository does not answer, and no repository is shown " +
       "to hold the commit, the record is 502 GITHUB_UNREADABLE and nothing is recorded: record the " +
-      "result again, after the wait the refusal names for a rate limit. Where Dispatch cannot read " +
-      "the repository of the check's issue, or where the issue has no repository, the result is " +
-      "recorded as before. " +
+      "result again, after the wait the refusal names for a rate limit. Where the issue has no " +
+      "repository, the result is recorded as before. Where Dispatch cannot read the repository " +
+      "of the check's issue, the result is recorded as before only when every linked read " +
+      "answers and no linked repository holds the commit: a linked read that does not answer " +
+      "is 502 GITHUB_UNREADABLE and nothing is recorded. " +
       "The result is recorded against the check's own issue, so a child's run of a parent's " +
       "check appears under that check. A closed issue takes a result only for a check whose " +
       "when is after_merge or default_branch, the production check after the merge. It refuses " +

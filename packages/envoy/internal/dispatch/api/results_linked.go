@@ -73,20 +73,24 @@ const linkedPullRequestReads = 10
 // held once, and a reader could not tell it from the real head, since both print as twelve
 // characters.
 //
-// It refuses in two ways. Where a read of a linked pull request's state or of a linked
-// repository's commit did not answer — a rate limit, a 5xx, a transport failure — and no
-// repository is shown to hold the commit, the record is refused for now (linkedReadRefusal),
-// telling the caller to record the result again, after GitHub's wait where the rate limit names
-// one: that repository may hold the commit, and a result stored under it would be stored at a
-// commit no read showed any repository to hold. And where GitHub proved that repo does not hold
-// the commit and every linked repository either does not count or, counting, is proved not to
-// hold it either — which delivery.RepositoryHoldsCommit defines as the one 422 whose message
-// says GitHub found no commit for the SHA — it is refused 400 RESULT_COMMIT_UNKNOWN. Every other
-// answer about repo stores the result, and so does a failed read of Dispatch's own list of the
-// links. No other GitHub answer can block the result a closed issue takes, the production
-// check's after-merge result — whose merge commit is on the branch its pull request merged into
-// and is held anyway. A refusal with links left unread for the bound says how many, since a link
-// past it may name the repository that holds the commit.
+// It refuses in three ways. Where Dispatch's own list of the links could not be read
+// (linkedRepositories), it answers that error, a server error to the caller, and nothing is
+// stored, whatever GitHub said of repo: the record cannot tell whether a linked repository holds
+// the commit, and a result stored then would sit at a commit no read showed any repository to
+// hold, one GitHub may have proved repo does not hold. The caller records the result again.
+// Where a read of a linked pull request's state or of a linked repository's commit did not
+// answer — a rate limit, a 5xx, a transport failure — and no repository is shown to hold the
+// commit, the record is refused for now (linkedReadRefusal), telling the caller to record the
+// result again, after GitHub's wait where the rate limit names one: that repository may hold the
+// commit, and a result stored under it would be stored at a commit no read showed any repository
+// to hold. And where GitHub proved that repo does not hold the commit and every linked
+// repository either does not count or, counting, is proved not to hold it either — which
+// delivery.RepositoryHoldsCommit defines as the one 422 whose message says GitHub found no
+// commit for the SHA — it is refused 400 RESULT_COMMIT_UNKNOWN. Every other answer about repo
+// stores the result. No other GitHub answer can block the result a closed issue takes, the
+// production check's after-merge result — whose merge commit is on the branch its pull request
+// merged into and is held anyway. A refusal with links left unread for the bound says how many,
+// since a link past it may name the repository that holds the commit.
 //
 // The repository it answers, in order:
 //
@@ -94,9 +98,7 @@ const linkedPullRequestReads = 10
 //     holds it;
 //   - repo, where GitHub's read of repo did not answer, every linked read answered and no linked
 //     repository holds the commit, which stores the result exactly as it was stored before the
-//     links were read;
-//   - repo where GitHub's read of repo did not answer, and nil where GitHub proved repo does not
-//     hold the commit, when Dispatch's own list of the links could not be read.
+//     links were read.
 //
 // So a linked repository is answered only where GitHub said it holds the commit.
 // recordCheckResult keeps a linked repository it answers with the row
@@ -111,8 +113,9 @@ func (s *server) refuseUnknownCommit(ctx context.Context, q refs.Queryer, issueK
 	if err == nil && held {
 		return repo, nil
 	}
-	// ownUnread is a read of repo that did not answer, which leaves repo the answer wherever every
-	// linked read answered and no linked repository holds the commit, and refuses nothing.
+	// ownUnread is a read of repo that did not answer. It refuses nothing by itself: it leaves
+	// repo the answer wherever the links are read, every linked read answers and no linked
+	// repository holds the commit.
 	ownUnread := err != nil
 	if ownUnread {
 		slog.Info("dispatch: GitHub could not say whether a recorded result's commit is held",
@@ -120,12 +123,7 @@ func (s *server) refuseUnknownCommit(ctx context.Context, q refs.Queryer, issueK
 	}
 	linked, err := linkedRepositories(ctx, q, issueKey)
 	if err != nil {
-		slog.Warn("dispatch: read the repositories a check's issue links pull requests in",
-			"issue", issueKey, "error", err)
-		if ownUnread {
-			return repo, nil
-		}
-		return nil, nil
+		return nil, err
 	}
 	checked := []string{*repo}
 	// failed is the first linked read that did not answer, and failedRepo its repository.
@@ -363,12 +361,12 @@ func linkCannotCount(err error) bool {
 	return delivery.RepositoryUnreadable(err) || errors.Is(err, refs.ErrNotGitHubRepo)
 }
 
-// linkedRepositoryOf is the canonical name of commitRepo, the repository a result's row takes
-// its commit to be of (model.CheckResult.CommitRepo), which may be one no read showed to hold it
-// (refuseUnknownCommit), as it is called today (refs.CanonicalRepo), and whether that read
-// answered. A read that failed leaves the result's repository unknown, which onNamedBranch
-// answers as model.ReasonReadFailed rather than walking a repository that holds no such commit,
-// and readThroughHead answers by reading nothing.
+// linkedRepositoryOf is the canonical name of commitRepo, the linked repository a result's row
+// takes its commit to be of (model.CheckResult.CommitRepo), one GitHub said holds the commit when
+// the result was recorded (refuseUnknownCommit), as it is called today (refs.CanonicalRepo), and
+// whether that read answered. A read that failed leaves the result's repository unknown, which
+// onNamedBranch answers as model.ReasonReadFailed rather than walking a repository that holds no
+// such commit, and readThroughHead answers by reading nothing.
 //
 // The record route stores the name it took the commit to be of, which is canonical at the write.
 // It is read again here because the repository can be renamed since, and GitHub answers 404
@@ -394,13 +392,13 @@ func (c *comparisonReader) linkedRepositoryOf(ctx context.Context, commitRepo st
 }
 
 // linkedBranchBases is branchBases for a result whose commit is taken to be of repo, a linked
-// repository (linkedRepositoryOf) that may be one no read showed to hold it: the branches of
-// repo that result is compared with, chosen by the rule the issue's own repository's are chosen
-// by (measuredBranches), the `after_merge` check's merged branch being the one the issue's
-// linked pull request in repo merged into (baseBranchMergedIn). The walk asks them in this order
-// (onNamedBranch), and the check goes on naming its own repository's branches as its bases:
-// these are one result's, not the check's. Each names repo, so a reader can tell the branch a
-// result stands at from the issue's own repository's branch of the same name.
+// repository (linkedRepositoryOf) GitHub said holds the commit when the result was recorded: the
+// branches of repo that result is compared with, chosen by the rule the issue's own repository's
+// are chosen by (measuredBranches), the `after_merge` check's merged branch being the one the
+// issue's linked pull request in repo merged into (baseBranchMergedIn). The walk asks them in
+// this order (onNamedBranch), and the check goes on naming its own repository's branches as its
+// bases: these are one result's, not the check's. Each names repo, so a reader can tell the
+// branch a result stands at from the issue's own repository's branch of the same name.
 //
 // A comparison naming no branch here is always unknown for the result, never another commit,
 // so its reason is one of the two a commit's standing carries. A merge read that failed is

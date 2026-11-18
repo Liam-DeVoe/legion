@@ -94,15 +94,15 @@ import (
 // The repository each issue resolves to, its default branch, the branch each issue's pull
 // request merged into, the pull request heads of each issue, the stored heads of each
 // repository-and-commit pair and GitHub's answer about each repository, branch and commit are
-// each read once per read of the results, and so are the canonical name of each repository a
-// result's row takes its commit to be of, which may be one no read showed to hold it, and the
-// branch each issue's linked pull request merged into in each such repository. The branch is in
-// that last key of GitHub's, and not the repository and the commit alone, because one issue's
-// Verification document may hold an `after_merge` check and a `default_branch` check with a
-// result at the same commit: two questions, with two answers, that one key for both would
-// collapse into whichever was asked first. Across reads, a repository's default branch, a
-// commit's place on a branch and the last read-through of a commit's pull requests are held by
-// delivery (server.branches, branch_commits and server.commitPulls).
+// each read once per read of the results, and so are the canonical name of each linked
+// repository a result's row takes its commit to be of, one GitHub said holds that commit when the
+// result was recorded, and the branch each issue's linked pull request merged into in each such
+// repository. The branch is in that last key of GitHub's, and not the repository and the commit
+// alone, because one issue's Verification document may hold an `after_merge` check and a
+// `default_branch` check with a result at the same commit: two questions, with two answers, that
+// one key for both would collapse into whichever was asked first. Across reads, a repository's
+// default branch, a commit's place on a branch and the last read-through of a commit's pull
+// requests are held by delivery (server.branches, branch_commits and server.commitPulls).
 type comparisonReader struct {
 	server *server
 	// at is the one commit the reader named, and noCommitNamed where it named none.
@@ -147,9 +147,10 @@ func noBases(reason string) comparison {
 // a database hiccup came to read as "this work has moved on" (dispatch://INFRA-1522).
 // It holds what one read of the canonical name of the repository a result's row takes its
 // commit to be of said too (linkedRepositoryOf), which names a repository wherever it answered.
-// The row names the repository the record route took the commit to be of, and no read may have
-// shown that repository to hold it: a row stored before the route refused a linked read that did
-// not answer names the first linked repository whose read failed (refuseUnknownCommit).
+// The row names a repository only where the record route took the commit to be of a linked
+// repository GitHub said holds it (refuseUnknownCommit): a linked read that did not answer,
+// where no repository was shown to hold the commit, and a failed read of the issue's links
+// store no row at all.
 type repositoryAnswer struct {
 	repo     *string
 	answered bool

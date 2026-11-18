@@ -162,9 +162,10 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 	// nothingReason). This route takes the repository alone, on purpose: the refusal below and
 	// the read-through it answers for are already answered by a nil, and the two nothings would
 	// earn one answer here anyway. Only GitHub's proof that the repository holds no such commit,
-	// and a read of a linked repository that did not answer, refuse a record, and neither is
-	// asked of a nil repository, so a resolve that did not answer stores the result, exactly as
-	// a deployment with no App key and an issue with no repository do.
+	// a read of a linked repository that did not answer and a failed read of the issue's links
+	// refuse a record, and none of them is asked of a nil repository, so a resolve that did not
+	// answer stores the result, exactly as a deployment with no App key and an issue with no
+	// repository do.
 	var checkRepo *string
 	if s.deps.GitHub != nil {
 		checkRepo, _ = s.checkIssueRepository(r.Context(), pool, check.IssueKey)
