@@ -6,9 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/textproto"
 	"os"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -1728,7 +1728,8 @@ func (r refusal) Is(target error) bool { return target == ErrRefused }
 // ErrTooLarge is the ErrRefused of an envelope too large to publish whole: a message past the NATS
 // server's max payload, which nats.go refuses before sending it, a subject past maxSubjectBytes, a
 // KV key whose subject would be, or a CI record or settlement past the bound its store keeps below
-// those. Its error names the size and the bound.
+// those. Its error names the size and the bound, and for a message past the max payload the bytes
+// of headers nats.go counts beside it and the envelope those headers leave room for (refused).
 var ErrTooLarge error = refusal("too large to publish whole")
 
 // ErrInvalidSubject is the ErrRefused of a subject NATS does not accept: an empty one or one holding
@@ -1808,28 +1809,35 @@ func storedRefusal(err error) error {
 // ErrStreamLacksSubject is wrapped by the error of a stored publish the notifications stream did
 // not take because that stream, as the client last read it, carries no subject capturing the
 // publish's: a newer build's stream, which this build leaves as it is, dropped a subject this build
-// stores. The server's answer shows it, no stream answering the subject (nats.ErrNoStreamResponse)
-// or another stream that captures it refusing a send that named the notifications stream
-// (jsStreamNotMatch, expectNotificationsStream), and the error names the subject and the
-// generation of the stream the client read, so a caller tells this refusal from a bus that did not
-// answer. It is not an ErrRefused: the same publish is stored once a build that stores the subject
-// sets the stream, so a caller retries it as any other failure. The error still matches what the
-// server answered.
+// stores. The server's answer shows it, no stream answering the subject (nats.ErrNoStreamResponse
+// for a publish, nats.ErrNoResponders for a window's send, its Request and a forward) or another
+// stream that captures it refusing a send that named the notifications stream (jsStreamNotMatch,
+// expectNotificationsStream), and the error names the subject and the generation of the stream
+// the client read, so a caller tells this refusal from a bus that did not answer. Every stored
+// send of the bus names it so (lacksSubject): sendStored's, a window's two sends and its Request,
+// and a forward's Wait. Two such sends meet no such answer and keep their own error: one whose
+// subject a core subscriber holds, which the server hands the send to, so the send waits out its
+// bound; and one made while the client's last read is older than the change of the stream's
+// subjects. It is not an ErrRefused: the same publish is stored once a build that stores the
+// subject sets the stream, so a caller retries it as any other failure. The error still matches
+// what the server answered and what the send's own error said of it.
 var ErrStreamLacksSubject = errors.New("the notifications stream does not capture the subject")
 
 // jsStreamNotMatch is nats-server's code for a publish whose expected stream is not the stream
 // that captured it (JSStreamNotMatchErr). nats.go v1.53.1 names no constant for it.
 const jsStreamNotMatch = 10060
 
-// lacksSubject names err, the failure of a stored publish to subject, as the ErrStreamLacksSubject
-// it is when the server's answer says the notifications stream did not take the publish and the
-// deployed stream, as the client last read it, carries no subject capturing subject. Any other
-// failure it returns as it is: one the client cannot tie to the deployed subjects, as a stream
-// that went away after a read that still carried the subject, keeps the words of a bus that did
-// not answer.
+// lacksSubject names err, the failure of a stored send to subject, as the ErrStreamLacksSubject it
+// is when the server's answer says the notifications stream did not take the send - no stream
+// answered it (nats.ErrNoStreamResponse, nats.ErrNoResponders), or another stream refused it as not
+// the one it named (jsStreamNotMatch) - and the deployed stream, as the client last read it,
+// carries no subject capturing subject. Any other failure it returns as it is: one the client
+// cannot tie to the deployed subjects, as a stream that went away after a read that still carried
+// the subject, keeps the words of a bus that did not answer.
 func (c *Client) lacksSubject(subject string, err error) error {
 	var apiErr *nats.APIError
-	if !errors.Is(err, nats.ErrNoStreamResponse) && !(errors.As(err, &apiErr) && apiErr.ErrorCode == jsStreamNotMatch) {
+	if !errors.Is(err, nats.ErrNoStreamResponse) && !errors.Is(err, nats.ErrNoResponders) &&
+		!(errors.As(err, &apiErr) && apiErr.ErrorCode == jsStreamNotMatch) {
 		return err
 	}
 	deployed := c.deployed.Load()
@@ -1867,16 +1875,40 @@ func validSubject(subject string) bool {
 		!strings.Contains(subject, "..") && !strings.ContainsAny(subject, " \t\r\n")
 }
 
-// refused names nats.go's refusal of a message past the server's max payload as the ErrTooLarge it
-// is, naming its envelope of size bytes. checkSubject has already refused every subject nats.go
-// would.
-func (c *Client) refused(err error, size int) error {
-	if errors.Is(err, nats.ErrMaxPayload) {
-		conn := c.Connection()
-		return fmt.Errorf("%w: an envelope of %d bytes against the server's max payload of %d bytes",
-			ErrTooLarge, size, conn.MaxPayload())
+// refused names nats.go's refusal of msg, a message past the server's max payload, as the
+// ErrTooLarge it is. nats.go counts the message's headers with its data against that payload, so
+// the error names both and the envelope those headers leave room for: every stored send carries
+// headers (at least the Nats-Expected-Stream that names the notifications stream), and an error that
+// named the envelope alone would name a size under the max payload. A message without headers is
+// named by its envelope alone. checkSubject has already refused every subject nats.go would.
+func (c *Client) refused(err error, msg *nats.Msg) error {
+	if !errors.Is(err, nats.ErrMaxPayload) {
+		return err
 	}
-	return err
+	maxPayload := c.Connection().MaxPayload()
+	envelope, headers := len(msg.Data), headerBytes(msg.Header)
+	if headers == 0 {
+		return fmt.Errorf("%w: an envelope of %d bytes against the server's max payload of %d bytes", ErrTooLarge, envelope, maxPayload)
+	}
+	return fmt.Errorf("%w: an envelope of %d bytes with %d bytes of headers, %d bytes in all, against the server's max payload of %d bytes, which leaves %d bytes for the envelope",
+		ErrTooLarge, envelope, headers, envelope+headers, maxPayload, maxPayload-int64(headers))
+}
+
+// headerBytes is how many bytes nats.go v1.53.1 writes header as, the size it counts against the
+// server's max payload beside a message's data (Msg.headerBytes): the NATS/1.0 line, one
+// `key: value` line for each value, trimmed of the white space at its ends, and the blank line
+// that ends them, each line ending CRLF. A message without headers writes none.
+func headerBytes(header nats.Header) int {
+	if len(header) == 0 {
+		return 0
+	}
+	size := len("NATS/1.0\r\n") + len("\r\n")
+	for key, values := range header {
+		for _, value := range values {
+			size += len(key) + len(": ") + len(textproto.TrimString(value)) + len("\r\n")
+		}
+	}
+	return size
 }
 
 // publishBound bounds Publish and PublishReportingDuplicate, and the publishJetStream and
@@ -1982,9 +2014,10 @@ type StoredAck struct {
 // which publishJetStream describes (ErrTooLarge, ErrRefused, ErrPublishDenied, ErrStreamFull), and
 // ErrDuplicateInProcess while a clustered stream is still storing an earlier publish under the
 // same id; subject must be one the notifications stream captures, or the publish fails, as
-// ErrStreamLacksSubject where the stream the client last read leaves it out. A failure
-// after a send that nothing answered wraps ErrUnacknowledged, since the stream may hold the copy
-// (sendStored).
+// ErrStreamLacksSubject where the server answers that no stream took it, or that another stream
+// refused it, and the stream the client last read leaves the subject out (lacksSubject). A
+// failure after a send that nothing answered wraps ErrUnacknowledged, since the stream may hold
+// the copy, save a resend refused as ErrStreamLacksSubject (sendStored).
 func (c *Client) PublishStoredAck(ctx context.Context, subject string, item contracts.Envelope, msgID string) (StoredAck, error) {
 	if err := checkSubject(subject); err != nil {
 		return StoredAck{}, err
@@ -2068,8 +2101,12 @@ func (c *Client) publishJetStream(ctx context.Context, item contracts.Envelope) 
 // under which nats.go sends nothing (publishJetStream). Nor does a server's answer, a refusal (an
 // *nats.APIError, ErrStreamFull, ErrDuplicateInProcess) or no stream answering the subject
 // (nats.ErrNoStreamResponse), since the stream stored nothing, unless an earlier send of the same
-// call went unanswered: then the resend is what the server refused (sendStored). A denied publish
-// (ErrPublishDenied) never wraps it, since the grant that denied it denied every send of the call.
+// call went unanswered: then the resend is what the server refused (sendStored). The one answer
+// that speaks for the earlier send too is ErrStreamLacksSubject: the notifications stream, as the
+// client read it and as the server answered the resend, captures no subject of the message, and
+// the earlier send was the same message to the same stream, so neither stored it and the failure
+// does not wrap ErrUnacknowledged. A denied publish (ErrPublishDenied) never wraps it, since the
+// grant that denied it denied every send of the call.
 var ErrUnacknowledged = errors.New("the stream did not acknowledge the publish, so it may hold the message")
 
 // sendUnanswered reports whether err, from a JetStream publish handed to nats.go under a live
@@ -2098,15 +2135,15 @@ func unacknowledged(err error, mayHold bool) error {
 	return fmt.Errorf("%w: %w", ErrUnacknowledged, err)
 }
 
-// expectNotificationsStream is the publish option every JetStream send of the stored path carries
+// expectNotificationsStream is the publish option a window's JetStream sends carry
 // (nats.ExpectStream): it names the notifications stream, the one stream every session consumer
 // reads (SessionConsumers), as the stream whose acknowledgement the send takes. A newer build's
 // stream, which this build leaves as it is, can drop a subject this build stores, and then another
 // stream of the account may capture it: the server refuses the send there, since that stream is
 // not the one named (nats-server's JSStreamNotMatchErr), so it stores nothing and its answer is an
 // error, where its acknowledgement would read as a copy stored for a consumer that never reads it.
-// The core sends a stream stores, a window's Request and a forward (StartRequestStoredTo), name it
-// in the same header themselves (nats.ExpectedStreamHdr).
+// The other sends a stream stores, sendStored's, a window's Request and a forward
+// (StartRequestStoredTo), set the same header on their message themselves (nats.ExpectedStreamHdr).
 var expectNotificationsStream = nats.ExpectStream(Stream)
 
 // sendStored publishes data to subject on the notification stream under options, once more if the
@@ -2114,19 +2151,25 @@ var expectNotificationsStream = nats.ExpectStream(Stream)
 // ErrStreamFull, ErrDuplicateInProcess or ErrStreamLacksSubject it is. It is the one send of the
 // stored path: its callers (PublishStoredAck, publishStoredRaw) bound ctx, connected first and pass
 // nats.Context(ctx) among the options, so the acknowledgement wait ends with that bound. Each send
-// takes the notifications stream's acknowledgement alone (expectNotificationsStream), so a nil
-// error means that stream holds the copy.
+// takes the notifications stream's acknowledgement alone: the message carries the
+// Nats-Expected-Stream header that names it, as expectNotificationsStream would set it, so a nil
+// error means that stream holds the copy. The two sends share the one message, and nats.go adds
+// the headers the options ask for to it, so a refusal past the max payload counts every header
+// the send carried (refused).
 //
 // A failure after a send that may have reached the stream wraps ErrUnacknowledged: ctx was live
 // as the send was made, read just before it, and what came back was no answer (sendUnanswered).
 // Once one send of the call is such a send, every failure after it wraps it too, the resend's and
-// that of the reconnect before the resend, since the first send may have stored the message. The
-// resend's acknowledgement is Resent, since its Duplicate may name the copy the first send stored.
+// that of the reconnect before the resend, since the first send may have stored the message, save
+// a resend the server refused because the notifications stream captures no subject of the message
+// (ErrStreamLacksSubject): the first send went to that same stream, so it stored nothing either,
+// and the error says that alone. The resend's acknowledgement is Resent, since its Duplicate may
+// name the copy the first send stored.
 func (c *Client) sendStored(ctx context.Context, subject string, data []byte, options ...nats.PubOpt) (StoredAck, error) {
-	options = append(slices.Clip(options), expectNotificationsStream)
+	msg := &nats.Msg{Subject: subject, Data: data, Header: nats.Header{nats.ExpectedStreamHdr: []string{Stream}}}
 	sentAt := time.Now()
 	live := ctx.Err() == nil
-	ack, err := c.JS().Publish(subject, data, options...)
+	ack, err := c.JS().PublishMsg(msg, options...)
 	mayHold := live && sendUnanswered(err)
 	resent := false
 	if err != nil && errors.Is(err, nats.ErrConnectionClosed) {
@@ -2136,14 +2179,18 @@ func (c *Client) sendStored(ctx context.Context, subject string, data []byte, op
 		sentAt = time.Now()
 		resent = true
 		live = ctx.Err() == nil
-		ack, err = c.JS().Publish(subject, data, options...)
+		ack, err = c.JS().PublishMsg(msg, options...)
 		mayHold = mayHold || live && sendUnanswered(err)
 	}
 	if err != nil {
 		if denied := c.deniedPublish(subject, sentAt); denied != nil {
 			return StoredAck{}, denied
 		}
-		return StoredAck{}, unacknowledged(c.lacksSubject(subject, storedRefusal(c.refused(err, len(data)))), mayHold)
+		named := c.lacksSubject(subject, storedRefusal(c.refused(err, msg)))
+		if errors.Is(named, ErrStreamLacksSubject) {
+			return StoredAck{}, named
+		}
+		return StoredAck{}, unacknowledged(named, mayHold)
 	}
 	return StoredAck{Sequence: ack.Sequence, Duplicate: ack.Duplicate, Resent: resent}, nil
 }
@@ -2337,11 +2384,15 @@ func (c *Client) StartRequestStoredTo(subject string, item contracts.Envelope, m
 		_ = replies.Unsubscribe()
 		return nil, err
 	}
-	return &PendingForward{replies: replies, deadline: deadline, unconfirmed: err}, nil
+	return &PendingForward{client: c, subject: subject, replies: replies, deadline: deadline, unconfirmed: err}, nil
 }
 
 // PendingForward is a forward StartRequestStoredTo published, whose replies Wait reads.
 type PendingForward struct {
+	// client is the client that published the forward, to subject, whose last read of the
+	// deployed stream names a refusal for want of the subject (lacksSubject).
+	client  *Client
+	subject string
 	// replies is the forward's reply inbox, which the stream answers on.
 	replies  *nats.Subscription
 	deadline time.Time
@@ -2354,7 +2405,9 @@ type PendingForward struct {
 // ends, and releases its reply subscription. No acknowledgement by the deadline, the stream's
 // error answer, and the server's no-responders answer (nothing captured the subject) are each
 // ErrForwardNotStored, wrapping the reason and, when publishConfirmed could not confirm the
-// publish, the reason for that.
+// publish, the reason for that. The no-responders answer and another stream's refusal of a
+// subject the deployed stream, as the client last read it, leaves out are ErrStreamLacksSubject
+// too (lacksSubject), which every forward to that subject meets while the stream stays so.
 func (f *PendingForward) Wait() error {
 	defer f.replies.Unsubscribe()
 	for {
@@ -2369,7 +2422,7 @@ func (f *PendingForward) Wait() error {
 		if err != nil {
 			// The server's no-responders answer: nothing, not even a stream, took the forward.
 			if errors.Is(err, nats.ErrNoResponders) {
-				return fmt.Errorf("%w: %w", ErrForwardNotStored, err)
+				return f.client.lacksSubject(f.subject, fmt.Errorf("%w: %w", ErrForwardNotStored, err))
 			}
 			return err
 		}
@@ -2379,7 +2432,7 @@ func (f *PendingForward) Wait() error {
 		}
 		// The stream's error answer to the forward, which no later reply changes.
 		if ack.Error != nil {
-			return fmt.Errorf("%w: %w", ErrForwardNotStored, ack.Error)
+			return f.client.lacksSubject(f.subject, fmt.Errorf("%w: %w", ErrForwardNotStored, ack.Error))
 		}
 		return nil
 	}

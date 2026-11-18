@@ -1,0 +1,197 @@
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/internal/testnats"
+)
+
+// subjectsWithout is every subject this build carries except those that capture subject: the
+// stream a newer build leaves that dropped it.
+func subjectsWithout(t *testing.T, subject string) []string {
+	t.Helper()
+	var without []string
+	for _, carried := range bus.StreamCarriedSubjects() {
+		if !bus.SubjectContains(carried, subject) {
+			without = append(without, carried)
+		}
+	}
+	if len(without) == len(bus.StreamCarriedSubjects()) {
+		t.Fatalf("no subject this build carries captures %s", subject)
+	}
+	return without
+}
+
+// Each route of the listener whose answer a stored publish decides answers a publish the
+// notifications stream did not take because, as the listener read it, the deployed stream
+// captures no subject of the message's (bus.ErrStreamLacksSubject) at once: the 503 with
+// Retry-After: 1 whose body opens with streamLacksSubjectPrefix and names the subject and the
+// stream's generation, recorded stream_lacks_subject, with nothing stored. One row per route:
+//
+//   - the send route, over a stream that dropped the agent subject;
+//   - the publish route's role send to a live holder, whose forward goes to the holder's agent
+//     subject: one forward, not the forty a send makes over 4 s for a forward the stream did not
+//     acknowledge, since every attempt would meet the same refusal;
+//   - the publish route's role send to a role nobody claims, whose keep goes to the role's kept
+//     lane, over a stream that dropped that lane: not the 404 of a role nothing was kept for,
+//     since the keep failed for want of the subject and the sender learns that nothing stored the
+//     message and why;
+//   - the publish route's topic publish, whose topic the stream leaves out: refused 400 before
+//     anything is published (ReachesNoSession), as it was, since no session's consumer would hold
+//     it.
+//
+// The webhook routes' rows are internal/webhook's
+// (TestAWebhookDeliveryTheStreamLacksTheSubjectOfIsAnswered503NamingIt). The routes whose lanes
+// keep core NATS by design publish nothing stored, so no row of theirs is here: their answers are
+// TestEveryCoreLaneDeliversWhateverTheDeployedStreamCaptures's.
+func TestEveryRouteThatEndsInAStoredPublishAnswersAStreamThatLacksTheSubjectAtOnce(t *testing.T) {
+	type answer struct {
+		status     int
+		retryAfter string
+		body       string
+		record     map[string]any
+		elapsed    time.Duration
+	}
+	serve := func(t *testing.T, build func(*logging.Logger) http.HandlerFunc, request *http.Request) answer {
+		t.Helper()
+		started := time.Now()
+		recorder, record := serveRecorded(t, build, request)
+		var refusal apiError
+		_ = json.Unmarshal(recorder.Body.Bytes(), &refusal)
+		a := answer{status: recorder.Code, retryAfter: recorder.Header().Get("Retry-After"), body: refusal.Error, record: record, elapsed: time.Since(started)}
+		line, _ := json.Marshal(record)
+		t.Logf("status %d, Retry-After %q, after %s, body %s, record %s", a.status, a.retryAfter, a.elapsed, strings.TrimSpace(recorder.Body.String()), line)
+		return a
+	}
+	// lacks asserts the answer of a stored publish the stream lacks subject of.
+	lacks := func(t *testing.T, a answer, subject string) {
+		t.Helper()
+		if a.status != http.StatusServiceUnavailable || a.retryAfter != "1" {
+			t.Errorf("status %d, Retry-After %q; want 503 and 1", a.status, a.retryAfter)
+		}
+		if !strings.HasPrefix(a.body, streamLacksSubjectPrefix+": ") || !strings.Contains(a.body, fmt.Sprintf("%q", subject)) || !strings.Contains(a.body, "generation 1000000") {
+			t.Errorf("the refusal reads %q, want it to open with %q and name %s and generation 1000000", a.body, streamLacksSubjectPrefix, subject)
+		}
+		if a.record["outcome"] != string(outcomeStreamLacksSubject) || a.record["status"] != float64(http.StatusServiceUnavailable) {
+			t.Errorf("the record's outcome is %v with status %v, want %s and 503", a.record["outcome"], a.record["status"], outcomeStreamLacksSubject)
+		}
+	}
+	// connect deploys a newer build's stream of subjects on a server of the row's own and
+	// connects the listener's client to it, which leaves that stream as it is.
+	connect := func(t *testing.T, subjects []string) (*bus.Client, string) {
+		t.Helper()
+		url := testnats.URL(t)
+		deployNewerBuildsStreamOf(t, url, subjects)
+		client, err := bus.ConnectOwningStream([]string{url}, bus.WithReplicas(1))
+		if err != nil {
+			t.Fatalf("connect the listener: %v", err)
+		}
+		t.Cleanup(client.Close)
+		return client, url
+	}
+
+	t.Run("the send route", func(t *testing.T) {
+		const target = "ses_lacks_route_send"
+		subject := contracts.LegacyAgentSubject(target)
+		client, url := connect(t, subjectsWithout(t, subject))
+		rig := newKnownSessionRigOn(t, client, url)
+		if err := rig.deps.sessions.Put(target, session.SessionEntry{SelfSubscribed: true, MachineID: "test-machine", Delivery: session.DeliveryConsumer}); err != nil {
+			t.Fatalf("write the session entry of %s: %v", target, err)
+		}
+		a := serve(t, func(logger *logging.Logger) http.HandlerFunc { return sendHandler(rig.deps, logger) },
+			postJSON("/v1/messages/send", sendBody(map[string]any{"target_session": target, "source": "agent", "source_session": "ses_lacks_route_sender", "message": "are you there?"})))
+		lacks(t, a, subject)
+		if stored := storedOnStream(t, client, bus.Stream, subject); stored != 0 {
+			t.Errorf("the stream holds %d copies on %s, want none", stored, subject)
+		}
+	})
+
+	// publishRig is a publish route over client whose role forwards are counted.
+	publishRig := func(t *testing.T, client *bus.Client) (*listenerDeps, listenerDeliveryHarness, *atomic.Int32) {
+		t.Helper()
+		harness := newListenerDeliveryHarnessOn(t, client)
+		forwards := &atomic.Int32{}
+		config := harness.config
+		forward := config.forwardRole
+		config.forwardRole = func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
+			forwards.Add(1)
+			return forward(subject, item, msgID, timeout)
+		}
+		deps := harness.publishDeps(t)
+		deps.delivery = &config
+		return deps, harness, forwards
+	}
+	rolePublish := func(role string) *http.Request {
+		return postJSON("/v1/messages/publish", fmt.Sprintf(`{"topic":%q,"message":"role event","source":"agent"}`, contracts.RoleTopicPrefix+role))
+	}
+
+	t.Run("the publish route's role send to a live holder", func(t *testing.T) {
+		const (
+			role   = "lacks-route-forward"
+			holder = "ses_lacks_route_holder"
+		)
+		subject := contracts.LegacyAgentSubject(holder)
+		client, _ := connect(t, subjectsWithout(t, subject))
+		deps, harness, forwards := publishRig(t, client)
+		if err := harness.sessions.Put(holder, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true}); err != nil {
+			t.Fatalf("register the holder: %v", err)
+		}
+		claim := httptest.NewRecorder()
+		roleSetHandler(&listenerDeps{registry: harness.registry, sessions: harness.sessions, delivery: &harness.config}, "test-machine", logging.New("test")).ServeHTTP(claim,
+			postJSON("/v1/roles/set", fmt.Sprintf(`{"session_id":%q,"role":%q}`, holder, role)))
+		if claim.Code != http.StatusOK {
+			t.Fatalf("claim %s for %s: status %d, body %s", role, holder, claim.Code, claim.Body.String())
+		}
+		a := serve(t, func(logger *logging.Logger) http.HandlerFunc { return publishHandler(deps, logger) }, rolePublish(role))
+		lacks(t, a, subject)
+		if got := forwards.Load(); got != 1 {
+			t.Errorf("the send made %d forwards, want 1: a forward to a subject the stream does not capture is refused the same way every time", got)
+		}
+		if a.elapsed >= publishDeliveryWindow {
+			t.Errorf("the send was answered after %s, its whole window of %s", a.elapsed, publishDeliveryWindow)
+		}
+		if stored := storedOnStream(t, client, bus.Stream, subject); stored != 0 {
+			t.Errorf("the stream holds %d copies on %s, want none", stored, subject)
+		}
+	})
+
+	t.Run("the publish route's role send kept for a role nobody claims", func(t *testing.T) {
+		const role = "lacks-route-keep"
+		subject := bus.KeptRoleSubject(role)
+		client, _ := connect(t, subjectsWithout(t, subject))
+		deps, _, forwards := publishRig(t, client)
+		a := serve(t, func(logger *logging.Logger) http.HandlerFunc { return publishHandler(deps, logger) }, rolePublish(role))
+		lacks(t, a, subject)
+		if got := forwards.Load(); got != 0 {
+			t.Errorf("the send made %d forwards to a role nobody claims, want none", got)
+		}
+		if stored := storedOnStream(t, client, bus.Stream, subject); stored != 0 {
+			t.Errorf("the stream holds %d copies on %s, want none", stored, subject)
+		}
+	})
+
+	t.Run("the publish route's topic publish, refused before the publish", func(t *testing.T) {
+		const topic = "notifications.github.acme.widgets.push.branch.main"
+		client, _ := connect(t, subjectsWithout(t, topic))
+		deps, _, _ := publishRig(t, client)
+		a := serve(t, func(logger *logging.Logger) http.HandlerFunc { return publishHandler(deps, logger) },
+			postJSON("/v1/messages/publish", fmt.Sprintf(`{"topic":%q,"message":"a push","source":"agent"}`, topic)))
+		if a.status != http.StatusBadRequest || !strings.Contains(a.body, "no stream subject captures "+topic) || a.record["outcome"] != string(outcomeInvalidRequest) {
+			t.Errorf("status %d, body %q, outcome %v; want the 400 that names the topic no stream subject captures, recorded invalid_request", a.status, a.body, a.record["outcome"])
+		}
+		if stored := storedOnStream(t, client, bus.Stream, topic); stored != 0 {
+			t.Errorf("the stream holds %d copies on %s, want none", stored, topic)
+		}
+	})
+}

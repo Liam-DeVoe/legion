@@ -94,7 +94,7 @@ requires a bearer checks no `Host`.
 | `/v1/legion/agents/roles/{role_token}` | GET | `{"entries":[…]}`: a role token's sessions, newest first (the first is the current holder), `[]` when none |
 | `/v1/legion/agents` | GET/PUT | GET `?issue={KEY}`: an issue's sessions by role in workflow order, then newest first, `[]` when none. PUT: a batch of at most 256 entries and 1 MiB, every entry validated before the first write (400 naming the bad entry's index); a batch that fails after that names how many were written (`written`) with the failed entry's own status, a 503 to retry for a write the bucket did not answer. Every read comes from the bucket itself, never a cache |
 | `/v1/messages/send` | POST | Send a direct agent-to-agent message. The target is read from the session store itself, and a session the store holds no entry within the gone horizon for is looked up in the known-session store (every session that registered in the last 30 days): `200` with `state` `connected` or `stopped` stores the message, a `409` refuses a stopped target the request asked `connected_only` of, and a 404 means neither store knows the session; a store read or a publish the bus did not answer is a 503 with `Retry-After: 1` (see “Send and publish answers” below). |
-| `/v1/messages/publish` | POST | Publish an event. Required `message` becomes the human `payload_summary`; optional `payload` is distinct machine data in `payload`. A topic the stream captures is answered once JetStream stored it, bounded to five seconds; `notifications.team.<name>` is such a topic, and each session that follows it reads the stored copy from its own consumer. A role topic is forwarded to its live holder's agent subject and answered once the stream stored that forward, or with a 504 after four seconds (see "Role delivery and exceptions"). Any other `notifications.` topic no stream subject captures is refused `400` by name, since no session would receive it. A publish of a captured topic the bus did not serve, and a role-holder read at a role send's first resolution that did not answer, are both the 503 below rather than a 500. |
+| `/v1/messages/publish` | POST | Publish an event. Required `message` becomes the human `payload_summary`; optional `payload` is distinct machine data in `payload`. A topic the stream captures is answered once JetStream stored it, bounded to five seconds; `notifications.team.<name>` is such a topic, and each session that follows it reads the stored copy from its own consumer. A role topic is forwarded to its live holder's agent subject and answered once the stream stored that forward, or with a 504 after four seconds, or at once with the 503 of a stream that does not capture the holder's subject (see "Role delivery and exceptions"). Any other `notifications.` topic no stream subject captures is refused `400` by name, since no session would receive it. A publish of a captured topic the bus did not serve, and a role-holder read at a role send's first resolution that did not answer, are both the 503 below rather than a 500. |
 | `/healthz` | GET | Health check (always available, even during startup); its bus checks answer within 3 s, and a rebuild of the KV watches that has not succeeded for a minute after a reconnect is `200 degraded` naming the `KV watch rebuild` - not a refusal, which would take the probes' only listener out and replace it with one that rebuilds into the same failure on empty caches, so the state pages through the `<N>-reconnect-hooks-stalled` alarm instead - while a rebuild that fails and is run again under that minute leaves the answer it had (see “Webhook and health check bounds” below). The healthy answer, and every degraded one that keeps its fields, carries `role_claim_repair`: `completed_at` (RFC 3339, UTC) and `age_seconds` of the role claim watcher's last whole read of the role bucket, both `null` before one completes, `bound_seconds` (120, `store.RoleClaimRepairBound`), and `put_back` and `took_out`, the claims that read put back into the copy and took out of it. A read older than the bound is `200 degraded` naming `role claim repair unavailable`, never `503`, and `GET /v1/sessions` still answers `200` from the copy then |
 
 ## Session state
@@ -174,11 +174,12 @@ attempt:
 | Neither store knows the session (no entry within the gone horizon and no record, which also covers a session id no session can register under) | `404 {"error":"no live session <id>"}` |
 | The store read did not answer (its second ran out, or the read failed any other way) | `503 {"error":"envoy: the message bus did not answer: <reason>"}` with `Retry-After: 1` |
 | The target's entry, or for a target with no entry its known-session record when that record carries capabilities, does not advertise the frame's `delivery.mode`, or that mode cannot be read unambiguously | `403` naming the session, and the mode when it could be read |
-| The publish is refused as too large (`bus.ErrTooLarge`) | `413` naming the size against the server's max payload |
+| The publish is refused as too large (`bus.ErrTooLarge`) | `413` naming the size, the bytes of headers nats.go counts beside it, the server's max payload, and the size those headers leave for the envelope |
 | The publish is refused for its subject or key (`bus.ErrRefused`) | `400` naming the refusal, with no `Retry-After` |
 | The stream refuses the publish because it holds its byte limit (`bus.ErrStreamFull`) | `503 {"error":"envoy: the message bus refused the message because its stream is full: <reason>"}` with `Retry-After: 1`, recorded `stream_full` |
 | The server denies the publish under this listener's own grant (`bus.ErrPublishDenied`) | `403 {"error":"envoy: the message bus denied the publish under this listener's own permissions: <reason>"}` with no `Retry-After`, recorded `publish_denied` (below) |
-| Any other publish failure | `503` with the same prefix and `Retry-After: 1`, carrying the bus's own reason |
+| The server answers that no stream took the publish, or that a stream other than `ENVOY_NOTIFICATIONS` refused it, and the listener's last read of the deployed stream captures no subject of the target's (`bus.ErrStreamLacksSubject`: a newer build's stream that dropped it) | `503 {"error":"envoy: the message bus stored nothing: <reason>"}` with `Retry-After: 1`, recorded `stream_lacks_subject`, with nothing stored; the reason names the subject and the stream's generation |
+| Any other publish failure | `503` with the bus-unavailable prefix and `Retry-After: 1`, carrying the bus's own reason; among them a publish whose subject a core subscriber holds, which waits out the budget, and one made while the listener's last read is older than the change of the stream's subjects |
 | Before the store read, the sending agent session's count under the operator's sender limit holds no message (below) | `429` with `Retry-After`, recorded `sender_rate_limited`, with nothing read, reported or stored |
 
 A target whose entry the store holds within the gone horizon is resolved whatever its state, so a
@@ -199,11 +200,13 @@ inside the same 3.5 s budget, and one the budget runs out on is that 503 too, na
 did not answer. Its 413, its 400s and its 403 for a denied publish are unchanged. Its role 404s
 (`unclaimed`, `holder_lapsed`) keep their bodies, and a role send gives one only when the listener
 kept nothing: the request sent `keep: false`; the role's token is one `roles.Valid` refuses, which
-no claim can ever name; or the keep itself failed. A role send whose message the listener kept
+no claim can ever name; or the keep itself failed, save a keep the stream did not take for want
+of the role's kept-lane subject (`bus.ErrStreamLacksSubject`), which is the table's
+`stream_lacks_subject` 503 instead. A role send whose message the listener kept
 answers `202` instead, both for a role nobody claims and for a claim whose holder is not live. A
 role topic's send then runs on
-within its own 4 s and answers its 200, 202, 403 `capability` or 504 as "Role delivery and
-exceptions" says.
+within its own 4 s and answers its 200, 202, 403 `capability`, 504 or the `stream_lacks_subject`
+503 as "Role delivery and exceptions" says.
 
 A publish the server denies under this listener's own grant (`bus.ErrPublishDenied`) is the
 table's `403` on either route. A publish on either transport can be denied this way: a core
@@ -309,7 +312,8 @@ Each inbound send and publish is recorded in one line, INFO when accepted and WA
 `listener send` (`target_session`) and `listener publish` (`topic`), both carrying `event_id`,
 `source`, `source_session`, `payload_summary`, `outcome` and `status`, and `holder` as well when a
 role topic resolved one. `outcome` is one of `accepted`, `invalid_request`, `too_large`,
-`bus_unavailable`, `stream_full` and `sender_rate_limited`, plus `no_live_session` for send,
+`bus_unavailable`, `stream_full`, `stream_lacks_subject` and `sender_rate_limited`, plus
+`no_live_session` for send,
 `session_stopped` for a
 `connected_only` send whose target is stopped, `capability_refused` for send and a role send,
 `publish_denied` for send and publish alike, since a publish on either transport can be denied,
@@ -414,7 +418,9 @@ gone horizon, `gone` past it) and its `last_seen`. Such a claim stands: the publ
 forwarded to its holder, nothing releases the claim, and an `unresponsive` holder is not dead, so
 the sender starts no replacement for it. It answers `404` with `reason` `unclaimed` or
 `holder_lapsed` when no live session holds the role and nothing was kept: the sender asked for
-that with `keep: false`, or the keep was refused or failed. A `holder_lapsed` 404 names the same
+that with `keep: false`, or the keep was refused or failed, save a keep the stream did not take
+for want of the role's kept-lane subject, which is the `stream_lacks_subject` 503 of "Send and
+publish answers". A `holder_lapsed` 404 names the same
 holder fields and `claim_released: false`. Also the 503 or 500 `GET /v1/roles/<role>` gives when
 its first resolution of
 the holder, within 3.5 s of the request's arrival, fails (see "Send and publish answers"); `403`
@@ -425,7 +431,11 @@ above. That reason is always `delivery_failed`, the one 504 reason the route giv
 is not known to have been stored for its holder (no live holder to forward to, a holder lookup
 that failed or ran out of time, a publish or flush to the server that failed or timed out, or the
 stream did not acknowledge storing the forward,
-`bus.ErrForwardNotStored`). The route publishes no exception: its sender has the answer.
+`bus.ErrForwardNotStored`). A forward the stream did not take because, as the listener last read
+it, the stream captures no subject of the holder's (`bus.ErrStreamLacksSubject`) ends the send at
+once instead, after that one forward, with the `stream_lacks_subject` 503 of "Send and publish
+answers": every later attempt would meet the same refusal. The route publishes no exception: its
+sender has the answer.
 
 The listener keeps a role message on a stored subject of its own,
 `notifications.envoy.kept.role.<role>`. No session may register that subject, and no consumer of

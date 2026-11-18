@@ -4,12 +4,10 @@
 package main
 
 import (
-	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
 
-	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/roles"
@@ -135,29 +133,14 @@ func (rec *requestRecord) refuseWith(w http.ResponseWriter, status int, outcome 
 	rec.write(status, outcome)
 }
 
-// refuseBusUnavailable answers a bus that did not serve the request and records the outcome the
-// status it wrote implies: 413 is the caller's own oversized message, 400 the subject or key NATS
-// will not take however often it is sent, 403 the publish this listener's own grant denies, and
-// anything else the bus not answering. The status is read back from the write rather than
-// classified a second time here, so the pair cannot drift, with two exceptions: a full stream
-// (bus.ErrStreamFull) and a stream that does not capture the subject (bus.ErrStreamLacksSubject)
-// share their 503 with the bus not answering, so the error tells them apart.
+// refuseBusUnavailable answers a bus that did not serve the request and records the outcome of the
+// answer it wrote: 413 is the caller's own oversized message, 400 the subject or key NATS will not
+// take however often it is sent, 403 the publish this listener's own grant denies, a full stream
+// and a stream that does not capture the subject their own 503s, and anything else the bus not
+// answering. Both come from writeBusUnavailable, which decides the answer and its outcome in one
+// place, so the error is classified once and the record cannot drift from the answer.
 func (rec *requestRecord) refuseBusUnavailable(w http.ResponseWriter, err error) {
-	status := writeBusUnavailable(w, err)
-	outcome := outcomeBusUnavailable
-	switch {
-	case errors.Is(err, bus.ErrStreamFull):
-		outcome = outcomeStreamFull
-	case errors.Is(err, bus.ErrStreamLacksSubject):
-		outcome = outcomeStreamLacksSubject
-	case status == http.StatusRequestEntityTooLarge:
-		outcome = outcomeTooLarge
-	case status == http.StatusBadRequest:
-		outcome = outcomeInvalidRequest
-	case status == http.StatusForbidden:
-		outcome = outcomePublishDenied
-	}
-	rec.write(status, outcome)
+	rec.write(writeBusUnavailable(w, err))
 }
 
 // refuseRoleClaimUnreadable answers a publish whose role claim record cannot be decoded

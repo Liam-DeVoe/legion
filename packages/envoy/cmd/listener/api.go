@@ -419,9 +419,13 @@ const grantGuardPrefix = "envoy: the role grant guard refused the claim because 
 // drift apart. Retry-After is set only where retrying can help: every member of bus.ErrRefused -
 // a refusal NATS repeats however often the same bytes are sent - is answered by writeNATSError as
 // what it is, bus.ErrTooLarge as the 413 and bus.ErrInvalidSubject and bus.ErrInvalidKey as the
-// 400, so this one guard keeps the header off every bus.ErrRefused and off nothing else. The
-// status writeNATSError settled on is passed back for the record's sake, as that function's own
-// comment explains.
+// 400, so this one guard keeps the header off every bus.ErrRefused and off nothing else.
+//
+// It returns the status it wrote and the outcome a request record names that answer by, both
+// decided here in one place: a route that records its answer (requestRecord.refuseBusUnavailable,
+// request_record.go) writes the pair this returns and classifies the error no second time, so
+// the answer and the record cannot drift apart. The 413 and the 400 are writeNATSError's, and
+// the status it settled on is the outcome's too.
 //
 // A publish the server denied (bus.ErrPublishDenied) is answered ahead of both, because it is
 // neither. bus.ErrRefused has exactly three members (internal/bus/nats.go): bus.ErrTooLarge,
@@ -442,25 +446,31 @@ const grantGuardPrefix = "envoy: the role grant guard refused the claim because 
 // answered, so the body must not say it did not, but the same message is taken once the stream
 // has room, so the caller's retry is right. A message the stream does not capture the subject of
 // (bus.ErrStreamLacksSubject) is answered the same way under streamLacksSubjectPrefix.
-func writeBusUnavailable(w http.ResponseWriter, err error) int {
-	if errors.Is(err, bus.ErrPublishDenied) {
+func writeBusUnavailable(w http.ResponseWriter, err error) (int, requestOutcome) {
+	switch {
+	case errors.Is(err, bus.ErrPublishDenied):
 		writeJSONError(w, http.StatusForbidden, fmt.Sprintf("%s: %s", publishDeniedPrefix, err))
-		return http.StatusForbidden
-	}
-	if errors.Is(err, bus.ErrStreamFull) {
+		return http.StatusForbidden, outcomePublishDenied
+	case errors.Is(err, bus.ErrStreamFull):
 		w.Header().Set("Retry-After", "1")
 		writeJSONError(w, http.StatusServiceUnavailable, fmt.Sprintf("%s: %s", streamFullPrefix, err))
-		return http.StatusServiceUnavailable
-	}
-	if errors.Is(err, bus.ErrStreamLacksSubject) {
+		return http.StatusServiceUnavailable, outcomeStreamFull
+	case errors.Is(err, bus.ErrStreamLacksSubject):
 		w.Header().Set("Retry-After", "1")
 		writeJSONError(w, http.StatusServiceUnavailable, fmt.Sprintf("%s: %s", streamLacksSubjectPrefix, err))
-		return http.StatusServiceUnavailable
+		return http.StatusServiceUnavailable, outcomeStreamLacksSubject
 	}
 	if !errors.Is(err, bus.ErrRefused) {
 		w.Header().Set("Retry-After", "1")
 	}
-	return writeNATSError(w, err, http.StatusServiceUnavailable, fmt.Sprintf("%s: %s", busUnansweredPrefix, err))
+	switch status := writeNATSError(w, err, http.StatusServiceUnavailable, fmt.Sprintf("%s: %s", busUnansweredPrefix, err)); status {
+	case http.StatusRequestEntityTooLarge:
+		return status, outcomeTooLarge
+	case http.StatusBadRequest:
+		return status, outcomeInvalidRequest
+	default:
+		return status, outcomeBusUnavailable
+	}
 }
 
 // writeGrantGuardRefusal answers a soft claim the grant guard refused (roleGrantGuarded) as the
@@ -829,9 +839,15 @@ const senderStampReadTimeout = 1 * time.Second
 // bus.Client.PublishAckWithin keeps on JetStream whatever the deployed stream captures, and no
 // other stream's acknowledgement counts, so a stopped answer means the message waits in the
 // stream for the session. A publish the stream did not acknowledge is the bus's 503, which asks
-// the sender to send the message again; where the deployed stream captures no subject of the
-// target's, such as a newer build's that dropped it, nothing is stored, and the 503 names the
-// subject the stream leaves out (streamLacksSubjectPrefix).
+// the sender to send the message again. Where the server answers that no stream took the publish,
+// or that a stream other than the notifications stream refused it, and the client's last read of
+// the deployed stream leaves the target's subject out (a newer build's stream that dropped it),
+// nothing is stored and the 503 names that subject and the stream's generation
+// (streamLacksSubjectPrefix). Two sends over such a stream keep the words of a bus that did not
+// answer: one whose subject a core subscriber holds, since that subscriber is handed the publish,
+// so no answer that nothing took it comes and the publish waits out its budget; and one made
+// while the client's last read is older than the change of the stream's subjects, which it reads
+// again every minute.
 //
 // The entry is read from the session store itself and not merely from this listener's cache of
 // it: only the store's word that the key is gone can make a record-based stopped answer or a 404,

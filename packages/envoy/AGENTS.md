@@ -4592,9 +4592,20 @@ A read-only broker token carries no project either, but none of the three checks
   A stream stamped with a higher generation was set by a newer build and is left exactly as it is, by a start (`ensureStreamWithConfig`) and by the keeper (`keepStream`), so while two builds run during a release the older one never reverts what the newer one set;
   a change to the stream's subjects, age, duplicate window or discard takes a new generation and a new row in `TestTheStreamConfigEqualsItsGenerationsPinnedRow`.
   A client that owns no stream reads the deployed stream's subjects at connect and again every `streamSubjectsRefresh`, so it publishes each topic on the transport the deployed stream calls for (`bus.Client.UsesCoreTransport`), and a topic under a subject only the newer build adds takes JetStream from the older build too; a test decides when a client reads them again (`bus.WithStreamSubjectsReads`).
-  A topic under a subject this build compiles keeps JetStream even where a newer build's stream has dropped that subject: its publish then fails as `bus.ErrStreamLacksSubject`, which names the subject and the generation of the stream the client read, and the listener's send answers that failure with a 503 and `Retry-After: 1` under its own words (`envoy: the message bus stored nothing`) and a `stream_lacks_subject` record, rather than succeed over core NATS with no copy kept for any session's consumer (`TestASendIsAnsweredOnlyOnceTheStreamHoldsIt`).
+  A topic under a subject this build compiles keeps JetStream even where a newer build's stream has dropped that subject, so its publish fails rather than succeed over core NATS with no copy kept for any session's consumer (`TestASendIsAnsweredOnlyOnceTheStreamHoldsIt`).
+  Where the server answers that no stream took the publish, or that a stream other than `ENVOY_NOTIFICATIONS` refused it, and the client's last read of the deployed stream leaves the subject out, the failure is `bus.ErrStreamLacksSubject`, which names the subject and the generation of the stream the client read.
+  Every stored send of the bus names it so: a publish, a cursor write, a window's two sends and its request, and a forward's wait (`TestEveryStoredPublishTheDeployedStreamLeavesOutIsNamedErrStreamLacksSubjectAtOnce`);
+  a resend refused so says the stream stored nothing, not that it may hold the message, since the first send went to the same stream (`bus.ErrUnacknowledged`).
+  Each listener route whose answer such a publish decides answers it at once with a 503, and with nothing stored (`TestEveryRouteThatEndsInAStoredPublishAnswersAStreamThatLacksTheSubjectAtOnce`):
+  the send route, and the publish route's role send, for its forward and for its keep, with `Retry-After: 1` under the route's own words (`envoy: the message bus stored nothing`) and a `stream_lacks_subject` record;
+  the webhook routes with the error itself as their answer (`TestAWebhookDeliveryTheStreamLacksTheSubjectOfIsAnswered503NamingIt`).
+  The publish route answers a topic publish whose topic the deployed stream leaves out with its `400` before it publishes ("Listener API").
+  Two such publishes meet no such answer and keep the words of a bus that did not answer: one whose subject a core subscriber holds, which the server hands the publish to, so it waits out its bound;
+  and one made while the client's last read is older than the change of the stream's subjects, which it reads again every `streamSubjectsRefresh`.
   Whether such a topic reaches a session is still judged on the deployed subjects alone (`bus.Client.ReachesNoSession`), so a registration leaves it out as its consumer filter does.
-  Every stored send names `ENVOY_NOTIFICATIONS` as the stream whose acknowledgement it takes (`nats.ExpectStream`, or the `Nats-Expected-Stream` header on a window's request and on a forward), so another stream that captures a subject the notifications stream dropped refuses the send rather than store a copy no session consumer reads (`TestEveryStoredPublishIsStoredOnlyByTheNotificationsStream`).
+  Every stored send names `ENVOY_NOTIFICATIONS` as the stream whose acknowledgement it takes (`nats.ExpectStream` on a window's JetStream sends, and the `Nats-Expected-Stream` header on every other stored send), so another stream that captures a subject the notifications stream dropped refuses the send rather than store a copy no session consumer reads (`TestEveryStoredPublishIsStoredOnlyByTheNotificationsStream`).
+  A newer stream that takes the agent subject through a source from another stream is refused the same way, with no copy stored anywhere.
+  The header is 43 bytes on the wire, 55 with the header block for a message that had no header, and nats.go counts headers against the server's max payload, so the largest envelope a stored send takes is the max payload less its header bytes (`bus.Client.refused` names both, `TestAStoredSendThatFillsTheMaxPayloadWithItsHeadersIsStoredAndOneByteMoreNamesThatLimit`).
 
 - The same reconcile keeps `ENVOY_NOTIFICATIONS`'s metadata as deployed, since `UpdateStream` writes the whole configuration and would otherwise drop it, and sets `envoy_stream_id` (`bus.StreamIDMetadataKey`) once:
   a fresh random id on a stream the start creates, and, on a deployed stream without one, an id derived from the stream's name and the Created time `STREAM.INFO` answers.
@@ -4690,6 +4701,7 @@ Each item below names an endpoint and its method, then its contract, and an item
   — sends this route to the known-session store, while a read that did not answer is the `503 {"error":"envoy: the message bus did not answer: <reason>"}` with `Retry-After: 1` that asks the sender to try the same route again.
   The `404 {"error":"no live session <id>"}` a sender routes around the pane on is answered only when neither store knows the id.
   The target read, the sender stamp, the connection probe and the publish share one 3.5 s budget (`sendRequestBudget`) taken from the request's own context, so a bus this listener cannot reach is answered inside the caller's attempt instead of spending it, and a publish the bus did not serve is that same 503.
+  A publish the notifications stream did not take because, as the listener last read it, the deployed stream captures no subject of the target's (`bus.ErrStreamLacksSubject`, under the condition "Operational notes" gives) is `503 {"error":"envoy: the message bus stored nothing: <reason>"}` with `Retry-After: 1` instead, recorded `outcome=stream_lacks_subject`, with nothing stored.
   The envelope's `sender` (on this route and the publish route alike) is stamped from the sender's interest record (`senderStamp`), whose cache miss is read through to the `envoy_interests` bucket within `senderStampReadTimeout` (1 s) of the same budget:
   the stamp is only enrichment, so a read that does not answer leaves it the session id and the title this listener's session cache holds, and the publish that follows meets the silent bus itself and answers that 503.
   Its `machine` and `cwd` are the interest row's, which the session's latest registration wrote, so they name the listener the session is registered through now and the directory that registration sent (dispatch://INFRA-889;
@@ -4795,7 +4807,7 @@ Each item below names an endpoint and its method, then its contract, and an item
   It answers `404 {"error":…,"reason":"unclaimed","claim_revision":0}` for a role with no claim nothing was kept for, or `reason: "holder_lapsed"` for a lapsed claim nothing was kept for, with the `holder`, its `holder_state` (`unresponsive` inside the gone horizon, `gone` past it), `claim_released: false`, since nothing here releases a claim, a `last_seen` whenever the listener can still name one (`session.LastSeenMemory`, 2 hours), and the `claim_revision` of the claim that still stands, which a conditional claim takes as its `if_claim_revision`.
   A later attempt that finds the role unclaimed is answered as the first resolution answers an unclaimed role, the claim being gone.
   A later attempt never answers `holder_lapsed`: a holder it finds past the live window keeps its claim and fails that attempt alone.
-  Three cases keep nothing and are answered 404: the request sent `keep: false`; the role's token is one `roles.PatternString` refuses (`roles.Valid`), which no claim can ever name; or the keep itself failed.
+  Three cases keep nothing and are answered 404: the request sent `keep: false`; the role's token is one `roles.PatternString` refuses (`roles.Valid`), which no claim can ever name; or the keep itself failed, save a keep the notifications stream did not take because, as the listener last read it, the stream captures no subject of the role's kept lane (`bus.ErrStreamLacksSubject`), which is the `503` of that refusal below.
 
 - A role topic's refusals, each keeping nothing.
   It answers `403 {"error":…,"reason":"capability","holder":…}`, forwarding nothing, when the holder does not advertise the payload's delivery mode or the mode cannot be read unambiguously, as `/v1/messages/send` refuses it.
@@ -4804,6 +4816,8 @@ Each item below names an endpoint and its method, then its contract, and an item
   It keeps nothing, since keeping is the answer of the two give-up branches above, which answer 202.
   There is no `receipt_timeout` reason any more: no holder answers a receipt (`startRoleForward`), so every failed forward is `delivery_failed`.
   `holder` is the holder last resolved, empty when none was, and `attempts` counts the forwards, every one the same envelope.
+  A forward the notifications stream did not take because, as the listener last read it, the stream captures no subject of the holder's (`bus.ErrStreamLacksSubject`) ends the send at once, after that one forward, with `503 {"error":"envoy: the message bus stored nothing: <reason>"}` and `Retry-After: 1`, recorded `stream_lacks_subject`: every later attempt would forward to a subject the stream does not capture.
+  A keep that failed the same way is that `503` too, with nothing kept.
   A session that stopped without unregistering stays registered until its registration lapses, 5 minutes after its last heartbeat, and a role send to it in that time is answered 200 all the same:
   the forward the stream stored waits in that session's consumer.
 
@@ -4817,8 +4831,8 @@ Each item below names an endpoint and its method, then its contract, and an item
   the publish goes ahead), and the JetStream path relies on nats.go's own check instead, whose request returns the context's error before it sends anything;
   a topic the stream captures answers it as that 503.
   Every answer is written with the route's one `listener publish` record line (`requestRecord`, `request_record.go`), its `outcome` naming it:
-  `accepted` (the kept 202 among them), `invalid_request`, `too_large`, `bus_unavailable`, `publish_denied`, `role_unclaimed`, `role_lapsed`, `role_claim_unreadable`, `capability_refused`, `delivery_failed`, `stream_full` or `sender_rate_limited` (the `429` of "Sender limit" above).
-  A message NATS cannot take whole is a 413 naming its size against the server's max payload, and a topic NATS does not accept (one holding whitespace or an empty token) a 400.
+  `accepted` (the kept 202 among them), `invalid_request`, `too_large`, `bus_unavailable`, `publish_denied`, `role_unclaimed`, `role_lapsed`, `role_claim_unreadable`, `capability_refused`, `delivery_failed`, `stream_full`, `stream_lacks_subject` or `sender_rate_limited` (the `429` of "Sender limit" above).
+  A message NATS cannot take whole is a 413 naming its size, the bytes of headers nats.go counts beside it, the server's max payload and the size those headers leave for the envelope, and a topic NATS does not accept (one holding whitespace or an empty token) a 400.
 
 - `/v1/roles/<role>` (GET)
 
@@ -5902,7 +5916,7 @@ a token the issuer never signed, one naming a key id the issuer publishes nothin
   What NATS still refuses however often it is sent is refused (`bus.ErrRefused`):
   an envelope past the server's max payload or a subject past the server's 4 KiB protocol line, over which the server would close the listener's connection (`bus.ErrTooLarge`, naming the size), or a subject holding whitespace or an empty token, which no stream matches (`bus.ErrInvalidSubject`).
   The webhook is answered 422, which Dispatch's redelivery sweep asks for again like any failed delivery, until GitHub records it `OK` or 72 hours after its first failed attempt, and logged `<source> publish refused` (or `github ci record refused`);
-  any other failure stays a 503 logged `<source> publish failed`.
+  any other failure stays a 503 logged `<source> publish failed`, answered `service unavailable`, save a publish the notifications stream did not take because, as the listener last read it, the deployed stream captures no subject of the envelope's (`bus.ErrStreamLacksSubject`), whose 503 is answered with that error, naming the subject and the stream's generation.
   A GitHub delivery logs that line at its first failure in a listener process only:
   a redelivery carries the same `X-GitHub-Delivery`, and each later failure of it the same way logs `redelivery <delivery>: <action> refused` (or `failed`), which the `webhook-refused` and `publish-failure` alarms do not count (`failedDeliveries`:
   the newest 4,096 deliveries, each for 72 hours).

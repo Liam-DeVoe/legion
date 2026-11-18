@@ -30,47 +30,7 @@ const anotherProgramsStream = "ANOTHER_PROGRAMS_STREAM"
 // subject: nil and one copy each, so an error in the second run is the other stream's doing and not
 // the row's.
 func TestEveryStoredPublishIsStoredOnlyByTheNotificationsStream(t *testing.T) {
-	envelope := func(subject string) contracts.Envelope {
-		return contracts.Envelope{
-			EventID:   "evt-" + subject,
-			Source:    "agent",
-			Topic:     subject,
-			DedupeKey: "agent.stored." + subject,
-			IssuedAt:  contracts.NowMillis(),
-		}
-	}
-	publishes := []struct {
-		name    string
-		publish func(c *Client, subject string) error
-	}{
-		{"Publish", func(c *Client, subject string) error {
-			return c.Publish(envelope(subject))
-		}},
-		{"PublishStoredAck", func(c *Client, subject string) error {
-			_, err := c.PublishStoredAck(context.Background(), subject, envelope(subject), "stored-ack."+subject)
-			return err
-		}},
-		{"PublishCursorAt", func(c *Client, subject string) error {
-			_, err := c.PublishCursorAt(context.Background(), subject, []byte(`{"cursor":1}`), 0)
-			return err
-		}},
-		{"a window's PublishAsync", func(c *Client, subject string) error {
-			return <-c.WindowUntil(nil).PublishAsync(envelope(subject))
-		}},
-		{"a window's PublishStoredAsync", func(c *Client, subject string) error {
-			return <-c.WindowUntil(nil).PublishStoredAsync(subject, envelope(subject), "stored-async."+subject)
-		}},
-		{"a window's Request", func(c *Client, subject string) error {
-			return <-c.WindowUntil(nil).Request(subject, envelope(subject), RequestOptions{MsgID: "request." + subject, Timeout: 2 * time.Second})
-		}},
-		{"a forward", func(c *Client, subject string) error {
-			forward, err := c.StartRequestStoredTo(subject, envelope(subject), "forward."+subject, 2*time.Second)
-			if err != nil {
-				return err
-			}
-			return forward.Wait()
-		}},
-	}
+	publishes := storedPublishes()
 	agentSubjects := contracts.AgentTopicPrefix + ">"
 	if !slices.Contains(streamCarriedSubjects, agentSubjects) {
 		t.Fatalf("this build carries no %s to drop", agentSubjects)
@@ -132,6 +92,145 @@ func TestEveryStoredPublishIsStoredOnlyByTheNotificationsStream(t *testing.T) {
 	}
 }
 
+// storedPublish is one kind of stored send of the bus, made to subject. unanswered is the error of
+// the send's own words that a send nothing answered still carries beside ErrStreamLacksSubject,
+// since its callers read it: a publish's nats.ErrNoStreamResponse, a window's ErrNotAcknowledged,
+// which Dispatch's outbox backs a send off by, and a forward's ErrForwardNotStored, which the
+// listener reports as delivery_failed.
+type storedPublish struct {
+	name       string
+	publish    func(c *Client, subject string) error
+	unanswered error
+}
+
+// storedPublishes is every kind of stored send of the bus: the publish of an envelope on its own
+// topic and on a subject the caller names, the cursor write, a window's two sends and its request,
+// and a forward.
+func storedPublishes() []storedPublish {
+	envelope := func(subject string) contracts.Envelope {
+		return contracts.Envelope{
+			EventID:   "evt-" + subject,
+			Source:    "agent",
+			Topic:     subject,
+			DedupeKey: "agent.stored." + subject,
+			IssuedAt:  contracts.NowMillis(),
+		}
+	}
+	return []storedPublish{
+		{"Publish", func(c *Client, subject string) error {
+			return c.Publish(envelope(subject))
+		}, nats.ErrNoStreamResponse},
+		{"PublishStoredAck", func(c *Client, subject string) error {
+			_, err := c.PublishStoredAck(context.Background(), subject, envelope(subject), "stored-ack."+subject)
+			return err
+		}, nats.ErrNoStreamResponse},
+		{"PublishCursorAt", func(c *Client, subject string) error {
+			_, err := c.PublishCursorAt(context.Background(), subject, []byte(`{"cursor":1}`), 0)
+			return err
+		}, nats.ErrNoStreamResponse},
+		{"a window's PublishAsync", func(c *Client, subject string) error {
+			return <-c.WindowUntil(nil).PublishAsync(envelope(subject))
+		}, ErrNotAcknowledged},
+		{"a window's PublishStoredAsync", func(c *Client, subject string) error {
+			return <-c.WindowUntil(nil).PublishStoredAsync(subject, envelope(subject), "stored-async."+subject)
+		}, ErrNotAcknowledged},
+		{"a window's Request", func(c *Client, subject string) error {
+			return <-c.WindowUntil(nil).Request(subject, envelope(subject), RequestOptions{MsgID: "request." + subject, Timeout: storedPublishWindow})
+		}, ErrNotAcknowledged},
+		{"a forward", func(c *Client, subject string) error {
+			forward, err := c.StartRequestStoredTo(subject, envelope(subject), "forward."+subject, storedPublishWindow)
+			if err != nil {
+				return err
+			}
+			return forward.Wait()
+		}, ErrForwardNotStored},
+	}
+}
+
+// storedPublishWindow is how long a window's Request and a forward of storedPublishes wait for the
+// stream's answer.
+const storedPublishWindow = 2 * time.Second
+
+// Every stored send of the bus that the notifications stream did not take because, as the client
+// read it, the deployed stream captures no subject of the send's is named ErrStreamLacksSubject,
+// with the subject and the stream's generation, as soon as the server says so: alone, where no
+// stream answers the send, and beside another stream that captures the subject, which refuses the
+// send that names the notifications stream. So a caller answers it as what it is and at once, and
+// does not retry it as a send nothing answered: the listener's role send stops after one forward
+// instead of forty, and a window's Request stops at the server's answer instead of at its timeout.
+// A send nothing answered keeps the words its callers read beside it (storedPublish.unanswered).
+// The negative control is the same sends over a stream that captures the subject: nil and one
+// copy each.
+func TestEveryStoredPublishTheDeployedStreamLeavesOutIsNamedErrStreamLacksSubjectAtOnce(t *testing.T) {
+	agentSubjects := contracts.AgentTopicPrefix + ">"
+	omitsAgent := slices.DeleteFunc(slices.Clone(streamCarriedSubjects), func(s string) bool { return s == agentSubjects })
+	if len(omitsAgent) == len(streamCarriedSubjects) {
+		t.Fatalf("this build carries no %s to drop", agentSubjects)
+	}
+	for _, stream := range []struct {
+		name     string
+		subjects []string
+		another  bool
+	}{
+		{"the control: the notifications stream captures the subject", streamCarriedSubjects, false},
+		{"the notifications stream dropped the subject and no stream captures it", omitsAgent, false},
+		{"the notifications stream dropped the subject and another stream captures it", omitsAgent, true},
+	} {
+		t.Run(stream.name, func(t *testing.T) {
+			uri := testnats.URL(t)
+			js := rawJetStream(t, uri)
+			if _, err := js.AddStream(&nats.StreamConfig{
+				Name:      Stream,
+				Subjects:  stream.subjects,
+				Retention: nats.LimitsPolicy,
+				Discard:   nats.DiscardNew,
+				Storage:   nats.FileStorage,
+				Metadata:  map[string]string{StreamIDMetadataKey: "stream-of-a-newer-build", generationKey: strconv.Itoa(streamConfigGeneration + 1)},
+			}); err != nil {
+				t.Fatalf("the newer build creates %s: %v", Stream, err)
+			}
+			if stream.another {
+				if _, err := js.AddStream(&nats.StreamConfig{Name: anotherProgramsStream, Subjects: []string{agentSubjects}, Storage: nats.FileStorage}); err != nil {
+					t.Fatalf("another program creates %s: %v", anotherProgramsStream, err)
+				}
+			}
+			client, err := ConnectOwningStream([]string{uri})
+			if err != nil {
+				t.Fatalf("connect: %v", err)
+			}
+			t.Cleanup(client.Close)
+			captures := len(stream.subjects) == len(streamCarriedSubjects)
+			for i, p := range storedPublishes() {
+				subject := fmt.Sprintf("%sses_lacks_%d", contracts.AgentTopicPrefix, i)
+				started := time.Now()
+				err := p.publish(client, subject)
+				elapsed := time.Since(started)
+				held := storedIn(t, js, Stream, subject)
+				t.Logf("%s on %s: err=%v, %d in %s, after %s", p.name, subject, err, held, Stream, elapsed)
+				if captures {
+					if err != nil || held != 1 {
+						t.Errorf("control: %s on %s = %v with %d copies, want nil and 1", p.name, subject, err, held)
+					}
+					continue
+				}
+				if !errors.Is(err, ErrStreamLacksSubject) || held != 0 {
+					t.Errorf("%s on %s = %v with %d copies, want ErrStreamLacksSubject and none", p.name, subject, err, held)
+					continue
+				}
+				if want := strconv.Quote(subject); !strings.Contains(err.Error(), want) || !strings.Contains(err.Error(), "generation "+strconv.Itoa(streamConfigGeneration+1)) {
+					t.Errorf("%s on %s = %q, want it to name %s and the stream's generation", p.name, subject, err, want)
+				}
+				if !stream.another && !errors.Is(err, p.unanswered) {
+					t.Errorf("%s on %s = %v, which no longer says what its callers read of a send nothing answered (%v)", p.name, subject, err, p.unanswered)
+				}
+				if elapsed >= storedPublishWindow {
+					t.Errorf("%s on %s was answered after %s, its whole wait of %s: the server's answer did not settle it", p.name, subject, elapsed, storedPublishWindow)
+				}
+			}
+		})
+	}
+}
+
 // A stored publish the notifications stream did not take is named ErrStreamLacksSubject, with its
 // subject and the generation of the stream the client read, exactly when the server's answer says
 // that stream did not take it - no stream answered the subject, or another stream refused a send
@@ -152,8 +251,10 @@ func TestAStoredPublishTheDeployedStreamLeavesOutIsNamedWithItsSubjectAndGenerat
 		lacks    bool
 	}{
 		{"no stream answered and the read leaves the subject out", leavesOut, nats.ErrNoStreamResponse, true},
+		{"nothing answered a window's send or a forward and the read leaves the subject out", leavesOut, fmt.Errorf("bus: %w: %w", ErrNotAcknowledged, nats.ErrNoResponders), true},
 		{"another stream refused and the read leaves the subject out", leavesOut, mismatch, true},
 		{"no stream answered and the read carries the subject", carries, nats.ErrNoStreamResponse, false},
+		{"nothing answered a window's send or a forward and the read carries the subject", carries, nats.ErrNoResponders, false},
 		{"no stream answered and the client has read no stream", nil, nats.ErrNoStreamResponse, false},
 		{"the bus did not answer", leavesOut, context.DeadlineExceeded, false},
 		{"the stream is full", leavesOut, full, false},

@@ -223,8 +223,12 @@ func (s *roleSend) delivered(outcome sendOutcome) {
 // answered as a send that kept nothing is, since the sender's own fallback must run when the
 // message was not kept: writeRoleHolderError's 404 (unclaimed or holder_lapsed), which the Legion
 // daemon reads as notify.ErrNoHolder, recorded role_unclaimed or role_lapsed, with its refusal
-// exception (publishRefusalException). The role lane counts an unclaimed role skipped and a lapsed
-// holder failed when its own keep fails.
+// exception (publishRefusalException). The one keep that failed and is answered otherwise is one
+// the notifications stream did not take because, as the listener last read it, the stream
+// captures no subject of the role's kept lane (bus.ErrStreamLacksSubject): that is the 503 of the
+// refusal, recorded stream_lacks_subject, as the send route and a role send's forward answer it,
+// so the sender learns that nothing stored the message and why. The role lane counts an unclaimed
+// role skipped and a lapsed holder failed when its own keep fails.
 //
 // It is also the one place a message to a Legion role of a released issue pod is seen at all, so
 // it raises the wake report beside the answer, before either answer and waiting for neither
@@ -239,8 +243,15 @@ func (s *roleSend) noHolder(result roles.Resolution) {
 	// The wake is what this message costs its sender, whether it is kept or answered 404 below.
 	s.record.charge.woke()
 	if s.keep && roleKeepable(result) {
-		if kept, ok := keepForNextHolder(*s.d.delivery, s.role, s.item); ok {
+		kept, ok, err := keepForNextHolder(*s.d.delivery, s.role, s.item)
+		if ok {
 			s.kept(result, kept)
+			return
+		}
+		if errors.Is(err, bus.ErrStreamLacksSubject) {
+			s.record.holder = result.Holder
+			s.record.refuseBusUnavailable(s.w, err)
+			s.settle(sendFailed)
 			return
 		}
 	}
@@ -316,7 +327,9 @@ func (s *roleSend) unresolved(err error) {
 }
 
 // refused answers a forward NATS refuses however often it is sent, or one the listener's grant
-// denies (forwardRefused), as requestRecord.refuseBusUnavailable maps it. The refused forward
+// denies (forwardRefused), or one the notifications stream did not take for want of the holder's
+// subject (bus.ErrStreamLacksSubject), as requestRecord.refuseBusUnavailable maps it: the 413, the
+// 400, the 403, or the 503 of a stream that does not capture the subject. The refused forward
 // stored nothing, so it marks nothing: an earlier forward of the same send that may have stored
 // the message has marked the charge already (sendToRole).
 func (s *roleSend) refused(err error) {
@@ -401,9 +414,13 @@ func (s *roleSend) settledBeforeForward(entry session.SessionEntry) bool {
 // the send's 200, since the holder answers nothing and reads the stored copy from its session
 // consumer (startRoleForward). The stream, which captures agent subjects, therefore keeps one copy
 // of the forward however many attempts there are. Every read takes ctx, the send's window, so
-// none outlasts it: a send whose window ends is answered 504. expectsReply is the expects_reply
-// its answers write (expectsReplyAnswer, api.go), the request's own dialect; the envelope this
-// send forwards and keeps carries the envelope's own value.
+// none outlasts it: a send whose window ends is answered 504. A forward the notifications stream
+// did not take because, as the listener last read it, the stream captures no subject of the
+// holder's (bus.ErrStreamLacksSubject) ends the send at once with the 503 of that refusal
+// (refused): every attempt would forward to a subject the stream does not capture, so the
+// attempts left would store nothing either. expectsReply is the expects_reply its answers write
+// (expectsReplyAnswer, api.go), the request's own dialect; the envelope this send forwards and
+// keeps carries the envelope's own value.
 func sendToRole(ctx context.Context, w http.ResponseWriter, record *requestRecord, d *listenerDeps, item contracts.Envelope, expectsReply json.RawMessage, role string, keep bool, arrived time.Time) {
 	send := &roleSend{w: w, record: record, d: d, item: item, expectsReply: expectsReply, role: role, keep: keep, arrived: arrived}
 	// The sender is stamped before the holder is resolved, so the copy a keep stores carries the
@@ -473,7 +490,7 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, record *requestRecor
 				send.delivered(sendDelivered)
 				return
 			}
-			if forwardRefused(err) {
+			if forwardRefused(err) || errors.Is(err, bus.ErrStreamLacksSubject) {
 				send.refused(err)
 				return
 			}

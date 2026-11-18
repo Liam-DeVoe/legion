@@ -66,11 +66,13 @@ func TestAStreamThatLacksTheSubjectIsAnsweredAsSuchNotAsABusThatDidNotAnswer(t *
 				if err := json.Unmarshal(recorder.Body.Bytes(), &refusal); err != nil {
 					t.Fatalf("decode the refusal %s: %v", recorder.Body.String(), err)
 				}
+				// The body and the record are each reported, not the first alone, so a change to the
+				// one decision both come from (writeBusUnavailable) shows in both at once.
 				if refusal.Error != tc.wantBody {
-					t.Fatalf("the refusal reads %q, want %q", refusal.Error, tc.wantBody)
+					t.Errorf("the refusal reads %q, want %q", refusal.Error, tc.wantBody)
 				}
 				if tc.err == lacks && (strings.HasPrefix(refusal.Error, busUnansweredPrefix) || !strings.Contains(refusal.Error, subject) || !strings.Contains(refusal.Error, "generation 1000000")) {
-					t.Fatalf("the refusal reads %q: want it to name %s and the generation, and not to say the bus did not answer", refusal.Error, subject)
+					t.Errorf("the refusal reads %q: want it to name %s and the generation, and not to say the bus did not answer", refusal.Error, subject)
 				}
 				assertRecordFields(t, record, map[string]any{
 					"msg":         route.line,
