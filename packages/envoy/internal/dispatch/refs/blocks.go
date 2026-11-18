@@ -53,17 +53,21 @@ type Pointer struct {
 // stop resolving until a version holds its id again. A block's stored excerpt is its text cut to
 // BlockExcerptRunes, the excerpt a document's mention has shown since migration 0092.
 //
-// A block whose text moved keeps its changed version and time as well when another renderer
+// A block whose text moved keeps its changed version and time as well when it is a top-level
+// block, enclosed by no other block of this version (topLevelCandidates), another renderer
 // version stored that version, or none stamped it (pmdoc.OtherRenderer), and the text recorded
-// for the block there reads, alone, as its text here (pmdoc.FragmentReadsAs): the same tree in
-// that renderer's spelling (respelledBlocks). Its row takes this text's sha256 and excerpt, and
-// no text is recorded for it at this version: a pin to an earlier version still reads unchanged,
-// and the block's recorded text keeps the earlier spelling until its text next changes. Such a
-// block counts as unchanged in what this returns. A block whose recorded text does not read
-// alone as the tree it held takes this version: one inside a quote, whose later lines carry the
-// quote's prefix, a list whose slice renders otherwise alone (its marker chosen against a list
-// before it), and one whose recorded text or text here holds `[^`, which reads as a footnote
-// reference or as text by the labels the rest of its document defines.
+// for the block there occurs in that version's stored markdown, only at line starts, and reads,
+// alone, as its text here (pmdoc.FragmentReadsAs): the same tree in that renderer's spelling
+// (respelledBlocks). Its row takes this text's sha256 and excerpt, and no text is recorded for it
+// at this version: a pin to an earlier version still reads unchanged, and the block's recorded
+// text keeps the earlier spelling until its text next changes. Such a block counts as unchanged
+// in what this returns. Every block inside a list item, a quote, a footnote definition or a typed
+// block takes this version when its text moved, and so does a top-level block that stood inside
+// one at its changed version: a block's text read alone loses its container's prefix, so two
+// trees can read as one (the inner list of `- a\n  - b\n  - c` is `- b\n  - c`, which reads
+// alone as c under b, as the inner list of `- a\n  - b\n    - c` does). So does a block whose
+// recorded text or text here holds `[^`, which reads as a footnote reference or as text by the
+// labels the rest of its document defines.
 //
 // A pair (block, kind, target) that survives keeps its created version, time and source event,
 // and takes the to_types this version gives it. A new pair takes this version and versionAt, and
@@ -100,8 +104,9 @@ func IndexBlocks(
 
 	// Each block whose text's sum this version moved, in document order: new, changed or
 	// restored, or held in another renderer version's spelling. A block the index holds whose
-	// changed version another renderer version stored, or none stamped, may be the second
-	// (respelledBlocks), which records each such block it keeps.
+	// changed version another renderer version stored, or none stamped, may be the second when it
+	// is a top-level block (topLevelCandidates, respelledBlocks), which records each such block
+	// it keeps.
 	var sumMoved []movedBlock
 	var candidates []respellCandidate
 	for _, block := range nodes {
@@ -118,7 +123,7 @@ func IndexBlocks(
 			candidates = append(candidates, respellCandidate{movedBlock: entry, storedAt: previous.changedVersion})
 		}
 	}
-	respelled, err := respelledBlocks(ctx, tx, artifactID, version, candidates)
+	respelled, err := respelledBlocks(ctx, tx, artifactID, version, topLevelCandidates(blocks, candidates))
 	if err != nil {
 		return nil, err
 	}

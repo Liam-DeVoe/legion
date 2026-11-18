@@ -1469,8 +1469,10 @@ func (s *Service) SnapshotVersion(ctx context.Context, artifactID string, actor 
 }
 
 // readsAs reports whether stored, a version's markdown that any build may have rendered, reads as
-// the document whose rendering is markdown, by pmdoc.ReadsAs's rule: this build reads stored and
-// renders it again (renderAgain), and the two are one rendering (pmdoc.SameRendering).
+// the document whose rendering is markdown: this build reads stored and renders it again
+// (renderAgain, which counts the render), and the two are one rendering (pmdoc.SameRendering).
+// It is the one rule a whole document is compared by; a fragment cut from one is compared by
+// pmdoc.FragmentReadsAs.
 func readsAs(stored, markdown string) bool {
 	again, rendered := renderAgain(stored)
 	return rendered && pmdoc.SameRendering(again, markdown)

@@ -17,23 +17,29 @@ import (
 // build's spelling though nobody changed it. Such a decision is kept when another renderer
 // version stored the version its keep names, or none stamped it (pmdoc.OtherRenderer), that
 // version's text of the decision (decisionCuts, named by its sectionKey) has the keep's sum,
-// which makes it the text the keep agreed with, and this build reads that text, alone, as the
-// decision's text now (pmdoc.FragmentReadsAs). The decision waits for review otherwise: a version
-// that holds no such text - the decision's heading changed since, or a block left the decision
-// after that version - kept text that reads otherwise alone, and kept text or text now that holds
-// `[^`, which reads as a footnote reference or as text by the labels the whole document defines
-// (another section among them), leave it waiting, as a version this renderer version stored does.
+// which makes it the text the keep agreed with, the decision stood in no container there and
+// stands in none now, and this build reads that text, alone, as the decision's text now
+// (pmdoc.FragmentReadsAs). alone[i] is whether decision i's heading block stands in no other
+// block of the document now (decisionSection.alone), and decisionCut.alone whether the kept text
+// stood in none: a decision's text read alone loses the list item, quote, footnote definition or
+// typed block it stands in, so two trees can read as one. The decision waits for review
+// otherwise: a version that holds no such text - the decision's heading changed since, or a block
+// left the decision after that version - a decision inside a container then or now, kept text
+// that reads otherwise alone, and kept text or text now that holds `[^`, which reads as a
+// footnote reference or as text by the labels the whole document defines (another section among
+// them), leave it waiting, as a version this renderer version stored does.
 //
-// The versions the keeps name that another renderer version stored, or none stamped, are read in
-// one query (otherRendererDecisionsAt), and a version this renderer version stored is not read,
-// so a decisions view pays nothing for a keep whose version this renderer version wrote; only
-// such a keep whose version holds the keep's sum pays a parse and a render.
+// Of the versions the keeps of decisions standing in no container name, those another renderer
+// version stored, or none stamped, are read in one query (otherRendererDecisionsAt), and a
+// version this renderer version stored is not read, so a decisions view pays nothing for a keep
+// whose version this renderer version wrote; only such a keep whose version holds the keep's sum
+// pays a parse and a render.
 func (s *server) markKeptAcrossRenderers(
-	ctx context.Context, artifactID string, decisions []model.Decision, keys []sectionKey,
+	ctx context.Context, artifactID string, decisions []model.Decision, keys []sectionKey, alone []bool,
 ) error {
 	numbers := map[int]bool{}
-	for _, decision := range decisions {
-		if decision.WaitingReview && decision.Kept != nil {
+	for i, decision := range decisions {
+		if decision.WaitingReview && decision.Kept != nil && alone[i] {
 			numbers[decision.Kept.ChangedVersion] = true
 		}
 	}
@@ -46,7 +52,7 @@ func (s *server) markKeptAcrossRenderers(
 	}
 	for i := range decisions {
 		decision := &decisions[i]
-		if !decision.WaitingReview || decision.Kept == nil {
+		if !decision.WaitingReview || decision.Kept == nil || !alone[i] {
 			continue
 		}
 		version, read := versions[decision.Kept.ChangedVersion]
@@ -54,7 +60,7 @@ func (s *server) markKeptAcrossRenderers(
 			continue
 		}
 		kept, held := version.decisions[keys[i]]
-		if held && kept.sum == decision.Kept.TextSHA256 && pmdoc.FragmentReadsAs(kept.text, decision.Text) {
+		if held && kept.alone && kept.sum == decision.Kept.TextSHA256 && pmdoc.FragmentReadsAs(kept.text, decision.Text) {
 			decision.WaitingReview = false
 		}
 	}
@@ -71,13 +77,13 @@ type storedDecisions struct {
 
 // holds reports whether this version holds now, the text of the decision key as the document
 // stands: its text of that decision has now's sum, or, for a version of another renderer version,
-// this build reads its text of that decision, alone, as now's text (pmdoc.FragmentReadsAs), which
-// a text that holds `[^` on either side does not. Only a version of another renderer version
-// whose sum differs pays the parse and the render. A version that gives the decision no text
-// holds none of it.
+// both texts stand alone (decisionCut.alone) and this build reads its text of that decision,
+// alone, as now's text (pmdoc.FragmentReadsAs), which a text that holds `[^` on either side does
+// not. Only a version of another renderer version whose sum differs pays the parse and the render.
+// A version that gives the decision no text holds none of it.
 func (v storedDecisions) holds(key sectionKey, now decisionCut) bool {
 	stored, ok := v.decisions[key]
-	return ok && (stored.sum == now.sum || v.otherRenderer && pmdoc.FragmentReadsAs(stored.text, now.text))
+	return ok && (stored.sum == now.sum || v.otherRenderer && stored.alone && now.alone && pmdoc.FragmentReadsAs(stored.text, now.text))
 }
 
 // storedDecisionsAt is each named version's decisions, each one's text and its sum: the version's
@@ -133,11 +139,4 @@ func scanStoredDecisions(rows pgx.Rows) (map[int]storedDecisions, error) {
 		}
 	}
 	return versions, rows.Err()
-}
-
-// decisionCut is one decision as a document's markdown holds it: its text, with the blank lines
-// at its end removed, and that text's sum (decisionTextSum).
-type decisionCut struct {
-	text string
-	sum  string
 }

@@ -83,37 +83,46 @@ func withoutFinalLineFeeds(rendering string) string {
 	return strings.TrimRight(rendering, "\n")
 }
 
-// ReadsAs reports whether stored, markdown that any build of the store may have written, reads as
-// rendering: this build reads stored and renders it again (RenderingOf), and the two are one
-// rendering (SameRendering). Stored text that reads as no document, or whose tree does not
-// render, reads as nothing. stored and rendering are whole documents; a fragment cut from one is
-// compared by FragmentReadsAs.
-func ReadsAs(stored, rendering string) bool {
+// readsAsRendering reports whether stored, markdown that any build of the store may have written,
+// reads as rendering: this build reads stored and renders it again (RenderingOf), and the two are
+// one rendering (SameRendering). Stored text that reads as no document, or whose tree does not
+// render, reads as nothing. It is the rule FragmentReadsAs applies to a fragment that holds no `[^`.
+func readsAsRendering(stored, rendering string) bool {
 	again, _, err := RenderingOf(stored)
 	return err == nil && SameRendering(again, rendering)
 }
 
-// FragmentReadsAs is ReadsAs for stored and rendering cut from documents - a block, a decision -
-// and read alone, away from the rest of their documents: false where either holds `[^`, and
-// ReadsAs otherwise. Whether `[^label]` reads as a footnote reference depends on the labels its
-// whole document defines, and so does whether the renderer escapes text shaped like one as
-// `\[^label]` (definedFootnoteLabels, footnoteReferenceText). A fragment holds none of its
-// document's definitions, so literal text `see \[^1] here` and a reference `see [^1] here`, two
-// trees in a document that defines 1, read alone as one. A reference is written `[^`, its label
-// and `]`, and text shaped like one is escaped as `\[^`, so every spelling whose reading depends
-// on the labels holds `[^`: where neither side holds it, no reading of either depends on a
-// definition it was cut away from.
+// FragmentReadsAs reports whether stored reads as rendering where both are cut from documents - a
+// block, a decision - and read alone, away from the rest of their documents: false where either
+// holds `[^`, and readsAsRendering otherwise. Whether `[^label]` reads as a footnote reference
+// depends on the labels its whole document defines, and so does whether the renderer escapes text
+// shaped like one as `\[^label]` (definedFootnoteLabels, footnoteReferenceText). A fragment holds
+// none of its document's definitions, so literal text `see \[^1] here` and a reference
+// `see [^1] here`, two trees in a document that defines 1, read alone as one. A reference is
+// written `[^`, its label and `]`, and text shaped like one is escaped as `\[^`, so every spelling
+// whose reading depends on the labels holds `[^`: where neither side holds it, no reading of
+// either depends on a definition it was cut away from.
+//
+// It does not give a fragment back the container it was cut from, and a caller reads alone only a
+// fragment that stands in none. A block inside a list item, a quote, a footnote definition or a
+// typed block starts after its container's marker or line, and its later lines carry the
+// container's prefix, which its text read alone loses, so two trees can read as one. The inner
+// list of `- a\n  - b\n  - c` is `- b\n  - c`: c stands beside b, but the prefix of its line is
+// also the content indent of a `- ` item, so read alone c stands under b, as it does in the inner
+// list of `- a\n  - b\n    - c`, `- b\n    - c`, and the two slices read alone as one.
 func FragmentReadsAs(stored, rendering string) bool {
-	return !strings.Contains(stored, "[^") && !strings.Contains(rendering, "[^") && ReadsAs(stored, rendering)
+	return !strings.Contains(stored, "[^") && !strings.Contains(rendering, "[^") && readsAsRendering(stored, rendering)
 }
 
 // OtherRenderer reports whether stamp, the renderer version a stored rendering was written at (a
 // document version's renderer_version), names a renderer other than this build's
 // (RendererVersion): another renderer version's, or none, for a rendering stored before
 // renderings were stamped or with no stamp. Such a rendering may spell the tree it holds otherwise
-// than this build does, so where its bytes are not this build's rendering it is compared with that
-// rendering by ReadsAs, or a fragment cut from it by FragmentReadsAs; a rendering this renderer
-// version stored is compared byte for byte.
+// than this build does, so where its bytes are not this build's rendering it is compared as this
+// build reads it and renders it again: a whole document through docs' counted path (docs'
+// readsAs and holdsRendering), which records the render as every render of a whole document is
+// recorded, and a fragment cut from it by FragmentReadsAs. A rendering this renderer version
+// stored is compared byte for byte.
 func OtherRenderer(stamp *int) bool {
 	return stamp == nil || *stamp != RendererVersion
 }
