@@ -1080,3 +1080,35 @@ func TestParseTaskCostArgsReadsTheLogWindow(t *testing.T) {
 		}
 	}
 }
+
+// A window whose lines carry no task value written and no take holds no evidence for any of R9's
+// three verdicts, which each read the takes and the value writes: the log of a daemon before this
+// change, whose every turn names no cause and whose charges are the push path's ("acknowledged, and
+// no turn started within 5s"), is such a window, and so is a daemon that launches no worker. Its
+// reading must not print the verdicts as passes: check c9 read over the daemon's previous
+// container (`kubectl logs --previous`) or over a daemon not yet rolled out would pass the very
+// fleet the change was made to fix, with three charges and a retirement in it. A reading of
+// nothing is the class review finding 13 named (TestTaskCostLogWithNoLineInTheWindowIsNoEvidence
+// holds the empty window alone).
+//
+// The negative control is TestTaskCostLogWithNoLineInTheWindowIsNoEvidence's: a window holding a
+// value write has its verdicts judged, each a pass.
+func TestTaskCostLogWithNoTaskValueAndNoTakePrintsNoPass(t *testing.T) {
+	const claim = "legion-infra-infra-3085-architect"
+	const why = "acknowledged, and no turn started within 5s"
+	b := costLines{t: t, at: time.Date(2026, 11, 12, 11, 28, 52, 0, time.UTC)}
+	cost := b.readCost([]string{
+		b.line(time.Second, DaemonStartedLine, ""),
+		b.turn(time.Minute, turnStartedLine, claim),
+		b.line(time.Minute+5*time.Second, promptFailureLine, claim, "why", why, "promptFailures", 1, "limit", 3),
+		b.turn(time.Minute+35*time.Second, turnEndedLine, claim),
+		b.turn(2*time.Minute, turnStartedLine, claim),
+		b.line(2*time.Minute+5*time.Second, promptFailureLine, claim, "why", why, "promptFailures", 2, "limit", 3),
+		b.turn(2*time.Minute+35*time.Second, turnEndedLine, claim),
+		b.line(3*time.Minute+5*time.Second, promptRetiredLine, claim, "why", why, "promptFailures", 3, "relaunchCycle", 1, "limit", 2),
+	})
+	if text := cost.Text(); strings.Contains(text, ": pass\n") {
+		t.Fatalf("a window with %d daemon lines, charges by wait %v and %d retirement, and no task value written and no take, prints\n%s\nwant no verdict printed as a pass: no take and no value write is no evidence for any of the three",
+			cost.Lines, cost.ChargesByWait, cost.Retirements, text)
+	}
+}
