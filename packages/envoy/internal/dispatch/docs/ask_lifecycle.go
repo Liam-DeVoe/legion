@@ -14,6 +14,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // BlockRef names one block of one document: the document's artifact id and the block's id.
@@ -39,9 +40,27 @@ func logUnindexedAskBlocks(issueKey string, blocks []BlockRef) {
 // transaction of its own and takes the issue's row, which a caller's open transaction can hold.
 var errSettleJoined = errors.New("docs: an issue's documents settle outside every transaction")
 
-// issueDocumentIDs lists the documents of the issue $1, in id order: the order WriteIssueAskStates
-// writes them and SettleIssueDocuments settles them.
-const issueDocumentIDs = `select id::text from artifacts where issue_key = $1 and kind = 'doc' order by id`
+// holdsFragmentSQL is true of the artifact aliased alias, an issue's, while it holds a fragment of
+// a room: each document of an issue with no issue room (no issue_trees row) is its own room, and
+// an issue room holds its tree's own fragment and one of each document its document_rooms rows
+// name. The decisions query node of an issue born converted, a doc row with no fragment and no
+// document_rooms row (D6 of dispatch://INFRA-1253's plan), holds none.
+func holdsFragmentSQL(alias string) string {
+	return `(` + alias + `.kind = 'tree' or ` + alias + `.kind = 'doc' and (
+		exists (select 1 from document_rooms held where held.artifact_id = ` + alias + `.id)
+		or not exists (select 1 from issue_trees tree where tree.issue_key = ` + alias + `.issue_key)))`
+}
+
+// issueDocumentIDs lists the documents of the issue $1 that hold a fragment (holdsFragmentSQL), the
+// tree of an issue room among them, in id order: the order WriteIssueAskStates writes them in, each
+// in its own fragment.
+var issueDocumentIDs = `select a.id::text from artifacts a where a.issue_key = $1 and ` + holdsFragmentSQL("a") + ` order by a.id`
+
+// issueRoomIDs lists the rooms the documents of the issue $1 are edited in (refs.DocumentRoomSQL),
+// each once, in id order: the order SettleIssueDocuments settles them in, an issue room's
+// settlement settling every fragment of the room.
+var issueRoomIDs = `select distinct (` + refs.DocumentRoomSQL("a.id") + `)::text as room
+	from artifacts a where a.issue_key = $1 and ` + holdsFragmentSQL("a") + ` order by room`
 
 type lifecycleWriteContextKey struct{}
 
@@ -175,7 +194,7 @@ func (s *Service) writeDocumentAskStates(
 		return ask, wanted
 	}
 	var writes *issueAskStateWrites
-	err := s.applyLive(ctx, artifactID, actor, func(doc *crdt.Doc, current pmdoc.ValidDocument, _ func(func(*crdt.Transaction))) error {
+	err := s.applyLive(ctx, artifactID, actor, func(doc liveDoc, current pmdoc.ValidDocument, _ func(func(*crdt.Transaction))) error {
 		if current.Node() == nil {
 			// Settlement reads none of its ask blocks either (settleRoomWithin).
 			slog.Warn("dispatch: leave the ask blocks of a document outside Proof schema as they are", "artifact", artifactID)
@@ -184,7 +203,7 @@ func (s *Service) writeDocumentAskStates(
 		// WriteIssueAskStates reads the fleet first and writes nothing on one build, so each write
 		// made here is the roll window's.
 		var err error
-		writes, err = readIssueAskStateWrites(ctx, tx, artifactID, owner, current.Node(), given, markUnindexed, true)
+		writes, err = readIssueAskStateWrites(ctx, tx, documentAsksOf(artifactID), owner, current.Node(), given, markUnindexed, true)
 		if err != nil || writes.empty() {
 			return err
 		}
@@ -192,7 +211,7 @@ func (s *Service) writeDocumentAskStates(
 		// id, as settlement makes its repairs (repairLive), and each repeat on the block at its place
 		// (markRepeatedAskBlocks), all in one rewrite of the fork, whose tree is the one current read.
 		// A document none of them changes is left as it was, and applyLive writes nothing for it.
-		_, err = rewriteLive(doc, nil, writes.apply)
+		_, err = doc.rewrite(writes.apply)
 		return err
 	})
 	switch {
@@ -213,17 +232,20 @@ func (s *Service) writeDocumentAskStates(
 	return writes.marked, nil
 }
 
-// reopenOwedAskDocuments lists, in id order, the documents of the issue $1 whose ask blocks a
+// reopenOwedAskDocuments lists, in id order, the rooms of the issue $1 whose ask blocks a
 // settlement after the issue's reopen has to reconcile: one that holds an ask block no settlement
 // has indexed, the blocks doc_ask_block_authors keeps an author for; one that is the block
-// document (asks.block_artifact_id) of an open ask, read once the reopen has restored the asks the
-// close withdrew; and one that is the block document of an ask a settlement retracted. The
+// room (asks.block_artifact_id) of an open ask, read once the reopen has restored the asks the
+// close withdrew; and one that is the block room of an ask a settlement retracted. Each of those
+// rows is keyed by the room its document is edited in, a document that is its own room or an
+// issue room's tree, which settles every fragment of the room, so the rooms are read among the
+// issue's documents and its tree alike. The
 // retraction is settlementRetraction's rule in SQL, read off the stored resolution: kind
 // "retracted", and an actor $2 (kind) and $3 (id) or a reason that opens with $4
 // (SettlementActor, SettlementRetractionReason), so the two change together.
 const reopenOwedAskDocuments = `
 	select a.id::text from artifacts a
-	where a.issue_key = $1 and a.kind = 'doc'
+	where a.issue_key = $1 and a.kind in ('doc', 'tree')
 		and (exists (select from doc_ask_block_authors b where b.artifact_id = a.id)
 			or exists (
 				select from asks k
@@ -406,30 +428,38 @@ type closedEditSource struct {
 	lastActor  []byte
 }
 
-// issueDocumentEditSources lists the documents of the issue $1 in id order, as issueDocumentIDs
-// does, each with its kept closed edit source (doc_closed_edit_sources), null for none.
-const issueDocumentEditSources = `
+// issueDocumentEditSources lists the documents of the issue $1 in id order, each with the closed
+// edit source (doc_closed_edit_sources) kept for the room it is edited in, the key its settlement
+// keeps it by (clearSettlementPending), null for none.
+var issueDocumentEditSources = `
 	select a.id::text, kept.last_actor
-	from artifacts a left join doc_closed_edit_sources kept on kept.artifact_id = a.id
+	from artifacts a left join doc_closed_edit_sources kept on kept.artifact_id = ` + refs.DocumentRoomSQL("a.id") + `
 	where a.issue_key = $1 and a.kind = 'doc'
 	order by a.id`
 
-// dropSettledClosedEditSources deletes the kept closed edit source of each document of the issue
-// $1 that owes no settlement (FollowClosedIssueVersions).
+// dropSettledClosedEditSources deletes the kept closed edit source of each room of the issue $1
+// that owes no settlement (FollowClosedIssueVersions): a document that is its own room, or an
+// issue room's tree, the keys a settlement keeps a source and a pending row by.
 const dropSettledClosedEditSources = `
 	delete from doc_closed_edit_sources kept
 	using artifacts a
-	where a.id = kept.artifact_id and a.issue_key = $1 and a.kind = 'doc'
+	where a.id = kept.artifact_id and a.issue_key = $1 and a.kind in ('doc', 'tree')
 		and not exists (select from doc_settlements_pending p where p.artifact_id = kept.artifact_id)`
 
 // followLatestVersion is FollowClosedIssueVersions for one document, artifactID, moving its
-// request in mover's name.
+// request in mover's name. Whether the document's stored updates are ahead of its latest version
+// is read on the room it is edited in, whose head a version records (doc_update_version), as
+// SnapshotVersion reads it.
 func (s *Service) followLatestVersion(ctx context.Context, tx pgx.Tx, artifactID string, mover model.Actor) ([]model.Event, error) {
 	latest, err := latestVersion(ctx, tx, artifactID)
 	if err != nil {
 		return nil, err
 	}
-	owed, err := contentChangedSinceVersion(ctx, tx, artifactID, latest.docUpdateVersion)
+	room, err := roomOf(ctx, tx, artifactID)
+	if err != nil {
+		return nil, err
+	}
+	owed, err := contentChangedSinceVersion(ctx, tx, room, latest.docUpdateVersion)
 	if err != nil || owed {
 		return nil, err
 	}
@@ -473,9 +503,10 @@ type issueAskStateWrites struct {
 	marked []BlockRef
 }
 
-// readIssueAskStateWrites reads, in tx, the writes WriteIssueAskStates makes to tree, the document
-// artifactID of owner, an issue whose row the caller holds, as the fleet stands (twoBuilds, as
-// anotherBuildServes read it). For each readable ask block that an ask of the document indexes,
+// readIssueAskStateWrites reads, in tx, the writes WriteIssueAskStates makes to tree, the blocks of
+// holder (a document's own, or an issue room's whole tree for a rebuild) of owner, an issue whose
+// row the caller holds, as the fleet stands (twoBuilds, as anotherBuildServes read it). For each
+// readable ask block that an ask of holder indexes,
 // or that readCopiedAskSources classifies as a copy of an ask on another document, wanted is
 // handed that ask's row and answers the ask whose state the block is to show and whether it is to
 // be written at all. An answered ask's own block is never written; its copies are written as
@@ -491,12 +522,13 @@ type issueAskStateWrites struct {
 func readIssueAskStateWrites(
 	ctx context.Context,
 	tx pgx.Tx,
-	artifactID string,
+	holder askHolder,
 	owner artifactOwner,
 	tree *pmdoc.Node,
 	wanted func(row model.Ask) (model.Ask, bool),
 	markUnindexed, twoBuilds bool,
 ) (*issueAskStateWrites, error) {
+	artifactID := holder.id
 	found := &issueAskStateWrites{artifactID: artifactID}
 	blocks, repeats := readableAskBlocks(tree)
 	if markUnindexed && twoBuilds {
@@ -505,7 +537,7 @@ func readIssueAskStateWrites(
 	if len(blocks) == 0 {
 		return found, nil
 	}
-	rows, err := loadAskBlocks(ctx, tx, artifactID)
+	rows, err := loadAskBlocks(ctx, tx, holder)
 	if err != nil {
 		return nil, err
 	}
@@ -728,7 +760,7 @@ func (s *Service) SettleIssueDocuments(ctx context.Context, issueKey string) err
 	if ledgerFrom(ctx).inTransaction() {
 		return errSettleJoined
 	}
-	rooms, err := s.documentRooms(ctx, "the issue's documents", issueDocumentIDs, issueKey)
+	rooms, err := s.documentRooms(ctx, "the issue's rooms", issueRoomIDs, issueKey)
 	if err != nil {
 		return err
 	}

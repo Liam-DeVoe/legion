@@ -408,10 +408,11 @@ func main() {
 	// this process serves, as document_search is filled above. A reading's check of its ask takes
 	// the answer from the node, which reads an ask the backfill has not stated as open, so a
 	// failure stops the boot, and the release before keeps serving in a roll until this process
-	// can. The process waits here for another booting process that holds the step. Its catch-up,
-	// its count of what the restore and the conversion owe, and its later passes run on its own
-	// tick once the server listens, below: the boot reads only what the first phase reads, so a
-	// table it does not need, held by another transaction, keeps no process from serving.
+	// can. The process waits here for the step's lock only while the first phase owes a row, so a
+	// process that holds the lock, stalled or not, keeps no boot waiting when nothing is owed. Its
+	// catch-up, its count of what the restore and the conversion owe, and its later passes run on
+	// its own tick once the server listens, below: the boot reads only what the first phase reads,
+	// so a table it does not need, held by another transaction, keeps no process from serving.
 	decisionStep := docs.NewDecisionStep(database, buildCommit, nil)
 	if !boot.HoldDecisionsStep {
 		if err := decisionStep.Boot(ctx); err != nil {

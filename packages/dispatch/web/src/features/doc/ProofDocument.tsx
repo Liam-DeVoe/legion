@@ -82,7 +82,7 @@ import type { PendingState } from "./pending-sync";
 import { createPendingWaiter } from "./pending-waiter";
 import { quoteAnchor } from "./quote-anchor";
 import { refocusWhenSettled } from "./refocus-when-settled";
-import { type ArtifactWithFragment, carriesFragment, fragmentOf } from "./roots";
+import { carriesFragment, fragmentOf } from "./roots";
 import { DocumentRuntime } from "./runtime";
 import { compiledBlockSchema, compiledSchemaCreatable } from "./schema";
 import { readLineText, useSpecMarks } from "./spec-marks";
@@ -197,7 +197,7 @@ export interface ProofDocumentProps {
   };
   /** The document, as the read that listed it answers it: where that answer carries `fragment`,
    *  the page connects at once; otherwise it waits for its own artifact read. */
-  artifact: ArtifactWithFragment;
+  artifact: Artifact;
   highlight: Highlight | undefined;
   highlightTerm?: string;
   isClosed: boolean;

@@ -117,13 +117,16 @@ func blockAskOf(t *testing.T, p *dispatchProcess, issueKey, blockID string) stri
 	}
 }
 
-// editAsBrowser opens a browser's tab on the document, signed in as the test's person, waits for
-// the room to send it a document holding holding, and makes change on its tree in one
-// transaction, which the tab sends the room as a browser's own update: a write no route refuses.
+// editAsBrowser opens a browser's tab on the document, signed in as the test's person and bound to
+// the fragment the artifact read answers (artifactFragment), waits for the room to send it a
+// document holding holding, and makes change on its tree in one transaction, which the tab sends
+// the room as a browser's own update: a write no route refuses.
 func editAsBrowser(t *testing.T, p *dispatchProcess, artifactID, holding string, change func(*pmdoc.Node) error) {
 	t.Helper()
+	bound := p.artifactFragment(t, artifactID)
 	editor := docstest.Dial(t, p.documentURL(artifactID), http.Header{"X-Dispatch-User": []string{dispatchTestLogin}}, artifactID, crdt.New())
 	defer editor.Close()
+	editor.Fragment = bound
 	deadline := time.Now().Add(10 * time.Second)
 	for !strings.Contains(markdown(editor), holding) {
 		if time.Now().After(deadline) {
@@ -131,7 +134,7 @@ func editAsBrowser(t *testing.T, p *dispatchProcess, artifactID, holding string,
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	fragment := editor.Doc.GetXmlFragment("prosemirror")
+	fragment := editor.Doc.GetXmlFragment(bound)
 	var changeErr error
 	if _, err := editor.Send(func(txn *crdt.Transaction) {
 		tree, err := pmdoc.ReadInTransaction(txn, fragment)

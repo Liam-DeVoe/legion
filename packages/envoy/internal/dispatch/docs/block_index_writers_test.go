@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -37,42 +38,63 @@ func deferredList(items int) string {
 	return body.String()
 }
 
-// writeDocumentThroughTheRequestPath writes one document the way a request writes it (api's
-// storeArtifact): the text seeded in the writer's transaction, the version row, the version's
-// references and blocks indexed from the rendering that transaction wrote, the version's event,
-// and then what the block index stated, appended under that event.
+// writeDocumentThroughTheRequestPath writes one document the way this build's request writes it
+// (api's storeArtifact): the document's node and its part_of its issue written before its row,
+// the row naming that node, the text seeded in the writer's transaction, the version row, the
+// version's references and blocks indexed from the rendering that transaction wrote, the
+// version's node (WriteVersionNode), the version's event, and then what the node writes and the
+// block index stated, appended under that event.
 func writeDocumentThroughTheRequestPath(t *testing.T, service *Service, database *store.Store, slug, markdown string) string {
 	t.Helper()
 	ctx := context.Background()
-	var artifactID string
-	if err := database.Pool.QueryRow(ctx, `
-		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
-		values ('CORE-1', 'CORE', $1, $1 || '.md', 'doc', false, '{"kind":"user","id":"alice"}')
-		returning id::text
-	`, slug).Scan(&artifactID); err != nil {
-		t.Fatalf("create document %s: %v", slug, err)
-	}
 	tx, err := database.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin the document write: %v", err)
 	}
 	defer tx.Rollback(ctx)
+	writer := model.Actor{Kind: "user", ID: "alice"}
+	refKey := graphstore.ArtifactRefKey("CORE-1", "CORE", "", slug)
+	at := time.Now().UTC()
+	documentNode, err := graphstore.WriteUncaused(ctx, tx,
+		[]graphstore.Node{graphstore.Created(graphstore.ArtifactNode(refKey, "CORE", "", writer, at))},
+		[]graphstore.Tuple{graphstore.ArtifactPartOf(refKey, "CORE-1", writer, at)})
+	if err != nil {
+		t.Fatalf("write the node of document %s: %v", slug, err)
+	}
+	var artifactID string
+	if err := tx.QueryRow(ctx, `
+		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by, node_kind, node_address)
+		values ('CORE-1', 'CORE', $1, $1 || '.md', 'doc', false, '{"kind":"user","id":"alice"}', $2, $3)
+		returning id::text
+	`, slug, graphstore.KindArtifact, refKey).Scan(&artifactID); err != nil {
+		t.Fatalf("create document %s: %v", slug, err)
+	}
 	joined, ledger := service.Join(ctx, tx)
 	defer ledger.Discard()
-	stored, err := service.SeedText(joined, artifactID, markdown, model.Actor{Kind: "user", ID: "alice"})
+	stored, err := service.SeedText(joined, artifactID, markdown, writer)
 	if err != nil {
 		t.Fatalf("seed %s: %v", slug, err)
 	}
-	if _, err := tx.Exec(ctx, `
-		insert into artifact_versions (artifact_id, number, markdown, authors)
+	var versionAt time.Time
+	var owner graphstore.VersionOwner
+	if err := tx.QueryRow(ctx, `
+		insert into artifact_versions as v (artifact_id, number, markdown, authors)
 		values ($1, 1, $2, '[{"kind":"user","id":"alice"}]')
-	`, artifactID, stored); err != nil {
+		returning created_at, `+graphstore.VersionOwnerColumns("v.artifact_id"),
+		artifactID, stored).Scan(append([]any{&versionAt}, owner.Targets()...)...); err != nil {
 		t.Fatalf("write version 1 of %s: %v", slug, err)
 	}
 	_, write, err := service.IndexDocumentReferences(joined, artifactID, 1, stored)
 	if err != nil {
 		t.Fatalf("index the references of %s: %v", slug, err)
 	}
+	// The version's node, after its block index's block nodes, held for the event below with the
+	// document's own node, as storeArtifact holds it.
+	versionNode, err := WriteVersionNode(ctx, tx, owner, 1, writer, versionAt)
+	if err != nil {
+		t.Fatalf("write the node of version 1 of %s: %v", slug, err)
+	}
+	documentNode = graphstore.Joined(documentNode, versionNode)
 	payload, err := json.Marshal(map[string]any{"artifact": map[string]any{"id": artifactID}})
 	if err != nil {
 		t.Fatalf("encode the created event's payload: %v", err)
@@ -86,6 +108,9 @@ func writeDocumentThroughTheRequestPath(t *testing.T, service *Service, database
 		returning id
 	`, payload).Scan(&event); err != nil {
 		t.Fatalf("record the document's event: %v", err)
+	}
+	if err := graphstore.Caused(ctx, tx, documentNode, event); err != nil {
+		t.Fatalf("append what the document's and its version's node writes stated: %v", err)
 	}
 	if err := graphstore.Caused(ctx, tx, write, event); err != nil {
 		t.Fatalf("append what the write's block index stated: %v", err)
@@ -477,6 +502,18 @@ var indexPasses = map[string]string{
 	// the ask's. Neither reads a row of either side to decide what the other says.
 	"api/comment_actions.go#editComment": "the edit request's own body, the comment's row it locked and the comment's own event",
 	"api/asks.go#editAsk":                "the edit request's own body, the ask's row it locked and the ask's own event",
+	// A comment's anchor block (T17b of dispatch://INFRA-1253's plan): the anchored_in its
+	// comments.anchor's block_id projects, kept by each write that moves the anchor's block or its
+	// orphan flag. An accept or a reject that finds a suggestion's mark gone writes the anchor
+	// orphaned from the request and the comment's row it locked, and retracts the block that row
+	// names; the refresh writes the quote and orphan flag it read off the document's marks, and
+	// retracts or states the block the row it updated names; the anchor block backfill pins the
+	// block the live document holds the legacy anchor's quote in, and states that block where the
+	// row it pinned stands. None reads the store to decide what a row says, nor a row to mend the
+	// store: each states what its own write moved.
+	"api/comment_actions.go#orphanCommentAnchor":      "the accept or reject request, the comment's row it locked and the block that row's anchor names",
+	"docs/anchor_refresh.go#stateRefreshedAnchoredIn": "the anchors the refresh orphaned or found again off the document's marks, the rows it updated and the events it appended",
+	"docs/anchor_blocks.go#pinCommentAnchorBlock":     "the live document's block that holds the legacy anchor's quote, and the row it pins it on",
 	// The comment path's two halves of one store write, split at its event (commentStoreWrite):
 	// the node and facts of the comment the request stores, then the same facts under the event
 	// that stored it. Neither reads a row of either side.
@@ -560,6 +597,13 @@ var indexPasses = map[string]string{
 	// writes it. Neither reads one side of a projection to mend the other.
 	"api/issue_relations.go#stateIssueRelations": "the request's relations and the issue's own event",
 	"api/issue_relations.go#stateFiledFromNode":  "the row of the item the request's filed_from names",
+	// A component's node and its relations (dispatch://INFRA-1253 R9): an import states them from
+	// the model it fetched, read against the part_of and depends_on each node states now only to
+	// state what moved, and the components it drops from the source's rows as they stood; a
+	// source's removal states its components gone from the rows its delete is about to take.
+	// Neither reads one side of a projection to mend the other.
+	"architecture/importer.go#stateComponents":  "the model the import fetched and the source's components before it",
+	"architecture/importer.go#RetireComponents": "the components the source's removal deletes",
 	// A run of the command bar: its interaction node, its author's node and their tuples, written
 	// from the POST alone before the going_requests row that projects them, and each frame's value,
 	// written from the frame its writer hands it before the going_events row that projects it.
@@ -617,12 +661,14 @@ var indexPasses = map[string]string{
 	// docs.WriteRemovedNode with each changed_by_run its node states retracted, which reads the
 	// store to state what it writes into that same node and mends no projection from it; and an
 	// issue's tree artifact, its node and its part_of written from the issue its caller names,
-	// before the rows naming it.
+	// before the rows naming it; and an issue born converted's decisions query node, its node and
+	// its part_of written the same way, from the issue its create makes, before the row naming it.
 	"api/artifacts.go#statedVersionBytes":          "the upload's own bytes and the node its document's row names",
 	"docs/mutation.go#WriteVersionNode":            "the version row its write inserted and that row's document",
 	"api/artifact_removal.go#removedDocumentNodes": "the document the removal takes and the nodes the store holds of it and its versions",
 	"api/artifact_removal.go#removeArtifact":       "the facts removedDocumentNodes stated, the changed_by_run its document's node states among them, and the artifact.removed event it appended",
 	"api/artifacts.go#createIssueTree":             "the issue its caller names and the slugs its documents hold",
+	"api/issue_create.go#createDecisionsQuery":     "the issue its caller creates and the slugs its documents hold",
 	// The seed's comments: their nodes, their author's person node and each comment's
 	// authored_by tuple, all drawn from the plan before any row is written (commentStoreWrite).
 	"cmd/dispatch-seed/write_items.go#writeComments": "the seed's own plan",
@@ -667,10 +713,31 @@ var indexPasses = map[string]string{
 	// found by an anti-join on graph_nodes since the row names no node, and its document's row,
 	// which give the node its address, its project and whether it is a query's version.
 	"graphcensus/census_versions.go#writeVersionBatch": "the artifact_versions rows no version node stands for, and their documents' rows",
+	// The same nodes written by the block-index pass that drains a mark of its documents (docs'
+	// indexRenderedVersion: the reconciliation's pass on either mark, a writer's on this build's,
+	// up to missingVersionNodesBound): the same read of the same rows, limited to the versions of
+	// the documents the pass covers, less the version its own writer writes the node of, each
+	// row's own content and its document's row, so it mends no projection from the store either.
+	"graphcensus/census_versions.go#WriteMissingVersionNodes": "the artifact_versions rows of the documents the draining pass covers that no version node stands for, and their documents' rows",
 	// The backfill of the waits a process of the release before wrote: each issue_links row naming
 	// no node, its own content, read again under its issue's row, and that issue's own row, whose
 	// node the object pass wrote first.
 	"graphcensus/census_issues.go#writeIssueLinkBatch": "each pre-store issue_links row's own content and its issue's row",
+	// The backfill of the comments' anchor blocks (T17b of dispatch://INFRA-1253's plan): each
+	// comments row's own anchor, read again under its owner row, and the anchored_in its node
+	// states now, found by an anti-join since the row names no tuple: the tuple is the marker, as a
+	// version's node is the versions pass's. It states only what levels that node with its own row.
+	"graphcensus/census_anchors.go#writeAnchorBatch": "each comments row's own anchor, read again under its owner row, and the anchored_in its node states",
+	// The backfill of the components a process of the release before wrote (dispatch://INFRA-1253
+	// R9): each components row its marker does not mark, its own content and the parent it names,
+	// read again under its source's row, with the part_of its node holds now, so it states only the
+	// part_of that moved into that same node; each component_depends row naming no node, its own
+	// content, under the same row; and each issue_component_members row naming no node, its own
+	// content, read again under its issue's row. None reads one side of a projection to mend the
+	// other.
+	"graphcensus/census_components.go#writeComponentBatch":            "each components row its marker does not mark, its own content and its snapshot's time",
+	"graphcensus/census_components.go#writeComponentDependsBatch":     "each pre-store component_depends row's own content and its component's row",
+	"graphcensus/census_components.go#writeIssueComponentMemberBatch": "each pre-store issue_component_members row's own content and its issue's row",
 	// The erase (R5), the one statement of the tree that removes bytes. Its input is the node
 	// the operator named and what the store itself holds about it, which is neither side of a
 	// projection read to mend the other: it deletes both sides together, the store's through

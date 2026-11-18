@@ -393,7 +393,8 @@ func requireResolvedDecisionAndCopy(t *testing.T, handler http.Handler, database
 // it holds none of the block's state, and the text an agent reads shows the block resolved.
 func TestClosingAnIssueWaitsForTheSettlementOfItsDocumentInFlight(t *testing.T) {
 	var documents *docs.Service
-	// hold names the document whose next settlement is held at its owner row, until release.
+	// hold names the room whose next settlement is held at its owner row, until release: the room
+	// the spec is edited in (documentRoomOf), which a settlement locks.
 	var hold atomic.Pointer[string]
 	held := make(chan struct{})
 	release := make(chan struct{})
@@ -418,7 +419,8 @@ func TestClosingAnIssueWaitsForTheSettlementOfItsDocumentInFlight(t *testing.T) 
 	awaitSettled(t, database, spec)
 	versions := len(versionHashes(t, database, spec))
 
-	hold.Store(&spec)
+	specRoom, _ := documentRoomOf(t, database.Pool, spec)
+	hold.Store(&specRoom)
 	edited := sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+spec+"/edits", map[string]any{
 		"actor": sessionActor(),
 		"ops": []map[string]string{{
@@ -505,8 +507,8 @@ func versionMarkdowns(t *testing.T, database *store.Store, document string) []st
 // written a moment before is indexed as an ask credited to its writer, and the document owes no
 // settlement afterwards, whatever becomes of the close.
 func TestAClientHangingUpOnItsCloseStillLetsTheDocumentsSettle(t *testing.T) {
-	// cancelOn names the document whose next settlement cancels the close's request once it holds
-	// the issue's row.
+	// cancelOn names the room whose next settlement cancels the close's request once it holds
+	// the issue's row: the room the spec is edited in (documentRoomOf), which a settlement locks.
 	var cancelOn atomic.Pointer[string]
 	var cancelClose atomic.Pointer[context.CancelFunc]
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
@@ -539,7 +541,8 @@ func TestAClientHangingUpOnItsCloseStillLetsTheDocumentsSettle(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	cancelClose.Store(&cancel)
-	cancelOn.Store(&spec)
+	specRoom, _ := documentRoomOf(t, database.Pool, spec)
+	cancelOn.Store(&specRoom)
 	request := httptest.NewRequest(http.MethodPatch, "/api/v1/issues/"+issue.Key, strings.NewReader(`{"status":"done"}`)).WithContext(ctx)
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("X-Dispatch-User", "alice")

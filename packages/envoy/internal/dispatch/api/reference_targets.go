@@ -89,7 +89,9 @@ func (s *server) getReferenceTargets(w http.ResponseWriter, r *http.Request) {
 // under its item's block kind, and those resolve to nodes of kind block), so a gone target is
 // answered under its kind too. A reference whose short id two items or more carry names no one
 // target, so it is looked up as nothing (the zero refs.Target, which has no name and no tree),
-// and is answered gone and ambiguous.
+// and is answered gone and ambiguous. A block's target is the node its address resolves to
+// (resolveBlockTargets), so a block of a document converted into its issue's room is read where
+// the room keeps it.
 //
 // A reference is read past the whitespace around it, and echoed as the request wrote it, that
 // whitespace and an id written short included: the answer is read by index or by reference, and
@@ -132,6 +134,9 @@ func (s *server) referenceTargets(r *http.Request, who model.Actor, trees *displ
 		target, _ := refs.TargetOf(ref)
 		named[index] = target
 	}
+	if err := s.resolveBlockTargets(r.Context(), named); err != nil {
+		return nil, err
+	}
 	names, err := refs.TargetNames(r.Context(), s.deps.Store.Pool, who, named)
 	if err != nil {
 		return nil, err
@@ -145,6 +150,32 @@ func (s *server) referenceTargets(r *http.Request, who model.Actor, trees *displ
 		return nil, err
 	}
 	return answers, nil
+}
+
+// resolveBlockTargets writes, in place, the node each document block of named resolves to: the
+// far end of its address's moved_to tuples first, then the same block in its document's room,
+// then the address itself (refs.ResolveFarEnds, block_moved_to), as every reader of a reference
+// resolves one (T17 of this branch's plan). So a reference to a block of a document converted into
+// its issue's room, written at the document's own address, names the block the room's index
+// keeps under the room's tree, and its name and its text are read there. Every block of the set is
+// resolved in one statement, and a set that names no document block costs none.
+func (s *server) resolveBlockTargets(ctx context.Context, named []refs.Target) error {
+	var addresses []string
+	for _, target := range named {
+		if target.Kind == refs.BlockNodeKind {
+			addresses = append(addresses, target.ID)
+		}
+	}
+	resolved, err := refs.ResolveFarEnds(ctx, s.deps.Store.Pool, addresses)
+	if err != nil {
+		return err
+	}
+	for index, target := range named {
+		if node, moved := resolved[target.ID]; moved && target.Kind == refs.BlockNodeKind {
+			named[index].ID = node
+		}
+	}
+	return nil
 }
 
 // wholeReferences writes, in place, the whole id into each of references whose item id or block

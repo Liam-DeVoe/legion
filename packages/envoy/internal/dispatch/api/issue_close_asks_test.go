@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -58,8 +59,21 @@ func newCloseAsksFixture(t *testing.T) closeAsksFixture {
 
 // newCloseAsksFixtureSettlingAfter is closeAsksFixture over a document service whose settle delay
 // is settle. Wherever the fixture needs a settlement it runs it itself (SettleIssueDocuments), so
-// it is built the same whatever the delay, and it leaves no document owing one.
+// it is built the same whatever the delay, and it leaves no document owing one. Its issues are
+// held unconverted: the copy is uploaded into the issue itself, and a copy inside one issue
+// stands only between documents that are each their own room
+// (TestAnUploadedCopyOfASpecOpensNoAskForItsCopiedBlocks).
 func newCloseAsksFixtureSettlingAfter(t *testing.T, settle time.Duration) closeAsksFixture {
+	t.Helper()
+	return newCloseAsksFixtureOf(t, settle, true)
+}
+
+// newCloseAsksFixtureOf is newCloseAsksFixtureSettlingAfter with the copy uploaded into the
+// fixture's issue, held unconverted, when copyInIssue, else into an issue of its own in the same
+// project, on converted issues. A copy stands only among an owner's documents
+// (docs.ownerDocuments), so the copy in an issue of its own is no copy: its block opens its own
+// ask, open and waiting on a person, in that issue, which the fixture's issue never closes.
+func newCloseAsksFixtureOf(t *testing.T, settle time.Duration, copyInIssue bool) closeAsksFixture {
 	t.Helper()
 	var documents *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
@@ -67,6 +81,9 @@ func newCloseAsksFixtureSettlingAfter(t *testing.T, settle time.Duration) closeA
 		t.Cleanup(func() { _ = documents.Shutdown(context.Background()) })
 		return documents
 	})
+	if copyInIssue {
+		holdIssuesUnconverted(t, database)
+	}
 	issue := createInteractionIssue(t, handler, "TEST", "Closing with asks", closeDecision)
 	f := closeAsksFixture{handler: handler, database: database, documents: documents, issue: issue.Key, spec: issue.PrimaryArtifactID}
 	settleDocuments := func(what string) {
@@ -78,7 +95,21 @@ func newCloseAsksFixtureSettlingAfter(t *testing.T, settle time.Duration) closeA
 	settleDocuments("the spec")
 	awaitIndexedAskBlock(t, handler, f.spec, "close-decision", "Ship it?")
 	f.blockAsk = requireBlockAsk(t, handler, f.issue, f.spec, "close-decision")
-	uploaded := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+f.issue+"/artifacts", map[string]any{
+	copyIssue, copyText := f.issue, contains(
+		`#close-decision urgency="med" multiple="false" state="open" copied_from="`+f.blockAsk+`"`,
+	)
+	if !copyInIssue {
+		created := createIssueRequest(t, handler, map[string]any{"project": "TEST", "title": "The copy's own issue", "spec": "Context\n"})
+		if created.Code != http.StatusCreated {
+			t.Fatalf("create the copy's issue: status=%d body=%s", created.Code, created.Body.String())
+		}
+		copyIssue = decodeBody[model.Issue](t, created).Key
+		ownAsk := `#close-decision urgency="med" multiple="false" state="open"`
+		copyText = func(text string) bool {
+			return strings.Contains(text, ownAsk) && !strings.Contains(text, "copied_from=")
+		}
+	}
+	uploaded := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+copyIssue+"/artifacts", map[string]any{
 		"actor": sessionActor(), "name": "spec-record.md", "content": closeDecision,
 	})
 	if uploaded.Code != http.StatusCreated {
@@ -87,10 +118,10 @@ func newCloseAsksFixtureSettlingAfter(t *testing.T, settle time.Duration) closeA
 	f.copy = decodeBody[struct {
 		Artifact model.Artifact `json:"artifact"`
 	}](t, uploaded).Artifact.ID
-	settleDocuments("the copy")
-	awaitTextShows(t, handler, f.copy, "the copy of the open decision", contains(
-		`#close-decision urgency="med" multiple="false" state="open" copied_from="`+f.blockAsk+`"`,
-	), nil)
+	if err := documents.SettleIssueDocuments(context.Background(), copyIssue); err != nil {
+		t.Fatalf("settle the copy: %v", err)
+	}
+	awaitTextShows(t, handler, f.copy, "the copy of the open decision", copyText, nil)
 	awaitSettled(t, database, f.spec, f.copy)
 	f.approvalAsk = requestApproval(t, handler, f.spec).ID
 
@@ -562,7 +593,7 @@ func TestClosingAnIssueWithdrawsADecisionBlockPastedUnderARepeatedID(t *testing.
 			if err != nil {
 				t.Fatal(err)
 			}
-			peer := connectBrowserPeer(t, documentService, issue.PrimaryArtifactID)
+			peer := connectBrowserPeer(t, handler, documentService, issue.PrimaryArtifactID)
 			peer.edit(t, func(tree *pmdoc.Node) error {
 				tree.Children = append(tree.Children, pasted.Children...)
 				return nil
@@ -768,7 +799,7 @@ func TestABrowsersDecisionBlockWrittenDuringTheCloseReadsResolved(t *testing.T) 
 	issue := createInteractionIssue(t, handler, "TEST", "A browser writes during the close", closeDecision)
 	awaitIndexedAskBlock(t, handler, issue.PrimaryArtifactID, "close-decision", "Ship it?")
 	awaitSettled(t, database, issue.PrimaryArtifactID)
-	peer := connectBrowserPeer(t, documentService, issue.PrimaryArtifactID)
+	peer := connectBrowserPeer(t, handler, documentService, issue.PrimaryArtifactID)
 	wrapper.insert = func() {
 		peer.appendParagraph(t, ":::ask{#peer-decision urgency=\"low\" multiple=\"false\"}\nWritten during the close?\n:::\n")
 		peer.barrier(t)
@@ -973,13 +1004,16 @@ func requireLiveTree(t *testing.T, documents *docs.Service, document string, par
 	}
 }
 
-// awaitSettled waits until none of documents owes a settlement.
+// awaitSettled waits until none of documents owes a settlement: until no pending-settlement row
+// stands for the room any of them is edited in, the key the settlement that clears it deletes
+// (refs.DocumentRoomSQL).
 func awaitSettled(t *testing.T, database *store.Store, documents ...string) {
 	t.Helper()
 	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
 		var pending int
 		if err := database.Pool.QueryRow(context.Background(), `
-			select count(*) from doc_settlements_pending where artifact_id = any($1::uuid[])
+			select count(*) from doc_settlements_pending
+			where artifact_id in (select `+refs.DocumentRoomSQL("owed.id")+` from unnest($1::uuid[]) as owed (id))
 		`, documents).Scan(&pending); err != nil {
 			t.Fatalf("read pending settlements: %v", err)
 		}

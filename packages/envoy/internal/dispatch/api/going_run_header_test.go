@@ -518,6 +518,89 @@ func TestAWriteNamingARunItMayNotWriteForStoresNothing(t *testing.T) {
 	}
 }
 
+// A request whose run withinGoingRun refused reaches the key layer only to be answered from its
+// key (answerRefusedRun), and that layer never runs its handler for it, whatever the key holds by
+// the time the layer reads it: withinGoingRun's look at the key and the layer's are two
+// statements, and the key can stop answering between them. A key that holds nothing - its first
+// request released it after a 5xx - is answered the run's refusal and claims no key; a first
+// request still running is 409 KEY_IN_FLIGHT; one whose lease lapsed with nothing committed is
+// answered the run's refusal and is not taken over; and one that answered is replayed, with the
+// run header part of what the repeat is judged by. The rig is the key layer alone, with the
+// refusal put on each refused request's context as withinGoingRun puts it there.
+func TestTheKeyLayerNeverRunsTheHandlerOfARefusedRun(t *testing.T) {
+	running := make(chan struct{})
+	release, releaseOnce := heldUntilReleased(t)
+	rig := newKeyedRig(t, func(run int32, w http.ResponseWriter, r *http.Request) {
+		if run == 1 {
+			close(running)
+			<-release
+		}
+		answerRun(run, w, r)
+	})
+	run := uuid.NewString()
+	send := func(key string, refused bool) *httptest.ResponseRecorder {
+		t.Helper()
+		request := httptest.NewRequest(http.MethodPost, "/test/a/writes", http.NoBody)
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("X-Dispatch-User", "alice")
+		request.Header.Set(contracts.IdempotencyKeyHeader, key)
+		request.Header.Set(contracts.GoingRunHeader, run)
+		if refused {
+			request = request.WithContext(context.WithValue(request.Context(), goingRunRefusedKey{}, goingRunRefused{login: "alice", key: key}))
+		}
+		response := httptest.NewRecorder()
+		rig.handler.ServeHTTP(response, request)
+		return response
+	}
+	refusedAs := func(what string, response *httptest.ResponseRecorder, status int, code string) {
+		t.Helper()
+		t.Logf("%s: status=%d body=%s", what, response.Code, response.Body.String())
+		if got, _ := refusalOf(t, response); response.Code != status || got != code {
+			t.Errorf("%s answers %d %s, want %d %s", what, response.Code, response.Body.String(), status, code)
+		}
+	}
+	attempt := func(key string) int {
+		t.Helper()
+		var attempt int
+		if err := rig.database.Pool.QueryRow(context.Background(),
+			`select attempt from request_keys where login = 'alice' and idempotency_key = $1`, key).Scan(&attempt); err != nil {
+			t.Fatalf("read the attempt key %s holds: %v", key, err)
+		}
+		return attempt
+	}
+
+	refusedAs("a refused run under a key that holds nothing", send("released", true), http.StatusNotFound, codeGoingRequestNotFound)
+	if rows := rig.rows(t); rows != 0 {
+		t.Errorf("a refused run under a key that holds nothing left %d request_keys rows, want none: it claims no key", rows)
+	}
+
+	answered := make(chan *httptest.ResponseRecorder, 1)
+	go func() { answered <- send("held", false) }()
+	<-running
+	refusedAs("a refused run under a key whose first request still runs", send("held", true), http.StatusConflict, contracts.IdempotencyKeyInFlight)
+	if _, err := rig.database.Pool.Exec(context.Background(), `update request_keys set leased_at = now() - interval '2 minutes'`); err != nil {
+		t.Fatalf("lapse the lease: %v", err)
+	}
+	refusedAs("a refused run under a key whose holder's lease lapsed with nothing committed", send("held", true), http.StatusNotFound, codeGoingRequestNotFound)
+	if held := attempt("held"); held != 1 {
+		t.Errorf("a refused run took over the key its holder's lapsed lease left: it holds attempt %d, want the holder's 1", held)
+	}
+	releaseOnce()
+	first := awaitResponse(t, answered)
+	if first.Code != http.StatusCreated || !strings.Contains(first.Body.String(), `"run":1`) {
+		t.Fatalf("the first request under the key: status=%d body=%s, want run 1", first.Code, first.Body.String())
+	}
+	repeat := send("held", true)
+	t.Logf("a refused run under a key whose first request answered: status=%d replayed=%t body=%s", repeat.Code, replayed(repeat), repeat.Body.String())
+	if repeat.Code != http.StatusCreated || !replayed(repeat) || repeat.Body.String() != first.Body.String() {
+		t.Errorf("a refused run under a key whose first request answered: status=%d replayed=%t body=%s, want the first answer %s replayed",
+			repeat.Code, replayed(repeat), repeat.Body.String(), first.Body.String())
+	}
+	if runs := rig.runs.Load(); runs != 1 {
+		t.Errorf("the handler ran %d times, want the first request's once: a refused run never runs it", runs)
+	}
+}
+
 // A run named in the header in another of the spellings uuid.Parse admits - RFC 4122's URN form,
 // the braced form, upper case - is the run its canonical id names, and a write made for it is
 // admitted exactly as one naming that id is. withinGoingRun sends the parsed uuid's own spelling
@@ -590,18 +673,19 @@ func TestAVersionWrittenForARunNamesTheBlocksItChanged(t *testing.T) {
 	if edited.Code != http.StatusOK && edited.Code != http.StatusCreated {
 		t.Fatalf("edit the spec under the run's header: status=%d body=%s", edited.Code, edited.Body.String())
 	}
-	spec := issue.Key + "/spec"
+	// Each block is read at the block index's own address of it (anchoredBlockAddress), under the
+	// room the spec is edited in.
 	for _, block := range []struct {
 		id   string
 		want int
 	}{{"edited", 1}, {"dropped", 1}, {"kept", 0}} {
-		if got := changedByRunCount(t, database, refs.BlockNodeKind, spec+"#"+block.id, run.ID); got != block.want {
+		if got := changedByRunCount(t, database, refs.BlockNodeKind, anchoredBlockAddress(t, database, issue.PrimaryArtifactID, block.id), run.ID); got != block.want {
 			t.Errorf("block %s holds %d changed_by_run tuples to the run, want %d", block.id, got, block.want)
 		}
 	}
 	var state string
 	if err := database.Pool.QueryRow(ctx, `select state from graph_nodes where kind = $1 and id = $2`,
-		refs.BlockNodeKind, spec+"#dropped").Scan(&state); err != nil || state != graphstore.StateGone {
+		refs.BlockNodeKind, anchoredBlockAddress(t, database, issue.PrimaryArtifactID, "dropped")).Scan(&state); err != nil || state != graphstore.StateGone {
 		t.Fatalf("the dropped block's node is %q (%v), want gone: the edit did not drop it", state, err)
 	}
 }

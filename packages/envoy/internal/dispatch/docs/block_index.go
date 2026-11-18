@@ -144,10 +144,11 @@ func (tick BlockIndexTick) OldestOwedDocumentAge(now time.Time) time.Duration {
 // RunBlockIndexReconciliation indexes what no block-aware version write indexed: every document
 // owed a block index (document_block_versions.version null) - each one at migration 0121, each
 // version any build writes (migration 0122's trigger) that its own writer did not index, and each
-// rebuild-refs marks - every document the backfill marked (store_owed_at, migration
-// 20261116221539), whose blocks' nodes, part_of tuples and parent_block_id are this release's to
-// state and which the release before this one never clears - every comment, ask and issue
-// message whose text holds `#b-`, owed an
+// rebuild-refs marks - every document holding this build's own mark (store_owed_at, migration
+// 20261116221539), which the backfill and every debt this build owes beside the null version set,
+// whose blocks' nodes, part_of tuples and parent_block_id are this release's to state and which
+// the release before this one never clears - every comment, ask and issue message whose text
+// holds `#b-`, owed an
 // index with the block grammar (block_grammar_owed, migrations 0123-0126), which a build older
 // than the block grammar indexes without, every source owed an index with this build's whole
 // grammar (refs_grammar_owed, migrations 20261103205037-20261103205042), which a build older than
@@ -876,11 +877,13 @@ func (liveAhead liveAheadDocuments) forgetUnlisted(after string, owed []owedDocu
 //
 // A document is owed in either of two ways, and each is read through its own partial index in key
 // order before the two are merged: its version is null (document_block_versions_owed), which every
-// release reads and sets; or it holds the backfill's mark, store_owed_at
-// (document_block_versions_store_owed, migration 20261116221539). The second is the one the
-// release before this one cannot clear: it neither reads nor writes that column, so a document it
-// indexes after the backfill stays listed here until a pass of this release states its blocks and
-// clears the mark (refs.IndexBlocks). A document holding both is listed by the first alone.
+// release reads and sets; or it holds this build's own mark, store_owed_at
+// (document_block_versions_store_owed, migration 20261116221539), which the backfill sets and every
+// debt this build owes beside the null version (oweDocumentIndex, refs.RebuildAll). The second is
+// the one the release before this one cannot clear: it neither reads nor writes that column, so a
+// document it indexes after either was set stays listed here until a pass of this release states
+// its blocks and clears the mark (refs.IndexBlocks). A document holding both is listed by the
+// first alone.
 func (s *Service) owedDocuments(ctx context.Context, after string) ([]owedDocument, error) {
 	var cursor any
 	if after != "" {
@@ -971,24 +974,35 @@ func (s *Service) reindexOwedText(ctx context.Context, source refs.Owed) (bool, 
 	return false, fmt.Errorf("re-index %s %s: not a kind the queue holds", source.Kind, source.ID)
 }
 
-// oweDocumentIndex owes a document a block index (document_block_versions.version null), which is
-// what a document's re-index with the whole grammar is: the batch of owed documents indexes its
-// latest version whole (indexOwedDocument, indexRenderedVersion), so its own mentions, the
-// mentions its blocks hold and the excerpt each shows are all read with this build's grammar. The
-// drain owes the work there rather than indexing the document itself because that batch is the one
-// writer of a document's index and holds the rules a document needs - its keyset cursor, the owner
-// row it indexes under, and the live text it must not date to the version that text is ahead of -
-// and because a document an older build's version write left owed is indexed by that batch in this
-// same tick.
+// oweDocumentIndex owes a document a block index, which is what a document's re-index with the
+// whole grammar is: the batch of owed documents indexes its latest version whole
+// (indexOwedDocument, indexRenderedVersion), so its own mentions, the mentions its blocks hold and
+// the excerpt each shows are all read with this build's grammar. The drain owes the work there
+// rather than indexing the document itself because that batch is the one writer of a document's
+// index and holds the rules a document needs - its keyset cursor, the owner row it indexes under,
+// and the live text it must not date to the version that text is ahead of - and because a
+// document an older build's version write left owed is indexed by that batch in this same tick.
+// A version write that leaves its blocks to that batch owes it the same way (indexDocument).
+//
+// It sets both marks a debt of this build carries: document_block_versions.version null, which
+// every release reads and drains, and store_owed_at, this build's own (migration 20261116221539),
+// which the release before this one neither reads nor clears. That release may take the
+// block-index lease first and index the document, writing every row it adds with no node and
+// stating nothing in the store, and only the second mark brings this build's pass to the document
+// after it, to name those rows' nodes and state what they project (refs.IndexBlocks). A mark the
+// document already holds keeps its time, so the debt stays dated from the write that first owed
+// it.
 //
 // A document that is gone owes no index: the row is written from the artifacts table, so nothing
 // is inserted for one. exec is the pool for a caller that owes the index on its own
 // (reindexScope), and the transaction that settles a queue row for the drain
-// (drainOwedDocument), which must owe the index and settle the row together or do neither.
+// (drainOwedDocument) or writes the version (indexDocument), which must owe the index with that
+// write or do neither.
 func oweDocumentIndex(ctx context.Context, exec refs.Execer, artifactID string) error {
 	if _, err := exec.Exec(ctx, `
-		insert into document_block_versions (artifact_id) select id from artifacts where id = $1::uuid
-		on conflict (artifact_id) do update set version = null
+		insert into document_block_versions (artifact_id, store_owed_at) select id, now() from artifacts where id = $1::uuid
+		on conflict (artifact_id) do update set version = null,
+			store_owed_at = coalesce(document_block_versions.store_owed_at, excluded.store_owed_at)
 	`, artifactID); err != nil {
 		return fmt.Errorf("owe document %s a block index: %w", artifactID, err)
 	}
@@ -1076,6 +1090,12 @@ func (s *Service) reindexScope(ctx context.Context, doc string) error {
 //
 // A pair the index inserts takes the version's created_at, and the source_seq of the event that
 // recorded the version (stampVersionEvent).
+//
+// The pass is the reconciliation's (indexRenderedVersion's tick): it runs only on a document owed
+// by either mark, and wherever it wins it also writes the node of each version of the document
+// that holds none, with no version of its own left out, since this tick writes none. So a version
+// the release before wrote during a roll stands at this tick rather than at the next run of the
+// backfill, whichever mark it left.
 func (s *Service) indexOwedDocument(ctx context.Context, document owedDocument) (indexed, liveAhead bool, err error) {
 	if document.version == 0 {
 		return false, false, nil
@@ -1147,7 +1167,7 @@ func (s *Service) indexOwedDocument(ctx context.Context, document owedDocument) 
 	if err != nil {
 		return false, false, err
 	}
-	_, write, err := s.indexRenderedVersion(ctx, tx, document.id, refs.OneVersion(document.id, version, versionAt), markdown, blocks, nil, nil)
+	_, write, err := s.indexRenderedVersion(ctx, tx, document.id, refs.OneVersion(document.id, version, versionAt), nil, true, markdown, blocks, nil, nil)
 	if err != nil {
 		return false, false, err
 	}
@@ -1266,6 +1286,10 @@ func (s *Service) indexOwed(ctx context.Context, document owedDocument) owedOutc
 // artifact of the room, the tree's own included: the pass's fence (refs.IndexBlocks) clears the
 // marks of the documents it indexes, and a document holding no version is cleared here.
 //
+// The pass is the reconciliation's, as for one document: wherever it wins it also writes the node
+// of each version of every document of the room it covers that holds none (indexRenderedVersion's
+// tick, with no version of its own left out).
+//
 // A room no document has joined yet is the tree artifact alone, one fragment, a room that is its
 // own document: its tree is indexed as one, through indexOwedDocument, at its newest version,
 // which the room's revision then is (roomRevisionSQL).
@@ -1335,6 +1359,9 @@ func (s *Service) indexOwedRoom(ctx context.Context, document owedDocument) (ind
 		return false, false, false, err
 	}
 	versions := refs.Versions{}
+	// markdowns is each fragment's own rendering: one that renders as no text holds no block
+	// (withoutSilentFragments).
+	markdowns := make([]string, len(documents))
 	for index, fragment := range documents {
 		if latest[index].number == 0 {
 			parts[index] = &pmdoc.Node{Type: parts[index].Type, Attrs: parts[index].Attrs}
@@ -1350,6 +1377,7 @@ func (s *Service) indexOwedRoom(ctx context.Context, document owedDocument) (ind
 		if markedAt != nil && markdown != latest[index].markdown {
 			return false, true, false, nil
 		}
+		markdowns[index] = markdown
 	}
 	if len(versions) > 0 {
 		joined, joinedCounts := joinFragments(parts)
@@ -1357,6 +1385,7 @@ func (s *Service) indexOwedRoom(ctx context.Context, document owedDocument) (ind
 		if err != nil {
 			return false, false, false, err
 		}
+		offsets = withoutSilentFragments(offsets, parts, func(index int) bool { return markdowns[index] == "" })
 		blocks := offsetBlocks(offsets, read.layout.blockDocuments(room, joined, joinedCounts))
 		// The events that recorded each version are read before the pass, as for one document:
 		// each document's is the cause of the facts the pass states of its blocks.
@@ -1366,7 +1395,7 @@ func (s *Service) indexOwedRoom(ctx context.Context, document owedDocument) (ind
 				return false, false, false, err
 			}
 		}
-		index, err := s.indexRoom(ctx, tx, room, versions, markdown, blocks, joined, nil)
+		index, err := s.indexRoom(ctx, tx, room, versions, nil, true, markdown, blocks, joined, nil)
 		if err != nil {
 			return false, false, false, err
 		}
@@ -1415,9 +1444,11 @@ func (s *Service) roomTree(ctx context.Context, room string, layout roomLayout) 
 
 // indexRoom is indexRenderedVersion over an issue room, under its tree artifact room, at the
 // version of each fragment's document (versions): the room's own pass, which a settlement of the
-// room and its reconciliation run alike. It answers what the pass stated, parted by the document
-// each fact is of (roomFacts), and the reference changes the pass moved.
-func (s *Service) indexRoom(ctx context.Context, tx pgx.Tx, room string, versions refs.Versions, markdown string, blocks []model.ArtifactBlock, tree *pmdoc.Node, settled *askBlockSources) (roomIndex, error) {
+// room and its reconciliation run alike. written is the versions of those this transaction wrote,
+// whose nodes its caller writes after the pass, and tick is set by the reconciliation alone
+// (indexRenderedVersion). It answers what the pass stated, parted by the document each fact is of
+// (roomFacts), and the reference changes the pass moved.
+func (s *Service) indexRoom(ctx context.Context, tx pgx.Tx, room string, versions, written refs.Versions, tick bool, markdown string, blocks []model.ArtifactBlock, tree *pmdoc.Node, settled *askBlockSources) (roomIndex, error) {
 	var refKey string
 	var heldBlocks, heldDocuments []string
 	if err := tx.QueryRow(ctx, `
@@ -1437,7 +1468,7 @@ func (s *Service) indexRoom(ctx context.Context, tx pgx.Tx, room string, version
 			documents[block.ID] = block.Document
 		}
 	}
-	changes, write, err := s.indexRenderedVersion(ctx, tx, room, versions, markdown, blocks, tree, settled)
+	changes, write, err := s.indexRenderedVersion(ctx, tx, room, versions, written, tick, markdown, blocks, tree, settled)
 	if err != nil {
 		return roomIndex{}, err
 	}

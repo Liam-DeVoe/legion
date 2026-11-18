@@ -16,17 +16,19 @@ import (
 const TupleMovedTo = "moved_to"
 
 // MovedToHops is how many moved_to tuples a reader follows from one address before it reads the
-// address as resolving to no block. block_moved_to, the SQL function every resolver reads a move
-// through (migration 20261117002006), holds the same bound in its loop, and the census follows a
-// far end no further (graphcensus' storeOnlyRead).
+// address as resolving to no block. block_moved_to, the SQL function every resolver reads an
+// address through (migrations 20261117002006 and 20261118165901), holds the same bound in its
+// loop, and the census follows a far end no further (graphcensus' storeOnlyRead).
 const MovedToHops = 8
 
-// MovedTo answers the block address a document_blocks row holds that the moved_to tuples from
-// address reach, and true: address itself when a row holds it, else the far end of the newest
-// moved_to that address states now, read through graph_tuples_as_of_out as AsOfOut reads a
-// relation, and so on from there, each step leaving an address no row holds. It answers false
-// where the chain stops before a block that stands: an address that states no moved_to, a far
-// end that is no block, a cycle, or a chain longer than MovedToHops.
+// MovedTo answers the block address a document_blocks row holds that address resolves to, and
+// true, in one order (T17 of this branch's plan): the far end of the newest moved_to
+// that address states now, read as AsOfOut reads a relation, and so on from there while another
+// current moved_to stands at the far end; then, where no tuple stands, the same block id in the
+// room the reached address's document is edited in (its document_rooms row: the node
+// `<tree ref_key>#<block id>` of an issue room); then the reached address itself. It answers false
+// where neither of the last two is held, and where the walk stops early: a far end that is no
+// block, a cycle, or a chain longer than MovedToHops.
 //
 // From a document's address, its ref_key, which holds no '#' where a block's address always
 // holds one, it answers the id of the lens the newest moved_to that address states points at, and
@@ -35,8 +37,8 @@ const MovedToHops = 8
 // moved_to, and for one whose lens is gone.
 //
 // The rule is block_moved_to's, called here alone, so the reading of api's blockReferenceNode and
-// getReferences and the readings refs.Closure and refs.BlockLinks make inside their own
-// statements are one rule.
+// the readings refs.Closure, refs.BlockLinks, refs.BlockTargets and the block index's pointer
+// writer make inside their own statements (refs.ResolvedBlockSQL) are one rule.
 func MovedTo(ctx context.Context, q Queryer, address string) (string, bool, error) {
 	var reached *string
 	if err := q.QueryRow(ctx, `select block_moved_to($1)`, address).Scan(&reached); err != nil {

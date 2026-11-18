@@ -15,6 +15,7 @@ import (
 	"github.com/reearth/ygo/persistence"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // A document's pending authors - every author whose change no committed version lists yet - are
@@ -233,22 +234,25 @@ type uploadHold struct {
 	hold *roomHold
 }
 
-// capturePendingAuthors reads R in tx, which holds the document's advisory lock, with the
-// document's latest person sender (readLastPerson), and takes whom a version lists
-// (captureAuthors), with the in-flight credits observed through `through`, under room's state
-// lock.
-func (s *Service) capturePendingAuthors(ctx context.Context, tx pgx.Tx, room string, write *liveWrite, actor *model.Actor, through uint64) (authorCapture, error) {
-	owed, err := readPendingAuthors(ctx, tx, room)
+// capturePendingAuthors reads R in tx, which holds the room's advisory lock, with the room's latest
+// person sender (readLastPerson), and takes whom a version of the target's document lists
+// (captureAuthors), with the in-flight credits observed through `through`, under the room's state
+// lock. A document of an issue room reads its own R rows - the ones an update that changed its
+// fragment wrote under it (pendingAuthorsIn) - and takes only the in-flight credits of updates that
+// changed its fragment (inflightCredit.documents): nobody is listed on a version of a document
+// whose fragment no change of theirs touched.
+func (s *Service) capturePendingAuthors(ctx context.Context, tx pgx.Tx, target liveTarget, write *liveWrite, actor *model.Actor, through uint64) (authorCapture, error) {
+	owed, err := readPendingAuthors(ctx, tx, target.document)
 	if err != nil {
 		return authorCapture{}, err
 	}
-	durableLatest, err := readLastPerson(ctx, tx, room)
+	durableLatest, err := readLastPerson(ctx, tx, target.room)
 	if err != nil {
 		return authorCapture{}, err
 	}
-	state := s.lockState(room)
-	defer s.unlockState(room, state)
-	return captureAuthors(state, owed, durableLatest, write, actor, through), nil
+	state := s.lockState(target.room)
+	defer s.unlockState(target.room, state)
+	return captureDocumentAuthors(state, owed, durableLatest, write, actor, through, target.document), nil
 }
 
 // everyCredit bounds no in-flight credit: a capture through it takes every credit its room has
@@ -282,6 +286,13 @@ const everyCredit = math.MaxUint64
 // that never loaded the document does. actor, the version's writer, names nobody by itself: an
 // agent writing a named version over someone's edit did not make that edit.
 func captureAuthors(state *roomState, owed map[string]model.Actor, durableLatest *model.Actor, write *liveWrite, actor *model.Actor, through uint64) authorCapture {
+	return captureDocumentAuthors(state, owed, durableLatest, write, actor, through, "")
+}
+
+// captureDocumentAuthors is captureAuthors for a version of document, a document of an issue room,
+// which takes only the in-flight credits whose update changed its fragment (inflightCredit.documents)
+// or that name no document, a room that is its own document's; "" takes every credit.
+func captureDocumentAuthors(state *roomState, owed map[string]model.Actor, durableLatest *model.Actor, write *liveWrite, actor *model.Actor, through uint64, document string) authorCapture {
 	capture := authorCapture{
 		state:    state,
 		authors:  make(map[string]model.Actor, len(owed)+1),
@@ -292,6 +303,11 @@ func captureAuthors(state *roomState, owed map[string]model.Actor, durableLatest
 		capture.rAuthors = append(capture.rAuthors, author)
 	}
 	capture.inflight = state.unconsumedInflightLocked(through)
+	if document != "" {
+		capture.inflight = slices.DeleteFunc(capture.inflight, func(record *inflightCredit) bool {
+			return record.documents != nil && !slices.Contains(record.documents, document)
+		})
+	}
 	for _, record := range capture.inflight {
 		mergeAuthors(capture.authors, record.authors)
 	}
@@ -731,10 +747,10 @@ func updateOwedStatement(room string, owed owedUpdates) (writeStatement, error) 
 	return settlementPendingStatement([]string{room}, owed.lastActor, owed.credited, true, owed.person, owed.setPerson)
 }
 
-// markSettlementPending records, in tx, that each document of rooms owes a settlement
-// (settlementPendingStatement).
-func markSettlementPending(ctx context.Context, tx pgx.Tx, rooms []string, lastActor *model.Actor, setLastActor, updateMarkedAt bool, person *model.Actor, setPerson bool) error {
-	statement, err := settlementPendingStatement(rooms, lastActor, setLastActor, updateMarkedAt, person, setPerson)
+// markSettlementPending records, in tx, that each of documents owes a settlement, keyed by the room
+// it is edited in (settlementPendingStatement).
+func markSettlementPending(ctx context.Context, tx pgx.Tx, documents []string, lastActor *model.Actor, setLastActor, updateMarkedAt bool, person *model.Actor, setPerson bool) error {
+	statement, err := settlementPendingStatement(documents, lastActor, setLastActor, updateMarkedAt, person, setPerson)
 	if err != nil {
 		return err
 	}
@@ -766,7 +782,10 @@ func latestPersonOf(sender *model.Actor, creditsPerson bool) (person *model.Acto
 }
 
 // settlementPendingStatement is the one statement that records, in the transaction that appends a
-// document update, that each document of rooms owes a settlement. With setLastActor it also
+// document update, that each of documents owes a settlement. The row is the room's that the
+// document is edited in (refs.DocumentRoomSQL), the key its settlement clears it by
+// (clearSettlementPending): a document converted into its issue's room owes that room's
+// settlement, and a document that is its own room its own. With setLastActor it also
 // records lastActor as the latest edit source that settlement names on its events, nil for an edit
 // no one peer can be credited with (creditContentChange); without it each row keeps the one it
 // has, and a row it inserts takes the document's closed edit source (doc_closed_edit_sources), the
@@ -790,7 +809,7 @@ func latestPersonOf(sender *model.Actor, creditsPerson bool) (person *model.Acto
 // many there are. updateMarkedAt is true for a newly appended update and for an owed copy:
 // recording the latest edit source after a write or while closing an issue must not make an old
 // row wait another resumption age.
-func settlementPendingStatement(rooms []string, lastActor *model.Actor, setLastActor, updateMarkedAt bool, person *model.Actor, setPerson bool) (writeStatement, error) {
+func settlementPendingStatement(documents []string, lastActor *model.Actor, setLastActor, updateMarkedAt bool, person *model.Actor, setPerson bool) (writeStatement, error) {
 	encoded, err := encodeActor(lastActor)
 	if err != nil {
 		return writeStatement{}, fmt.Errorf("encode the document's latest edit source: %w", err)
@@ -806,13 +825,13 @@ func settlementPendingStatement(rooms []string, lastActor *model.Actor, setLastA
 			case when $3 then $2::jsonb
 				else (select kept.last_actor from doc_closed_edit_sources kept where kept.artifact_id = owed.id) end,
 			$5::jsonb
-		from unnest($1::uuid[]) as owed(id)
+		from (select distinct ` + refs.DocumentRoomSQL("listed.id") + ` as id from unnest($1::uuid[]) as listed(id)) owed
 		on conflict (artifact_id) do update set
 			last_actor = case when $3 then excluded.last_actor else doc_settlements_pending.last_actor end,
 			marked_at = case when $4 then now() else doc_settlements_pending.marked_at end,
 			last_person = case when $6 then excluded.last_person else doc_settlements_pending.last_person end
 	`,
-		args: []any{rooms, encoded, setLastActor, updateMarkedAt, encodedPerson, setPerson},
+		args: []any{documents, encoded, setLastActor, updateMarkedAt, encodedPerson, setPerson},
 		what: "record the document's pending settlement",
 	}, nil
 }

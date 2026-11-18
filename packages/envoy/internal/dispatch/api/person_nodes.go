@@ -260,6 +260,8 @@ func (s *server) listPersonNodes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !shown {
+		// caller.ID is the acting person's canonical login (actingPerson), the form login takes
+		// above, so a login spelled in another case is still the reader's own.
 		if login != caller.ID {
 			writeError(w, "NOT_FOUND", http.StatusNotFound, "not found")
 			return

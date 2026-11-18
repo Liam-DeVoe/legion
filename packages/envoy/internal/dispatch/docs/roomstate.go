@@ -164,8 +164,11 @@ type roomState struct {
 	// (closeReservedRoom). reservedFor is the instance that close checked: a reservation outlasts
 	// that instance when it is retired and a load replaces it on this state before the close
 	// returns, and the replacement is not the reserving close's to answer for (closeRoomBehindHead).
+	// reserved is closed when that close returns, for a caller that waits the reservation out
+	// (awaitReservedClose); nil while no close is reserved.
 	reloading   bool
 	reservedFor *crdt.Doc
+	reserved    chan struct{}
 	// released marks a state the service has forgotten (forgetLocked), so a lookup that found it
 	// before it went takes the document's current state instead.
 	released bool

@@ -307,7 +307,7 @@ func (r *StoreReport) Refused() bool {
 var projections = slices.Concat(
 	commentProjections, blockProjections, runProjections, actorProjections, decisionProjections,
 	issueProjections, componentProjections, resultProjections, versionProjections, refProjections,
-	approvalProjections, searchProjections, citationProjections, queryRoleProjections,
+	approvalProjections, searchProjections, citationProjections, queryRoleProjections, anchorProjections,
 	visibilityStateProjections,
 )
 
@@ -325,7 +325,7 @@ var projections = slices.Concat(
 var backfillPasses = slices.Concat(
 	blockBackfills, commentBackfills, runBackfills, actorBackfills, projectBackfills, decisionBackfills,
 	issueBackfills, componentBackfills, resultBackfills, versionBackfills, refBackfills,
-	approvalBackfills, searchBackfills, citationBackfills, queryRoleBackfills,
+	approvalBackfills, searchBackfills, citationBackfills, queryRoleBackfills, anchorBackfills,
 )
 
 // commentBackfills are the backfill's pass over the comments (backfillComments).
@@ -506,7 +506,9 @@ func kindIn(column string, kinds []string) string {
 // (grapherase's readBlockers): a tuple of any other kind into a node - a requirement's
 // constrained_by to a constraint, a changed_by_run to a run - is no row's to state, so erasing the
 // node it points at, and the tuple with it, leaves no row stating a link the store no longer
-// holds.
+// holds. A comment's anchored_in is no blocker either: the erase of the block it names deletes it,
+// and its row states no anchored_in to a block erased since the comment was written
+// (graphstore.AnchorBlockAddressSQL), as the erase leaves the comment's anchored_to and its row.
 func DigestedTuple(t string) string {
 	return `((` + t + `.from_kind = '` + graphstore.KindComment + `' and ` + kindIn(t+".kind", commentLinkKinds) + `)
 		or (` + t + `.from_kind = '` + refs.BlockNodeKind + `' and not ` + lensBlockID(t+".from_id") + `

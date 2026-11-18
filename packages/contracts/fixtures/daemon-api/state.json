@@ -7,8 +7,8 @@
     "startedAt": "2026-09-22T09:15:02Z"
   },
   "contract": {
-    "daemon": 158,
-    "caller": 158
+    "daemon": 161,
+    "caller": 161
   },
   "admission": {
     "cap": 5,
@@ -917,7 +917,6 @@
           "-c",
           "echo fixture-setup"
         ],
-        "skills_repository": "acme/agent-skills",
         "test_postgres": false,
         "repository_cache": {
           "volume": "40Gi",

@@ -129,7 +129,7 @@ func askAnswers(ctx context.Context, tx pgx.Tx, ids []string) (map[string]askAns
 	rows, err := tx.Query(ctx, `
 		select k.id::text, coalesce(answer.to_id, $2), k.issue_key, a.project_key, coalesce(a.slug, ''),
 		       k.node_kind is not null and k.node_address is not null
-		from asks k join artifacts a on a.id = k.block_artifact_id
+		from asks k join artifacts a on a.id = `+refs.AskBlockDocumentSQL("k")+`
 		left join lateral (
 			select t.to_id, t.asserted from graph_tuples t
 			where t.from_kind = $3 and t.from_id = k.id::text and t.kind = $4 and t.to_kind = $5
@@ -170,7 +170,7 @@ func askAnswers(ctx context.Context, tx pgx.Tx, ids []string) (map[string]askAns
 func blockAsks(ctx context.Context, tx pgx.Tx, artifactID string, blockIDs []string) (map[string]model.Ask, error) {
 	rows, err := tx.Query(ctx, `
 		select `+AskColumns+`
-		from asks a where a.block_artifact_id = $1 and a.block_id = any($2::text[])
+		from asks a where `+refs.AsksOfFragmentBlocksSQL("a", "$1::uuid", "$2::text[]")+`
 	`, artifactID, blockIDs)
 	if err != nil {
 		return nil, fmt.Errorf("read the asks of document %s: %w", artifactID, err)

@@ -16,9 +16,11 @@ import (
 
 	gws "github.com/gorilla/websocket"
 	"github.com/jackc/pgx/v5"
+	"github.com/reearth/ygo/crdt"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -349,12 +351,11 @@ func TestAnUntouchedDocumentIsRemovedWholeAndATouchedOneIsRefused(t *testing.T) 
 		// A document somebody typed in: the write goes into its room, and nothing settles it
 		// into a version while this server's settlement is held back, so what it holds is a
 		// doc_updates row above the version's cursor - the durable terms the removal reads a
-		// room in.
+		// room in - and, for a document of an issue room, its own fragment of the room reading
+		// otherwise than its version. It is typed in once every other document is made (below):
+		// a write to an issue room's document indexes the room only while every other fragment
+		// reads as its version, so the citing upload below is indexed before this edit stands.
 		typed := emptyDocument(t, handler, issue.Key, "Typed notes")
-		if _, err := replaceDocumentText(database, deps.Docs, typed.ID, "# Typed\n\nA passage.\n",
-			model.Actor{Kind: "user", ID: "alice"}); err != nil {
-			t.Fatalf("type into the document's room: %v", err)
-		}
 		commented := emptyDocument(t, handler, issue.Key, "Commented notes")
 		asked := emptyDocument(t, handler, issue.Key, "Asked notes")
 		approved := emptyDocument(t, handler, issue.Key, "Approved notes")
@@ -368,14 +369,22 @@ func TestAnUntouchedDocumentIsRemovedWholeAndATouchedOneIsRefused(t *testing.T) 
 		// A comment and an ask of an issue name one of its documents through their anchor and,
 		// for an ask written back as a question block, through block_artifact_id: the artifact_id
 		// column of each is for a project's documents (comments_one_owner, asks_one_owner), which
-		// this route does not remove.
+		// this route does not remove. An ask block of a converted document is keyed as the room's
+		// settlement writes it: its row names the room the document is edited in as its
+		// block_artifact_id, and the room's issue_room_blocks row names the document whose
+		// fragment holds the block (refs.AsksOfDocumentSQL).
 		seedExec(t, database, "a comment anchored in a document", `
 			insert into comments (issue_key, author, body, anchor)
 			values ($1, '{"kind":"user","id":"alice"}', 'A remark on the notes.', jsonb_build_object('artifact_id', $2::text))
 		`, issue.Key, commented.ID)
+		seedExec(t, database, "the question block's place in the room", `
+			insert into issue_room_blocks (tree_artifact_id, block_id, document_id)
+			select room, 'q1', $1::uuid from (select `+refs.DocumentRoomSQL("$1::uuid")+` as room) placed
+			where room <> $1::uuid
+		`, asked.ID)
 		seedExec(t, database, "an ask written back as a question block", `
 			insert into asks (issue_key, author, question, block_artifact_id, block_id)
-			values ($1, '{"kind":"user","id":"alice"}', 'Which way?', $2::uuid, 'q1')
+			values ($1, '{"kind":"user","id":"alice"}', 'Which way?', `+refs.DocumentRoomSQL("$2::uuid")+`, 'q1')
 		`, issue.Key, asked.ID)
 		if requested := sessionRequest(t, handler, http.MethodPost,
 			"/api/v1/artifacts/"+approved.ID+"/approval-requests", map[string]any{"actor": sessionActor()}); requested.Code != http.StatusCreated {
@@ -443,6 +452,10 @@ func TestAnUntouchedDocumentIsRemovedWholeAndATouchedOneIsRefused(t *testing.T) 
 			returning id::text
 		`, issue.Key).Scan(&versionlessID); err != nil {
 			t.Fatalf("write a document row holding no version: %v", err)
+		}
+		if _, err := replaceDocumentText(database, deps.Docs, typed.ID, "# Typed\n\nA passage.\n",
+			model.Actor{Kind: "user", ID: "alice"}); err != nil {
+			t.Fatalf("type into the document's room: %v", err)
 		}
 		versionless := readDocument(t, handler, versionlessID)
 
@@ -542,26 +555,30 @@ func TestAnUntouchedDocumentIsRemovedWholeAndATouchedOneIsRefused(t *testing.T) 
 		document := emptyDocument(t, handler, issue.Key, "Raced notes")
 
 		// What a room's batch of browser updates holds on any process while it appends: the
-		// document's lock, taken here as the transaction-level form of the session lock that
-		// batch's opening pipeline takes (docs/room_appends.go), and the doc_updates row it has
-		// written and not committed. Such a writer takes no owner row, so the issue's row the
-		// removal holds does not order it: the room's lock is what does.
+		// room's lock, taken here as the transaction-level form of the session lock that batch's
+		// opening pipeline takes (docs/room_appends.go), and the doc_updates row it has written
+		// and not committed. Such a writer takes no owner row, so the issue's row the removal
+		// holds does not order it: the room's lock is what does. The issue is converted, so the
+		// document's room is the issue's (its read's room).
+		if document.Room == document.ID {
+			t.Fatalf("the document %s is its own room, want a fragment of its issue's room", document.ID)
+		}
 		appending, err := database.Pool.Begin(ctx)
 		if err != nil {
 			t.Fatalf("begin the append in flight: %v", err)
 		}
 		defer appending.Rollback(context.Background())
-		if _, err := appending.Exec(ctx, `select pg_advisory_xact_lock(hashtext($1))`, document.ID); err != nil {
+		if _, err := appending.Exec(ctx, `select pg_advisory_xact_lock(hashtext($1))`, document.Room); err != nil {
 			t.Fatalf("hold the document's room lock: %v", err)
 		}
-		// The update is the document's own first one over again, which decodes and adds nothing:
-		// what the removal reads of it is its version, above the one the document's version was
-		// stamped at (writeDocumentVersion), which is an edit that has not settled.
+		// The update is a keystroke into the document's own fragment: what the removal reads of
+		// it is that fragment reading otherwise than the document's version, which is an edit
+		// that has not settled.
 		appended, err := appending.Exec(ctx, `
 			insert into doc_updates (artifact_id, version, update, content_changed)
-			select $1::uuid, max(version) + 1, (array_agg(update order by version desc))[1], true
+			select $1::uuid, max(version) + 1, $2, true
 			from doc_updates where artifact_id = $1::uuid
-		`, document.ID)
+		`, document.Room, keystrokeUpdate(document.ID, "Raced words."))
 		if err != nil {
 			t.Fatalf("append to the document while the removal runs: %v", err)
 		}
@@ -644,15 +661,20 @@ func TestAnUntouchedDocumentIsRemovedWholeAndATouchedOneIsRefused(t *testing.T) 
 			t.Fatalf("the settlement pass over the untouched document wrote %#v (%v); want nothing written", version, err)
 		}
 		// The room is read live before the removal, so what is said of it after is said of a room
-		// that existed.
-		if rooms := documents.ResidentRooms(); !slices.Contains(rooms, document.ID) {
-			t.Fatalf("this process holds the rooms %v, and not %s, whose room the removal must close", rooms, document.ID)
+		// that existed. The issue is converted, so the document's room is the issue's (its read's
+		// room), which the removal closes so that it loads again without the document.
+		room := document.Room
+		if room == document.ID {
+			t.Fatalf("the document %s is its own room, want a fragment of its issue's room", document.ID)
+		}
+		if rooms := documents.ResidentRooms(); !slices.Contains(rooms, room) {
+			t.Fatalf("this process holds the rooms %v, and not %s, whose room the removal must close", rooms, room)
 		}
 
 		removedDocument(t, roomHandler, document.ID)
 
-		if rooms := documents.ResidentRooms(); slices.Contains(rooms, document.ID) {
-			t.Fatalf("this process still holds the room of the removed document %s: %v", document.ID, rooms)
+		if rooms := documents.ResidentRooms(); slices.Contains(rooms, room) || slices.Contains(rooms, document.ID) {
+			t.Fatalf("this process still holds the room %s of the removed document %s: %v", room, document.ID, rooms)
 		}
 		// Nothing settles against the row that has gone: the eviction ended what the room had
 		// armed, so a settle window passes with no room loaded again and nothing said about the
@@ -660,7 +682,8 @@ func TestAnUntouchedDocumentIsRemovedWholeAndATouchedOneIsRefused(t *testing.T) 
 		// request's own line is not one of the lines read.
 		logs := captureLogs(t)
 		if testwait.Holds(time.Second, 10*time.Millisecond, func() bool {
-			return slices.Contains(documents.ResidentRooms(), document.ID) || strings.Contains(logs.String(), document.ID)
+			rooms := documents.ResidentRooms()
+			return slices.Contains(rooms, room) || slices.Contains(rooms, document.ID) || strings.Contains(logs.String(), document.ID)
 		}) {
 			t.Fatalf("the service read the removed document %s again: rooms=%v log=%s",
 				document.ID, documents.ResidentRooms(), logs.Lines(document.ID))
@@ -701,7 +724,12 @@ func TestAnUntouchedDocumentIsRemovedWholeAndATouchedOneIsRefused(t *testing.T) 
 		awaitLockWaits(t, ctx, queueDatabase, "the removal never queued for the issue's row", func(waiting func(string) int) bool {
 			return waiting("%select status, closed_at is null from issues where key = $1 for no key update%") == 1
 		})
-		documents.SettleNow(document.ID)
+		// The issue is converted, so the settlement that versions the document is its room's, the
+		// issue's (the document's read's room).
+		if document.Room == document.ID {
+			t.Fatalf("the document %s is its own room, want a fragment of its issue's room", document.ID)
+		}
+		documents.SettleNow(document.Room)
 		awaitLockWaits(t, ctx, queueDatabase, "the settlement never queued for the issue's row behind the removal", func(waiting func(string) int) bool {
 			return waiting("%select closed_at is null from issues where key = $1 for no key update%") == 1
 		})
@@ -806,7 +834,13 @@ func TestARemovedDocumentsRoomClosesOnEveryProcess(t *testing.T) {
 
 	// Each process is read holding a room of the document, so what is said of the two rooms
 	// after the removal is said of rooms that existed. The removing process loaded its own when
-	// the document was made.
+	// the document was made. The issue is converted, so the document's room is the issue's (its
+	// read's room), which the removal closes on every process so that it loads again without the
+	// document.
+	room := document.Room
+	if room == document.ID {
+		t.Fatalf("the document %s is its own room, want a fragment of its issue's room", document.ID)
+	}
 	for _, process := range []struct {
 		what    string
 		service *docs.Service
@@ -818,39 +852,41 @@ func TestARemovedDocumentsRoomClosesOnEveryProcess(t *testing.T) {
 			t.Fatalf("%s reads the live document as %q, %v; want the empty document it was made as", process.what, text, err)
 		}
 		if !testwait.Holds(testwait.Bounded(t, 30*time.Second, time.Second), testwait.Poll, func() bool {
-			return slices.Contains(process.service.ResidentRooms(), document.ID)
+			return slices.Contains(process.service.ResidentRooms(), room)
 		}) {
 			t.Fatalf("%s holds the rooms %v, and not %s, whose room the removal must close",
-				process.what, process.service.ResidentRooms(), document.ID)
+				process.what, process.service.ResidentRooms(), room)
 		}
 	}
 
 	removedDocument(t, handler, document.ID)
+	appendsAtRemoval := documentAppendCount(t, database, room)
 
 	// The second process hears the removal over the database and closes its room. The wait is
 	// for the notification's trip, not for a retry: nothing announces this twice.
 	if !testwait.Holds(testwait.Bounded(t, 30*time.Second, time.Second), testwait.Poll, func() bool {
-		return !slices.Contains(holding.ResidentRooms(), document.ID)
+		return !slices.Contains(holding.ResidentRooms(), room)
 	}) {
-		t.Fatalf("the second process still holds the room of the removed document %s: %v; its next append meets a foreign key that no longer resolves",
-			document.ID, holding.ResidentRooms())
+		t.Fatalf("the second process still holds the room %s of the removed document %s: %v; its next append meets a foreign key that no longer resolves",
+			room, document.ID, holding.ResidentRooms())
 	}
-	if rooms := removing.ResidentRooms(); slices.Contains(rooms, document.ID) {
-		t.Fatalf("the removing process still holds the room of %s: %v", document.ID, rooms)
+	if rooms := removing.ResidentRooms(); slices.Contains(rooms, room) || slices.Contains(rooms, document.ID) {
+		t.Fatalf("the removing process still holds the room %s of %s: %v", room, document.ID, rooms)
 	}
 	// The person who held it open on the second process is left holding no live room: the close
 	// takes their socket with it, and their browser reconnects to a document that has gone.
 	waitForDocumentConnectionClose(t, connection)
 	// No append of either room reached the database after the removal, and neither process takes
-	// the room up again: a settle window passes with doc_updates holding nothing of the document
-	// and no room of it resident anywhere.
+	// the room up again: a settle window passes with doc_updates holding nothing of the document,
+	// nothing more of its room than the removal left, and no room of it resident anywhere.
 	if testwait.Holds(time.Second, testwait.Poll, func() bool {
-		return documentAppendCount(t, database, document.ID) > 0 ||
-			slices.Contains(holding.ResidentRooms(), document.ID) ||
-			slices.Contains(removing.ResidentRooms(), document.ID)
+		return documentAppendCount(t, database, document.ID) > 0 || documentAppendCount(t, database, room) > appendsAtRemoval ||
+			slices.Contains(holding.ResidentRooms(), room) ||
+			slices.Contains(removing.ResidentRooms(), room)
 	}) {
-		t.Fatalf("after the removal of %s the store holds %d appends of it, the second process the rooms %v and the removing process %v",
-			document.ID, documentAppendCount(t, database, document.ID), holding.ResidentRooms(), removing.ResidentRooms())
+		t.Fatalf("after the removal of %s the store holds %d appends of it and %d of its room (%d at the removal), the second process the rooms %v and the removing process %v",
+			document.ID, documentAppendCount(t, database, document.ID), documentAppendCount(t, database, room), appendsAtRemoval,
+			holding.ResidentRooms(), removing.ResidentRooms())
 	}
 	assertNoRowNamesTheDocument(t, database, document.ID)
 
@@ -898,11 +934,12 @@ func TestARemovedDocumentsRoomClosesOnEveryProcess(t *testing.T) {
 	if text, err := third.Text(ctx, untouched.ID); err != nil || text != "" {
 		t.Fatalf("the third process reads the live document as %q, %v; want the empty document it was made as", text, err)
 	}
+	// The third process holds the issue's room, which the document's socket was admitted to.
 	if !testwait.Holds(testwait.Bounded(t, 30*time.Second, time.Second), testwait.Poll, func() bool {
-		return slices.Contains(third.ResidentRooms(), untouched.ID)
+		return slices.Contains(third.ResidentRooms(), untouched.Room)
 	}) {
 		t.Fatalf("the third process holds the rooms %v, and not %s, whose room the removal must close",
-			third.ResidentRooms(), untouched.ID)
+			third.ResidentRooms(), untouched.Room)
 	}
 
 	removedDocument(t, handler, untouched.ID)
@@ -917,12 +954,28 @@ func TestARemovedDocumentsRoomClosesOnEveryProcess(t *testing.T) {
 		t.Fatal("the third process's listener hub never listened after the test let its dial through")
 	}
 	if !testwait.Holds(testwait.Bounded(t, 30*time.Second, time.Second), testwait.Poll, func() bool {
-		return !slices.Contains(third.ResidentRooms(), untouched.ID)
+		return !slices.Contains(third.ResidentRooms(), untouched.Room)
 	}) {
-		t.Fatalf("the third process, whose hub was between connections when %s was removed, still holds the room of it after its LISTEN stood again: %v; it holds a resident room over a deleted row, and its next append meets the doc_updates foreign key",
-			untouched.ID, third.ResidentRooms())
+		t.Fatalf("the third process, whose hub was between connections when %s was removed, still holds its room %s after its LISTEN stood again: %v; it holds a resident room over a deleted row, and its next append meets the doc_updates foreign key",
+			untouched.ID, untouched.Room, third.ResidentRooms())
 	}
 	assertNoRowNamesTheDocument(t, database, untouched.ID)
+}
+
+// keystrokeUpdate is a browser's keystroke into the fragment named fragment of an issue room, as
+// one Yjs update of a client of its own: a new paragraph holding text, which the room takes beside
+// what the fragment holds.
+func keystrokeUpdate(fragment, text string) []byte {
+	doc := crdt.New()
+	held := doc.GetXmlFragment(fragment)
+	doc.Transact(func(txn *crdt.Transaction) {
+		paragraph := crdt.NewYXmlElement("paragraph")
+		held.InsertElement(txn, 0, paragraph)
+		run := crdt.NewYXmlText()
+		paragraph.InsertText(txn, 0, run)
+		run.Insert(txn, 0, text, nil)
+	})
+	return crdt.EncodeStateAsUpdateV1(doc, nil)
 }
 
 // documentAppendCount is how many stored appends the database holds of a document's room. After

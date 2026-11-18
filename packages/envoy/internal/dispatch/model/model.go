@@ -266,6 +266,11 @@ type AnchorInput struct {
 	Quote      *string `json:"quote,omitempty"`
 	Occurrence *int    `json:"occurrence,omitempty"`
 	MarkID     *string `json:"mark_id,omitempty"`
+	// BlockID, beside a quote, is the block of the document the quote is found inside: the server
+	// finds it there alone and counts Occurrence within it. A block the document does not hold, a
+	// block that does not hold the quote, and a block_id beside a mark_id are refused 400
+	// INVALID_ANCHOR naming block_id (api.resolveAnchor).
+	BlockID *string `json:"block_id,omitempty"`
 }
 
 // Project groups native issues under a short key.
@@ -1222,16 +1227,37 @@ type Artifact struct {
 	// "" for every other document. It is set from the document's slug when the row is created, as
 	// Primary is, and no request field sets it; the one write that clears it is the document's
 	// retirement. A decisions document an earlier release stored answers its stored role,
-	// `decisions`, until the decisions step retires it (dispatch://INFRA-1150 R11).
+	// `decisions`, until the decisions step retires it (dispatch://INFRA-1150 R11). A document of
+	// an issue born converted carries no role in its row: its role is projected from the query
+	// value of its node (graphstore.QueryNode), `verification`, `plan` or `decisions`, the spec's
+	// `spec` projecting none (dispatch://INFRA-1253 R8, decision 2 of its plan).
 	Role      string    `json:"role,omitempty"`
 	CreatedBy Actor     `json:"created_by"`
 	CreatedAt time.Time `json:"created_at"`
+	// Room is the artifact id of the room the document is edited in, which a socket opened on the
+	// document's own id is admitted to: its document_rooms row's room, the issue's tree artifact,
+	// for a document of an issue room, and its own id otherwise (dispatch://INFRA-1253 R5, D3 of
+	// its plan). Fragment is the fragment of that room's Yjs document that holds the document,
+	// which the page's editor binds: the document's own id for a document of an issue room, and
+	// ArtifactFragmentOwn otherwise, the tree artifact itself included. Every artifact this build
+	// reads answers both (scanArtifact) but an issue's decisions query, which no fragment of any
+	// room holds and which answers no Fragment (DecisionsQuery); they are optional on the wire
+	// because a server of the release before the issue room answers neither, and a reader then
+	// binds ArtifactFragmentOwn of the document's own room, as the page does (packages/dispatch's
+	// fragmentOf).
+	Room     string `json:"room,omitempty"`
+	Fragment string `json:"fragment,omitempty"`
 	// Retired is whether the document was retired (artifacts.retired_at, docs.RetireDocument): it
 	// is in no list of its issue's or its project's documents, plays no role, and its approval no
 	// longer stands, while its row, its versions and its address stay readable. No response
 	// carries it.
-	Retired  bool      `json:"-"`
-	Versions []Version `json:"versions"`
+	Retired bool `json:"-"`
+	// DecisionsQuery is whether the document is its issue's decisions query node, whose versions
+	// render the issue's decisions and which no fragment of any room holds (docs'
+	// DecisionsQuerySQL): it answers no Fragment, and no upload, edit or socket writes it. No
+	// response carries it.
+	DecisionsQuery bool      `json:"-"`
+	Versions       []Version `json:"versions"`
 	// Approval is the document's approval as of its latest version, derived from
 	// version-pinned reviews and any open approval ask; nil for non-documents.
 	Approval *ArtifactApproval `json:"approval,omitempty"`
@@ -1243,6 +1269,11 @@ const (
 	ArtifactRoleVerification = "verification"
 	ArtifactRolePlan         = "plan"
 )
+
+// ArtifactFragmentOwn is the fragment of a room's Yjs document that holds the room's own document
+// (docs' fragmentName): every document that is its own room, and an issue's tree artifact, whose
+// own fragment holds the nodes written into the issue rather than into a document.
+const ArtifactFragmentOwn = "prosemirror"
 
 // ArtifactSlugVerification and ArtifactSlugPlan are the slugs that name an issue's Verification
 // and Plan documents: a document whose row a rolling deploy left with no role, or whose role the

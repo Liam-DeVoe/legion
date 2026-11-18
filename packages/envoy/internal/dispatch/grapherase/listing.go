@@ -68,12 +68,13 @@ func digest(lines []string) string {
 // window's text came from, so a block a window holds in part is reached as well as one it holds
 // whole) or holds an erased text, its document's whole-text row, and the issue's own row where
 // the document is the issue's spec, each that holds an erased text. A window of another document
-// or of another item is that node's, and stays.
+// or of another item is that node's, and stays. A block's document here is the one it stands in
+// (erasedRead.versioned), which writes the windows of a block of an issue room.
 func (e *Erasure) readEmbeddings(ctx context.Context, tx pgx.Tx, read *erasedRead) error {
 	windowKind, ownerKey := e.itemWindows()
 	document := ""
-	if read.document != nil {
-		document = read.document.artifact
+	if read.versioned != nil {
+		document = read.versioned.artifact
 	}
 	rows, err := tx.Query(ctx, `
 		select held.kind, held.id from embeddings held
@@ -87,7 +88,7 @@ func (e *Erasure) readEmbeddings(ctx context.Context, tx pgx.Tx, read *erasedRea
 		   or ($9 <> '' and held.kind = 'issue' and held.id = $9
 		       and exists (select 1 from unnest($8::text[]) erased (text) where position(erased.text in held.text_snapshot) > 0))
 		order by 1, 2`,
-		e.Kind, e.ID, windowKind, ownerKey, document, refs.DocumentWindowKind, read.blockID, read.texts, read.document.specIssue())
+		e.Kind, e.ID, windowKind, ownerKey, document, refs.DocumentWindowKind, read.blockID, read.texts, read.versioned.specIssue())
 	if err != nil {
 		return fmt.Errorf("read the embedding rows of %s:%s: %w", e.Kind, e.ID, err)
 	}
@@ -119,21 +120,22 @@ func (e *Erasure) readEmbeddings(ctx context.Context, tx pgx.Tx, read *erasedRea
 	return nil
 }
 
-// readSearch lists the search rows that stand on a version the run deletes: the document's own
-// search row, and the issue's search vector where the document is its spec (restateSearch).
+// readSearch lists the search rows that stand on a version the run deletes: the search row of the
+// document the block stands in (erasedRead.versioned), and the issue's search vector where that
+// document is its spec (restateSearch).
 func (e *Erasure) readSearch(ctx context.Context, tx pgx.Tx, read *erasedRead) error {
 	if len(read.artifacts) == 0 {
 		return nil
 	}
 	var searched bool
 	if err := tx.QueryRow(ctx, `select exists (select 1 from document_search where artifact_id = $1::uuid)`,
-		read.document.artifact).Scan(&searched); err != nil {
-		return fmt.Errorf("read the search row of %s: %w", read.document.refKey, err)
+		read.versioned.artifact).Scan(&searched); err != nil {
+		return fmt.Errorf("read the search row of %s: %w", read.versioned.refKey, err)
 	}
 	if searched {
-		read.listing.search = append(read.listing.search, "rewrite document_search of "+read.document.refKey)
+		read.listing.search = append(read.listing.search, "rewrite document_search of "+read.versioned.refKey)
 	}
-	if issue := read.document.specIssue(); issue != "" {
+	if issue := read.versioned.specIssue(); issue != "" {
 		read.listing.search = append(read.listing.search, "rewrite issues.search of "+issue)
 	}
 	return nil
@@ -203,7 +205,9 @@ type derivedRows struct {
 // foreign keys into the projections. A run of the command bar's own rows (runTables) are here
 // too, by the run's uuid, which is its node's id (runDerived): its going_requests row holds the
 // words readTexts reads off its node, and its going_events rows its answer, and apply deletes
-// both with the node.
+// both with the node. A block's rows are keyed by bound.document, its room's tree for a block of
+// an issue room, and its versions, search rows and windows by bound.versioned, the document it
+// stands in (erasedRead.versioned).
 var derivedTables = runDerived(map[string][]derivedRows{
 	"graph_nodes": {{where: `held.kind = bound.kind and held.id = bound.id`}},
 	"graph_tuples": {
@@ -221,12 +225,12 @@ var derivedTables = runDerived(map[string][]derivedRows{
 	},
 	"block_refs":           {{where: `held.node_kind = bound.kind and held.node_address = bound.id`}},
 	"document_block_texts": {{where: `held.artifact_id = nullif(bound.document, '')::uuid and (held.block_id = bound.block or held.block_id = any(bound.ancestors))`}},
-	"artifact_versions":    {{where: `held.artifact_id = nullif(bound.document, '')::uuid and held.number = any(bound.numbers)`}},
-	"document_search":      {{where: `held.artifact_id = nullif(bound.document, '')::uuid and cardinality(bound.numbers) > 0`}},
+	"artifact_versions":    {{where: `held.artifact_id = nullif(bound.versioned, '')::uuid and held.number = any(bound.numbers)`}},
+	"document_search":      {{where: `held.artifact_id = nullif(bound.versioned, '')::uuid and cardinality(bound.numbers) > 0`}},
 	"issues":               {{columns: []string{"search"}, where: `bound.spec_issue <> '' and held.key = bound.spec_issue and cardinality(bound.numbers) > 0`}},
 	"embeddings": {{where: `(held.kind = bound.kind and held.id = bound.id)
 		or (bound.window_kind <> '' and held.kind = bound.window_kind and split_part(held.id, '#', 1) = bound.owner_key)
-		or (bound.document <> '' and held.kind in ('document', '` + refs.DocumentWindowKind + `') and split_part(held.id, '#', 1) = bound.document)
+		or (bound.versioned <> '' and held.kind in ('document', '` + refs.DocumentWindowKind + `') and split_part(held.id, '#', 1) = bound.versioned)
 		or (bound.spec_issue <> '' and held.kind = 'issue' and held.id = bound.spec_issue)`}},
 	"doc_updates":       {{where: `held.artifact_id::text = any(bound.histories)`}},
 	"doc_checkpoints":   {{where: `held.artifact_id::text = any(bound.histories)`}},
@@ -248,11 +252,11 @@ func runDerived(tables map[string][]derivedRows) map[string][]derivedRows {
 }
 
 // leftBound is the one row of values every statement of readLeft reads its derivation from, so
-// each binds the same fourteen parameters whichever of them its table's predicate names.
+// each binds the same fifteen parameters whichever of them its table's predicate names.
 const leftBound = `with bound as (select $1::text as kind, $2::text as id, $3::text[] as texts, $4::text as document,
 	$5::text as block, $6::text[] as ancestors, $7::bigint[] as events, $8::int[] as numbers, $9::text as window_kind,
 	$10::text as owner_key, $11::text as spec_issue, $12::text as project, $13::text[] as histories,
-	$14::text as document_ref)`
+	$14::text as document_ref, $15::text as versioned)`
 
 // readLeft searches every column of every table a text can be written into for the erased texts,
 // and lists each row it finds that does not derive from the node - by its table, its primary key
@@ -282,9 +286,9 @@ func (e *Erasure) readLeft(ctx context.Context, tx pgx.Tx, read *erasedRead) err
 		return err
 	}
 	windowKind, ownerKey := e.itemWindows()
-	document, documentRef := "", ""
+	document, documentRef, versioned := "", "", ""
 	if read.document != nil {
-		document, documentRef = read.document.artifact, read.document.refKey
+		document, documentRef, versioned = read.document.artifact, read.document.refKey, read.versioned.artifact
 	}
 	eventIDs := make([]int64, len(read.events))
 	for index, event := range read.events {
@@ -295,7 +299,7 @@ func (e *Erasure) readLeft(ctx context.Context, tx pgx.Tx, read *erasedRead) err
 		histories = append(histories, replaced.document.artifact)
 	}
 	args := []any{e.Kind, e.ID, read.texts, document, read.blockID, read.ancestors, eventIDs, read.numbers,
-		windowKind, ownerKey, read.document.specIssue(), read.project, histories, documentRef}
+		windowKind, ownerKey, read.versioned.specIssue(), read.project, histories, documentRef, versioned}
 	held := map[string][]string{}
 	for _, column := range columns {
 		if column.schema == "public" && (column.table == "text_trees" || column.table == "graph_erasures") {
@@ -349,6 +353,9 @@ func (e *Erasure) readLeft(ctx context.Context, tx pgx.Tx, read *erasedRead) err
 // leaves (R5), and it stands in that document's doc_updates after the run, which derive from the
 // node otherwise. So the listing names each such record by its document, its mark id and its
 // comment, and a search of that history after the run can tell those bytes from the node's own.
+// A replaced history of an issue room is the tree's, and a comment's anchor names the document
+// of the room it is written on, so a record's comment is found by its anchor's room
+// (refs.DocumentRoomSQL), which is its own document for a document of a one-document room.
 //
 // It reads the stored history without taking the document's owner row or its room lock, as the
 // rest of the listing reads, so a run without --confirm lists them in its read-only transaction;
@@ -367,7 +374,8 @@ func (e *Erasure) readKeptMargins(ctx context.Context, tx pgx.Tx, read *erasedRe
 		}
 		rows, err := tx.Query(ctx, `
 			select marks.mark, coalesce((select 'comment:' || c.id::text from comments c
-			                             where (c.anchor->>'artifact_id')::uuid = $1::uuid and c.anchor->>'mark_id' = marks.mark
+			                             where c.anchor->>'mark_id' = marks.mark
+			                               and `+refs.DocumentRoomSQL(`(c.anchor->>'artifact_id')::uuid`)+` = $1::uuid
 			                             order by c.created_at limit 1), 'no comment row')
 			from unnest($2::text[]) as marks (mark)
 			order by 1`, replaced.document.artifact, marks)

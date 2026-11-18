@@ -175,8 +175,7 @@ func documentBlockIDs(param string) string {
 		  and not exists (select 1 from document_rooms moved where moved.artifact_id = a.id)
 		union all
 		select d.node_id from artifacts a
-		join issue_room_blocks r on r.tree_artifact_id = coalesce(
-			(select moved.room from document_rooms moved where moved.artifact_id = a.id), a.id) and r.document_id = a.id
+		join issue_room_blocks r on r.tree_artifact_id = ` + DocumentRoomSQL("a.id") + ` and r.document_id = a.id
 		join document_blocks d on d.artifact_id = r.tree_artifact_id and d.block_id = r.block_id
 		where a.ref_key = ` + param + `)`
 }
@@ -1011,8 +1010,10 @@ func anchorVersion(alias string) string {
 // (edited_at: its wording, a block ask's settlement, an approval request's version move), by the
 // editor the latest ask.edited event names; an answer or a resolution is no change of it. It
 // belongs to the document it is written on: the one its anchor names, when the anchor's
-// artifact_id casts to a uuid, at the anchored version; a block ask's document, at the version
-// that first held its block when Dispatch knows it (blockFirstVersion); an approval request's
+// artifact_id casts to a uuid, at the anchored version; a block ask's document, the one holding
+// its block (AskBlockDocumentSQL: the document whose fragment holds it for an ask of an issue
+// room, whose row names the room's tree), at the version that first held its block when Dispatch
+// knows it (blockFirstVersion, over the block's row under that key); an approval request's
 // document, at the version it named when it opened (written_version); the document that owns it,
 // at the version current when it was written (written_version). An ask written on no document
 // belongs to its issue.
@@ -1039,7 +1040,7 @@ func loadAskNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _ b
 		left join artifacts a on a.id = k.artifact_id
 		left join artifacts doc on doc.id = case
 		  when `+anchorArtifact+` is not null then `+anchorArtifact+`
-		  when k.block_artifact_id is not null then k.block_artifact_id
+		  when k.block_artifact_id is not null then `+AskBlockDocumentSQL("k")+`
 		  when k.kind = 'approval' then (k.approval->>'artifact_id')::uuid
 		  else k.artifact_id
 		end

@@ -69,8 +69,10 @@ import (
 // is read again only when something can have made it non-zero (recountOwed).
 //
 // The runner takes a session advisory lock of its own (decisionStepLock) for phases 1 and 2, so
-// two processes that boot together do not run them both at once: a booting process waits for it,
-// so every process has phase 1 behind it before it serves, and a tick that finds it held skips,
+// two processes do not run them both at once. A booting process waits for it only while phase 1
+// owes a row, so every process has phase 1 behind it before it serves. Where phase 1 owes
+// nothing, a booting process takes no lock, so a tick that holds the lock for phase 2, or a
+// process stalled while it holds it, keeps no boot waiting. A tick that finds the lock held skips,
 // since the holder is doing the work. Phase 3 takes a second key of its own
 // (decisionRestoreLock) once phases 1 and 2 are behind it and the first key is released, so a
 // process that boots while a pass of phase 3 runs - every owed issue, one transaction each - or
@@ -203,19 +205,29 @@ const decisionStepLock int64 = 0x4444454349534E53
 // decisionRestoreLock is the session advisory lock the step's third phase takes ("DRESTORE"), a
 // single 64-bit key apart from decisionStepLock and every other single-key advisory lock of the
 // server: a pass of the third phase holds it, and never the step's own lock, which a booting
-// process waits for (Boot).
+// process waits for while phase 1 owes a row (Boot).
 const decisionRestoreLock int64 = 0x44524553544F5245
 
 // decisionStepApplication is what pg_stat_activity names the connection the step holds its lock
 // on.
 const decisionStepApplication = "dispatch-decision-step"
 
-// Boot is the step's pass at boot: it waits for the step's lock, reads whether phase 1 owes a row
-// (graphcensus.AsksOwed), and runs phase 1 where one stands unmarked. It answers a failure of
-// either, which stops the boot. It reads nothing else - not whether another build is live, which
+// Boot is the step's pass at boot: it runs phase 1 where a row stands unmarked, and waits for the
+// step's lock only then. It first reads whether phase 1 owes a row (graphcensus.AsksOwed) on the
+// shared pool, holding no lock. Where nothing is owed it answers at once, having opened no
+// connection of its own and taken no lock, so a tick that holds the lock for phase 2, or a process
+// stalled while it holds it, keeps no boot waiting. A row the release before writes after that
+// read is a tick's work, as a row written after a read under the lock would be. Where a row is
+// owed, it waits for the step's lock and reads AsksOwed again, since the holder may have stated
+// the row meanwhile, and runs phase 1 where one still stands. It answers a failure of any of
+// these, which stops the boot. It reads nothing else - not whether another build is live, which
 // phase 1 does not wait on, and not what the restore and the conversion owe, which the process's
 // first tick counts (probe) - so the boot waits on no table phase 1 does not read.
 func (s *DecisionStep) Boot(ctx context.Context) error {
+	owed, err := graphcensus.AsksOwed(ctx, s.database.Pool)
+	if err != nil || !owed {
+		return err
+	}
 	conn, err := s.database.Pool.Dedicated(ctx, decisionStepApplication)
 	if err != nil {
 		return fmt.Errorf("open the decision step's connection: %w", err)
@@ -224,8 +236,7 @@ func (s *DecisionStep) Boot(ctx context.Context) error {
 	if _, err := conn.Exec(ctx, `select pg_advisory_lock($1)`, decisionStepLock); err != nil {
 		return fmt.Errorf("take the decision step's lock: %w", err)
 	}
-	owed, err := graphcensus.AsksOwed(ctx, s.database.Pool)
-	if err != nil || !owed {
+	if owed, err = graphcensus.AsksOwed(ctx, s.database.Pool); err != nil || !owed {
 		return err
 	}
 	return s.backfill(ctx)

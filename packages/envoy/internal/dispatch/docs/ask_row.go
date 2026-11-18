@@ -11,10 +11,15 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
-// AskColumns selects one ask row, aliased a, in the order ScanAsk reads it.
-const AskColumns = `a.id::text, a.issue_key, a.artifact_id::text, a.block_id, a.block_artifact_id::text, a.author, a.question, a.options, a.multiple, a.urgency,
+// AskColumns selects one ask row, aliased a, in the order ScanAsk reads it. Its block artifact is
+// the document holding the ask's block (refs.AskBlockDocumentSQL): for an ask of an issue room,
+// whose row is keyed by the room's tree, the document of the fragment that holds the block. Every
+// write into the block reaches that document's fragment through it, and every read names that
+// document.
+var AskColumns = `a.id::text, a.issue_key, a.artifact_id::text, a.block_id, (` + refs.AskBlockDocumentSQL("a") + `)::text, a.author, a.question, a.options, a.multiple, a.urgency,
 		a.anchor, a.state, a.answer, a.resolution, a.created_at, a.edited_at, a.kind, a.approval, a.asked_of, a.asked_of_by, a.asked_of_at`
 
 // ScanAsk decodes one AskColumns row. extra receives, in order, any columns the query

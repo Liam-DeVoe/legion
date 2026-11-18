@@ -1778,13 +1778,14 @@ type settlementRead struct {
 // versions, and arming one would end this settlement as superseded (treePoint). A read after
 // the ask blocks were reconciled arms one (followUp), since that reconciliation did not see them.
 // A read that found the updates but could not read the tree arms that settlement all the same:
-// its caller arms what the drain classified wherever the tree read ends.
-func (s *Service) readSettlementTree(state *roomState, doc *crdt.Doc, room string, afterTake func(room string), followUp bool) (settlementRead, error) {
+// its caller arms what the drain classified wherever the tree read ends. layout is the fragments
+// the settlement settles (settlement.layout, treePoint).
+func (s *Service) readSettlementTree(state *roomState, doc *crdt.Doc, room string, layout roomLayout, afterTake func(room string), followUp bool) (settlementRead, error) {
 	through := state.creditSeq.Load()
 	if afterTake != nil {
 		afterTake(room)
 	}
-	tree, counts, point, settles, err := s.treePoint(room, doc)
+	tree, counts, point, settles, err := s.treePoint(room, doc, layout)
 	if settles && followUp {
 		s.scheduleSettle(room)
 	}
@@ -2231,6 +2232,7 @@ func (s *Service) reserveRoomCloseLocked(room string, state *roomState, live *cr
 	}
 	state.reloading = true
 	state.reservedFor = live
+	state.reserved = make(chan struct{})
 	state.roomGeneration = s.nextRoomGeneration()
 	// The closed room's settlement failures are not the next room's, and the record outlives the
 	// close. retrySettleLocked counts a failure only for the generation its settlement read, and
@@ -2271,11 +2273,35 @@ func (s *Service) closeReservedRoom(ctx context.Context, reservation roomCloseRe
 	}
 	// Cleared on a released record too: it holds the instance, which nothing should keep alive.
 	state.reservedFor = nil
+	if state.reserved != nil {
+		close(state.reserved)
+		state.reserved = nil
+	}
 	s.unlockState(reservation.room, state)
 	if reservation.owesSettlement {
 		s.scheduleSettle(reservation.room)
 	}
 	return closed, err
+}
+
+// awaitReservedClose waits until no close reserved on room's state (reserveRoomCloseLocked) is in
+// flight, or until ctx ends, so a write that follows meets the room that close leaves rather than
+// the reservation's refusal (errRoomReloading). Its caller holds no lock of the room or its issue,
+// which the close's flush may take.
+func (s *Service) awaitReservedClose(ctx context.Context, room string) {
+	state := s.lockExistingState(room)
+	if state == nil {
+		return
+	}
+	reserved := state.reserved
+	s.unlockState(room, state)
+	if reserved == nil {
+		return
+	}
+	select {
+	case <-reserved:
+	case <-ctx.Done():
+	}
 }
 
 // closeRoomInstance closes live, room's instance, and never a room that replaced it, answering
@@ -3586,20 +3612,20 @@ func readRoomLayout(ctx context.Context, q Queryer, room string) (roomLayout, er
 	return roomLayout(layout), nil
 }
 
-// documentRoomOfStatement is the room the document $1 (text) is edited in: its document_rooms
-// row's room, else the document itself, as documentRoomStatement reads it, for an entry point that
-// reads nothing else of the document first.
-const documentRoomOfStatement = `
-	select coalesce(moved.room::text, asked.id)
-	from (select $1::text as id) asked
-	left join document_rooms moved on moved.artifact_id = asked.id::uuid`
+// DocumentRoomOfStatement is the room the document $1 (text) is edited in (refs.DocumentRoomSQL):
+// its document_rooms row's room, else the document itself spelled as the caller spelled it, for an
+// entry point that reads nothing else of the document first, in this package or another. Its one
+// column is room.
+var DocumentRoomOfStatement = `
+	select coalesce(nullif(` + refs.DocumentRoomSQL("asked.id::uuid") + `, asked.id::uuid)::text, asked.id) as room
+	from (select $1::text as id) asked`
 
-// roomOf is the room artifactID's document is edited in (documentRoomOfStatement), read from q:
+// roomOf is the room artifactID's document is edited in (DocumentRoomOfStatement), read from q:
 // the issue room it was converted into, else the document itself. Every room entry point that
 // takes an artifact id resolves it here first.
 func roomOf(ctx context.Context, q Queryer, artifactID string) (string, error) {
 	var room string
-	if err := q.QueryRow(ctx, documentRoomOfStatement, artifactID).Scan(&room); err != nil {
+	if err := q.QueryRow(ctx, DocumentRoomOfStatement, artifactID).Scan(&room); err != nil {
 		return "", fmt.Errorf("read the document's room: %w", err)
 	}
 	return room, nil

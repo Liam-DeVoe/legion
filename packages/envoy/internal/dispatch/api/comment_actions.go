@@ -416,13 +416,14 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 					s.writeHandlerError(w, markErr)
 					return
 				}
+				stood := !comment.Anchor.Orphaned
 				comment.Anchor.Orphaned = true
 				anchor, err := encodeJSON(comment.Anchor)
 				if err != nil {
 					s.writeHandlerError(w, err)
 					return
 				}
-				if _, err := tx.Exec(r.Context(), `update comments set anchor = $2 where id = $1`, comment.ID, anchor); err != nil {
+				if err := orphanCommentAnchor(r.Context(), tx, comment.ID, anchor, stood, actor); err != nil {
 					s.writeHandlerError(w, err)
 					return
 				}
@@ -537,6 +538,32 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 		return
 	}
 	WriteJSON(w, http.StatusOK, newShapedComment(comment, wantsDisplayTrees(r)))
+}
+
+// orphanCommentAnchor writes the anchor of comment id orphaned, as an accept or a reject found its
+// mark gone (docs.ErrAnchorOrphaned), and, where the anchor stood in a block until now (stood),
+// retracts the anchored_in to that block's node (graphstore.AnchoredIn): an orphaned anchor stands
+// in no block. It runs in the caller's transaction, which holds the comment's owner row and the
+// comment's own row (lockedComment): the row's update, then the retraction, dated now by actor at
+// the sentinel, since the orphaning appends no event. The block is read off the row the update
+// leaves, and a comment the store holds no node of states nothing to retract.
+func orphanCommentAnchor(ctx context.Context, tx pgx.Tx, id string, anchor any, stood bool, actor model.Actor) error {
+	var block *string
+	if err := tx.QueryRow(ctx, `
+		update comments c set anchor = $2 where c.id = $1
+		returning case when c.node_kind is not null then `+graphstore.AnchorBlockAddressSQL("c")+` end
+	`, id, anchor).Scan(&block); err != nil {
+		return fmt.Errorf("orphan the anchor of comment %s: %w", id, err)
+	}
+	if !stood || block == nil || !graphstore.AddressFits(*block) {
+		return nil
+	}
+	if err := graphstore.Write(ctx, tx, nil, []graphstore.Tuple{
+		graphstore.AnchoredIn(id, *block, false, actor, time.Now().UTC(), graphstore.NoEvent),
+	}); err != nil {
+		return fmt.Errorf("retract the anchored_in of comment %s: %w", id, err)
+	}
+	return nil
 }
 
 // acceptedComment is the accept route's response: the comment, plus whether the live document

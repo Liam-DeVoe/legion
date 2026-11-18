@@ -85,14 +85,19 @@ func CICheckRule(check CheckAttributes) string {
 // (the pool, or the transaction of the write that asks) only when the other three leave that to
 // decide. Every reader of the rules that has no results loaded comes here: a document write's
 // refusal (refuseCICheckBlocks), settlement's repair of what a browser leaves
-// (reconcileCICheckBlocks) and the refusal of a result against a check CI proves.
+// (reconcileCICheckBlocks) and the refusal of a result against a check CI proves. A result names
+// the document that holds its check (check_results.check_artifact_id), so artifactID may be that
+// document or the issue room a settlement reads, whose documents' results are the room's: block ids
+// are unique across a room, and the room's documents are the ones document_rooms places in it.
 func CICheckRuleIn(ctx context.Context, q Queryer, artifactID, blockID string, check CheckAttributes) (string, error) {
 	if rule := CICheckRule(check); rule != "" {
 		return rule, nil
 	}
 	var recorded bool
 	if err := q.QueryRow(ctx, `
-		select exists(select 1 from check_results where check_artifact_id = $1::uuid and check_block_id = $2)
+		select exists(select 1 from check_results
+			where check_block_id = $2 and check_artifact_id = any(array[$1::uuid] ||
+				array(select moved.artifact_id from document_rooms moved where moved.room = $1::uuid)))
 	`, artifactID, blockID).Scan(&recorded); err != nil {
 		return "", fmt.Errorf("read whether check %s of document %s holds a result: %w", blockID, artifactID, err)
 	}

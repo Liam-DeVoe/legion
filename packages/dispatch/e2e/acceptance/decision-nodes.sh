@@ -596,11 +596,15 @@ done <"$work/capture/sections"
 
 # The approved specs still read approved, at a version whose only change is the conversion's.
 # conversion_only FILE: FILE without decision blocks, reading blocks, the shaped pointers of ask
-# blocks, a nested ask's wider fence and repeated blank lines.
+# blocks, a nested ask's wider fence and repeated blank lines. The blank lines before a removed
+# block go with it: they are the separator its insertion wrote, so a reading added after an
+# ask's last option leaves no blank line above the ask's closing fence.
 conversion_only() {
   awk '
     skip { if ($0 == fence) { skip = 0 } ; next }
-    /^:+(decision|reading)\{/ { skip = 1; match($0, /^:+/); fence = substr($0, 1, RLENGTH); next }
+    /^:+(decision|reading)\{/ { held = 0; skip = 1; match($0, /^:+/); fence = substr($0, 1, RLENGTH); next }
+    $0 == "" { held++; next }
+    { for (; held > 0; held--) print "" }
     /^::::+ask\{/ { sub(/^:+/, ":::"); asking = 1 }
     asking && /^::::+$/ { $0 = ":::"; asking = 0 }
     /^:+ask\{/ { gsub(/ shaped="[^"]*"/, "") }

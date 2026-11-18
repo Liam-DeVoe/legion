@@ -44,11 +44,11 @@ type Interaction struct {
 // InteractionFacts is what the store holds of one run: its interaction node, then the author's
 // own nodes, and its tuples. The node is live and reserved for its author whoever that is, since
 // a run is read by the credential that asked it and by nobody else, and a run whose author names
-// nobody - a credential that proves no author (ProvesAuthor) - is read by nobody, as the stream
-// reads it (api.streamGoingAnswer). It carries its words and the moment it ends, each also stated
-// as a value tuple, and the run's project where it names one. Where AuthorOf names somebody of the
-// author, the run also states its authored_by tuple, with that author's own person or session node
-// and the aliases the server proved of them (AuthorFacts).
+// no credential (NamesCredential) - the shared bearer's empty author - is read by nobody, as the
+// stream reads it (api's goingRunIsTheCallers). It carries its words and the moment it ends, each
+// also stated as a value tuple, and the run's project where it names one. Where AuthorOf names
+// somebody of the author, the run also states its authored_by tuple, with that author's own person
+// or session node and the aliases the server proved of them (AuthorFacts).
 //
 // ends_at is written in UTC as RFC 3339 with its fraction of a second, a timestamp attribute's
 // text, so the node's attribute and its value tuple read the same instant the run's row holds.

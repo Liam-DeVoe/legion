@@ -478,8 +478,8 @@ func TestRepairSweepsAClosedIssuesDocumentWrittenByAnotherProcess(t *testing.T) 
 	other := docs.New(docs.Deps{Store: f.database, Identity: headerIdentity(f.database), Settle: time.Hour})
 	t.Cleanup(func() { _ = other.Shutdown(context.Background()) })
 	peers := map[string]*syncedPeer{
-		swept.PrimaryArtifactID:     connectBrowserPeer(t, other, swept.PrimaryArtifactID),
-		untouched.PrimaryArtifactID: connectBrowserPeer(t, other, untouched.PrimaryArtifactID),
+		swept.PrimaryArtifactID:     connectBrowserPeer(t, f.handler, other, swept.PrimaryArtifactID),
+		untouched.PrimaryArtifactID: connectBrowserPeer(t, f.handler, other, untouched.PrimaryArtifactID),
 	}
 	for _, issue := range []string{swept.Key, untouched.Key} {
 		if closed := dispatchRequest(t, f.handler, http.MethodPatch, "/api/v1/issues/"+issue, map[string]string{"status": "done"}, "alice"); closed.Code != http.StatusOK {
@@ -541,8 +541,8 @@ func TestAnIntervalRepairSweepsOnlyTheDocumentsMarkedSinceItsLastPass(t *testing
 	other := docs.New(docs.Deps{Store: f.database, Identity: headerIdentity(f.database), Settle: time.Hour})
 	t.Cleanup(func() { _ = other.Shutdown(context.Background()) })
 	peers := map[string]*syncedPeer{
-		stale.PrimaryArtifactID: connectBrowserPeer(t, other, stale.PrimaryArtifactID),
-		fresh.PrimaryArtifactID: connectBrowserPeer(t, other, fresh.PrimaryArtifactID),
+		stale.PrimaryArtifactID: connectBrowserPeer(t, f.handler, other, stale.PrimaryArtifactID),
+		fresh.PrimaryArtifactID: connectBrowserPeer(t, f.handler, other, fresh.PrimaryArtifactID),
 	}
 	for _, issue := range []string{stale.Key, fresh.Key} {
 		if closed := dispatchRequest(t, f.handler, http.MethodPatch, "/api/v1/issues/"+issue, map[string]string{"status": "done"}, "alice"); closed.Code != http.StatusOK {
@@ -603,7 +603,7 @@ func TestARepairThatChangesNothingAppendsNoUpdateAndMarksNoDocument(t *testing.T
 	}
 	requireLiveText(t, f.handler, closed.PrimaryArtifactID, `#close-decision urgency="med" multiple="false" state="resolved"`)
 	plainAsk := createSessionAsk(t, f.handler, older.Key, "Which region?")
-	peer := connectBrowserPeer(t, f.documents, older.PrimaryArtifactID)
+	peer := connectBrowserPeer(t, f.handler, f.documents, older.PrimaryArtifactID)
 	stored := storedUpdateCount(t, f.database, older.PrimaryArtifactID)
 	peer.appendParagraph(t, `:::ask{#browser-decision urgency="low" multiple="false"}`+"\nWritten in a browser?\n:::\n")
 	peer.barrier(t)
@@ -864,7 +864,7 @@ func awaitOwedSettlement(t *testing.T, database *store.Store, document string) {
 	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
 		var owed bool
 		if err := database.Pool.QueryRow(context.Background(), `
-			select exists (select 1 from doc_settlements_pending where artifact_id = $1)
+			select exists (select 1 from doc_settlements_pending where artifact_id = `+refs.DocumentRoomSQL("$1::uuid")+`)
 		`, document).Scan(&owed); err != nil {
 			t.Fatalf("read the pending settlement: %v", err)
 		}
@@ -891,12 +891,14 @@ func awaitLiveText(t *testing.T, handler http.Handler, document, part string) {
 	}
 }
 
-// storedUpdateCount is how many updates document's stored history holds now.
+// storedUpdateCount is how many updates the stored history of the room document is edited in holds
+// now (refs.DocumentRoomSQL): its issue's room for a converted document, whose one history every
+// document of the issue writes, so a caller counts what lands after a reading of it.
 func storedUpdateCount(t *testing.T, database *store.Store, document string) int {
 	t.Helper()
 	var updates int
 	if err := database.Pool.QueryRow(context.Background(),
-		`select count(*) from doc_updates where artifact_id = $1`, document).Scan(&updates); err != nil {
+		`select count(*) from doc_updates where artifact_id = `+refs.DocumentRoomSQL("$1::uuid"), document).Scan(&updates); err != nil {
 		t.Fatalf("count the stored updates of document %s: %v", document, err)
 	}
 	return updates
@@ -916,8 +918,9 @@ func awaitStoredUpdates(t *testing.T, database *store.Store, document string, wa
 	}
 }
 
-// documentWrites is, for each of documents, how many updates it holds and when its owed
-// settlement was marked, or that it owes none.
+// documentWrites is, for each of documents, how many updates the room it is edited in holds and
+// when that room's owed settlement was marked, or that it owes none, both keyed by the room
+// (refs.DocumentRoomSQL).
 func documentWrites(t *testing.T, database *store.Store, documents ...string) map[string]string {
 	t.Helper()
 	writes := make(map[string]string, len(documents))
@@ -926,8 +929,8 @@ func documentWrites(t *testing.T, database *store.Store, documents ...string) ma
 		var marked string
 		if err := database.Pool.QueryRow(context.Background(), `
 			select
-				(select count(*) from doc_updates where artifact_id = $1),
-				coalesce((select marked_at::text from doc_settlements_pending where artifact_id = $1), 'none')
+				(select count(*) from doc_updates where artifact_id = `+refs.DocumentRoomSQL("$1::uuid")+`),
+				coalesce((select marked_at::text from doc_settlements_pending where artifact_id = `+refs.DocumentRoomSQL("$1::uuid")+`), 'none')
 		`, document).Scan(&updates, &marked); err != nil {
 			t.Fatalf("read the writes of document %s: %v", document, err)
 		}

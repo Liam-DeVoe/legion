@@ -399,13 +399,15 @@ var eraseActor = model.Actor{Kind: "system", ID: "dispatch-erase"}
 // it, its number and its time, at the run's time, with no event (the run appends none). A version
 // the store holds no node of, or holds gone, writes nothing. A later version that takes a freed
 // number restates the node live with its own row's created_at as a value (docs.WriteVersionNode).
+// The versions are those of the document the block stands in (erasedRead.versioned), whose
+// ref_key their nodes are addressed by.
 func (e *Erasure) endErasedVersions(ctx context.Context, tx pgx.Tx, read erasedRead) error {
-	if read.document == nil {
+	if read.versioned == nil {
 		return nil
 	}
 	var nodes []graphstore.Node
 	for _, number := range read.numbers {
-		id := graphstore.VersionID(read.document.refKey, int(number))
+		id := graphstore.VersionID(read.versioned.refKey, int(number))
 		if !graphstore.AddressFits(id) {
 			continue
 		}

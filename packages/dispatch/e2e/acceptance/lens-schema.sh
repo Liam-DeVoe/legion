@@ -16,7 +16,9 @@
 #   - reads the server's row of server_processes before and after, and fails if its instance or
 #     its started_at changed, so no restart stood between the two writes;
 #   - adds one lens kind with its constraint through `envoy-dispatch lens-kind-add` and reads it in
-#     the catalogue, with the installed block schema version unmoved from boot.
+#     the catalogue, with the installed block schema version unmoved from boot, the rows of
+#     schema_migrations the same before and after the add and the server's row of server_processes
+#     the same, so the new kind is a row: no migration ran and no restart.
 #
 # It starts the server with e2e/run-server.sh (lib-processes.sh's boot_server), one server process
 # on a port the kernel chooses, which the server's own line names, and the two fakes
@@ -256,16 +258,34 @@ server_row S2 "read the server's row of server_processes again"
 kill -0 "$server_pid" 2>/dev/null || fail S2 "the server this driver started still serves" "pid $server_pid is gone"
 pass S2 "one process took both writes: its instance and started_at are the ones it had ($server_row)"
 
-# --- S3: a kind added at runtime, with the block schema version unmoved -------------------------
+# --- S3: a kind added at runtime: no migration, no restart, the block schema version unmoved -----
 
 readonly kind_source="Edward Tufte, The Visual Display of Quantitative Information, Graphics Press, 1983"
 readonly kind_reference='Cheshire, CT: Graphics Press, 1983; ch. 4, “Data-Ink and Graphical Redesign”, p. 93'
+# The rows of schema_migrations, each version with the time it was applied, in version order: a
+# migration, run by whatever runs it, adds a row, and the server ran its own at boot.
+readonly migrations_sql="select coalesce(json_agg(json_build_object('version', version, 'applied_at', applied_at)
+  order by version), '[]') from schema_migrations"
+query S3 "read the rows of schema_migrations before the add" "$migrations_sql"
+printf '%s' "$answer" >"$work/migrations-before.json"
+jq -e 'length > 0' "$work/migrations-before.json" >/dev/null ||
+  fail S3 "schema_migrations holds the migrations the server ran at boot" "it holds $(<"$work/migrations-before.json")"
 DATABASE_URL="$database_url" "$server_bin" lens-kind-add --id "$added_kind" --words "the data-ink check" \
   --source "$kind_source" --reference "$kind_reference" >"$work/kind.out" 2>&1 ||
   fail S3 "envoy-dispatch lens-kind-add --id $added_kind adds the kind" "it exited $?: $(<"$work/kind.out")"
 grep -q "^lens-kind-add: added dispatch://lens_kind/$added_kind, held to its source dispatch://constraint/" "$work/kind.out" ||
   fail S3 "envoy-dispatch lens-kind-add --id $added_kind adds the kind" "it printed: $(<"$work/kind.out")"
 pass S3 "envoy-dispatch lens-kind-add added $added_kind: $(<"$work/kind.out")"
+query S3 "read the rows of schema_migrations after the add" "$migrations_sql"
+printf '%s' "$answer" >"$work/migrations-after.json"
+changed="$(jq -cn --slurpfile b "$work/migrations-before.json" --slurpfile a "$work/migrations-after.json" \
+  '{added: ($a[0] - $b[0]), removed: ($b[0] - $a[0])}')" ||
+  fail S3 "compare the rows of schema_migrations" "before: $(<"$work/migrations-before.json"); after: $answer"
+[[ "$changed" == '{"added":[],"removed":[]}' ]] ||
+  fail S3 "the rows of schema_migrations are the same before and after the add: no migration ran" \
+    "lens-kind-add --id $added_kind changed them: $changed"
+held="$(jq -r '"\(length) rows, to version \(.[-1].version)"' "$work/migrations-after.json")"
+pass S3 "the rows of schema_migrations are the same before and after the add, $held: no migration ran"
 
 send GET /api/v1/schema/blocks
 want_status 200 S3 "read the catalogue after the add"

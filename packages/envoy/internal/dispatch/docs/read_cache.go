@@ -51,7 +51,7 @@ const documentStampSQL = `
 		left join doc_updates u on u.artifact_id = $1 and u.version = h.version`
 
 // documentRoomStampSQL selects, for the document $1, the room its document_rooms row names, null for
-// a document that is its own room (documentRoomOfStatement reads the same row), beside the
+// a document that is its own room (DocumentRoomOfStatement reads the same row), beside the
 // DocumentStamp of the stored history named $1 (documentStampSQL), in one statement, so a cold read
 // of a document that is its own room learns both in one round trip (documentReadRoom).
 const documentRoomStampSQL = `

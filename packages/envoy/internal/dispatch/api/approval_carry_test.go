@@ -591,7 +591,7 @@ func TestAForgedServerAttributeOnADecidedBlockCarriesNothing(t *testing.T) {
 			approveVersion(t, handler, issue.PrimaryArtifactID, "alice", 2)
 
 			answerDecisionBlock(t, handler, asks["wave"], "alice", []string{"Two"}, "", nil)
-			setLiveBlockAttributes(t, documents, issue.PrimaryArtifactID, "region", map[string]any{tc.attribute: tc.forged})
+			setLiveBlockAttributes(t, handler, documents, issue.PrimaryArtifactID, "region", map[string]any{tc.attribute: tc.forged})
 			whileTheReleaseBeforeServes(t, database, func() {
 				named := sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/versions", map[string]any{"summary": "Name the forged " + tc.attribute, "actor": sessionActor()})
 				if named.Code != http.StatusCreated {
@@ -634,9 +634,9 @@ func TestAForgedServerAttributeOnADecidedBlockCarriesNothing(t *testing.T) {
 // server write puts a block's attributes on it alone any more: an answer is held on the ask's node
 // (dispatch://INFRA-1150 R3), and the roll window's copy is settlement's (docs'
 // rollWindowAskAttributes).
-func setLiveBlockAttributes(t *testing.T, documents *docs.Service, artifactID, blockID string, attributes map[string]any) {
+func setLiveBlockAttributes(t *testing.T, handler http.Handler, documents *docs.Service, artifactID, blockID string, attributes map[string]any) {
 	t.Helper()
-	peer := connectBrowserPeer(t, documents, artifactID)
+	peer := connectBrowserPeer(t, handler, documents, artifactID)
 	t.Cleanup(peer.close)
 	peer.edit(t, func(tree *pmdoc.Node) error {
 		var block *pmdoc.Node
@@ -657,30 +657,33 @@ func setLiveBlockAttributes(t *testing.T, documents *docs.Service, artifactID, b
 }
 
 // settledVersion settles the document at once and waits until version number reads: the version a
-// write's settlement writes, without waiting out the settle window the write armed.
+// write's settlement writes, without waiting out the settle window the write armed. The settlement
+// is its room's (artifactRoom), the issue room a converted document is edited in.
 func settledVersion(t *testing.T, handler http.Handler, documents *docs.Service, artifactID string, number int) {
 	t.Helper()
-	documents.SettleNow(artifactID)
+	documents.SettleNow(artifactRoom(t, handler, artifactID))
 	waitForArtifactVersion(t, handler, artifactID, number)
 }
 
-// settledDecisionBlocks settles the document at once and returns its blocks' ask ids as
+// settledDecisionBlocks settles the document's room at once and returns its blocks' ask ids as
 // indexedDecisionBlocks does, once settlement has indexed them.
 func settledDecisionBlocks(t *testing.T, handler http.Handler, documents *docs.Service, issueKey, artifactID string, blocks map[string]string) map[string]string {
 	t.Helper()
-	documents.SettleNow(artifactID)
+	documents.SettleNow(artifactRoom(t, handler, artifactID))
 	return indexedDecisionBlocks(t, handler, issueKey, artifactID, blocks)
 }
 
-// settledWithoutVersion settles the document at once, for a document whose settlement is owed,
-// and waits until that settlement has committed: its pending-settlement row, which a live write
-// leaves and only a settlement's commit clears, is gone. It fails t when the document owes no
-// settlement, since then there would be nothing to wait for.
+// settledWithoutVersion settles the document's room at once, for a document whose settlement is
+// owed, and waits until that settlement has committed: its pending-settlement row, which a live
+// write leaves and only a settlement's commit clears, is gone. The row is keyed by the room the
+// document is edited in (documentRoomOf), as the settlement that clears it is. It fails t
+// when the document owes no settlement, since then there would be nothing to wait for.
 func settledWithoutVersion(t *testing.T, database *store.Store, documents *docs.Service, artifactID string) {
 	t.Helper()
+	room, _ := documentRoomOf(t, database.Pool, artifactID)
 	owed := func() bool {
 		var pending bool
-		if err := database.Pool.QueryRow(context.Background(), `select exists(select 1 from doc_settlements_pending where artifact_id = $1)`, artifactID).Scan(&pending); err != nil {
+		if err := database.Pool.QueryRow(context.Background(), `select exists(select 1 from doc_settlements_pending where artifact_id = $1)`, room).Scan(&pending); err != nil {
 			t.Fatalf("read the document's pending settlement: %v", err)
 		}
 		return pending
@@ -688,7 +691,7 @@ func settledWithoutVersion(t *testing.T, database *store.Store, documents *docs.
 	if !owed() {
 		t.Fatal("the document owes no settlement, want the live write's settlement still owed")
 	}
-	documents.SettleNow(artifactID)
+	documents.SettleNow(room)
 	for deadline := time.Now().Add(5 * time.Second); owed(); time.Sleep(10 * time.Millisecond) {
 		if time.Now().After(deadline) {
 			t.Fatal("the document's settlement never committed")
@@ -827,6 +830,11 @@ func TestADeletedAndRestoredAnsweredBlockIsApprovedOnceItsTextIsTheApprovedText(
 // the copy's text then shows his answer on its block.
 func TestAnAnswerThroughACopysSourceWritesNoVersionOfEitherDocument(t *testing.T) {
 	handler, database, _ := settlingCarryDocuments(t, 20*time.Millisecond)
+	// Held unconverted: the copy is uploaded into the source's own issue, and block ids are unique
+	// within an issue room, so on an issue born converted the copy takes fresh ids and opens its
+	// own asks (TestACopyOfASpecUploadedIntoItsConvertedIssueOpensItsOwnAsks); the copy rule this
+	// test reads holds between documents that are each their own room.
+	holdIssuesUnconverted(t, database)
 	issue := createInteractionIssue(t, handler, "TEST", "Copied block", "Context\n\n"+waveAsk)
 	asks := indexedDecisionBlocks(t, handler, issue.Key, issue.PrimaryArtifactID, map[string]string{"wave": "How many regions take the first wave?"})
 	uploaded := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]any{

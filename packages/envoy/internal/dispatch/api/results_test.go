@@ -2696,7 +2696,7 @@ func TestResultAgainstACICheckHoldingAResultIsRecorded(t *testing.T) {
 	if first.Code != http.StatusCreated {
 		t.Fatalf("record a result against c1: status=%d body=%s", first.Code, first.Body.String())
 	}
-	writeBrowserDocument(t, documents, verification.Artifact.ID, ciCheckBlock("c1", ciCheckKept)+"\n"+ciCheckBlock("c2", ciCheckKept))
+	writeBrowserDocument(t, handler, documents, verification.Artifact.ID, ciCheckBlock("c1", ciCheckKept)+"\n"+ciCheckBlock("c2", ciCheckKept))
 
 	held := checkOf(t, readResults(t, handler, issue.Key), "c1")
 	if held.CICheck != ciCheckRun || len(held.Results) != 1 || held.Results[0].ID != decodeBody[recordedResult](t, first).Result.ID {

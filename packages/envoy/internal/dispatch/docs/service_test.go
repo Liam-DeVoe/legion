@@ -5888,10 +5888,10 @@ func joinedApplyOps(service *Service, artifactID string, ops []model.EditOp, act
 	return outcome, err
 }
 
-func joinedMarkQuote(service *Service, artifactID string, mark MarkSpec, quote string, occurrence *int) (Anchored, error) {
+func joinedMarkQuote(service *Service, artifactID string, mark MarkSpec, quote string, scope *QuoteScope) (Anchored, error) {
 	var anchored Anchored
 	err := joinedWrite(service, func(ctx context.Context) (err error) {
-		anchored, err = service.MarkQuote(ctx, artifactID, mark, quote, occurrence)
+		anchored, err = service.MarkQuote(ctx, artifactID, mark, quote, scope)
 		return err
 	})
 	return anchored, err

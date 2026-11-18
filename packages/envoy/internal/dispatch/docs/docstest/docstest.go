@@ -60,6 +60,11 @@ type Peer struct {
 	Ended <-chan struct{}
 	// UpgradeHeader is the header of the room's answer to the websocket upgrade.
 	UpgradeHeader http.Header
+	// Fragment is the fragment of the room's Yjs document the peer's editor binds, which its caller
+	// sets as a page binds the one the artifact read answers (model.Artifact.Fragment): a converted
+	// document's own fragment of its issue's room. Dial leaves it empty, which names the room's own
+	// fragment, and nothing here reads it: the room sends the peer the whole room either way.
+	Fragment string
 
 	artifactID string
 	connection *gws.Conn
@@ -523,7 +528,7 @@ func WriteDeepChain(txn *crdt.Transaction, fragment *crdt.YXmlFragment, textLeve
 // sends to mark the first text of doc with a link whose "nested" attribute is nested.
 func NestedLinkUpdate(t testing.TB, doc *crdt.Doc, nested any) []byte {
 	t.Helper()
-	update, err := crafted.NestedLinkUpdate(doc, nested)
+	update, err := crafted.NestedLinkUpdate(doc, "prosemirror", nested)
 	if err != nil {
 		t.Fatal(err)
 	}

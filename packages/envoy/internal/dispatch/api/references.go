@@ -51,9 +51,11 @@ const referencesSinceWait = time.Second
 // at the node (backlinks), ?from= every edge it writes; exactly one is required. ?kind= narrows
 // edge types and ?since= keeps mentions introduced after an events.id, which excludes
 // structural edges. Cross-project by design: no project filter. A block reference names a
-// block node carrying its whole current text; one pinned to a version of its document, or a
-// revision of its ask's parts or of its comment, also reads the block as that version or revision
-// recorded it (blockReferenceNode, itemBlockReferenceNode). A finding of a lens
+// block node carrying its whole current text, the node its address resolves to (its moved_to
+// tuples first, then its document's room, then itself), and lists the edges at the address and at
+// that node (referenceEdges); one pinned to a version of its document, or a revision of its ask's
+// parts or of its comment, also reads the block as that version or revision recorded it
+// (blockReferenceNode, itemBlockReferenceNode). A finding of a lens
 // (`dispatch://lens/<uuid>#b-<id>`) is the registry's lens_block node, read as a lens, a risk or a
 // constraint is (refs.Node). A document's address that moved to a lens - the pre-mortem
 // conversion retires a document and moves its address to the lens it writes in its place - answers
@@ -165,24 +167,57 @@ func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 			}
 			query.Through = &safe
 		}
-		edges, err = refs.Edges(r.Context(), s.deps.Store.Pool, who, query)
+		edges, err = s.referenceEdges(r.Context(), who, query, node)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
 	}
 	answerIssueWaitsAsNeeds(edges)
-	if query.Direction == "in" {
-		if err := s.documentMentionExcerpts(r.Context(), who, query, edges); err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-	}
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
 	answer := graphReferencesRead{Node: graphNodeRead{GraphNode: node}, Edges: edges, UnknownKinds: unknownKinds}
 	answer.Node.shape(reader)
 	reader.resolve()
 	WriteJSON(w, http.StatusOK, answer)
+}
+
+// referenceEdges is the edges the read of query lists beside node, the node it answers: the edges
+// at the address the query names, each document mention with its stored excerpt
+// (documentMentionExcerpts), and, where that address is a block's that resolves to another node
+// (resolvedBlockNode), the edges at that node too. So the read of a block that moved lists the
+// citations of its old address and the links into the block where it stands now, and the read of
+// a block of a document converted into its issue's room, at the document's own address, lists the
+// mentions written at that address and the links the block index wrote at the room's node, which
+// is where it writes a pointer's (T17 of this branch's plan). Each list is in the read's order,
+// newest first, and the two are merged by time, a tie taking the address's edge first.
+func (s *server) referenceEdges(ctx context.Context, who model.Actor, query refs.Query, node model.GraphNode) ([]model.GraphEdge, error) {
+	pool := s.deps.Store.Pool
+	read := func(query refs.Query) ([]model.GraphEdge, error) {
+		edges, err := refs.Edges(ctx, pool, who, query)
+		if err != nil || query.Direction != "in" {
+			return edges, err
+		}
+		return edges, s.documentMentionExcerpts(ctx, who, query, edges)
+	}
+	edges, err := read(query)
+	if err != nil || query.Kind != refs.BlockNodeKind || node.Kind != refs.BlockNodeKind || node.ID == query.ID {
+		return edges, err
+	}
+	at := query
+	at.ID = node.ID
+	resolved, err := read(at)
+	if err != nil || len(resolved) == 0 {
+		return edges, err
+	}
+	merged := make([]model.GraphEdge, 0, len(edges)+len(resolved))
+	for len(edges) > 0 || len(resolved) > 0 {
+		if len(edges) == 0 || len(resolved) > 0 && resolved[0].CreatedAt.After(edges[0].CreatedAt) {
+			merged, resolved = append(merged, resolved[0]), resolved[1:]
+			continue
+		}
+		merged, edges = append(merged, edges[0]), edges[1:]
+	}
+	return merged, nil
 }
 
 // wholeReference is ref with its item id, or its block id, written whole where the request
@@ -335,11 +370,11 @@ func (s *server) sinceHorizon(ctx context.Context) (int64, error) {
 }
 
 // blockReferenceNode is the block node ref names (query addresses it), with its whole current
-// text. A block no current version of its document holds is the block its moved_to tuples reach
-// (movedBlockNode), and answers 404 where they reach none, unless ref is pinned to a version N
-// that held it: the node then carries what N recorded (model.BlockPin), "unchanged"
-// or "changed" by comparing the current text with N's, or "removed" with the version that deleted
-// it, as a node with no text or changed version whose facts are a removed block's
+// text. Unpinned, it is the block the address resolves to (resolvedBlockNode: its moved_to tuples
+// first, then its document's room, then itself), and answers 404 where it resolves to none.
+// Pinned to a version N that held the block, the node carries what N recorded (model.BlockPin),
+// "unchanged" or "changed" by comparing the current text with N's, or "removed" with the version
+// that deleted it, as a node with no text or changed version whose facts are a removed block's
 // (refs.RemovedBlockNode); a pin to a current block carries the current block's facts. A pin to
 // a version the document lacks, to one whose blocks are not on record (an older build wrote it and
 // none indexed it) or to one that did not hold the block answers 404, each saying which. A block
@@ -354,16 +389,12 @@ func (s *server) blockReferenceNode(ctx context.Context, who model.Actor, query 
 	if !found {
 		return model.GraphNode{}, errorf(http.StatusNotFound, "NOT_FOUND", "no document at %s", documentKey)
 	}
+	if ref.Pin == 0 {
+		return s.resolvedBlockNode(ctx, who, query.ID, ref, document)
+	}
 	node, current, err := refs.Node(ctx, pool, who, "block", query.ID, true)
 	if err != nil {
 		return model.GraphNode{}, err
-	}
-	if ref.Pin == 0 {
-		if !current {
-			return s.movedBlockNode(ctx, who, query.ID, ref, document)
-		}
-		node.Text, err = refs.CurrentBlockText(ctx, pool, document.ID, ref.Block)
-		return node, err
 	}
 	at, err := refs.BlockTextAt(ctx, pool, document.ID, ref.Block, ref.Pin)
 	if err != nil {
@@ -414,14 +445,16 @@ func (s *server) blockReferenceNode(ctx context.Context, who model.Actor, query 
 	return node, nil
 }
 
-// movedBlockNode is the block an address no current version holds moved to (dispatch://INFRA-1150
-// R8): the block the address's moved_to tuples reach (graphstore.MovedTo), named by its own
-// address and carrying its whole current text, so a citation written before the block moved reads
-// the block where it stands now. Where no move reaches a block, and where who may not see the
-// block one reaches, it answers the 404 of a block no current version holds, naming the address
-// asked, so a move says nothing of a block the reader may not see. The edges the read lists beside
-// it are those at the address asked: the citations of that address.
-func (s *server) movedBlockNode(ctx context.Context, who model.Actor, address string, ref text.Ref, document model.GraphNode) (model.GraphNode, error) {
+// resolvedBlockNode is the block an address resolves to (graphstore.MovedTo: the far end of its
+// moved_to tuples first, then the same block id in its document's room, then the address itself),
+// named by its own address and carrying its whole current text: so a citation written before the
+// block moved reads the block where it stands now, and a citation of a block of a document
+// converted into its issue's room, at the document's own address, reads the room's node. Where
+// the address resolves to no block, and where who may not see the block it resolves to, it answers
+// the 404 of a block no current version holds, naming the address asked, so a move says nothing of
+// a block the reader may not see. The edges the read lists beside it are those at the address
+// asked, the citations of that address, and those at the node it reaches (referenceEdges).
+func (s *server) resolvedBlockNode(ctx context.Context, who model.Actor, address string, ref text.Ref, document model.GraphNode) (model.GraphNode, error) {
 	pool := s.deps.Store.Pool
 	noBlock := errorf(http.StatusNotFound, "NOT_FOUND", "no block %q in %s", ref.Block, document.Ref)
 	reached, moved, err := graphstore.MovedTo(ctx, pool, address)
@@ -445,7 +478,7 @@ func (s *server) movedBlockNode(ctx context.Context, who model.Actor, address st
 // movedDocumentNode is the lens the address of the document stored at refKey moved to: the lens
 // the pre-mortem conversion wrote in the place of the document it retired (api.ConvertPremortem),
 // which the moved_to from the document's address reaches (graphstore.MovedTo). It is answered as a
-// moved block's old address answers the block it reached (movedBlockNode): the node the move
+// moved block's old address answers the block it reached (resolvedBlockNode): the node the move
 // reaches, named by its own address, and the edges the read lists beside it are those at the
 // address asked, the citations of the document. found is false where the address moved to no lens
 // that stands, and where who may not see the lens, and the read then answers the address as it

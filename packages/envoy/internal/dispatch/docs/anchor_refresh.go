@@ -9,8 +9,10 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -98,7 +100,9 @@ type refreshedAnchors struct {
 
 // refreshAnchors updates each open anchor from its current tree mark. Each
 // persisted change appends the affected row's own full refresh event in this
-// transaction; callers publish the collected committed events afterward.
+// transaction; callers publish the collected committed events afterward. A comment whose anchor it
+// orphans or finds again has its anchored_in retracted or stated under that event
+// (stateRefreshedAnchoredIn).
 //
 // Every changed anchor is found before any is written, and then all of them are written
 // together: one update of each table, one reload of the refreshed asks and one of the refreshed
@@ -204,6 +208,64 @@ func (s *Service) refreshAnchors(ctx context.Context, tx pgx.Tx, artifactID stri
 	for _, event := range appended {
 		collectEvent(ctx, event)
 	}
+	return stateRefreshedAnchoredIn(ctx, tx, changed, appended, actor)
+}
+
+// stateRefreshedAnchoredIn keeps the anchored_in of each comment whose anchor the refresh orphaned
+// or found again level with that anchor (graphstore.AnchoredIn): a retraction of the block an
+// anchor it orphaned stood in, and the block an anchor it found again stands in, each caused by
+// that comment's own comment.anchor_refreshed (appended, in changed's order) and so appended after
+// it. The block is read off the row the refresh's update left, in its transaction, so a block id
+// the backfill pinned after the refresh read the row is the one stated (BackfillAnchorBlocks). A
+// comment the store holds no node of, and a block past the store's bound, which is no node, state
+// nothing; a change of the quote alone moves no block.
+func stateRefreshedAnchoredIn(ctx context.Context, tx pgx.Tx, changed []changedAnchor, appended []model.Event, actor model.Actor) error {
+	ids := make([]string, 0, len(changed))
+	causes := make(map[string]int64, len(changed))
+	stands := make(map[string]bool, len(changed))
+	for index, anchor := range changed {
+		if !anchor.comment || anchor.refreshed.Orphaned == anchor.mark.anchor.Orphaned {
+			continue
+		}
+		ids = append(ids, anchor.mark.id)
+		causes[anchor.mark.id] = appended[index].ID
+		stands[anchor.mark.id] = !anchor.refreshed.Orphaned
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	rows, err := tx.Query(ctx, `
+		select c.id::text, `+graphstore.AnchorBlockAddressSQL("c")+`
+		from comments c
+		where c.id = any($1::uuid[]) and c.node_kind is not null
+		order by c.id
+	`, ids)
+	if err != nil {
+		return fmt.Errorf("read the blocks of the refreshed comment anchors: %w", err)
+	}
+	now := time.Now().UTC()
+	var tuples []graphstore.Tuple
+	for rows.Next() {
+		var id string
+		var block *string
+		if err := rows.Scan(&id, &block); err != nil {
+			rows.Close()
+			return fmt.Errorf("read the block of a refreshed comment anchor: %w", err)
+		}
+		if block != nil && graphstore.AddressFits(*block) {
+			tuples = append(tuples, graphstore.AnchoredIn(id, *block, stands[id], actor, now, causes[id]))
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("read the blocks of the refreshed comment anchors: %w", err)
+	}
+	if len(tuples) == 0 {
+		return nil
+	}
+	if err := graphstore.Write(ctx, tx, nil, tuples); err != nil {
+		return fmt.Errorf("state the anchored_in of the refreshed comment anchors: %w", err)
+	}
 	return nil
 }
 
@@ -218,7 +280,7 @@ func loadAnchorRefreshedAsks(ctx context.Context, tx pgx.Tx, ids []string) (map[
 		select `+AskColumns+`, ba.id::text, ba.slug, ba.is_primary,
 			aa.project_key, aa.slug, aa.name, aa.is_primary
 		from asks a
-		left join artifacts ba on ba.id = a.block_artifact_id
+		left join artifacts ba on ba.id = `+refs.AskBlockDocumentSQL("a")+`
 		left join artifacts aa on aa.id = `+store.CastableUUID(`a.anchor->>'artifact_id'`)+`
 		where a.id = any($1::uuid[])
 	`, ids)

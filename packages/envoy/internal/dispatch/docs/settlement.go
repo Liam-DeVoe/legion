@@ -631,7 +631,7 @@ func (st *settlement) commitRepairs(ctx context.Context) (settleStep, settleOutc
 		// before them: a peer's edit made since is in the room, its browsers and, stored here, its
 		// stored updates, and a version rendered from the earlier tree would leave it out. An edit
 		// made after this read is in neither the version nor its authors.
-		if versionRead, err = s.readSettlementTree(st.state, st.doc, room, s.afterSettleAuthorsTake, true); err != nil {
+		if versionRead, err = s.readSettlementTree(st.state, st.doc, room, st.layout, s.afterSettleAuthorsTake, true); err != nil {
 			return settleDone, st.abandon(err)
 		}
 		if err := ledger.flushThrough(ctx, tx, room, versionRead.point); err != nil {
@@ -1002,21 +1002,24 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 	// A closed issue's settlement sweeps no marks: the unmark is an injection without the
 	// owner-verified mark, which allowInject refuses on a closed issue. The document's next
 	// settlement on the open issue sweeps them: at the reopen, one runs only for a document the
-	// reopen writes or marks owed.
+	// reopen writes or marks owed. An issue room's sweep reads each fragment's marks against what
+	// its own document records.
 	if !st.issueClosed {
-		s.sweepUnrecordedMarks(room, st.versioned)
+		s.sweepUnrecordedMarks(room, st.layout, st.versioned, st.versionedCounts)
 	}
 	return settleDone, settleOutcome{}
 }
 
 // roomVersion is the latest markdown version a document of an issue room holds, as
 // readRoomVersions reads it: its number, 0 for a document that holds none, its markdown and its
-// row's created_at, with the document's name, which its version event carries.
+// row's created_at, with the document's name, which its version event carries, and whether the
+// document is retired (RetireDocument), whose fragment the room's settlement versions no more.
 type roomVersion struct {
 	number   int
 	markdown string
 	at       time.Time
 	name     string
+	retired  bool
 }
 
 // readRoomVersions reads, in one statement through q, the latest markdown version of each of
@@ -1025,7 +1028,8 @@ type roomVersion struct {
 // dispatch://INFRA-1253's plan), and a block of the room records a version of its own document.
 func readRoomVersions(ctx context.Context, q Queryer, documents []string) ([]roomVersion, error) {
 	rows, err := q.Query(ctx, `
-		select coalesce(v.number, 0), coalesce(v.markdown, ''), coalesce(v.created_at, a.created_at), a.name
+		select coalesce(v.number, 0), coalesce(v.markdown, ''), coalesce(v.created_at, a.created_at), a.name,
+		       a.retired_at is not null
 		from unnest($1::uuid[]) with ordinality as d (id, position)
 		join artifacts a on a.id = d.id
 		left join lateral (
@@ -1039,7 +1043,7 @@ func readRoomVersions(ctx context.Context, q Queryer, documents []string) ([]roo
 	}
 	versions, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (roomVersion, error) {
 		var version roomVersion
-		err := row.Scan(&version.number, &version.markdown, &version.at, &version.name)
+		err := row.Scan(&version.number, &version.markdown, &version.at, &version.name, &version.retired)
 		return version, err
 	})
 	if err != nil {
@@ -1069,7 +1073,8 @@ type roomFragment struct {
 // each whose rendering differs from that document's latest version where the room's content
 // changed since the tree artifact's latest version (contentChanged): a settlement of an issue
 // room writes one version of each document whose fragment it changed, and no version of the room
-// as a whole (T12a of dispatch://INFRA-1253's plan).
+// as a whole (T12a of this branch's plan). A retired document takes no new text (RetireDocument),
+// so its fragment is never marked changed, whatever a peer of the room typed into it.
 func (st *settlement) roomFragments(ctx context.Context, contentChanged bool) ([]roomFragment, error) {
 	documents := st.layout.documents(st.room)
 	parts := st.layout.parts(st.versioned, st.versionedCounts)
@@ -1088,7 +1093,7 @@ func (st *settlement) roomFragments(ctx context.Context, contentChanged bool) ([
 		}
 		fragments[index] = roomFragment{
 			document: document, tree: parts[index], markdown: markdown, offsets: offsets, latest: latest[index],
-			changed: contentChanged && (latest[index].number == 0 || markdown != latest[index].markdown),
+			changed: contentChanged && !latest[index].retired && (latest[index].number == 0 || markdown != latest[index].markdown),
 		}
 	}
 	return fragments, nil
@@ -1171,7 +1176,9 @@ func (st *settlement) blockVersions(ctx context.Context, fragments []roomFragmen
 // next version.
 func (st *settlement) commitRoomVersions(ctx context.Context, fragments []roomFragment, markdown string, offsets []pmdoc.BlockOffset, keptEditor *model.Actor) (int64, error) {
 	s, room, tx, ledger := st.service, st.room, st.tx, st.ledger
-	versions := refs.Versions{}
+	// versions is the version of each document the room's pass covers, and inserted those of them
+	// this settlement writes, whose nodes it writes after the pass.
+	versions, inserted := refs.Versions{}, refs.Versions{}
 	type written struct {
 		fragment roomFragment
 		result   versionWriteResult
@@ -1200,10 +1207,17 @@ func (st *settlement) commitRoomVersions(ctx context.Context, fragments []roomFr
 			return graphstore.NoEvent, err
 		}
 		versions[fragment.document] = refs.Version{Number: result.version.Number, At: result.version.CreatedAt}
+		inserted[fragment.document] = versions[fragment.document]
 		writes = append(writes, written{fragment: fragment, result: result, actor: actor})
 		listed[fragment.document] = st.credit.listed[fragment.document]
 	}
-	index, err := s.indexRoom(ctx, tx, room, versions, markdown, offsetBlocks(offsets, st.layout.blockDocuments(room, st.versioned, st.versionedCounts)),
+	// A fragment that renders as no text holds no block (withoutSilentFragments).
+	parts := make([]*pmdoc.Node, len(fragments))
+	for index, fragment := range fragments {
+		parts[index] = fragment.tree
+	}
+	indexed := withoutSilentFragments(offsets, parts, func(index int) bool { return fragments[index].markdown == "" })
+	index, err := s.indexRoom(ctx, tx, room, versions, inserted, false, markdown, offsetBlocks(indexed, st.layout.blockDocuments(room, st.versioned, st.versionedCounts)),
 		st.versioned, &st.reconciliation.sources)
 	if err != nil {
 		return graphstore.NoEvent, err

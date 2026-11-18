@@ -21,6 +21,14 @@ const (
 	// renders each one's attached_to while its part_of to that issue stands. The child_of arm also
 	// answers a marked row whose parent the release before moved in place (IssueParentMoved).
 	GraphEdgesIssueRelations GraphEdgesArms = iota + 1
+	// GraphEdgesComponents is the set 20261118023219_issue_tree_components states:
+	// GraphEdgesIssueRelations with the three arms over a component's relations split the same
+	// way. The arms over components (part_of), component_depends (depends_on) and
+	// issue_component_members (affects) answer only the rows that name no node, the part_of arm
+	// also a marked row whose parent no longer matches its node's part_of (ComponentParentMoved),
+	// and the tuple arm renders a component's part_of and depends_on and an issue's affects while
+	// the projection row that names each carries its node.
+	GraphEdgesComponents
 )
 
 // GraphEdgesView is the statement that states graph_edges with the arms of set arms. A set no
@@ -49,11 +57,23 @@ const (
 // node answers by the artifact's uuid and at its row's created_at, as the arm over the rows that
 // carry none does: an arm's from_id names an artifact by its uuid, which is what every reader of
 // the view resolves it by, and the store addresses the node by its ref_key.
+//
+// A component's relations, as GraphEdgesComponents has them: its part_of is answered while the
+// components row carries the component's node and names that parent, its depends_on while the
+// component_depends row of the pair carries it, and an issue's affects while the
+// issue_component_members row of the issue and the component carries the issue's node. A marked
+// components row whose parent no longer matches its node's part_of counts as unmarked
+// (ComponentParentMoved), as an issues row does (IssueParentMoved).
 func GraphEdgesView(arms GraphEdgesArms) string {
-	if arms != GraphEdgesIssueRelations {
+	components, stated := componentArms[arms]
+	if !stated {
 		panic(fmt.Sprintf("graph_edges is stated with no arm set %d", arms))
 	}
-	return graphEdgesIssueRelations
+	classes, probes := "", ""
+	if arms >= GraphEdgesComponents {
+		classes, probes = componentClasses, componentProbes
+	}
+	return graphEdgesHead + components + graphEdgesBlocks + classes + graphEdgesProbes + probes + graphEdgesTail
 }
 
 // IssueParentMoved is the test that the issues row aliased i, which names its node, names a parent
@@ -79,8 +99,100 @@ const IssueParentMoved = `not exists (
       where newest.asserted
       offset 0)`
 
-// graphEdgesIssueRelations is the statement of GraphEdgesIssueRelations.
-const graphEdgesIssueRelations = `create or replace view graph_edges (from_kind, from_id, kind, to_kind, to_id, created_at, source_seq) as
+// ComponentParentMoved is IssueParentMoved for a component's parent: the test that the components
+// row aliased c, which names its node, names a parent its node does not hang under, the newest
+// part_of tuple out of that node that names the row's parent not asserting it, or there being
+// none. No importer of this release or of the release before moves a row's parent in place - each
+// deletes a source's components and inserts them again, so a row the release before writes names
+// no node - but a row updated in place by anything else, leaving its node columns as they were,
+// counts as unmarked while that is so (R9 of dispatch://INFRA-1253): graph_edges' old part_of arm
+// over components answers it, refs.BacklinkCounts counts it the same way, and the backfill states
+// the part_of that names its parent (graphcensus' component pass). It is the complement, over a
+// marked row, of the tuple arm's own test of the same edge, so every parent is answered by exactly
+// one of the two arms. It reads graph_tuples_current and ends in `offset 0`, as IssueParentMoved
+// does and for the same reason.
+const ComponentParentMoved = `not exists (
+      select 1 from (
+        select tuple.asserted from graph_tuples tuple
+        where tuple.from_kind = c.node_kind and tuple.from_id = c.node_address and tuple.kind = 'part_of'
+          and tuple.to_kind = 'component' and tuple.to_id = c.project_key || '/' || c.parent
+        order by tuple.seq desc
+        limit 1
+      ) newest
+      where newest.asserted
+      offset 0)`
+
+// componentArms are, for each set, the arms over a component's part_of (components.parent), its
+// depends_on (component_depends) and an issue's affects (issue_component_members): the three over
+// every row in GraphEdgesIssueRelations, and in GraphEdgesComponents the three over the rows no
+// writer of this release wrote, the part_of arm also over a marked row whose parent was moved in
+// place (ComponentParentMoved). Each is dated as it always was: a component's edges at its
+// snapshot's imported_at, an issue's affects at its issue_components row's updated_at.
+var componentArms = map[GraphEdgesArms]string{
+	GraphEdgesIssueRelations: `  select 'component', c.project_key || '/' || c.id, 'part_of', 'component', c.project_key || '/' || c.parent, s.imported_at, null
+  from components c join architecture_snapshots s on s.id = c.snapshot_id
+  where c.parent is not null
+  union all
+  select 'component', d.project_key || '/' || d.from_id, 'depends_on', 'component', d.project_key || '/' || d.to_id, s.imported_at, null
+  from component_depends d
+  join components c on c.project_key = d.project_key and c.id = d.from_id
+  join architecture_snapshots s on s.id = c.snapshot_id
+  union all
+  select 'issue', m.issue_key, 'affects', 'component', m.project_key || '/' || m.component_id, c.updated_at, null
+  from issue_component_members m join issue_components c using (issue_key)
+`,
+	GraphEdgesComponents: `  select 'component', c.project_key || '/' || c.id, 'part_of', 'component', c.project_key || '/' || c.parent, s.imported_at, null
+  from components c join architecture_snapshots s on s.id = c.snapshot_id
+  where c.parent is not null
+    and (c.node_kind is null or ` + ComponentParentMoved + `)
+  union all
+  select 'component', d.project_key || '/' || d.from_id, 'depends_on', 'component', d.project_key || '/' || d.to_id, s.imported_at, null
+  from component_depends d
+  join components c on c.project_key = d.project_key and c.id = d.from_id
+  join architecture_snapshots s on s.id = c.snapshot_id
+  where d.node_kind is null
+  union all
+  select 'issue', m.issue_key, 'affects', 'component', m.project_key || '/' || m.component_id, c.updated_at, null
+  from issue_component_members m join issue_components c using (issue_key)
+  where m.node_kind is null
+`,
+}
+
+// componentClasses are the tuple arm's classes of a component's three relations, which
+// GraphEdgesComponents renders and GraphEdgesIssueRelations does not: a component's part_of its
+// parent component, its depends_on another component and an issue's affects a component.
+const componentClasses = `             when tuple.from_kind = 'component' and tuple.kind = 'part_of' and tuple.to_kind = 'component' then 'component_parent'
+             when tuple.from_kind = 'component' and tuple.kind = 'depends_on' and tuple.to_kind = 'component' then 'component_depends'
+             when tuple.from_kind = 'issue' and tuple.kind = 'affects' and tuple.to_kind = 'component' then 'component_member'
+`
+
+// componentProbes are the probes of componentClasses: each answers its edge while the projection
+// row that names it carries the node the tuple comes from, the components row of the component
+// while it names that parent, the component_depends row of the pair and the
+// issue_component_members row of the issue and the component. Each reads its table through the
+// expression index on the address it binds (migrations 0037 and 0038) or its primary key, and
+// ends in `offset 0`.
+const componentProbes = `          when 'component_parent' then exists (
+            select 1 from components projected
+            where projected.project_key || '/' || projected.id = edge.from_id and projected.node_kind = edge.from_kind
+              and projected.node_address = edge.from_id and projected.project_key || '/' || projected.parent = edge.to_id
+            offset 0)
+          when 'component_depends' then exists (
+            select 1 from component_depends projected
+            where projected.project_key || '/' || projected.from_id = edge.from_id
+              and projected.project_key || '/' || projected.to_id = edge.to_id and projected.node_kind = edge.from_kind
+              and projected.node_address = edge.from_id
+            offset 0)
+          when 'component_member' then exists (
+            select 1 from issue_component_members projected
+            where projected.issue_key = edge.from_id and projected.project_key || '/' || projected.component_id = edge.to_id
+              and projected.node_kind = edge.from_kind and projected.node_address = edge.from_id
+            offset 0)
+`
+
+// graphEdgesHead is the view from its head to the arms over a component's relations, which every
+// set states as GraphEdgesView has them.
+const graphEdgesHead = `create or replace view graph_edges (from_kind, from_id, kind, to_kind, to_id, created_at, source_seq) as
   select from_kind, from_id, kind, to_kind, to_id, created_at, source_seq from refs
   union all
   select 'issue', i.key, 'child_of', 'issue', i.parent_key, i.created_at, null
@@ -140,18 +252,11 @@ const graphEdgesIssueRelations = `create or replace view graph_edges (from_kind,
   from ask_followers
   where node_kind is null
   union all
-  select 'component', c.project_key || '/' || c.id, 'part_of', 'component', c.project_key || '/' || c.parent, s.imported_at, null
-  from components c join architecture_snapshots s on s.id = c.snapshot_id
-  where c.parent is not null
-  union all
-  select 'component', d.project_key || '/' || d.from_id, 'depends_on', 'component', d.project_key || '/' || d.to_id, s.imported_at, null
-  from component_depends d
-  join components c on c.project_key = d.project_key and c.id = d.from_id
-  join architecture_snapshots s on s.id = c.snapshot_id
-  union all
-  select 'issue', m.issue_key, 'affects', 'component', m.project_key || '/' || m.component_id, c.updated_at, null
-  from issue_component_members m join issue_components c using (issue_key)
-  union all
+`
+
+// graphEdgesBlocks is the view from the arms over a block's links to the tuple arm's class of an
+// issue's wait, the last class every set states.
+const graphEdgesBlocks = `  union all
   select 'block', from_node, kind, to_kind, to_id, created_at, source_seq
   from block_refs
   where (to_types is null or block_ref_listed(to_types, to_id))
@@ -219,7 +324,11 @@ const graphEdgesIssueRelations = `create or replace view graph_edges (from_kind,
              when tuple.from_kind = 'issue' and tuple.kind in ('duplicate_of', 'filed_from') then 'store'
              when tuple.from_kind = 'issue' and tuple.kind = 'child_of' and tuple.to_kind = 'issue' then 'issue_parent'
              when tuple.from_kind = 'issue' and tuple.kind = 'needs' and tuple.to_kind = 'issue' then 'issue_link'
-             when tuple.from_kind = 'block' and tuple.kind <> 'part_of' then 'block_ref'
+`
+
+// graphEdgesProbes is the tuple arm from the class of a block's link to the probe of an issue's
+// wait, the last probe every set states.
+const graphEdgesProbes = `             when tuple.from_kind = 'block' and tuple.kind <> 'part_of' then 'block_ref'
              when tuple.from_kind = 'comment' and tuple.kind in ('anchored_to', 'owned_by') then 'comment'
              when tuple.from_kind = 'ask' and tuple.kind in ('anchored_to', 'owned_by') then 'ask'
              when tuple.from_kind = 'ask' and tuple.kind = 'followed_by' then 'ask_follower'
@@ -250,7 +359,11 @@ const graphEdgesIssueRelations = `create or replace view graph_edges (from_kind,
               and projected.target_key = edge.to_id and projected.node_kind = edge.from_kind
               and projected.node_address = edge.from_id
             offset 0)
-          when 'block_ref' then exists (
+`
+
+// graphEdgesTail is the view after the probes of the tuple arm's classes of a set's own, from the
+// probe of a block's link on.
+const graphEdgesTail = `          when 'block_ref' then exists (
             select 1 from block_refs projected
             where projected.node_kind = edge.from_kind and projected.node_address = edge.from_id
               and projected.kind = edge.stated and projected.to_kind = edge.to_kind

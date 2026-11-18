@@ -1091,7 +1091,15 @@ export const dispatchToolSpecs = [
           quote: z.string().describe("Exact text the decision concerns."),
           occurrence: z
             .number({ int: true, min: 0 })
-            .describe("Zero-based occurrence of the quote.")
+            .describe(
+              "Zero-based occurrence of the quote, counted inside block_id when it is given."
+            )
+            .optional(),
+          block_id: z
+            .string()
+            .describe(
+              "Optional id of the block the quote is in: the quote is found inside that block alone."
+            )
             .optional(),
         })
         .describe("Optional document location for the question.")
@@ -1265,7 +1273,15 @@ export const dispatchToolSpecs = [
       quote: z.string().describe("Optional exact quoted document text.").optional(),
       occurrence: z
         .number({ int: true, min: 0 })
-        .describe("Optional zero-based occurrence of quote.")
+        .describe(
+          "Optional zero-based occurrence of quote, counted inside block_id when it is given."
+        )
+        .optional(),
+      block_id: z
+        .string()
+        .describe(
+          "Optional id of the block the quote is in: the quote is found inside that block alone."
+        )
         .optional(),
       body: z.string().describe(`Review comment. ${BODY_BLOCK_RULE}`),
       reply_to: z
@@ -1331,7 +1347,15 @@ export const dispatchToolSpecs = [
       body: z.string().describe(`Optional rationale. ${BODY_BLOCK_RULE}`).optional(),
       occurrence: z
         .number({ int: true, min: 0 })
-        .describe("Optional zero-based occurrence of quote.")
+        .describe(
+          "Optional zero-based occurrence of quote, counted inside block_id when it is given."
+        )
+        .optional(),
+      block_id: z
+        .string()
+        .describe(
+          "Optional id of the block the quote is in: the quote is found inside that block alone."
+        )
         .optional(),
     }),
     validation: documentOwnerValidation(true, true),
@@ -2485,11 +2509,13 @@ export const dispatchToolSpecs = [
       "sign it is seen coming by (early_warning) and what keeps it from happening (prevention). " +
       "lens is the dispatch://lens/<uuid> address of a lens of kind pre-mortem; a lens of any " +
       "other kind is refused with 400 INVALID_POINTER, which says a risk belongs under a " +
-      "pre-mortem. prevented_by is the dispatch:// address of a check block of the issue's " +
-      "documents that covers the risk (dispatch://KEY-1/artifact/verification-md#b-<id>); a " +
-      "block that is no check is 400 INVALID_POINTER. Add a second check, or move one, with " +
-      "dispatch pointer. A lens or a check outside the issue, or one you may not see, is 404 " +
-      "NOT_FOUND. The result names the risk's dispatch://risk/<uuid> address. " +
+      "pre-mortem. prevented_by is the dispatch:// address of a check block that covers the " +
+      "risk, of any issue of the issue's project " +
+      "(dispatch://KEY-1/artifact/verification-md#b-<id>); a block that is no check, and a " +
+      "check of another project, are 400 INVALID_POINTER, the second naming the check. Add a " +
+      "second check, or move one, with dispatch pointer. A lens outside the issue, and a lens " +
+      "or a check you may not see, are 404 NOT_FOUND. The result names the risk's " +
+      "dispatch://risk/<uuid> address. " +
       `${REASONING_WRITE_RULE} ${ISSUE_REFERENCE}`,
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE),
@@ -2502,7 +2528,7 @@ export const dispatchToolSpecs = [
       prevented_by: z
         .string({ min: 1 })
         .describe(
-          "The dispatch:// address of a check block of the issue's documents that covers the risk."
+          "The dispatch:// address of a check block that covers the risk, of any issue of the issue's project."
         )
         .optional(),
       visibility: reasoningVisibility(z, "the risk is"),
@@ -2575,17 +2601,19 @@ export const dispatchToolSpecs = [
       "lens to its kind, from and to being lens_kind ids such as trade-off), triggered_by (a " +
       "lens to the lens of the issue whose finding asked for it), constrained_by (a requirement " +
       "block of the issue's spec to a constraint of the issue or of the catalogue, " +
-      "dispatch://constraint/<uuid>) or prevented_by (a risk to a check block that covers it). " +
-      "action append adds a pointer at to, retract removes the one at to, and retarget moves " +
-      "the one at from to to in one write. node is the dispatch:// address of the node the " +
-      "pointer goes out of. Dispatch holds every pointer to its type rule: a far end of the " +
-      "wrong type, a lens triggered by itself and a lens left with no kind are refused with 400 " +
-      "INVALID_POINTER, and a second has_kind on a lens, or a retarget of a pre-mortem's kind " +
-      "away from pre-mortem, with 409 POINTER_ALREADY_ASSERTED. A node outside the issue, a far " +
-      "end outside it (but a has_kind's lens_kind and a constrained_by's constraint of the " +
-      "catalogue, which stand under no issue), one you may not see, and a pointer to retract or " +
-      "retarget that the node does not hold are 404 NOT_FOUND. No pointer moves a node to " +
-      `another parent. ${REASONING_WRITE_RULE} ${ISSUE_REFERENCE}`,
+      "dispatch://constraint/<uuid>) or prevented_by (a risk to a check block that covers it, " +
+      "of any issue of the issue's project). action append adds a pointer at to, retract " +
+      "removes the one at to, and retarget moves the one at from to to in one write. node is " +
+      "the dispatch:// address of the node the pointer goes out of. Dispatch holds every " +
+      "pointer to its type rule: a far end of the wrong type, a prevented_by at a check of " +
+      "another project (naming the check), a lens triggered by itself and a lens left with no " +
+      "kind are refused with 400 INVALID_POINTER, and a second has_kind on a lens, or a " +
+      "retarget of a pre-mortem's kind away from pre-mortem, with 409 POINTER_ALREADY_ASSERTED. " +
+      "A node outside the issue, a far end outside it (but a has_kind's lens_kind, a " +
+      "constrained_by's constraint of the catalogue, which stand under no issue, and a " +
+      "prevented_by's check of another issue of the project), one you may not see, and a " +
+      "pointer to retract or retarget that the node does not hold are 404 NOT_FOUND. No " +
+      `pointer moves a node to another parent. ${REASONING_WRITE_RULE} ${ISSUE_REFERENCE}`,
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE),
       node: z.string({ min: 1 }).describe(`The node the pointer goes out of: ${NODE_UNDER_ISSUE}.`),
@@ -2596,7 +2624,7 @@ export const dispatchToolSpecs = [
       to: z
         .string({ min: 1 })
         .describe(
-          "The pointer's far end: the one added or removed, or the one a retarget moves it to. A has_kind's is a lens_kind id; a constrained_by's is the dispatch://constraint/<uuid> address of a constraint of the issue or of the catalogue; any other is a dispatch:// address of the issue."
+          "The pointer's far end: the one added or removed, or the one a retarget moves it to. A has_kind's is a lens_kind id; a constrained_by's is the dispatch://constraint/<uuid> address of a constraint of the issue or of the catalogue; a prevented_by's is the dispatch:// address of a check block of any issue of the issue's project; any other is a dispatch:// address of the issue."
         ),
       from: z
         .string({ min: 1 })
@@ -2657,7 +2685,11 @@ export const dispatchToolSpecs = [
       "block of a document, an issue, a document, an ask, a comment or a message, any state " +
       "on a gone node, and any state on a block of an ask, a comment or a message, which the " +
       "store keeps no node of and every read answers live. Settle a proposal with dispatch " +
-      "settle. The result names the node's state before and after. " +
+      "settle. A move out of settled, and a move into proposed, take the settle's rule: a " +
+      "person makes either on any node, and an agent only on a node whose author is the " +
+      "author its credential proves; any other is refused with 403 STATE_NOT_PERMITTED, so " +
+      "the deployment's shared agent token makes neither. The result names the node's state " +
+      "before and after. " +
       `${REASONING_WRITE_RULE} ${ISSUE_REFERENCE}`,
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE),
@@ -2728,10 +2760,12 @@ export const dispatchToolSpecs = [
       "leaves the issue's document list and takes no new text, and its address answers the " +
       "lens. prevented_by holds one entry for each risk the document holds: its number as the " +
       "document numbers it, the dispatch:// addresses of the check blocks that prevent it, of " +
-      "any issue ([] for none), and why. An entry for a number the document does not hold, a " +
-      "number twice, a risk with no entry, an address that names no check block you may see, a " +
-      "blank reason, and an entry of any other shape are refused with 400 ARTIFACT_INPUT, " +
-      "naming the entry by its position from 1 and its risk number, and nothing is written. " +
+      "any issue of the issue's project ([] for none), and why. An entry for a number the " +
+      "document does not hold, a number twice, a risk with no entry, an address that names no " +
+      "check block you may see, a blank reason, and an entry of any other shape are refused " +
+      "with 400 ARTIFACT_INPUT, naming the entry by its position from 1 and its risk number, " +
+      "and an entry naming a check of another project with 400 INVALID_POINTER, naming the " +
+      "entry, its risk and the check, with preview as without it; nothing is written. " +
       "preview answers what the conversion would write and writes nothing; run it first. A " +
       "document converted already is answered as such, naming its lens, and nothing is " +
       "written. The result names the lens's dispatch://lens/<uuid> address and each risk's " +

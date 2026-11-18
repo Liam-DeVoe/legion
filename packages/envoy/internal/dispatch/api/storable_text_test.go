@@ -400,7 +400,7 @@ func TestABrowsersNulLeavesTheDocumentVersionable(t *testing.T) {
 					t.Fatalf("anchor a comment: status=%d body=%s", comment.Code, comment.Body.String())
 				}
 			}
-			peer := connectBrowserPeer(t, documentService, issue.PrimaryArtifactID)
+			peer := connectBrowserPeer(t, handler, documentService, issue.PrimaryArtifactID)
 			peer.edit(t, func(tree *pmdoc.Node) error {
 				test.edit(tree)
 				return nil
@@ -465,7 +465,7 @@ func TestABlockIDHoldingANulIsMintedAgain(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			documentService, handler, database := browserDocumentService(t)
 			issue := createInteractionIssue(t, handler, "TEST", "Crafted block id", test.spec)
-			peer := connectBrowserPeer(t, documentService, issue.PrimaryArtifactID)
+			peer := connectBrowserPeer(t, handler, documentService, issue.PrimaryArtifactID)
 			peer.edit(t, func(tree *pmdoc.Node) error {
 				tree.Children[1].Attrs[pmdoc.BlockIDAttr] = "x" + nulText
 				return nil
@@ -516,7 +516,7 @@ func TestABlockIDTheEditorKeepsFromAPasteSurvivesSettlement(t *testing.T) {
 				t.Fatal(err)
 			}
 			pasted.Children[0].Attrs[pmdoc.BlockIDAttr] = id
-			peer := connectBrowserPeer(t, documentService, issue.PrimaryArtifactID)
+			peer := connectBrowserPeer(t, handler, documentService, issue.PrimaryArtifactID)
 			peer.edit(t, func(tree *pmdoc.Node) error {
 				tree.Children = append(tree.Children, pasted.Children...)
 				return nil
@@ -533,7 +533,7 @@ func TestABlockIDTheEditorKeepsFromAPasteSurvivesSettlement(t *testing.T) {
 				t.Fatalf("answer the pasted ask: status=%d body=%s", answered.Code, answered.Body.String())
 			}
 
-			peer = connectBrowserPeer(t, documentService, issue.PrimaryArtifactID)
+			peer = connectBrowserPeer(t, handler, documentService, issue.PrimaryArtifactID)
 			peer.appendToFirstParagraph(t, " more")
 			peer.barrier(t)
 			peer.closeAndWait(t)
@@ -570,7 +570,7 @@ func TestAnAskBlockPastedWithNullServerAttributesIsTaken(t *testing.T) {
 		t.Fatal(err)
 	}
 	attributes, _ := pmdoc.BlockTypeAttributes("ask")
-	peer := connectBrowserPeer(t, documentService, issue.PrimaryArtifactID)
+	peer := connectBrowserPeer(t, handler, documentService, issue.PrimaryArtifactID)
 	peer.transact(t, func(txn *crdt.Transaction, fragment *crdt.YXmlFragment) error {
 		tree, err := pmdoc.ReadInTransaction(txn, fragment)
 		if err != nil {
@@ -638,7 +638,7 @@ func describeAsks(asks []model.Ask) string {
 func TestAnAnchorInABlockWhoseLiveIDHoldsANulIsUnpinned(t *testing.T) {
 	documentService, handler, _ := browserDocumentService(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Unsettled NUL id", "before\n")
-	peer := connectBrowserPeer(t, documentService, issue.PrimaryArtifactID)
+	peer := connectBrowserPeer(t, handler, documentService, issue.PrimaryArtifactID)
 	t.Cleanup(peer.close)
 	peer.edit(t, func(tree *pmdoc.Node) error {
 		tree.Children[0].Attrs[pmdoc.BlockIDAttr] = "x" + nulText
@@ -682,7 +682,7 @@ func TestABlockIDHoldingANulIsServedAndVersionedAsAReplacementCharacter(t *testi
 		t.Run(test.name, func(t *testing.T) {
 			documentService, handler, _ := browserDocumentService(t)
 			issue := createInteractionIssue(t, handler, "TEST", "Unsettled NUL id", test.spec)
-			peer := connectBrowserPeer(t, documentService, issue.PrimaryArtifactID)
+			peer := connectBrowserPeer(t, handler, documentService, issue.PrimaryArtifactID)
 			t.Cleanup(peer.close)
 			peer.edit(t, func(tree *pmdoc.Node) error {
 				tree.Children[test.block].Attrs[pmdoc.BlockIDAttr] = "x" + nulText
@@ -716,7 +716,7 @@ func TestABlockIDHoldingANulIsServedAndVersionedAsAReplacementCharacter(t *testi
 func TestAQuoteMatchesABrowsersNulAsEveryReadServesIt(t *testing.T) {
 	documentService, handler, _ := browserDocumentService(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Quote over a NUL", "# Plan\n\nbefore\n")
-	peer := connectBrowserPeer(t, documentService, issue.PrimaryArtifactID)
+	peer := connectBrowserPeer(t, handler, documentService, issue.PrimaryArtifactID)
 	peer.edit(t, func(tree *pmdoc.Node) error {
 		tree.Children[0].Children[0].Text = "Pl" + nulText + "an"
 		tree.Children[1].Children[0].Text = "bef" + nulText + "ore"

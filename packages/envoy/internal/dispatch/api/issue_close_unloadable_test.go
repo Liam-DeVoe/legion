@@ -147,6 +147,10 @@ func TestRebuildingAClosedIssuesDocumentWritesTheAskAttributesOnlyWhileAnotherBu
 		}
 		t.Run(name, func(t *testing.T) {
 			f := newRepairFixture(t)
+			// Held unconverted: the notes hold a copy of the spec's decision, and a copy inside
+			// one issue stands only between documents that are each their own room
+			// (TestAnUploadedCopyOfASpecOpensNoAskForItsCopiedBlocks).
+			holdIssuesUnconverted(t, f.database)
 			if twoBuilds {
 				registerTwoBuilds(t, f.database)
 			}

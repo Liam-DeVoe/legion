@@ -260,11 +260,13 @@ func TestTheReferenceTargetsReadCarriesATypedBlocksContentWhole(t *testing.T) {
 	// After the marker `10. ` an item's content stands four columns in, so each line of the
 	// requirement's stored text but its first carries four spaces.
 	const numbered = "Nested in item 10.\n\nIts second paragraph."
+	// The requirement deep in a nested list is n2, not r2: the issue is born converted, so notes.md
+	// and the spec are fragments of one room, which holds a block id once, and the spec holds r2.
 	notesDocument := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "notes.md",
 		"> :::requirement{#q1}\n> Nested in a quote.\n> :::\n\n"+
 			"- An item:\n\n  :::requirement{#l1}\n  "+listed+"\n  :::\n\n"+
 			"10. An item:\n\n    :::requirement{#l10}\n    "+strings.ReplaceAll(numbered, "\n\n", "\n\n    ")+"\n    :::\n\n"+
-			"- a\n  - b\n\n    :::requirement{#r2}\n    "+deep+"\n    :::\n\n"+
+			"- a\n  - b\n\n    :::requirement{#n2}\n    "+deep+"\n    :::\n\n"+
 			"See the note.[^1]\n\n[^1]: A note.\n\n    :::requirement{#f1}\n    "+footnoted+"\n    :::\n\n"+
 			strings.Join(notes, "\n\n")+"\n")
 	notesRef := "dispatch://" + issue.Key + "/artifact/" + notesDocument.Artifact.Slug
@@ -278,7 +280,7 @@ func TestTheReferenceTargetsReadCarriesATypedBlocksContentWhole(t *testing.T) {
 	if stored := storedBlockText(t, database, notesDocument.Artifact.ID, "l10"); !strings.Contains(stored, "\n    Nested in item 10.") {
 		t.Fatalf("the requirement in item 10 has the stored text %q, want its lines four spaces in", stored)
 	}
-	for id, content := range map[string]string{"r2": deep, "f1": footnoted} {
+	for id, content := range map[string]string{"n2": deep, "f1": footnoted} {
 		if stored := storedBlockText(t, database, notesDocument.Artifact.ID, id); !strings.Contains(stored, "requirement{") ||
 			!strings.Contains(stored, "\n    "+content) {
 			t.Fatalf("the requirement %s has the stored text %q, want its opening line and its lines four spaces in", id, stored)
@@ -340,7 +342,7 @@ func TestTheReferenceTargetsReadCarriesATypedBlocksContentWhole(t *testing.T) {
 		notesRef + "#b-l10",
 		"dispatch://" + issue.Key + "/comment/" + nested.ID + "#b-b1",
 		"dispatch://" + issue.Key + "/comment/" + ruled.ID + "#b-b1",
-		notesRef + "#b-r2",
+		notesRef + "#b-n2",
 		notesRef + "#b-f1",
 		"dispatch://" + issue.Key + "/comment/" + fenced.ID + "#b-b1",
 		"dispatch://" + issue.Key + "/comment/" + fencedThree.ID + "#b-b1",

@@ -391,7 +391,7 @@ func TestDocumentEditPreconditionRejectsWriterAfterDurableAppendRace(t *testing.
 	// A browser's edit reaches the room at once, and its durable append waits for the room's
 	// lock: the one writer that does not first take the document's owner row, as every server
 	// write and the conditional edit below do.
-	writeBrowserDocument(t, service, issue.PrimaryArtifactID, "writer")
+	writeBrowserDocument(t, handler, service, issue.PrimaryArtifactID, "writer")
 	waitForDatabaseLocks(t, blocker, 1)
 
 	conditionalDone := make(chan *httptest.ResponseRecorder, 1)

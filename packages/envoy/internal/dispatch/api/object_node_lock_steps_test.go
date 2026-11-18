@@ -87,7 +87,14 @@ func (r *storeWriterRig) objectCreate(name, object, table, insert string, owner 
 // issueCreate is the issue create: one node write of the issue's node and its spec's, then the
 // issue's row and the spec's row, the issue.created event and the facts it caused. It numbers the
 // issue under its project's row, which is not the project of its event. Each run's title and spec
-// share no word with another's, so the create's duplicate check lets it through.
+// share no word with another's, so the create's duplicate check lets it through. No live process
+// of the rig lacks the issue room, so each run is born converted (T12b of dispatch://INFRA-1253's
+// plan): after the spec's row it writes the issue's tree (createIssueTree) and its issue_trees
+// row, the spec's document_rooms row naming that tree, and then the decisions query node
+// (createDecisionsQuery), each node before the row naming it, all before the event, so the facts
+// of every node it writes are appended under issue.created. The tree's and the decisions query's
+// nodes and rows are writes of tables an earlier step takes first; the issue_trees and
+// document_rooms rows are each the first write of its own table, held in turn.
 func (r *storeWriterRig) issueCreate() storeWriter {
 	steps := objectNodeSteps("the issue", "issues", "insert into issues (")
 	spec := storeStep{
@@ -95,7 +102,17 @@ func (r *storeWriterRig) issueCreate() storeWriter {
 		hold: holdTableWrites("artifacts"), at: "insert into artifacts (",
 		takes: []tableLock{{"artifacts", rowExclusiveMode}},
 	}
-	steps = append(steps[:2], append([]storeStep{spec}, steps[2:]...)...)
+	tree := storeStep{
+		name: "the tree's issue_trees row", order: projectionStep,
+		hold: holdTableWrites("issue_trees"), at: "insert into issue_trees (",
+		takes: []tableLock{{"issue_trees", rowExclusiveMode}},
+	}
+	room := storeStep{
+		name: "the spec's document_rooms row", order: projectionStep,
+		hold: holdTableWrites("document_rooms"), at: "insert into document_rooms (",
+		takes: []tableLock{{"document_rooms", rowExclusiveMode}},
+	}
+	steps = append(steps[:2], append([]storeStep{spec, tree, room}, steps[2:]...)...)
 	return storeWriter{
 		name: "createIssue", steps: steps, locksOwnProject: true,
 		ready: func(t *testing.T, _ context.Context) storeWriterRun {

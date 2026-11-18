@@ -5,11 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
+	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -45,6 +48,20 @@ import (
 // reconciliation's. The 8,000-item list pays nothing instead of 347 ms.
 const deferBlockIndexBlocks = 2000
 
+// missingVersionNodesBound is the most version nodes a writer's index pass writes in its own
+// request for versions of the documents it covers that the release before wrote with none
+// (indexRenderedVersion); a pass that finds more leaves them all to the block-index
+// reconciliation, which writes them under no request's clock. Before the backfill's version pass
+// has run, a document the backfill marked can hold every one of its versions with no node.
+//
+// A version node costs about 300 µs to write on a two-core pod:
+// graphcensus.WriteMissingVersionNodes over one document wrote 51 nodes in 15 and 27 ms, 101 in
+// 31 and 37 ms, 201 in 38 and 57 ms, 401 in 90 and 121 ms and 801 in 210 and 211 ms, the read of
+// the versions with no node included. At 100 versions a write that drains them pays at most about
+// 40 ms more, under half of the 100 ms its own block index is held to (deferBlockIndexBlocks), and
+// so well inside the ±150 ms by which this pod moves the same byte-identical write.
+const missingVersionNodesBound = 100
+
 // IndexDocumentReferences indexes version's markdown, which the calling transaction has just
 // stored as the document's version (indexDocument): its references, each mention's excerpt and
 // its blocks, all from the rendering of the tree that transaction wrote: an upload's replacement,
@@ -74,31 +91,63 @@ func (s *Service) IndexDocumentReferences(ctx context.Context, artifactID string
 			"artifact", artifactID, "version", version)
 		rendered = renderedTree{}
 	}
+	// A document of an issue room, and the room's tree artifact once a document has joined it, is
+	// indexed by the room's one pass over every fragment (indexDocumentInRoom): no pass indexes one
+	// fragment of a room alone. The pass defers as one document's does, measured on the blocks it
+	// would index, every fragment's.
+	room, err := readDocumentRoom(ctx, tx, artifactID)
+	if err != nil {
+		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
+	}
+	if len(room.layout) > 0 {
+		return s.indexDocumentInRoom(ctx, tx, room.room, room.layout, artifactID, rendered, nil, true)
+	}
+	// An empty version holds no block, whatever the transaction rendered, so one no write of this
+	// transaction rendered - an issue's decisions query's version 1, which no fragment holds - is
+	// indexed as the empty document: its block index stands at it in its own write, and no
+	// block-index reconciliation reads it.
+	if rendered.tree == nil && markdown == "" {
+		rendered = renderedTree{tree: &pmdoc.Node{Type: "doc"}}
+	}
 	// Above deferBlockIndexBlocks the write indexes this version's references alone: migration
 	// 0122's trigger marked the document owed a block index (document_block_versions.version
-	// null) when the version's row was inserted, and nothing here settles that mark, so the
-	// block-index reconciliation (RunBlockIndexReconciliation) indexes the blocks and the
-	// mentions they hold out of the request. The typed-node pass still runs here, so a decision
-	// is a node, with its ties and their rows, in the transaction that accepts it, whatever the
-	// size of its document (indexDeferredVersion).
+	// null) when the version's row was inserted, indexDeferredVersion adds this build's own mark
+	// (oweDocumentIndex), and nothing here settles either, so the block-index reconciliation
+	// (RunBlockIndexReconciliation) indexes the blocks and the mentions they hold out of the
+	// request. The typed-node pass still runs here, so a decision is a node, with its ties and
+	// their rows, in the transaction that accepts it, whatever the size of its document
+	// (indexDeferredVersion).
 	if blocks := len(rendered.offsets); rendered.tree != nil && blocks > deferBlockIndexBlocks {
 		slog.Info("dispatch: a document version left its blocks to the block-index reconciliation: it holds more blocks than a write indexes in its own request",
 			"artifact", artifactID, "version", version, "blocks", blocks, "bound", deferBlockIndexBlocks)
-		return s.indexDeferredVersion(ctx, tx, artifactID, version, versionAt, markdown, rendered)
+		return s.indexDeferredVersion(ctx, tx, artifactID, refs.OneVersion(artifactID, version, versionAt), markdown, rendered)
 	}
 	return s.indexDocument(ctx, tx, artifactID, refs.OneVersion(artifactID, version, versionAt), markdown, rendered, nil)
 }
 
 // indexDeferredVersion indexes one document version whose blocks its write leaves to the
-// block-index reconciliation (deferBlockIndexBlocks), written at versionAt, in a transaction
-// holding the document's owner row: its references, as indexUnrenderedVersion indexes them, and
-// its decisions, readings and ask blocks through the typed-node pass on its own
-// (refs.IndexDecisionNodes), which writes those nodes, their values and their ties' rows from
-// rendered, the tree the write left. The targets those ties moved are counted with the
-// references'. What the pass stated is answered for the caller's event, as the block index's is.
-func (s *Service) indexDeferredVersion(ctx context.Context, tx pgx.Tx, artifactID string, version int, versionAt time.Time, markdown string, rendered renderedTree) (model.ReferenceChanges, graphstore.Uncaused, error) {
+// block-index reconciliation (deferBlockIndexBlocks), or an issue room under its tree artifact at
+// the version of each of its documents (versions), in a transaction holding the document's owner
+// row: its references, as indexUnrenderedVersion indexes them, and its decisions, readings and ask
+// blocks through the typed-node pass on its own (refs.IndexDecisionNodes), which writes those
+// nodes, their values and their ties' rows from rendered, the tree the write left - for a room,
+// every fragment joined, each block carrying its fragment's document (rendered.documents). The
+// targets those ties moved are counted with the references'. What the pass stated is answered for
+// the caller's event, as the block index's is. The references take artifactID's own version, as
+// indexRenderedVersion dates them. Each document of versions takes this build's own index mark
+// first (oweVersionsIndex), as indexDocument's unrendered one does, so a version the release
+// before indexes first during a roll is drained by this build once the roll ends.
+func (s *Service) indexDeferredVersion(ctx context.Context, tx pgx.Tx, artifactID string, versions refs.Versions, markdown string, rendered renderedTree) (model.ReferenceChanges, graphstore.Uncaused, error) {
+	if err := oweVersionsIndex(ctx, tx, versions); err != nil {
+		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
+	}
+	own, held := versions[artifactID]
+	if !held {
+		_, newest := versions.Newest(artifactID)
+		own = refs.Version{At: newest.At}
+	}
 	blocks := offsetBlocks(rendered.offsets, rendered.documents)
-	facts, err := refs.DecisionFacts(ctx, tx, artifactID, refs.OneVersion(artifactID, version, versionAt), blocks, rendered.tree, blockPointers(blocks, rendered.tree),
+	facts, err := refs.DecisionFacts(ctx, tx, artifactID, versions, blocks, rendered.tree, blockPointers(blocks, rendered.tree),
 		typedSources(ctx, tx, artifactID, rendered.tree, nil))
 	if err != nil {
 		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
@@ -108,7 +157,10 @@ func (s *Service) indexDeferredVersion(ctx context.Context, tx pgx.Tx, artifactI
 		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 	}
 	reader := refs.NewReader(ctx, tx, "artifact", artifactID, s.serverURL)
-	changes, err := replaceVersionRefs(ctx, tx, artifactID, version, versionAt, reader.Mentions(markdown), moved, nil)
+	if err := settleRoomDocumentsOwed(ctx, tx, artifactID, versions); err != nil {
+		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
+	}
+	changes, err := replaceVersionRefs(ctx, tx, artifactID, own.Number, own.At, reader.Mentions(markdown), moved, nil)
 	return changes, write, err
 }
 
@@ -122,13 +174,146 @@ func (s *Service) indexDeferredVersion(ctx context.Context, tx pgx.Tx, artifactI
 // trigger left the document owed when the version's row was inserted, for the block-index
 // reconciliation, which reads the document itself. settled is the authors a settlement read of
 // the blocks it settles (typedSources), nil for any other write.
+//
+// That trigger's mark is the null version, which the release before this one reads and drains
+// too, so during a roll a pod of that release can index this version first and write its rows
+// naming no node. Such a version therefore takes this build's own mark as well, in this same
+// transaction (oweVersionsIndex), which that release neither reads nor clears: this build's
+// reconciliation then indexes the version after it, names every row's node and states what each
+// projects (refs.IndexBlocks). A version whose blocks the write deferred takes it in
+// indexDeferredVersion.
+//
+// versions is what its writer wrote in this transaction, whose nodes that writer writes after the
+// index (WriteVersionNode), so a pass that drains this build's mark leaves them out of the version
+// nodes it writes (indexRenderedVersion's written).
 func (s *Service) indexDocument(ctx context.Context, tx pgx.Tx, artifactID string, versions refs.Versions, markdown string, rendered renderedTree, settled *askBlockSources) (model.ReferenceChanges, graphstore.Uncaused, error) {
 	if rendered.tree == nil {
+		if err := oweVersionsIndex(ctx, tx, versions); err != nil {
+			return model.ReferenceChanges{}, graphstore.Uncaused{}, err
+		}
 		_, newest := versions.Newest(artifactID)
 		changes, err := s.indexUnrenderedVersion(ctx, tx, artifactID, versions[artifactID].Number, newest.At, markdown)
 		return changes, graphstore.Uncaused{}, err
 	}
-	return s.indexRenderedVersion(ctx, tx, artifactID, versions, markdown, offsetBlocks(rendered.offsets, rendered.documents), rendered.tree, settled)
+	return s.indexRenderedVersion(ctx, tx, artifactID, versions, versions, false, markdown, offsetBlocks(rendered.offsets, rendered.documents), rendered.tree, settled)
+}
+
+// oweVersionsIndex owes each document of versions this build's block index (oweDocumentIndex), in
+// ascending id, the order every writer of document_block_versions rows of several documents takes:
+// one document for a version of a document that is its own room, every document of the room whose
+// version the pass covers for an issue room, whose reconciliation then indexes the room
+// (indexOwedRoom).
+func oweVersionsIndex(ctx context.Context, tx pgx.Tx, versions refs.Versions) error {
+	for _, document := range slices.Sorted(maps.Keys(versions)) {
+		if err := oweDocumentIndex(ctx, tx, document); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// indexVersion is indexDocument for a version of artifactID its writer wrote outside an issue
+// room's settlement (writeVersionTx): the document's own pass where it is a room of its own with
+// no other fragment, and otherwise its room's one pass over every fragment (indexDocumentInRoom).
+func (s *Service) indexVersion(ctx context.Context, tx pgx.Tx, artifactID string, versions refs.Versions, markdown string, rendered renderedTree, settled *askBlockSources) (model.ReferenceChanges, graphstore.Uncaused, error) {
+	room, err := readDocumentRoom(ctx, tx, artifactID)
+	if err != nil {
+		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
+	}
+	if len(room.layout) == 0 {
+		return s.indexDocument(ctx, tx, artifactID, versions, markdown, rendered, settled)
+	}
+	return s.indexDocumentInRoom(ctx, tx, room.room, room.layout, artifactID, rendered, settled, false)
+}
+
+// indexDocumentInRoom indexes, in tx, the issue room room, of layout, after a version of document -
+// one of its documents, or its tree artifact - that its writer wrote outside the room's
+// settlement: the room's one pass under its tree artifact (indexRoom), over every fragment, each at
+// its own document's latest version, the one just written for document. document's fragment is
+// the tree the version was rendered from (rendered), and every other fragment the room's own tree
+// of it (roomTree: the transaction's fork where it writes the room, else the room this server
+// holds or the stored room), which holds the very block ids its blocks were indexed under; a
+// stored rendering read back would mint a new id for each block whose id the rendering does not
+// carry, and the pass would state that block anew under the writer's event. A fragment whose
+// document holds no version yet is empty. Where a fragment does not read, or another fragment
+// reads otherwise than its document's latest version - a browser's edit the room's settlement has
+// not versioned yet - or document's own does where its writer rendered no tree of it (an upload
+// whose replacement changed nothing, or one whose written tree did not render as the version's
+// markdown: IndexDocumentReferences), the room is left owed and nothing of it indexed here, as the
+// block-index reconciliation leaves a room live ahead (indexOwedRoom): the version trigger marked
+// document owed when its row was inserted, and the reconciliation, or the settlement that
+// versions that edit, indexes the room. What the pass stated of every document is answered
+// together, for the event the writer appends. Where deferLarge is set - an upload's or a create's
+// write (IndexDocumentReferences) - and the room holds more blocks than a write indexes in its own
+// request (deferBlockIndexBlocks), the blocks are left to the block-index reconciliation, which
+// indexes the room whole (indexOwedRoom), and the room's references and typed nodes are indexed
+// here, as one document's deferred version's are (indexDeferredVersion). document's latest version
+// is the one its writer just wrote, whose node that writer writes after the index, so it is the
+// version a pass that drains this build's mark leaves out (indexRenderedVersion's written).
+func (s *Service) indexDocumentInRoom(ctx context.Context, tx pgx.Tx, room string, layout roomLayout, document string, rendered renderedTree, settled *askBlockSources, deferLarge bool) (model.ReferenceChanges, graphstore.Uncaused, error) {
+	documents := layout.documents(room)
+	latest, err := readRoomVersions(ctx, tx, documents)
+	if err != nil {
+		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
+	}
+	held, heldCounts, err := s.roomTree(ctx, room, layout)
+	switch {
+	case errors.Is(err, ErrDocumentUnloadable), errors.Is(err, ErrDocOutsideSchema):
+		slog.Warn("dispatch: a version of a document of an issue room left the room to the block-index reconciliation: a fragment of the room does not read",
+			"room", room, "document", document, "error", err)
+		return model.ReferenceChanges{}, graphstore.Uncaused{}, nil
+	case err != nil:
+		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
+	}
+	parts := layout.parts(held, heldCounts)
+	if parts == nil {
+		return model.ReferenceChanges{}, graphstore.Uncaused{}, fmt.Errorf("the tree of room %s does not part into its %d fragments", room, len(documents))
+	}
+	versions := refs.Versions{}
+	for index, id := range documents {
+		version := latest[index]
+		switch {
+		case version.number == 0:
+			parts[index] = &pmdoc.Node{Type: "doc"}
+			continue
+		case id == document && rendered.tree != nil:
+			parts[index] = rendered.tree
+		default:
+			// A fragment no writer of this transaction rendered, document's own among them where
+			// it wrote no tree, is indexed only where it reads as its document's latest version.
+			markdown, _, err := renderFragment(parts[index])
+			if err != nil || markdown != version.markdown {
+				slog.Info("dispatch: a version of a document of an issue room left the room to the block-index reconciliation: a fragment of the room reads otherwise than its latest version",
+					"room", room, "document", document, "fragment", id, "version", version.number, "error", err)
+				return model.ReferenceChanges{}, graphstore.Uncaused{}, nil
+			}
+		}
+		versions[id] = refs.Version{Number: version.number, At: version.at}
+	}
+	joined, counts := joinFragments(parts)
+	markdown, offsets, err := renderFragment(joined)
+	if err != nil {
+		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
+	}
+	// Each fragment reads as its document's latest version here, so a version that holds no text
+	// is a fragment that renders as none, which holds no block (withoutSilentFragments).
+	offsets = withoutSilentFragments(offsets, parts, func(index int) bool { return latest[index].markdown == "" })
+	blocks := offsetBlocks(offsets, layout.blockDocuments(room, joined, counts))
+	if deferLarge && len(blocks) > deferBlockIndexBlocks {
+		slog.Info("dispatch: a version of a document of an issue room left the room's blocks to the block-index reconciliation: the room holds more blocks than a write indexes in its own request",
+			"room", room, "document", document, "blocks", len(blocks), "bound", deferBlockIndexBlocks)
+		return s.indexDeferredVersion(ctx, tx, room, versions, markdown,
+			renderedTree{tree: joined, markdown: markdown, offsets: offsets, documents: layout.blockDocuments(room, joined, counts)})
+	}
+	index, err := s.indexRoom(ctx, tx, room, versions, refs.Versions{document: versions[document]}, false, markdown, blocks, joined, settled)
+	if err != nil {
+		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
+	}
+	var facts graphstore.Uncaused
+	for _, id := range slices.Sorted(maps.Keys(index.facts)) {
+		facts = graphstore.Joined(facts, index.facts[id])
+	}
+	return index.changes, facts, nil
 }
 
 // offsetBlocks is the blocks a render's offsets name, as the block index takes them, each carrying
@@ -169,8 +354,26 @@ func offsetBlocks(offsets []pmdoc.BlockOffset, documents map[string]string) []mo
 // The typed nodes' facts take the version of each block's own document, as the blocks' do. The
 // document's own references - artifactID's, an issue room's tree artifact's, which belong to no
 // one document of the room - take artifactID's own version and its time: for an issue room whose
-// tree holds no version yet, no number and the newest time the pass covers.
-func (s *Service) indexRenderedVersion(ctx context.Context, tx pgx.Tx, artifactID string, versions refs.Versions, markdown string, blocks []model.ArtifactBlock, tree *pmdoc.Node, settled *askBlockSources) (model.ReferenceChanges, graphstore.Uncaused, error) {
+// tree holds no version yet, no number and the newest time the pass covers. Their write settles
+// artifactID's re-index queue row, and for an issue room each document's the pass read is settled
+// beside it (settleRoomDocumentsOwed).
+//
+// A pass that drains a mark also writes, in this transaction, the node of each version of the
+// documents it covers that holds none (graphcensus.WriteMissingVersionNodes), after the pass's own
+// nodes: the release before this one writes no version node, and once the marks are cleared no
+// later pass reaches such a version. tick is set by the block-index reconciliation's passes
+// (indexOwedDocument, indexOwedRoom), which run only on a document or a room they listed as owed
+// by either mark - this build's (store_owed_at), or the null version migration 0122's trigger
+// sets, which is all the release before leaves on a version whose blocks it deferred or which it
+// wrote with no rendering - so such a pass writes them wherever it wins, every one, and leaves
+// none out, since it writes no version. Any other pass is a writer's and drains this build's mark
+// alone (refs.IndexBlocks' marked); written is the versions of versions its transaction wrote,
+// which are left out, each one's node being its writer's, written after the index with the
+// version's own writer, time and event (WriteVersionNode). A writer's pass writes at most
+// missingVersionNodesBound of them: where more are missing it writes none, and owes each document
+// the pass covers its block index again in this transaction (oweVersionsIndex), so the
+// reconciliation's next tick indexes them again and writes those nodes.
+func (s *Service) indexRenderedVersion(ctx context.Context, tx pgx.Tx, artifactID string, versions, written refs.Versions, tick bool, markdown string, blocks []model.ArtifactBlock, tree *pmdoc.Node, settled *askBlockSources) (model.ReferenceChanges, graphstore.Uncaused, error) {
 	own, held := versions[artifactID]
 	if !held {
 		_, newest := versions.Newest(artifactID)
@@ -186,7 +389,7 @@ func (s *Service) indexRenderedVersion(ctx context.Context, tx pgx.Tx, artifactI
 	// The blocks are indexed before the document's own references are reconciled: a first
 	// indexing dates a block's mention from the document's refs row for its target, which a
 	// surviving target already holds and a new one gets with this same time.
-	moved, won, write, err := refs.IndexBlocks(ctx, tx, artifactID, versions, markdown, blocks, located, pointers, facts)
+	moved, won, write, marked, err := refs.IndexBlocks(ctx, tx, artifactID, versions, markdown, blocks, located, pointers, facts)
 	if err != nil {
 		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 	}
@@ -197,6 +400,26 @@ func (s *Service) indexRenderedVersion(ctx context.Context, tx pgx.Tx, artifactI
 		}
 		write.Nodes = append(write.Nodes, typed.Nodes...)
 		write.Tuples = append(write.Tuples, typed.Tuples...)
+	}
+	if tick && won || marked {
+		bound := missingVersionNodesBound
+		if tick {
+			bound = 0
+		}
+		wrote, err := graphcensus.WriteMissingVersionNodes(ctx, tx, slices.Sorted(maps.Keys(versions)), written, bound)
+		if err != nil {
+			return model.ReferenceChanges{}, graphstore.Uncaused{}, err
+		}
+		if !wrote {
+			slog.Info("dispatch: a version write left the version nodes the release before did not write to the block-index reconciliation: more are missing than a write writes in its own request",
+				"artifact", artifactID, "bound", missingVersionNodesBound)
+			if err := oweVersionsIndex(ctx, tx, versions); err != nil {
+				return model.ReferenceChanges{}, graphstore.Uncaused{}, err
+			}
+		}
+	}
+	if err := settleRoomDocumentsOwed(ctx, tx, artifactID, versions); err != nil {
+		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 	}
 	changes, err := replaceVersionRefs(ctx, tx, artifactID, own.Number, own.At, located, moved, refs.MentionExcerpts(markdown, blocks, located))
 	return changes, write, err
@@ -249,6 +472,21 @@ func (s *Service) indexUnrenderedVersion(ctx context.Context, tx pgx.Tx, artifac
 // moved, which its blocks and their mentions moved, as well (refs.ReplaceDocumentCounted).
 func replaceVersionRefs(ctx context.Context, tx pgx.Tx, artifactID string, version int, versionAt time.Time, located []text.Located, moved []refs.Target, excerpts map[refs.Target]model.GraphExcerpt) (model.ReferenceChanges, error) {
 	return refs.ReplaceDocumentCounted(ctx, tx, artifactID, version, versionAt, text.Refs(located), moved, excerpts)
+}
+
+// settleRoomDocumentsOwed settles the re-index queue row of each document of versions other than
+// artifactID (refs.SettleOwedDocuments): the documents of the issue room whose tree artifact is
+// artifactID, whose text the pass over the room read, while the room's references, written under
+// artifactID (replaceVersionRefs), settle the tree's own row. For one document's pass versions
+// names artifactID alone, and nothing is settled here.
+func settleRoomDocumentsOwed(ctx context.Context, tx pgx.Tx, artifactID string, versions refs.Versions) error {
+	documents := make([]string, 0, len(versions))
+	for _, document := range slices.Sorted(maps.Keys(versions)) {
+		if document != artifactID {
+			documents = append(documents, document)
+		}
+	}
+	return refs.SettleOwedDocuments(ctx, tx, documents)
 }
 
 // ExcerptsOwedChannel is the Postgres notification channel every artifact mention left owed an

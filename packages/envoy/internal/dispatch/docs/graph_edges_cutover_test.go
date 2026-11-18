@@ -70,9 +70,9 @@ var graphEdgesArms = []graphEdgesArm{
 	{relation: "comments", fate: "a reply's replies_to an ask; dispatch://INFRA-1152 writes it"},
 	{relation: "messages", fate: "a message's replies_to; dispatch://INFRA-1152 writes it"},
 	{relation: "ask_followers", projects: "ask_follower", renders: "followed_by", fate: "followed_by; the store answers it for a row that carries its ask's node (dispatch://INFRA-1150), and " + askArmsDeletedBy + " deletes this arm"},
-	{relation: "components", fate: "a component's part_of; no child has moved it"},
-	{relation: "component_depends", fate: "depends_on; no child has moved it"},
-	{relation: "issue_component_members", fate: "affects; no child has moved it"},
+	{relation: "components", fate: "a component's part_of over the rows that name no node; the store answers the rest (dispatch://INFRA-1253), and dispatch://INFRA-1098 deletes this arm"},
+	{relation: "component_depends", fate: "depends_on over the rows that name no node; the store answers the rest (dispatch://INFRA-1253), and dispatch://INFRA-1098 deletes this arm"},
+	{relation: "issue_component_members", fate: "affects over the rows that name no node; the store answers the rest (dispatch://INFRA-1253), and dispatch://INFRA-1098 deletes this arm"},
 	{relation: "block_refs", projects: "block_ref", fate: "a block's links; the store answers them for a row that carries its node, and " + movedArmsDeletedBy + " deletes this arm"},
 	{relation: "document_blocks", projects: "block", fate: "a block's part_of its document; the store answers it for a row that carries its node, and " + movedArmsDeletedBy + " deletes this arm"},
 	{relation: "comment_blocks", fate: "a comment block's part_of; dispatch://INFRA-1152 writes an item's blocks"},
@@ -249,11 +249,13 @@ func TestGraphEdgesLosesEveryArmOverAMovedKind(t *testing.T) {
 	}
 	// followed_by is an ask's, which TestTheAsksArmsAnswerEachRowOnce writes; from_ask and
 	// decided_by are a decision block's, which the typed-node pass writes; an issue's child_of,
-	// duplicate_of and filed_from are its create's and its PATCH's, which api's
+	// duplicate_of and filed_from are its create's and its PATCH's, and a component's depends_on and
+	// an issue's affects are an import's and an issue's components', which api's
 	// TestGraphEdgesKeepsEveryRelationAcrossARollback writes; and attached_to is answered by the arm
 	// over the artifacts that carry their node, not by the tuple arm.
 	requireTheTupleArmRendersTheList(t, after.tuple, graphstore.TupleFollowedBy, "from_ask", graphstore.TupleDecidedBy,
-		graphstore.TupleChildOf, graphstore.TupleDuplicateOf, graphstore.TupleFiledFrom, refs.TupleAttachedTo)
+		graphstore.TupleChildOf, graphstore.TupleDuplicateOf, graphstore.TupleFiledFrom, refs.TupleAttachedTo,
+		graphstore.TupleDependsOn, graphstore.TupleAffects)
 
 	// Pods of the previous release write beside this one, during a roll or after a rollback.
 	written := writeAsThePreviousRelease(t, database, fixture)

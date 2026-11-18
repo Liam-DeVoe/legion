@@ -49,7 +49,7 @@ func (e *Erasure) readEvents(ctx context.Context, tx pgx.Tx, read *erasedRead) e
 	case refs.ItemKind(e.Kind) == refs.ItemComment:
 		about, subject = `payload->>'id' = $1 or payload->>'comment_id' = $1`, e.ID
 	case read.document != nil:
-		about, subject = `payload->>'artifact_id' = $1 and (type like 'artifact.%' or type like 'block.%')`, read.document.artifact
+		about, subject = `payload->>'artifact_id' = $1 and (type like 'artifact.%' or type like 'block.%')`, read.versioned.artifact
 	default:
 		return nil
 	}

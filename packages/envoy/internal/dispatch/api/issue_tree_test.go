@@ -18,6 +18,9 @@ import (
 func TestAnIssuesTreeArtifactTakesItsSlugItsNodeAndItsIssueTreesRow(t *testing.T) {
 	ctx := context.Background()
 	handler, database, _ := newTestServer(t, testServerOptions{})
+	// The issue is created as before the issue room, holding no tree yet: an issue born converted
+	// holds one from its create, and this test makes the issue's first.
+	holdIssuesUnconverted(t, database)
 	key := createTestIssue(t, handler, "TREE", "An issue with a tree")
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	created := func() (string, error) {

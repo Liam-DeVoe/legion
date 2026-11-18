@@ -484,7 +484,8 @@ func (s *server) verificationDocument(ctx context.Context, q queryer, issueKey, 
 // (`dispatch://KEY/artifact/verification-md#b-<id>`) that names one document when a block id is
 // not unique in that set: an id two documents share is 409 CHECK_AMBIGUOUS, and an id no
 // Verification document of the set holds — or one that is not a `check` block — is 400
-// UNKNOWN_CHECK.
+// UNKNOWN_CHECK. A Verification document's check rows are read where its block index keeps them,
+// in the room it is edited in (refs.DocumentRoomBlocksSQL), and a check is named by its document.
 func (s *server) resolveCheck(ctx context.Context, q queryer, issueKey, value string) (resolvedCheck, error) {
 	ancestors, err := refs.IssueAncestors(ctx, q, issueKey)
 	if err != nil {
@@ -511,12 +512,12 @@ func (s *server) resolveCheck(ctx context.Context, q queryer, issueKey, value st
 	}
 
 	rows, err := q.Query(ctx, `
-		select a.issue_key, a.slug, d.artifact_id::text, d.changed_version, d.text_sha256
-		from document_blocks d
-		join artifacts a on a.id = d.artifact_id
+		select a.issue_key, a.slug, a.id::text, d.changed_version, d.text_sha256
+		from artifacts a
+		join document_blocks d on `+refs.DocumentRoomBlocksSQL("d", "a.id")+`
 		where `+aliasedVerificationRole+`
 		  and a.issue_key = any($1) and d.type = 'check' and d.block_id = $2
-		  and ($3 = '' or d.artifact_id = $3::uuid)
+		  and ($3 = '' or a.id = $3::uuid)
 		order by a.issue_key
 	`, scope, blockID, artifactFilter)
 	if err != nil {
@@ -570,7 +571,8 @@ func unknownCheck(value string) error {
 // as it stands at the commit, and its attributes with them when that block moved: the refusal a
 // closed issue earns turns on `when`, and the refusal of a check CI proves on ci_check, run,
 // `when` and negative control, all read before the lock, and a version landing in between can
-// have changed them. A block the index no longer holds is no check any more.
+// have changed them. A block the index no longer holds is no check any more. The row is read in
+// the room the document is edited in (refs.DocumentRoomBlocksSQL), as resolveCheck read it.
 //
 // The digest is document_blocks.text_sha256, the sha256 of the block's whole markdown as the
 // index writes it (refs.BlockTextSum over markdown[From:To]), its opening line and that line's
@@ -584,8 +586,8 @@ func unknownCheck(value string) error {
 func (s *server) refreshResolvedCheck(ctx context.Context, q queryer, check *resolvedCheck, named string) error {
 	resolved := check.SHA256
 	err := q.QueryRow(ctx, `
-		select changed_version, text_sha256 from document_blocks
-		where artifact_id = $1::uuid and block_id = $2 and type = 'check'
+		select d.changed_version, d.text_sha256 from document_blocks d
+		where `+refs.DocumentRoomBlocksSQL("d", "$1::uuid")+` and d.block_id = $2 and d.type = 'check'
 	`, check.ArtifactID, check.BlockID).Scan(&check.Version, &check.SHA256)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return unknownCheck(named)
@@ -766,7 +768,8 @@ func (s *server) checkBlocksIn(ctx context.Context, artifactID string, trees *di
 // checkBlocksOf is checkBlocksIn with each block's reference, issue and indexed version and
 // digest filled in. The reference is built from the document's own slug, which is a property of
 // the artifacts row and not of a block row, so a Verification document whose blocks the index
-// does not hold yet still answers a reference every check can be addressed by.
+// does not hold yet still answers a reference every check can be addressed by. The indexed rows
+// are read in the room the document is edited in (refs.DocumentRoomBlocksSQL).
 func (s *server) checkBlocksOf(ctx context.Context, q queryer, artifact model.Artifact, trees *displayTreeReader) ([]model.CheckBlock, error) {
 	checks, err := s.checkBlocksIn(ctx, artifact.ID, trees)
 	if err != nil {
@@ -781,8 +784,8 @@ func (s *server) checkBlocksOf(ctx context.Context, q queryer, artifact model.Ar
 	}
 	indexed := make(map[string]model.CheckBlock, len(checks))
 	rows, err := q.Query(ctx, `
-		select block_id, changed_version, text_sha256
-		from document_blocks where artifact_id = $1 and type = 'check'
+		select d.block_id, d.changed_version, d.text_sha256
+		from document_blocks d where `+refs.DocumentRoomBlocksSQL("d", "$1::uuid")+` and d.type = 'check'
 	`, artifact.ID)
 	if err != nil {
 		return nil, fmt.Errorf("read the indexed checks of %s: %w", artifact.ID, err)

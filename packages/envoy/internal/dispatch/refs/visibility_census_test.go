@@ -171,9 +171,10 @@ var readsWithoutAViewer = map[string]string{
 	"BlockChanges":         nodeDetail,
 	"BlockEmbeddingStates": nodeDetail,
 	"BlockTargets":         serverWork + " - the write of a document checks the block pointers it holds against the blocks they name",
+	"BlockTexts": "it reads the texts of blocks its caller has already resolved through TargetNames, which binds each " +
+		"block's predicate: GET /api/v1/reference-targets asks it for the members TargetNames answered alone, so a block " +
+		"who may not see is never asked",
 	"BlockTextAt":          nodeDetail,
-	"BlockTexts": nodeDetail + " - the batch of CurrentBlockText and CurrentItemBlockText, which the reference-targets read " +
-		"asks only for the blocks TargetNames answered its reader",
 	"CanonicalRepo":        noNode,
 	"CountedChanges":       serverWork + " - a write records what its own text cites, as the addresses that text already spells",
 	"CurrentBlockText":     nodeDetail,
@@ -194,11 +195,16 @@ var readsWithoutAViewer = map[string]string{
 	"NewReader":        serverWork + " - the index-time resolver acts for no person, and every edge it lets a write store is held to the predicates of both its ends when it is read",
 	"NextExcerptRetry": serverWork,
 	"OwedItemBlocks":   serverWork,
+	"PartOfChains": serverWork + " - the block index climbs the part_of chain of each block an authored node may hang under, " +
+		"to keep a cycle out of where it places that node (placeAuthored), and the chain reaches no reader",
 	"QueueAskPartIDs":  nodeDetail,
 	"RecordExcerpts":   serverWork,
 	"RemovedBlockNode": nodeDetail,
-	"ScopeSources":     serverWork,
-	"SourceText":       serverWork,
+	"ResolveFarEnds": "it answers node ids and nothing of any node: the block index resolves the far ends of the pointers it " +
+		"places a node by, and the pre-mortem conversion the checks its map names, whose nodes it then reads through Nodes, " +
+		"which binds each one's predicate, so a node who may not see is absent from what a reader is shown",
+	"ScopeSources": serverWork,
+	"SourceText":   serverWork,
 }
 
 // SeedStoreThroughItsWriters writes the people and agents a running deployment's store holds, as
@@ -335,9 +341,8 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 			return database.Pool.SendBatch(ctx, batch).Close()
 		})
 	}
-	// Nodes is Node over a batch, ExcerptedNodes is Nodes with each node's excerpt, and
-	// TargetNames is Nodes with each node's name: one target of every kind, so each kind's
-	// loader issues its statement in the one call.
+	// Nodes is Node over a batch, and ExcerptedNodes is Nodes with each node's excerpt: one
+	// target of every kind, so each kind's loader issues its statement in the one call.
 	everyKind := make([]Target, len(nodeKinds))
 	for index, kind := range nodeKinds {
 		everyKind[index] = Target{Kind: kind, ID: "no-such-node"}
@@ -348,10 +353,6 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 	})
 	record("ExcerptedNodes", "ExcerptedNodes of every kind at once", func() error {
 		_, err := ExcerptedNodes(ctx, recorder, who, true, everyKind)
-		return err
-	})
-	record("TargetNames", "TargetNames of every kind at once", func() error {
-		_, err := TargetNames(ctx, recorder, who, everyKind)
 		return err
 	})
 	record("ReferencedBy", "ReferencedBy of CORE-1/spec", func() error {
@@ -399,17 +400,19 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 			return err
 		})
 	}
-	// ResolvePrefixes is ResolvePrefix over a batch: one short id of each kind and scope it reads,
-	// so each of its statements, a pinned block's included, is issued in the one call.
-	record("ResolvePrefixes", "ResolvePrefixes of every kind at once", func() error {
+	// ResolvePrefixes reads each kind its ids name in one statement, and the blocks of a document in
+	// two: those of its latest version and those of a version a reference pins.
+	record("ResolvePrefixes", "ResolvePrefixes of every kind", func() error {
 		_, _, err := ResolvePrefixes(ctx, recorder, who, []ShortID{
-			{Kind: "ask", Prefix: "00000000"},
-			{Kind: "comment", Scope: Scope{IssueKey: "CORE-1"}, Prefix: "00000000"},
-			{Kind: "message", Scope: Scope{IssueKey: "CORE-1"}, Prefix: "00000000"},
-			{Kind: "artifact", Prefix: "00000000"},
+			{Kind: "ask", Prefix: "00000000"}, {Kind: "comment", Scope: Scope{IssueKey: "CORE-1"}, Prefix: "00000000"},
+			{Kind: "message", Scope: Scope{IssueKey: "CORE-1"}, Prefix: "00000000"}, {Kind: "artifact", Prefix: "00000000"},
 			{Kind: "block", Scope: Scope{Document: "CORE-1/spec"}, Prefix: "00000000"},
 			{Kind: "block", Scope: Scope{Document: "CORE-1/spec", Version: 1}, Prefix: "00000000"},
 		})
+		return err
+	})
+	record("TargetNames", "TargetNames of an issue and a document", func() error {
+		_, err := TargetNames(ctx, recorder, who, []Target{{Kind: "issue", ID: "CORE-1"}, {Kind: "artifact", ID: "CORE-1/spec"}})
 		return err
 	})
 	// A document's own scope is its id, answered with no statement; the three kinds whose scope
@@ -478,7 +481,7 @@ func seedBlockLink(t *testing.T, ctx context.Context, database *store.Store) str
 		{ID: "target", Type: "paragraph", From: len(source), To: len(markdown)},
 	}
 	located := text.ExtractAt(markdown, "https://dispatch.example")
-	_, _, write, err := IndexBlocks(ctx, tx, artifact, OneVersion(artifact, 1, time.Now()), markdown, blocks, located, nil, TypedFacts{})
+	_, _, write, _, err := IndexBlocks(ctx, tx, artifact, OneVersion(artifact, 1, time.Now()), markdown, blocks, located, nil, TypedFacts{})
 	if err != nil {
 		t.Fatalf("index the linked document: %v", err)
 	}

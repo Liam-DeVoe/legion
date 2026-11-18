@@ -323,8 +323,11 @@ const GoingRequestTTL = 3600000 * time.Millisecond
 // GoingRunHeader is the request header a write made for a run names the run in: its uuid. The
 // server holds the run to the caller's whole credential and to its window before the write runs,
 // and the nodes a write it accepts creates or changes each carry a changed_by_run tuple to the
-// run's interaction. Generated from GOING_RUN_HEADER in packages/contracts so the server's check
-// and every caller that sends the header name it once.
+// run's interaction. A write sent again under the Idempotency-Key of a write already committed is
+// answered that committed answer, even after the run has ended, and nothing runs again. The key's
+// comparison of the two requests includes this header, so the key reused with another run, or
+// with none, is 422 KEY_REUSED. Generated from GOING_RUN_HEADER in packages/contracts so the
+// server's check and every caller that sends the header name it once.
 const GoingRunHeader = "Dispatch-Going-Run"
 
 // MaxIssueBlockers bounds blocked_by input before deduplication. Generated from

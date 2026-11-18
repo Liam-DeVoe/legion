@@ -42,7 +42,7 @@ type API interface {
 	DecisionHeading(ctx context.Context, q graphstore.Queryer, artifactID, blockID string) (HeadingDecision, bool, error)
 	ScheduleSettlement(artifactID string)
 	SettleCopiesOf(ctx context.Context, ask model.Ask) error
-	MarkQuote(ctx context.Context, artifactID string, mark MarkSpec, quote string, occurrence *int) (Anchored, error)
+	MarkQuote(ctx context.Context, artifactID string, mark MarkSpec, quote string, scope *QuoteScope) (Anchored, error)
 	VerifyMark(ctx context.Context, artifactID string, kind MarkKind, id string) (Anchored, error)
 	BlockForQuote(ctx context.Context, artifactID, quote string) (string, error)
 	SuggestionKind(ctx context.Context, artifactID, id string) (string, error)

@@ -322,15 +322,24 @@ func TestTheReadsAnswerEachNodeStateAndCountNoProposedNodeAsSettled(t *testing.T
 // broker-issued token bound to a session of its own, one for bob and one for carol, so each
 // proves an author - the person a broker session that names one proves - and holds no person
 // scope. The spec holds four requirements, each the block a version of its own first held: one
-// the first agent wrote, two the second wrote, one written on the shared bearer; alice marks all
-// four proposed, and her own lens, reserved for her, too. She settles the second agent's first
+// the first agent wrote, two the second wrote, one written on the shared bearer, beside a fifth
+// the shared bearer wrote that stays live. Each agent moves its own requirements into proposed
+// itself, as their author, and alice the shared bearer's, since that bearer proves no author;
+// she marks her own lens, reserved for her, proposed too. She settles the second agent's first
 // proposal, and the first agent its own, each read back settled with its writer as the tuple's
 // writer. The first agent is refused the second agent's other proposal, which alice's token then
 // settles as her. alice's personal token without the person scope writes one more proposal, a pod
 // token of another workload is refused its settle, and a second personal token of hers without
 // the person scope settles it, since both of her tokens prove her (graphstore.SameAuthor). alice
 // is refused a node already settled, and the shared bearer its own proposal. The first agent's
-// settle of alice's hidden lens answers, byte for byte, what a lens nobody wrote answers.
+// settle of alice's hidden lens answers, byte for byte, what a lens nobody wrote answers. The
+// second agent writes a third proposal of its own and settles it, and a broker session acting for
+// alice settles a proposal another session of hers wrote, both sessions proving her. Through the
+// state route the shared bearer is refused 403 STATE_NOT_PERMITTED, naming the node, its move of
+// the requirement alice settled to live and its move of the live requirement to proposed, and the
+// second agent the same refusal for its move of the first agent's settled proposal to overtaken,
+// each node reading as before and holding no new state tuple; the first agent then moves its own
+// settled proposal to live.
 func TestSettlingAProposedNodeIsOneWriteByAPersonOrItsAuthor(t *testing.T) {
 	issuer := newServiceTokenIssuer(t)
 	rig := newBrokerTokenRigOn(t, testServerOptions{oidc: issuer.verifier(t)})
@@ -356,21 +365,19 @@ func TestSettlingAProposedNodeIsOneWriteByAPersonOrItsAuthor(t *testing.T) {
 		secondSession = "ses_second_agent_002"
 	)
 	firstPerson, secondPerson := "bob", "carol"
-	agent := func(session, person, token string) *brokerCaller {
+	// agent is a broker-issued token bound to a session of its own that acts for person, and the
+	// requests it makes.
+	agent := func(session, person, token string) func(method, path string, body any) *httptest.ResponseRecorder {
 		caller := newBrokerCaller(t)
 		answer := liveNamedToken(caller.jkt)
 		answer.Session, answer.Person = session, person
 		rig.broker.Says(token, answer)
-		return caller
+		return func(method, path string, body any) *httptest.ResponseRecorder {
+			return rig.serve(caller.presenting(t, method, path, token, body))
+		}
 	}
-	first := agent(firstSession, firstPerson, "the-first-agent's-token")
-	second := agent(secondSession, secondPerson, "the-second-agent's-token")
-	asFirst := func(method, path string, body any) *httptest.ResponseRecorder {
-		return rig.serve(first.presenting(t, method, path, "the-first-agent's-token", body))
-	}
-	asSecond := func(method, path string, body any) *httptest.ResponseRecorder {
-		return rig.serve(second.presenting(t, method, path, "the-second-agent's-token", body))
-	}
+	asFirst := agent(firstSession, firstPerson, "the-first-agent's-token")
+	asSecond := agent(secondSession, secondPerson, "the-second-agent's-token")
 	asBearer := func(method, path string, body map[string]any) *httptest.ResponseRecorder {
 		body["actor"] = sessionActor()
 		return rig.serve(brokerRequest(t, method, path, body, "Bearer agent-token", ""))
@@ -398,31 +405,47 @@ func TestSettlingAProposedNodeIsOneWriteByAPersonOrItsAuthor(t *testing.T) {
 			return asSecond(http.MethodPost, edits, insert("r-second-a", "r-second-b"))
 		},
 		"the shared bearer's": func() *httptest.ResponseRecorder {
-			return asBearer(http.MethodPost, edits, insert("r-shared"))
+			return asBearer(http.MethodPost, edits, insert("r-shared", "r-live"))
 		},
 	} {
 		if written := response(); written.Code != http.StatusOK {
 			t.Fatalf("write %s requirement: status=%d body=%s", name, written.Code, written.Body.String())
 		}
 	}
-	authors := map[string]model.Actor{
-		"r-first":    {Kind: "session", ID: firstSession, Owner: &firstPerson, Proven: true},
-		"r-second-a": {Kind: "session", ID: secondSession, Owner: &secondPerson, Proven: true},
-		"r-second-b": {Kind: "session", ID: secondSession, Owner: &secondPerson, Proven: true},
-		"r-shared":   {Kind: "session", ID: sessionActor()["id"].(string)},
-	}
-	for blockID, author := range authors {
+	// requireMadeBy holds the requirement blockID to the author who wrote it: the test's premise.
+	requireMadeBy := func(blockID string, author model.Actor) {
+		t.Helper()
 		node, held, err := graphstore.ReadNode(ctx, rig.database.Pool, refs.BlockNodeKind, refKey+"#"+blockID)
 		if err != nil || !held || !node.MadeBy.SameCredential(author) || node.MadeBy.Proven != author.Proven {
 			t.Fatalf("%s is made by %+v (held %t, %v), want %+v: the test's premise is who wrote each requirement", blockID, node.MadeBy, held, err, author)
 		}
 	}
+	secondAgent := model.Actor{Kind: "session", ID: secondSession, Owner: &secondPerson, Proven: true}
+	sharedBearer := model.Actor{Kind: "session", ID: sessionActor()["id"].(string)}
+	for blockID, author := range map[string]model.Actor{
+		"r-first":    {Kind: "session", ID: firstSession, Owner: &firstPerson, Proven: true},
+		"r-second-a": secondAgent,
+		"r-second-b": secondAgent,
+		"r-shared":   sharedBearer,
+		"r-live":     sharedBearer,
+	} {
+		requireMadeBy(blockID, author)
+	}
 
 	requirement := func(blockID string) string { return refs.BlockRef(spec, blockID) }
-	for blockID := range authors {
-		if response := writeStateAs(t, rig.handler, issue.Key, requirement(blockID), graphstore.StateProposed, "alice"); response.Code != http.StatusOK {
-			t.Fatalf("mark %s proposed: status=%d body=%s", blockID, response.Code, response.Body.String())
+	stateRoute := func(blockID string) string { return statePath(issue.Key, requirement(blockID), "state") }
+	toState := func(state string) map[string]any { return map[string]any{"state": state} }
+	// Each agent moves its own requirements into proposed, as their author; alice, a person, moves
+	// the shared bearer's, since that bearer proves no author. r-live stays live.
+	for blockID, as := range map[string]func(method, path string, body any) *httptest.ResponseRecorder{
+		"r-first": asFirst, "r-second-a": asSecond, "r-second-b": asSecond,
+	} {
+		if response := as(http.MethodPost, stateRoute(blockID), toState(graphstore.StateProposed)); response.Code != http.StatusOK {
+			t.Fatalf("its author marks %s proposed: status=%d body=%s", blockID, response.Code, response.Body.String())
 		}
+	}
+	if response := writeStateAs(t, rig.handler, issue.Key, requirement("r-shared"), graphstore.StateProposed, "alice"); response.Code != http.StatusOK {
+		t.Fatalf("alice marks r-shared proposed: status=%d body=%s", response.Code, response.Body.String())
 	}
 	lensWritten := dispatchRequest(t, rig.handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/lenses", map[string]any{
 		"on": spec, "kind": "trade-off", "visibility": graphstore.VisibilityAuthor,
@@ -521,6 +544,82 @@ func TestSettlingAProposedNodeIsOneWriteByAPersonOrItsAuthor(t *testing.T) {
 			seen.Code, seen.Body.String(), unwritten.Code, unwritten.Body.String())
 	}
 	requireNodeState(t, rig.handler, hidden.Address, "alice", graphstore.StateProposed)
+
+	// The second agent writes a third proposal of its own, moves it into proposed as its author,
+	// and settles it.
+	if written := asSecond(http.MethodPost, edits, insert("r-second-c")); written.Code != http.StatusOK {
+		t.Fatalf("write the second agent's third requirement: status=%d body=%s", written.Code, written.Body.String())
+	}
+	requireMadeBy("r-second-c", secondAgent)
+	if response := asSecond(http.MethodPost, stateRoute("r-second-c"), toState(graphstore.StateProposed)); response.Code != http.StatusOK {
+		t.Fatalf("mark r-second-c proposed: status=%d body=%s", response.Code, response.Body.String())
+	}
+	requireSettled("the second agent", "r-second-c",
+		asSecond(http.MethodPost, settlePath(requirement("r-second-c")), map[string]any{}), model.Actor{Kind: "session", ID: secondSession})
+
+	// A broker session acting for alice writes a proposal and moves it into proposed, and another
+	// session of hers settles it: neither holds the person scope, and the one author rule names
+	// alice for both.
+	const aliceFirstSession, aliceSecondSession = "ses_alice_agent_0001", "ses_alice_agent_0002"
+	asAliceFirst := agent(aliceFirstSession, aliceLogin, "alice's-first-session-token")
+	asAliceSecond := agent(aliceSecondSession, aliceLogin, "alice's-second-session-token")
+	if written := asAliceFirst(http.MethodPost, edits, insert("r-alice")); written.Code != http.StatusOK {
+		t.Fatalf("write the requirement of alice's first broker session: status=%d body=%s", written.Code, written.Body.String())
+	}
+	requireMadeBy("r-alice", model.Actor{Kind: "session", ID: aliceFirstSession, Owner: &aliceLogin, Proven: true})
+	if response := asAliceFirst(http.MethodPost, stateRoute("r-alice"), toState(graphstore.StateProposed)); response.Code != http.StatusOK {
+		t.Fatalf("mark r-alice proposed: status=%d body=%s", response.Code, response.Body.String())
+	}
+	requireSettled("alice's second broker session", "r-alice",
+		asAliceSecond(http.MethodPost, settlePath(requirement("r-alice")), map[string]any{}), model.Actor{Kind: "session", ID: aliceSecondSession})
+
+	// Through the state route a move out of settled, and a move into proposed, take the settle's
+	// caller rule: the shared bearer, which proves no author, makes neither, and an agent moves
+	// another agent's settled proposal nowhere. Each refusal names the node, which reads the state
+	// it held and holds no new state tuple. The second agent's move runs while the first agent's
+	// proposal is still settled, before the first agent's own move of it.
+	stateTuples := func(blockID string) int {
+		t.Helper()
+		history, err := graphstore.History(ctx, rig.database.Pool, refs.BlockNodeKind, refKey+"#"+blockID, graphstore.AttributeState)
+		if err != nil {
+			t.Fatalf("read the state history of %s: %v", blockID, err)
+		}
+		return len(history)
+	}
+	requireRefusedMove := func(name, blockID, held string, move func() *httptest.ResponseRecorder) {
+		t.Helper()
+		before := stateTuples(blockID)
+		requireRefused(t, name, move(), http.StatusForbidden, codeStateNotPermitted, requirement(blockID))
+		requireNodeState(t, rig.handler, requirement(blockID), "alice", held)
+		if after := stateTuples(blockID); after != before {
+			t.Fatalf("%s left %s with %d state tuples, want the %d it held", name, requirement(blockID), after, before)
+		}
+	}
+	requireRefusedMove("the shared bearer's move of "+requirement("r-second-a")+", which alice settled, to live", "r-second-a", graphstore.StateSettled,
+		func() *httptest.ResponseRecorder {
+			return asBearer(http.MethodPost, stateRoute("r-second-a"), toState(graphstore.StateLive))
+		})
+	requireRefusedMove("the shared bearer's move of the live "+requirement("r-live")+" to proposed", "r-live", graphstore.StateLive,
+		func() *httptest.ResponseRecorder {
+			return asBearer(http.MethodPost, stateRoute("r-live"), toState(graphstore.StateProposed))
+		})
+	requireRefusedMove("the second agent's move of the first agent's settled "+requirement("r-first")+" to overtaken", "r-first", graphstore.StateSettled,
+		func() *httptest.ResponseRecorder {
+			return asSecond(http.MethodPost, stateRoute("r-first"), toState(graphstore.StateOvertaken))
+		})
+	moved := asFirst(http.MethodPost, stateRoute("r-first"), toState(graphstore.StateLive))
+	if moved.Code != http.StatusOK {
+		t.Fatalf("the first agent's move of its own settled %s to live: status=%d body=%s, want 200",
+			requirement("r-first"), moved.Code, moved.Body.String())
+	}
+	if written := decodeBody[nodeStateWritten](t, moved); written.Previous != graphstore.StateSettled || written.Node.State != graphstore.StateLive {
+		t.Fatalf("the first agent's move of its own settled proposal answers %+v, want it moved from settled to live", written)
+	}
+	requireNodeState(t, rig.handler, requirement("r-first"), "alice", graphstore.StateLive)
+	if newest := newestStateTuple(t, rig.database, refs.BlockNodeKind, refKey+"#r-first"); newest.ToID != graphstore.StateLive ||
+		!newest.Who.SameAs(model.Actor{Kind: "session", ID: firstSession}) {
+		t.Fatalf("r-first's newest state tuple is %s written by %+v, want live written by the first agent", newest.ToID, newest.Who)
+	}
 }
 
 // TestATokenThatProvesNoIDOfItsOwnSettlesWhatItWrote holds the settle, and the read of what a
@@ -534,7 +633,8 @@ func TestSettlingAProposedNodeIsOneWriteByAPersonOrItsAuthor(t *testing.T) {
 // token of another owner, another workload or the other kind of credential wrote. A pod reads the
 // lens it reserved for itself, and a pod of another workload reads it, and is refused its settle,
 // as a lens nobody wrote. The shared bearer settles nothing, not even the proposal it wrote, and
-// nothing a caller is refused moves a node.
+// nothing a caller is refused moves a node. Each writer marks its own lens proposed, as its
+// author, but for the shared bearer, which proves no author: alice, a person, marks its lens.
 func TestATokenThatProvesNoIDOfItsOwnSettlesWhatItWrote(t *testing.T) {
 	ctx := context.Background()
 	issuer := newServiceTokenIssuer(t)
@@ -557,8 +657,10 @@ func TestATokenThatProvesNoIDOfItsOwnSettlesWhatItWrote(t *testing.T) {
 		body["actor"] = map[string]any{"kind": "session", "id": as.session}
 		return agentRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+path, body, as.token)
 	}
-	// propose writes one lens on the spec as by at visibility, marks it proposed as by, and
-	// answers its store address, after holding its made_by to madeBy: the test's premise.
+	// propose writes one lens on the spec as by at visibility, marks it proposed as by - or as
+	// alice's cookie for the shared bearer, which proves no author and so moves no node into
+	// proposed (maySettle) - and answers its store address, after holding its made_by to madeBy:
+	// the test's premise.
 	propose := func(by writer, visibility string, madeBy model.Actor) string {
 		t.Helper()
 		written := post(by, "/lenses", map[string]any{"on": spec, "kind": "trade-off", "visibility": visibility})
@@ -571,8 +673,14 @@ func TestATokenThatProvesNoIDOfItsOwnSettlesWhatItWrote(t *testing.T) {
 			t.Fatalf("%s's %s lens is made by %+v (held %t, %v), want %+v", by.name, visibility, node.MadeBy, held, err, madeBy)
 		}
 		address := graphstore.KindLens + "/" + lens.ID
-		if marked := post(by, nodePath(address, "state"), map[string]any{"state": graphstore.StateProposed}); marked.Code != http.StatusOK {
-			t.Fatalf("%s marks its %s lens proposed: status=%d body=%s", by.name, visibility, marked.Code, marked.Body.String())
+		var marked *httptest.ResponseRecorder
+		if by == shared {
+			marked = writeStateAs(t, handler, issue.Key, address, graphstore.StateProposed, "alice")
+		} else {
+			marked = post(by, nodePath(address, "state"), map[string]any{"state": graphstore.StateProposed})
+		}
+		if marked.Code != http.StatusOK {
+			t.Fatalf("the proposed mark on %s's %s lens: status=%d body=%s", by.name, visibility, marked.Code, marked.Body.String())
 		}
 		return address
 	}

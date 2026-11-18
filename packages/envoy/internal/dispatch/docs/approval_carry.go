@@ -471,7 +471,7 @@ func asksAgreeWithTheirNodes(ctx context.Context, tx pgx.Tx, artifactID string, 
 	if !readable || len(nodes) == 0 {
 		return versionAsks{}, readable, nil
 	}
-	rows, err := loadAskBlocks(ctx, tx, artifactID)
+	rows, err := loadAskBlocks(ctx, tx, documentAsksOf(artifactID))
 	if err != nil {
 		return versionAsks{}, false, err
 	}

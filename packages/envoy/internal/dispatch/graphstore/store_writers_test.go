@@ -142,6 +142,24 @@ var storeWriteCallSites = []string{
 	// TestEveryApiStoreWriterTakesTheStoreLockOrder holds each to those steps.
 	"api/asks.go#editAsk",
 	"api/comment_actions.go#editComment",
+	// A comment's anchor block (T17b of dispatch://INFRA-1253's plan), the anchored_in that
+	// comments.anchor's block_id projects, kept by each write that moves the anchor's block or its
+	// orphan flag beside the comment's create (createCommentFor's caused, above): an accept or a
+	// reject that finds a suggestion's mark gone orphans the anchor and retracts its anchored_in,
+	// after the comment's owner row and its row `for update` (lockedComment), its update, then the
+	// retraction through Write at the sentinel (api's TestEveryApiStoreWriterTakesTheStoreLockOrder);
+	// the refresh of a document's anchors retracts or states it for each comment whose anchor it
+	// orphans or finds again, after the owner row its settlement or version write takes first, the
+	// comments update and the comment.anchor_refreshed events it appends, which cause the tuples
+	// (docs' TestTheAnchorRefreshTakesTheOwnerRowTheRowTheEventThenTheTuple); and the anchor block
+	// backfill states it beside the block id it pins, the comment's row, then the tuple through
+	// Write at the sentinel. It takes no owner row, which the register's order admits: once it holds
+	// the row it waits on nothing, so no owner-row holder that waits on the row can be waited on in
+	// turn (docs' TestTheAnchorBlockBackfillTakesTheRowThenTheTuple holds the issue's row through the
+	// whole run, and the run never queues behind it).
+	"api/comment_actions.go#orphanCommentAnchor",
+	"docs/anchor_blocks.go#pinCommentAnchorBlock",
+	"docs/anchor_refresh.go#stateRefreshedAnchoredIn",
 	// A run of the command bar (api/going.go), which takes no owner row: its record writes the
 	// interaction node, its author's node and their tuples in one Write before the going_requests
 	// row, and each frame, in a transaction of its own, takes the run's interaction node row
@@ -184,12 +202,19 @@ var storeWriteCallSites = []string{
 	// the issue_trees row, in its caller's transaction, which holds the issue's row and causes what
 	// the write stated under the event it appends - the order of the write it shares with
 	// createIssue's spec (WriteUncaused, then the row), which TestEveryStoreWriteTakesOneLockOrder
-	// proves of WriteUncaused.
+	// proves of WriteUncaused. createDecisionsQuery is the decisions query node of an issue born
+	// converted (T12b of dispatch://INFRA-1253's plan): in createIssue's transaction, after the
+	// issue's row, the tree's issue_trees row and the spec's document_rooms row, its node and its
+	// part_of through WriteUncaused before the artifacts row naming the node, then its empty
+	// version 1 and that version's node, and createIssue causes what both stated under
+	// issue.created through Caused. api's TestEveryObjectNodeWriterTakesTheStoreLockOrder runs
+	// createIssue born converted and holds it to those steps.
 	"api/artifact_removal.go#removeArtifact",
 	"api/artifact_removal.go#removedDocumentNodes",
 	"api/artifacts.go#createIssueTree",
 	"api/artifacts.go#statedVersionBytes",
 	"api/broadcasts.go#writeBroadcast",
+	"api/issue_create.go#createDecisionsQuery",
 	"api/message_delivery.go#insertSessionReply",
 	"api/messages.go#createStoredMessage",
 	"api/messages.go#writeMessageNode",
@@ -258,11 +283,44 @@ var storeWriteCallSites = []string{
 	// rows read again under them, then the version nodes and their facts, in one graphstore.Write
 	// per batch (graphcensus' TestTheVersionBatchTakesTheStoreLockOrder).
 	"graphcensus/census_versions.go#writeVersionBatch",
+	// The same nodes written by the block-index pass that drains a mark, for the versions of the
+	// documents it covers that hold none (docs' indexRenderedVersion: the reconciliation's drain on
+	// either mark, and a request's version write that drains this build's mark first, leaving out
+	// its own version and writing none where more than missingVersionNodesBound are missing): under
+	// the owner row its caller took first, which every writer of a version node takes, after the
+	// nodes of the pass, the version rows read again, then the version nodes and their facts in one
+	// graphstore.Write at the sentinel, the same read and the same write as the batch above.
+	"graphcensus/census_versions.go#WriteMissingVersionNodes",
 	// The backfill's pass over the waits a process of the release before wrote with no node
 	// (dispatch://INFRA-1253): the issue rows the batch's links stand under first, then the links
 	// read again under them, then their needs tuples through Write, then the rows naming the issue's
 	// node (graphcensus' TestTheIssueLinkBatchTakesTheStoreLockOrder).
 	"graphcensus/census_issues.go#writeIssueLinkBatch",
+	// The backfill's pass over the comments' anchor blocks (T17b of dispatch://INFRA-1253's plan):
+	// the owner rows the batch's comments stand under first, then the comments' rows and their
+	// nodes' anchored_in read again under them, then the tuples that level the two through Write
+	// at the sentinel (graphcensus' TestTheAnchorBatchTakesTheStoreLockOrder).
+	"graphcensus/census_anchors.go#writeAnchorBatch",
+	// The backfill's passes over the components a process of the release before wrote with no
+	// node (dispatch://INFRA-1253 R9): the architecture source rows of the batch's projects first,
+	// in ascending (project, id), then the rows read again under them, then the component nodes and
+	// their part_of, or the depends_on of a component whose node stands, in one Write at the
+	// sentinel, then the rows naming the node; and over the issues' components, the issue rows
+	// first, then the rows read again under them, then their affects through Write, then the rows
+	// naming the issue's node (graphcensus' TestTheComponentBatchesTakeTheStoreLockOrder).
+	"graphcensus/census_components.go#writeComponentBatch",
+	"graphcensus/census_components.go#writeComponentDependsBatch",
+	"graphcensus/census_components.go#writeIssueComponentMemberBatch",
+	// A component's node and its relations as an import and a source's removal state them
+	// (dispatch://INFRA-1253 R9): the import's one Write of every component node of the source,
+	// each component it drops stated gone, and the part_of and depends_on that moved, at the
+	// sentinel, after the row locks of every source of the project and before the components and
+	// component_depends rows it replaces (architecture's TestTheImportTakesTheStoreLockOrder); and
+	// a source's removal's Write of each of its components gone with every relation it held
+	// retracted, after the source's row and before the delete whose cascade takes the rows (api's
+	// TestEveryApiStoreWriterTakesTheStoreLockOrder).
+	"architecture/importer.go#RetireComponents",
+	"architecture/importer.go#stateComponents",
 	// The erase, the one writer that deletes from the store, through EraseNode: the tuples on both
 	// sides of the node, then the node's row. It takes the owner rows it writes under before that
 	// row, and its projection rows after it (grapherase's TestTheEraseTakesTheStoreLockOrder).
