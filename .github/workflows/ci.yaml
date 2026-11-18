@@ -3528,7 +3528,7 @@ jobs:
               # reads the Go package's own testdata by relative path, that file itself and never a
               # copy, so a field added there must start this job.
               - 'packages/envoy/internal/brokerclient/testdata/wire.json'
-              # src/__tests__/stream-topics.test.ts:118-121,131 reads the listener's own cases of
+              # src/__tests__/stream-topics.test.ts reads the listener's own cases of
               # which topics reach a private stream subject, the file
               # packages/envoy/internal/bus's TestReachesPrivateStreamSubjectBoundsInterests reads.
               - 'packages/envoy/internal/bus/testdata/private-stream-subjects.json'

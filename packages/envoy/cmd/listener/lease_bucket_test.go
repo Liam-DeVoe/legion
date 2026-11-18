@@ -52,14 +52,8 @@ func TestListenerStateBucketIsCreatedAtTheConfiguredReplicas(t *testing.T) {
 	})
 }
 
-// The bucket keeps a session's `seen.` record for at least the session TTL and the interest
-// reaper's allowance (store.InterestReapAllowance of the reaper's grace) past the last
-// registration write. The session registry would report a lapsed session's last_seen for the
-// session TTL and its last-seen retention (session.LastSeenMemory, 2 hours) past that write
-// (session.SessionRegistry.LastSeen), but every pod reads the record alone and keeps no answer of
-// its own, so the bucket's age is what ends the answer for the whole fleet, and an age shorter
-// than this window would have /v1/interests/ list rows the reaper still holds with no last
-// heartbeat.
+// The listener state bucket's age (listenerStateMaxAge) is at least the session TTL plus the
+// interest reaper's allowance (store.InterestReapAllowance of store.InterestReapGrace).
 func TestTheListenerStateBucketOutlivesTheLastSeenWindow(t *testing.T) {
 	conn := testnats.Connect(t, testnats.URL(t))
 	t.Cleanup(conn.Close)
@@ -70,7 +64,7 @@ func TestTheListenerStateBucketOutlivesTheLastSeenWindow(t *testing.T) {
 	t.Cleanup(sessions.StopWatch)
 	window := sessions.TTL() + store.InterestReapAllowance(store.InterestReapGrace)
 	if listenerStateMaxAge < window {
-		t.Fatalf("the listener state bucket keeps a record for %s, want at least the %s a lapsed session's last_seen is answered for", listenerStateMaxAge, window)
+		t.Fatalf("the listener state bucket's age is %s, want at least the session TTL plus the interest reaper's allowance, %s", listenerStateMaxAge, window)
 	}
 }
 

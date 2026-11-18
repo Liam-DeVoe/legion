@@ -793,7 +793,7 @@ RULES = {
         (f"{ENVOY}/loadtest/README.md", "internal/textcheck/readme_commands_test.go:23 reads packages/envoy/loadtest/README.md under ../../../..")),
     # --- envoy-infra
     f"{INFRA}/core/permissions_live_test.go": [
-        run(ENVOY, ["./cmd/dispatch", "./cmd/listener"], "infra/core/permissions_live_test.go:404 buildEnvoyCommand builds . in ../../cmd/<dispatch|listener> (root go.work)", mode="build")],
+        run(ENVOY, ["./cmd/dispatch", "./cmd/listener"], "infra/core/permissions_live_test.go's buildEnvoyCommand builds . in ../../cmd/<dispatch|listener> (root go.work)", mode="build")],
     f"{INFRA}/core/allowed_hosts_agreement_test.go": [run(f"{INFRA}/core", ["."], "infra/core/allowed_hosts_agreement_test.go:9 imports the listener's internal/config, so this package's own closure (go list -deps .) is what compiling the test reads", mode="build")],
     # infra/gcp/imports_test.go moved to infra/internal/textcheck/gcp_imports_test.go in this
     # change, and main's entry for the old path came with the forward merge; the guard's own
@@ -2386,7 +2386,7 @@ GATES = [
         (f"{ENVOY}/cmd/dispatch/README.md", "packages/envoy-client/src/__tests__/dispatch-who-waits.test.ts:783 names it and :791 reads it ('states the rule'): the CLI guide's sentence on an assignee move names the project's default assignee"),
         (TEST_FIXTURES_SRC, "packages/envoy-client/src/__tests__ import @legion/test-fixtures"),
         (f"{ENVOY}/internal/brokerclient/testdata/wire.json", "packages/broker-client/src/__tests__/wire.test.ts:84 reads the Go package's own corpus by relative path (CORPUS_PATH :27-29) - that file itself, never a copy, so the two clients are held to one wire"),
-        (f"{ENVOY}/internal/bus/testdata/private-stream-subjects.json", "packages/envoy-client/src/__tests__/stream-topics.test.ts:131 reads the listener's own cases by relative path (SHARED_CASES :118-121), which packages/envoy/internal/bus's TestReachesPrivateStreamSubjectBoundsInterests reads too"),
+        (f"{ENVOY}/internal/bus/testdata/private-stream-subjects.json", "packages/envoy-client/src/__tests__/stream-topics.test.ts reads the listener's own cases by relative path, which packages/envoy/internal/bus's TestReachesPrivateStreamSubjectBoundsInterests reads too"),
     ) + bun_job("envoy-client")),
 
     gate("pi_shared", "pi-shared", reads=reads(
