@@ -8,7 +8,7 @@ import { bringOnScreen } from "../identity-block";
 import { ANSWER_LINES, CONTROL_LABELS, type Preset } from "../page-words";
 import { TAB_STOP_ROW } from "../tree-focus";
 import {
-  dropViews,
+  resetViews,
   subscribeTreeFreshness,
   TREE_VIEWS,
   type TreeView,
@@ -51,7 +51,7 @@ export function ViewReadProvider({
   // stage mounts would be dropped by that reset and read a second time.
   const [dropped, setDropped] = useState(false);
   useEffect(() => {
-    dropViews(queryClient, key);
+    resetViews(queryClient, key);
     setDropped(true);
   }, [key, queryClient]);
   useEffect(() => subscribeTreeFreshness(queryClient, key), [key, queryClient]);
