@@ -2,7 +2,12 @@ import { describe, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { isKnownBrokerRefusal, KNOWN_OAUTH_ERROR_CODES } from "../refusal-text";
+import {
+  BROKER_OAUTH_ERROR_CODES,
+  isKnownBrokerRefusal,
+  KNOWN_OAUTH_ERROR_CODES,
+  LIBRARY_OAUTH_ERROR_CODES,
+} from "../refusal-text";
 import { BrokerRefusedError } from "../token-errors";
 
 // The broker's refusals as its own OAuth library writes them on the wire: the library's fixed
@@ -25,8 +30,9 @@ describe("the broker's refusals as it writes them", () => {
     expect(corpus.length).toBeGreaterThan(10);
   });
 
-  // The codes shown are the library's own (the Go code corpus writes them from its error values).
-  test("the codes the client shows are the codes the broker's library writes", () => {
+  // The library's codes shown are the library's own (the Go code corpus writes them from its
+  // error values), and the broker's own codes are the ones the wire corpus answers a trade with.
+  test("the codes the client shows are the codes the broker's library writes, and the broker's own", () => {
     const codes: string[] = JSON.parse(
       readFileSync(
         join(import.meta.dir, "../../../envoy/internal/broker/oauth/testdata/refusal-codes.json"),
@@ -34,7 +40,18 @@ describe("the broker's refusals as it writes them", () => {
       )
     );
     expect(codes.length).toBeGreaterThan(5);
-    expect([...KNOWN_OAUTH_ERROR_CODES].sort()).toEqual(codes);
+    expect([...LIBRARY_OAUTH_ERROR_CODES].sort()).toEqual(codes);
+    const wire = readFileSync(
+      join(import.meta.dir, "../../../envoy/internal/brokerclient/testdata/wire.json"),
+      "utf8"
+    );
+    for (const code of BROKER_OAUTH_ERROR_CODES) {
+      expect(codes).not.toContain(code);
+      expect(wire).toContain(`"error": "${code}"`);
+    }
+    expect([...KNOWN_OAUTH_ERROR_CODES].sort()).toEqual(
+      [...codes, ...BROKER_OAUTH_ERROR_CODES].sort()
+    );
   });
 
   test.each(corpus)("%p prints whole", (description) => {

@@ -7,6 +7,10 @@ export type SendEnvoyMessageOptions = {
    *  machine's broker credential, which signs a DPoP proof for this request, or none, which
    *  sends no `Authorization` header, for a loopback listener that asks for none. */
   readonly credential: RequestCredential | undefined
+  /** The session the shell names, which the message goes from (`source_session`), so the
+   *  listener counts it against that session's sending limit; "" for a shell that names none,
+   *  which the transport leaves off the wire. */
+  readonly sourceSession?: string
   readonly targetSession: string
   readonly message: string
   /** The key the send goes under: the one an unconfirmed send named, to resend it safely. One is
@@ -93,10 +97,12 @@ export async function sendEnvoyMessage(
     fetch: globalThis.fetch,
     credential: kept?.credential,
   })
-  // No source session: the body names none, as `envoy-send` never has. The listener records the
-  // message as an agent's (`source` is `agent`) with no sending session, and stamps no sender.
+  // The shell's session as the message's source, so the listener counts the message against that
+  // session's sending limit; a shell that names no session sends a blank one, which the transport
+  // leaves off the wire. A refusal is an `EnvoyApiError` whose message is the listener's own
+  // sentence, which `envoy-send` prints.
   await client.send({
-    sourceSessionID: "",
+    sourceSessionID: options.sourceSession ?? "",
     targetSessionID: options.targetSession,
     message: options.message,
     ...(options.idempotencyKey === undefined ? {} : { idempotencyKey: options.idempotencyKey }),

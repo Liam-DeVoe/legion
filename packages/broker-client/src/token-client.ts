@@ -14,9 +14,10 @@
 //
 // What it refuses to do: hand out a token it could not renew. `token()` answers the token in hand
 // while that token is live and the broker is merely unreachable, busy (its 429), refusing this
-// moment's proof (`invalid_dpop_proof`, `use_dpop_nonce`) or holding no registration for this
-// pod's session yet (`pod_session_not_registered:`), or the source of the identity could not be
-// read this once. With nothing live in hand, a caller that fails fast (the default) is told the
+// moment's proof (`invalid_dpop_proof`, `use_dpop_nonce`), refusing a person Dispatch holds until
+// they sign in again (`membership_held`), or holding no registration for this pod's session yet
+// (`pod_session_not_registered:`), or the source of the identity could not be read this once.
+// With nothing live in hand, a caller that fails fast (the default) is told the
 // retry loop's last failure at once, and one that waits for ready, or for a missing registration,
 // waits until a token lands or its own signal ends; it is then told what the last trade came to,
 // or that the trade still out has not answered (`TradeUnansweredError`). It throws once the token
@@ -139,7 +140,8 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 /**
  * A failed trade of the retry loop that a later trade may cure, by its class, with the text that
  * says what it was (`#failure`): `pending`, a pod session the broker holds no registration for
- * yet; `busy`, the broker's 429 or a DPoP refusal; `unanswered`, no answer within the attempt's
+ * yet; `busy`, the broker's 429, a DPoP refusal or a person Dispatch holds (`membership_held`,
+ * which the person's next Dispatch sign-in ends); `unanswered`, no answer within the attempt's
  * time, no connection, a 5xx, or an answer that is not this grant's; `unsent`, a trade that
  * failed before it reached the broker, its identity's source unreadable this once.
  */

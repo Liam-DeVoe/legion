@@ -566,20 +566,15 @@ fi
 # identity there; what keeps them apart is this row, which the deployment's daemon writes as it
 # starts a pod. Here the registrar account stands in for that daemon (BROKER_SERVICE_LOGINS), and
 # the body carries the pod's own broker-audience token, the one a daemon enrolls that pod with.
-# Without it the exchange below is refused invalid_grant, naming the session. Both tokens reach
-# curl by file, never in an argv, which /proc shows every user: the registrar's bearer as a 0600
-# header file (`-H @file`), and the pod token read by jq itself (`--rawfile`) into a 0600 body
-# file (`--data-binary @file`), both in a directory of their own under the run's, removed after. ---
-registration="$(mktemp -d "$WORK_DIR/register.XXXXXX")"
-(umask 077 && printf 'Authorization: Bearer %s\n' "$(<"$REGISTRAR_TOKEN_FILE")" >"$registration/header")
-(umask 077 && jq -cn --rawfile p "$POD_TOKEN_FILE" --arg s "$EXCHANGE_SESSION" \
-  '{pod_token: ($p | sub("\n+$"; "")), session: $s}' >"$registration/body")
-registered=true
-curl -sf -X POST "${PUBLIC_URL}/v1/oauth/exchange/pod-sessions" \
-  -H "@$registration/header" -H 'Content-Type: application/json' \
-  --data-binary "@$registration/body" >/dev/null || registered=false
-rm -rf -- "$registration"
-if [ "$registered" != true ]; then
+# Without it the exchange below is refused invalid_grant, naming the session. Both tokens stay out
+# of every command line: the body reaches curl on standard input from a here-string, which the
+# shell writes before curl starts, so no pipeline's status can hide curl's, and the header from a
+# file curl reads. ---
+registration=$(printf '{"pod_token": "%s", "session": "%s"}' "$(cat "$POD_TOKEN_FILE")" "$EXCHANGE_SESSION")
+if ! curl -sf -X POST "${PUBLIC_URL}/v1/oauth/exchange/pod-sessions" \
+  -H @<(printf 'Authorization: Bearer %s' "$(cat "$REGISTRAR_TOKEN_FILE")") \
+  -H 'Content-Type: application/json' \
+  --data @- <<<"$registration" >/dev/null; then
   echo "dev-broker: registering the exchange pod for $EXCHANGE_SESSION failed" >&2
   exit 1
 fi
@@ -658,7 +653,7 @@ dev-broker: ready.
     AGENT_SECRETS_KEY_DIR=\$KEYS agent-secrets DEMO_SERVICE_TOKEN -- printenv DEMO_SERVICE_TOKEN
     AGENT_SECRETS_KEY_DIR=\$KEYS agent-secrets $GITHUB_SECRET --github-owner $GITHUB_OWNER \\
       --github-repo proofs --github-token -- \\
-      sh -c 'curl -fsS -H "Authorization: Bearer \$$GITHUB_SECRET" $GITHUB_URL/repos/$GITHUB_OWNER/proofs'
+      sh -c 'printf "Authorization: Bearer %s" "\$$GITHUB_SECRET" | curl -fsS -H @- $GITHUB_URL/repos/$GITHUB_OWNER/proofs'
 
   To approve a pending request for DEMO_API_KEY, open the approve_url agent-secrets prints for
   it (${PUBLIC_URL}/approve/<record>) in a browser: the broker sends you to sign in at

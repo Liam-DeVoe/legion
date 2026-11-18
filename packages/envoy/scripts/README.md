@@ -148,6 +148,12 @@ over both brokers' API ports and one over both proxy ports (`dev-airlock-stands
 front`, round-robin per connection), and enrols one pod session the way the Legion
 daemon does — a service login at `POST /v1/launcher-credentials/token`, then
 `POST /v1/enrollments` of kind `pod` — so `agent-secrets self` answers `kind: pod`.
+It keeps that session's lease alive for as long as it runs, with the renewer the
+Legion worker shim gives a pod: `agent-secrets renew --pod-token-file` on the pod
+token `dev-oidc-issuer` rewrites in place. The broker ends a session whose lease
+(`BROKER_LEASE_SECONDS`, 900 seconds by default) passes unrenewed, and every grant
+of it with it, so without the renewer a check that holds a grant for longer would
+have its calls refused 407 midway.
 
 ```bash
 DEV_BROKER_POSTGRES_URL="$LEGION_TEST_PG_DSN" packages/envoy/scripts/dev-airlock.sh
@@ -170,9 +176,21 @@ Options: `--keep-values` and `--no-kind`, the two negative controls
 `dev-airlock.test.sh` proves the driver's own decisions behind fake binaries — the
 work directories under `TMPDIR`, two brokers with the whole airlock block on one
 database, one front over each pair of ports, the options reaching the brokers, the
-enrolment written beside the session key, the usage error, and the cleanup stopping
-everything it started — with no real Postgres, no network and no Go build; CI runs
-it in the `envoy-go` job of `.github/workflows/ci.yaml`.
+enrolment written beside the session key, the session's renewer, the usage error,
+and the cleanup stopping everything it started — with no real Postgres, no network
+and no Go build; CI runs it in the `envoy-go-checks` job
+(`.github/workflows/ci-job-envoy-go-checks.yaml`).
+
+`dev-airlock-lease.test.sh` proves the renewer works on the real stack: it starts
+the stack with one broker and `BROKER_LEASE_SECONDS=91`, the shortest lease the
+broker starts with at its default sweep, holds one 30-minute grant of
+`AIRLOCK_DEMO_TOKEN`, and calls S through the proxy front at once and again three
+leases later. Both calls must reach S with the real value, and the session must still
+be the one enrolled, with a later lease. It prints a `PASS:` or `FAIL:` line for each
+and ends `dev-airlock-lease: passed` or `dev-airlock-lease: failed (<n> of <m>)`. It
+needs what `dev-airlock.sh` needs, takes the stack's start plus about five minutes,
+and is not part of CI. Without the renewer, the second call is refused 407 "grant is
+expired, revoked, or its session ended".
 
 ## airlock-check.sh
 
@@ -247,9 +265,11 @@ from `VmHWM` in `/proc/<pid>/status`, which is the quantity `getrusage` reports 
 `ru_maxrss` for a process one can wait on — these two are `dev-airlock.sh`'s children,
 not the check's.
 
-It needs bash, curl, jq, go, python3, openssl, node and psql; `k2` and `k7` also need
-`gh` (the last released `agent-secrets` comes from the newest `legion-envoy-v*`
-release, and the consumers come from `sjawhar/dotfiles`), `k6` and `k7` need `bun`,
+It needs bash, curl, jq, go, python3, openssl, node and psql; `k2`, `k6` and `k7` also
+need `gh` (`k2`'s own step and the negative controls of `k2` and `k7` run the
+`agent-secrets` of the pinned release before the airlock, `OLD_CLI_DEFAULT_TAG` in the
+script, which `AIRLOCK_OLD_CLI_TAG` overrides, and `k6`'s and `k7`'s consumers come
+from `sjawhar/dotfiles`), `k6` and `k7` need `bun`,
 `wget`, `git`, `uv` and the clients `airlock-clients.sh` installs, `k9` needs `git`,
 and `k15` needs `lake` from the Lean toolchain the environment names. Each bound host
 listens on one loopback address and port 443, so only one stack runs on a machine at a
@@ -385,17 +405,21 @@ BROKER_TEST_DATABASE_URL=postgres://… packages/envoy/scripts/database-skips.sh
 packages/envoy/scripts/database-skips.sh --report REPORT.json
 ```
 
-With no argument it runs `go test -json -count=1 -timeout 15m ./internal/broker/...` and
-reads that report; `--report` reads a `go test -json` report instead and runs nothing. It
-prints `SKIP PACKAGE TEST` for each skip, then `database_skips=N` and, for a run of its own,
-`go_test_exit=E`. A report that is missing, empty or holds no broker test prints
+With no argument it runs one `go test -json -count=1 -timeout 15m` over the packages `go list
+./internal/broker/... | grep -Ev '/internal/broker/natscallout$'` prints: every broker
+package but the ones the race lane runs, of which the auth service's `natscallout`, which opens no
+database, is the one today (`DATABASE_SKIPS_PATTERN` in `.github/scripts/ci_job_reads.py`, which
+refuses the script when its `grep` names anything else). It reads that report; `--report`
+reads a `go test -json` report instead and runs nothing. It prints `SKIP PACKAGE TEST` for
+each skip, then `database_skips=N` and, for a run of its own, `go_test_exit=E`, go test's own
+exit status. A report that is missing, empty or holds no broker test prints
 `database_skips=UNKNOWN`, names what it could not read, and exits 1. It exits 0 only when
 broker tests ran, none skipped and go test passed. The tests `EXPECTED_SKIPS` names in the
-script skip by their own design in every run, and are not counted. `GO_TEST_TIMEOUT`
-replaces the 15-minute `-timeout`, which bounds each package's test binary and not the run:
-the packages run several at a time, so one that starts late ends later. `ci.yaml`'s
-`envoy-go` job runs it as "Count the database broker suites' skips", with a step limit of
-its own (`timeout-minutes: 25`) that its time budget counts.
+script skip by their own design in every run, and are not counted. `GO_TEST_TIMEOUT` replaces
+the 15-minute `-timeout`, which bounds each package's test binary and not the run: the packages
+run several at a time, so one that starts late ends later. `ci.yaml`'s `envoy-go` job runs it
+as "Count the database broker suites' skips", with a step limit of its own (`timeout-minutes:
+25`) that its time budget counts.
 
 ## aws-moto-check.sh
 

@@ -17,7 +17,7 @@ import {
 import { SIGNIN_COMMAND } from "./signins";
 import { POD_SESSION_NOT_REGISTERED } from "./wire";
 
-/** The broker's rate limit: the first of the four refusals a later trade may be answered
+/** The broker's rate limit: the first of the five refusals a later trade may be answered
  *  differently. */
 const TOO_MANY_REQUESTS = 429;
 
@@ -32,12 +32,15 @@ const USE_DPOP_NONCE = "use_dpop_nonce";
  *  description begins {@link POD_SESSION_NOT_REGISTERED} and a colon. */
 const INVALID_GRANT = "invalid_grant";
 
+/** What the broker answers a trade naming a person Dispatch holds (`oauthwire.MembershipHeld`). */
+const MEMBERSHIP_HELD = "membership_held";
+
 /**
  * A trade the broker refused: a plain error naming what was traded and what the broker said.
  * Almost every refusal is one no retry can cure — an identity no entry lists, a sign-in a person
  * revoked, a token of the wrong audience — and a renewal stops on it rather than asking again.
- * The four exceptions are the broker's 429, its two DPoP refusals, and a pod session it holds no
- * registration for yet (`permanent`).
+ * The five exceptions are the broker's 429, its two DPoP refusals, a pod session it holds no
+ * registration for yet, and a person Dispatch holds (`permanent`).
  */
 export class BrokerRefusedError extends Error {
   /** What the broker said, as a text may print it: its description where that is a known
@@ -86,8 +89,8 @@ export class BrokerRefusedError extends Error {
   }
 
   /**
-   * Whether this refusal is one no retry can cure, which every refusal is but four. The Go
-   * client reads it the same way, out of the same four cases (`RefusedError.Permanent`,
+   * Whether this refusal is one no retry can cure, which every refusal is but five. The Go
+   * client reads it the same way, out of the same five cases (`RefusedError.Permanent`,
    * packages/envoy/internal/brokerclient/brokerclient.go), and
    * `packages/envoy/internal/brokerclient/testdata/wire.json` holds the two to that one reading.
    *
@@ -109,12 +112,19 @@ export class BrokerRefusedError extends Error {
    * pod's trade can reach the broker before its daemon's or its session watch's registration
    * does, and a registrar can be down for minutes, so the trade that follows the registration
    * succeeds.
+   *
+   * `membership_held`: Dispatch holds the person this identity names, because Google refused
+   * their Dispatch sign-in, or no refresh has confirmed them for 24 hours. A hold revokes nothing,
+   * and the person's next Dispatch sign-in, or the next refresh that confirms them, ends it, so
+   * the identity this client trades is served again then with no new credential. A client that
+   * dropped it would need a restart after every hold.
    */
   get permanent(): boolean {
     return (
       this.status !== TOO_MANY_REQUESTS &&
       this.code !== INVALID_DPOP_PROOF &&
       this.code !== USE_DPOP_NONCE &&
+      this.code !== MEMBERSHIP_HELD &&
       !this.podSessionUnregistered
     );
   }

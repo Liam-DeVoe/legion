@@ -620,20 +620,64 @@ test("a send whose only attempt was answered with an unreadable 2xx names that o
   expect((refused as Error).message).toContain("on its only attempt")
 })
 
+/** The sentence of the listener's 429 for a session past its sending limit
+ *  (`senderRateLimitedAnswer`, packages/envoy/cmd/listener/sender_limit.go). */
+const RATE_LIMITED_SENTENCE =
+  "Your sending is rate limited. This message was not sent. This listener lets one session send " +
+  "4 messages a minute and 2 at once. You can send it again after 15 seconds."
+
+test("envoy-send whose sender is rate limited sends its session as source_session, prints the listener's sentence and exits 1", async () => {
+  requests.length = 0
+  answers.push(() =>
+    Response.json(
+      {
+        error: RATE_LIMITED_SENTENCE,
+        reason: "sender_rate_limited",
+        retry_after_seconds: 15,
+        messages_per_minute: 4,
+        burst: 2,
+      },
+      { status: 429, headers: { "Retry-After": "15" } },
+    ),
+  )
+  const token = fixtureSecret("listener")
+  const sent = await runEnvoySend(["ses_receiver", "limited", "send"], {
+    token,
+    env: {
+      PATH: process.env["PATH"] ?? "",
+      HOME: scratch,
+      ENVOY_CONFIG_FILE: envoyConfig(token),
+      ENVOY_SESSION_ID: "ses_sender",
+    },
+  })
+  expect(sent.code).toBe(1)
+  expect(sent.stderr).toBe(
+    `Claude Envoy send failed: ${RATE_LIMITED_SENTENCE} (reason: sender_rate_limited)\n`,
+  )
+  // One request: a refusal is not sent again.
+  expect(requests).toEqual([
+    {
+      path: "/v1/messages/send",
+      authorization: `Bearer ${token}`,
+      body: {
+        source: "agent",
+        source_session: "ses_sender",
+        target_session: "ses_receiver",
+        message: "limited send",
+        idempotency_key: expect.stringMatching(MINTED_KEY),
+      },
+    },
+  ])
+})
+
 test("envoy-send with no Envoy configured refuses, saying why, and sends nothing", async () => {
   requests.length = 0
   const missing = join(scratch, "absent", "envoy.json")
-  const send = Bun.spawn(
-    ["bun", resolve(import.meta.dir, "../bin/envoy-send.ts"), "ses_receiver", "nothing"],
-    {
-      cwd: scratch,
-      env: { PATH: process.env["PATH"] ?? "", HOME: scratch, ENVOY_CONFIG_FILE: missing },
-      stdout: "pipe",
-      stderr: "pipe",
-    },
-  )
-  expect(await send.exited).toBe(1)
-  expect(await new Response(send.stderr).text()).toBe(
+  const sent = await runEnvoySend(["ses_receiver", "nothing"], {
+    env: { PATH: process.env["PATH"] ?? "", HOME: scratch, ENVOY_CONFIG_FILE: missing },
+  })
+  expect(sent.code).toBe(1)
+  expect(sent.stderr).toBe(
     `Claude Envoy send failed: Envoy is off: no envoy.json at ${missing}: Envoy is off\n`,
   )
   expect(requests).toEqual([])

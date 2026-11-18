@@ -114,6 +114,7 @@ try {
     targetSession: send.targetSession,
     message: send.message,
     ...(send.idempotencyKey === undefined ? {} : { idempotencyKey: send.idempotencyKey }),
+    sourceSession: session ?? "",
   })
   process.stdout.write(`Sent Envoy message to ${send.targetSession}.\n`)
   // Stored, so it exits 0; but a send that went without its credential says why, once.

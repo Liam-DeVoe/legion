@@ -705,20 +705,15 @@ callout_after_first_broker
 # session name to the listed account and never to a pod, so what keeps two pods of one account
 # apart is this row, which a deployment's daemon writes as it starts a pod; here the registrar
 # account stands in for that daemon, and the body carries the pod's own broker-audience token.
-# Without it the exchange is refused invalid_grant, naming the session. Both tokens reach curl by
-# file, never in an argv, which /proc shows every user: the registrar's bearer as a 0600 header
-# file (`-H @file`), and the pod token read by jq itself (`--rawfile`) into a 0600 body file
-# (`--data-binary @file`), both in a directory of their own under the run's, removed after. ---
-registration="$(mktemp -d "$WORK_DIR/register.XXXXXX")"
-(umask 077 && printf 'Authorization: Bearer %s\n' "$(<"$REGISTRAR_TOKEN_FILE")" >"$registration/header")
-(umask 077 && jq -cn --rawfile p "$POD_TOKEN_FILE" --arg s "$EXCHANGE_SESSION" \
-  '{pod_token: ($p | sub("\n+$"; "")), session: $s}' >"$registration/body")
-registered=true
-curl -sf -X POST "$BROKER_URL/v1/oauth/exchange/pod-sessions" \
-  -H "@$registration/header" -H 'Content-Type: application/json' \
-  --data-binary "@$registration/body" >/dev/null || registered=false
-rm -rf -- "$registration"
-if [ "$registered" != true ]; then
+# Without it the exchange is refused invalid_grant, naming the session. Both tokens stay out of
+# every command line: the body reaches curl on standard input from a here-string, which the shell
+# writes before curl starts, so no pipeline's status can hide curl's, and the header from a file
+# curl reads. ---
+registration=$(printf '{"pod_token": "%s", "session": "%s"}' "$(cat "$POD_TOKEN_FILE")" "$EXCHANGE_SESSION")
+if ! curl -sf -X POST "$BROKER_URL/v1/oauth/exchange/pod-sessions" \
+  -H @<(printf 'Authorization: Bearer %s' "$(cat "$REGISTRAR_TOKEN_FILE")") \
+  -H 'Content-Type: application/json' \
+  --data @- <<<"$registration" >/dev/null; then
   echo "dev-stack: registering the exchange pod for $EXCHANGE_SESSION failed" >&2
   exit 1
 fi

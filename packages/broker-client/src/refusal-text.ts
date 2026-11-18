@@ -259,6 +259,9 @@ const KNOWN_BROKER_REFUSAL_PATTERNS: readonly RegExp[] = [
   `The session name '${SESSION_SLOT}' belongs to another identity: one the broker's configuration fixes it for, or one that has written under it within the last [0-9]{1,4} days\\. Ask under a name of your own\\.`,
   `No registration says this pod may write under the session name '${SESSION_SLOT}'\\. A pod writes under a session name its deployment registered for it\\.`,
   `Refused: this pod's registration for session '${SESSION_SLOT}' is bound to another key; a role trades only for its own session\\.`,
+  // Dispatch's hold of a person (`membership_held`), as the wire corpus's own sentence writes it:
+  // the same person each time.
+  `${PERSON_SLOT}'s credentials are held by Dispatch; they work again when \\k<person> signs in to Dispatch, or when Dispatch can confirm \\k<person> with Google again`,
   ...POLICY_REFUSAL_PATTERNS,
 ].map((source) => new RegExp(`^${source}$`));
 
@@ -316,18 +319,16 @@ export function isKnownBrokerRefusal(text: string, context: RefusalContext = {})
 export const REFUSAL_TEXT_WITHHELD = "(its text is withheld)";
 
 /**
- * The OAuth error codes the clients handle, the only ones a text shows: RFC 6749's token-endpoint
+ * The OAuth error codes of the broker's library the clients handle: RFC 6749's token-endpoint
  * codes (Section 5.2: invalid_request, invalid_client, invalid_grant, unauthorized_client,
  * unsupported_grant_type, invalid_scope) and its two an authorization server answers when it
  * cannot serve (Section 4.1.2.1: server_error, temporarily_unavailable, and access_denied, which
  * an issuer answers a refused grant with), RFC 8693's invalid_target (Section 2.2.2), and RFC
  * 9449's invalid_dpop_proof and use_dpop_nonce (Sections 5 and 8). The broker's library writes
  * each of these (`packages/envoy/internal/broker/oauth/testdata/refusal-codes.json`, which the Go
- * refusal corpus writes from the library's own errors); the broker's own codes (`RATE_LIMITED`)
- * go in its text, not here. A code is a peer's choice of characters, which can be a token the
- * client sent it, lowercased past the case-sensitive scrub, so no other code is ever shown.
+ * refusal corpus writes from the library's own errors).
  */
-export const KNOWN_OAUTH_ERROR_CODES: ReadonlySet<string> = new Set([
+export const LIBRARY_OAUTH_ERROR_CODES: ReadonlySet<string> = new Set([
   "invalid_request",
   "invalid_client",
   "invalid_grant",
@@ -340,6 +341,23 @@ export const KNOWN_OAUTH_ERROR_CODES: ReadonlySet<string> = new Set([
   "invalid_target",
   "invalid_dpop_proof",
   "use_dpop_nonce",
+]);
+
+/** The broker's own OAuth error codes, beside its library's: `membership_held`
+ *  (`oauthwire.MembershipHeld`), a person Dispatch holds, which a client trades again on. The
+ *  wire corpus (`packages/envoy/internal/brokerclient/testdata/wire.json`) answers each. */
+export const BROKER_OAUTH_ERROR_CODES: ReadonlySet<string> = new Set(["membership_held"]);
+
+/**
+ * The OAuth error codes the clients handle, the only ones a text shows: the library's
+ * ({@link LIBRARY_OAUTH_ERROR_CODES}) and the broker's own ({@link BROKER_OAUTH_ERROR_CODES}). The
+ * broker's other codes of its own (`RATE_LIMITED`) go in its text, not here. A code is a peer's
+ * choice of characters, which can be a token the client sent it, lowercased past the
+ * case-sensitive scrub, so no other code is ever shown.
+ */
+export const KNOWN_OAUTH_ERROR_CODES: ReadonlySet<string> = new Set([
+  ...LIBRARY_OAUTH_ERROR_CODES,
+  ...BROKER_OAUTH_ERROR_CODES,
 ]);
 
 /** `code` as a text shows it: one of {@link KNOWN_OAUTH_ERROR_CODES} as itself, "" for none, and
