@@ -355,13 +355,15 @@ jobs:
   # go-envoy-infra. The infra module is not in the root go.work - its own go.work binds it and
   # packages/envoy - so it keys on packages/envoy/infra/go.mod's Go and builds in a job of its own,
   # as ci.yaml's envoy-infra-go does. Unlike the other families, its key also carries the hash of
-  # the files that choose the module versions it builds: that go.work and its go.work.sum, and the
-  # go.mod and go.sum of both modules it binds. An entry keyed on the Go version alone was refreshed
-  # only by a Go bump and went stale as those files moved: restoring the entry of 2026-11-06, eleven
-  # days old, envoy-infra-go's linux vet took 175, 229 and 177 s in runs 43990864191, 43996496498
-  # and 44008055050, 83 to 85% of what its darwin vet took in the same run with nothing cached,
-  # because google.golang.org/api, gax-go, the AWS SDK and nats had moved under it. With the hash, a
-  # push to main that changes those files misses the lookup and fills a fresh entry; a pull request
+  # the files that choose the module versions it builds: that go.work and its go.work.sum, the
+  # go.mod and go.sum of both modules it binds, and gcp's live tests' tool pins
+  # (gcp/testdata/live-tools.txt), which the fill installs. An entry keyed on the Go version alone
+  # was refreshed only by a Go bump and went stale as those files moved: restoring the entry of
+  # 2026-11-06, eleven days old, envoy-infra-go's linux vet took 175, 229 and 177 s in runs
+  # 43990864191, 43996496498 and 44008055050, 83 to 85% of what its darwin vet took in the same run
+  # with nothing cached, because google.golang.org/api, gax-go, the AWS SDK and nats had moved
+  # under it. With the hash, a push to main that changes those files misses the lookup and fills a
+  # fresh entry; a pull request
   # that changes none of them restores one built from the same module versions, and one that
   # changes them restores the newest entry by prefix and builds what moved. One leg per runner:
   # envoy-infra-go runs on ubuntu-24.04-arm, and release-envoy-infra.yaml's build, which restores
@@ -401,7 +403,7 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-infra-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('packages/envoy/infra/go.work', 'packages/envoy/infra/go.work.sum', 'packages/envoy/infra/go.mod', 'packages/envoy/infra/go.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum') }}
+          key: go-envoy-infra-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('packages/envoy/infra/go.work', 'packages/envoy/infra/go.work.sum', 'packages/envoy/infra/go.mod', 'packages/envoy/infra/go.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/envoy/infra/gcp/testdata/live-tools.txt') }}
           lookup-only: true
 
       # The lookup's key and whether this leg fills it, as the job's outputs name them: RUNNER_ARCH
@@ -417,10 +419,12 @@ jobs:
           echo "filled-$arch=$FILLED" >>"$GITHUB_OUTPUT"
 
       # What envoy-infra-go builds: the vet with both live-test tags, for linux and for darwin, the
-      # test binary of every package, and the natslive binaries of the three packages its live step
-      # runs. Compiled, not run: the live tests need nats-server, Postgres and container images, and
-      # the unit tests nothing a build cache keeps. The darwin vet is in the fill because, built
-      # cold, it is the step that brought envoy-infra-go near its time limit.
+      # test binary of every package, the natslive binaries of the three packages its live step
+      # runs, and what its fetch step fetches before the tests: gcp's live tools, installed, and
+      # the modules of the envoy commands its tests build. Compiled, not run: the live tests need
+      # nats-server, Postgres and container images, and the unit tests nothing a build cache
+      # keeps. The darwin vet is in the fill because, built cold, it is the step that brought
+      # envoy-infra-go near its time limit.
       - name: Build what envoy-infra-go builds
         if: steps.go-envoy-infra.outputs.cache-hit != 'true'
         run: |
@@ -431,6 +435,8 @@ jobs:
           done <<< "$flags"
           go test -c -o /dev/null ./...
           go test -c -o /dev/null -tags natslive ./core/ ./seed/ ./gcp/
+          ../../../.github/scripts/go-fetch.sh tools gcp/testdata/live-tools.txt
+          ../../../.github/scripts/go-fetch.sh deps .. ./cmd/listener ./cmd/dispatch
         working-directory: packages/envoy/infra
 
       - if: steps.go-envoy-infra.outputs.cache-hit != 'true'
@@ -439,7 +445,7 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-infra-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('packages/envoy/infra/go.work', 'packages/envoy/infra/go.work.sum', 'packages/envoy/infra/go.mod', 'packages/envoy/infra/go.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum') }}
+          key: go-envoy-infra-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('packages/envoy/infra/go.work', 'packages/envoy/infra/go.work.sum', 'packages/envoy/infra/go.mod', 'packages/envoy/infra/go.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/envoy/infra/gcp/testdata/live-tools.txt') }}
 
   # The go-envoy-infra entries the fill above superseded, deleted once it has saved the new one. A
   # module-file change gives the family a new key, and the entry under the old key, about 1.4 GB,
