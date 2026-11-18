@@ -39,6 +39,7 @@ import {
   settingsSectionGap,
   settingsSubmitButton,
 } from "./classes";
+import { LegionDaemonsSection } from "./LegionDaemonsSection";
 import { NoProjectPicked, ProjectSelect } from "./ProjectSelect";
 import { ProjectsSection } from "./ProjectsSection";
 
@@ -350,6 +351,7 @@ export function SettingsPage(): ReactNode {
           <DeliverySettingsForm />
         </section>
         <IssuePagePreference />
+        <LegionDaemonsSection />
       </div>
     </section>
   );

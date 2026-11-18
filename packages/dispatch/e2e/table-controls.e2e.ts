@@ -3481,7 +3481,7 @@ test("the control in the row carries what the banner carried, and narrows the In
   ).toEqual(PILL_CLASSES_AT_THE_BASE);
 });
 
-// SLOW(>=2s): seven tables across three pages, each seeded and read.
+// SLOW(>=2s): ten tables across three pages, each seeded and read.
 test("every table with no controls draws its rows in the shared markup and offers no search, filter or sort", async ({
   page,
 }) => {
@@ -3557,6 +3557,7 @@ test("every table with no controls draws its rows in the shared markup and offer
     "Architecture sources",
     "Sign-ins",
     "Live grants",
+    "Legion daemons",
   ]) {
     await readPlainTable(name);
   }
