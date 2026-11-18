@@ -273,10 +273,27 @@ accessibility rows joined the shards: its maxima here are 381 s (run 42521581875
 step, which raised it to 10 minutes there, is not in that sample: it was taken on the bare
 runner with the Playwright install this change removes still in the job.
 
-The browser step is the one step of this job that carries a budget, so the job's budget is
-that budget plus the maxima above of every step without one, which sum to 219 s:
-540 + 219 = 759 s, 12 min 39 s, rounded up to the 13 minutes below. That is a backstop
-above the sum of the step budgets, as this file's head says a job budget is.
+The browser step was the one step of this job that carried a budget, so the job's budget was
+that budget plus the maxima above of every step without one, which summed to 219 s:
+540 + 219 = 759 s, 12 min 39 s, rounded up to 13 minutes.
+
+THE TWO NETWORK READS, AT A BUSY HOUR. That sum read the binaries download at 5 s and the
+image pull, `Initialize containers`, at 45 s, from quiet runs, and on 2026-11-18 a leg of
+each job stalled on one of them while its siblings did not: in run 44228250420 shard (4)'s
+download of dispatch-e2e-binaries (106 MB, 101 MiB) took 428 s where the run's six other
+legs took 2 to 6 s, and the job budget cancelled the leg at about 13 minutes; in run
+44213916667 alone (chromium-alone) spent 355 s pulling this image (1,161 MB) where the two
+other alone legs took 38 and 39 s, and its budget cancelled it 3 s into its checkout. The
+pull's time was one layer: the other nine arrived in 6 s and the 122 MB Firefox layer in
+346 s, and shard (4) of that run, pulling in the same minute, took 200 s on two layers. A
+merge group drops its entry for a cancelled leg as for a failed one, and every group behind
+it is built again. So the download now carries a budget of its own and a second attempt
+(the step's comment), and the pull is counted at that 355 s: no step holds it, so no step
+budget can cut it and no step can read it again, and Docker's own retry ("Retrying in 5
+seconds" in that log) answers a failed read, not a slow one. The job's budget is the
+browser step's 540 s, the two download attempts' 120 s each, and the steps without a
+budget at 219 - 5 - 45 + 355 = 524 s: 1,304 s, 21 min 44 s, rounded up to the 22 minutes
+below. The browser step's own budget is unchanged, and it still fires before the job's.
 
 The rows behind those seconds were the suite of the head those runs measured. Listed
 again at this change's head, the suite holds 1,427 rows in 194 files, which is two
@@ -302,6 +319,28 @@ nothing, and the restore was there only for the build run-server.sh no longer do
 The directory is the one run-broker.sh built the broker's three binaries in, which is
 where packages/dispatch/e2e/real-broker.ts:30-31 runs requestseed from; the server
 binary rides along in it and is named by path below.
+
+A BOUND OF ITS OWN AND A SECOND ATTEMPT. A read of this artifact took 2 to 6 s on every
+leg but one, which took 428 s (the budget note above), so a slow read is answered by
+reading again rather than by waiting. Each attempt carries this file's floor of 2
+minutes, twenty times the longest of the other reads. That is not this file's rule of
+the measured maximum plus 15 per cent, which the 428 s read would put at 9 minutes: those
+9 minutes are the wait this bound is here to cut, since the same bytes took seconds on
+every other leg. The second attempt runs only when the first did not end in success, and
+a second failure fails the job there, by name.
+
+EACH ATTEMPT INTO A DIRECTORY OF ITS OWN. A step that runs past its budget in a
+`container:` job ends the `docker exec` that started it, and the action's process inside
+the container can outlive it (moby/moby#9098) and go on writing the files it was
+extracting. Into a directory of its own, those writes reach nothing a later step reads:
+the step after the two copies the attempt that succeeded into the directory
+run-broker.sh serves from.
+
+## What the shard job places, and what its budget leaves for it
+
+The step budget note above does not count this step, which is new here. It copies one
+106 MB artifact on the runner's disk (141 ms for those bytes on a pod), and the 16 s
+that rounding up to 22 minutes leaves hold it.
 
 ## Why the shard job makes the downloaded binaries executable
 
@@ -555,16 +594,27 @@ The browser step's own 3 minutes above still holds: 69 s is the most it took ove
 nine legs, webkit-alone's again, under the 141 s that budget was derived from, so the
 pooled maximum the rule reads is still that 141 s.
 
-The browser step is the one step of this job that carries a budget, so the job's budget is
-that budget plus the maxima above of every step without one, which sum to 137 s:
-180 + 137 = 317 s, 5 min 17 s, rounded up to the 6 minutes below. It is a backstop above
-the sum of the step budgets, as this file's head says a job budget is.
+The browser step was the one step of this job that carried a budget, so the job's budget was
+that budget plus the maxima above of every step without one, which summed to 137 s:
+180 + 137 = 317 s, 5 min 17 s, rounded up to 6 minutes.
+
+The shard job's note "THE TWO NETWORK READS, AT A BUSY HOUR" holds here too, and one of its
+two legs is this job's: in run 44213916667 alone (chromium-alone) spent 355 s pulling the
+image, and the 6-minute budget cancelled it 3 s into its checkout. The download carries the
+same budget and second attempt as there, and the pull is counted at that 355 s. The job's
+budget is the browser step's 180 s, the two download attempts' 120 s each, and the steps
+without a budget at 137 - 5 - 45 + 355 = 442 s: 862 s, 14 min 22 s, rounded up to the 15
+minutes below, whose 38 s left over hold the new step that places the binaries (the shard
+job's comment above that step). The browser step's own budget is unchanged, and it still
+fires first.
 
 ## What the alone job downloads in place of a Go build
 
 What the binaries job above built, in place of this job's own actions/setup-go
 and go-envoy cache restore, which are gone: the shard job's step of this name says why,
 and this job runs the same two scripts from the same directory.
+The shard job's steps of these names say why each attempt carries its own budget and
+directory and why there is a second; the four steps are the same here.
 
 ## Why the alone job makes the downloaded binaries executable
 
@@ -890,6 +940,11 @@ before any step budget could fire. That inverts this file's rule, which says the
 is the backstop that never fires first, so it is re-derived above from the maximum those
 runs measured. A download this job does not control may not decide a required check.
 
+The step "Pull the stack's Postgres image" was added later, for the reason its comment gives,
+and its pull is counted at the 120 s the browser step spent before the stack's first output
+on the run that found it: 240 + 314 + 120 = 674 s, 11 min 14 s, rounded up to the 12 minutes
+below.
+
 ## Why the visual job restores go-envoy-test
 
 go-envoy-test, restored only, for the reason the binaries job's step of this name gives:
@@ -916,6 +971,19 @@ The copy in ghcr.io/cybermonklabs/legion/ci (.github/ci-images.yaml), named by t
 digest packages/dispatch/e2e/visual-run.sh runs, pulled here so the run below does not
 pay for it inside the browser step's own budget. A failed pull is a fault of this
 repository's own package, so it fails here and says so.
+
+## The stack's Postgres image, pulled here for the same reason
+
+THE STACK'S POSTGRES IMAGE, PULLED HERE FOR THE SAME REASON. e2e/harness-pool.ts's
+startStack starts the stack's PostgreSQL with a `docker run` of DISPATCH_E2E_PG_IMAGE, the
+digest the browser step below exports, and a pull the runner had not made yet counts
+inside that step's 4 minutes. On #4129 (run 44215262087, job 134503540243) the step spent
+120 s before the stack's first output, where five green visual jobs (134499880849,
+134479592234, 134451447710, 134451520100, 134547177192) spent 7 to 15 s, and the step ran
+past its budget at 250 s. Its log does not time the pull apart from the rest of that
+start, so the 120 s is the bound this pull is given, not a measure of the pull alone. The
+digest is the browser step's, written twice, and the two must stay the same: a pull of
+another digest here leaves that step to pull its own inside its budget again.
 
 ## Why the visual job's upload is always
 
