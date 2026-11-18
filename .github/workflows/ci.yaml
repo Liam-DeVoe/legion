@@ -327,7 +327,8 @@ jobs:
       daemon_live: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter3.outputs.daemon_live }}
       # The agent harness: a job of parts, each driving real agents on model stand-ins for up to
       # 24 minutes, the first of them the five live proofs of the daemon's Go suite that drive real
-      # Oh My Pi panes. A slow suite, gated as the comment above `envoy_go` says.
+      # Oh My Pi panes, the second the scripts and the Go test that drive them on tmux. A slow
+      # suite, gated as the comment above `envoy_go` says.
       agent_harness: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter3.outputs.agent_harness || 'false' }}
       # The private-name port harness, in a job of its own: it builds the `legion` binary of
       # this head, so as a step of the test job it put that build's whole closure on the test
@@ -4921,7 +4922,11 @@ jobs:
             # command they build for their panes, the two plugins they pack with `bun pm pack`
             # and everything each plugin's prepack builds its bundle from, the frozen install the
             # packs read, jj, the pinned Oh My Pi, and the NATS image the package's test broker
-            # starts.
+            # starts. The tmux-scripts part adds the three tmux scripts of scripts/e2e, the lib
+            # files they source and run, their builds of `legion`, the Envoy listener, natsd and
+            # the controller's liveness prober, the claude-envoy build, the model stand-in and
+            # what it loads, and the pinned Claude Code; and the Claude Code backend's live proof
+            # of AGENT_HARNESS_TMUX_TESTS, in the package above.
             agent_harness:
               - *ci_router
               - '.github/workflows/ci-job-agent-harness.yaml'
@@ -4954,6 +4959,72 @@ jobs:
               - '.github/actions/install-omp/**'
               - '.omp-pin'
               - '.github/actions/pull-test-images/**'
+              # The tmux-scripts part: its three scripts of scripts/e2e, the lib files they source
+              # and run, the overlay main the controller's runs as packages/daemon's
+              # cmd/liveprobe-accept, and the model stand-in two of them run under bun, with the
+              # test fixtures packages/pi-shared/test/omp-harness.ts, which it imports, imports.
+              - 'scripts/e2e/stage2-tmux-supervision.sh'
+              - 'scripts/e2e/controller-start-tmux.sh'
+              - 'scripts/e2e/clean-session-stop-tmux.sh'
+              - 'scripts/e2e/lib/transcript.sh'
+              - 'scripts/e2e/lib/omp-home.sh'
+              - 'scripts/e2e/lib/loopback-dsn.sh'
+              - 'scripts/e2e/lib/loopback-dsn.py'
+              - 'scripts/e2e/lib/rig.sh'
+              - 'scripts/e2e/lib/port-file.sh'
+              - 'scripts/e2e/lib/held-port.py'
+              - 'scripts/e2e/lib/leftovers.sh'
+              - 'scripts/e2e/lib/built-from.sh'
+              - 'scripts/e2e/lib/model-gateway-unserved.sh'
+              - 'scripts/e2e/lib/install-key-file-model-route.sh'
+              - 'scripts/e2e/lib/model-endpoint.sh'
+              - 'scripts/e2e/lib/check-model-route.sh'
+              - 'scripts/e2e/lib/install-plugin-profile.sh'
+              - 'scripts/e2e/lib/messages-standin.ts'
+              - 'scripts/e2e/lib/controller-liveprobe.go'
+              - 'packages/test-fixtures/src/**'
+              # The Envoy listener each script builds from this checkout, its whole closure, and
+              # natsd (packages/envoy/internal/testnats/cmd/natsd), which imports nats-server alone.
+              - 'packages/envoy/cmd/listener/*'
+              - 'packages/envoy/internal/broker/oauthwire/*'
+              - 'packages/envoy/internal/brokertoken/*'
+              - 'packages/envoy/internal/bus/*'
+              - 'packages/envoy/internal/cistore/*'
+              - 'packages/envoy/internal/config/*'
+              - 'packages/envoy/internal/contracts/*'
+              - 'packages/envoy/internal/ctxlock/*'
+              - 'packages/envoy/internal/dedupe/*'
+              - 'packages/envoy/internal/envconf/*'
+              - 'packages/envoy/internal/fold/*'
+              - 'packages/envoy/internal/ghrename/*'
+              - 'packages/envoy/internal/googleidentity/*'
+              - 'packages/envoy/internal/id/*'
+              - 'packages/envoy/internal/kvwatch/*'
+              - 'packages/envoy/internal/legionagents/*'
+              - 'packages/envoy/internal/logging/*'
+              - 'packages/envoy/internal/metrics/*'
+              - 'packages/envoy/internal/oidc/*'
+              - 'packages/envoy/internal/ratelimit/*'
+              - 'packages/envoy/internal/roles/*'
+              - 'packages/envoy/internal/session/*'
+              - 'packages/envoy/internal/store/*'
+              - 'packages/envoy/internal/verify/*'
+              - 'packages/envoy/internal/webhook/*'
+              - 'packages/envoy/listenfd/*'
+              - 'packages/envoy/roleholder/*'
+              - 'packages/envoy/natsversion/*'
+              - 'packages/envoy/internal/testnats/cmd/natsd/*'
+              # The claude-envoy build the clean stop and the Claude Code test run with bun
+              # (packages/claude-envoy/scripts/build.ts) and what the claude-envoy job's build reads
+              # beyond the trees above, and the Claude Code release both run,
+              # which .github/actions/install-claude-code installs at .claude-code-pin.
+              - 'packages/claude-envoy/**'
+              - '.github/scripts/check-private-names.sh'
+              - '.github/scripts/release-push.sh'
+              - '.github/workflows/release.yaml'
+              - 'packages/broker-client/**'
+              - '.github/actions/install-claude-code/**'
+              - '.claude-code-pin'
               # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
               # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
               - '!packages/daemon/cmd/**/*_test.go'
@@ -5371,9 +5442,12 @@ jobs:
   # .github/scripts/ci_job_reads.py's AGENT_HARNESS_TESTS names, which drive real Oh My Pi panes
   # on the whole daemon; the daemon-go race step skips them by name (.github/scripts/ci_job_reads.py
   # builds both steps' text). They were the drivers of five scripts under scripts/e2e, which no CI
-  # job ran. The merge queue runs the job, and a pull request only with the label `full-ci`, as
-  # the comment on its `changes` output says. Not fail-open: its tests were in no job that
-  # `changes` failing runs.
+  # job ran. Its second part, tmux-scripts, runs three scripts under scripts/e2e that drive Oh My
+  # Pi and Claude Code panes on the daemon's own tmux server, each a step of its own, and the
+  # Claude Code backend's live proof of AGENT_HARNESS_TMUX_TESTS, which the race step skips too.
+  # The merge queue runs the job, and a pull request only with the label `full-ci`, as the
+  # comment on its `changes` output says. Not fail-open: its tests were in no job that `changes`
+  # failing runs.
   agent-harness:
     needs: changes
     if: needs.changes.outputs.agent_harness == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')

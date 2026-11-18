@@ -1517,10 +1517,77 @@ def at_pane_drivers(step):
     return at(AGENT_HARNESS_PANE_DRIVERS, step, AGENT_HARNESS_WORKFLOW)
 
 
+# The Claude Code backend's live proof on tmux (claude_backend_live_test.go), which the same job's
+# tmux-scripts part runs beside the three tmux scripts of scripts/e2e: it boots the whole daemon
+# with the implementer's claim on the real tmux runtime and Claude Code, so it needs what that part
+# installs (tmux, Claude Code) and pane-drivers does not. The file is taken whole, as
+# AGENT_HARNESS_FILES are, hold_whole_files() holds AGENT_HARNESS_TMUX_TESTS to it, and the
+# daemon-go race step skips the test by name from this list (DAEMON_RACE_SKIP below).
+AGENT_HARNESS_TMUX_FILES = ["claude_backend_live_test.go"]
+AGENT_HARNESS_TMUX_TESTS = ["TestTheClaudeCodeImplementerRegistersCompletesThroughItsStopHookAndResumesLive"]
+AGENT_HARNESS_TMUX_SCRIPTS = "tmux-scripts"
+AGENT_HARNESS_TMUX_STEP = "Run the Claude Code backend's proof on tmux"
+AGENT_HARNESS_TMUX_PATTERN = f"'^({'|'.join(sorted(AGENT_HARNESS_TMUX_TESTS))})$'"
+AGENT_HARNESS_TMUX_SCRIPT = f"go test -v -count=1 -timeout 15m -run {AGENT_HARNESS_TMUX_PATTERN} ./{AGENT_HARNESS_PACKAGE}/"
+hold_whole_files(AGENT_HARNESS_JOB, AGENT_HARNESS_PACKAGE, AGENT_HARNESS_TMUX_FILES, AGENT_HARNESS_TMUX_TESTS,
+                 "AGENT_HARNESS_TMUX_FILES", "AGENT_HARNESS_TMUX_TESTS")
+
+
+def at_tmux_scripts(step):
+    """A citation of a step of the agent-harness job's tmux-scripts part."""
+    return at(AGENT_HARNESS_TMUX_SCRIPTS, step, AGENT_HARNESS_WORKFLOW)
+
+
+# The three scripts of scripts/e2e that same part runs, each itself the test and a step of its
+# own, keyed by the step that runs it. Each builds `legion`, the Envoy listener and natsd from this
+# checkout, and the controller's runs the daemon's liveness prober as a main inside
+# packages/daemon through an overlay; those are their go commands, which TMUX_SCRIPT_RUNS pins to
+# each script's own line.
+AGENT_HARNESS_STAGE2 = "scripts/e2e/stage2-tmux-supervision.sh"
+AGENT_HARNESS_CONTROLLER = "scripts/e2e/controller-start-tmux.sh"
+AGENT_HARNESS_CLEAN_STOP = "scripts/e2e/clean-session-stop-tmux.sh"
+AGENT_HARNESS_TMUX_SCRIPT_STEPS = {
+    AGENT_HARNESS_STAGE2: "Stage 2's supervision on tmux",
+    AGENT_HARNESS_CONTROLLER: "The operator-launched controller on tmux",
+    AGENT_HARNESS_CLEAN_STOP: "The daemon's clean stop of a dead role's session",
+}
+
+
+def at_tmux_script(script):
+    """A citation of the tmux-scripts step that runs one of the three scripts."""
+    return at_tmux_scripts(AGENT_HARNESS_TMUX_SCRIPT_STEPS[script])
+
+
+TMUX_SCRIPT_RUNS = [
+    run_
+    for script in (AGENT_HARNESS_STAGE2, AGENT_HARNESS_CONTROLLER)
+    for run_ in (
+        script_run(script, '(cd "$root/packages/daemon" && go build -o "$work/legion" ./cmd/legion)',
+                   at_tmux_script(script), DAEMON, [LEGION_BUILD], mode="build"),
+        script_run(script, '(cd "$root/packages/envoy" && go build -o "$work/envoy-listener" ./cmd/listener)',
+                   at_tmux_script(script), ENVOY, ["./cmd/listener"], mode="build"),
+        script_run(script, '(cd "$root/packages/envoy" && go build -o "$work/natsd" ./internal/testnats/cmd/natsd)',
+                   at_tmux_script(script), ENVOY, ["./internal/testnats/cmd/natsd"], mode="build"),
+    )
+] + [
+    script_run(AGENT_HARNESS_CLEAN_STOP, 'go -C "$root/packages/daemon" build -o "$work/bin/legion" ./cmd/legion',
+               at_tmux_script(AGENT_HARNESS_CLEAN_STOP), DAEMON, [LEGION_BUILD], mode="build"),
+    script_run(AGENT_HARNESS_CLEAN_STOP, 'go -C "$root/packages/envoy" build -o "$work/bin/envoy-listener" ./cmd/listener',
+               at_tmux_script(AGENT_HARNESS_CLEAN_STOP), ENVOY, ["./cmd/listener"], mode="build"),
+    script_run(AGENT_HARNESS_CLEAN_STOP, 'go -C "$root/packages/envoy" build -o "$work/bin/natsd" ./internal/testnats/cmd/natsd',
+               at_tmux_script(AGENT_HARNESS_CLEAN_STOP), ENVOY, ["./internal/testnats/cmd/natsd"], mode="build"),
+    script_run(AGENT_HARNESS_CONTROLLER,
+               'verdicts=$(cd "$root/packages/daemon" && go run -overlay "$work/overlay.json" ./cmd/liveprobe-accept '
+               '"${probe_args[@]}" 2>"$evidence/checks/liveprobe.log" | tr \'\\n\' \' \')',
+               at_tmux_script(AGENT_HARNESS_CONTROLLER), DAEMON, ["./cmd/liveprobe-accept"], mode="build",
+               overlay={f"{DAEMON}/cmd/liveprobe-accept/main.go": "scripts/e2e/lib/controller-liveprobe.go"}),
+]
+
+
 # The daemon-go race step's -skip: the tests of its package that jobs of their own run, the
-# plugin-pack job's, the daemon-live job's and the agent-harness job's, in one pattern built from
-# the three lists.
-DAEMON_RACE_SKIP = f"'^({'|'.join(sorted(PLUGIN_PACK_TESTS + DAEMON_LIVE_TESTS + AGENT_HARNESS_TESTS))})$'"
+# plugin-pack job's, the daemon-live job's and the agent-harness job's two parts', in one pattern
+# built from the four lists.
+DAEMON_RACE_SKIP = f"'^({'|'.join(sorted(PLUGIN_PACK_TESTS + DAEMON_LIVE_TESTS + AGENT_HARNESS_TESTS + AGENT_HARNESS_TMUX_TESTS))})$'"
 DAEMON_RACE_SCRIPT = f"go test -v -count=1 -race -timeout 30m -skip {DAEMON_RACE_SKIP} " + " ".join(DAEMON_RACE_PKGS)
 
 
@@ -2661,14 +2728,24 @@ GATES = [
     # of their own, one per part, so this gate keeps `workflow=CI`, the file that holds a job named
     # agent-harness, as the dispatch_browser gate does, and declares the pair of files it reads
     # itself.
+    # The tmux-scripts part adds its own: the three scripts of AGENT_HARNESS_TMUX_SCRIPT_STEPS,
+    # the lib files they source and run, their go commands (TMUX_SCRIPT_RUNS), the plugins they
+    # pack through the same scripts/e2e/lib/pack-plugin.sh, the claude-envoy build the clean stop
+    # and the Claude Code test both run with bun, and the model stand-in two scripts run under
+    # bun, whose loads .github/scripts/ci_ts_programs.py's BUNDLES holds to this filter; and the
+    # Claude Code test of AGENT_HARNESS_TMUX_TESTS, whose package is the pane drivers' one.
     gate("agent_harness", AGENT_HARNESS_JOB, runs=[
         script_run(f"{DAEMON}/internal/daemon/live_agent_proof_test.go",
                    'build := exec.Command("go", "build", "-o", binary, "./cmd/legion")',
-                   f"buildProofLegion, which the five tests {at_pane_drivers(AGENT_HARNESS_STEP)} runs call",
+                   f"buildProofLegion, which the five tests {at_pane_drivers(AGENT_HARNESS_STEP)} runs and the one "
+                   f"{at_tmux_scripts(AGENT_HARNESS_TMUX_STEP)} runs call",
                    DAEMON, [LEGION_BUILD], mode="build"),
-    ], exact=[
+    ] + TMUX_SCRIPT_RUNS, exact=[
         pinned_step(AGENT_HARNESS_PANE_DRIVERS, AGENT_HARNESS_STEP, DAEMON, AGENT_HARNESS_SCRIPT, [
             (DAEMON, [f"./{AGENT_HARNESS_PACKAGE}/"], "go test -run over the package the five tests are in", {}),
+        ], workflow=AGENT_HARNESS_WORKFLOW),
+        pinned_step(AGENT_HARNESS_TMUX_SCRIPTS, AGENT_HARNESS_TMUX_STEP, DAEMON, AGENT_HARNESS_TMUX_SCRIPT, [
+            (DAEMON, [f"./{AGENT_HARNESS_PACKAGE}/"], "go test -run over the package the Claude Code test is in", {}),
         ], workflow=AGENT_HARNESS_WORKFLOW),
     ], reads=reads(
         ("scripts/e2e/lib/pack-plugin.sh", f"{at_pane_drivers(AGENT_HARNESS_STEP)}: "
@@ -2685,6 +2762,56 @@ GATES = [
       + install_omp(AGENT_HARNESS_PANE_DRIVERS, AGENT_HARNESS_WORKFLOW)
       + setup_go(AGENT_HARNESS_PANE_DRIVERS, f"{DAEMON}/go.mod", AGENT_HARNESS_WORKFLOW)
       + bun_job(AGENT_HARNESS_PANE_DRIVERS, AGENT_HARNESS_WORKFLOW)
+      + reads(*[(script, at_tmux_script(script)) for script in AGENT_HARNESS_TMUX_SCRIPT_STEPS])
+      + reads(
+        ("scripts/e2e/lib/transcript.sh", "stage2-tmux-supervision.sh:48, controller-start-tmux.sh:39 and "
+                                          "clean-session-stop-tmux.sh:186 source it"),
+        ("scripts/e2e/lib/omp-home.sh", "stage2-tmux-supervision.sh:73 and controller-start-tmux.sh:73 source it, "
+                                        "and scripts/e2e/lib/install-key-file-model-route.sh:65"),
+        ("scripts/e2e/lib/loopback-dsn.sh", "stage2-tmux-supervision.sh:75 sources it, and scripts/e2e/lib/rig.sh:93"),
+        ("scripts/e2e/lib/loopback-dsn.py", "scripts/e2e/lib/loopback-dsn.sh:175 runs it with python3"),
+        ("scripts/e2e/lib/rig.sh", "controller-start-tmux.sh:69 and clean-session-stop-tmux.sh:201 source it"),
+        ("scripts/e2e/lib/port-file.sh", "stage2-tmux-supervision.sh:307 sources it, and scripts/e2e/lib/rig.sh:102"),
+        ("scripts/e2e/lib/held-port.py", "stage2-tmux-supervision.sh:305 and scripts/e2e/lib/rig.sh:143,157 run it "
+                                         "to hold a port for the daemon"),
+        ("scripts/e2e/lib/leftovers.sh", "stage2-tmux-supervision.sh:354 and controller-start-tmux.sh:71 source it"),
+        ("scripts/e2e/lib/built-from.sh", "stage2-tmux-supervision.sh:350 and clean-session-stop-tmux.sh:584 run it "
+                                          "over the checkout"),
+        ("scripts/e2e/lib/model-gateway-unserved.sh", "stage2-tmux-supervision.sh:164 runs it for a failed check's notes"),
+        ("scripts/e2e/lib/install-key-file-model-route.sh", "stage2-tmux-supervision.sh:328 runs it to route the "
+                                                            "profile's model to the stand-in"),
+        ("scripts/e2e/lib/model-endpoint.sh", "scripts/e2e/lib/install-key-file-model-route.sh:63 and "
+                                              "clean-session-stop-tmux.sh:203 source it"),
+        ("scripts/e2e/lib/check-model-route.sh", "stage2-tmux-supervision.sh:906 runs it over the profile's sessions"),
+        ("scripts/e2e/lib/install-plugin-profile.sh", "stage2-tmux-supervision.sh:390-391 and "
+                                                      "controller-start-tmux.sh:180-181 run it, once per plugin"),
+        ("scripts/e2e/lib/pack-plugin.sh", "scripts/e2e/lib/install-plugin-profile.sh:153 and "
+                                           "clean-session-stop-tmux.sh:607 run it"),
+        ("scripts/e2e/lib/messages-standin.ts", "stage2-tmux-supervision.sh:324 and clean-session-stop-tmux.sh:660 run "
+                                                "it under bun, the model stand-in"),
+        ("packages/pi-shared/test/omp-harness.ts", "scripts/e2e/lib/messages-standin.ts:23 imports messageStream"),
+        ("scripts/e2e/lib/controller-liveprobe.go", "controller-start-tmux.sh:447-449 runs it with go run -overlay as "
+                                                    "packages/daemon/cmd/liveprobe-accept/main.go"),
+        (TEST_FIXTURES_SRC, "packages/pi-shared/test/omp-harness.ts:19, which the model stand-in imports, imports "
+                            "@legion/test-fixtures/host-tools"),
+        (".github/actions/install-claude-code/**", at_tmux_scripts("./.github/actions/install-claude-code")),
+        (".claude-code-pin", ".github/actions/install-claude-code/action.yml:16 pin=$(<.claude-code-pin), the release "
+                             "clean-session-stop-tmux.sh's Claude Code pane and claude_backend_live_test.go's "
+                             "implementer run"),
+        (".github/actions/pull-test-images/**", at_tmux_scripts("Pull the NATS test container image")),
+        (f"{DAEMON}/internal/testnats/nats.go", f"{at_tmux_scripts('Pull the NATS test container image')} const Image"),
+    ) + [
+        Read(g, f"{at_tmux_script(AGENT_HARNESS_CLEAN_STOP)}: clean-session-stop-tmux.sh:607 and "
+                "scripts/e2e/lib/install-plugin-profile.sh:153, which the other two scripts run, pack packages/pi-envoy "
+                "and packages/pi-legion through scripts/e2e/lib/pack-plugin.sh, whose `bun pm pack` runs their prepack")
+        for g in PACK_READS
+    ] + CLAUDE_ENVOY_BUILD
+      + envoy_client_dep("packages/pi-shared/test/omp-harness.ts:12-18, which the model stand-in imports, imports "
+                         "@legion/envoy-client/*")
+      + install_jj(AGENT_HARNESS_TMUX_SCRIPTS, AGENT_HARNESS_WORKFLOW)
+      + install_omp(AGENT_HARNESS_TMUX_SCRIPTS, AGENT_HARNESS_WORKFLOW)
+      + setup_go(AGENT_HARNESS_TMUX_SCRIPTS, f"{DAEMON}/go.mod", AGENT_HARNESS_WORKFLOW)
+      + bun_job(AGENT_HARNESS_TMUX_SCRIPTS, AGENT_HARNESS_WORKFLOW)
       + CI_SELF + job_self(AGENT_HARNESS_JOB), workflow=CI),
 
     # The private-name port harness, in a job of its own: one step, which builds the `legion`

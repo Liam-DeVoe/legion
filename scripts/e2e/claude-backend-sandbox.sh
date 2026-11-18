@@ -26,7 +26,8 @@
 # out of its context), and the same pod's architect and planner come back in the replacement at a
 # new generation and register there.
 #
-# It is the tmux proof's rig (scripts/e2e/claude-backend-tmux.sh) on the cluster proof's cluster
+# It is the rig of the Claude Code backend's tmux proof (packages/daemon/internal/daemon/
+# claude_backend_live_test.go) on the cluster proof's cluster
 # (scripts/e2e/stage4a-sandbox-runtime.sh): scratch Postgres, NATS, Envoy listener and Dispatch from
 # lib/rig.sh, `admission_cap: 1`, `gates.design: off`, the smoke repository sjawhar/legion-smoke
 # where the implementer pushes a branch and opens no pull request — and, for the runtime, an

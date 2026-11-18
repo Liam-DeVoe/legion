@@ -18,13 +18,14 @@
 # NAME is the environment variable the caller read DSN from, and it starts that line. WHAT is
 # what the run does on that server, in a few words.
 #
-# Eight call sites read a DSN with this guard before they start anything, because the server must
-# be this machine's. Seven are proofs of their own: plan-pointer-drive.sh,
-# verification-results.sh, dispatch-claimant-delivery.sh, clean-session-stop-tmux.sh,
-# envoy-session-states.sh, envoy-session-delivery.sh and dispatch-session-settings.sh. The
-# eighth is lib/two-builds.sh, the harness the two two-builds proofs share, which reads
-# DATABASE_URL once for dispatch-two-builds.sh and dispatch-search-two-builds.sh. Six of the
-# eight call sites call this function.
+# Ten call sites read a DSN with this guard before they start anything, because the server must
+# be this machine's. Nine are proofs of their own: plan-pointer-drive.sh,
+# verification-results.sh, dispatch-claimant-delivery.sh, stage2-tmux-supervision.sh,
+# controller-start-tmux.sh, clean-session-stop-tmux.sh, envoy-session-states.sh,
+# envoy-session-delivery.sh and dispatch-session-settings.sh. The tenth is lib/two-builds.sh,
+# the harness the two two-builds proofs share, which reads DATABASE_URL once for
+# dispatch-two-builds.sh and dispatch-search-two-builds.sh. Eight of the ten call sites call
+# this function.
 # envoy-session-delivery.sh and dispatch-session-settings.sh read their DSN with
 # run_database_url alone, which begins with this guard's own check. Every proof that writes a
 # server its caller's DSN names reads that DSN with this guard before it starts anything.
@@ -40,7 +41,7 @@
 #
 # So the client the run connects with must be this one. A proof that reads the DSN with a second
 # parser decides the host twice, and the host it connects to is the second answer. Each of the
-# nine proofs those eight call sites serve reaches that server with psql, which is libpq. Five
+# eleven proofs those ten call sites serve reaches that server with psql, which is libpq. Seven
 # of them give every server
 # they start the connection string run_database_url below rebuilds, which libpq read back inside
 # the helper.

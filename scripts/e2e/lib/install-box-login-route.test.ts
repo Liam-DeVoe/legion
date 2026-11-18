@@ -302,12 +302,10 @@ describe("a box-login stage proof refused at its first lines", () => {
   const lockFile = join(dir, "stage-box-login.lock");
   // A refused stage exits before its `mktemp -d /tmp/legion-e2e…` and prints no directory, so the
   // only way to see the one it must not have made is to look where it would have made it: the
-  // literal /tmp of stage2-tmux-supervision.sh and stage3-devbox-workflow.sh. The child's own pid
-  // is in every such name, so this read never sees another run's directory.
+  // literal /tmp of stage3-devbox-workflow.sh. The child's own pid is in every such name, so this
+  // read never sees another run's directory.
   const runDirs = (pid: number) =>
-    readdirSync("/tmp").filter(
-      (name) => name.startsWith(`legion-e2e2.${pid}.`) || name.startsWith(`legion-e2e3.${pid}.`)
-    );
+    readdirSync("/tmp").filter((name) => name.startsWith(`legion-e2e3.${pid}.`));
   const stage = (script: string, env: Record<string, string>) => {
     const evidence = join(dir, `evidence-${script}-${Object.keys(env).join("-")}`);
     const child = Bun.spawnSync(["bash", join(e2e, script)], {
@@ -326,7 +324,8 @@ describe("a box-login stage proof refused at its first lines", () => {
       left: [...runDirs(child.pid), ...(existsSync(evidence) ? [evidence] : [])],
     };
   };
-  const scripts = ["stage2-tmux-supervision.sh", "stage3-devbox-workflow.sh"];
+  // stage3-devbox-workflow.sh is the one stage proof with a box-login route.
+  const scripts = ["stage3-devbox-workflow.sh"];
 
   test.each(scripts)("%s takes the lock before it makes any run state", async (script) => {
     const holder = Bun.spawn(

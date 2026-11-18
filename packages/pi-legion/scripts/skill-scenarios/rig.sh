@@ -335,7 +335,7 @@ install_model_route() {
     local base=()
     # An Anthropic-compatible gateway, whose key the file holds, in place of Anthropic itself:
     # the installer's own --base-url, which this route did not pass, so a batch on a gateway had
-    # to be written as a provider block by hand (scripts/e2e/claude-backend-tmux.sh takes the
+    # to be written as a provider block by hand (scripts/e2e/claude-backend-sandbox.sh takes the
     # same variable for the same reason).
     [ -z "${LEGION_E2E_MODEL_BASE_URL:-}" ] || base=(--base-url "$LEGION_E2E_MODEL_BASE_URL")
     bash "$co/scripts/e2e/lib/install-key-file-model-route.sh" --profile "$profile" --home "$dir/home" --dest "$dir/key" \

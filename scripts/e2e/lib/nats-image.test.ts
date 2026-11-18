@@ -77,12 +77,9 @@ const drivers = gitNames(["ls-files", "-z", "--", "*.sh"]).filter(
 /** The drivers known to start a NATS server, a floor under the scan: a scan finding none fails. */
 const knownDrivers = [
   "scripts/e2e/stage3-devbox-workflow.sh",
-  "scripts/e2e/claude-backend-tmux.sh",
   "scripts/e2e/claude-backend-sandbox.sh",
-  "scripts/e2e/controller-start-tmux.sh",
   "scripts/e2e/dispatch-user-turns.sh",
   "scripts/e2e/parked-decision-devbox.sh",
-  "scripts/e2e/stage2-tmux-supervision.sh",
   "scripts/e2e/verifiers-staging-token.sh",
   "docs/site/media/walkthroughs/legion-operator/record-casts.sh",
   "packages/pi-legion/scripts/skill-scenarios/rig.sh",

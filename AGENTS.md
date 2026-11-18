@@ -263,9 +263,8 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   The Bun tests under `scripts/`, which is no workspace.
   ci.yaml's `test` job runs the first four, one step each and in that order, and runs no other Bun test under `scripts/`: `scripts/semantic-line-breaks.guides.test.ts` checks the guides' own layout on demand and gates nothing.
   `bun test scripts/conflicts` runs in the `conflicts-script` job instead, after that job's biome and tsc steps over the same directory.
-  Beyond `bun install`, a suite needs only what it names in the line it prints when it skips, and that line, not this entry, is the whole of it:
-  the two Claude backend rigs (`scripts/e2e/lib/claude-backend-app-secrets.test.ts` and `scripts/e2e/lib/claude-backend-bun-pin.test.ts`) name 44 POSIX programs each, from `bash` and `jq` to `flock` and `sha256sum`.
-  Examples of the rest: `gofmt` (contracts' Go generator), `go` (the daemon-pane scenario and the held-port proof), `docker` (the rigs that start a container), `openssl` (the h2 settings proof), `tmux` (claude-envoy's session-title rows and the parked-decision teardown proof), `bash` and `sleep` (the Claude backend guard rows, where pi-shared's shell-command row needs `bash` alone), `node` (claude-envoy's channel rows, and packages/dispatch's pull-request lane row, which also needs the Playwright `bun install` wrote into this checkout), `jj` (pi-shared's handoff record and pi-legion's pane fixtures), and `psql` with `LEGION_TEST_PG_DSN` naming a PostgreSQL server the run may create a database on (packages/dispatch's psql and stack suites, whose one skip line names whichever of the two the host does not have).
+  Beyond `bun install`, a suite needs only what it names in the line it prints when it skips, and that line, not this entry, is the whole of it.
+  Examples: `gofmt` (contracts' Go generator), `go` (the daemon-pane scenario and the held-port proof), `docker` (the rigs that start a container), `openssl` (the h2 settings proof), `tmux` (claude-envoy's session-title rows and the parked-decision teardown proof), `bash` (pi-shared's shell-command row), `node` (claude-envoy's channel rows, and packages/dispatch's pull-request lane row, which also needs the Playwright `bun install` wrote into this checkout), `jj` (pi-shared's handoff record and pi-legion's pane fixtures), and `psql` with `LEGION_TEST_PG_DSN` naming a PostgreSQL server the run may create a database on (packages/dispatch's psql and stack suites, whose one skip line names whichever of the two the host does not have).
   The `-omp` and Claude Code suites are the exception that prints nothing: they skip silently unless `LEGION_TEST_OMP` or `LEGION_TEST_CLAUDE` names a real binary, and on GitHub Actions they fail rather than skip.
   The browser suite is no `bun run test` at all — `bun run e2e` and `bun run e2e:clock` in packages/dispatch build @legion/contracts and the SPA and run Playwright, and refuse before they start a harness or a Postgres when `bun run e2e:install` has not downloaded the browsers (docs/testing.md, "Bun tests")
   `bun run e2e` runs the default selection and `bun run e2e:clock` the three wall-clock projects, which are out of that selection because their rows are read from the clock and need the machine to themselves, so the two commands together are the whole suite.
@@ -544,13 +543,10 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
 
   Stage 1's live proof: the Go daemon boots on a real Postgres, serves GET /legion/v1/state, answers GET /readyz 200 once it serves, at each of its two boots, restarts against the same store, and refuses an unreachable Postgres by host (scripts/e2e/README.md)
 
-- `LEGION_E2E_MODEL_ROUTE=gateway LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic bash scripts/e2e/stage2-tmux-supervision.sh`
+- `LEGION_TEST_OMP=<omp> LEGION_TEST_PG_DSN=<loopback postgres://…> bash scripts/e2e/stage2-tmux-supervision.sh`
 
-  Stage 2's live proof, devbox only: real Oh My Pi panes with the branch's two plugins (pi-envoy and pi-legion) under the Go daemon's private tmux server, against a real Envoy listener and NATS
-  — register, role claim, delivery once, resume, suspend, the registration deadline, re-adoption across a restart, the orphan sweep, the gate's refusal of pi-legion without pi-envoy;
-  LEGION_E2E_MODEL_ROUTE=key-file `LEGION_E2E_ANTHROPIC_KEY_FILE=<0600 file>` instead, for a devbox with no Hawk gateway;
-  LEGION_E2E_MODEL_ROUTE=box-login instead, on the operator's own Oh My Pi login, where the operator allows it (the profile's agent.db a symlink to the operator's, no credential read;
-  the operator's global omp build, refused without the refresh-race fix, in place of .omp-pin; one box-login proof at a time) (scripts/e2e/README.md)
+  Stage 2's live proof, which the `tmux-scripts` part of `ci.yaml`'s `agent-harness` job runs: real Oh My Pi panes with the branch's two plugins (pi-envoy and pi-legion) under the Go daemon's private tmux server, against a real Envoy listener and NATS and an Anthropic Messages stand-in
+  — register, role claim, delivery once, resume, suspend, the registration deadline, re-adoption across a restart, the orphan sweep, the gate's refusal of pi-legion without pi-envoy (scripts/e2e/README.md)
 
 - `LEGION_E2E_MODEL_ROUTE=gateway LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic SMOKE_UPSTREAM_NATS=nats://<host>.<tailnet>.ts.net:4222 LEGION_E2E_REVIEW_APP_KEY_COMMAND='<command that prints the review App PEM private key>' bash scripts/e2e/stage3-devbox-workflow.sh`
 
@@ -561,15 +557,14 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   `STAGE3_PRODUCTION_ENVOY_URL=http://<host>.<tailnet>.ts.net:9020` instead of the default http://127.0.0.1:9020, for a devbox with no standing local port-forward to the production Envoy listener's API;
   three of the `LEGION_E2E_*_APP_*` inputs are optional and name another deployment's two role Apps in place of this deployment's own (the two Apps' ids and the secrets broker `github-app` secret that mints the implement App's tokens), while `LEGION_E2E_REVIEW_APP_KEY_COMMAND` is required of every run of the proofs that drive the review App, this deployment's own included, and has no default;
   it is shell text that prints the review App's PEM private key on stdout, which the run runs once, on the driver, in the operator's own environment (so it may read their HOME, their own gcloud or kubectl configuration and any variable of their shell), into the run's own 0600 key file, since the daemon never runs it and the review App's `private_key_command` is a `cat` of that file (`scripts/e2e/lib/github-apps.sh`, `write_github_apps`);
-  and the live proofs that drive the real Apps (this one, stage3-4b13b-acceptance.sh, claude-backend-tmux.sh, parked-decision-devbox.sh, stage4b-sandbox-tree.sh, and stage4a-sandbox-runtime.sh for the implement App alone) prove each App's token is its id's App (GraphQL's viewer, then GET /apps/<slug>), with the write permission its role needs, before the run's first write (scripts/e2e/README.md, "lib/github-apps.sh")
+  and the live proofs that drive the real Apps (this one, stage3-4b13b-acceptance.sh, parked-decision-devbox.sh, stage4b-sandbox-tree.sh, and stage4a-sandbox-runtime.sh for the implement App alone) prove each App's token is its id's App (GraphQL's viewer, then GET /apps/<slug>), with the write permission its role needs, before the run's first write (scripts/e2e/README.md, "lib/github-apps.sh")
 
-- `LEGION_E2E_MODEL_ROUTE=gateway LEGION_E2E_CLAUDE_KEY_FILE=<file holding an Anthropic API key> LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic LEGION_E2E_REVIEW_APP_KEY_COMMAND='<command that prints the review App PEM private key>' bash scripts/e2e/claude-backend-tmux.sh`
+- `LEGION_TEST_CLAUDE=<claude> LEGION_TEST_PG_DSN=<loopback postgres://…> go test -count=1 -v -run '^TestTheClaudeCodeImplementerRegistersCompletesThroughItsStopHookAndResumesLive$' ./internal/daemon/` (in packages/daemon)
 LEGION_E2E_MODEL_ROUTE=gateway LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic LEGION_E2E_REVIEW_APP_KEY_COMMAND='<command that prints the review App PEM private key>' bash scripts/e2e/parked-decision-devbox.sh   # the devbox proof that a person's decision on a parked tree reaches the controller, and that its next start walks the parked roots (scripts/e2e/README.md)
 
-  The Claude Code backend's devbox-only live proof:
-  an implementer `worker_backends` puts on claude registers its transcript, completes its phase through the `legion` MCP tool's handoff_complete with its handoff recorded on the Dispatch issue, and resumes the same Claude Code session after its pane is killed;
-  LEGION_E2E_MODEL_ROUTE=key-file `LEGION_E2E_ANTHROPIC_KEY_FILE=<0600 file>` instead, for a devbox with no Hawk gateway, where that one key file serves the Claude Code pane too;
-  with `LEGION_E2E_MODEL_BASE_URL=<gateway base URL>` as well, the key file holds a gateway key and both the Claude Code pane and (under key-file) the Oh My Pi agents call that Anthropic-compatible gateway, so no Anthropic key is needed (scripts/e2e/README.md)
+  The Claude Code backend's live proof on tmux, which the `tmux-scripts` part of `ci.yaml`'s `agent-harness` job runs:
+  an implementer `worker_backends` puts on claude registers its transcript, is reminded by Claude Code's own `Stop` hook when a turn ends with its phase open, completes its phase through the `legion` MCP tool's handoff_complete with its handoff recorded on the Dispatch issue, and resumes the same Claude Code session after its pane is killed;
+  the architect and the planner run on the fake runtime, the model is a Messages stand-in, and GitHub is a stand-in with a local bare remote (`packages/daemon/internal/daemon/claude_backend_live_test.go`)
 
 - `LEGION_E2E_RUNTIME_CONTEXT=<restricted context> LEGION_E2E_IMAGE=<worker image@sha256> LEGION_E2E_STORAGE_CLASS=<StorageClass> LEGION_E2E_POD_SERVICE_ACCOUNT=<ServiceAccount the pods run as> LEGION_E2E_CLAUDE_KEY_FILE=<file holding an Anthropic API key> LEGION_E2E_CLAUDE_MODEL=<model id> LEGION_E2E_POD_REACHABILITY=aws-private-ip LEGION_E2E_MODEL_ROUTE=gateway LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic LEGION_E2E_MODEL_GATEWAY_AUDIENCE=<gateway audience> LEGION_E2E_SESSION_DB_PORT=<port> LEGION_E2E_REVIEW_APP_KEY_COMMAND='<command that prints the review App PEM private key>' bash scripts/e2e/claude-backend-sandbox.sh`
 
@@ -718,7 +713,7 @@ Each item below names a task and where its code is, then notes on it.
   A phase worker's role on `claude` runs `legion claude-bridge -- claude -p …` under either runtime, with claude-envoy's `dist/envoy-channel.js` (the `legion` MCP tool, its claim, Envoy, the phase reminder's hook endpoint) as its one MCP server and claude-envoy plus its generated `legion/` plugin as its plugins.
   Under tmux boot resolves `LEGION_CLAUDE_PATH`, `LEGION_BUN_PATH` and `LEGION_CLAUDE_PLUGIN_DIR`;
   a pod takes bun and the plugin from the worker image, which carries Claude Code's pin and no Claude Code (its licence grants no redistribution), and its start script installs the pinned release at every launch and verifies it, failing the launch when the fetch fails or does not verify (`claudeCodeBlock`, `packages/daemon/internal/runtime/sandbox/plugins.go`).
-  `docs/deployment.md` "How a harness plugs in", `docs/kubernetes.md`; live proofs `scripts/e2e/claude-backend-tmux.sh` and `claude-backend-sandbox.sh`
+  `docs/deployment.md` "How a harness plugs in", `docs/kubernetes.md`; live proofs `packages/daemon/internal/daemon/claude_backend_live_test.go` and `scripts/e2e/claude-backend-sandbox.sh`
 
 - Shared plugin interface — `packages/pi-shared/`
 

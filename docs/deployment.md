@@ -414,10 +414,11 @@ way an Oh My Pi pane's does: `provider_keys` (for example
 `ANTHROPIC_API_KEY: <secretsd key>`) is exported by the shim into `legion claude-bridge`'s
 environment, which Claude Code inherits, and into every Oh My Pi pane's as well. A key meant for the
 Claude Code roles alone goes in the claim's directory instead, before the claim first launches: a
-`settings.json` there whose `apiKeyHelper` prints the key, as `scripts/e2e/claude-backend-tmux.sh`,
-the live proof, writes it. In a pod the route is the operator's the same way: `provider_keys`
-carries `ANTHROPIC_API_KEY`, and `ANTHROPIC_BASE_URL` and `ANTHROPIC_MODEL`, which are not
-credentials, go in `runtime.kubernetes.pod.env` (`docs/kubernetes.md`, "Configuration").
+`settings.json` there whose `apiKeyHelper` prints the key, as the live proof on tmux
+(`packages/daemon/internal/daemon/claude_backend_live_test.go`) writes it. In a pod the route is
+the operator's the same way: `provider_keys` carries `ANTHROPIC_API_KEY`, and `ANTHROPIC_BASE_URL`
+and `ANTHROPIC_MODEL`, which are not credentials, go in `runtime.kubernetes.pod.env`
+(`docs/kubernetes.md`, "Configuration").
 
 ### How a harness plugs in
 

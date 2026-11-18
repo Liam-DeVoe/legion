@@ -1,11 +1,11 @@
 # shellcheck shell=bash disable=SC2154,SC2034 # the variables below are the caller's (listed below)
 # What a Claude Code backend proof reads in its implementer's transcript: Claude Code's own session
-# JSONL, one entry per line, that the implementer's generation writes as it works. Shared by
-# claude-backend-tmux.sh, whose transcript is a file on the devbox, and claude-backend-sandbox.sh,
-# whose transcript is a file on the implementer pod's own disk. Each judges the same entries; only
-# the way it reads the file's bytes is its own.
+# JSONL, one entry per line, that the implementer's generation writes as it works. Read by
+# claude-backend-sandbox.sh, whose transcript is a file on the implementer pod's own disk, through
+# a transcript_since of its own; the backend's tmux proof, a Go test
+# (packages/daemon/internal/daemon/claude_backend_live_test.go), reads the same entries itself.
 #
-# Sourced after lib/workflow.sh (both callers source both), whose role_handoff handoff_recorded
+# Sourced after lib/workflow.sh (its caller sources both), whose role_handoff handoff_recorded
 # reads. The caller sets (beside note):
 #   issue         the proof's issue, whose implementer handoff handoff_recorded looks for
 #   stall_offset  the transcript's size in bytes when the proof told the implementer to stall,

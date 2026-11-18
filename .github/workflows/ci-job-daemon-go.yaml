@@ -252,7 +252,7 @@ jobs:
       # slowest run.
       #
       # The -skip is the tests of internal/daemon that jobs of their own run, in one pattern
-      # ci_job_reads.py builds from the three lists. The plugin-pack job's three, which
+      # ci_job_reads.py builds from the four lists. The plugin-pack job's three, which
       # ci_job_reads.py's PLUGIN_PACK_TESTS names, a fourth test of that package loading a plugin
       # on the real Oh My Pi and staying in this step (TestThePromptReferenceProbeOnTheRealOhMyPi):
       # they run in .github/workflows/ci-job-plugin-pack.yaml, so that their reads — bun.lock and
@@ -261,15 +261,17 @@ jobs:
       # .github/workflows/ci-job-daemon-live.yaml, so that the bun install and the `dispatch`
       # CLI two of them run are that job's inputs, and none of them holds this step's package
       # time for the minutes each takes. And the agent-harness job's five live proofs that drive
-      # real Oh My Pi panes, which AGENT_HARNESS_TESTS names: they run in
+      # real Oh My Pi panes, which AGENT_HARNESS_TESTS names, and its Claude Code backend proof on
+      # tmux, which AGENT_HARNESS_TMUX_TESTS names: they run in
       # .github/workflows/ci-job-agent-harness.yaml, so that the plugin packs they make, and
-      # bun.lock and skills/ with them, are that job's inputs, and the minutes each takes are
-      # spent in the merge queue. A test run twice is a test whose second run tells nobody
-      # anything. The names are written in .github/scripts/ci_job_reads.py, which builds this
-      # step's text and the other jobs' from the three lists and holds each step to it, so the
-      # skip and the runs cannot come to name different tests.
+      # bun.lock and skills/ with them, and the tmux and Claude Code the second needs, are that
+      # job's inputs, and the minutes each takes are spent in the merge queue. A test run twice is
+      # a test whose second run tells nobody anything. The names are written in
+      # .github/scripts/ci_job_reads.py, which builds this step's text and the other jobs' from
+      # the four lists and holds each step to it, so the skip and the runs cannot come to name
+      # different tests.
       - name: Test the concurrent packages under the race detector
-        run: go test -v -count=1 -race -timeout 30m -skip '^(TestABehindCompletionIsDecidedByItsHeadAndTheMoveThatRaisedTheEntryLive|TestABusyAgentIsSentItsTaskOnceAndARelaunchSaysWhatItEndedLive|TestAConflictStartsTheNextRoleAtOnceAndTakesNoTurnOverLive|TestAPhaseEntryConvergesOnARunningDaemonLive|TestAProviderErrorKeepsTheTaskAndTheOperatorRetriesWhatItLeavesLive|TestAQueuedRootUnderALiveTreeJoinsItLive|TestEveryChildThatStartsRunsUnderItsOwnArchitectLive|TestEveryRoleIsLaunchedWithTheRulesItsOwnPromptCarriesLive|TestHandoffRecordsLive|TestLateCompletionsThroughTheRealLegionToolLive|TestReviewRangeLive|TestTheAgentModelCheckOnTheRealOhMyPi|TestTheImageProbeResolvesTheAgentsTheDaemonsPromptsName|TestTheMergeWaitSaysWhatAReviewRoundWaitsOnFromGitHubLive|TestTheOperatorAndTheControllerCompactAClaimsSessionAndStartItFreshLive|TestTheRealPluginsOnTheRealOhMyPi)$' ./internal/daemon/ ./internal/sessionproxy/ ./internal/launcher/
+        run: go test -v -count=1 -race -timeout 30m -skip '^(TestABehindCompletionIsDecidedByItsHeadAndTheMoveThatRaisedTheEntryLive|TestABusyAgentIsSentItsTaskOnceAndARelaunchSaysWhatItEndedLive|TestAConflictStartsTheNextRoleAtOnceAndTakesNoTurnOverLive|TestAPhaseEntryConvergesOnARunningDaemonLive|TestAProviderErrorKeepsTheTaskAndTheOperatorRetriesWhatItLeavesLive|TestAQueuedRootUnderALiveTreeJoinsItLive|TestEveryChildThatStartsRunsUnderItsOwnArchitectLive|TestEveryRoleIsLaunchedWithTheRulesItsOwnPromptCarriesLive|TestHandoffRecordsLive|TestLateCompletionsThroughTheRealLegionToolLive|TestReviewRangeLive|TestTheAgentModelCheckOnTheRealOhMyPi|TestTheClaudeCodeImplementerRegistersCompletesThroughItsStopHookAndResumesLive|TestTheImageProbeResolvesTheAgentsTheDaemonsPromptsName|TestTheMergeWaitSaysWhatAReviewRoundWaitsOnFromGitHubLive|TestTheOperatorAndTheControllerCompactAClaimsSessionAndStartItFreshLive|TestTheRealPluginsOnTheRealOhMyPi)$' ./internal/daemon/ ./internal/sessionproxy/ ./internal/launcher/
         working-directory: packages/daemon
 
       # What the race step's packages hold that the race build cannot run, run plain by name, one

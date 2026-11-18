@@ -77,6 +77,12 @@ BUNDLES = [
     ("daemon_live", "scripts/e2e/completion-head.ts",
      at("daemon-live", "Run the whole-daemon live tests (internal/daemon/handoff_records_live_test.go:763 runs "
                        "`bun scripts/e2e/completion-head.ts`, the real findHandoffReport)")),
+    # The agent-harness job's tmux-scripts part runs the model stand-in under bun from two of its
+    # scripts, stage2-tmux-supervision.sh and clean-session-stop-tmux.sh.
+    ("agent_harness", "scripts/e2e/lib/messages-standin.ts",
+     "ci-job-agent-harness.yaml's tmux-scripts job: Stage 2's supervision on tmux and The daemon's clean stop of a "
+     "dead role's session (scripts/e2e/stage2-tmux-supervision.sh:324 and clean-session-stop-tmux.sh:660 run "
+     "`bun scripts/e2e/lib/messages-standin.ts`, the model stand-in)"),
     # The postgres-rows job of dispatch-browser.yaml runs three files of packages/dispatch's
     # e2e/__tests__ with `bun test`. dispatch_ui's tsc program compiles them and its job runs none
     # of them, so what they load is this filter's to hold, and each file is built as an entry.
