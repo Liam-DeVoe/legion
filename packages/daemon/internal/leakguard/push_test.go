@@ -385,6 +385,50 @@ func TestAHeaderWhoseNameNamesAHostIsRead(t *testing.T) {
 	}
 }
 
+// A commit's message is published as the object holds it, whatever git show makes of it: under an
+// encoding header that names UTF-16LE, git show decodes an ASCII message into other characters, so
+// the host it names is in no line git show prints, while the object, which the destination keeps
+// and serves to every clone, holds it as written. So the push reads the message the object holds,
+// and refuses one that names a host, whatever label its report gives the line. git accepts such a
+// commit, and so does a destination that checks what it receives (receive.fsckObjects). The report
+// never holds the text it refused (refusal).
+func TestAMessageIsReadAsTheCommitObjectHoldsIt(t *testing.T) {
+	home, root := t.TempDir(), t.TempDir()
+	repo := filepath.Join(root, "repo")
+	fixture := fixturegit.Isolated(t, home)
+	fixture.Run(root, fixturegit.InitWorkTree(repo, "main")...)
+	base := commitFiles(t, fixture, repo, map[string]string{"README.md": "one\n"}, "the commit the destination holds")
+	destination := destinationAt(t, fixture, repo, base+":refs/heads/main")
+	tree := fixture.Run(repo, "git", "rev-parse", base+"^{tree}")
+	const identity = "builder <builder@example.invalid> 1700000000 +0000"
+	message := "the runner answers at " + theHost + "\n"
+	if len(message)%2 == 1 {
+		// An even length, which UTF-16LE decodes whole, so git show prints no byte of it as
+		// written.
+		message = "a " + message[1:]
+	}
+	pushed := fixture.Fed(repo, "tree "+tree+"\nparent "+base+"\nauthor "+identity+"\ncommitter "+identity+"\nencoding UTF-16LE\n\n"+message, "git", "hash-object", "-t", "commit", "-w", "--stdin")
+	if shown := fixture.Run(repo, "git", "show", "--no-patch", "--format=%B", pushed); strings.Contains(shown, theHost) {
+		t.Fatalf("git show printed the message as written, so this case reads nothing git show does not: %q", shown)
+	}
+	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
+	err := guard.Push(bound(t), PushRequest{
+		Dir:     repo,
+		Remote:  "origin",
+		URL:     destination,
+		Updates: []Update{{LocalRef: "refs/heads/pushed", LocalSHA: pushed, RemoteRef: "refs/heads/pushed", RemoteSHA: noSHA}},
+	})
+	refused := refusal(t, err)
+	if len(refused.Lines) == 0 {
+		t.Fatalf("the refusal names no line: %v", err)
+	}
+	for _, line := range refused.Lines {
+		if !strings.HasSuffix(line, ": "+theClass) {
+			t.Errorf("the report line %q does not name the message's class, %q", line, theClass)
+		}
+	}
+}
+
 // A merge of a signed tag holds that whole tag object in its mergetag header, the tag's name, its
 // tagger, its message and its signature, which the merge publishes whether or not the tag itself
 // is pushed, so a push of the merge reads that header as a record labelled by the merge, as its
