@@ -8,17 +8,37 @@ import (
 	"strings"
 	"time"
 
+	"github.com/spf13/cobra"
+
 	"github.com/sjawhar/legion/daemon/internal/api"
 )
 
-// projectCommands is the operator's hand on the daemon's project as a whole: one subcommand,
+// newProjectCommand is the operator's hand on the daemon's project as a whole: one command,
 // release, the project release of dispatch://INFRA-3583 (internal/api/project_release.go).
-var projectCommands = map[string]command{
-	"release": runProjectRelease,
+func newProjectCommand(stdout, stderr io.Writer) *cobra.Command {
+	return group(&cobra.Command{Use: "project", Short: "the operator's hand on the daemon's project: release every pod of it, asking each role with unpushed work to push first, for a move to another cluster"},
+		newProjectReleaseCommand(stdout, stderr),
+	)
 }
 
-func runProject(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	return runSubcommand(ctx, "project", projectCommands, args, stdout, stderr)
+// newProjectReleaseCommand is `legion project release`: the three flags every operator command
+// takes, and the release's own --bound, --wait, --dry-run and --json. Its --wait is its own rather
+// than withWait's, since the call it bounds waits out the release's bound (waitUntil).
+func newProjectReleaseCommand(stdout, stderr io.Writer) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "release",
+		Short: "release every pod of the project, asking each role with unpushed work to push first, for a move to another cluster",
+		Args:  noArguments,
+	}
+	c := newOperatorCall(cmd, "file holding the operator bearer the daemon's operator_token_file names (required)", stdout, stderr)
+	bound := c.flags.Duration("bound", 0, "how long the release waits for the roles it asks before it deletes every pod still waiting (default the daemon's pod_update_grace_minutes)")
+	wait := c.flags.Duration("wait", 0, "how long the whole command may take before it ends, saying the release goes on (default the release's bound plus 30m)")
+	dryRun := c.flags.Bool("dry-run", false, "print what a release would do now: read each pod's workspace, and ask, stop and save nothing")
+	asJSON := c.flags.Bool("json", false, "print the release as the daemon served it, one JSON object")
+	cmd.RunE = runs(func(ctx context.Context, _ []string) int {
+		return runProjectRelease(ctx, c, *bound, *wait, *dryRun, *asJSON)
+	})
+	return cmd
 }
 
 // projectReleasePoll is how often `legion project release` reads the release while it runs. A
@@ -47,20 +67,12 @@ const releaseGoesOn = "the release goes on in the daemon. Run this command again
 // answer. It exits 1 when the release names a pod it left or stopped short, when the daemon
 // refuses, and when --wait ends first, saying that the release goes on in the daemon. A pod
 // deleted with work lost changes no exit: the line names that workspace. A usage error is 2.
-func runProjectRelease(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	c := newOperatorCall("project release", "usage: legion project release --operator-token-file <file> [--bound <duration>] [--wait <duration>] [--dry-run] [--json]",
-		"file holding the operator bearer the daemon's operator_token_file names (required)", stdout, stderr)
-	bound := c.flags.Duration("bound", 0, "how long the release waits for the roles it asks before it deletes every pod still waiting (default the daemon's pod_update_grace_minutes)")
-	wait := c.flags.Duration("wait", 0, "how long the whole command may take before it ends, saying the release goes on (default the release's bound plus 30m)")
-	dryRun := c.flags.Bool("dry-run", false, "print what a release would do now: read each pod's workspace, and ask, stop and save nothing")
-	asJSON := c.flags.Bool("json", false, "print the release as the daemon served it, one JSON object")
-	if code, ok := c.parse(args, "operator-token-file"); !ok {
+func runProjectRelease(ctx context.Context, c *operatorCall, bound, wait time.Duration, dryRun, asJSON bool) int {
+	if code, ok := c.check("operator-token-file"); !ok {
 		return code
 	}
-	if *bound < 0 || *wait < 0 {
-		fmt.Fprintf(stderr, "%s: --bound and --wait must not be negative\n", c.name)
-		c.flags.Usage()
-		return 2
+	if bound < 0 || wait < 0 {
+		return refuse(c.cmd, "--bound and --wait must not be negative")
 	}
 	op, ok := c.connect()
 	if !ok {
@@ -70,20 +82,20 @@ func runProjectRelease(ctx context.Context, args []string, stdout, stderr io.Wri
 	// The call is bounded from its start. Until the daemon names the release's bound, the bound
 	// the command was given stands in for it, and a bound the daemon chooses moves the end once
 	// the daemon has named it (waitUntil).
-	c.until = waitUntil(began, *wait, *bound)
-	request := api.ProjectReleaseRequest{DryRun: *dryRun}
-	if *bound > 0 {
+	c.until = waitUntil(began, wait, bound)
+	request := api.ProjectReleaseRequest{DryRun: dryRun}
+	if bound > 0 {
 		request.Bound = bound.String()
 	}
 	release, answer, cut, ok := releaseRequest(ctx, c, op, http.MethodPost, request)
 	// The daemon has answered nothing yet, so which sentence ends the wait follows --dry-run.
 	if cut {
 		ended := releaseGoesOn
-		if *dryRun {
+		if dryRun {
 			ended = "a dry run records and starts nothing"
 		}
-		fmt.Fprintf(stderr, "%s: %s %s%s was not answered before the command's wait of %s ended; %s\n",
-			c.name, http.MethodPost, op.base, api.ProjectReleaseRoute, c.until.Sub(began).Round(time.Millisecond), ended)
+		fmt.Fprintf(c.stderr, "%s: %s %s%s was not answered before the command's wait of %s ended; %s\n",
+			c.name(), http.MethodPost, op.base, api.ProjectReleaseRoute, c.until.Sub(began).Round(time.Millisecond), ended)
 		return 1
 	}
 	if !ok {
@@ -93,22 +105,22 @@ func runProjectRelease(ctx context.Context, args []string, stdout, stderr io.Wri
 	// that already ran a release in this process answers a dry run with that release, which may
 	// still run or have left a pod.
 	if release.DryRun {
-		return printProjectRelease(c, release, answer, *asJSON)
+		return printProjectRelease(c, release, answer, asJSON)
 	}
-	if *dryRun {
-		fmt.Fprintf(stderr, "%s: the daemon already ran release %d in this process, so it answered the dry run with that release; it is read as the release it is\n",
-			c.name, release.ID)
+	if dryRun {
+		fmt.Fprintf(c.stderr, "%s: the daemon already ran release %d in this process, so it answered the dry run with that release; it is read as the release it is\n",
+			c.name(), release.ID)
 	}
-	if *wait == 0 {
+	if wait == 0 {
 		c.until = waitUntil(began, 0, release.BoundAt.Sub(release.StartedAt))
 	}
 	// Once the daemon has answered with a release, the end of the wait prints that release as the
 	// command last read it, and says it goes on, whether the wait ends between two reads or
 	// inside one: a read the wait cuts loses nothing the command already holds.
 	waitEndedFirst := func() int {
-		printProjectRelease(c, release, answer, *asJSON)
-		fmt.Fprintf(stderr, "%s: the command's wait of %s ended before release %d finished; %s\n",
-			c.name, c.until.Sub(began).Round(time.Millisecond), release.ID, releaseGoesOn)
+		printProjectRelease(c, release, answer, asJSON)
+		fmt.Fprintf(c.stderr, "%s: the command's wait of %s ended before release %d finished; %s\n",
+			c.name(), c.until.Sub(began).Round(time.Millisecond), release.ID, releaseGoesOn)
 		return 1
 	}
 	for release.FinishedAt == nil && release.EndedAt == nil {
@@ -133,7 +145,7 @@ func runProjectRelease(ctx context.Context, args []string, stdout, stderr io.Wri
 		}
 		release, answer = read, readAnswer
 	}
-	return printProjectRelease(c, release, answer, *asJSON)
+	return printProjectRelease(c, release, answer, asJSON)
 }
 
 // releaseRequest makes one request of the release's route under the command's bound
@@ -147,7 +159,7 @@ func releaseRequest(ctx context.Context, c *operatorCall, op operator, method st
 		return api.ProjectReleaseResponse{}, nil, cut, false
 	}
 	if err := decodeAnswer(answer, &release); err != nil {
-		fmt.Fprintf(c.stderr, "%s: read the answer %s%s served: %v\n", c.name, op.base, api.ProjectReleaseRoute, err)
+		fmt.Fprintf(c.stderr, "%s: read the answer %s%s served: %v\n", c.name(), op.base, api.ProjectReleaseRoute, err)
 		return api.ProjectReleaseResponse{}, nil, false, false
 	}
 	return release, answer, false, true
@@ -185,12 +197,12 @@ func printProjectRelease(c *operatorCall, release api.ProjectReleaseResponse, an
 	}
 	code := 0
 	if release.Result.Failure != "" {
-		fmt.Fprintf(c.stderr, "%s: release %d stopped short: %s\n", c.name, release.ID, release.Result.Failure)
+		fmt.Fprintf(c.stderr, "%s: release %d stopped short: %s\n", c.name(), release.ID, release.Result.Failure)
 		code = 1
 	}
 	if release.FinishedAt == nil {
 		fmt.Fprintf(c.stderr, "%s: release %d was ended by a %s before it finished; read the Sandboxes left in the cluster before the project moves\n",
-			c.name, release.ID, orNone(string(release.EndedBy)))
+			c.name(), release.ID, orNone(string(release.EndedBy)))
 		code = 1
 	}
 	var left []string
@@ -201,7 +213,7 @@ func printProjectRelease(c *operatorCall, release api.ProjectReleaseResponse, an
 	}
 	if len(left) > 0 {
 		fmt.Fprintf(c.stderr, "%s: release %d left %d Sandbox(es) of the project: %s; move nothing while one stands (docs/kubernetes.md, \"Releasing a project's pods\")\n",
-			c.name, release.ID, len(left), strings.Join(left, ", "))
+			c.name(), release.ID, len(left), strings.Join(left, ", "))
 		code = 1
 	}
 	return code
