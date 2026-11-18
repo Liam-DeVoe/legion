@@ -2500,6 +2500,62 @@ func TestRoleClaimsReadsTheClaimsAloneOfTheTokensItIsGiven(t *testing.T) {
 	})
 }
 
+// RoleClaims reads whether a text an accepted take was answered with stands, not the text: its
+// readers ask only that (supervise's Delivery.StillWorked), and the text stays on the row through
+// the take's turn, so a read of the whole of it would carry every running task's text on every
+// admission pass. The task's TakenText is that text's first character, and StillWorked answers
+// from the read as it answers from the record: a take awaiting its turn still works the task on
+// an idle claim, and a take whose turn started does not.
+//
+// The negative control is the read of the whole column (the taken_text select without left): the
+// task then reads back the whole text.
+func TestRoleClaimsReadsWhetherATakenTextStandsAndNotTheText(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	const text = "Your last turn was interrupted.\n\nTest it. Issue: LEGION-208. Phase: testing."
+	for _, tc := range []struct {
+		name        string
+		turnStarted bool
+	}{
+		{name: "a take awaiting its turn"},
+		{name: "a take whose turn started", turnStarted: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			token := claim.Token("legion-legion-legion-208-tester")
+			if tc.turnStarted {
+				token = "legion-legion-legion-208-implementer"
+			}
+			held := supervise.Claim{Token: token, Project: "legion", Tree: "LEGION-208", Issue: "LEGION-208",
+				Role: claim.RoleTester, Generation: 1, State: supervise.StateIdle, TaskWritten: 1, TaskTaken: 1}
+			task := supervise.Delivery{ID: "outbox:17", Task: "Test it.", Generation: 1, Phase: phase.Testing,
+				Number: 1, QueuedAt: time.Now(), ConfirmedAt: time.Now(), TakenText: text, TurnStarted: tc.turnStarted}
+			if err := st.PutClaimAndDelivery(ctx, held, task); err != nil {
+				t.Fatalf("record the claim and the task its take holds: %v", err)
+			}
+			inTx(t, st, func(tx pgx.Tx) {
+				claims, err := records.RoleClaims(ctx, tx, []claim.Token{token})
+				if err != nil {
+					t.Fatalf("read the claim = %v", err)
+				}
+				read := claims[token]
+				if read == nil || read.Pending == nil {
+					t.Fatalf("the claim reads %+v, want it holding the task the fixture wrote", read)
+				}
+				if read.Pending.TakenText != text[:1] {
+					t.Fatalf("the task's taken text reads %q, want only its first character, %q: the read says whether a text stands", read.Pending.TakenText, text[:1])
+				}
+				if got, want := read.Pending.StillWorked(1, phase.Testing, read.State), task.StillWorked(1, phase.Testing, held.State); got != want {
+					t.Fatalf("StillWorked over the read = %v, want %v, as over the record", got, want)
+				}
+				if got := read.Pending.StillWorked(1, phase.Testing, read.State); got == tc.turnStarted {
+					t.Fatalf("StillWorked over the read = %v, want %v for %s on an idle claim", got, !tc.turnStarted, tc.name)
+				}
+			})
+		})
+	}
+}
+
 // A root keeps one relayed decision per Dispatch reference, the newest by its time: a later one
 // replaces it (an approval after a changes request of the same spec), an older one arriving late
 // does not. A read names them all, newest first and ties by reference, and leaves them; the forget

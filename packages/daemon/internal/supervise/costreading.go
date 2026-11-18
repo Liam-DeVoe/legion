@@ -28,15 +28,14 @@ import (
 // claim than the one asked for, and every line at or after the window's end.
 //
 // The page's command pipes the current container's whole log, from its start, and not the window
-// alone (plan review round 33 of dispatch://INFRA-2811): a number written and seen before the
-// window that no take reaches inside it writes no line in the window, so a reading cut at the
-// window's start would never see the stranded number the never-taken figure exists to catch. So
-// the lines before From are read for one thing only, where each claim and each of its numbers
-// stands at From — its clock, its turn, its latest write and seen report, its accepted take — and
-// From and To bound everything counted: every figure counts what happened in the window alone.
-// Within one container that state is whole, since the container's boot writes every owed value
-// again, a restored seen report is written again at its first expiry (decision 20), and a value
-// nobody saw is written again once per first bound.
+// alone: a number written and seen before the window that no take reaches inside it writes no line
+// in the window, so a reading cut at the window's start would never see the stranded number the
+// never-taken figure exists to catch. So the lines before From are read for one thing only, where
+// each claim and each of its numbers stands at From — its clock, its turn, its latest write and
+// seen report, its accepted take — and From and To bound everything counted: every figure counts
+// what happened in the window alone. Within one container that state is whole, since a restored
+// seen report is written again at its first expiry (decision 20), and a value nobody saw is written
+// again once per first bound.
 //
 // What is counted, and from which line:
 //
@@ -146,9 +145,12 @@ import (
 // selector, a window the node no longer keeps — so each verdict reads "no evidence" rather than a
 // pass (TaskCost.NoEvidence), and `legion task-cost` exits non-zero for it.
 //
-// Every figure is a lower bound but the numbers no take reached, which can also count too many
-// (above): the log reaches back only as far as the node kept the current container's log, and a
-// take, a write or a turn that fell before its first line is not seen.
+// Every figure is a lower bound but two, which can also count too many: the numbers no take
+// reached (above), and the turns each number took, since a run the daemon gave a take inside the
+// window whose put-back line falls at or after To stays counted as that number's turn — no line
+// from To on is read, so the put-back that would make it a turn of no cause is never seen. The
+// log reaches back only as far as the node kept the current container's log, and a take, a write
+// or a turn that fell before its first line is not seen.
 
 // TaskCostArgs is what `legion task-cost` is asked: the window of the daemon's log to count, From
 // included and To not (the lines before From are read for where each claim stands at From alone),

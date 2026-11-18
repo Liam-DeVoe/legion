@@ -182,11 +182,13 @@ outcome to `POST /legion/v1/claims/turn-outcome`, a refused one with the provide
 it, and the daemon's provider-error wait (dispatch://INFRA-956) keeps the task under its number
 and writes its value again once the wait is over, 30 s doubling to at most 10 minutes, which the
 bridge takes as it takes any value. Such a turn counts toward no launch failure, and the daemon
-tells the project's controller after six of them in a row; only a refusal with no provider error
-counts toward the trailing run that fails a claim at `launch_failure_limit`, and the bridge
-reports no refusal without one. A claim the daemon fails, on a provider error that holds the issue
-(an HTTP 4xx other than 401, 403, 408 and 429) or on any other budget, has every reminder dropped
-by the runner's record check, since a failed claim is replaced by a retry in a session of its
+tells the project's controller after six of them in a row. Every other refused turn counts toward
+the trailing run that fails a claim at `launch_failure_limit`, whatever error it carries: one the
+bridge reports naming no task, or a number no take of the claim holds — a reminder's, a card's, a
+background result's — reaches no wait, and is counted there. A claim the daemon fails, on a
+provider error that holds the issue (an HTTP 4xx other than 401, 403, 408 and 429) or on any
+other budget, has every reminder dropped by the runner's record check, since a failed claim is
+replaced by a retry in a session of its
 own. Claude Code ignores whatever this hook returns, which now costs nothing.
 `PostToolUse` and `PostToolUseFailure` are the worker
 working, which puts the count back to zero; a non-empty `${agent_id}` is a subagent's

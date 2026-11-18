@@ -453,24 +453,33 @@ class DaemonAnswerTimeout extends Error {
 
 /**
  * Whether `error` is an attempt the daemon gave no answer to (dispatch://INFRA-2811, the plan's
- * departure 7): a refused, reset or closed connection, a DNS failure, no answer within
- * `DAEMON_ANSWER_TIMEOUT_MS`, or a 502, 503 or 504 that names no Legion error code, which a proxy
- * in front of the daemon answers. Every refusal the daemon itself gives names a code or is a 4xx,
- * and is an answer.
+ * departure 7): a refused, reset or closed connection, an unreachable host or network, a connect
+ * or read timeout, a DNS failure, no answer within `DAEMON_ANSWER_TIMEOUT_MS`, or a 502, 503 or
+ * 504 that names no Legion error code, which a proxy in front of the daemon answers. Every
+ * refusal the daemon itself gives names a code or is a 4xx, and is an answer.
  */
-export function daemonGaveNoAnswer(error: unknown): boolean {
+function daemonGaveNoAnswer(error: unknown): boolean {
   if (error instanceof DaemonAnswerTimeout || daemonUnreachable(error) !== undefined) return true;
   if (error instanceof LegionDaemonApiError) {
     return error.status === 504 && error.code === undefined;
   }
   if (!(error instanceof Error)) return false;
+  // Bun's fetch names a read that timed out by the error's name alone (a DOMException).
+  if (error.name === "TimeoutError") return true;
   const code = "code" in error && typeof error.code === "string" ? error.code : undefined;
-  return code === "ENOTFOUND" || code === "EAI_AGAIN";
+  return (
+    code === "ENOTFOUND" ||
+    code === "EAI_AGAIN" ||
+    code === "EHOSTUNREACH" ||
+    code === "ENETUNREACH" ||
+    code === "ETIMEDOUT" ||
+    code === "ConnectionTimeout"
+  );
 }
 
 /** Resolves `true` once `ms` have passed, or `false` as soon as `signal` aborts: a timer that
  * keeps no process alive. */
-export function timerWait(ms: number, signal: AbortSignal): Promise<boolean> {
+function timerWait(ms: number, signal: AbortSignal): Promise<boolean> {
   const { promise, resolve } = Promise.withResolvers<boolean>();
   if (signal.aborted) {
     resolve(false);
@@ -525,13 +534,11 @@ export async function sendUntilAnswered<T>(
   for (;;) {
     stop.throwIfAborted();
     const attempt = new AbortController();
-    const forward = () => attempt.abort(stop.reason);
-    stop.addEventListener("abort", forward, { once: true });
     void wait(DAEMON_ANSWER_TIMEOUT_MS, attempt.signal).then((passed) => {
       if (passed) attempt.abort(new DaemonAnswerTimeout(what));
     });
     try {
-      return await call(attempt.signal);
+      return await call(AbortSignal.any([stop, attempt.signal]));
     } catch (error) {
       stop.throwIfAborted();
       if (!daemonGaveNoAnswer(error) && options.alsoSendAgain?.(error) !== true) throw error;
@@ -542,7 +549,6 @@ export async function sendUntilAnswered<T>(
         });
       }
     } finally {
-      stop.removeEventListener("abort", forward);
       attempt.abort();
     }
     await wait(delay, stop);

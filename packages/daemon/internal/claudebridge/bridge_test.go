@@ -281,8 +281,9 @@ func newRig(t *testing.T, args ...string) *rig {
 
 // newRigWithEnv is newRig with more of the pane's environment than a bare bridge needs: the
 // daemon, boot token file and generation a bridge reports its turns and takes its task with
-// (daemonlink.go); and calls, the timing and network of the bridge's seen reports and takes, the
-// zero value being production's.
+// (daemonlink.go); and calls, the timing and network of every request the bridge sends — its seen
+// reports, its takes and the re-sends of its turn-outcome reports — the zero value being
+// production's.
 func newRigWithEnv(t *testing.T, extra []string, calls daemonCalls, args ...string) *rig {
 	t.Helper()
 	dir := t.TempDir()
@@ -1321,6 +1322,17 @@ func resetConnection(t *testing.T) func(http.ResponseWriter, *http.Request) {
 	}
 }
 
+// timedOutConn is a connection whose far side stopped answering: what is written to it goes
+// nowhere, and every read meets the kernel's timeout of the connection (ETIMEDOUT), as net wraps
+// it. The embedded end of a pipe answers the rest of net.Conn.
+type timedOutConn struct{ net.Conn }
+
+func (timedOutConn) Write(b []byte) (int, error) { return len(b), nil }
+
+func (timedOutConn) Read([]byte) (int, error) {
+	return 0, &net.OpError{Op: "read", Net: "tcp", Err: os.NewSyscallError("read", syscall.ETIMEDOUT)}
+}
+
 // reportOf is the report of the bridge's turn sequence, which the stand-in answered 200, once it
 // has come, within 10 s. A report is read by its sequence, as the daemon keys it, and not by the
 // order reports arrive in: the bridge sends each from a goroutine of its own, on a connection of
@@ -1368,10 +1380,11 @@ func newTakingRig(t *testing.T, d *taskDaemon, url string, calls daemonCalls) *r
 }
 
 // handLine writes line to the inbox as claude-envoy writes its lines (src/legion-inbox.ts), down a
-// connection of its own, and is the inbox's answer to it.
+// connection of its own, closed once the inbox has answered, and is the inbox's answer to it.
 func (r *rig) handLine(line InboxDelivery) InboxAnswer {
 	r.t.Helper()
 	inbox := r.dialInbox()
+	defer func() { _ = inbox.conn.Close() }()
 	if err := json.NewEncoder(inbox.conn).Encode(line); err != nil {
 		r.t.Fatal(err)
 	}
@@ -1604,20 +1617,28 @@ func TestTheTurnOutcomeNamesTheTaskAndTheProviderError(t *testing.T) {
 }
 
 // A seen report and a take that get no answer from the daemon are sent again, the same request,
-// until it answers (dispatch://INFRA-2811): on a refused, a reset and a closed
-// connection, a name that does not resolve, an attempt with no answer within its bound, and a 502,
-// a 503 and a 504 that name no Legion error code. Once the daemon answers, the task is taken once
-// and runs once.
+// until it answers (dispatch://INFRA-2811): on a refused, a reset and a closed connection, an
+// unreachable host and network, a name that does not resolve, a dial and a read that timed out,
+// an attempt with no answer within its bound, and a 502, a 503 and a 504 that name no Legion
+// error code. Once the daemon answers, the task is taken once and runs once.
 func TestATakeAndASeenReportAreSentAgainOnEachListedFailure(t *testing.T) {
 	proxyStatus := func(status int) func(http.ResponseWriter, *http.Request) {
 		return func(w http.ResponseWriter, _ *http.Request) { http.Error(w, "upstream connect error", status) }
 	}
+	// failedDial is a dial that fails as net.Dial fails with err, before the request leaves.
+	failedDial := func(err error) func(context.Context, string, string) (net.Conn, error) {
+		return func(_ context.Context, network, _ string) (net.Conn, error) {
+			return nil, &net.OpError{Op: "dial", Net: network, Err: err}
+		}
+	}
 	for _, tc := range []struct {
 		name, why string
-		// fault fails each request at the daemon's side; nil for the two failures a request meets
-		// before it reaches the daemon, which refused and dns make.
-		fault        func(t *testing.T) func(http.ResponseWriter, *http.Request)
-		refused, dns bool
+		// fault fails each request at the daemon's side; nil for a failure a request meets
+		// before it reaches the daemon, which refused and dial make.
+		fault   func(t *testing.T) func(http.ResponseWriter, *http.Request)
+		refused bool
+		// dial is what a dial of the daemon meets until the failure lifts.
+		dial func(ctx context.Context, network, address string) (net.Conn, error)
 	}{
 		{name: "a refused connection", why: "the connection was refused", refused: true},
 		{name: "a reset connection", why: "the connection was reset", fault: resetConnection},
@@ -1628,7 +1649,26 @@ func TestATakeAndASeenReportAreSentAgainOnEachListedFailure(t *testing.T) {
 				}
 			}
 		}},
-		{name: "a name that does not resolve", why: "the daemon's name did not resolve", dns: true},
+		{name: "an unreachable host", why: "the daemon's host was unreachable",
+			dial: failedDial(os.NewSyscallError("connect", syscall.EHOSTUNREACH))},
+		{name: "an unreachable network", why: "the daemon's network was unreachable",
+			dial: failedDial(os.NewSyscallError("connect", syscall.ENETUNREACH))},
+		{name: "a name that does not resolve", why: "the daemon's name did not resolve",
+			dial: failedDial(&net.DNSError{Err: "no such host", Name: "legion-daemon", IsNotFound: true})},
+		// The dialer's own timeout, as net.Dialer makes it: a deadline already past.
+		{name: "a dial that timed out", why: "the connection timed out",
+			dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+				dialer := net.Dialer{Deadline: time.Now().Add(-time.Second)}
+				return dialer.DialContext(ctx, network, address)
+			}},
+		// The kernel's timeout of a connection whose far side stopped answering, met at the
+		// read of the answer; the request goes nowhere.
+		{name: "a read that timed out", why: "the connection timed out",
+			dial: func(context.Context, string, string) (net.Conn, error) {
+				local, far := net.Pipe()
+				_ = far.Close()
+				return timedOutConn{local}, nil
+			}},
 		{name: "no answer within the attempt's bound", why: "no answer within 200ms", fault: func(*testing.T) func(http.ResponseWriter, *http.Request) {
 			return func(_ http.ResponseWriter, r *http.Request) { <-r.Context().Done() }
 		}},
@@ -1657,15 +1697,15 @@ func TestATakeAndASeenReportAreSentAgainOnEachListedFailure(t *testing.T) {
 				_ = listener.Close()
 				url = "http://" + addr
 				lift = func() { d.startAt(addr) }
-			case tc.dns:
+			case tc.dial != nil:
 				var mu sync.Mutex
-				resolves := false
+				lifted := false
 				calls.dial = func(ctx context.Context, network, address string) (net.Conn, error) {
 					mu.Lock()
-					up := resolves
+					up := lifted
 					mu.Unlock()
 					if !up {
-						return nil, &net.OpError{Op: "dial", Net: network, Err: &net.DNSError{Err: "no such host", Name: "legion-daemon", IsNotFound: true}}
+						return tc.dial(ctx, network, address)
 					}
 					var dialer net.Dialer
 					return dialer.DialContext(ctx, network, address)
@@ -1673,7 +1713,7 @@ func TestATakeAndASeenReportAreSentAgainOnEachListedFailure(t *testing.T) {
 				lift = func() {
 					mu.Lock()
 					defer mu.Unlock()
-					resolves = true
+					lifted = true
 				}
 			default:
 				d.setFault(tc.fault(t))
@@ -2067,10 +2107,11 @@ func TestAValueNamingAFinishedNumberIsReportedSeenAndNotTaken(t *testing.T) {
 
 // When a task's turn ends with no provider error its report finishes the task on the daemon, so
 // the bridge holds the number finished from that end: a newer revision of it, written before the
-// report lands — a daemon start writes every owed value again, and the daemon would answer its take
-// with the same text —, is reported seen and not taken. A 2xx keeps the mark, the record having
-// finished the task; a 4xx refusal applied nothing and the record still owes the task, so the mark
-// is cleared, and the newer revision is taken and runs once.
+// report lands — the daemon writes the value again from its record where the bucket lost it or
+// holds another write, and would answer its take with the same text —, is reported seen and not
+// taken. A 2xx keeps the mark, the record having finished the task; a 4xx refusal applied nothing
+// and the record still owes the task, so the mark is cleared, and the newer revision is taken and
+// runs once.
 func TestATaskFinishedAtItsTurnsEndIsNotTakenAgainUntilItsReportIsRefused(t *testing.T) {
 	for _, tc := range []struct {
 		name          string

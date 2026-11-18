@@ -220,11 +220,7 @@ func (h *harness) wantFinishedOnceAndRelaunchedEmpty() {
 	if p := h.claim().Pending; p != nil {
 		h.t.Fatalf("pending %+v after the relaunch, want the task its turn ran finished", p)
 	}
-	finished := h.records.of(finishedLine)
-	if len(finished) != 1 {
-		h.t.Fatalf("%q was logged %d times, want once", finishedLine, len(finished))
-	}
-	wantAttr(h.t, finished[0], "by", finishedByEndFrame)
+	h.wantFinishedOnce(finishedByEndFrame)
 	if back := h.records.of(takenBackLiteral); len(back) != 0 {
 		h.t.Fatalf("%q was logged %d times, want the task never taken back", takenBackLiteral, len(back))
 	}

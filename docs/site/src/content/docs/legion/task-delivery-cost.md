@@ -60,8 +60,11 @@ The command reads only the log that the node keeps for the daemon's container, `
 The node keeps a limited part of that log, and a busy daemon fills it quickly.
 The reading thus goes back only as far as the node keeps the log of that container.
 Each figure is a lower bound: the true count can be higher.
-The one exception is `numbers owed that no take reached within the first bound`, which can also count too many tasks.
-Its entry below says when.
+There are two exceptions, which can also count too many tasks or turns.
+The first is `numbers owed that no take reached within the first bound`, and its entry below says when.
+The second is the turns that each task number took.
+The daemon can give a turn to a take inside the window and then put the take back at or after `<to>`.
+The reading reads no line from `<to>` on, so it counts that turn as a turn of the number.
 
 `kubectl logs` reads the log of the current container only.
 So a reading goes back no further than the start of the current container.
@@ -72,7 +75,6 @@ When Kubernetes replaces the daemon's pod, the new pod starts with an empty log.
 `--previous` does not read the log of a pod that Kubernetes replaced.
 
 The log of one container holds the state of each task at `<from>`.
-When the container starts, the daemon writes the value of each task that it owes.
 After a start, the daemon writes again each value that a worker saw before the start, when the first bound passes.
 The daemon writes again each value that nobody saw, one time in each first bound.
 
@@ -232,7 +234,7 @@ So each figure that names a task names its claim too.
     A reading with no evidence passes no verdict, and the command exits with status 1.
 
   1. `no charge of a worker whose turn began within the second bound after its take`.
-     It fails for a charge made while an accepted take stood, if a turn of that claim started after the second wait of that take began, and no later than the charge's limit.
+     It fails for a charge made while an accepted take stood, if a turn of that claim started no earlier than the start of the second wait of that take, and no later than the charge's limit.
      The second wait begins at the latest of these times: the daemon accepts the take; the daemon puts the take back; a turn that ran while the take waited for its turn ends; the worker acts for the first time after a start of the daemon.
      So a turn that the daemon gave to the take and then put back is not a turn within the second bound.
      For a `turn-start` charge, the limit is the second bound after the second wait began.

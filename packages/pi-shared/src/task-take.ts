@@ -50,14 +50,15 @@ import { takeTaskSignals, taskTurnMark } from "./task-values";
  * `agent_start` between), so the task would run inside a run whose end names no task.
  *
  * A seen report or a take is sent through `sendUntilAnswered` (`./daemon-client`): one the daemon
- * gave no answer to — a refused, reset or closed connection, a DNS failure, no answer within
- * `DAEMON_ANSWER_TIMEOUT_MS`, or a 502, 503 or 504 that names no Legion error code — is sent
- * again, the same request, after a doubling wait with no attempt limit, until the daemon answers
- * it or a newer value replaces it: a take the daemon never received would otherwise be lost, since
- * the worker asks once per revision. Such a re-send is the same ask, not a second one, and the
- * daemon answers a take repeated for the number it accepted with the same text until that task
- * finishes, whether or not its turn has started. Every refusal of these routes names a code, so a
- * coded refusal is an answer and is not sent again.
+ * gave no answer to — a refused, reset or closed connection, an unreachable host or network, a
+ * connect or read timeout, a DNS failure, no answer within `DAEMON_ANSWER_TIMEOUT_MS`, or a 502,
+ * 503 or 504 that names no Legion error code — is sent again, the same request, after a doubling
+ * wait with no attempt limit, until the daemon answers it or a newer value replaces it: a take the
+ * daemon never received would otherwise be lost, since the worker asks once per revision. Such a
+ * re-send is the same ask, not a second one, and the daemon answers a take repeated for the number
+ * it accepted with the same text until that task finishes, whether or not its turn has started.
+ * Every refusal of these routes names a code, so a coded refusal is an answer and is not sent
+ * again.
  *
  * A take its host replaced (`close`) does nothing more: what it was sending stops, an answer that
  * still arrives for it is dropped, and its task-turn mark is cleared.
@@ -91,7 +92,7 @@ export interface TaskTakeDeps {
 
 export interface TaskTake {
   /** The daemon's reading of the claim's value: the registration's answer, or a `claims/task`
-   * read at a new epoch of the relay or a regain of the role. */
+   * read right after the claim's ready, at a new epoch of the relay, or at a regain of the role. */
   readonly read: (reading: LegionTask) => void;
   /** A value a task frame relayed; one for another claim is not this take's. */
   readonly relayed: (value: RelayTaskValue) => void;

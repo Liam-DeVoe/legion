@@ -49,8 +49,9 @@ export interface LegionClaimHost {
    * answered, before the role claim; at each regain of the role; and at each read the host asks
    * for (`LegionClaimBoot.readTask`) when its relay begins a new epoch — a value the listener
    * relayed while the session did not hold its role, or was not subscribed, is lost, so it is
-   * read rather than waited for. Oh My Pi's claim hands it to its take (`src/task-take.ts`), and
-   * claude-envoy's to the Claude bridge.
+   * read rather than waited for. claude-envoy's claim asks for that read and hands every reading
+   * to the Claude bridge; Oh My Pi's claim hands each reading to its take (`src/task-take.ts`),
+   * whose own read (`takeClaimTask`) covers a new epoch of its relay, so it asks for none.
    */
   readonly taskValue: (reading: LegionTask) => void;
   /** Sets the one hook the Envoy heartbeat runs after it re-establishes this session as a role's
@@ -107,8 +108,9 @@ export interface LegionClaimBoot {
  * interval it runs while it is idle (`packages/pi-legion/src/capability-schedule.ts`).
  *
  * A registration the daemon refuses (a 4xx: a spent boot token, another contract) and any failure
- * after a registration, the role claim's refusal among them, are logged and `stop` the agent,
- * since neither changes on retry; a relaunched process reads its claim's value at its own
+ * after a registration but the read after the ready — the host's `afterRegister`, the ready, the
+ * role claim, the role claim's refusal among them — are logged and `stop` the agent, since none of
+ * them changes on retry; a relaunched process reads its claim's value at its own
  * registration. Any other refusal of the registration (a 5xx) is logged and rejects, as a request
  * that never reached the daemon does unlogged: both leave the agent to the daemon's registration
  * deadline.
@@ -173,9 +175,10 @@ export async function bootLegionClaim(host: LegionClaimHost): Promise<LegionClai
   };
 }
 
-/** The one path every failure after a registration takes — the ready, the read after it and the
- * role claim, a refused claim of a pane relaunched with `--resume` among them: it reports the
- * failure in one sentence and stops the session, since none of them changes on retry. */
+/** The one path every failure after a registration takes — the host's `afterRegister`, the ready
+ * and the role claim, a refused claim of a pane relaunched with `--resume` among them: it reports
+ * the failure in one sentence and stops the session, since none of them changes on retry. The
+ * read after the ready never takes it: a failed read is logged and the boot goes on. */
 function stopAfterRegistration(host: LegionClaimHost, role: string, error: unknown): void {
   host.log(
     `claim boot failed after claims/register registered ${role}; ${host.stopping}: ${messageFor(error)}`

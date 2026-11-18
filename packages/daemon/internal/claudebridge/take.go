@@ -26,8 +26,8 @@ import (
 //     (replaces), and the highest finished number any task line or finished line carried. A value
 //     naming a number at or below that, or at or below the run-end mark (below), is owed nothing
 //     (owes);
-//   - it reports each value seen at once, owed or not, whatever Claude Code is doing
-//     (claims/task-seen);
+//   - it reports each value that names a task seen at once, owed or not, whatever Claude Code is
+//     doing (claims/task-seen);
 //   - from the ready line on, when Claude Code is in no turn and the seed is done, it asks the
 //     daemon to take the task an owed value names, once per (epoch, revision) (claims/take). The
 //     daemon refuses a take before the ready, so none is asked for before the ready line. The
@@ -57,14 +57,14 @@ import (
 //     plan's decisions 8 and 9), and the held text then starts a turn of its own when Claude Code
 //     is idle, ahead of every queued delivery: the task's turn on both sides, whose report names
 //     the number;
-//   - a repeat `accepted` for the number of the run going on runs nothing more, nor one for the
-//     number whose text is held: the daemon answers a take of the number it accepted with the same
-//     text until that task finishes;
+//   - an `accepted` answer for a number the claim is owed no more — one a finished line or the
+//     run-end mark raised while the take was being sent — runs nothing;
 //   - when a task's turn ends with no provider error, its number is held finished (the run-end
 //     mark, finishing) until the daemon answers that turn's report: for a worker on the current
 //     contract that report alone finishes the task, so a newer revision of the same number, which
-//     the daemon may write before the report lands (a daemon start writes every owed value again)
-//     and would answer with the same text, is reported seen and not taken. A 2xx finished the
+//     the daemon may write before the report lands (it writes the value again from its record
+//     where the bucket lost it or holds another write) and would answer with the same text, is
+//     reported seen and not taken. A 2xx finished the
 //     number in the record, which deletes its value, so the mark stays; a 4xx refusal applied
 //     nothing and the record still owes the number, so the mark is cleared (reportRefused) and a
 //     newer revision of it is taken and runs once. A report carrying a provider error marks
@@ -142,9 +142,9 @@ func (b *bridge) unasked() bool {
 // valueHanded takes a task value the inbox handed the bridge, with the number the reading it came
 // with says the claim finished, the highest of which the bridge holds. A value newer than the one
 // held replaces it, and with it every seen report and take still being sent for another pair
-// (replace); it is reported seen at once, owed or not; and Claude Code in no turn takes it once the
-// ready line came (idle). A value no newer than the one held changes nothing but the finished
-// number: the same value relayed again is not a new ask.
+// (replace); one that names a task is reported seen at once, owed or not; and Claude Code in no
+// turn takes it once the ready line came (idle). A value no newer than the one held changes
+// nothing but the finished number: the same value relayed again is not a new ask.
 func (b *bridge) valueHanded(v taskValue, finished uint64) {
 	if b.daemon == nil {
 		b.log.Printf("ignoring task %d's value: this pane names no daemon to take it from", v.number)
@@ -285,9 +285,9 @@ func (b *bridge) ask() bool {
 // takeAnswered acts on the daemon's answer to the take being sent; the answer of a take a newer
 // value replaced is no longer anyone's. An accepted take starts the task's turn ahead of every
 // queued delivery, or, during a turn, holds its text until that turn ends: nothing is sent into a
-// turn that is running. A repeat accepted for the number of the run going on, for the number whose
-// text is held, or for a number the claim is owed no more runs nothing more. Anything else lets go
-// of the cards the take held back: the value is asked about again only at its next revision.
+// turn that is running. An accepted answer for a number the claim is owed no more runs nothing.
+// Anything else lets go of the cards the take held back: the value is asked about again only at
+// its next revision.
 func (b *bridge) takeAnswered(a takeAnswer) {
 	if b.asking != a.call {
 		return
@@ -299,7 +299,7 @@ func (b *bridge) takeAnswered(a takeAnswer) {
 		b.log.Printf("the take of task %d failed (%v); it is asked again at the value's next revision", number, a.err)
 	case a.answer.Outcome == takeAccepted:
 		switch {
-		case !b.owes(number) || number == b.runTask || number == b.heldTask:
+		case !b.owes(number):
 			b.log.Printf("the daemon accepted the take of task %d again; its text runs no second time", number)
 		case b.inRun || b.seeding:
 			b.heldText, b.heldTask = a.answer.Text, number

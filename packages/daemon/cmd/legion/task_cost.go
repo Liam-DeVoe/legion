@@ -21,10 +21,10 @@ first wait, and finished, the charges by wait, the retirements, and three verdic
 before --from say only where each claim stands when the window opens: every figure counts the
 window alone. --claim reads one claim alone. --take-timeout is the deployment's first bound,
 worker_take_timeout_seconds (300 when not given), which the log does not always name. Every figure
-is a lower bound but the owed numbers, which can also count too many (the page says when): the log
-reaches back no further than the current container (--previous reads the one before), and only as
-far as the node kept it. A window that holds no daemon line, of the claim asked for, prints each
-verdict as "no evidence" and exits 1.
+is a lower bound but the owed numbers and the turns each number took, which can also count too
+many (the page says when): the log reaches back no further than the current container (--previous
+reads the one before), and only as far as the node kept it. A window that holds no daemon line,
+of the claim asked for, prints each verdict as "no evidence" and exits 1.
 
   kubectl -n legion logs deploy/legion-<project>-daemon -c legion | legion task-cost --from <from> --to <to>`
 

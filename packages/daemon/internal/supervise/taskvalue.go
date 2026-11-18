@@ -168,7 +168,12 @@ const (
 // whose takeable reads nothing of the store — one of no phase — would go round a value write, a
 // take and a failed answer at every sweep for as long as the store is away. The write is made at
 // the first chance after the owed write lands, which the next decision's repair makes.
-func (m *Machine) offerPending(ctx context.Context) error {
+func (m *Machine) offerPending(ctx context.Context) error { return m.offer(ctx, false) }
+
+// offer is offerPending, told whether this decision has already asked the record whether it still
+// owes the pending task and was told that it does (owed: queue's own drop test, dropUnowed), so
+// takeable does not ask the record that again: nothing between the two asks changes the answer.
+func (m *Machine) offer(ctx context.Context, owed bool) error {
 	p := m.claim.Pending
 	if p == nil {
 		m.deleteAgain(ctx)
@@ -191,7 +196,7 @@ func (m *Machine) offerPending(ctx context.Context) error {
 			"task", p.Number)
 		return nil
 	}
-	hold, dropped, err := m.takeable(ctx)
+	hold, dropped, err := m.takeable(ctx, owed)
 	if err != nil || dropped || hold != "" {
 		return err
 	}

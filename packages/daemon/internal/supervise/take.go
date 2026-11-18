@@ -476,7 +476,7 @@ func (m *Machine) answeredFromRecord(request RequestTake) bool {
 // it.
 func (m *Machine) takePending(ctx context.Context, request RequestTake) error {
 	m.claim.recordTake(request, TakeMade)
-	hold, dropped, err := m.takeable(ctx)
+	hold, dropped, err := m.takeable(ctx, false)
 	switch {
 	case err != nil:
 		return err
@@ -704,7 +704,8 @@ func (m *Machine) accept(ctx context.Context, request RequestTake) error {
 // takeable decides whether the pending task, which no take has been accepted for, may be taken
 // now: the name of the hold that stands, a drop the record made here, or neither. Both a take
 // (takePending) and the hold's end (offerPending) ask it, so a value is written again exactly
-// where a take would be accepted.
+// where a take would be accepted. owed says the decision has already asked the record whether it
+// owes the task and was told it does (queue's dropUnowed), so the three drops are not asked again.
 //
 // The claim's own holds come first (claimHold). Then the three drops, which retire the task and
 // delete its value (dropUnowed): an ask of an update round that an older daemon queued as a task,
@@ -737,13 +738,15 @@ func (m *Machine) accept(ctx context.Context, request RequestTake) error {
 // queues that delivery only for a claim that holds nothing then (finishReady), so a held task
 // dropped at a take or a hold's end would otherwise leave the sentence waiting for whatever task
 // comes next.
-func (m *Machine) takeable(ctx context.Context) (hold string, dropped bool, err error) {
+func (m *Machine) takeable(ctx context.Context, owed bool) (hold string, dropped bool, err error) {
 	if hold := m.claimHold(); hold != "" {
 		return hold, false, nil
 	}
-	dropped, err = m.dropUnowed(ctx)
-	if err != nil {
-		return "", dropped, err
+	if !owed {
+		dropped, err = m.dropUnowed(ctx)
+		if err != nil {
+			return "", dropped, err
+		}
 	}
 	if dropped {
 		return "", true, m.queueRelaunch(ctx)
@@ -785,7 +788,8 @@ func (m *Machine) takeable(ctx context.Context) (hold string, dropped bool, err 
 // which then gives the claim the daemon's own delivery of a record that still tells
 // (queueRelaunch); and a newer task that arrives behind the task (queue), whatever holds stand
 // and before any other case of a held task, which then takes its place and carries that sentence
-// itself. A read of the record that fails drops nothing.
+// itself, and where nothing was dropped hands that answer to the hold's end its refusal makes
+// (offer), so one decision asks the record once. A read of the record that fails drops nothing.
 func (m *Machine) dropUnowed(ctx context.Context) (bool, error) {
 	p := m.claim.Pending
 	round, asks := updateRoundOf(p.ID)

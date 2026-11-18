@@ -199,7 +199,13 @@ func TestTurnOutcomeAProviderErrorRefusalThatReachesNoLadderCountsTowardTheRefus
 		task func(h *harness) uint64
 	}{
 		{"naming no task", func(*harness) uint64 { return 0 }},
-		{"naming a task no take holds", func(h *harness) uint64 { return h.claim().TaskFinished }},
+		{"naming a task no take holds", func(h *harness) uint64 {
+			finished := h.claim().TaskFinished
+			if finished == 0 {
+				h.t.Fatal("the claim has finished no task, so this row would name none, as the row before it does")
+			}
+			return finished
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)

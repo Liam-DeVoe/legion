@@ -26,6 +26,16 @@ import (
 // for the claim (register).
 func currentPlugin(d *Deps) { d.PluginContract = TaskTakeContract }
 
+// wantFinishedOnce holds that the claim's task was finished once, by by (finishedLine's "by").
+func (h *harness) wantFinishedOnce(by string) {
+	h.t.Helper()
+	finished := h.records.of(finishedLine)
+	if len(finished) != 1 {
+		h.t.Fatalf("%q was logged %d times, want once", finishedLine, len(finished))
+	}
+	wantAttr(h.t, finished[0], "by", by)
+}
+
 // givesARunNoTakeStartedToTheTake walks the claim to an accepted take of a task, then a run no
 // take started — a background result's, which starts before the take's answer reached the worker
 // — that the daemon gives to the take, and that run's end, with no report behind it yet. It
@@ -86,11 +96,7 @@ func TestTurnReportNamingNoTaskGivesTheTakeItsTurnBack(t *testing.T) {
 		if p := h.claim().Pending; p != nil {
 			t.Fatalf("pending %+v after the take's own turn was reported, want task %d finished", p, number)
 		}
-		finished := h.records.of(finishedLine)
-		if len(finished) != 1 {
-			t.Fatalf("%q was logged %d times, want once", finishedLine, len(finished))
-		}
-		wantAttr(t, finished[0], "by", finishedByReport)
+		h.wantFinishedOnce(finishedByReport)
 	})
 	t.Run("a plugin older than the take finishes at the end frame", func(t *testing.T) {
 		h := newHarness(t)
@@ -107,11 +113,7 @@ func TestTurnReportNamingNoTaskGivesTheTakeItsTurnBack(t *testing.T) {
 		if p := h.claim().Pending; p != nil {
 			t.Fatalf("pending %+v an end-frame bound after the run, want the task finished by its end", p)
 		}
-		finished := h.records.of(finishedLine)
-		if len(finished) != 1 {
-			t.Fatalf("%q was logged %d times, want once", finishedLine, len(finished))
-		}
-		wantAttr(t, finished[0], "by", finishedByEndFrame)
+		h.wantFinishedOnce(finishedByEndFrame)
 	})
 }
 
@@ -240,11 +242,7 @@ func TestTurnOutcomeSentAgainToARestartedDaemonReachesItsTask(t *testing.T) {
 		if p := h.claim().Pending; p != nil {
 			t.Fatalf("pending %+v a bound after the hello, want the task finished by its turn's end", p)
 		}
-		finished := h.records.of(finishedLine)
-		if len(finished) != 1 {
-			t.Fatalf("%q was logged %d times, want once", finishedLine, len(finished))
-		}
-		wantAttr(t, finished[0], "by", finishedByEndFrame)
+		h.wantFinishedOnce(finishedByEndFrame)
 	})
 }
 
@@ -280,11 +278,7 @@ func TestTurnOutcomeAloneFinishesTheTaskOfAPluginThatNamesItsNumber(t *testing.T
 			if p := h.claim().Pending; p != nil {
 				t.Fatalf("pending %+v after the report, want task %d finished", p, number)
 			}
-			finished := h.records.of(finishedLine)
-			if len(finished) != 1 {
-				t.Fatalf("%q was logged %d times, want once", finishedLine, len(finished))
-			}
-			wantAttr(t, finished[0], "by", finishedByReport)
+			h.wantFinishedOnce(finishedByReport)
 		})
 	}
 }
@@ -317,7 +311,6 @@ func TestTurnOutcomeRepeatedAfterItsTaskFinishedAnswersTheSameAndAppliesNothing(
 	if second.Number == number || !second.turnStarted() {
 		t.Fatalf("the claim holds %+v, want the second task's take with its turn started", second)
 	}
-	run := h.claim().RefusedRun()
 
 	if err := h.m.Handle(h.ctx, first); err != nil {
 		t.Fatalf("the report sent again = %v, want it answered as the first was", err)
@@ -332,9 +325,6 @@ func TestTurnOutcomeRepeatedAfterItsTaskFinishedAnswersTheSameAndAppliesNothing(
 	}
 	if lines := h.logs.lines("a turn's report repeats one already applied"); len(lines) != 1 {
 		t.Fatalf("the lines that say the report was a repeat are %q, want one", lines)
-	}
-	if got := h.claim().RefusedRun(); got != run {
-		t.Fatalf("the refused run is %d after the repeat, want %d as before it", got, run)
 	}
 }
 
@@ -363,11 +353,7 @@ func TestTurnOutcomeFinishTheStoreRefusedIsMadeAgainAcrossAnOutage(t *testing.T)
 		if p := h.claim().Pending; p != nil {
 			t.Fatalf("pending %+v a bound after the store answered, want task %d finished", p, number)
 		}
-		finished := h.records.of(finishedLine)
-		if len(finished) != 1 {
-			t.Fatalf("%q was logged %d times, want once", finishedLine, len(finished))
-		}
-		wantAttr(t, finished[0], "by", finishedByReport)
+		h.wantFinishedOnce(finishedByReport)
 	}
 	t.Run("a report after its turn's end", func(t *testing.T) {
 		h := newHarnessOf(t, queuedClaim(), currentPlugin)
@@ -391,6 +377,14 @@ func TestTurnOutcomeFinishTheStoreRefusedIsMadeAgainAcrossAnOutage(t *testing.T)
 			t.Fatal("the report whose finish the store refused answered no failure")
 		}
 		h.advance(3 * testRPC)
+		// The claim is still working, so no bound is armed until the turn's end frame, and the
+		// three bounds that pass make nothing again.
+		if _, armed := h.m.timers[TimerFinish]; armed {
+			t.Fatal("the end-frame bound is armed while the claim is still working, want it armed at the turn's end")
+		}
+		if p := h.claim().Pending; p == nil || p.Number != number {
+			t.Fatalf("three bounds into the turn the claim holds %+v, want task %d still pending", p, number)
+		}
 		h.mustQuiet(StreamTurnEnd{Claim: h.token})
 		outage(t, h, number)
 	})
@@ -476,11 +470,7 @@ func TestTurnOutcomeFinishTheStoreRefusedIsOwedAgainAfterADaemonRestart(t *testi
 			t.Fatalf("pending %+v a bound after the restart, want task %d finished", p, number)
 		}
 		h.advance(3 * testRPC)
-		finished := h.records.of(finishedLine)
-		if len(finished) != 1 {
-			t.Fatalf("%q was logged %d times, want once", finishedLine, len(finished))
-		}
-		wantAttr(t, finished[0], "by", finishedByReport)
+		h.wantFinishedOnce(finishedByReport)
 	})
 	t.Run("a report of an earlier generation", func(t *testing.T) {
 		h := newHarnessOf(t, queuedClaim(), currentPlugin)
@@ -572,11 +562,7 @@ func TestTurnOutcomeAheadOfItsTurnStartIsFinishedWhenTheStoreRefusedItsStartAndF
 			if c.ServedEntry != 1 || c.GivenEntry != 1 {
 				t.Fatalf("the finished claim served entry %d and was given entry %d, want entry 1 served", c.ServedEntry, c.GivenEntry)
 			}
-			finished := h.records.of(finishedLine)
-			if len(finished) != 1 {
-				t.Fatalf("%q was logged %d times, want once", finishedLine, len(finished))
-			}
-			wantAttr(t, finished[0], "by", finishedByReport)
+			h.wantFinishedOnce(finishedByReport)
 		})
 	}
 }

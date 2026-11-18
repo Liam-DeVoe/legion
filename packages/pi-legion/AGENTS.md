@@ -823,14 +823,16 @@ it (`providerError`) — to `POST /legion/v1/claims/turn-outcome` from `agent_en
 sequence this plugin counts itself, monotonic from 1 within the claim's launch generation. The
 daemon keys each outcome by `(generation, sequence)`, so a report that arrives late lands in its
 own place and a repeat writes the same cell. A refused turn that carries the provider's failure
-counts toward no launch failure: on a task's turn it is the provider-error ladder's
-(dispatch://INFRA-956), which keeps the task and gives it to the same session again after a
-wait, and tells the project's controller after six such turns in a row. Only a refusal that
-carries none counts toward the trailing run of refusals that fails the claim once it reaches
-`launch_failure_limit`. The report of a task's turn names its number, and for a worker on the
-current contract it is the only thing that finishes the task, so a report is sent until the
-daemon answers it, by the policy a take is sent by (`sendUntilAnswered` in
-`@legion/pi-shared/daemon-client`): a refused, reset or closed connection, a DNS failure, no answer
+counts toward no launch failure where the provider-error ladder takes it, which is the turn of
+the task a take of the claim holds (dispatch://INFRA-956): the ladder keeps the task and gives it
+to the same session again after a wait, and tells the project's controller after six such turns
+in a row. Every other refused turn — one that carries no provider failure, and one whose report
+reaches no ladder, a reminder's, a card's or a background result's — counts toward the trailing
+run of refusals that fails the claim once it reaches `launch_failure_limit`. The report of a
+task's turn names its number, and for a worker on the current contract it is the only thing
+that finishes the task, so a report is sent until the daemon answers it, by the policy a take is
+sent by (`sendUntilAnswered` in `@legion/pi-shared/daemon-client`): a refused, reset or closed
+connection, an unreachable host or network, a connect or read timeout, a DNS failure, no answer
 within five minutes, a 502, 503 or 504 with no Legion error code, and any 500 (the daemon's own
 failure to record it) are sent again, the same report, with backoff and no attempt limit, until a
 2xx or a refusal, which is warned about once; the session's end (`session_shutdown`) stops it. The

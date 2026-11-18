@@ -578,6 +578,12 @@ for (const [name, attempt] of [
   ["a refused connection", { fail: transport("ECONNREFUSED") }],
   ["a reset connection", { fail: transport("ECONNRESET") }],
   ["a closed connection", { fail: transport("ConnectionClosed") }],
+  ["an unreachable host", { fail: transport("EHOSTUNREACH") }],
+  ["an unreachable network", { fail: transport("ENETUNREACH") }],
+  ["a connect timeout", { fail: transport("ETIMEDOUT") }],
+  ["a connect timeout Bun names ConnectionTimeout", { fail: transport("ConnectionTimeout") }],
+  // Bun's fetch gives a read that timed out no code, only the name (Bun 1.4.4).
+  ["a read timeout", { fail: new DOMException("The operation timed out.", "TimeoutError") }],
   ["a DNS failure", { fail: transport("ENOTFOUND") }],
   ["no answer within 5 minutes", { silent: true }],
   ["a 502 with no code", { fail: uncoded(502) }],

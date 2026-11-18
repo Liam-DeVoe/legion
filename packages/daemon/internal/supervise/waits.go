@@ -210,7 +210,7 @@ func takeBoundOver(m *Machine, ctx context.Context, _ Event) error {
 			"task", p.Number, "epoch", now.revision.Epoch, "revision", now.revision.Revision, "bound", m.deps.Timeouts.Take)
 		return m.writeValue(ctx, TaskValueUnseen)
 	}
-	hold, dropped, err := m.takeable(ctx)
+	hold, dropped, err := m.takeable(ctx, false)
 	switch {
 	case err != nil || dropped:
 		return err

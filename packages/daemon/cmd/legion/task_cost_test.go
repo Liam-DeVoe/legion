@@ -64,8 +64,8 @@ func TestTaskCostPrintsTheDaemonsOwnReading(t *testing.T) {
 // wrong kubectl selector pipes, a window the log does not reach, a claim no line names — is
 // evidence of nothing: `legion task-cost` prints the reading with each of its three verdicts as
 // "no evidence", none as a pass, and exits 1, so a check reading the command cannot take a reading
-// of nothing for three passes (review handoff v1, costreading.go:758). Exit 2 stays the usage
-// error's, for arguments the command cannot take.
+// of nothing for three passes. Exit 2 stays the usage error's, for arguments the command cannot
+// take.
 //
 // The negative control is the window that holds the three lines: the command exits 0, and its
 // verdicts are judged, each a pass.

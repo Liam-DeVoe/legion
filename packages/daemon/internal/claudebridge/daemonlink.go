@@ -165,10 +165,18 @@ func (d *daemonLink) untilAnswered(ctx context.Context, what, path string, reque
 }
 
 // attempt is one post of body to the route at path, bounded by calls.answerTimeout, with the
-// daemon's answer read whole, up to maxTaskAnswerBytes.
-func (d *daemonLink) attempt(ctx context.Context, path string, body []byte) (int, []byte, error) {
-	ctx, cancel := context.WithTimeout(ctx, d.calls.answerTimeout)
+// daemon's answer read whole, up to maxTaskAnswerBytes. An attempt the bound ended fails with
+// errNoAnswerInTime, whatever the transport made of it: a dial or a read the bound cut off reads
+// to the transport as a timeout, as one that timed out on its own does, and the two are told
+// apart by the bound's cause.
+func (d *daemonLink) attempt(ctx context.Context, path string, body []byte) (status int, answer []byte, err error) {
+	ctx, cancel := context.WithTimeoutCause(ctx, d.calls.answerTimeout, errNoAnswerInTime)
 	defer cancel()
+	defer func() {
+		if err != nil && context.Cause(ctx) == errNoAnswerInTime {
+			err = errNoAnswerInTime
+		}
+	}()
 	post, err := http.NewRequestWithContext(ctx, http.MethodPost, d.url+path, bytes.NewReader(body))
 	if err != nil {
 		return 0, nil, err
@@ -179,23 +187,28 @@ func (d *daemonLink) attempt(ctx context.Context, path string, body []byte) (int
 		return 0, nil, err
 	}
 	defer func() { _ = response.Body.Close() }()
-	var answer bytes.Buffer
-	_, err = answer.ReadFrom(http.MaxBytesReader(nil, response.Body, maxTaskAnswerBytes))
-	return response.StatusCode, answer.Bytes(), err
+	answer, err = io.ReadAll(http.MaxBytesReader(nil, response.Body, maxTaskAnswerBytes))
+	return response.StatusCode, answer, err
 }
+
+// errNoAnswerInTime is what an attempt the daemon did not answer within calls.answerTimeout
+// fails with (attempt).
+var errNoAnswerInTime = errors.New("no answer within the attempt's bound")
 
 // unanswered names why an attempt got no answer from the daemon, and is "" for an attempt it
 // answered: the failures listed here, and nothing else. A refused, reset or closed
-// connection and a name that did not resolve never reached the daemon or lost its answer on the
-// way; an attempt past calls.answerTimeout is a daemon that took the request and never answered;
-// and a 502, 503 or 504 that names no Legion error code is a proxy in front of a daemon that is not
-// serving. Every refusal the daemon itself makes names a code (api's taskRefusal), so a coded
-// answer, whatever its status, is the daemon's word and is never sent again.
+// connection, an unreachable host or network, a name that did not resolve, and a dial or a read
+// that timed out never reached the daemon or lost its answer on the way; an attempt past
+// calls.answerTimeout is a daemon that took the request and never answered; and a 502, 503 or
+// 504 that names no Legion error code is a proxy in front of a daemon that is not serving. Every
+// refusal the daemon itself makes names a code (api's taskRefusal), so a coded answer, whatever
+// its status, is the daemon's word and is never sent again.
 func (d *daemonLink) unanswered(status int, body []byte, err error) string {
 	var dns *net.DNSError
+	var transport net.Error
 	switch {
 	case err == nil:
-	case errors.Is(err, context.DeadlineExceeded):
+	case errors.Is(err, errNoAnswerInTime):
 		return fmt.Sprintf("no answer within %v", d.calls.answerTimeout)
 	case errors.Is(err, syscall.ECONNREFUSED):
 		return "the connection was refused"
@@ -203,8 +216,14 @@ func (d *daemonLink) unanswered(status int, body []byte, err error) string {
 		return "the connection was reset"
 	case errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF):
 		return "the connection was closed"
+	case errors.Is(err, syscall.EHOSTUNREACH):
+		return "the daemon's host was unreachable"
+	case errors.Is(err, syscall.ENETUNREACH):
+		return "the daemon's network was unreachable"
 	case errors.As(err, &dns):
 		return "the daemon's name did not resolve"
+	case errors.As(err, &transport) && transport.Timeout():
+		return "the connection timed out"
 	default:
 		return ""
 	}

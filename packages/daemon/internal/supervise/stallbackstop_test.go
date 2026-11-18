@@ -489,11 +489,11 @@ func TestTheBackstopTellsNobodyOfAnEndTheStoreRefusedBeforeItWasMade(t *testing.
 }
 
 // A replacement the pacing parked is an end of its own, and it is told as that
-// (EndRelaunchParked). The take-back has already run, so the task the stalled agent was serving
-// is owed to it again; the claim keeps the process and the wake's own turn is what stops it and
-// brings the session back (reserveWake, wakeNow). An owner told nothing here is an owner who
-// hears of this stall never — the claim leaves StateWorking at that turn, and the sweep that
-// would post again skips it — and an owner told "its session was brought back" is told of a
+// (EndRelaunchParked). The park makes no take-back: the stalled agent's turn runs on with the task
+// it was serving, and the wake's own turn is what takes that task back, stops the process and
+// brings the session back (launchReplacing, runWake, wakeNow). An owner told nothing here is an
+// owner who hears of this stall never — the claim leaves StateWorking at that turn, and the sweep
+// that would post again skips it — and an owner told "its session was brought back" is told of a
 // process that does not exist yet. The wake's turn tells nobody again: the end this notice
 // named is the one that turn carries out.
 func TestTheBackstopTellsTheOwnerOfAReplacementThePacingParkedOnce(t *testing.T) {

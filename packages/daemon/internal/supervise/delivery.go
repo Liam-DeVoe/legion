@@ -562,7 +562,8 @@ func (m *Machine) queue(ctx context.Context, request RequestDeliver) error {
 					return err
 				}
 			default:
-				if err := m.offerPending(ctx); err != nil {
+				// The record was asked above whether it owes the task, and it does.
+				if err := m.offer(ctx, true); err != nil {
 					return err
 				}
 				return &RefusedError{State: m.claim.State, Request: "deliver", Err: ErrDeliveryPending}

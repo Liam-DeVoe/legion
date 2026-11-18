@@ -32,7 +32,7 @@ const (
 	taskCostSample         = "testdata/task-cost.jsonl"
 	taskCostSampleFromRoot = "packages/daemon/internal/supervise/" + taskCostSample
 	// taskCostCommand is the command the page gives in one fenced block: it pipes the current
-	// container's whole log, from its start, with no --since-time (plan review round 33).
+	// container's whole log, from its start, with no --since-time.
 	taskCostCommand = "kubectl -n legion logs deploy/legion-<project>-daemon -c legion | legion task-cost --from <from> --to <to> [--claim <token>] [--take-timeout <seconds>]"
 )
 
@@ -575,8 +575,8 @@ func (b costLines) readCost(lines []string) TaskCost {
 // again and seen, and never taken again; one seen, whose process died, from its new process's
 // seen report after the next registration; one taken, then taken back from a process the daemon
 // stopped, with no new write, and never taken by the process relaunched, from that process's seen
-// report (review handoff v1, costreading.go:476); and one refused, whose process died before the
-// hold ended, and never taken by the process relaunched, which the refusal no longer holds off,
+// report; and one refused, whose process died before the hold ended, and never taken by the
+// process relaunched, which the refusal no longer holds off,
 // from that process's seen report. Not listed: a number taken after a turn that ran longer than
 // the bound between its seen report and its take; one written, and written again at each bound,
 // but never reported seen, which is the unseen rewrite's case; one whose clock started a bound
@@ -587,8 +587,8 @@ func (b costLines) readCost(lines []string) TaskCost {
 // process is not charged for (decision 6).
 //
 // The reading reads the lines before the window for where each claim stands at its start, and
-// counts only clock time inside it (plan review round 33). Listed: a number written before the
-// window and seen inside it, from that seen report; one written and seen before the window and
+// counts only clock time inside it. Listed: a number written before the window and seen inside
+// it, from that seen report; one written and seen before the window and
 // never taken, from the window's start, as if seen there; and one whose write fell before the
 // log's first line, taken before the log too, taken back in the window from a process the daemon
 // stopped and seen by the next process, from that seen report, at the revision it names. Not
@@ -992,7 +992,7 @@ func TestTaskCostLogFirstVerdictReadsTheSecondWaitFromWhereTheMachineBeginsIt(t 
 // A window that holds no daemon line, of the claim asked for, is evidence of nothing: an empty
 // log, a window the log does not reach, a claim no line of it names. The reading says so
 // (NoEvidence) and prints each of R9's three verdicts as "no evidence", none as a pass, so check
-// c9 cannot read a reading of nothing as three passes (review handoff v1, costreading.go:758).
+// c9 cannot read a reading of nothing as three passes.
 //
 // The negative control is the same window with one line of the claim in it: the verdicts are
 // judged, and pass.

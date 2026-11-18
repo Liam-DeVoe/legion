@@ -78,7 +78,7 @@ cluster and the image:
   creates it, so it refuses rather than waiting, since no wait gives a user a grant it lacks. The
   open asks only the bucket stream's info and, for a bucket not created yet, JetStream's account
   info, the notification stream's info, the create and, when another daemon created the bucket
-  first with an older discard or direct-get setting, the stream's update, so a grant that lacks
+  first, the stream's update, so a grant that lacks
   only the bucket's gets, key writes, purge or watch boots, and each call it then refuses is logged
   ([GitHub, NATS and the Secrets Broker](#github-nats-and-the-secrets-broker)). Apply the
   `envoy-infra` release whose daemon grant carries the bucket

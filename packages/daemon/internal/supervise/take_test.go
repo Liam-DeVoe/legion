@@ -324,6 +324,44 @@ func TestTakeDropTestRunsWhenANewerTaskArrives(t *testing.T) {
 	}
 }
 
+// A newer task that arrives behind an untaken task the record still owes asks the record once in
+// that decision: the queue's drop test reads the issue's phase (dropUnowed), and the hold's end
+// its refusal makes (offer) takes that answer rather than reading the phase again. The worker
+// asked at the latest revision and was refused by a hold that has ended since, so that hold's end
+// writes the value again under the owed task's number, as it did when it read the phase twice.
+//
+// The negative control is the queue's refusal ending the hold as every other caller does
+// (offerPending): the decision reads the phase twice.
+func TestTakeDropTestReadsTheRecordOnceWhenANewerTaskWaitsBehindAnOwedOne(t *testing.T) {
+	reads, inTurn := 0, true
+	h := newHarness(t)
+	h.deps.Identity = adoptingIdentity
+	h.deps.IssueInTurn = func(string, claim.Token) (claim.Token, bool) { return testerToken, inTurn }
+	h.deps.PhaseHolds = func(context.Context, string, phase.Phase, uint64) (bool, error) {
+		reads++
+		return true, nil
+	}
+	h.restart()
+	h.manualTakes()
+	h.reach(StateReady)
+	h.must(RequestDeliver{Claim: h.token, Task: "implement the plan", Phase: phase.Implementing, Generation: 7, ID: "outbox:7", Row: 7})
+	h.wantRefused(HoldIssueInTurn)
+	before, _ := h.values.value(h.token)
+	inTurn, reads = false, 0
+
+	err := h.handle(RequestDeliver{Claim: h.token, Task: "look at production after the merge", ID: "outbox:9", Row: 9})
+
+	if !errors.Is(err, ErrDeliveryPending) {
+		t.Fatalf("the newer task was answered %v, want the pending-delivery refusal behind a task the record owes", err)
+	}
+	if reads != 1 {
+		t.Fatalf("the decision read the issue's phase %d times, want once: the queue's drop test asked it, and the hold's end has that answer", reads)
+	}
+	if after, held := h.values.value(h.token); !held || after.Number != before.Number || after.Revision <= before.Revision {
+		t.Fatalf("the bucket holds %+v (held %v) after the hold's end, want the owed task's value %+v written again", after, held, before)
+	}
+}
+
 // A root architect's held task names decisions that can be owed to another tree by the time its
 // root hears again: the take is answered with what it still names (Deps.RootTask), and the
 // delivery is written narrowed, so a take sent again is answered the same narrowed text.
