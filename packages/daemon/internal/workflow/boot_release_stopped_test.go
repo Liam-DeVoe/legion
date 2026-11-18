@@ -39,8 +39,8 @@ func seedReleaseStopped(t *testing.T, pool *pgxpool.Pool, issue string, role cla
 	return token
 }
 
-// startsOf is the start rows the boot left for issue's role.
-func startsOf(t *testing.T, pool *pgxpool.Pool, issue string, role claim.Role) []record.SuperviseRequest {
+// roleStartsOf is the start rows the boot left for issue's role.
+func roleStartsOf(t *testing.T, pool *pgxpool.Pool, issue string, role claim.Role) []record.SuperviseRequest {
 	t.Helper()
 	var starts []record.SuperviseRequest
 	for _, start := range superviseRowsOf(t, pool, issue, "start") {
@@ -137,7 +137,7 @@ func TestTheBootStartsEachClaimTheProjectReleaseStoppedOnce(t *testing.T) {
 	// one is the one start the case reads, after asserting there is exactly one.
 	one := func(t *testing.T, issue string, role claim.Role) record.SuperviseRequest {
 		t.Helper()
-		starts := startsOf(t, pool, issue, role)
+		starts := roleStartsOf(t, pool, issue, role)
 		if len(starts) != 1 {
 			t.Fatalf("the boot left %s's %s the starts %+v, want exactly one", issue, role, starts)
 		}
@@ -231,7 +231,7 @@ func TestTheBootStartsAnArchitectTheProjectReleaseStoppedAtAdmittedWithNoTask(t 
 		t.Fatalf("apply the boot: %v", err)
 	}
 
-	starts := startsOf(t, pool, root, claim.RoleArchitect)
+	starts := roleStartsOf(t, pool, root, claim.RoleArchitect)
 	if len(starts) != 1 {
 		t.Fatalf("the boot left the architect stopped at admitted the starts %+v, want exactly one", starts)
 	}

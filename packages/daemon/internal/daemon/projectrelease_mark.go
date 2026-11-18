@@ -140,9 +140,9 @@ func projectReleaseRound(id int64) string {
 // the daemon's next boot has ended the release: a machine whose relaunch it refuses keeps the
 // claim waiting uncharged (supervise's relaunchRefused), and a row it holds is put back unrun,
 // with no attempt counted, and read again every releaseHoldSpacing (outbox.holdForRelease). The
-// wait is routine (routineWaitError): the operator who released the project knows what it holds,
+// wait is routine (routineWaiting): the operator who released the project knows what it holds,
 // so a row held for the whole bound stays at debug after its first line.
-var errProjectReleased error = routineWaitError{err: wait.New(api.ProjectReleaseHeldSentence)}
+var errProjectReleased error = routineWaiting{err: wait.New(api.ProjectReleaseHeldSentence)}
 
 // roleTakenMargin is how long past config.ClaimFirstTurnBound a session that stands ready is given
 // to hold its role: the plugin arms the bound once the daemon has answered its ready, and its

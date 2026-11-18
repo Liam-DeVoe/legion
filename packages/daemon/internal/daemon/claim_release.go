@@ -147,8 +147,13 @@ func (r *outbox) releaseClaim(ctx context.Context, row record.OutboxRow) error {
 // backoff until claimReleaseWait is up. It deliberately wraps nothing of Dispatch's refusal, only
 // its holder's name: settle computes permanentRefusal before it tests wait.ErrWaiting, so a wait
 // errors.As could reach the *dispatch.Error through would be finished rather than retried.
+//
+// It is routine (routineWaiting), so the hour's attempts stay at debug: the backoff caps at 64
+// seconds, so an hour costs about 57 of them, and every attempt from the seventh would otherwise
+// be logged as a warning (waitWarnAttempts). A holder that has not stopped yet is not something an
+// operator should be woken for; the hour running out is, and that line is its own.
 func claimHeldWait(holder string) error {
-	return routineWaitError{err: wait.Errorf("the Dispatch claim is still held by %s", holder)}
+	return routineWaiting{err: wait.Errorf("the Dispatch claim is still held by %s", holder)}
 }
 
 // claimContendedWait is the wait a claim release answers a contended refusal with
@@ -159,30 +164,11 @@ func claimHeldWait(holder string) error {
 // refused release at is wall-clock time from row.CreatedAt, so the time these retries take
 // counts toward it like any other, and a refusal naming the holder (dispatch.Claimed) after them
 // can end the row at once. It wraps nothing of Dispatch's refusal, for the reason claimHeldWait
-// gives.
+// gives, and it is routine (routineWaiting), as claimHeldWait's wait is and for the same reason:
+// Dispatch applied nothing, so the row has only to ask again.
 func claimContendedWait(issue string) error {
-	return routineWaitError{err: wait.Errorf("the Dispatch claim of %s was contended while it was released", issue)}
+	return routineWaiting{err: wait.Errorf("the Dispatch claim of %s was contended while it was released", issue)}
 }
-
-// routineWaitError is a wait an outbox row rides out that nobody has to act on (routineWait), so
-// its attempts past the first stay at debug: the backoff caps at 64 seconds, and every attempt from
-// the seventh would otherwise be logged as a warning (waitWarnAttempts). Two waits ride it. A claim
-// release row's, whichever refusal it answers: the claim still held by its holder
-// (claimHeldWait), which the hour claimReleaseWait caps, or a contended answer
-// (claimContendedWait), where Dispatch applied nothing and the row has only to ask again; a holder
-// that has not stopped yet is not something an operator should be woken for, and the hour running
-// out is a line of its own. And the project release's refusal of a start (errProjectReleased),
-// which the operator who released the project asked for: a row that meets it while it runs,
-// because the release set its mark after the row began, is retried under this rule, and a row
-// the release holds before it runs is put back with no attempt counted and logged at debug after
-// its first line (outbox.holdForRelease).
-type routineWaitError struct{ err error }
-
-func (c routineWaitError) Error() string { return c.err.Error() }
-
-func (c routineWaitError) Unwrap() error { return c.err }
-
-func (routineWaitError) Routine() bool { return true }
 
 // releaseParkedClaims queues one Dispatch claim release (record.ClaimRelease) for each issue of
 // the boot's listing that still carries a claim while the daemon's own record says it stopped.
