@@ -520,8 +520,10 @@ func TestABlockWhoseFootnoteShapedTextBecomesAReferenceTakesTheNewVersion(t *tes
 		blocks[index] = model.ArtifactBlock{ID: offset.ID, Type: offset.Type, From: offset.From, To: offset.To}
 	}
 	body := markdown[blocks[0].From:blocks[0].To]
-	if blocks[0].ID != paragraph || body != "Opening paragraph, see [^1] here." || !pmdoc.ReadsAs(recorded, body) {
-		t.Fatalf("version 2's first block is %s written %q; the test needs paragraph %s written as a reference that reads alone as %q", blocks[0].ID, body, paragraph, recorded)
+	// The reference and the recorded literal read alone as one (TestReadsAsReadsAnotherSpellingOfTheSameTree),
+	// which is the case FragmentReadsAs refuses; the guard reads no pmdoc symbol the base lacks.
+	if blocks[0].ID != paragraph || body != "Opening paragraph, see [^1] here." {
+		t.Fatalf("version 2's first block is %s written %q; the test needs paragraph %s written as a reference", blocks[0].ID, body, paragraph)
 	}
 	versionTwoAt := versionOneAt.Add(time.Hour)
 	insertRenderedVersion(t, tx, artifact, 2, markdown, pmdoc.RendererVersion, versionTwoAt)

@@ -622,8 +622,10 @@ func TestADecisionKeptAsFootnoteShapedTextWaitsOnceItCitesTheFootnote(t *testing
 		t.Fatalf("read version %d: %v", version.Number, err)
 	}
 	kept := strings.TrimSuffix(written.Text, reference) + literal
-	if !strings.Contains(stored, written.Text+"\n") || !pmdoc.ReadsAs(kept, written.Text) {
-		t.Fatalf("version %d = %q; the test needs it to hold the decision as %q, which %q reads alone as", version.Number, stored, written.Text, kept)
+	// That literal and the reference read alone as one (TestReadsAsReadsAnotherSpellingOfTheSameTree),
+	// which is the case FragmentReadsAs refuses; the guard reads no pmdoc symbol the base lacks.
+	if !strings.Contains(stored, written.Text+"\n") {
+		t.Fatalf("version %d = %q; the test needs it to hold the decision as %q", version.Number, stored, written.Text)
 	}
 	another := pmdoc.RendererVersion - 1
 	if _, err := database.Pool.Exec(ctx, `
