@@ -1214,20 +1214,32 @@ export async function seedRows(): Promise<RowSeed> {
   };
 }
 
-/** How many long rows `seedLongRows` writes: whole, at 1440 px, more than ten screens of them. */
+/** How many long rows of the planner's `seedLongRows` writes: whole, at 1440 px, more than ten
+ *  screens of them. */
 export const LONG_ROWS = 60;
 
-/** What `seedLongRows` wrote: the issue, and its long rows by node id, top to bottom. */
+/** How many of the planner's rows stand above the reader's own run of long rows, which is a
+ *  third of the way down the page: well away from both the middle and the rows drawn at load. */
+const ROWS_ABOVE_OWN = 20;
+
+/** How many long rows of the reader's own `seedLongRows` writes: more than fill a screen. */
+const OWN_ROWS = 6;
+
+/** What `seedLongRows` wrote: the issue; the planner's long rows by node id, top to bottom; the
+ *  reader's own long rows, top to bottom; and the planner's row right above the reader's. */
 export interface LongRowsSeed {
   readonly key: string;
   readonly rows: readonly string[];
+  readonly own: readonly string[];
+  readonly aboveOwn: string;
 }
 
 /**
  * One issue whose conversation is the reader's comment and, under it, `LONG_ROWS` replies of the
  * planner's of 160 short words each, which a row cuts at six lines at either width and draws
- * whole shorter than a phone's screen. Drawn whole they make a page many screens tall, so a jump
- * to its middle lands on rows no batch measured.
+ * whole shorter than a phone's screen, with a run of `OWN_ROWS` replies of the reader's own of
+ * the same words after the first `ROWS_ABOVE_OWN`, which no cut ever shortens. Drawn whole they
+ * make a page many screens tall, so a jump into it lands on rows no batch measured.
  */
 export async function seedLongRows(): Promise<LongRowsSeed> {
   await createProject({ key: PROJECT, name: "Rows" });
@@ -1239,8 +1251,14 @@ export async function seedLongRows(): Promise<LongRowsSeed> {
   const head = await createComment(key, { body: "Each reply under this one is long." });
   const body = longWords("w", 160);
   const rows: string[] = [];
+  const own: string[] = [];
   for (let at = 0; at < LONG_ROWS; at += 1) {
+    if (at === ROWS_ABOVE_OWN) {
+      for (let mine = 0; mine < OWN_ROWS; mine += 1) {
+        own.push((await createComment(key, { body, reply_to: head.id })).id);
+      }
+    }
     rows.push((await createComment(key, { body, reply_to: head.id }, asPlanner)).id);
   }
-  return { key, rows };
+  return { aboveOwn: rows[ROWS_ABOVE_OWN - 1] ?? "", key, own, rows };
 }
