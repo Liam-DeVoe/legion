@@ -11,15 +11,18 @@
 -- activity_sent_at is the session's own time of the report, bounded to its receipt, which only
 -- the guard that drops an earlier reading arriving after a later one reads (store's
 -- PutClaimActivity): a session sends its reports without an in-flight guard, so the order they
--- arrive in is not the order it read them in. The launch's write that clears the other activity
--- columns clears it too. Every existing row takes null, which that guard reads as no report yet,
--- so the next report of each claim is written.
+-- arrive in is not the order it read them in. activity_sent_generation is the launch that report
+-- was of: the guard compares two readings of one process alone, so a report of a later launch is
+-- written whatever the process before it last said. The launch's write that clears the other
+-- activity columns clears activity_sent_at too. Every existing row takes null in both, which that
+-- guard reads as no report yet, so the next report of each claim is written.
 --
--- Rolling the image back needs no statement: the release before this one names no such column,
--- so its daemon writes activity_at by the session's clock again and leaves activity_sent_at as it
--- stands, and a daemon rolled forward again orders by it from its next report on. A launch that
--- release made does not clear the column, so the launched process's first reports are dropped
--- until its own clock passes the time the process before it last reported at.
+-- Rolling the image back needs no statement: the release before this one names neither column,
+-- so its daemon writes activity_at by the session's clock again and leaves both as they stand, and
+-- a daemon rolled forward again orders by them from its next report on. A launch that release
+-- made moves the generation and leaves them as the process before it left them, which the guard
+-- then reads as another launch's report, so the launched process's first report is written.
 --
 -- There is no down file: migrations here are forward-only.
 alter table claims add column activity_sent_at timestamptz;
+alter table claims add column activity_sent_generation bigint;

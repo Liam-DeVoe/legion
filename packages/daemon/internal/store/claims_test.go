@@ -1035,6 +1035,38 @@ func TestAReportFromASessionClockBehindTheDaemonStillHoldsTheTurnReportGuard(t *
 	}
 }
 
+// A rollback runs the release before activity_sent_at, whose launch clears the four activity
+// columns it knows and leaves activity_sent_at as the process before it left it. The launched
+// process's reports are of its own generation, so its first is written whatever its own clock
+// reads beside the time the process before it last reported at.
+func TestAReportAfterALaunchTheEarlierReleaseMadeIsWritten(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	c := tmuxClaim("legion-LEGION-212-implementer")
+	if err := store.PutClaim(ctx, c); err != nil {
+		t.Fatalf("put claim: %v", err)
+	}
+	if known, err := store.PutClaimActivity(ctx, c.Token, c.Generation, claim.SessionActivity{At: at(20)}, at(20)); err != nil || !known {
+		t.Fatalf("PutClaimActivity of the process before = %t, %v", known, err)
+	}
+	// The earlier release's launch, in its own statement: it names no activity_sent_at.
+	if _, err := store.Pool().Exec(ctx, `update claims set generation = generation + 1, activity_at = null,
+		activity_background = false, activity_kinds = '', activity_next_reminder_at = null, updated_at = now()
+		where token = $1`, string(c.Token)); err != nil {
+		t.Fatalf("launch the next process as the earlier release does: %v", err)
+	}
+
+	// The launched process's clock runs behind the one before it.
+	first := claim.SessionActivity{At: at(5), BackgroundWork: claim.BackgroundWork{Running: true, Kinds: []string{"async-job"}}}
+	if known, err := store.PutClaimActivity(ctx, c.Token, c.Generation+1, first, at(21)); err != nil || !known {
+		t.Fatalf("PutClaimActivity of the launched process = %t, %v", known, err)
+	}
+	if got, background, kinds, _ := storedActivity(t, store, c.Token); !got.Equal(at(21)) || !background || kinds != "async-job" {
+		t.Fatalf("after the launched process's first report the row reads %s, background %t, kinds %q; want the report received at %s written",
+			got, background, kinds, at(21))
+	}
+}
+
 // A report for a claim the daemon has forgotten is nothing to record, and says so: the route
 // answers it as it answers a wrong secret. A report the ordering guard drops is not that.
 func TestAnActivityReportOfAnUnknownClaimIsNotRecorded(t *testing.T) {

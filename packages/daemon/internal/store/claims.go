@@ -104,7 +104,9 @@ func (s *Store) PutClaim(ctx context.Context, c supervise.Claim) error {
 // A report older than the one recorded is dropped rather than written: a session fires its
 // reports without an in-flight guard, so an earlier reading can land after a later one, and the
 // pod would then be released on a reading the session has already replaced. Older is by the
-// session's own clock (activity_sent_at), the one clock that orders its readings.
+// session's own clock (activity_sent_at), the one clock that orders its readings, and only
+// within one launch (activity_sent_generation): a launch the release before this column made
+// leaves the time the process before it reported at, which says nothing of the launched one.
 //
 // It answers whether the store held the claim at generation when the statement began, which is
 // not always whether it wrote. The answer is the outer select's, read from the snapshot the
@@ -144,9 +146,10 @@ func (s *Store) PutClaimActivity(ctx context.Context, token claim.Token, generat
 	}
 	var known bool
 	err := s.pool.QueryRow(ctx, `with reported as (
-		update claims set activity_at = $2, activity_sent_at = $7, activity_background = $3, activity_kinds = $4,
-			activity_next_reminder_at = $5, updated_at = now()
-		where token = $1 and generation = $6 and (activity_sent_at is null or activity_sent_at <= $7) returning token)
+		update claims set activity_at = $2, activity_sent_at = $7, activity_sent_generation = $6, activity_background = $3,
+			activity_kinds = $4, activity_next_reminder_at = $5, updated_at = now()
+		where token = $1 and generation = $6
+			and (activity_sent_at is null or activity_sent_generation is distinct from $6 or activity_sent_at <= $7) returning token)
 		select exists (select 1 from claims where token = $1 and generation = $6)`,
 		// Only the three known kinds are kept (claim.BackgroundWork.KnownKinds): they reach the
 		// architect's worker-background-stalled notice and the daemon's log.
