@@ -373,7 +373,9 @@ test.describe("agents page", () => {
       await page.keyboard.type("still typing");
 
       release?.();
-      await expect(issueSearchIn(row)).toBeVisible();
+      // The issues have landed, which is when the list decides whether to take the focus; its
+      // text box is drawn at the open, before they land.
+      await expect(issueOption(row, "CORE-1")).toBeVisible();
       await expect(field).toBeFocused();
       await expect(field).toHaveValue("still typing");
       await expect(row.getByRole("button", { name: "Choose issue" })).toContainText("No issue");
