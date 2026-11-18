@@ -56,19 +56,44 @@ func stepOfWalk(w Walk, place record.TaskPlace) (step int, kind, role, typ strin
 	return 0, "", "", "", false
 }
 
-// stepAt is the step the run whose walk is w runs while its issue stands in at
-// (record.StandsAt): the place its count of starts is kept under, its place in the task, its role
-// and its type. A run with plan rows runs the step of its one task at the place at holds on the
-// task's line (stepOfWalk), under the task's id, so an owner's plan of `implementer reviewer`
-// records its implementer at step 1 of its own task and has no step 3, 4 or 5. A run with none
-// runs today's step of the task default (stepOf), so an issue that ran before plan rows keeps the
-// ids of its records (R20). A phase the line does not hold, and one that runs no step, answer ok
-// false.
-func stepAt(w Walk, at phase.Phase) (place record.StepPlace, step int, role, typ string, ok bool) {
-	if !w.Stored {
-		return stepOf(at)
+// stepSite is the place a caller of stepAt asks for, made by standingIn or placeNamed. The zero
+// stepSite is no place: stepAt answers ok false for it.
+type stepSite struct {
+	at    phase.Phase
+	place record.TaskPlace
+	named bool
+}
+
+// standingIn is where the task stands while its issue stands in at (record.StandsAt):
+// Walk.placeIn on a stored walk, and today's step of at (stepOf) on a walk with no plan rows.
+func standingIn(at phase.Phase) stepSite { return stepSite{at: at} }
+
+// placeNamed is a place the caller names: place on a stored walk; on a walk with no plan rows,
+// whose rows carry no place that it reads, today's step of at (stepOf), so an issue that ran
+// before plan rows keeps the ids of its records (R20).
+func placeNamed(place record.TaskPlace, at phase.Phase) stepSite {
+	return stepSite{at: at, place: place, named: true}
+}
+
+// stepAt is the step the run whose walk is w runs at site: the place its count of starts is kept
+// under, its place in the task, its role and its type. A run with plan rows runs the step of its
+// one task at the site's place on the task's line (stepOfWalk), under the task's id, so an owner's
+// plan of `implementer reviewer` records its implementer at step 1 of its own task and has no step
+// 3, 4 or 5, and of two steps that run as step, the one the site names. A run with none runs
+// today's step of the task default (stepOf), so an issue that ran before plan rows keeps the ids
+// of its records (R20). No place, a phase the line does not hold, and one that runs no step,
+// answer ok false.
+func stepAt(w Walk, site stepSite) (place record.StepPlace, step int, role, typ string, ok bool) {
+	if site == (stepSite{}) {
+		return record.StepPlace{}, 0, "", "", false
 	}
-	stands, ok := w.PlaceOf(at)
+	if !w.Stored {
+		return stepOf(site.at)
+	}
+	stands, ok := site.place, site.named
+	if !site.named {
+		stands, ok = w.placeIn(site.at)
+	}
 	if !ok {
 		return record.StepPlace{}, 0, "", "", false
 	}
@@ -127,7 +152,7 @@ var stepStopped = StepEnd{Result: "stopped"}
 // phase that runs no step writes nothing, and neither does a record key that is no issue key
 // (recordsSteps).
 func (e *Engine) startStep(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, agent claim.Token) error {
-	place, step, role, typ, ok := stepAt(w, record.StandsAt(issue))
+	place, step, role, typ, ok := stepAt(w, standingIn(record.StandsAt(issue)))
 	if !ok || !recordsSteps(issue) {
 		return nil
 	}
@@ -171,7 +196,7 @@ func (e *Engine) endStep(ctx context.Context, tx pgx.Tx, before record.Issue, en
 		return err
 	}
 	at := record.StandsAt(before)
-	place, step, role, typ, ok := stepAt(w, at)
+	place, step, role, typ, ok := stepAt(w, standingIn(at))
 	if !ok {
 		return nil
 	}
@@ -282,14 +307,15 @@ func (e *Engine) readAgent(agent claim.Token) StepAgent {
 }
 
 // endOfTransition is how a transition on trigger ends the step of from on w, the walk of the
-// issue's run, moving the issue into to with handoff as the completion's row: endOf's result, the
-// place of to's step on w where the work goes back (stepAt), and the handoff record handoff names
-// when its role is the role of from. A phase that runs no step, admitted among them, whose role
-// is the architect's, ends no step and names no report.
-func endOfTransition(w Walk, trigger TriggerKind, from, to phase.Phase, handoff record.PhaseRow) StepEnd {
+// issue's run, where the task stands, with handoff as the completion's row: endOf's result, the
+// place of the step at to on w where the work goes back (stepAt; to is the place the transition's
+// row moves the task to, or no place for a fail that returns nowhere), and the handoff record
+// handoff names when its role is the role of from. A phase that runs no step, admitted among them,
+// whose role is the architect's, ends no step and names no report.
+func endOfTransition(w Walk, trigger TriggerKind, from phase.Phase, to stepSite, handoff record.PhaseRow) StepEnd {
 	result, returns := endOf(trigger)
 	end := StepEnd{Result: result}
-	if _, _, _, _, ok := stepAt(w, from); !ok {
+	if _, _, _, _, ok := stepAt(w, standingIn(from)); !ok {
 		return end
 	}
 	if _, step, _, _, ok := stepAt(w, to); returns && ok {
@@ -328,7 +354,7 @@ func (e *Engine) StartStepRecord(ctx context.Context, tx pgx.Tx, issue record.Is
 		return err
 	}
 	at := record.StandsAt(issue)
-	place, _, _, _, ok := stepAt(w, at)
+	place, _, _, _, ok := stepAt(w, standingIn(at))
 	if !ok {
 		return nil
 	}

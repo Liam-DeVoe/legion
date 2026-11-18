@@ -282,7 +282,8 @@ func TestEachTaskLabelIsOneThePromptsName(t *testing.T) {
 	readers := taskReaders(t)
 	issue := record.Issue{Key: "LEGION-208", Title: "root", Phase: phase.Reviewing}
 	steps := []record.PlanStep{{Task: "a", Position: 1, Role: "implementer"}, {Task: "a", Position: 2, Role: "reviewer"}}
-	w := Walk{Stored: true, Task: "a", Text: "Build the widget.", Steps: steps, Line: []phase.Phase{phase.Implementing, phase.Reviewing, phase.Retro, phase.Merging}}
+	w := Walk{Stored: true, Task: "a", Text: "Build the widget.", Steps: steps, Line: []phase.Phase{phase.Implementing, phase.Reviewing, phase.Retro, phase.Merging},
+		State: record.TaskRunning, Place: record.TaskPlace{Kind: record.PlaceStep, Position: 2}}
 	rows := []record.PhaseRow{{Role: claim.RoleImplementer, HandoffRecord: "implement-1", HandoffVersion: 1}}
 	at, err := standingText(issue, func(record.Issue) string { return "/work" }, w, rows)
 	if err != nil {
@@ -331,10 +332,10 @@ func TestEachTaskLabelIsOneThePromptsName(t *testing.T) {
 	if !strings.Contains(readers, noStep) {
 		t.Errorf("no prompt or skill a worker reads spells out %s, the task of the retro and of the merger", noStep)
 	}
-	for _, p := range []phase.Phase{phase.Retro, phase.Merging} {
-		after := issue
-		after.Phase = p
-		at, err := standingText(after, func(record.Issue) string { return "/work" }, w, rows)
+	for p, place := range map[phase.Phase]record.TaskPlace{phase.Retro: {Kind: record.PlaceRetro}, phase.Merging: {Kind: record.PlaceMerge}} {
+		after, there := issue, w
+		after.Phase, there.Place = p, place
+		at, err := standingText(after, func(record.Issue) string { return "/work" }, there, rows)
 		if err != nil {
 			t.Fatal(err)
 		}

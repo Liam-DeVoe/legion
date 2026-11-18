@@ -246,7 +246,7 @@ func (e *Engine) rateRetro(ctx context.Context, tx pgx.Tx, issue record.Issue, r
 	if err != nil {
 		return err
 	}
-	place, step, role, typ, _ := stepAt(w, phase.Retro)
+	place, step, role, typ, _ := stepAt(w, placeNamed(record.TaskPlace{Kind: record.PlaceRetro}, phase.Retro))
 	start, err := e.store.StepStarts(ctx, tx, issue.Key, place)
 	if err != nil {
 		return err
@@ -313,14 +313,14 @@ func (e *Engine) lateReport(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if err != nil || !w.Stored {
 		return nil, err
 	}
-	at, ok := w.PlaceOf(reported)
+	at, ok := w.placeOfRole(fact.Role)
 	if !ok || at.Kind != record.PlaceStep {
 		return nil, nil
 	}
 	ended := w.Steps[at.Position-1].Role
 	named := fact.HandoffRecord != ""
 	if left {
-		now, ok := w.PlaceOf(issue.Phase)
+		now, ok := w.placeIn(issue.Phase)
 		if !ok || now.Kind != record.PlaceStep {
 			return nil, nil
 		}

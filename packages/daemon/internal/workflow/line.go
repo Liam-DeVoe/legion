@@ -65,9 +65,10 @@ func (e *Engine) walk(ctx context.Context, tx pgx.Tx, issue record.Issue) (Walk,
 		Version: stored.Version}, nil
 }
 
-// PlaceOf is where the task stands while its issue stands in p: the step of the line that runs
-// as p, at its place from 1, or the retro or the merge at place 0. A phase the line does not hold
-// has no place.
+// PlaceOf is the first place of w's line that runs as p: the step of the line that runs as p, at
+// its place from 1, or the retro or the merge at place 0. A phase the line does not hold has no
+// place. Two steps that run as step are two places, so a reader of where the task stands reads
+// placeIn, and PlaceOf serves a phase that stands once in its line.
 func (w Walk) PlaceOf(p phase.Phase) (record.TaskPlace, bool) {
 	switch p {
 	case phase.Retro:
@@ -79,6 +80,21 @@ func (w Walk) PlaceOf(p phase.Phase) (record.TaskPlace, bool) {
 		return record.TaskPlace{Kind: record.PlaceStep, Position: at + 1}, true
 	}
 	return record.TaskPlace{}, false
+}
+
+// placeIn is where w's task stands while its issue stands in p: for a stored walk, w.Place where
+// the phase it derives for a running task (issuePhaseOf) is p, and no place otherwise; for a walk
+// with no plan rows, the place of p on today's line (PlaceOf), whose phases each stand once.
+// moveTask keeps w.Place with the issue's phase, so a caller that reads the walk and the issue in
+// one transaction finds one place.
+func (w Walk) placeIn(p phase.Phase) (record.TaskPlace, bool) {
+	if !w.Stored {
+		return w.PlaceOf(p)
+	}
+	if w.Place.Kind == "" || issuePhaseOf(w, w.Place, record.TaskRunning) != p {
+		return record.TaskPlace{}, false
+	}
+	return w.Place, true
 }
 
 // steps is the part of the line each step runs: all of it but the retro and the merge.

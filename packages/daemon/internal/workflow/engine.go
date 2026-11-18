@@ -1631,7 +1631,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if returns {
 		to, found := w.returnTarget()
 		if !found {
-			return e.stopUnreturned(ctx, tx, issue, w, endOfTransition(w, trigger, issue.Phase, "", handoff))
+			return e.stopUnreturned(ctx, tx, issue, w, endOfTransition(w, trigger, issue.Phase, stepSite{}, handoff))
 		}
 		if row, ok = w.row(issue.Phase, trigger, to, snapshot); !ok {
 			return fmt.Errorf("return the work of %s from %+v to %+v: its line %v holds no such return", issue.Key, w.Place, to, w.Line)
@@ -1692,7 +1692,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	}
 	// The move ends the step the issue stood in, on the issue as it stood: before the phase write,
 	// and before the start below writes the step it moves into.
-	if err := e.endStep(ctx, tx, issue, endOfTransition(w, trigger, issue.Phase, row.To, handoff)); err != nil {
+	if err := e.endStep(ctx, tx, issue, endOfTransition(w, trigger, issue.Phase, placeNamed(row.ToPlace, row.To), handoff)); err != nil {
 		return err
 	}
 	from := issue.Phase
