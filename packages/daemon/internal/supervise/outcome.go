@@ -13,7 +13,7 @@ import (
 // alone: each charge function asks it (chargePrompt, chargeDeath, and chargeLaunch, through which
 // relaunchAfterFailure counts), and each site that can charge names its outcome and decides
 // nothing. The one outcome a site names from more than the frame is the agent's busy answer, and
-// one rule names it, from facts the daemon holds itself and never from words
+// one rule names it, from the daemon's own record or the agent's get_state, never from its words
 // (agentRefusalOutcome). An outcome is never stored: what ended a failed claim is a FailureCause,
 // a different type whose doc says how the two differ, and failureCause is the one place a cause is
 // derived from an outcome.
@@ -145,7 +145,7 @@ func sendOutcome(err error) runtime.Outcome {
 // its Oh My Pi gives its busy refusal no code, and a pod moves onto this image only at its update
 // round, never when the daemon moves. The record is read first because it costs nothing, and
 // because the ask can time out, where charging a working agent is the worse mistake; an ask that
-// fails or times out says the agent is not streaming (isStreaming). So an agent of the earlier
+// fails or times out says the agent is not streaming (streaming). So an agent of the earlier
 // image that refuses busy with no code, while the daemon's record does not hold the claim working,
 // and that does not answer get_state within the RPC bound, is still charged as unrecognised (as a
 // prompt that ran no turn, for a result) until its pod's update round; so is one whose turn ended
@@ -159,8 +159,10 @@ func (m *Machine) agentRefusalOutcome(ctx context.Context, o runtime.Outcome) ru
 	if m.claim.State == StateWorking {
 		return runtime.OutcomeAgentBusy
 	}
-	if conn, connected := m.deps.Conns.Conn(m.claim.Token); connected && m.isStreaming(ctx, conn) {
-		return runtime.OutcomeAgentBusy
+	if conn, connected := m.deps.Conns.Conn(m.claim.Token); connected {
+		if streaming, _ := m.streaming(ctx, conn); streaming {
+			return runtime.OutcomeAgentBusy
+		}
 	}
 	return o
 }

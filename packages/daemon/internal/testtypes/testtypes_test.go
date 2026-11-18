@@ -3,7 +3,6 @@ package testtypes
 import (
 	"go/token"
 	"go/types"
-	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -30,8 +29,8 @@ func TestCheckPackageReadsTheFilesTheBuildCompilesAndNoOther(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CheckPackage: %v", err)
 	}
-	if names := slices.Sorted(maps.Keys(checked.Files)); !slices.Equal(names, []string{"a.go"}) {
-		t.Errorf("CheckPackage read %v, want a.go alone: the build compiles no test file and no file its constraints leave out", names)
+	if !slices.Equal(checked.Names, []string{"a.go"}) {
+		t.Errorf("CheckPackage read %v, want a.go alone: the build compiles no test file and no file its constraints leave out", checked.Names)
 	}
 	if checked.Types.Path() != "example.com/p" {
 		t.Errorf("CheckPackage checked the package as %q, want the path it was given", checked.Types.Path())

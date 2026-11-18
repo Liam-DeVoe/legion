@@ -2274,8 +2274,8 @@ package api
 // still on the earlier image, until its update round, sends its busy refusal with no code, and the
 // daemon reads it as busy from its own record of the claim working or from the agent's get_state
 // (supervise's agentRefusalOutcome); one that does not answer get_state within the RPC bound while
-// the record does not hold the claim working is charged as unrecognised. Nothing of the daemon API
-// changes with the pin.
+// the record does not hold the claim working is charged as unrecognised for its refusal, and as a
+// prompt that ran no turn for its prompt's result. Nothing of the daemon API changes with the pin.
 // (This entry takes 162, the lowest number above main's 152 that no open pull request declared,
 // as .github/scripts/check-daemon-api-contract.sh read every open head's own copy of this file at
 // 2026-11-18T07:20Z: 153 #4115, 154 #3659, 155 #4273, 156 #4065, 157 #2230 and #3993, 158 #4017,

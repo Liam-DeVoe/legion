@@ -1503,8 +1503,9 @@ func (s *Postgres) ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree stri
 // forgetSuperseded deletes in tx each decision tree keeps on issue that does not stand, asked of
 // stands against the gates of the issue it was made on, or each one it keeps on any of its
 // issues when issue is "". Only the cleared issues' decisions are asked: a decision is asked of
-// the gates of the issue it was made on, and every other issue keeps its gates. Each issue's
-// gates are read once. A nil stands is refused before anything is read or written, so a clear
+// the gates of the issue it was made on, and every other issue keeps its gates. The gates of
+// every issue a decision is asked on are read in one read (Gates), and none are read when no
+// decision is asked. A nil stands is refused before anything is read or written, so a clear
 // handed no rule clears nothing.
 func (s *Postgres) forgetSuperseded(ctx context.Context, tx pgx.Tx, tree, issue string, stands KeptStands, describe string) error {
 	if stands == nil {
@@ -1514,21 +1515,28 @@ func (s *Postgres) forgetSuperseded(ctx context.Context, tx pgx.Tx, tree, issue 
 	if err != nil {
 		return fmt.Errorf("%s: %w", describe, err)
 	}
-	gates := map[string]map[DesignStep]DesignGate{}
-	var spent []DecisionMark
+	var asked []DecisionMark
+	var issues []string
 	for _, d := range decisions {
 		if issue != "" && d.Issue != issue {
 			continue
 		}
-		held, read := gates[d.Issue]
-		if !read {
-			if held, err = s.GatesOf(ctx, tx, d.Issue); err != nil {
-				return fmt.Errorf("%s: %w", describe, err)
-			}
-			gates[d.Issue] = held
+		asked = append(asked, d.Mark())
+		if !slices.Contains(issues, d.Issue) {
+			issues = append(issues, d.Issue)
 		}
-		mark := DecisionMark{Ref: d.Ref, At: d.At, Issue: d.Issue, Decision: d.Decision, Actor: d.Actor, Seq: d.Seq}
-		if !stands(held, mark) {
+	}
+	if len(asked) == 0 {
+		return nil
+	}
+	gates, err := s.Gates(ctx, tx, issues)
+	if err != nil {
+		return fmt.Errorf("%s: %w", describe, err)
+	}
+	var spent []DecisionMark
+	for _, mark := range asked {
+		// Gates gives no entry for an issue with no gate, and the nil map reads as an empty one.
+		if !stands(gates[mark.Issue], mark) {
 			spent = append(spent, mark)
 		}
 	}

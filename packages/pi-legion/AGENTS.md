@@ -763,19 +763,17 @@ session reminds the worker exactly when the daemon answers that the claim owes w
 that work in the daemon's words; it reminds again at the end of every turn for as long as the
 daemon answers so. The reminder says the daemon's record holds that work open for the role: run
 `handoff_complete`, or reply with a line starting WAITING that names what the worker waits on. An
-answer that does not
-arrive — an error, the bound passing, a refusal, or a body the contract does not describe — still
-nudges the worker (`UNREAD_CHECK`), with words that say the record could not be read and
-name no phase and no operation. A final message holding a tool call written as text is told so
-first. The first reminder of a run is the host's own continuation
-(`{continue: true, additionalContext}`), one more turn of the same session; every one after it
-comes from a timer as a steered
-`legion-phase-reminder` message that starts a turn (`pi.sendMessage`), so the run settles and the
-daemon sees the turn end and can deliver a queued task. A WAITING reply buys
-`LEGION_STALL_WAITING_MS` of quiet and then the same reminder. The host's timer cannot be
-cancelled, so a generation counter, bumped by everything that makes an armed timer stale (a turn
-starting, a settle, a session change, a reminder going out), is the whole defence against two
-timers reminding twice; a timer that is due asks the daemon again before it reminds.
+answer that does not arrive — an error, the bound passing, a refusal, or a body the contract does
+not describe — still nudges the worker (`UNREAD_CHECK`), with words that say the record could not be
+read and name no phase and no operation. A final message holding a tool call written as text is told
+so first. The first reminder of a run is the host's own continuation
+(`{continue: true, additionalContext}`), one more turn of the same session; every one after it comes
+from a timer as a steered `legion-phase-reminder` message that starts a turn (`pi.sendMessage`), so
+the run settles and the daemon sees the turn end and can deliver a queued task. A WAITING reply buys
+`LEGION_STALL_WAITING_MS` of quiet and then the same reminder. The host's timer cannot be cancelled,
+so a generation counter, bumped by everything that makes an armed timer stale (a turn starting, a
+settle, a session change, a reminder going out), is the whole defence against two timers reminding
+twice; a timer that is due asks the daemon again before it reminds.
 
 A count of reminders the worker has done nothing about climbs by one per delivered reminder and
 drops to zero as soon as anything happens — a real tool call in the settling message (a `toolCall`
@@ -783,35 +781,33 @@ block, Oh My Pi's name for it; `assistantRanTool` also takes Claude Code's `tool
 daemon's task, an Envoy delivery. At `LEGION_STALL_ARCHITECT_AFTER` the session tells the
 architect the daemon names as the claim's owner in its owed answer (`architect`: the issue's own
 architect while its claim holds its role, else the nearest one above it whose claim holds its
-role, else the tree root's),
-or the tree's architect while no answer has named one, over Envoy, once per run of reminders: the
-notice carries the issue, the role, the work the daemon answered was owed (absent when the answer
-could not be read), the count and the head of the worker's last message under one idempotency
-key, minted at the first attempt and kept until the count resets. The notice sends no `keep`
-field, so when no live session holds the architect role, the listener keeps the notice on the
-role's kept lane for one hour and answers 202 kept. A kept answer does not mean that the architect
-was told, so the next reminder publishes the notice again. When the answer names `kept_until`,
-that publish uses the same key: the listener answers it with the copy it still holds, or keeps a
-new copy once that copy has been forwarded or its hour has ended. A listener of an earlier release
-names no `kept_until` and answers a repeated key as the first copy for 72 hours, so such an answer
-clears the key, and the next attempt mints a new one. The stall watch's notice of a stuck tool
-call (`src/stall-evidence.ts`), to the architect the owed answer it asks for then names, else the
-tree's, or, for a root architect's own call, to the controller, also sends no `keep` field, and a
-kept answer reports that no owner was told. The listener answers a session past its send limit
+role, else the tree root's), or the tree's architect while no answer has named one, over Envoy, once
+per run of reminders: the notice carries the issue, the role, the work the daemon answered was owed
+(absent when the answer could not be read), the count and the head of the worker's last message
+under one idempotency key, minted at the first attempt and kept until the count resets. The notice
+sends no `keep` field, so when no live session holds the architect role, the listener keeps the
+notice on the role's kept lane for one hour and answers 202 kept. A kept answer does not mean that
+the architect was told, so the next reminder publishes the notice again. When the answer names
+`kept_until`, that publish uses the same key: the listener answers it with the copy it still holds,
+or keeps a new copy once that copy has been forwarded or its hour has ended. A listener of an
+earlier release names no `kept_until` and answers a repeated key as the first copy for 72 hours, so
+such an answer clears the key, and the next attempt mints a new one. The stall watch's notice of a
+stuck tool call (`src/stall-evidence.ts`), to the architect the owed answer it asks for then names,
+else the tree's, or, for a root architect's own call, to the controller, also sends no `keep` field,
+and a kept answer reports that no owner was told. The listener answers a session past its send limit
 with 429 `sender_rate_limited` and the whole seconds until it takes the next message: the stall
-watch waits that long and sends its notice again under the same key, at most 3 times, so the
-notice is sent at most 4 times. It sends again in the background, so no resend's wait holds a step
-of the ladder: the one wait that does is the owed read the notice of a phase worker names its
-architect from, made before the first publish and bounded at `OWED_READ_BOUND_MS` (3 s). A resend
-that is answered and not kept records the owner as told. The phase reminder's
-notice needs no such resend: a refused publish leaves it unreported, and the next reminder
-publishes it again. A kept notice that no session takes in its hour comes back to this worker's
-session as a dead letter, an Envoy card that names it, unless Envoy drops it
-more than an hour late. A reminder is dropped when the daemon answers that the claim owes nothing:
-its phase finished, through the tool, from the shell or by a move of the issue it did not make, or
-the daemon failed the claim. A worker the daemon relaunched is reminded from a timer
-`LEGION_STALL_RESUME_MS` after its claim boots, if the daemon then answers that its claim owes
-work, since nothing else would wake it.
+watch waits that long and sends its notice again under the same key, at most 3 times, so the notice
+is sent at most 4 times. It sends again in the background, so no resend's wait holds a step of the
+ladder: the one wait that does is the owed read the notice of a phase worker names its architect
+from, made before the first publish and bounded at `OWED_READ_BOUND_MS` (3 s). A resend that is
+answered and not kept records the owner as told. The phase reminder's notice needs no such resend: a
+refused publish leaves it unreported, and the next reminder publishes it again. A kept notice that
+no session takes in its hour comes back to this worker's session as a dead letter, an Envoy card
+that names it, unless Envoy drops it more than an hour late. A reminder is dropped when the daemon
+answers that the claim owes nothing: its phase finished, through the tool, from the shell or by a
+move of the issue it did not make, or the daemon failed the claim. A worker the daemon relaunched is
+reminded from a timer `LEGION_STALL_RESUME_MS` after its claim boots, if the daemon then answers
+that its claim owes work, since nothing else would wake it.
 
 A turn the provider refused earns no continuation, and its settle earns no reminder of its own.
 `session_stop` classifies the settling message (`turnEndOf`): a reply Oh My Pi stopped at `error`

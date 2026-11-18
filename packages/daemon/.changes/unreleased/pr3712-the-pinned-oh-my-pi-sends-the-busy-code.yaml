@@ -8,4 +8,5 @@ body: |-
   code: the daemon reads it as busy, charging nothing, when its own record holds the claim working
   or when the agent's `get_state` says it is streaming. Such an agent that does not answer
   `get_state` within the RPC bound, while the daemon's record does not hold the claim working, is
-  charged as unrecognised until its pod's update round.
+  charged as unrecognised for its refusal, and as a prompt that ran no turn for its prompt's
+  result, until its pod's update round.

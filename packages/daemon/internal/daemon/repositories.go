@@ -2255,24 +2255,29 @@ func (w *workflowRuntime) followListing(ctx context.Context, only map[string]boo
 	}
 	records := recordsByKey(issues)
 	reads := followReads{}
-	follow := make([]intake.DispatchIssue, 0, len(records))
+	size := len(records)
+	if only != nil {
+		size = len(only)
+	}
+	follow := make([]intake.DispatchIssue, 0, size)
 	for _, summary := range listed {
 		recorded := records[summary.Key]
 		if recorded == nil || only != nil && !only[summary.Key] {
 			continue
 		}
-		if left == nil {
-			prepared, err := w.prepareRecorded(reading, intake.ListedIssue(summary), recorded, false, reads)
-			if reading.Err() == nil {
-				if err != nil {
-					return nil, fmt.Errorf("prepare the repository of %s for the repository mapping's change: %w", summary.Key, err)
-				}
-				follow = append(follow, prepared)
-				continue
-			}
-			left = map[string]bool{}
+		if left != nil {
+			left[summary.Key] = true
+			continue
 		}
-		left[summary.Key] = true
+		prepared, err := w.prepareRecorded(reading, intake.ListedIssue(summary), recorded, false, reads)
+		switch {
+		case reading.Err() != nil:
+			left = map[string]bool{summary.Key: true}
+		case err != nil:
+			return nil, fmt.Errorf("prepare the repository of %s for the repository mapping's change: %w", summary.Key, err)
+		default:
+			follow = append(follow, prepared)
+		}
 	}
 	if len(follow) == 0 {
 		return left, nil
@@ -3257,7 +3262,7 @@ func (w *workflowRuntime) prepareIssue(ctx context.Context, issue intake.Dispatc
 		return issue, err
 	}
 	if recorded != nil {
-		prepared, err := w.prepareRecorded(ctx, issue, recorded, false, followReads{})
+		prepared, err := w.prepareRecorded(ctx, issue, recorded, false, nil)
 		if err != nil {
 			return prepared, err
 		}
@@ -3358,7 +3363,7 @@ func (w *workflowRuntime) prepareArtifact(ctx context.Context, fact intake.Dispa
 func (w *workflowRuntime) prepareListed(ctx context.Context, records map[string]*record.Issue, walk ancestry, issue intake.DispatchIssue, boot bool) (intake.DispatchIssue, error) {
 	recorded := records[issue.Key]
 	if recorded != nil {
-		prepared, err := w.prepareRecorded(ctx, issue, recorded, boot, followReads{})
+		prepared, err := w.prepareRecorded(ctx, issue, recorded, boot, nil)
 		if err != nil {
 			return prepared, err
 		}
@@ -3382,8 +3387,8 @@ func (w *workflowRuntime) prepareListed(ctx context.Context, records map[string]
 // (the boot's, or the follow's: followListing): no event of it is held as an admission any longer
 // (forgetIssue), and one that names no repository (ResolvedRepoMissing) takes the record's. reads
 // keeps the pass's reads of the repositories no mapping names (followReads): a follow pass's,
-// which every issue of that pass shares, or a fresh one an event's or a listing's preparation
-// passes for its own issue, which reads for that one issue.
+// which every issue of that pass shares, or nil for an event's or a listing's preparation, which
+// reads for its one issue and keeps nothing.
 //
 // A resolution that names another repository is the repository the record follows
 // (workflow.Engine.ApplyRepositoryChange), which resolves it inside the fact's own transaction,
@@ -3405,8 +3410,8 @@ func (w *workflowRuntime) prepareListed(ctx context.Context, records map[string]
 //     so a kept read would move the record onto a repository an App was uninstalled from since,
 //     or at a default branch renamed since. In the follow's pass it is read once, at the first
 //     issue the pass moves onto it, and every other issue of that pass moved onto it takes that
-//     pass's read (readCorrection); an event's preparation reads for its own issue alone, into
-//     reads of its own.
+//     pass's read (readCorrection); an event's preparation, which passes no reads, reads for its
+//     own issue alone.
 //     Both installed, the read replaces the recorded set's entry (repositories.recordRepository)
 //     and travels on the fact (intake.DispatchIssue.RepositoryRead), and the record follows onto
 //     GitHub's name and default branch from it and from nothing else
@@ -3454,8 +3459,8 @@ func (w *workflowRuntime) prepareRecorded(ctx context.Context, issue intake.Disp
 // followReads is what one preparation pass read of each repository no mapping names that its
 // issues move onto, by the repository's lowercased <owner>/<name>, as the first issue's
 // preparation read it (readCorrection): a follow pass's (followListing), which every issue of the
-// pass shares, or the one an event's or a listing's preparation makes for its one issue. It lives
-// for that pass alone, so no pass takes a read made at an earlier one.
+// pass shares. It lives for that pass alone, so no pass takes a read made at an earlier one. An
+// event's or a listing's preparation passes none (nil), and reads for its one issue.
 type followReads map[string]unmappedRead
 
 // unmappedRead is what one correction's reads of a repository no mapping names answered
@@ -3471,19 +3476,19 @@ type unmappedRead struct {
 // readCorrection is issue, which Dispatch moves off its record's repository onto one no mapping
 // names, carrying what its correction is written from (readUnmapped, through
 // defaultBranches.Fresh). The repository is read at the first issue of reads' pass moved onto it
-// and every other takes that read: in a follow pass, every issue of the pass; in an event's
-// preparation, whose reads are its own, this issue alone. A name that is no <owner>/<name>
-// (intake.RefusedName) asked GitHub nothing and its refusal names this issue, so it is not kept
-// for any other issue to take.
+// and every other takes that read: in a follow pass, every issue of the pass; in an event's or a
+// listing's preparation, whose reads are nil and keep nothing, this issue alone. A name that is
+// no <owner>/<name> (intake.RefusedName) asked GitHub nothing and its refusal names this issue,
+// so it is not kept for any other issue to take.
 func (w *workflowRuntime) readCorrection(ctx context.Context, issue intake.DispatchIssue, reads followReads) intake.DispatchIssue {
 	key := strings.ToLower(issue.ResolvedRepo)
 	if taken, read := reads[key]; read {
 		issue.RepositoryRead, issue.RepositoryRefusal, issue.RepositoryRefusalKind = taken.read, taken.refusal, taken.kind
 		return issue
 	}
-	prepared, read := w.readUnmapped(ctx, issue, correct)
+	prepared, read := w.readUnmapped(ctx, issue, correctRecorded)
 	prepared.RepositoryRead = read
-	if prepared.RepositoryRefusalKind != intake.RefusedName {
+	if reads != nil && prepared.RepositoryRefusalKind != intake.RefusedName {
 		reads[key] = unmappedRead{read: read, refusal: prepared.RepositoryRefusal, kind: prepared.RepositoryRefusalKind}
 	}
 	return prepared
@@ -3778,10 +3783,10 @@ const (
 	// nothing, and the repository is left for the recovery (leaveForRecovery; prepareListed
 	// says why).
 	admitAtBoot
-	// correct is a recorded issue's correction (readCorrection): the name and default branch are
-	// read through defaultBranches.Fresh, which never answers from a read it holds, and a read
-	// ctx's end cut short leaves the repository as it found it.
-	correct
+	// correctRecorded is a recorded issue's correction (readCorrection): the name and default
+	// branch are read through defaultBranches.Fresh, which never answers from a read it holds,
+	// and a read ctx's end cut short leaves the repository as it found it.
+	correctRecorded
 )
 
 // readUnmapped makes prepareUnmapped's reads of the repository issue resolves to, one no mapping
@@ -3817,11 +3822,11 @@ func (w *workflowRuntime) readUnmapped(ctx context.Context, issue intake.Dispatc
 		return issue, nil
 	}
 	branch := w.defaultBranches.Named
-	if mode == correct {
+	if mode == correctRecorded {
 		branch = w.defaultBranches.Fresh
 	}
 	leave := func(reason string) {
-		if mode != correct || ctx.Err() == nil {
+		if mode != correctRecorded || ctx.Err() == nil {
 			w.leaveUnread(repo, reason)
 		}
 	}

@@ -73,7 +73,8 @@ const (
 	// IdleHoldBundleTooLarge: the workspace's unpushed work does not fit the bundle a release
 	// carries (runtime.MaxWorkspaceBundleBytes), so the pod is kept and the work with it. The
 	// save that finds it tells the issue's worker once, and the idle rule keeps the pod under it
-	// until a role of the pod does something or the branch moves (pods.BundleRefusal).
+	// until a turn of a role of the pod, or a push that moves the head of the issue's pull request
+	// (pods.BundleRefusal).
 	IdleHoldBundleTooLarge
 	// IdleHoldBundleSave: the bundle could not be built or could not be saved, so the pod is kept.
 	// The next idle tick marks the release again: such a cause is no worker's to cure, so the

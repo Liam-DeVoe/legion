@@ -168,7 +168,7 @@ func TestOutcomeSourceHoldsThePolicyAtItsSites(t *testing.T) {
 	t.Run("no function but a charge function or a reset writes a budget counter", func(t *testing.T) {
 		counters := src.budgetCounters(t)
 		wrote := map[string]bool{}
-		for name, file := range src.files {
+		for i, file := range src.files {
 			for _, decl := range file.Decls {
 				fn, ok := decl.(*ast.FuncDecl)
 				if !ok || fn.Body == nil {
@@ -176,7 +176,7 @@ func TestOutcomeSourceHoldsThePolicyAtItsSites(t *testing.T) {
 				}
 				for _, write := range src.budgetWrites(fn.Body, counters) {
 					wrote[fn.Name.Name] = true
-					where := fmt.Sprintf("%s (%s, in %s)", src.pos(write.target), name, fn.Name.Name)
+					where := fmt.Sprintf("%s (%s, in %s)", src.pos(write.target), src.names[i], fn.Name.Name)
 					switch {
 					case slices.Contains(chargeFunctions, fn.Name.Name):
 					case budgetResets[fn.Name.Name] != "":
@@ -296,12 +296,19 @@ func (s *goSource) isZero(expr ast.Expr) bool {
 	return ok && len(literal.Elts) == 0
 }
 
-// goSource is one package's non-test source, type-checked (testtypes.CheckPackage).
+// goSource is one package's non-test source, type-checked (testtypes.CheckPackage), with its files
+// in the order of their names (testtypes.Package.Files), so the test reads them, and reports what
+// it finds, in the same order on every run.
 type goSource struct {
 	fileset *gotoken.FileSet
-	files   map[string]*ast.File
-	pkg     *types.Package
-	info    *types.Info
+	files   []*ast.File
+	// names is the name of each of files, at the same index.
+	names []string
+	pkg   *types.Package
+	info  *types.Info
+	// given is what assignments answers, read once on its first call: both taints and the judge
+	// read it, and it walks every file of the package.
+	given map[types.Object][]ast.Expr
 }
 
 // checkOutcomeSources type-checks the packages this test reads — this one, the runtime that
@@ -317,7 +324,7 @@ func checkOutcomeSources(t *testing.T) map[string]*goSource {
 		if err != nil {
 			t.Fatal(err)
 		}
-		sources[path] = &goSource{fileset: fileset, files: checked.Files, pkg: checked.Types, info: checked.Info}
+		sources[path] = &goSource{fileset: fileset, files: checked.Files, names: checked.Names, pkg: checked.Types, info: checked.Info}
 	}
 	return sources
 }
@@ -352,9 +359,11 @@ func (s *goSource) declaredOutcomes(t *testing.T) []declaredOutcome {
 // funcDecl is the declaration of the package-level function name in file.
 func (s *goSource) funcDecl(t *testing.T, file, name string) *ast.FuncDecl {
 	t.Helper()
-	for _, decl := range s.files[file].Decls {
-		if fn, ok := decl.(*ast.FuncDecl); ok && fn.Recv == nil && fn.Name.Name == name {
-			return fn
+	if i := slices.Index(s.names, file); i >= 0 {
+		for _, decl := range s.files[i].Decls {
+			if fn, ok := decl.(*ast.FuncDecl); ok && fn.Recv == nil && fn.Name.Name == name {
+				return fn
+			}
 		}
 	}
 	t.Fatalf("%s declares no function %s", file, name)
@@ -406,8 +415,12 @@ func (s *goSource) params(decl *ast.FuncDecl) []types.Object {
 
 // assignments is every expression the package's source gives each variable: by := and =, by a
 // var declaration, and, for a parameter, by each call of its function. A value no expression
-// stands for alone — one of several results of one call — is recorded as that call.
+// stands for alone — one of several results of one call — is recorded as that call. It is read
+// once per package (given).
 func (s *goSource) assignments() map[types.Object][]ast.Expr {
+	if s.given != nil {
+		return s.given
+	}
 	given := map[types.Object][]ast.Expr{}
 	object := func(expr ast.Expr) types.Object {
 		ident, ok := ast.Unparen(expr).(*ast.Ident)
@@ -459,6 +472,7 @@ func (s *goSource) assignments() map[types.Object][]ast.Expr {
 			return true
 		})
 	}
+	s.given = given
 	return given
 }
 
@@ -600,6 +614,10 @@ type wordMatch struct {
 // stringMatchers are the functions of package strings that match one text against another.
 var stringMatchers = []string{"HasPrefix", "HasSuffix", "Contains", "ContainsAny", "EqualFold", "Index", "Cut", "CutPrefix", "CutSuffix"}
 
+// busyMatchers are the functions of package strings and of package bytes that compare one text
+// with another (busyMatcher): every one of stringMatchers, and Compare, Equal, LastIndex and Count.
+var busyMatchers = slices.Concat(stringMatchers, []string{"Compare", "Equal", "LastIndex", "Count"})
+
 // matches is every place in node that matches a refusal's words: a call of a matcher of package
 // strings on them, an == or != between them and a string constant other than "", and a switch on
 // them with such a constant for a case. Words are a plain string: a value of a named type — an
@@ -659,7 +677,7 @@ func busyMatcher(fn *types.Func) bool {
 	}
 	switch fn.Pkg().Path() {
 	case "strings", "bytes":
-		return slices.Contains(stringMatchers, fn.Name()) || slices.Contains([]string{"Compare", "Equal", "LastIndex", "Count"}, fn.Name())
+		return slices.Contains(busyMatchers, fn.Name())
 	case "regexp":
 		return true
 	case "errors":

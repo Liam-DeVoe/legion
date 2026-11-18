@@ -95,8 +95,7 @@ func ParkedDecisionTask(ctx context.Context, tx pgx.Tx, store record.Store, step
 	}
 	owed := record.KeptDecisions{KeptApproval: approval}
 	for _, d := range decisions {
-		owed.Decisions = append(owed.Decisions, record.DecisionMark{Ref: d.Ref, At: d.At, Issue: d.Issue,
-			Decision: d.Decision, Actor: d.Actor, Seq: d.Seq})
+		owed.Decisions = append(owed.Decisions, d.Mark())
 	}
 	gates, err := ForgetSuperseded(ctx, tx, store, steps, root.Key, owed)
 	if err != nil {
@@ -204,8 +203,7 @@ func KeptDecisionsTask(gates KeptGates, steps []record.DesignStep, tree string, 
 		named = append(named, fmt.Sprintf("%s (%s by %s)", d.Ref, d.Decision, d.Actor))
 	}
 	step := owed.Step.OrSpec()
-	gated := slices.Contains(steps, step)
-	if owed.Approved > 0 && gated && DecisionStands(gateOf(gates[tree], step), gated,
+	if owed.Approved > 0 && slices.Contains(steps, step) && DecisionStands(gateOf(gates[tree], step), true,
 		Decision{Kind: record.DecisionDesignApproved, Step: step, Version: owed.Approved}) == nil {
 		kept.KeptApproval = owed.KeptApproval
 	}
@@ -224,16 +222,11 @@ func KeptDecisionsTask(gates KeptGates, steps []record.DesignStep, tree string, 
 
 // keptSuperseded is the approval that superseded the kept decision mark (DecisionStands), nil
 // when it stands, asked of gates, the gates of the issue it was made on, under steps, the steps
-// the deployment gates. It is asked of the step whose document its reference names, resolved
-// once here (RefStep), at no version, since a kept row records none, and at the review's place
-// in Dispatch's log. A reference that names no step's document is asked of no gate, and stands.
+// the deployment gates. It is asked of the step whose document its reference names
+// (RefSuperseded), at no version, since a kept row records none, and at the review's place in
+// Dispatch's log. A reference that names no step's document is asked of no gate, and stands.
 func keptSuperseded(gates map[record.DesignStep]record.DesignGate, steps []record.DesignStep, mark record.DecisionMark) *Approval {
-	d := Decision{Kind: mark.Decision, Mark: record.EventMark{Seq: mark.Seq, At: mark.At}}
-	var gate *record.DesignGate
-	if step, named := RefStep(mark.Issue, mark.Ref); named {
-		d.Step, gate = step, gateOf(gates, step)
-	}
-	return DecisionStands(gate, slices.Contains(steps, d.Step), d)
+	return RefSuperseded(gates, steps, mark.Issue, mark.Ref, Decision{Kind: mark.Decision, Mark: record.EventMark{Seq: mark.Seq, At: mark.At}})
 }
 
 // ParkedDecisionTask is ParkedDecisionTask over the engine's store and gated steps.
@@ -384,11 +377,11 @@ func stepRef(key string, step record.DesignStep) string {
 	return "dispatch://" + key + "/spec"
 }
 
-// RefStep is the design-gate step whose document ref names on issue key, the one stepRef gives
+// refStep is the design-gate step whose document ref names on issue key, the one stepRef gives
 // it, and false for a reference that names no step's document (an ask's or a comment's). It is
 // how a sender that holds only a decision's reference (record.ParkedDecision.Ref,
-// record.Notice.Ref) finds the step DecisionStands asks of.
-func RefStep(key, ref string) (record.DesignStep, bool) {
+// record.Notice.Ref) finds the step DecisionStands asks of (RefSuperseded).
+func refStep(key, ref string) (record.DesignStep, bool) {
 	for _, step := range record.DesignSteps {
 		if stepRef(key, step) == ref {
 			return step, true

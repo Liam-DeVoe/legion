@@ -28,10 +28,10 @@ func TestADecisionIsAskedOnlyOfTheGateOfItsOwnStep(t *testing.T) {
 		superseded *Approval
 	}{
 		{name: "the gate of the step reviewed", gate: gateAt(record.DesignStepDecisions), d: review(record.DesignStepDecisions),
-			superseded: &Approval{Version: 3, Mark: record.EventMark{Seq: 9}}},
+			superseded: &Approval{Version: 3}},
 		{name: "a gate of another step", gate: gateAt(record.DesignStepSpec), d: review(record.DesignStepDecisions)},
 		{name: "a gate naming no step, of a review of the spec step", gate: gateAt(""), d: review(record.DesignStepSpec),
-			superseded: &Approval{Version: 3, Mark: record.EventMark{Seq: 9}}},
+			superseded: &Approval{Version: 3}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := DecisionStands(tc.gate, true, tc.d)

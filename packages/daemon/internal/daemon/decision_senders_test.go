@@ -7,7 +7,6 @@ import (
 	"go/importer"
 	"go/token"
 	"go/types"
-	"maps"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -39,10 +38,10 @@ var ruleAskers = map[string]string{
 	senderModule + "workflow.requestStands": "an approval request on the ask mirror, which is the architect's ask and no person's decision",
 }
 
-// storedTaskSenders is every function of the three packages that may send the task a phase
-// entry stored when it was raised (record.PhaseRow.EntryTask), with why that task names no
-// person's review of a design document.
-var storedTaskSenders = map[string]string{
+// storedTaskReaders is every function of the three packages that may read the task a phase entry
+// stored when it was raised (record.PhaseRow.EntryTask), with why that read sends no person's
+// review of a design document.
+var storedTaskReaders = map[string]string{
 	"(*" + senderModule + "workflow.Engine).sendOwedEntry": "a phase worker's entry, whose task its transition composed from the " +
 		"phase (workflow's task and ResumePhaseTask) and which names no person's review; a root architect's entry is sent by " +
 		"workflow.Engine.SendArchitectStart, which sends none of it",
@@ -123,15 +122,15 @@ var decisionReviewSentences = []struct{ phrase, renderer string }{
 // person's approval had superseded that way.
 //
 // A task a phase entry stored when it was raised is held to more as well: a function that reads
-// record.PhaseRow.EntryTask sends a text rendered at the raise, and no call it makes at the send
+// record.PhaseRow.EntryTask can send a text rendered at the raise, and no call it makes at the send
 // can ask the predicate about what that text already says. The resume renders a person's review
 // into its architect's entry (workflow.Engine.ResumeAwaitedRoot), so a send of that stored text
 // again names the review whether or not the person's word has moved since, which is how the
 // sweep's send of a lost resume's start named a changes request the person's approval had
 // superseded. The resume still writes that text, which this release never sends, for the release
 // a rollback past contract 162 returns to (record.PhaseRow.EntryTask says so), so the text is
-// there for a new sender to read. Such a function passes only where storedTaskSenders names it,
-// with why the task it sends names no person's review.
+// there for a new sender to read. Such a function passes only where storedTaskReaders names it,
+// with why its read sends no person's review.
 //
 // And the rule itself (classify.ReviewSuperseded) is asked by the predicate alone, and by the one
 // reading of an approval request (ruleAskers), so the guards that choose whether to ask it live in
@@ -191,20 +190,20 @@ func TestDecisionSendersAskWhetherTheReviewIsStillThePersonsWord(t *testing.T) {
 			}
 		}
 		if len(f.storedTasks) > 0 {
-			why, named := storedTaskSenders[f.name]
-			t.Logf("sender of a stored task %s (%s), at %s: %s", f.short(), f.at, strings.Join(f.storedTasks, ", "), why)
+			why, named := storedTaskReaders[f.name]
+			t.Logf("reader of a stored task %s (%s), at %s: %s", f.short(), f.at, strings.Join(f.storedTasks, ", "), why)
 			if !named {
-				t.Errorf("%s (%s) sends the task a phase entry stored when it was raised (record.PhaseRow.EntryTask, at %s): that text was "+
+				t.Errorf("%s (%s) reads the task a phase entry stored when it was raised (record.PhaseRow.EntryTask, at %s): that text was "+
 					"rendered at the raise, and the resume of a root a person answered renders the person's review into its architect's "+
 					"entry (workflow.Engine.ResumeAwaitedRoot), so sent again it names that review whether or not the person's word has "+
 					"moved since. Send what the task was built from, which the send renders (record.PhaseRow.EntryAwaiting), or name the "+
-					"function in storedTaskSenders with why the task it sends names no person's review", f.short(), f.at, strings.Join(f.storedTasks, ", "))
+					"function in storedTaskReaders with why its read sends no person's review", f.short(), f.at, strings.Join(f.storedTasks, ", "))
 			}
 		}
 	}
-	for name := range storedTaskSenders {
+	for name := range storedTaskReaders {
 		if f := walk.byName[name]; f == nil || len(f.storedTasks) == 0 {
-			t.Errorf("storedTaskSenders names %s, which reads no stored entry task: take it out, so the list names every send of a stored "+
+			t.Errorf("storedTaskReaders names %s, which reads no stored entry task: take it out, so the list names every read of a stored "+
 				"task and no other", short(name))
 		}
 	}
@@ -416,11 +415,7 @@ func checkPackage(t *testing.T, fset *token.FileSet, imports types.Importer, nam
 	if err != nil {
 		t.Fatal(err)
 	}
-	pkg := &checkedPackage{name: name, fset: fset, info: checked.Info}
-	for _, file := range slices.Sorted(maps.Keys(checked.Files)) {
-		pkg.files = append(pkg.files, checked.Files[file])
-	}
-	return pkg
+	return &checkedPackage{name: name, files: checked.Files, fset: fset, info: checked.Info}
 }
 
 // readDecisionWalk type-checks record and the three sender packages and reads every function

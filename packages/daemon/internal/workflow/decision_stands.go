@@ -1,6 +1,8 @@
 package workflow
 
 import (
+	"slices"
+
 	"github.com/sjawhar/legion/daemon/internal/classify"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
@@ -10,8 +12,8 @@ import (
 // step's document (Step), the document itself when the sender knows it (Artifact, "" when it does
 // not), the version reviewed when the sender knows it (Version, 0 when it does not: a kept
 // decision's row records none), and where Dispatch recorded the review (Mark, empty where the
-// sender holds no mark of it). A sender that holds only the review's Dispatch reference resolves
-// its step once (RefStep).
+// sender holds no mark of it). A sender that holds only the review's Dispatch reference asks
+// through RefSuperseded, which resolves the step from the reference once.
 type Decision struct {
 	Kind     record.DecisionKind
 	Step     record.DesignStep
@@ -20,11 +22,11 @@ type Decision struct {
 	Mark     record.EventMark
 }
 
-// Approval is a person's approval a gate records (record.DesignGate.ApprovedVersion and
-// ApprovedMark): the one that superseded a review, as DecisionStands answers it.
+// Approval is a person's approval a gate records (record.DesignGate.ApprovedVersion): the one
+// that superseded a review, as DecisionStands answers it, by the version approved, which is what
+// a sender names of it.
 type Approval struct {
 	Version int
-	Mark    record.EventMark
 }
 
 // DecisionStands is the one place that decides whether a person's recorded review of a design
@@ -77,7 +79,22 @@ func DecisionStands(gate *record.DesignGate, gated bool, d Decision) (superseded
 	if !classify.ReviewSuperseded(*gate, version, d.Mark) {
 		return nil
 	}
-	return &Approval{Version: *gate.ApprovedVersion, Mark: gate.ApprovedMark}
+	return &Approval{Version: *gate.ApprovedVersion}
+}
+
+// RefSuperseded is DecisionStands for a sender that holds only the review's Dispatch reference,
+// ref on issue (record.ParkedDecision.Ref, record.Notice.Ref): the step whose document ref names
+// (refStep) is resolved once here and set as d.Step, and DecisionStands is asked of that step's
+// gate in gates, the gates of issue, and of whether steps, the steps the deployment gates, holds
+// it. A reference that names no step's document (an ask's or a comment's) is asked of no gate,
+// and stands: nil.
+func RefSuperseded(gates map[record.DesignStep]record.DesignGate, steps []record.DesignStep, issue, ref string, d Decision) *Approval {
+	step, named := refStep(issue, ref)
+	if !named {
+		return nil
+	}
+	d.Step = step
+	return DecisionStands(gateOf(gates, step), slices.Contains(steps, step), d)
 }
 
 // gateOf is the gate gates holds for step, nil where it holds none: the gate DecisionStands asks

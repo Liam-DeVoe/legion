@@ -30,7 +30,10 @@ func (e *Engine) ClearGeneration(ctx context.Context, tx pgx.Tx, issue record.Is
 	if err != nil {
 		return err
 	}
-	return e.publishEmptied(ctx, tx, emptied, fmt.Sprintf("clear the generation of %s", issue.Key), now)
+	if err := e.publishEmptied(ctx, tx, emptied, now); err != nil {
+		return fmt.Errorf("clear the generation of %s: %w", issue.Key, err)
+	}
+	return nil
 }
 
 // ClearTreeGeneration empties them for every issue of tree, and forgets first as ClearGeneration
@@ -42,7 +45,10 @@ func (e *Engine) ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree string
 	if err != nil {
 		return err
 	}
-	return e.publishEmptied(ctx, tx, emptied, fmt.Sprintf("clear the generation of tree %s", tree), now)
+	if err := e.publishEmptied(ctx, tx, emptied, now); err != nil {
+		return fmt.Errorf("clear the generation of tree %s: %w", tree, err)
+	}
+	return nil
 }
 
 // keptStands is the rule a clear asks of each decision kept on a cleared issue
@@ -59,10 +65,10 @@ func (e *Engine) keptStands(gates map[record.DesignStep]record.DesignGate, decis
 // recorded until something tells it otherwise. It is queued through the engine's own store,
 // which in the daemon wakes the issue's board lane once the clear commits (projectRecords), so
 // the publication is sent then rather than at the lane's next sweep.
-func (e *Engine) publishEmptied(ctx context.Context, tx pgx.Tx, emptied []string, describe string, now time.Time) error {
+func (e *Engine) publishEmptied(ctx context.Context, tx pgx.Tx, emptied []string, now time.Time) error {
 	for _, issue := range emptied {
 		if err := e.store.EnqueueDesignGates(ctx, tx, record.DesignGatesPublish{Issue: issue, Gates: record.GateDocuments(nil)}, now); err != nil {
-			return fmt.Errorf("%s: %w", describe, err)
+			return err
 		}
 	}
 	return nil

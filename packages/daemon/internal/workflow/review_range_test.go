@@ -2,7 +2,6 @@ package workflow
 
 import (
 	"context"
-	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -309,20 +308,13 @@ func reviewedPartOf(head string) string {
 
 // handoffPartOf is the sentence, with its leading space, that a task names the handoff record of
 // word at version on issue with, filled in from the one copy of it that handoff_line_extract.txt
-// holds, which TestTheHandoffLineExtractIsTheSentenceTheTaskWrites holds equal to what task
-// writes. So a test of a whole task reads the line from that copy and keeps no copy of its own.
+// holds, read as TestTheHandoffLineExtractIsTheSentenceTheTaskWrites reads it (handoffSentence),
+// which holds it equal to what task writes. So a test of a whole task reads the line from that
+// copy and keeps no copy of its own.
 func handoffPartOf(t *testing.T, issue, word string, version int) string {
 	t.Helper()
-	body, err := os.ReadFile(handoffLineExtract)
-	if err != nil {
-		t.Fatalf("read %s: %v", handoffLineExtract, err)
-	}
-	_, sentence, ok := strings.Cut(string(body), "\n\n")
-	if !ok {
-		t.Fatalf("%s has no blank line between its `#` header and the sentence", handoffLineExtract)
-	}
 	filled := strings.NewReplacer("{word}", word, "{version}", strconv.Itoa(version), "{issue}", issue)
-	return " " + filled.Replace(strings.TrimSuffix(sentence, "\n"))
+	return " " + filled.Replace(handoffSentence(t))
 }
 
 // endsNamingNoCommit says whether task ends with the daemon's sentence naming no commit,
@@ -332,14 +324,14 @@ func endsNamingNoCommit(task string, entry int64) bool {
 	return strings.HasSuffix(task, reviewedPartOf("none")+reviewEntryPartOf(entry)) && strings.Count(task, reviewround.CommitLabel) == 1
 }
 
-// readsReviewingTask fails the test unless task is the reviewing task of the round whose tester
-// handed off version version: an assertion of what a round's task lacks is only worth something
-// once it has read that round's task, since a row a round never reached still holds the task of
-// the round before it.
+// readsReviewingTask fails the test unless task is LEGION-208's reviewing task (reviewerRow's) of
+// the round whose tester handed off version version, the handoff read from its one copy
+// (handoffPartOf): an assertion of what a round's task lacks is only worth something once it has
+// read that round's task, since a row a round never reached still holds the task of the round
+// before it.
 func readsReviewingTask(t *testing.T, round, task string, version int) {
 	t.Helper()
-	handoff := " Handoff: test version " + strconv.Itoa(version) + " ("
-	if !strings.Contains(task, " Phase: reviewing.") || !strings.Contains(task, handoff) {
+	if !strings.Contains(task, " Phase: reviewing.") || !strings.Contains(task, handoffPartOf(t, "LEGION-208", "test", version)) {
 		t.Fatalf("%s's task = %q, want the reviewing task the tester's handoff version %d started", round, task, version)
 	}
 }

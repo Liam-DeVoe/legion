@@ -1669,13 +1669,6 @@ func lateRefused(m *Machine, ctx context.Context, ev Event) error {
 	return errors.Join(m.promptFailed(ctx, outcome, taskUnread), m.recordBusyTurn(ctx))
 }
 
-// isStreaming is whether the agent says, when asked, that a turn is running; an ask that fails
-// says no.
-func (m *Machine) isStreaming(ctx context.Context, conn runtime.Conn) bool {
-	busy, _ := m.streaming(ctx, conn)
-	return busy
-}
-
 // recordBusyTurn records a ready or idle claim working on the agent's busy answer to a prompt of
 // its pending task (OutcomeAgentBusy, which the stream mints from the answer's code and the one
 // rule of the refusal paths from the daemon's record or the agent's get_state, never from its

@@ -3,13 +3,10 @@ package supervise
 import (
 	"context"
 	"errors"
-	"go/ast"
 	"go/importer"
-	"go/parser"
 	gotoken "go/token"
 	"go/types"
 	"io"
-	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -725,38 +722,20 @@ func stalledSweep(h *harness) (time.Time, StepRecord) {
 // or one another package manufactures — is outside it, and the daemon's notice answers that one
 // by naming the value rather than claiming a relaunch (the daemon's stallBackstopEnd).
 func TestProcessEndsListsEveryEndDeclared(t *testing.T) {
-	entries, err := os.ReadDir(".")
-	if err != nil {
-		t.Fatalf("read this package's source: %v", err)
-	}
 	fileset := gotoken.NewFileSet()
-	var parsed []*ast.File
-	for _, entry := range entries {
-		name := entry.Name()
-		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
-			continue
-		}
-		file, err := parser.ParseFile(fileset, name, nil, 0)
-		if err != nil {
-			t.Fatalf("parse %s: %v", name, err)
-		}
-		parsed = append(parsed, file)
-	}
-	defs := map[*ast.Ident]types.Object{}
-	config := types.Config{Importer: importer.ForCompiler(fileset, "gc", compiledDependencies(t))}
-	pkg, err := config.Check("github.com/sjawhar/legion/daemon/internal/supervise", fileset, parsed, &types.Info{Defs: defs})
+	checked, err := testtypes.CheckPackage(fileset, importer.ForCompiler(fileset, "gc", compiledDependencies(t)), supervisePath, ".")
 	if err != nil {
-		t.Fatalf("type-check this package: %v", err)
+		t.Fatal(err)
 	}
 	type declaration struct{ name, text string }
 	var declared []declaration
-	for ident, object := range defs {
+	for ident, object := range checked.Info.Defs {
 		constant, isConstant := object.(*types.Const)
 		if !isConstant {
 			continue
 		}
 		named, isNamed := constant.Type().(*types.Named)
-		if !isNamed || named.Obj().Pkg() != pkg || named.Obj().Name() != "ProcessEnd" {
+		if !isNamed || named.Obj().Pkg() != checked.Types || named.Obj().Name() != "ProcessEnd" {
 			continue
 		}
 		text, err := strconv.Unquote(constant.Val().ExactString())

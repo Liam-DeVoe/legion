@@ -434,6 +434,12 @@ type ParkedDecision struct {
 	HeldBy    DeliveryHold
 }
 
+// Mark is the mark a task names d by (DecisionMark): the row's identity, what the task says of
+// it, and Dispatch's sequence of its review, which a send asks the gate with.
+func (d ParkedDecision) Mark() DecisionMark {
+	return DecisionMark{Ref: d.Ref, At: d.At, Issue: d.Issue, Decision: d.Decision, Actor: d.Actor, Seq: d.Seq}
+}
+
 // DeliveryHold is the claim token and delivery id of a start's task queued on an architect's
 // claim, which holds what that task names until that delivery is confirmed (the rows are told),
 // retired (the hold is cleared and the rows are KEPT again) or taken back under a new id (the
