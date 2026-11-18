@@ -36,6 +36,12 @@
 // deadline only once the code has armed it, and a failure names what the test expected and the
 // deadlines it saw.
 //
+// SetWhen reads the fake's present and its pending deadlines, asks a question of them and makes
+// the move the answer names, under one hold of the fake's lock. A test that reads Armed and then
+// calls Set leaves a gap between the two: a timer the code arms in it is pending when the move
+// begins, though the reading that decided the move never saw it. SetWhen leaves no such gap: a
+// timer the code arms while it runs is armed after the question, at the moment the move reached.
+//
 // # Deadline contexts
 //
 // WithTimeout and WithDeadline give a context that ends once the fake reaches its deadline, with
@@ -116,9 +122,32 @@ func (c *Fake) Advance(d time.Duration) {
 // deadline it was armed for, so a move back fires none that a later move had not reached.
 func (c *Fake) Set(at time.Time) { c.moveTo(at) }
 
+// SetWhen moves the fake as Set does to the moment to names, when to reports true. to is asked
+// of the fake's present and of every pending deadline, earliest first (Armed), under the hold of
+// the fake's lock that the move begins with, so no timer is armed, fired or stopped between the
+// question and the move's start. to runs under that lock, so it must not call the fake, nor wait
+// for anything that does. SetWhen returns the deadlines to was asked of and whether it moved.
+func (c *Fake) SetWhen(to func(now time.Time, armed []time.Time) (time.Time, bool)) ([]time.Time, bool) {
+	c.mu.Lock()
+	armed := c.armedLocked()
+	target, move := to(c.nowLocked(), armed)
+	if !move {
+		c.mu.Unlock()
+		return armed, false
+	}
+	c.moveLocked(target)
+	return armed, true
+}
+
 func (c *Fake) moveTo(target time.Time) {
-	for {
-		c.mu.Lock()
+	c.mu.Lock()
+	c.moveLocked(target)
+}
+
+// moveLocked is moveTo begun under the hold of the lock its caller took: each later pass takes
+// the lock again (the loop's post statement), and the last lets it go.
+func (c *Fake) moveLocked(target time.Time) {
+	for ; ; c.mu.Lock() {
 		next := c.dueLocked(target)
 		if next == nil {
 			c.setLocked(target)
@@ -172,12 +201,16 @@ func (c *Fake) dueLocked(target time.Time) *timer {
 // Armed is the deadline of every pending timer, earliest first.
 func (c *Fake) Armed() []time.Time {
 	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.armedLocked()
+}
+
+func (c *Fake) armedLocked() []time.Time {
 	pending := make([]*timer, len(c.pending))
 	for i, t := range c.pending {
-		// A copy, so the sort below reads no field a Reset writes.
+		// A copy, so the sort below leaves the fake's own list as it stands.
 		pending[i] = &timer{at: t.at, seq: t.seq}
 	}
-	c.mu.Unlock()
 	slices.SortFunc(pending, func(a, b *timer) int {
 		if order := a.at.Compare(b.at); order != 0 {
 			return order

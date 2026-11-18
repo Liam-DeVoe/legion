@@ -19,6 +19,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -376,31 +377,44 @@ func TestTheStateNamesEachRefusedRepositorysAppsWhereGitHubAnswered(t *testing.T
 // refused for now. This guards checkMapping's own bound, which the code before this check already
 // had; the removed bound on a refresh as a whole, which cut such a check off, is
 // TestASlowButAnsweringGitHubIsServedOnARefresh's. The reads' slowness and their bounds run on one
-// fake clock, which the test moves through the reads (moveThroughSlowReads).
+// fake clock, which the test moves from each deadline armed on it to the next (checkMovingThrough),
+// inside a synctest bubble.
 func TestEachInstallationReadIsBoundedOnItsOwn(t *testing.T) {
-	var mappings []dispatch.RepoProject
-	for i := range 10 {
-		mappings = append(mappings, dispatch.RepoProject{Repo: fmt.Sprintf("acme/repo-%d", i), Project: "LEGION", Default: i == 0})
-	}
-	clk := clocktest.New(time.Now())
-	slow := installReadAttempt * 2 / 3
-	start := clk.Now()
-	accepted, refused, err := checkMovingThrough(t, clk, mappings, slow)
-	if err != nil || len(accepted) != 10 || len(refused) != 0 {
-		t.Fatalf("checkMapping of 20 slow reads = %d accepted, %#v, %v; want all 10 served", len(accepted), refused, err)
-	}
-	if took := clk.Now().Sub(start); took <= installReadAttempt {
-		t.Fatalf("the check of 20 reads of %s each took %s of the fake clock, want longer than one read's bound (%s), so a bound on the whole check would have cut it", slow, took, installReadAttempt)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		var mappings []dispatch.RepoProject
+		for i := range 10 {
+			mappings = append(mappings, dispatch.RepoProject{Repo: fmt.Sprintf("acme/repo-%d", i), Project: "LEGION", Default: i == 0})
+		}
+		clk := clocktest.New(time.Now())
+		slow := installReadAttempt * 2 / 3
+		start := clk.Now()
+		accepted, refused, err := checkMovingThrough(t, clk, mappings, slow)
+		if err != nil || len(accepted) != 10 || len(refused) != 0 {
+			t.Fatalf("checkMapping of 20 slow reads = %d accepted, %#v, %v; want all 10 served", len(accepted), refused, err)
+		}
+		if took := clk.Now().Sub(start); took <= installReadAttempt {
+			t.Fatalf("the check of 20 reads of %s each took %s of the fake clock, want longer than one read's bound (%s), so a bound on the whole check would have cut it", slow, took, installReadAttempt)
+		}
 
-	accepted, refused, err = checkMovingThrough(t, clk, mappings[:1], installReadAttempt+slow)
-	if err != nil || len(accepted) != 0 || len(refused) != 1 || !errors.Is(refused[0].readErr, context.DeadlineExceeded) {
-		t.Fatalf("checkMapping of a read longer than installReadAttempt = %#v, %#v, %v; want it refused for now as a failed read", accepted, refused, err)
-	}
+		accepted, refused, err = checkMovingThrough(t, clk, mappings[:1], installReadAttempt+slow)
+		if err != nil || len(accepted) != 0 || len(refused) != 1 || !errors.Is(refused[0].readErr, context.DeadlineExceeded) {
+			t.Fatalf("checkMapping of a read longer than installReadAttempt = %#v, %#v, %v; want it refused for now as a failed read", accepted, refused, err)
+		}
+	})
 }
 
 // checkMovingThrough runs checkMapping of mappings for LEGION on clk, every installation read
-// taking slow on clk, and moves clk through the reads (moveThroughSlowReads) until it returns.
+// taking slow on clk, and moves clk to the earliest deadline armed on it until the check returns.
+// It runs in the caller's synctest bubble, since the check and its stand-ins do no I/O: it moves
+// clk only once every goroutine of the check has gone as far as it can without the clock
+// (synctest.Wait), so every read begun by then has armed its bound and its answer at the moment it
+// began, and no read begins between that reading and the move. A count of the timers armed,
+// asked while the check still ran, saw a read the check began just then with its bound armed and
+// its answer not yet, and moved the clock under it: that read's answer then fell a move later than
+// its bound, and the count never again matched. At each move every timer armed is a read's bound,
+// installReadAttempt past the moment, or its answer, slow past it, one of each per read; a move
+// that finds anything else is an error, and the clock still moves to the earliest deadline armed,
+// so the check ends and the test reads what it returned.
 func checkMovingThrough(t *testing.T, clk *clocktest.Fake, mappings []dispatch.RepoProject, slow time.Duration) ([]mappedRepository, []refusedRepository, error) {
 	t.Helper()
 	type checked struct {
@@ -413,15 +427,26 @@ func checkMovingThrough(t *testing.T, clk *clocktest.Fake, mappings []dispatch.R
 		accepted, refused, _, err := checkMapping(context.Background(), clk, &mappingDispatch{}, mappings, "LEGION", &installations{delay: slow, clock: clk}, ghrepo.Renames{})
 		result <- checked{accepted, refused, err}
 	}()
-	var got checked
-	moveThroughSlowReads(t, clk, slow, []time.Duration{installReadAttempt}, "the mapping check to end", func() bool {
-		select {
-		case got = <-result:
-			return true
-		default:
-			return false
+	for synctest.Wait(); len(result) == 0; synctest.Wait() {
+		now, armed := clk.Now(), clk.Armed()
+		answers, bounds := 0, 0
+		for _, at := range armed {
+			switch at.Sub(now) {
+			case slow:
+				answers++
+			case installReadAttempt:
+				bounds++
+			}
 		}
-	})
+		if answers == 0 || answers != bounds || answers+bounds != len(armed) {
+			t.Errorf("checkMapping, with every goroutine of it blocked, armed %v on the fake clock at %v; want each read in flight to have armed its bound %s and its answer %s past that moment, and nothing else", armed, now, installReadAttempt, slow)
+		}
+		if len(armed) == 0 {
+			break // no move ends the check: the receive below is the bubble's deadlock, which names every goroutine blocked
+		}
+		clk.Set(armed[0])
+	}
+	got := <-result
 	return got.accepted, got.refused, got.err
 }
 

@@ -129,6 +129,55 @@ func TestAwaitArmedReturnsThePendingDeadlines(t *testing.T) {
 	}
 }
 
+// SetWhen asks its question of the fake's present and every pending deadline, in order, and moves
+// only when the answer says to, then as Set does. A timer the code arms while the question is
+// asked is armed after it, from the moment the move reached (here, a move that fires nothing, the
+// moment it ends at): one armed between a reading of Armed and a Set is armed before the move,
+// and here would have fired in it.
+func TestSetWhenMovesOnItsAnswerWithNoTimerArmedBetweenTheQuestionAndTheMove(t *testing.T) {
+	c := clocktest.New(epoch)
+	due := c.After(2 * time.Second)
+	c.AfterFunc(5*time.Second, func() {})
+	pending := []time.Time{epoch.Add(2 * time.Second), epoch.Add(5 * time.Second)}
+
+	var asked time.Time
+	var read []time.Time
+	armed, moved := c.SetWhen(func(now time.Time, armed []time.Time) (time.Time, bool) {
+		asked, read = now, armed
+		return now.Add(3 * time.Second), false
+	})
+	if moved || !asked.Equal(epoch) || !slices.Equal(read, pending) || !slices.Equal(armed, pending) {
+		t.Fatalf("SetWhen = %v, %t after asking at %s of %v; want no move, asked at %s of %v", armed, moved, asked, read, epoch, pending)
+	}
+	if now := c.Now(); !now.Equal(epoch) || len(due) != 0 {
+		t.Fatalf("after an answer of no the fake reads %s with %d values sent, want %s and none", now, len(due), epoch)
+	}
+
+	arming := make(chan (<-chan time.Time), 1)
+	if _, moved := c.SetWhen(func(now time.Time, _ []time.Time) (time.Time, bool) {
+		go func() { arming <- c.After(500 * time.Millisecond) }()
+		return now.Add(time.Second), true
+	}); !moved {
+		t.Fatal("SetWhen did not move on an answer of yes")
+	}
+	armedBetween := testwait.Receive(t, "the timer armed while the question was asked", arming)
+	want := append([]time.Time{epoch.Add(1500 * time.Millisecond)}, pending...)
+	if now, armed := c.Now(), c.Armed(); !now.Equal(epoch.Add(time.Second)) || !slices.Equal(armed, want) || len(armedBetween) != 0 {
+		t.Fatalf("after the move the fake reads %s with %v armed, the timer armed during the question holding %d values; want %s, %v and none",
+			now, armed, len(armedBetween), epoch.Add(time.Second), want)
+	}
+
+	if _, moved := c.SetWhen(func(now time.Time, _ []time.Time) (time.Time, bool) { return now.Add(2 * time.Second), true }); !moved {
+		t.Fatal("SetWhen did not move on an answer of yes")
+	}
+	if len(due) != 1 || len(armedBetween) != 1 {
+		t.Fatalf("a move to %s sent %d values on the timer due at %s and %d on the one due at %s, want one each", epoch.Add(3*time.Second), len(due), pending[0], len(armedBetween), want[0])
+	}
+	if armed := c.Armed(); !slices.Equal(armed, pending[1:]) {
+		t.Errorf("armed after the move: %v, want only the timer due past it, %v", armed, pending[1:])
+	}
+}
+
 // A Sleep the context ends first returns the context's error and leaves nothing armed.
 func TestASleepEndsWithItsContext(t *testing.T) {
 	c := clocktest.New(epoch)

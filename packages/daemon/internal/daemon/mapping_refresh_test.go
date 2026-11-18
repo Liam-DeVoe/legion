@@ -1086,37 +1086,35 @@ func refreshUntil(t *testing.T, w *workflowRuntime, what string, done func() boo
 // as a read starts) has a slow answer armed beside it, so no read is caught between arming its
 // bound and its answer, and then moves clk by the shorter of slow and the bounds, which ends
 // those reads, answered or cut off; a read that starts after a move starts at the moment it
-// reached. what names what done waits for.
+// reached. The count and the move are one step of clk's own (SetWhen), made under its lock: a
+// count read before a Set of its own saw a read the code began just then with neither timer
+// armed yet, and moved the clock between that read's bound and its answer, so its answer fell a
+// move after its bound and the count never held again. what names what done waits for.
 func moveThroughSlowReads(t *testing.T, clk *clocktest.Fake, slow time.Duration, bounds []time.Duration, what string, done func() bool) {
 	t.Helper()
 	step := slow
 	for _, bound := range bounds {
 		step = min(step, bound)
 	}
-	for {
-		now := clk.Now()
-		finished := false
+	for finished := false; !finished; {
 		testwait.Until(t, what+", or every read in flight to wait on its slow answer", func() ([]time.Time, bool) {
 			if done() {
 				finished = true
 				return nil, true
 			}
-			armed := clk.Armed()
-			answers, bounded := 0, 0
-			for _, at := range armed {
-				switch {
-				case at.Sub(now) == slow:
-					answers++
-				case slices.Contains(bounds, at.Sub(now)):
-					bounded++
+			return clk.SetWhen(func(now time.Time, armed []time.Time) (time.Time, bool) {
+				answers, bounded := 0, 0
+				for _, at := range armed {
+					switch {
+					case at.Sub(now) == slow:
+						answers++
+					case slices.Contains(bounds, at.Sub(now)):
+						bounded++
+					}
 				}
-			}
-			return armed, answers > 0 && answers == bounded
+				return now.Add(step), answers > 0 && answers == bounded
+			})
 		})
-		if finished {
-			return
-		}
-		clk.Set(now.Add(step))
 	}
 }
 
