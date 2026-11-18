@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
@@ -57,7 +58,7 @@ func ReadUnpushed(ctx context.Context, dir string, env []string, budget time.Dur
 	defer cancel()
 	started := time.Now()
 	run := func(args ...string) (string, error) {
-		return workspace.RunCommand(ctx, nil, budget, started, env, dir, nil, args)
+		return workspace.RunCommand(ctx, procgroup.NoReaper, budget, started, env, dir, nil, args)
 	}
 	changed, err := run(jj, "log", "-R", dir, "-r", workingCopyChangedRevset, "--no-graph", "-T", "commit_id")
 	if err != nil {
