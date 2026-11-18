@@ -31,7 +31,7 @@ import (
 // whichever schema the reader holds when that tree is served. Written whole, a typed block reads
 // the same under every schema. Leaving those defaults out would change every tree that holds a
 // typed block, testdata/display.json's among them, and so raise DisplayTreeVersion; the change
-// that would read them from the manifest instead (dispatch://INFRA-3404) has to answer a schema
+// that would read them from the manifest instead has to answer a schema
 // installed while the process runs first.
 var displayNodeDefaults = map[string]Attrs{
 	// heading: `id` is the slug milkdown's own generator would write and both readers leave

@@ -4,7 +4,7 @@
 
 package main
 
-// dispatch://INFRA-1149's c-write-cost: no write path this child changes gets slower.
+// This change's check c-write-cost: no write path this child changes gets slower.
 //
 // The test is TestNoWritePathThisChildChangesGetsSlower at the end of this file; everything
 // above it is the corpus it writes and the five paths it measures. graph_cost_test.go holds the

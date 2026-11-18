@@ -262,7 +262,7 @@ func (s *Service) settleRoomWithin(parent context.Context, room string, generati
 }
 
 // lockSettlementFence takes the document's document_block_versions row `for no key update`, the
-// revision fence's row (R23 of dispatch://INFRA-1149), right after the settlement's owner row and
+// revision fence's row (R23 of this change), right after the settlement's owner row and
 // before anything the settlement writes. Whether a settlement writes a version is decided only in
 // commitVersion, after reconcileAskBlocks has opened the asks of new ask blocks and followed each
 // one for a session author, which writes that session's node (asks.Follow); the version's own

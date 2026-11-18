@@ -90,7 +90,7 @@ var personNodesTied = `
 	)`
 
 // personPageShownQuery is whether the page of the person $1 names answers anyone but that person
-// (R15 of dispatch://INFRA-1149): the store holds the person, not gone, and visible to the reader
+// (R15 of this change): the store holds the person, not gone, and visible to the reader
 // whose acting credential is bound at $2 (refs.VisibilityArg), and the person is tied to at least
 // one node, not gone, that the reader may see (personNodesTied). Each tied node is held to the
 // predicate of its own kind, read off the one row the store holds of it (refs.VisibleRow), and a

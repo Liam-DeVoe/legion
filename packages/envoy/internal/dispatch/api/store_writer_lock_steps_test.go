@@ -25,7 +25,7 @@ import (
 // run that passes either is the write waiting on something it should not, not a slow machine.
 const storeStepWait = 20 * time.Second
 
-// TestEveryApiStoreWriterTakesTheStoreLockOrder is this package's half of dispatch://INFRA-1149's
+// TestEveryApiStoreWriterTakesTheStoreLockOrder is this package's half of the check
 // c-lock-order. graphstore's TestEveryStoreWriteCallSiteIsListed lists every call site of the node
 // and tuple store's writers, beside the test that drives each site's lock steps. Thirteen of them
 // live here, and this test drives them all:

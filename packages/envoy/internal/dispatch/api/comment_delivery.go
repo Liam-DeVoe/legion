@@ -1347,8 +1347,8 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 // answeredDelivery is what one answer makes of the attempt it answers: the session that attempt
 // names, the state the row recorded before the answer, and the thing the attempt carried as the
 // store addresses it. itemID is empty for a thing whose delivery this store records no tuple of
-// yet, which a message is: a message is a node of its project, but the change that records its
-// deliveries is a later one.
+// yet, which a message is: a message is a node of its project, but the child that moves the
+// inbox, the messages and the read state owns messages and records their deliveries.
 type answeredDelivery struct {
 	session  string
 	was      string

@@ -18,7 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// TestTheStoreHoldsNodesAndAppendedTuples is this half of dispatch://INFRA-1149's
+// TestTheStoreHoldsNodesAndAppendedTuples is this half of the check
 // c-store-tuples: one write through the real write path, read back out of the node and tuple
 // store. The other half, the facts a resolved role holder states - the `held_by` tuple, its
 // retraction with the earlier claim still in the history, and the session `part_of` the role it

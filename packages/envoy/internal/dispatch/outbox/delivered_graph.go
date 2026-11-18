@@ -58,10 +58,13 @@ type resolvedRole struct {
 //
 // The tuple side is R1's: a tuple's far end is an address and never a foreign key, and a tuple
 // may point at an address a later child writes. So the delivered_to tuple of a destination this
-// batch reached is stated whatever node that session has yet. Only a comment's delivery is
-// recorded from the near end today (deliveredItem), so an event that delivered anything else
-// appends no tuple at all. An issue, a document, an ask and a message are nodes of their project
-// from their own create on, but the change that records their deliveries is a later one.
+// batch reached is stated whatever node that session has yet - the child that moves the inbox,
+// the messages and the read state owns messages and their deliveries and gives those sessions
+// their nodes. Only a comment's delivery is recorded from the near end today (deliveredItem), so
+// an event that delivered anything else appends no tuple at all. An issue, a document, an ask and
+// a message are nodes of their project from their own create on, and the children that record
+// their deliveries append those tuples (the child that moves issues and their documents, and the
+// one that moves the messages).
 //
 // A delivery is a destination this batch reached, and a mention attempt the listener took. A
 // mention's is recorded under the comment.delivery receipt its settle appended (mentionReached),
@@ -296,7 +299,8 @@ func nodeOfSubject(subject string) (kind, id string, ok bool) {
 // comment, the one thing a delivery is recorded from (mentionReached is the other reading of it),
 // whose id its payload carries. An event about anything else reaches its destinations all the
 // same: an issue, an ask and a message are nodes of their project, and the tuple that records
-// their delivery waits for the later change that records it.
+// their delivery waits for the child that records it (the child that moves issues and their
+// documents, or the one that moves the messages).
 func deliveredItem(event model.Event) (kind, id string, ok bool) {
 	if !strings.HasPrefix(event.Type, "comment.") {
 		return "", "", false

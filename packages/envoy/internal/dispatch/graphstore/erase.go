@@ -12,7 +12,7 @@ import (
 // EraseNode deletes node kind:id and the tuples seqs names, inside the caller's transaction: the
 // tuples of both sides of the node, then its row. It is the one write of this store that deletes,
 // and `envoy-dispatch erase` (grapherase) is its one caller: an erase (R1 and R5 of
-// dispatch://INFRA-1149) takes a node's bytes away, which no tuple appended after them can do.
+// this change) takes a node's bytes away, which no tuple appended after them can do.
 //
 // seqs are the tuples the erase listed, by seq, and the delete takes those rows and no others:
 // the erase's transaction is READ COMMITTED, so a tuple another writer commits after the listing

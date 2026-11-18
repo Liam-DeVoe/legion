@@ -90,6 +90,11 @@ type Deps struct {
 	// EditNoticeQuiet is how long a document stays quiet after a person's last settled version
 	// before its edit notice goes (recordEditNotice, RunEditNotices); zero means 30 s.
 	EditNoticeQuiet time.Duration
+	// BuildCommit is the commit this process's binary was built from (cmd/dispatch's buildCommit),
+	// the empty string for an unstamped build. The block-index tick compares it with the commit of
+	// every live server process to tell whether another build serves beside this one
+	// (markVersionsAnotherBuildWrote).
+	BuildCommit string
 }
 
 // VersionedStore is Dispatch's transactional extension of ygo's durable room
@@ -150,6 +155,19 @@ type Service struct {
 	unrecordedMarkTTL time.Duration
 	// editNoticeQuiet is Deps.EditNoticeQuiet, with its default applied.
 	editNoticeQuiet time.Duration
+	// buildCommit is Deps.BuildCommit.
+	buildCommit string
+	// eventHorizon is the event log's safe horizon the block-index tick reads, which
+	// blockIndexHorizon builds under horizonOnce on the first tick that asks for it.
+	horizonOnce  sync.Once
+	eventHorizon *events.Horizon
+	// eventCursorJoined is whether a block-index tick of this process has read a proven horizon,
+	// found its build's row of block_index_event_cursors and committed. Until one has, the tick
+	// moves the cursor forward to the newest cursor any build left and records the newest event id
+	// as the row's read_through, so this process's ticks read every event since a build of this
+	// code last read, whatever the previous release wrote while none ran
+	// (markVersionsAnotherBuildWrote).
+	eventCursorJoined atomic.Bool
 	// maxPendingItems is the pending queue the service's rooms decode their stored state under
 	// (Server.MaxPendingItems, which New sets from it and ygo reads as each room loads) and the
 	// queue the check a room's load is compared with takes (validateUpdate). New sets it to
@@ -860,6 +878,7 @@ func New(deps Deps) *Service {
 		timers:            make(map[uint64]*time.Timer),
 		unrecordedMarkTTL: unrecordedMarkTTL,
 		editNoticeQuiet:   editNoticeQuiet,
+		buildCommit:       deps.BuildCommit,
 		reads:             newDocumentReads(readBudget),
 		roomCap:           roomCap,
 		connectionCap:     connectionCap,

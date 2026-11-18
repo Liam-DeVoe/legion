@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Drives the people and the agents of the node and tuple store end to end against a running
-# server (dispatch://INFRA-1149's c-person-graph). It writes comments, a message and an ask
+# server (the check c-person-graph). It writes comments, a message and an ask
 # through the real HTTP API, has the server deliver them to sessions and to a role, adds one
 # comment that no session receives, one delivery attempt that fails and one the listener queues
 # for a session that is not running, and then reads the store back and checks each tuple: what
@@ -9,9 +9,9 @@
 # every read against a table of identities a person wrote into this driver. A message is a node
 # of its project, written with its own create and carrying that node's base attributes, and
 # earns no delivery or authorship tuple in this child - only a comment has a node on the near end
-# of a delivery, and a later change gives a message those tuples - so what the driver reads of
-# the message is its node, the role it reaches and that role's page, and that no other tuple
-# stands on the message itself (G10).
+# of a delivery, and the child that moves the inbox, the messages and the read state gives a
+# message those tuples - so what the driver reads of the message is its node, the role it reaches
+# and that role's page, and that no other tuple stands on the message itself (G10).
 #
 # Which clause is read which way, and why:
 #
