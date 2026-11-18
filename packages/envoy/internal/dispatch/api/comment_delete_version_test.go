@@ -161,13 +161,7 @@ func TestADeleteRenamesNoVersionWhenTwoCarryTheAcceptsTime(t *testing.T) {
 	comment := acceptSuggestionNamed(t, handler, issue.Key, "quick", phrase)
 	before := documentVersionNames(t, handler, issue.PrimaryArtifactID)
 	accepted, other := versionNamed(t, before, phrase), versionNamed(t, before, byHand)
-	if _, err := database.Pool.Exec(context.Background(), `
-		update artifact_versions set created_at = (
-			select created_at from artifact_versions where artifact_id = $1 and number = $2
-		) where artifact_id = $1 and number = $3
-	`, issue.PrimaryArtifactID, accepted, other); err != nil {
-		t.Fatalf("give version %d the accepted version's time: %v", other, err)
-	}
+	giveVersionTheTimeOf(t, database, issue.PrimaryArtifactID, accepted, other)
 	unlinkAcceptedVersion(t, database, issue.PrimaryArtifactID, comment.ID)
 
 	deleteThreadComment(t, handler, comment.ID, "alice")

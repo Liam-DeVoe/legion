@@ -321,7 +321,7 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	payload, err := s.commentEventPayload(r.Context(), tx, &comment, artifactName, commentEventThread{}, referenceChanges)
+	payload, err := s.commentCorrectionPayload(r.Context(), tx, &comment, artifactName, referenceChanges)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

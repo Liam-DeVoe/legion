@@ -3,6 +3,9 @@ package api
 // post_deleted_quote_reads_test.go holds R3 of dispatch://INFRA-1523 on the reads the census found
 // no test of that give a post's words as part of something else: a comment's blocks (row 1.6), a
 // related-item check's hit (1.22) and a document's row for a post that cites it (1.24).
+//
+// The row numbers in subtest names and comments are the rows of the issue's surface census,
+// dispatch://INFRA-1523/artifact/surface-census-md.
 
 import (
 	"net/http"
@@ -36,15 +39,16 @@ func TestEveryReadThatGivesADeletedPostsWordsAsPartOfAnotherGivesNoneOfThem(t *t
 		// it, the read's path, and the post's delete.
 		write func(t *testing.T, letter, phrase string) (post postCopies, path string, withdraw func())
 	}{
-		// M1 leaves the cleared body no block; M6 marks the comment's own node
-		// (refs.loadCommentNodes), which the answer's item is.
+		// The delete's clear (clearDeletedPostBody) leaves the body no block, and the reference
+		// graph marks the comment's own node (refs.loadCommentNodes), which the answer's item is.
 		{"1.6 GET /api/v1/comments/{id}/blocks", func(t *testing.T, _, phrase string) (postCopies, string, func()) {
 			post, withdraw := comment(t, phrase+" as written.\n\nThe second paragraph.")
 			post.posts = 1
 			return post, "/api/v1/comments/" + post.id + "/blocks", withdraw
 		}},
-		// M1: the delete clears the comment's body and with it its search vector, so the keyword
-		// arm the check runs finds it no more. A hit carries no mark of its own.
+		// The delete clears the comment's body (clearDeletedPostBody) and with it its search
+		// vector, so the keyword arm the check runs finds it no more. A hit carries no mark of its
+		// own.
 		{"1.22 GET /api/v1/projects/{key}/related, a comment it finds", func(t *testing.T, letter, phrase string) (postCopies, string, func()) {
 			match := "quokkafound" + letter
 			post, withdraw := comment(t, match+" calibration drifted, "+phrase+".")
@@ -52,7 +56,7 @@ func TestEveryReadThatGivesADeletedPostsWordsAsPartOfAnotherGivesNoneOfThem(t *t
 			post.absent = true
 			return post, related(match), withdraw
 		}},
-		// M1, as for a comment.
+		// The delete's clear, as for a comment.
 		{"1.22 GET /api/v1/projects/{key}/related, a message it finds", func(t *testing.T, letter, phrase string) (postCopies, string, func()) {
 			match := "quokkafound" + letter
 			post, withdraw := message(t, match+" calibration drifted, "+phrase+".")
@@ -60,15 +64,15 @@ func TestEveryReadThatGivesADeletedPostsWordsAsPartOfAnotherGivesNoneOfThem(t *t
 			post.absent = true
 			return post, related(match), withdraw
 		}},
-		// M1: the delete indexes the cleared body again (refs.TombstoneItem), which takes the
-		// post's mention of the document out of the graph, so no row names the post. A row
+		// The delete indexes the cleared body again (refs.TombstoneItem), which takes the post's
+		// mention of the document out of the graph, so no row names the post. A row
 		// (model.ReferencedBy) carries no mark of its own.
 		{"1.24 GET /api/v1/artifacts/{id}/references, a comment that cites it", func(t *testing.T, _, phrase string) (postCopies, string, func()) {
 			post, withdraw := comment(t, phrase+" is in dispatch://TEST/artifact/"+cited.Slug)
 			post.absent = true
 			return post, "/api/v1/artifacts/" + cited.ID + "/references", withdraw
 		}},
-		// M1, as for a comment.
+		// The delete's index of the cleared body (refs.TombstoneItem), as for a comment.
 		{"1.24 GET /api/v1/artifacts/{id}/references, a message that cites it", func(t *testing.T, _, phrase string) (postCopies, string, func()) {
 			post, withdraw := message(t, phrase+" is in dispatch://TEST/artifact/"+cited.Slug)
 			post.absent = true

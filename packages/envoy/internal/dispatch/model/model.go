@@ -2956,9 +2956,9 @@ type CommentEventPayload struct {
 	// reply to an open ask.
 	AskWaitingOn string `json:"ask_waiting_on,omitempty"`
 	// ThreadRootID is the id of the head of the thread the comment joined, which is also
-	// what Comment.ReplyTo stores for it. Carried by comment.created and by the
-	// comment.answered a delivery callback appends; empty when the comment replies to an
-	// ask or is a root comment.
+	// what Comment.ReplyTo stores for it. Carried by comment.created, by the
+	// comment.answered a delivery callback appends, and by comment.edited and comment.deleted;
+	// empty when the comment replies to an ask or is a root comment.
 	ThreadRootID string `json:"thread_root_id,omitempty"`
 	// SuppressRoute is resolved before the comment event commits, so the outbox can deduplicate
 	// without consulting the live session registry. It names a candidate only: a session the
@@ -2998,9 +2998,10 @@ type CommentEventPayload struct {
 	// ReferenceChangesPayload names the nodes whose inbound reference edges this write moved,
 	// so a reader carrying their batched backlink counts refreshes exactly those rows.
 	ReferenceChangesPayload
-	// ThreadLogins is carried by comment.created and comment.answered: every login with a
-	// Replies row on the comment's thread (its ask, else its root) once the comment is in, read
-	// in its own transaction (events.ThreadLogins). Absent on every other comment event.
+	// ThreadLogins is carried by comment.created, comment.answered, comment.edited and
+	// comment.deleted: every login with a Replies row on the comment's thread (its ask, else its
+	// root), read in the write's own transaction (events.ThreadLogins). Absent on every other
+	// comment event.
 	ThreadLogins []string `json:"thread_logins,omitzero"`
 }
 

@@ -1104,7 +1104,8 @@ func (s *server) replayAnswer(w http.ResponseWriter, r *http.Request, held heldR
 // what the request did as its key records it (committed, markRequestKeyCommitted): a request that
 // wrote ran, and its caller reads what it wrote to see the answer, where one that wrote nothing
 // can be sent again under a new key and answered afresh. A client takes a replayed 2xx reading
-// that code for a request that ran (answerNotKept, packages/contracts).
+// that code for a write that ran, and asks a call that wrote nothing again under a new key
+// (answerNotKept, packages/contracts).
 func replayStoredAnswer(w http.ResponseWriter, held heldRequestKey, ended bool) {
 	w.Header().Set(contracts.IdempotencyReplayedHeader, "?1")
 	if held.kept && !ended {

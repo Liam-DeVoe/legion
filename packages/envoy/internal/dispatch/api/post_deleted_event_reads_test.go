@@ -7,7 +7,10 @@ package api
 // with the issue's feed under a validator given before a message's delete (2.3).
 //
 // Every one of them reads through readEventRows, which masks the events of a deleted post at the
-// read (M4, attachPostMarks): the stored payload is never rewritten.
+// read (attachPostMarks): the stored payload is never rewritten.
+//
+// The row numbers in subtest names and comments are the rows of the issue's surface census,
+// dispatch://INFRA-1523/artifact/surface-census-md.
 
 import (
 	"encoding/json"
@@ -25,7 +28,7 @@ import (
 // The one copy of the words that stays is the document event of an accepted suggestion, which is
 // no event of the post and keeps its payload as written (R3).
 //
-// M4: each row relies on attachPostMarks taking the body, body_truncated and suggestion out of
+// Each row relies on attachPostMarks taking the body, body_truncated and suggestion out of
 // every event of the deleted post (postBodyEventKinds) and adding its mark.
 func TestEveryKindOfADeletedPostsOwnEventReadsWithTheMarkAndNoBody(t *testing.T) {
 	live := true
@@ -56,13 +59,13 @@ func TestEveryKindOfADeletedPostsOwnEventReadsWithTheMarkAndNoBody(t *testing.T)
 		// the post, the id of the actor that deletes it and the delete.
 		write func(t *testing.T, issue, phrase string) (id, by string, withdraw func())
 	}{
-		// 3.2, M4: the edit's event carries the new body (editComment).
+		// 3.2: the edit's event carries the new body (editComment).
 		{kind: "comment.edited", write: func(t *testing.T, issue, phrase string) (string, string, func()) {
 			created, withdraw := comment(t, issue, map[string]any{"body": "The comment as first written."})
 			editThreadComment(t, handler, created.ID, phrase+" as corrected.", "alice")
 			return created.ID, "alice", withdraw
 		}},
-		// 3.3, M4: a session's answer to the comment that mentioned it is its own comment, whose
+		// 3.3: a session's answer to the comment that mentioned it is its own comment, whose
 		// one event is comment.answered (replyComment); the session deletes it.
 		{kind: "comment.answered", write: func(t *testing.T, issue, phrase string) (string, string, func()) {
 			mentioned := decodeMentionedComment(t, postMentionedComment(t, handler, issue, map[string]any{
@@ -83,14 +86,14 @@ func TestEveryKindOfADeletedPostsOwnEventReadsWithTheMarkAndNoBody(t *testing.T)
 				}
 			}
 		}},
-		// 3.4, M4: a reopen's event carries the comment as it stands, body and all.
+		// 3.4: a reopen's event carries the comment as it stands, body and all.
 		{kind: "comment.reopened", write: func(t *testing.T, issue, phrase string) (string, string, func()) {
 			created, withdraw := comment(t, issue, map[string]any{"body": phrase + " to reopen."})
 			act(t, created.ID, "resolve")
 			act(t, created.ID, "reopen")
 			return created.ID, "alice", withdraw
 		}},
-		// 3.5, M4: an anchor refresh rewrites the comment's event payload from the stored row
+		// 3.5: an anchor refresh rewrites the comment's event payload from the stored row
 		// (docs/anchor_refresh.go).
 		{kind: "comment.anchor_refreshed", write: func(t *testing.T, issue, phrase string) (string, string, func()) {
 			created, withdraw := comment(t, issue, map[string]any{
@@ -105,7 +108,7 @@ func TestEveryKindOfADeletedPostsOwnEventReadsWithTheMarkAndNoBody(t *testing.T)
 			act(t, competing.ID, "accept")
 			return created.ID, "alice", withdraw
 		}},
-		// 3.6, M4: the accept's event carries the body and the suggestion; the version the accept
+		// 3.6: the accept's event carries the body and the suggestion; the version the accept
 		// named after the body keeps its artifact.version event as written (R3).
 		{kind: "suggestion.accepted", carried: []string{"suggestion"}, keeps: 1, write: func(t *testing.T, issue, phrase string) (string, string, func()) {
 			created, withdraw := comment(t, issue, map[string]any{
@@ -115,7 +118,7 @@ func TestEveryKindOfADeletedPostsOwnEventReadsWithTheMarkAndNoBody(t *testing.T)
 			act(t, created.ID, "accept")
 			return created.ID, "alice", withdraw
 		}},
-		// 3.6, M4: the reject's event carries the body and the suggestion.
+		// 3.6: the reject's event carries the body and the suggestion.
 		{kind: "suggestion.rejected", carried: []string{"suggestion"}, write: func(t *testing.T, issue, phrase string) (string, string, func()) {
 			created, withdraw := comment(t, issue, map[string]any{
 				"body": "Say this instead, " + phrase + ".", "anchor": map[string]any{"artifact": "spec", "quote": "quick"},
@@ -124,7 +127,7 @@ func TestEveryKindOfADeletedPostsOwnEventReadsWithTheMarkAndNoBody(t *testing.T)
 			act(t, created.ID, "reject")
 			return created.ID, "alice", withdraw
 		}},
-		// 3.11, M4: a reply's message.answered carries its own body, which its own delete takes;
+		// 3.11: a reply's message.answered carries its own body, which its own delete takes;
 		// the preview it froze of the message it answers is not the deleted post's.
 		{kind: "message.answered", write: func(t *testing.T, issue, phrase string) (string, string, func()) {
 			root := createIssueMessage(t, handler, issue, map[string]any{"body": "Is the build green?"}, "bob")
@@ -213,9 +216,9 @@ func TestEveryReadOfTheEventLogGivesADeletedPostsEventsWithTheMarkAndNoBody(t *t
 		phrase: "zarquonloggedmessage",
 	}
 
-	// replayed is a socket of alice's subscribed to the event feed after since, and every event
-	// it is sent until one of each kind of want has arrived, as one JSON array.
-	replayed := func(t *testing.T, sub string, want ...string) []byte {
+	// socketReplay is a socket of alice's subscribed to the event feed after since, and every
+	// event it is sent until one of each kind of want has arrived, as one JSON array.
+	socketReplay := func(t *testing.T, sub string, want ...string) []byte {
 		t.Helper()
 		client := rig.dial(t, asUser("alice"))
 		subscribeEvents(t, client, sub, &since)
@@ -287,7 +290,7 @@ func TestEveryReadOfTheEventLogGivesADeletedPostsEventsWithTheMarkAndNoBody(t *t
 		// answer is the read made before the delete, or after it where deleted is set.
 		answer func(t *testing.T, deleted bool) []byte
 	}{
-		// M4, through readEvents of the document's owner.
+		// attachPostMarks, through readEvents of the document's owner.
 		{"1.26 GET /api/v1/artifacts/{id}/events", []logged{comment}, func(t *testing.T, _ bool) []byte {
 			response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+document.ID+"/events", nil, "alice")
 			if response.Code != http.StatusOK {
@@ -295,22 +298,22 @@ func TestEveryReadOfTheEventLogGivesADeletedPostsEventsWithTheMarkAndNoBody(t *t
 			}
 			return response.Body.Bytes()
 		}},
-		// M4, through readEventsAfterID.
+		// attachPostMarks, through readEventsAfterID.
 		{"1.27 GET /api/v1/events/log", []logged{comment, message}, func(t *testing.T, deleted bool) []byte {
 			if deleted {
 				return logRead(t, "comment.deleted", "message.deleted")
 			}
 			return logRead(t, "comment.created", "message.created")
 		}},
-		// M4, through replayThrough's readEventsAfterID and the relay's.
+		// attachPostMarks, through replayThrough's readEventsAfterID and the relay's.
 		{"1.28 GET /ws/live, the events view's replay", []logged{comment, message}, func(t *testing.T, deleted bool) []byte {
 			if deleted {
-				return replayed(t, "after", "comment.deleted", "message.deleted")
+				return socketReplay(t, "after", "comment.deleted", "message.deleted")
 			}
-			return replayed(t, "before", "comment.created", "message.created")
+			return socketReplay(t, "before", "comment.created", "message.created")
 		}},
-		// M4, through readEvents of the issue; the delete appends message.deleted, which moves
-		// the validator (eventFeedETag).
+		// attachPostMarks, through readEvents of the issue; the delete appends message.deleted,
+		// which moves the validator (eventFeedETag).
 		{"2.3 GET /api/v1/issues/{key}/events under the ETag given before a message's delete", []logged{message}, feedRead},
 	}
 	for _, row := range rows {

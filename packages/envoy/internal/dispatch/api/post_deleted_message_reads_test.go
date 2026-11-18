@@ -5,6 +5,9 @@ package api
 // its blocks (1.7), the issue's threads and the one thread (1.8, 1.9), the conversation by any of
 // its ids (1.10), the session's conversations (1.11), and the reference graph's node and block of
 // a message (the message half of 1.23).
+//
+// The row numbers in subtest names and comments are the rows of the issue's surface census,
+// dispatch://INFRA-1523/artifact/surface-census-md.
 
 import (
 	"net/http"
@@ -46,27 +49,29 @@ func TestEveryReadOfADeletedIssueMessageSaysItIsDeletedAndGivesNoneOfIt(t *testi
 		// message at all; nil is requireDeletedPostRead's.
 		gone func(t *testing.T, response *httptest.ResponseRecorder)
 	}{
-		// M3 (scanMessage's mark) on the message; M5 (refs.ReplyBlocks' mark) on bob's quote;
-		// M1 cleared the body and the excerpt the quote serves.
+		// scanMessage's mark on the message, and refs.ReplyBlocks' mark on bob's quote; the
+		// delete's clear (clearDeletedPostBody) took the body and the excerpt the quote serves.
 		{read: "1.8 GET /api/v1/issues/{key}/messages", path: "/api/v1/issues/" + f.issue + "/messages", post: thread},
-		// M3 and M5, as 1.8.
+		// scanMessage's and refs.ReplyBlocks' marks, as 1.8.
 		{read: "1.9 GET /api/v1/issues/{key}/messages/{id}", path: "/api/v1/issues/" + f.issue + "/messages/" + message, post: thread},
-		// M3 and M5, as 1.8: readableMessageThread reads the thread through readMessage.
+		// scanMessage's and refs.ReplyBlocks' marks, as 1.8: readableMessageThread reads the
+		// thread through readMessage.
 		{read: "1.10 GET /api/v1/messages/{id}", path: "/api/v1/messages/" + message, post: thread},
-		// M3 and M5, as 1.8: listAgentMessages scans each root with scanMessage.
+		// scanMessage's and refs.ReplyBlocks' marks, as 1.8: listAgentMessages scans each root
+		// with scanMessage.
 		{read: "1.11 GET /api/v1/agents/{session_id}/messages", path: "/api/v1/agents/" + answersSession + "/messages", post: thread},
-		// M1 leaves the cleared body no block; M6 marks the message's own node
-		// (refs.loadMessageNodes), which the answer's item is.
+		// The delete's clear leaves the body no block, and the reference graph marks the message's
+		// own node (refs.loadMessageNodes), which the answer's item is.
 		{read: "1.7 GET /api/v1/messages/{id}/blocks", path: "/api/v1/messages/" + message + "/blocks", post: node},
-		// M6: the edge from bob's plain answer ends at the message's node, which carries the mark,
-		// and its excerpt is cut from the body M1 cleared.
+		// The reference graph's node: the edge from bob's plain answer ends at the message's node,
+		// which carries the mark, and its excerpt is cut from the body the delete cleared.
 		{
 			read: "1.23 GET /api/v1/references?from=, an edge ending at the message",
 			path: "/api/v1/references?" + url.Values{"from": {"dispatch://" + f.issue + "/message/" + plain.ID}}.Encode(),
 			post: node,
 		},
-		// M6: a block read of a deleted post is refused with the deletion named
-		// (itemBlockNotFound, postIsDeleted), where it gave the block's text.
+		// The reference graph's block node: a block read of a deleted post is refused with the
+		// deletion named (itemBlockNotFound, postIsDeleted), where it gave the block's text.
 		{
 			read: "1.23 GET /api/v1/references?to=, a block of the message",
 			path: "/api/v1/references?" + url.Values{"to": {reference + "#b-b1"}}.Encode(),

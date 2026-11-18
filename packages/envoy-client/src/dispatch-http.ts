@@ -226,7 +226,8 @@ export class DispatchWriteUnsettledError extends Error {
  * version name a delete replaced, which would give back text the delete withdrew). The write took
  * effect, so this is no refusal and deliberately no `DispatchServiceError`; it is never asked
  * again. Its message is the one line a session reads: what was made, why its answer is gone, and
- * to read it back. A call that writes nothing never throws this (`DispatchAnswerNotKeptError`).
+ * to read it back. A call that writes nothing throws this for a `409 KEY_COMMITTED` alone; its
+ * replayed `IDEMPOTENCY_ANSWER_NOT_KEPT` is a `DispatchAnswerNotKeptError`.
  */
 export class DispatchWriteLandedError extends Error {
   override readonly name = "DispatchWriteLandedError";
@@ -2042,21 +2043,27 @@ export class DispatchClient {
    * a write is, under a key of its own, so an attempt with no definitive answer is asked again
    * under that key (`#sendPresenting`). Such a repeat can come back as a replayed 2xx reading
    * `IDEMPOTENCY_ANSWER_NOT_KEPT`: an earlier attempt ran, and Dispatch kept no copy of its answer.
-   * The request wrote nothing, so that is no landing: it is asked once more under a new key, which
+   * `#response` reads that replay as a write's landing (`DispatchWriteLandedError`), but this
+   * request wrote nothing, so it is no landing: it is asked once more under a new key, which
    * `#send` mints, and which runs it afresh and can double nothing. That ask's answer is the
    * call's, and a second such replay is thrown as the `DispatchAnswerNotKeptError` it is rather
-   * than asked again, so the call is asked under at most two keys.
+   * than asked again, so the call is asked under at most two keys. Every other error, a
+   * `409 IDEMPOTENCY_KEY_COMMITTED` landing among them, is thrown as it came.
    */
   async #writingNothing<T>(path: readonly string[], body: unknown): Promise<T> {
-    const url = this.#url(path);
-    const encoded = { content: JSON.stringify(body), type: "application/json" };
     for (let keys = 1; ; keys++) {
       try {
-        return await this.#noRoute(async () =>
-          this.#response<T>("POST", url, await this.#send("POST", url, encoded), false)
-        );
+        return await this.#json<T>("POST", path, body);
       } catch (error) {
-        if (!(error instanceof DispatchAnswerNotKeptError) || keys === 2) throw error;
+        if (
+          !(error instanceof DispatchWriteLandedError) ||
+          error.code !== IDEMPOTENCY_ANSWER_NOT_KEPT
+        ) {
+          throw error;
+        }
+        if (keys === 2) {
+          throw new DispatchAnswerNotKeptError(error.status, "POST", this.#url(path));
+        }
       }
     }
   }
@@ -2431,10 +2438,10 @@ export class DispatchClient {
    * method and status. A replayed refusal is the refusal Dispatch first gave, read as any other.
    * A write Dispatch made whose answer is gone — `409 IDEMPOTENCY_KEY_COMMITTED`, or a replayed
    * 2xx reading `IDEMPOTENCY_ANSWER_NOT_KEPT` (`answerNotKept`) — is a `DispatchWriteLandedError`,
-   * neither a refusal nor a payload. For a call that writes nothing (`writes` false,
-   * `#writingNothing`) that replayed 2xx made nothing, so it is a `DispatchAnswerNotKeptError`.
+   * neither a refusal nor a payload. A call that writes nothing made nothing, so `#writingNothing`
+   * reads that replayed 2xx as no landing and asks again.
    */
-  async #response<T>(method: string, url: string, response: Response, writes = true): Promise<T> {
+  async #response<T>(method: string, url: string, response: Response): Promise<T> {
     const text = await response.text();
     let payload: unknown = text;
     if (text && isJson(response)) {
@@ -2487,9 +2494,7 @@ export class DispatchClient {
     }
     const replayed = response.headers.get(IDEMPOTENCY_REPLAYED_HEADER)?.trim() === "?1";
     if (answerNotKept(response.status, replayed, payload)) {
-      throw writes
-        ? new DispatchWriteLandedError(IDEMPOTENCY_ANSWER_NOT_KEPT, response.status, method, url)
-        : new DispatchAnswerNotKeptError(response.status, method, url);
+      throw new DispatchWriteLandedError(IDEMPOTENCY_ANSWER_NOT_KEPT, response.status, method, url);
     }
     return payload as T;
   }

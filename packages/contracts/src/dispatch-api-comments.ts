@@ -122,7 +122,8 @@ export const CommentSchema = z.strictObject(commentFields).readonly();
  * (`Comment`) always has all four. The read of an edited comment's event gives `edited_at` as the
  * comment reads now, the time its author last replaced the body, beside the body the event
  * recorded (`attachPostMarks` in `api/events.go`). `thread_logins` (the comment's ask, else its
- * root) is carried by `comment.created` and `comment.answered`.
+ * root) is carried by `comment.created`, `comment.answered`, `comment.edited` and
+ * `comment.deleted`.
  */
 export const commentEventPayloadFields = {
   ...commentFields,

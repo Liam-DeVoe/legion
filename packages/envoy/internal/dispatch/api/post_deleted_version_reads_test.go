@@ -6,9 +6,11 @@ package api
 // version (6.6) and a citing document's outgoing references (6.7). An accept names the version it
 // makes after the suggestion's body (acceptedVersionName), so every one of them gives that body
 // as a version's name until the delete renames it.
+//
+// The row numbers in subtest names are the rows of the issue's surface census,
+// dispatch://INFRA-1523/artifact/surface-census-md.
 
 import (
-	"encoding/json"
 	"net/http"
 	"slices"
 	"strconv"
@@ -19,28 +21,12 @@ import (
 // versionSummaries is every version name an answer carries, wherever its shape holds one.
 func versionSummaries(t *testing.T, read string, body []byte) []string {
 	t.Helper()
-	var answer any
-	if err := json.Unmarshal(body, &answer); err != nil {
-		t.Fatalf("%s: decode the answer %s: %v", read, body, err)
-	}
 	var summaries []string
-	var collect func(any)
-	collect = func(value any) {
-		switch node := value.(type) {
-		case map[string]any:
-			if summary, ok := node["summary"].(string); ok {
-				summaries = append(summaries, summary)
-			}
-			for _, child := range node {
-				collect(child)
-			}
-		case []any:
-			for _, child := range node {
-				collect(child)
-			}
+	eachAnswerObject(t, read, body, func(_ string, node map[string]any) {
+		if summary, ok := node["summary"].(string); ok {
+			summaries = append(summaries, summary)
 		}
-	}
-	collect(answer)
+	})
 	return summaries
 }
 
@@ -65,29 +51,29 @@ func TestEveryReadOfADocumentsVersionsNamesTheAcceptedVersionAsTheDeleteRenamedI
 	specVersion := strconv.Itoa(versionNamed(t, documentVersionNames(t, handler, issue.PrimaryArtifactID), spec.phrase))
 	ledgerVersion := strconv.Itoa(versionNamed(t, documentVersionNames(t, handler, ledger.ID), notes.phrase))
 
-	// Every row reads artifact_versions.summary, which M8 rewrites in place in the delete's
-	// transaction: the delete renames the version the accept recorded (renameAcceptedVersion).
+	// Every row reads artifact_versions.summary, which renameAcceptedVersion rewrites in place in
+	// the delete's transaction: the delete renames the version the accept recorded.
 	rows := []struct {
 		read, path string
 		version    accepted
 	}{
-		// M8, read by getArtifact.
+		// Read by getArtifact.
 		{"6.3 GET /api/v1/issues/{key}/artifacts/{slug}", "/api/v1/issues/" + issue.Key + "/artifacts/spec", spec},
-		// M8, read by getArtifact.
+		// Read by getArtifact.
 		{"6.3 GET /api/v1/projects/{key}/artifacts/{slug}", "/api/v1/projects/TEST/artifacts/" + ledger.Slug, notes},
-		// M8, read by listArtifacts.
+		// Read by listArtifacts.
 		{"6.4 GET /api/v1/issues/{key}/artifacts", "/api/v1/issues/" + issue.Key + "/artifacts", spec},
-		// M8, read by listProjectArtifacts.
+		// Read by listProjectArtifacts.
 		{"6.4 GET /api/v1/projects/{key}/artifacts", "/api/v1/projects/TEST/artifacts", notes},
-		// M8, read by getIssue (readIssue's artifacts and their versions).
+		// Read by getIssue (readIssue's artifacts and their versions).
 		{"6.5 GET /api/v1/issues/{key}", "/api/v1/issues/" + issue.Key, spec},
-		// M8, read by getArtifactVersion.
+		// Read by getArtifactVersion.
 		{"6.6 GET /api/v1/artifacts/{id}/versions/{number}", "/api/v1/artifacts/" + issue.PrimaryArtifactID + "/versions/" + specVersion, spec},
-		// M8, read by getArtifactVersion.
+		// Read by getArtifactVersion.
 		{"6.6 GET /api/v1/issues/{key}/artifacts/{slug}/versions/{number}", "/api/v1/issues/" + issue.Key + "/artifacts/spec/versions/" + specVersion, spec},
-		// M8, read by getArtifactVersion.
+		// Read by getArtifactVersion.
 		{"6.6 GET /api/v1/projects/{key}/artifacts/{slug}/versions/{number}", "/api/v1/projects/TEST/artifacts/" + ledger.Slug + "/versions/" + ledgerVersion, notes},
-		// M8, read by getArtifactReferences (refs.Outgoing, the cited document's versions).
+		// Read by getArtifactReferences (refs.Outgoing, the cited document's versions).
 		{"6.7 GET /api/v1/artifacts/{id}/references, a cited document's versions", "/api/v1/artifacts/" + citer.ID + "/references", notes},
 	}
 	for _, row := range rows {

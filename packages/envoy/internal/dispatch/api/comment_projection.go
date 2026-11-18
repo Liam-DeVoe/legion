@@ -97,8 +97,8 @@ func commentMarkRecord(comment model.Comment, replies []model.Comment, suggestio
 // commentEventThread is what a comment payload says about the thread the comment joined:
 // the ask it replies to (question, state, and whose turn it is once this comment is the
 // newest reply) or the root of the comment thread. Populated on comment.created and on the
-// comment.answered a delivery callback appends; zero for root comments and for every other
-// comment.* event.
+// comment.answered a delivery callback appends; an edit or a delete names the root alone
+// (commentCorrectionPayload); zero for root comments and for every other comment.* event.
 type commentEventThread struct {
 	AskQuestion  string
 	AskState     string
@@ -140,6 +140,26 @@ func (s *server) commentEventPayload(ctx context.Context, tx pgx.Tx, comment *mo
 	}
 	if err := tx.QueryRow(ctx, `select coalesce(project_key, ''), slug from artifacts where id = $1`, *comment.ArtifactID).Scan(&payload.ProjectKey, &payload.ArtifactSlug); err != nil {
 		return model.CommentEventPayload{}, fmt.Errorf("load artifact comment event owner: %w", err)
+	}
+	return payload, nil
+}
+
+// commentCorrectionPayload is the payload of comment.edited and comment.deleted: the event
+// carries the thread_root_id and the thread_logins its comment's comment.created carried, so a
+// reader routes a correction as it routed the post - an Inbox refreshes only for the logins
+// with a Replies row on the thread. The ask's question, state and turn belong to the moment
+// the comment was posted and stay with that event.
+func (s *server) commentCorrectionPayload(ctx context.Context, tx pgx.Tx, comment *model.Comment, artifactName string, changes model.ReferenceChanges) (model.CommentEventPayload, error) {
+	var thread commentEventThread
+	if comment.ReplyTo != nil {
+		thread.ThreadRootID = *comment.ReplyTo
+	}
+	payload, err := s.commentEventPayload(ctx, tx, comment, artifactName, thread, changes)
+	if err != nil {
+		return model.CommentEventPayload{}, err
+	}
+	if payload.ThreadLogins, err = commentThreadLogins(ctx, tx, *comment); err != nil {
+		return model.CommentEventPayload{}, fmt.Errorf("read the logins on comment %s's thread: %w", comment.ID, err)
 	}
 	return payload, nil
 }

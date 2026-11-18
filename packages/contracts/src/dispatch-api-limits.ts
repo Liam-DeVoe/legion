@@ -149,10 +149,12 @@ export const MAX_BROADCAST_RECIPIENTS = 100;
  * reply to a comment or a message. Any other stored success is not replayed once it holds a
  * comment or an issue message that is deleted (an object whose own id is the post, such as a
  * related-item hit with its snippet) or a document version a delete renamed: such a repeat is the
- * first answer's status with `IDEMPOTENCY_ANSWER_NOT_KEPT`. A post named only in a text, a
- * citation, holds no part of it and ends nothing, and a stored refusal is replayed as it was. A
- * write without the header is run as it always was, with no replay (the IETF `Idempotency-Key`
- * draft; Google AIP-155).
+ * first answer's status with `IDEMPOTENCY_ANSWER_NOT_KEPT`, and where one of the five routes above
+ * answers a repeat of an answer a delete so ended from what it made, that replay keeps none of the
+ * first answer's other members, such as its `advice`. A post named only in a text, a citation,
+ * holds no part of it and ends nothing, and a stored refusal is replayed as it was. A write
+ * without the header is run as it always was, with no replay (the IETF `Idempotency-Key` draft;
+ * Google AIP-155).
  */
 export const IDEMPOTENCY_KEY_HEADER = "Idempotency-Key";
 

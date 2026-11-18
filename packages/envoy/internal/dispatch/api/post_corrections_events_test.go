@@ -1,16 +1,19 @@
 package api
 
 // What the four events of a correction carry, and what a read of an event of an edited or a
-// deleted post gives: the post's own marks, no part of a deleted post's body, and the frozen
-// preview of another post untouched.
+// deleted post gives: the post's own marks, the thread a comment's correction is routed by, no
+// part of a deleted post's body, and the frozen preview of another post untouched.
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // decodedIssueEvents is the issue's events, oldest first, each payload decoded into a map so a
@@ -152,6 +155,58 @@ func requireDeletedMark(t *testing.T, eventType string, payload map[string]any, 
 	actor, _ := payload["deleted_by"].(map[string]any)
 	if actor == nil || actor["id"] != by {
 		t.Fatalf("the %s payload deleted_by = %v, want the actor %s", eventType, payload["deleted_by"], by)
+	}
+}
+
+// storedThreadRootID is the thread_root_id the newest stored eventType event about the record id
+// carries, and whether its payload carries the field at all.
+func storedThreadRootID(t *testing.T, database *store.Store, eventType, id string) (string, bool) {
+	t.Helper()
+	var root *string
+	if err := database.Pool.QueryRow(context.Background(), `
+		select payload->>'thread_root_id' from events where type = $1 and payload->>'id' = $2 order by id desc limit 1
+	`, eventType, id).Scan(&root); err != nil {
+		t.Fatalf("read the %s event of %s: %v", eventType, id, err)
+	}
+	if root == nil {
+		return "", false
+	}
+	return *root, true
+}
+
+// An edit and a delete of a comment are routed as its creation was (commentCorrectionPayload): a
+// reply's comment.edited and comment.deleted carry its reply_to as thread_root_id and the
+// thread_logins its comment.created carried, so an Inbox reads its Replies rows again for the
+// logins with a row on the thread and no other. A root comment heads its own thread, so its
+// corrections carry no thread_root_id, and they name the logins with a row on that thread when
+// the correction is written, bob's reply among them: his row draws the root.
+func TestACommentsCorrectionsCarryTheThreadItsCreationCarried(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	issue := createInteractionIssue(t, handler, "TEST", "A corrected thread", "A spec")
+	root := createThreadComment(t, handler, issue.Key, map[string]any{"body": "Who reviews this?"}, "alice")
+	reply := createThreadComment(t, handler, issue.Key, map[string]any{"body": "I will.", "reply_to": root.ID}, "bob")
+	created, carried := threadLoginsOf(t, database, "comment.created", reply.ID)
+	if !carried || !slices.Equal(created, []string{"alice", "bob"}) {
+		t.Fatalf("the reply's comment.created thread_logins = %#v (carried %v), want alice and bob", created, carried)
+	}
+	if rootID, _ := storedThreadRootID(t, database, "comment.created", reply.ID); rootID != root.ID {
+		t.Fatalf("the reply's comment.created thread_root_id = %q, want its reply_to %s", rootID, root.ID)
+	}
+
+	editThreadComment(t, handler, reply.ID, "I will, on Friday.", "bob")
+	deleteThreadComment(t, handler, reply.ID, "bob")
+	editThreadComment(t, handler, root.ID, "Who reviews this today?", "alice")
+	deleteThreadComment(t, handler, root.ID, "alice")
+
+	for _, eventType := range []string{"comment.edited", "comment.deleted"} {
+		if rootID, carried := storedThreadRootID(t, database, eventType, reply.ID); rootID != root.ID {
+			t.Fatalf("the reply's %s thread_root_id = %q (carried %v), want its reply_to %s, as its comment.created carried", eventType, rootID, carried, root.ID)
+		}
+		requireThreadLogins(t, database, eventType, reply.ID, created...)
+		if rootID, carried := storedThreadRootID(t, database, eventType, root.ID); carried {
+			t.Fatalf("the root comment's %s thread_root_id = %q, want none: a root heads its own thread", eventType, rootID)
+		}
+		requireThreadLogins(t, database, eventType, root.ID, "alice", "bob")
 	}
 }
 

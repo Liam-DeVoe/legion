@@ -3,6 +3,9 @@ package api
 // post_deleted_ask_thread_reads_test.go holds R2 and R3 of dispatch://INFRA-1523 on the reads of
 // an ask's thread the census found no test of after a reply's delete: an issue's ask list with its
 // threads (row 1.13), the one ask (1.14) and the Inbox (1.15).
+//
+// The row numbers in subtest names and comments are the rows of the issue's surface census,
+// dispatch://INFRA-1523/artifact/surface-census-md.
 
 import (
 	"net/http"
@@ -27,9 +30,9 @@ func TestEveryReadOfAnAsksThreadSaysADeletedReplyIsDeletedAndGivesNoneOfIt(t *te
 		"body": "On the first paragraph.", "reply_to": reply.ID, "reply_to_block": "b1",
 	}, "bob")
 
-	// Each read carries the thread's replies: M2 (scanComment's mark) on alice's reply, M5
-	// (refs.ReplyBlocks' mark) on bob's quote of it; M1 cleared the body and the excerpt the quote
-	// serves.
+	// Each read carries the thread's replies: scanComment's mark on alice's reply, and
+	// refs.ReplyBlocks' mark on bob's quote of it; the delete's clear (clearDeletedPostBody) took
+	// the body and the excerpt the quote serves.
 	post := postCopies{kind: "comment", id: reply.ID, by: "alice", posts: 1, quotes: 1, edited: true}
 	rows := []struct{ read, path string }{
 		// listIssueAsks with ?thread=1: loadAskThreads, loadInboxAskReplyChains, scanComment.

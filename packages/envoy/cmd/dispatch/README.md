@@ -3358,7 +3358,7 @@ Each item below names a status and code, then its meaning.
 - The first status with `ANSWER_NOT_KEPT`
 
   A repeat whose first answer Dispatch gives no copy of: one larger than the 1 MiB a key keeps, or one a delete withdrew text from.
-  What a repeat answers on each route, and when a kept answer is not replayed, is `IDEMPOTENCY_KEY_HEADER`'s description in `packages/contracts/src/dispatch-api-limits.ts`.
+  What a caller does with it - what a request that wrote made is read back, and a call that wrote nothing may be sent again under a new key - is `IDEMPOTENCY_ANSWER_NOT_KEPT`'s description in `packages/contracts/src/dispatch-api-limits.ts`.
 
 - `409 KEY_IN_FLIGHT`, `Retry-After: 1`
 
@@ -4256,7 +4256,7 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/comments/{id}/history?before=` (GET; cookie, trusted header, or bearer)
 
-  The bodies an edit or a delete of this comment replaced, newest first.
+  The bodies an edit or a delete of this comment replaced, newest first: a delete writes an entry of its own, and a deleted comment's entries carry no body.
   Its rules are its description in the route table (`internal/dispatch/api/routes_table.go`), which `GET /api/v1` serves and the docs site's API reference prints.
 
 - `/api/v1/comments/{id}/resolve` (POST; cookie, trusted header, or bearer)
@@ -4312,7 +4312,7 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/messages/{id}/history?before=&session=` (GET; cookie, trusted header, or bearer)
 
-  The bodies an edit or a delete of this message replaced, newest first.
+  The bodies an edit or a delete of this message replaced, newest first: a delete writes an entry of its own, and a deleted message's entries carry no body.
   Its rules are its description in the route table (`internal/dispatch/api/routes_table.go`), which `GET /api/v1` serves and the docs site's API reference prints.
 
 - `/api/v1/issues/{key}/results` (GET, POST; cookie, trusted header, or bearer)

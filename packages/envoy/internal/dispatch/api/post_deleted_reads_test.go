@@ -5,6 +5,9 @@ package api
 // post's words, which is what lets the same read after the delete fail, and that read after the
 // delete gives none of them and says, on every copy of the post its answer's shape carries, that
 // the post is deleted.
+//
+// The row numbers in the subtest names of the post_deleted_*_reads tests are the rows of the
+// issue's surface census, dispatch://INFRA-1523/artifact/surface-census-md.
 
 import (
 	"bytes"
@@ -42,21 +45,22 @@ type postObjects struct {
 	named         int
 }
 
-// findPostObjects decodes body and collects what it holds of post.
-func findPostObjects(t *testing.T, read string, body []byte, post postCopies) postObjects {
+// eachAnswerObject decodes the answer read gave and calls visit for every object it holds,
+// wherever it holds it (walkOpenAPI).
+func eachAnswerObject(t *testing.T, read string, body []byte, visit func(path string, node map[string]any)) {
 	t.Helper()
 	var answer any
 	if err := json.Unmarshal(body, &answer); err != nil {
 		t.Fatalf("%s: decode the answer %s: %v", read, body, err)
 	}
-	var found postObjects
-	found.collect(answer, post)
-	return found
+	walkOpenAPI(answer, "", visit)
 }
 
-func (found *postObjects) collect(value any, post postCopies) {
-	switch node := value.(type) {
-	case map[string]any:
+// findPostObjects decodes body and collects what it holds of post.
+func findPostObjects(t *testing.T, read string, body []byte, post postCopies) postObjects {
+	t.Helper()
+	var found postObjects
+	eachAnswerObject(t, read, body, func(_ string, node map[string]any) {
 		if node["id"] == post.id {
 			found.named++
 			_, body := node["body"]
@@ -67,14 +71,8 @@ func (found *postObjects) collect(value any, post postCopies) {
 		if block, _ := node["node"].(string); strings.HasPrefix(block, post.kind+"/"+post.id+"#") {
 			found.quotes = append(found.quotes, node)
 		}
-		for _, child := range node {
-			found.collect(child, post)
-		}
-	case []any:
-		for _, child := range node {
-			found.collect(child, post)
-		}
-	}
+	})
+	return found
 }
 
 // requireStandingPostRead fails t unless the answer of a read made while the post stands gives
@@ -129,10 +127,6 @@ func requireDeletedPostRead(t *testing.T, read string, body []byte, phrase strin
 			read, len(found.posts), post.kind, post.id, len(found.quotes), post.posts, post.quotes, body)
 	}
 	for _, held := range append(found.posts, found.quotes...) {
-		at, _ := held["deleted_at"].(string)
-		actor, _ := held["deleted_by"].(map[string]any)
-		if at == "" || actor == nil || actor["id"] != post.by {
-			t.Fatalf("%s after the delete carries %s %s as %v, want deleted_at and deleted_by %s", read, post.kind, post.id, held, post.by)
-		}
+		requireDeletedMark(t, read, held, post.by)
 	}
 }

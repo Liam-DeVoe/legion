@@ -13,8 +13,15 @@ import { writesOf } from "./write-store";
 const refusal = new ApiError(503, { code: "UNAVAILABLE", error: "the server is down" });
 const verdict = new ApiError(422, { code: "KEY_REUSED", error: "the key names another write" });
 
+/** What a surface does once its write settles, where a test counts it: its rollback (`onError`)
+ *  and its landing (`onSuccess`). */
+interface AnswerWriteSettled {
+  readonly onError?: () => void;
+  readonly onSuccess?: (data: unknown) => void;
+}
+
 /** A surface's write of an answer, as `AskCard`'s form makes it, over one app's queue. */
-function renderAnswerWrite() {
+function renderAnswerWrite(settled: AnswerWriteSettled = {}) {
   const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
   client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
   const wrapper = ({ children }: { children: ReactNode }) => (
@@ -25,6 +32,7 @@ function renderAnswerWrite() {
       useKeyedWrite({
         inline: true,
         label: () => "Answer to “Ship?”",
+        ...settled,
         write: (input: { selected: string[] }, bounds) =>
           api.answerAsk("ask-1", { expected_edited_at: null, ...input }, bounds),
       }),
@@ -86,25 +94,12 @@ test("a write answered KEY_COMMITTED succeeds with null: no error and no rollbac
   );
   let rolledBack = 0;
   const succeeded: unknown[] = [];
-  const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
-  client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
-  const wrapper = ({ children }: { children: ReactNode }) => (
-    <QueryClientProvider client={client}>{children}</QueryClientProvider>
-  );
-  const hook = renderHook(
-    () =>
-      useKeyedWrite({
-        inline: true,
-        label: () => "Answer to “Ship?”",
-        onError: () => {
-          rolledBack += 1;
-        },
-        onSuccess: (data) => succeeded.push(data),
-        write: (input: { selected: string[] }, bounds) =>
-          api.answerAsk("ask-1", { expected_edited_at: null, ...input }, bounds),
-      }),
-    { wrapper }
-  );
+  const { client, hook } = renderAnswerWrite({
+    onError: () => {
+      rolledBack += 1;
+    },
+    onSuccess: (data) => succeeded.push(data),
+  });
 
   try {
     let resolved: unknown = "unset";
@@ -146,25 +141,12 @@ test("a write whose replayed answer Dispatch kept no copy of succeeds with null:
         )) as typeof fetch);
   let rolledBack = 0;
   const succeeded: unknown[] = [];
-  const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
-  client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
-  const wrapper = ({ children }: { children: ReactNode }) => (
-    <QueryClientProvider client={client}>{children}</QueryClientProvider>
-  );
-  const hook = renderHook(
-    () =>
-      useKeyedWrite({
-        inline: true,
-        label: () => "Answer to “Ship?”",
-        onError: () => {
-          rolledBack += 1;
-        },
-        onSuccess: (data) => succeeded.push(data),
-        write: (input: { selected: string[] }, bounds) =>
-          api.answerAsk("ask-1", { expected_edited_at: null, ...input }, bounds),
-      }),
-    { wrapper }
-  );
+  const { client, hook } = renderAnswerWrite({
+    onError: () => {
+      rolledBack += 1;
+    },
+    onSuccess: (data) => succeeded.push(data),
+  });
 
   try {
     let resolved: unknown = "unset";

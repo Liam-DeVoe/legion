@@ -566,13 +566,13 @@ const INBOX_THREAD_WRITES: Partial<Record<EventType, true>> = {
 
 /**
  * Whether the viewer's Inbox thread rows (`["me", "replies"]`: both states of the unpaged read,
- * the unread count and every owner's unread set) can have moved: a write above, or an issue
- * closing, reopening or being reassigned. A reassignment, a hand-on (`ask.asked_of`, among the
- * writes above) and a project's default moving all move the same rows for the same reason: whom
- * an open ask waits on is one expression, `coalesce(a.asked_of, i.assignee, p.default_assignee)`,
- * and the Reply rows leave out an ask the Inbox already lists for the viewer (`myRepliesOwner`
- * in the server's replies.go), so moving that person moves the ask's thread into one person's
- * Reply rows and out of the other's.
+ * the unread count and every owner's unread set) can have moved, or changed what they print (a
+ * correction of a post a row draws): a write above, or an issue closing, reopening or being
+ * reassigned. A reassignment, a hand-on (`ask.asked_of`, among the writes above) and a project's
+ * default moving all move the same rows for the same reason: whom an open ask waits on is one
+ * expression, `coalesce(a.asked_of, i.assignee, p.default_assignee)`, and the Reply rows leave out
+ * an ask the Inbox already lists for the viewer (`myRepliesOwner` in the server's replies.go), so
+ * moving that person moves the ask's thread into one person's Reply rows and out of the other's.
  *
  * A project-default write moves the person without touching the thread or naming an issue, so
  * it reads it for the two named people's whole Inbox as well, and every other reader's Inbox
@@ -580,12 +580,13 @@ const INBOX_THREAD_WRITES: Partial<Record<EventType, true>> = {
  * `ownerTargets`). An assignee write needs no such read: every reader's Inbox holds every open
  * ask of the issue, so the test against its rows (`inboxRowsOf`) finds each list it moves.
  *
- * `thread_logins` names whose rows the write moved - for an issue-less message the thread root's
- * author, which is the person whose Agent row it is, for a hand-on the person it moved from and
- * the one it moved to, and for a project default the previous default and the new one - so only
- * theirs, and the writer's own, refresh. Without it every one of those writes refreshes, except
- * an `issue.updated` that says it moved neither status nor assignee: the server names the logins
- * on every status move, a close and a reopen among them, and on every assignee move.
+ * `thread_logins` names whose rows the write moved or reprinted - for an issue-less message the
+ * thread root's author, which is the person whose Agent row it is, for a hand-on the person it
+ * moved from and the one it moved to, and for a project default the previous default and the new
+ * one - so only theirs, and the writer's own, refresh. Without it every one of those writes
+ * refreshes, except an `issue.updated` that says it moved neither status nor assignee: the server
+ * names the logins on every status move, a close and a reopen among them, and on every assignee
+ * move.
  *
  * The known limit: an older server mid-deploy writes no `thread_logins` on a reassignment, so a
  * Reply row that should appear here - an open ask on an issue assigned away from the viewer -

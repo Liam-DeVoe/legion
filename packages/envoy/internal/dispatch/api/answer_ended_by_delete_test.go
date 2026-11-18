@@ -59,6 +59,13 @@ func createProjectIssue(t *testing.T, handler http.Handler, project, title, spec
 	}](t, created).Key
 }
 
+// keyedSend answers a send of body to target through handler under a key, as alice.
+func keyedSend(t *testing.T, handler http.Handler, method, target string, body map[string]any) func(string) *httptest.ResponseRecorder {
+	return func(key string) *httptest.ResponseRecorder {
+		return keyedRequest(t, handler, method, target, body, "alice", key)
+	}
+}
+
 // The census: every keyed route whose kept answer can carry the text of a comment or of an issue
 // message and is not answered by a reread of the post (keyedRereads, whose rows are
 // TestAKeyedRepeatAfterADeleteGivesThePostAsItStandsNow), one row each. A row's write is sent
@@ -89,12 +96,6 @@ func TestAKeyedRepeatOfAnAnswerADeleteEndedGivesNoPartOfTheDeletedText(t *testin
 		refreshTermStats(t, database, "TEST")
 		return func(*httptest.ResponseRecorder) { deleteThreadComment(t, handler, comment.ID, "alice") }
 	}
-	// keyed answers a send of body to target under a key, as alice.
-	keyed := func(t *testing.T, method, target string, body map[string]any) func(string) *httptest.ResponseRecorder {
-		return func(key string) *httptest.ResponseRecorder {
-			return keyedRequest(t, handler, method, target, body, "alice", key)
-		}
-	}
 	// withdrawCreated deletes the post the first answer is.
 	withdrawCreated := func(t *testing.T, path string) func(*httptest.ResponseRecorder) {
 		return func(first *httptest.ResponseRecorder) {
@@ -124,76 +125,76 @@ func TestAKeyedRepeatOfAnAnswerADeleteEndedGivesNoPartOfTheDeletedText(t *testin
 	}{
 		{route: "POST /api/v1/projects/{key}/related, a comment it finds", write: func(t *testing.T, _, match, phrase string) (func(string) *httptest.ResponseRecorder, func(*httptest.ResponseRecorder)) {
 			withdraw := commented(t, match, phrase)
-			return keyed(t, http.MethodPost, "/api/v1/projects/TEST/related", map[string]any{"title": match + " calibration", "keywords_only": true}), withdraw
+			return keyedSend(t, handler, http.MethodPost, "/api/v1/projects/TEST/related", map[string]any{"title": match + " calibration", "keywords_only": true}), withdraw
 		}},
 		{route: "POST /api/v1/projects/{key}/related, a message it finds", write: func(t *testing.T, _, match, phrase string) (func(string) *httptest.ResponseRecorder, func(*httptest.ResponseRecorder)) {
 			message := createIssueMessage(t, handler, holder.Key, map[string]any{"body": match + " calibration drifted, " + phrase + "."}, "alice")
 			refreshTermStats(t, database, "TEST")
-			return keyed(t, http.MethodPost, "/api/v1/projects/TEST/related", map[string]any{"title": match + " calibration", "keywords_only": true}),
+			return keyedSend(t, handler, http.MethodPost, "/api/v1/projects/TEST/related", map[string]any{"title": match + " calibration", "keywords_only": true}),
 				func(*httptest.ResponseRecorder) { deleteIssueMessage(t, handler, message.ID, "alice") }
 		}},
 		{route: "POST /api/v1/issues", write: func(t *testing.T, _, match, phrase string) (func(string) *httptest.ResponseRecorder, func(*httptest.ResponseRecorder)) {
 			withdraw := commented(t, match, phrase)
-			return keyed(t, http.MethodPost, "/api/v1/issues", map[string]any{"project": "TEST", "title": match + " calibration review"}), withdraw
+			return keyedSend(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{"project": "TEST", "title": match + " calibration review"}), withdraw
 		}},
 		{route: "POST /api/v1/issues/{key}/asks", write: func(t *testing.T, _, match, phrase string) (func(string) *httptest.ResponseRecorder, func(*httptest.ResponseRecorder)) {
 			withdraw := commented(t, match, phrase)
-			return keyed(t, http.MethodPost, "/api/v1/issues/"+asker+"/asks", map[string]any{"question": asked(match)}), withdraw
+			return keyedSend(t, handler, http.MethodPost, "/api/v1/issues/"+asker+"/asks", map[string]any{"question": asked(match)}), withdraw
 		}},
 		{route: "POST /api/v1/artifacts/{id}/asks", write: func(t *testing.T, _, match, phrase string) (func(string) *httptest.ResponseRecorder, func(*httptest.ResponseRecorder)) {
 			withdraw := commented(t, match, phrase)
-			return keyed(t, http.MethodPost, "/api/v1/artifacts/"+notes.ID+"/asks", map[string]any{"question": asked(match)}), withdraw
+			return keyedSend(t, handler, http.MethodPost, "/api/v1/artifacts/"+notes.ID+"/asks", map[string]any{"question": asked(match)}), withdraw
 		}},
 		{route: "POST /api/v1/artifacts/{id}/edits", write: func(t *testing.T, letter, match, phrase string) (func(string) *httptest.ResponseRecorder, func(*httptest.ResponseRecorder)) {
 			withdraw := commented(t, match, phrase)
 			spec := decodeBody[struct {
 				PrimaryArtifactID string `json:"primary_artifact_id"`
 			}](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+asker, nil, "alice")).PrimaryArtifactID
-			return keyed(t, http.MethodPost, "/api/v1/artifacts/"+spec+"/edits", decision(match, "census-"+letter)), withdraw
+			return keyedSend(t, handler, http.MethodPost, "/api/v1/artifacts/"+spec+"/edits", decision(match, "census-"+letter)), withdraw
 		}},
 		{route: "POST /api/v1/issues/{key}/artifacts/{slug}/edits", write: func(t *testing.T, letter, match, phrase string) (func(string) *httptest.ResponseRecorder, func(*httptest.ResponseRecorder)) {
 			withdraw := commented(t, match, phrase)
-			return keyed(t, http.MethodPost, "/api/v1/issues/"+asker+"/artifacts/spec/edits", decision(match, "census-"+letter)), withdraw
+			return keyedSend(t, handler, http.MethodPost, "/api/v1/issues/"+asker+"/artifacts/spec/edits", decision(match, "census-"+letter)), withdraw
 		}},
 		{route: "POST /api/v1/projects/{key}/artifacts/{slug}/edits", write: func(t *testing.T, letter, match, phrase string) (func(string) *httptest.ResponseRecorder, func(*httptest.ResponseRecorder)) {
 			withdraw := commented(t, match, phrase)
-			return keyed(t, http.MethodPost, "/api/v1/projects/TEST/artifacts/"+notes.Slug+"/edits", decision(match, "census-"+letter)), withdraw
+			return keyedSend(t, handler, http.MethodPost, "/api/v1/projects/TEST/artifacts/"+notes.Slug+"/edits", decision(match, "census-"+letter)), withdraw
 		}},
 		{route: "PATCH /api/v1/artifacts/{id}", write: func(t *testing.T, letter, _, phrase string) (func(string) *httptest.ResponseRecorder, func(*httptest.ResponseRecorder)) {
 			document := uploadIssueDocument(t, handler, holder.Key, "renamed-"+letter+".md", "alpha bravo charlie")
 			comment := acceptSuggestion(t, handler, "/api/v1/issues/"+holder.Key+"/comments", document.Slug, "Say this instead, "+phrase+".", "alpha", "omega")
-			return keyed(t, http.MethodPatch, "/api/v1/artifacts/"+document.ID, map[string]any{"name": "renamed-" + letter + "-again.md"}),
+			return keyedSend(t, handler, http.MethodPatch, "/api/v1/artifacts/"+document.ID, map[string]any{"name": "renamed-" + letter + "-again.md"}),
 				func(*httptest.ResponseRecorder) { deleteThreadComment(t, handler, comment, "alice") }
 		}},
 		{route: "POST /api/v1/issues/{key}/artifacts, to an existing document", write: func(t *testing.T, letter, _, phrase string) (func(string) *httptest.ResponseRecorder, func(*httptest.ResponseRecorder)) {
 			name := "uploaded-" + letter + ".md"
 			document := uploadIssueDocument(t, handler, holder.Key, name, "alpha bravo charlie")
 			comment := acceptSuggestion(t, handler, "/api/v1/issues/"+holder.Key+"/comments", document.Slug, "Say this instead, "+phrase+".", "alpha", "omega")
-			return keyed(t, http.MethodPost, "/api/v1/issues/"+holder.Key+"/artifacts", map[string]any{"name": name, "content": "alpha bravo charlie delta"}),
+			return keyedSend(t, handler, http.MethodPost, "/api/v1/issues/"+holder.Key+"/artifacts", map[string]any{"name": name, "content": "alpha bravo charlie delta"}),
 				func(*httptest.ResponseRecorder) { deleteThreadComment(t, handler, comment, "alice") }
 		}},
 		{route: "POST /api/v1/projects/{key}/artifacts, to an existing document", write: func(t *testing.T, letter, _, phrase string) (func(string) *httptest.ResponseRecorder, func(*httptest.ResponseRecorder)) {
 			name := "Ledger " + letter
 			document := createProjectDocument(t, handler, "TEST", name, "# Ledger\n\nkilo lima mike\n")
 			comment := acceptSuggestion(t, handler, "/api/v1/artifacts/"+document.ID+"/comments", document.Slug, "Say this instead, "+phrase+".", "kilo", "november")
-			return keyed(t, http.MethodPost, "/api/v1/projects/TEST/artifacts", map[string]any{"name": name, "content": "# Ledger\n\nkilo lima mike oscar\n"}),
+			return keyedSend(t, handler, http.MethodPost, "/api/v1/projects/TEST/artifacts", map[string]any{"name": name, "content": "# Ledger\n\nkilo lima mike oscar\n"}),
 				func(*httptest.ResponseRecorder) { deleteThreadComment(t, handler, comment, "alice") }
 		}},
 		{route: "POST /api/v1/issues/{key}/comments", recovered: true, carries: true, write: func(t *testing.T, _, _, phrase string) (func(string) *httptest.ResponseRecorder, func(*httptest.ResponseRecorder)) {
-			return keyed(t, http.MethodPost, "/api/v1/issues/"+holder.Key+"/comments", map[string]any{"body": "A census comment, " + phrase + "."}),
+			return keyedSend(t, handler, http.MethodPost, "/api/v1/issues/"+holder.Key+"/comments", map[string]any{"body": "A census comment, " + phrase + "."}),
 				withdrawCreated(t, "/api/v1/comments/")
 		}},
 		{route: "POST /api/v1/issues/{key}/comments, a reply to a block", recovered: true, carries: true, afresh: true, write: func(t *testing.T, _, _, phrase string) (func(string) *httptest.ResponseRecorder, func(*httptest.ResponseRecorder)) {
 			parent := createThreadComment(t, handler, holder.Key, map[string]any{"body": "A census parent, " + phrase + "."}, "alice")
-			return keyed(t, http.MethodPost, "/api/v1/issues/"+holder.Key+"/comments", map[string]any{"body": "An answer.", "reply_to": parent.ID, "reply_to_block": "b1"}),
+			return keyedSend(t, handler, http.MethodPost, "/api/v1/issues/"+holder.Key+"/comments", map[string]any{"body": "An answer.", "reply_to": parent.ID, "reply_to_block": "b1"}),
 				func(*httptest.ResponseRecorder) { deleteThreadComment(t, handler, parent.ID, "alice") }
 		}},
 		{route: "POST /api/v1/artifacts/{id}/comments", recovered: true, write: func(t *testing.T, _, _, phrase string) (func(string) *httptest.ResponseRecorder, func(*httptest.ResponseRecorder)) {
-			return keyed(t, http.MethodPost, "/api/v1/artifacts/"+notes.ID+"/comments", map[string]any{"body": "A census document comment, " + phrase + "."}),
+			return keyedSend(t, handler, http.MethodPost, "/api/v1/artifacts/"+notes.ID+"/comments", map[string]any{"body": "A census document comment, " + phrase + "."}),
 				withdrawCreated(t, "/api/v1/comments/")
 		}},
 		{route: "POST /api/v1/issues/{key}/messages", recovered: true, carries: true, write: func(t *testing.T, _, _, phrase string) (func(string) *httptest.ResponseRecorder, func(*httptest.ResponseRecorder)) {
-			return keyed(t, http.MethodPost, "/api/v1/issues/"+holder.Key+"/messages", map[string]any{"body": "A census message, " + phrase + "."}),
+			return keyedSend(t, handler, http.MethodPost, "/api/v1/issues/"+holder.Key+"/messages", map[string]any{"body": "A census message, " + phrase + "."}),
 				withdrawCreated(t, "/api/v1/messages/")
 		}},
 	}
@@ -243,10 +244,10 @@ func TestAKeyedRepeatOfAnAnswerADeleteEndedGivesNoPartOfTheDeletedText(t *testin
 			for _, name := range replayKeptMembers {
 				value, kept := firstMembers[name]
 				carried = carried || kept
-				switch still, replayed := againMembers[name]; {
+				switch still, present := againMembers[name]; {
 				case row.afresh && kept && string(still) != string(value):
 					t.Fatalf("the repeat answers the first answer's %s as %s, want %s: the delete withdrew nothing of it", name, still, value)
-				case !row.afresh && replayed:
+				case !row.afresh && present:
 					t.Fatalf("the repeat keeps the first answer's %s (%s) from an answer the delete ended", name, still)
 				}
 			}
@@ -543,12 +544,6 @@ func TestAKeptRefusalListingAPostThatIsThenDeletedIsReplayedAsKept(t *testing.T)
 func TestAKeptAnswerHoldingNoTextOfADeletedPostIsReplayedAsKept(t *testing.T) {
 	_, handler, _ := browserDocumentService(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Writes beside a deleted comment", "alpha bravo charlie")
-	// keyed answers a send of body to target under a key, as alice.
-	keyed := func(method, target string, body map[string]any) func(string) *httptest.ResponseRecorder {
-		return func(key string) *httptest.ResponseRecorder {
-			return keyedRequest(t, handler, method, target, body, "alice", key)
-		}
-	}
 	rows := []struct {
 		route string
 		// write makes the comment the row deletes and returns the write, sent under a key, the
@@ -559,12 +554,12 @@ func TestAKeptAnswerHoldingNoTextOfADeletedPostIsReplayedAsKept(t *testing.T) {
 			comment := createThreadComment(t, handler, issue.Key, map[string]any{
 				"body": "A plain comment on the spec.", "anchor": map[string]any{"artifact": "spec", "quote": "bravo"},
 			}, "alice")
-			return keyed(http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]any{"title": "Writes beside a deleted comment, " + letter}),
+			return keyedSend(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]any{"title": "Writes beside a deleted comment, " + letter}),
 				issue.PrimaryArtifactID, comment.ID
 		}},
 		{"POST /api/v1/markdown/round-trip, of a text citing the deleted comment", func(t *testing.T, _ string) (func(string) *httptest.ResponseRecorder, string, string) {
 			comment := createThreadComment(t, handler, issue.Key, map[string]any{"body": "A cited comment."}, "alice")
-			return keyed(http.MethodPost, "/api/v1/markdown/round-trip", map[string]any{
+			return keyedSend(t, handler, http.MethodPost, "/api/v1/markdown/round-trip", map[string]any{
 				"markdown": "See dispatch://" + issue.Key + "/comment/" + comment.ID + " for the reason.\n",
 			}), comment.ID, comment.ID
 		}},
@@ -573,7 +568,7 @@ func TestAKeptAnswerHoldingNoTextOfADeletedPostIsReplayedAsKept(t *testing.T) {
 			comment := createThreadComment(t, handler, issue.Key, map[string]any{
 				"body": "A plain comment on the document.", "anchor": map[string]any{"artifact": document.Slug, "quote": "bravo"},
 			}, "alice")
-			return keyed(http.MethodPatch, "/api/v1/artifacts/"+document.ID, map[string]any{"name": "plain-" + letter + "-renamed.md"}),
+			return keyedSend(t, handler, http.MethodPatch, "/api/v1/artifacts/"+document.ID, map[string]any{"name": "plain-" + letter + "-renamed.md"}),
 				document.ID, comment.ID
 		}},
 	}

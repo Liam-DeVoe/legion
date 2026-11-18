@@ -1431,6 +1431,20 @@ const rules: Record<string, Rule> = {
       refreshes: ["conversationMessages", "messageBlock"],
       spares: ["inboxThreads", "replies"],
     },
+  // A comment's correction names them too (`commentCorrectionPayload` in the server's
+  // comment_projection.go), as its create does.
+  "a correction of a comment in a thread the viewer has no row in leaves the viewer's Inbox thread rows alone":
+    {
+      event: event("comment.edited", {
+        anchor: null,
+        ask_id: null,
+        id: "comment-1",
+        reply_to: "root-1",
+        thread_logins: ["bob"],
+      }),
+      refreshes: ["comment", "rootComment", "comments"],
+      spares: ["inboxThreads", "replies"],
+    },
   // The answers page lists the viewer's answers and replies on asks: a comment on no ask is none
   // of them, and neither is the ask list or the Inbox row of an ask.
   "a delete of a comment on no ask leaves the answers page and every ask read alone": {
@@ -1460,20 +1474,22 @@ type Correction = "comment.edited" | "comment.deleted" | "message.edited" | "mes
 
 /** One edit and one delete of each kind of post of CORE-1: comment-1, a reply to root-1 in ask-1's
  *  thread, anchored in CORE-1's spec; and message-0, a root aimed at session planner. Alice has a
- *  row on both threads: the message's correction names her in `thread_logins`, and the comment's
- *  carries none, which every viewer's rows read again on. */
+ *  row on both threads, and each correction names her in `thread_logins`, as the post's create
+ *  did. */
 const corrections: Record<Correction, DispatchEvent> = {
   "comment.edited": event("comment.edited", {
     anchor: { artifact_id: "artifact-3" },
     ask_id: "ask-1",
     id: "comment-1",
     reply_to: "root-1",
+    thread_logins: ["alice"],
   }),
   "comment.deleted": event("comment.deleted", {
     anchor: { artifact_id: "artifact-3" },
     ask_id: "ask-1",
     id: "comment-1",
     reply_to: "root-1",
+    thread_logins: ["alice"],
   }),
   "message.edited": event("message.edited", {
     id: "message-0",

@@ -2,8 +2,10 @@ kind: Added
 body: |-
   Four tools for the author of a post: dispatch_edit_comment, dispatch_delete_comment,
   dispatch_edit_message and dispatch_delete_message, and dispatch_read takes history, which lists
-  the bodies an edit or a delete of one post replaced; each spec's description states what it does.
-  Three event kinds join the union: comment.deleted, message.edited and message.deleted.
+  the bodies an edit or a delete of one post replaced: a delete writes an entry of its own, and a
+  deleted post's entries carry no body. Each spec's description states what it does.
+  Three event kinds join the union: comment.deleted, message.edited and message.deleted. A comment's
+  edit and delete events carry the thread_root_id and thread_logins its creation carried.
   IDEMPOTENCY_ANSWER_NOT_KEPT also answers a repeat whose first answer held text a delete withdrew,
   and its message says whether the request wrote.
 time: 2026-11-11T07:23:28.113040407Z
