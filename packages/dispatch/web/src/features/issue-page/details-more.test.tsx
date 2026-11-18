@@ -1408,7 +1408,12 @@ test("a load of /collaborators keeps the focused Collaborators control's place a
 // the wheel, a row above that grows moves what is in view, as it does anywhere else.
 test("a key or a turn of the wheel of the reader's ends the hold, and a later growth above the control scrolls nothing", async () => {
   const acts: readonly (readonly [string, (box: HTMLElement) => Promise<void>])[] = [
-    ["a key", () => userEvent.keyboard("{Shift}")],
+    [
+      "a key",
+      async () => {
+        await userEvent.keyboard("{Shift}");
+      },
+    ],
     [
       "a turn of the wheel",
       async (box) => {
