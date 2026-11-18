@@ -8,6 +8,7 @@ import {
   type LegionIssue,
   type LegionPhase,
   type LegionState,
+  legionPlanRatingLoneField,
   legionPlanRatingScale,
   legionPlanReasonRules,
 } from "@legion/contracts/legion-api";
@@ -190,15 +191,21 @@ export const PhaseOpArguments = z.discriminatedUnion(
       plan_reason: planReason.optional(),
     })
       // A rating of the plan carries its reason, and the daemon takes neither alone
-      // (PLAN_RATING_INPUT): one without the other is refused with the call's other problems,
-      // naming the one missing.
-      .refine((args) => args.plan_rating === undefined || args.plan_reason !== undefined, {
-        error:
-          "handoff_complete names plan_rating without plan_reason: send the rating of the plan with one sentence of why, the two together",
-      })
-      .refine((args) => args.plan_reason === undefined || args.plan_rating !== undefined, {
-        error: `handoff_complete names plan_reason without plan_rating: send the reason with the rating of the plan, a whole number from ${LEGION_PLAN_RATING_LEAST} to ${LEGION_PLAN_RATING_MOST}, the two together`,
-      }),
+      // (PLAN_RATING_INPUT, the contract's `legionPlanRatingLoneField`): one without the other is
+      // refused with the call's other problems, naming the one missing.
+      .refine(
+        (args) => legionPlanRatingLoneField(args.plan_rating, args.plan_reason) !== "rating",
+        {
+          error:
+            "handoff_complete names plan_rating without plan_reason: send the rating of the plan with one sentence of why, the two together",
+        }
+      )
+      .refine(
+        (args) => legionPlanRatingLoneField(args.plan_rating, args.plan_reason) !== "reason",
+        {
+          error: `handoff_complete names plan_reason without plan_rating: send the reason with the rating of the plan, a whole number from ${LEGION_PLAN_RATING_LEAST} to ${LEGION_PLAN_RATING_MOST}, the two together`,
+        }
+      ),
     operation("request_backward_move", {
       // The issue the move names: the tree architect's move names the issue it returns from
       // accepting (its grant serves its whole tree); a phase worker's leaves it out, or names its
