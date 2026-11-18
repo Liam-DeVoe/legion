@@ -361,6 +361,30 @@ function renderPage(
   };
 }
 
+/** Holds the page's frames: each `requestAnimationFrame` callback waits until `run`, which runs
+ *  those held so far and the ones they ask for, so a frame a call schedules can run inside `act`
+ *  once React has drawn what the call changed. `release` gives the page its own frames back. */
+function holdFrames(): { readonly release: () => void; readonly run: () => void } {
+  const real = window.requestAnimationFrame;
+  let held: FrameRequestCallback[] = [];
+  window.requestAnimationFrame = (callback) => {
+    held.push(callback);
+    return held.length;
+  };
+  return {
+    release: () => {
+      window.requestAnimationFrame = real;
+    },
+    run: () => {
+      for (let round = 0; round < 30 && held.length > 0; round += 1) {
+        const now = held;
+        held = [];
+        for (const callback of now) callback(performance.now());
+      }
+    },
+  };
+}
+
 /** The box's section. */
 function composerBox(): HTMLElement {
   const found = document.querySelector<HTMLElement>('[data-testid="issue-composer"]');
@@ -558,7 +582,12 @@ test("under a view or a document the box is hidden until the reader asks to writ
   // With a document open, Edit and Reply each draw the box with the caret in their field, and
   // ending them hides it again.
   page.redraw({ documentOpen: true });
-  act(() => page.writer().edit("comment-2", "My own words"));
+  // The writer puts the caret in the line's field on a frame, once the edit is drawn
+  // (`OutlineWriter.focus`): the frames are held while the edit draws and run inside `act` after.
+  const frames = holdFrames();
+  await act(async () => page.writer().edit("comment-2", "My own words"));
+  act(() => frames.run());
+  frames.release();
   await waitFor(() =>
     expect(within(composerBox()).getByRole("textbox", { name: "Edit comment" })).toHaveFocus()
   );
@@ -583,7 +612,12 @@ test("under a view or a document the box is hidden until the reader asks to writ
   await waitFor(() => expect(api.createComment).toHaveBeenCalledTimes(1));
   page.redraw({ viewOn: true });
   expect(composerBox()).not.toHaveAttribute("hidden");
-  await act(async () => out.resolve(commentRecord("comment-9", ALICE, "Sent at rest")));
+  // The send lands a task after its answer (TanStack Query notifies on a zero-delay timer), and
+  // the box then hides and gives the focus back: both inside `act`.
+  await act(async () => {
+    out.resolve(commentRecord("comment-9", ALICE, "Sent at rest"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
   await waitFor(() => expect(composerBox()).toHaveAttribute("hidden"));
 });
 
