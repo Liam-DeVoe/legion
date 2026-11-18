@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/testprereq"
 )
 
 // Hosts renders exactly the file gh >= 2.40 writes for one account, and TokenFromHosts reads the
@@ -176,17 +178,16 @@ func TestWriteBringsTheDirectoryToTheRender(t *testing.T) {
 
 // ghBinary is the real GitHub CLI to prove the rendered files against: LEGION_GH_PATH when the test
 // runs in a Legion pane or pod, whose `gh` on PATH is the `legion gh` wrapper in front of it, and
-// otherwise the `gh` on PATH. A machine with neither skips.
+// otherwise the `gh` on PATH. A machine with neither skips, and fails on GitHub Actions, whose
+// runner ships gh (testprereq.Require).
 func ghBinary(t *testing.T) string {
 	t.Helper()
 	if path := os.Getenv("LEGION_GH_PATH"); path != "" {
 		return path
 	}
-	if path, err := exec.LookPath("gh"); err == nil {
-		return path
-	}
-	t.Skip("no real gh on this machine: the gh-backed test needs one to prove the rendered files against")
-	return ""
+	path, err := exec.LookPath("gh")
+	testprereq.Require(t, err == nil, "daemon-go", "no real gh on this machine: the gh-backed test needs one to prove the rendered files against")
+	return path
 }
 
 // The real gh reads the rendered files as its own: `gh auth token` prints the token, its

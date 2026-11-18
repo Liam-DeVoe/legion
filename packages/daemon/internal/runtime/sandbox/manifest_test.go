@@ -22,6 +22,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 
+	"github.com/sjawhar/envoy/testprereq"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
@@ -522,9 +523,8 @@ func TestPIShellPrefixIsTmuxsFormOverThePodsDirectories(t *testing.T) {
 // git runs `git credential fill` in a directory that is no repository, with a stand-in `legion`
 // first on PATH, for a workflow role and the controller alike.
 func TestEveryRolesGitAsksItsOwnHelperForGitHubOutsideAnyClone(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("no git in this environment")
-	}
+	_, err := exec.LookPath("git")
+	testprereq.Require(t, err == nil, "daemon-go", "no git in this environment")
 	r, err := configure(goldenOptions())
 	if err != nil {
 		t.Fatal(err)

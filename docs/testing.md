@@ -35,6 +35,11 @@ Each bullet says what the helper does not do, so a site that must keep its own b
   It replaces the address of a server or listener the test closed: a freed port is any program's to take, and on a shared machine one took it and answered HTTP (dispatch://INFRA-3904).
   It holds no listening socket and hands nothing to a child: a process the test starts takes a socket the test holds (`cmdtest.HoldPort` and `Pass`, `DISPATCH_LISTEN_FD`, `ENVOY_LISTEN_FD`, `LEGION_LISTEN_FD`) or binds port 0 and names its port, never a port the test picked and let go of.
 
+- A test whose prerequisite is missing — a server a variable names, a program on PATH, a capability of the machine or of its Postgres — takes `packages/envoy/testprereq`, one body for both modules: `packages/daemon` imports it through its `replace` of `packages/envoy`, and it imports the standard library alone.
+  `Require(t, present, job, format, args...)` skips the test with the reason it is given, and under `GITHUB_ACTIONS=true` fails it instead, with that reason and the `ci.yaml` job that must give the prerequisite, so no CI job passes with a test skipped for want of what the job is set up to give.
+  It fails at the test that called it and never in a `TestMain`, so the package's other tests still run; the daemon's `testbin` binaries and `testdb.DSN` (which `testdb.Database` and `testpg.Clone` read through) and both modules' `storetest` go through it.
+  It is for a prerequisite and nothing else: a variable that only chooses where a test runs (`DISPATCH_FIRST_ROLLOUT_BUILD`, which `dispatch-two-builds-same` leaves unset on purpose, or `AIRLOCK_MODEL`), the input a tool reads, a platform the code does not run on, a test run as root and a child process's guard keep their plain skip.
+
 - A test that a command line keeps the rules of a cobra command line takes `packages/envoy/clitest`, one body for both modules: `packages/daemon` can import it through its `replace` of `packages/envoy`, and it imports the standard library alone.
   `Conformance` runs the built binary, of any framework, and checks help on every command; a typo, an unknown flag at the root and on each command, an unknown shell for `completion` and an unknown topic for `help` that each exit 2, print the word they refuse, are no Go runtime crash and make no contact with its `Recorder`; a flag read after a positional; the completion script of each shell; and `__complete`.
   The package documentation is the whole list and the rule each check holds.
@@ -331,7 +336,8 @@ clone would not let them do.
 `packages/daemon/internal/testpg/testdb` that holds it: `internal/testpg` imports `internal/store`
 to migrate the template its `Clone` copies, so a test binary of `internal/store` cannot import
 `internal/testpg` back, and the half of the fixture that needs no schema sits in `testdb`, which
-imports nothing of the module and so is open to every package of it.
+imports no package of the module, only `packages/envoy/testprereq`, which imports the standard
+library alone, and so is open to every package of it.
 A package whose tests migrate into the database their DSN names, rather than taking one each,
 takes one database for its whole run instead: `testdb.RunDatabaseMain` from its `TestMain`, and
 `testdb.RunDatabaseFor` wherever it reads the DSN (`internal/daemon`, whose daemons migrate the

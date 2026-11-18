@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testprereq"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -246,7 +247,7 @@ func stageMountPoint(t *testing.T) string {
 			return dir
 		}
 	}
-	skipOutsideCI(t, "no directory to mount the role's layout on (/mnt, /media, /srv)")
+	testprereq.Require(t, false, "daemon-go", "no directory to mount the role's layout on (/mnt, /media, /srv)")
 	return ""
 }
 

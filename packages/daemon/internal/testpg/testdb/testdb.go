@@ -1,7 +1,8 @@
 // Package testdb gives a test a Postgres database of its own on the devbox and CI Postgres that
 // LEGION_TEST_PG_DSN names, dropped when the test ends, so no test sees another's rows, and a way
-// to reach it across a network's delay (Delayed). A test is skipped without it: there is nothing
-// to run against.
+// to reach it across a network's delay (Delayed). A test is skipped without it, since there is
+// nothing to run against, and fails without it on GitHub Actions, where ci.yaml's daemon-go job
+// gives it (DSN).
 //
 // Database is an empty database. A test that needs the daemon's schema takes internal/testpg's
 // Clone or CloneStore instead, which copy a template that package migrated once.
@@ -11,10 +12,12 @@
 // RunDatabaseFor wherever it reads the DSN. The two mechanisms compose, and a package that needs
 // both nests them (internal/daemon's TestMain).
 //
-// This package imports nothing of this module, and nothing added here may: migrating the template
-// needs internal/store, so internal/testpg imports it, and a test binary of internal/store that
-// imported internal/testpg back would be a cycle. Keeping the schema-free half apart is what lets
-// internal/store's own tests take the same fixture every other package's tests take.
+// This package imports no package of this module, and nothing added here may: migrating the
+// template needs internal/store, so internal/testpg imports it, and a test binary of
+// internal/store that imported internal/testpg back would be a cycle. Its one import outside the
+// standard library and pgx is github.com/sjawhar/envoy/testprereq, which imports the standard
+// library alone. Keeping the schema-free half apart is what lets internal/store's own tests take
+// the same fixture every other package's tests take.
 //
 // DatabaseURL is the one rewrite of LEGION_TEST_PG_DSN a test binary of this module makes, and
 // its own comment says which callers make that rewrite and what it refuses. RandomName is
@@ -38,6 +41,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/sjawhar/envoy/testprereq"
 )
 
 // Image is the Postgres server image a developer starts for the daemon's own tests: PostgreSQL 18
@@ -46,20 +51,26 @@ import (
 // the version envoy-infra gives a new Cloud SQL instance.
 const Image = "mirror.gcr.io/library/postgres@sha256:979bccfde35445db618c65107d27d08c6c21339d8dc3ad4c830c6633947be0e4"
 
-// SkipMessage is what a test is skipped with when there is no Postgres to run it against. It is
-// exported for the packages whose own skip says the same thing (internal/daemon's testDSN).
-const SkipMessage = "LEGION_TEST_PG_DSN is unset, so there is no Postgres to test against. In a Legion pod, read skill://legion-worker/references/tools.md, \"The database your tests use\"; never the sessions database. Elsewhere, start one and set it:\n" +
+// skipMessage is what a test is skipped with when there is no Postgres to run it against (DSN).
+const skipMessage = "LEGION_TEST_PG_DSN is unset, so there is no Postgres to test against. In a Legion pod, read skill://legion-worker/references/tools.md, \"The database your tests use\"; never the sessions database. Elsewhere, start one and set it:\n" +
 	"  docker run -d --name legion-pg --cpus 2 --memory 2g -e POSTGRES_USER=legion -e POSTGRES_PASSWORD=legion -e POSTGRES_DB=legion -p 127.0.0.1::5432 " + Image + "\n" +
 	"  port=$(docker port legion-pg 5432/tcp | head -1 | sed 's/.*://')\n" +
 	"  LEGION_TEST_PG_DSN=postgres://legion:legion@127.0.0.1:$port/legion go test ./..."
 
+// DSN is the server LEGION_TEST_PG_DSN names. Without one the test skips, saying how to start
+// one, except on GitHub Actions, where ci.yaml's daemon-go job gives it and the test fails
+// (testprereq.Require).
+func DSN(t testing.TB) string {
+	t.Helper()
+	dsn := os.Getenv("LEGION_TEST_PG_DSN")
+	testprereq.Require(t, dsn != "", "daemon-go", "%s", skipMessage)
+	return dsn
+}
+
 // Database is the URL of a new, empty database named <prefix>_<random>, dropped at the test's end.
 func Database(t testing.TB, prefix string) string {
 	t.Helper()
-	dsn := os.Getenv("LEGION_TEST_PG_DSN")
-	if dsn == "" {
-		t.Skip(SkipMessage)
-	}
+	dsn := DSN(t)
 	database, drop, err := create(dsn, prefix)
 	if err != nil {
 		t.Fatal(err)

@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testprereq"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
@@ -55,12 +56,8 @@ func namespaceRig(t *testing.T, grace time.Duration) *rig {
 	}
 	prefix := []string{"-n", "unshare", "--pid", "--fork", "--mount-proc", "--kill-child", "--setuid", strconv.Itoa(os.Getuid()), "--setgid", strconv.Itoa(os.Getgid())}
 	probe := exec.Command("sudo", append(append([]string{}, prefix...), "/bin/true")...)
-	if output, err := probe.CombinedOutput(); err != nil {
-		if os.Getenv("GITHUB_ACTIONS") == "true" {
-			t.Fatalf("PID namespace prerequisite: %v: %s", err, output)
-		}
-		t.Skipf("PID namespace prerequisite: %v: %s", err, output)
-	}
+	probeOutput, err := probe.CombinedOutput()
+	testprereq.Require(t, err == nil, "daemon-go", "PID namespace prerequisite: %v: %s", err, probeOutput)
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
