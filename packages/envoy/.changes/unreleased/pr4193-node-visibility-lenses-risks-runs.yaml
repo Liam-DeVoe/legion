@@ -12,13 +12,17 @@ body: |-
   Dispatch adds a lens (`POST /api/v1/issues/{key}/lenses`), its findings, a risk, a constraint and
   the pointers between them (`prevented_by` from a risk to the checks that prevent it,
   `constrained_by` from a block to its constraints). A risk's `prevented_by` may point at a check of
-  any issue of the risk's project, and a check of another project is refused with
-  `400 INVALID_POINTER`, naming the check. When a block goes, its `constrained_by` pointers and the
-  `prevented_by` pointers at it are retracted. `GET /api/v1/lenses?on=<address>` reads the lenses
-  invoked on a node in invocation order, and a trigger walks at most 50 lenses down a chain: the
-  lenses past that cut start no chain of their own. The lens kinds are a catalogue that two
-  migrations seed with 22 kinds, ten and then twelve more, and `envoy-dispatch lens-kind-add` is
-  its one writer.
+  any issue of the risk's project, and a check of another project, or a check of a retired
+  document, is refused with `400 INVALID_POINTER`, naming the check. When a block goes, its
+  `constrained_by` pointers and the `prevented_by` pointers at it are retracted, and when a document
+  is retired, the `prevented_by` pointers at its checks are retracted. A lens's `triggered_by` may
+  point only at a lens invoked before it: one to the lens itself or to a lens invoked at the same
+  time or later is refused with `400 INVALID_POINTER`, naming both lenses, so no trigger closes a
+  cycle. `GET /api/v1/lenses?on=<address>` reads the lenses invoked on a node in invocation order,
+  the order of each lens's first `part_of`, which a move does not change, and a trigger walks at
+  most 50 lenses down a chain: the lenses past that cut start no chain of their own. The lens kinds
+  are a catalogue that two migrations seed with 22 kinds, ten and then twelve more, and
+  `envoy-dispatch lens-kind-add` is its one writer.
 
   `POST /api/v1/issues/{key}/nodes/{id}/state` moves a node's state, `GET
   /api/v1/issues/{key}/proposed` lists the proposed nodes of an issue, and

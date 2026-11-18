@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -525,6 +526,145 @@ func TestARisksPreventedByIsACheckOfAnyIssueOfItsProject(t *testing.T) {
 	if afterRisks, afterPreventions := rig.counts(graphstore.KindRisk, graphstore.TuplePreventedBy); afterRisks != risks || afterPreventions != preventions {
 		t.Errorf("the store holds %d risks and %d prevented_by tuples after bob's refusals, and held %d and %d before",
 			afterRisks, afterPreventions, risks, preventions)
+	}
+}
+
+// TestARetiredDocumentsChecksPreventNoRisk: nobody runs a retired document's checks
+// (dispatch://INFRA-1950/spec#b-r-constraint-risk). A risk prevented by the check of the second
+// issue's Verification document, and a second risk prevented by the issue's own second check, read
+// prevented by them, and the first check's backlinks hold the first risk. The second issue's
+// document is then retired (docs.RetireDocument): the first risk reads prevented by nothing,
+// through the store and through the lens read, the check reads preventing no risk, and the tuple's
+// history ends in its retraction, signed by the retirement's writer under its document.retired
+// event; the second risk keeps its check. A prevented_by to the retired document's check is then
+// refused with 400 INVALID_POINTER naming the check by its address, through the risk route, the
+// pointer route's append and retarget, and the conversion's map, in a dry run as in a real one,
+// which names the entry and its risk too; nothing is stored.
+func TestARetiredDocumentsChecksPreventNoRisk(t *testing.T) {
+	rig := newPremortemRig(t)
+	ctx := context.Background()
+	premortem := rig.invoke(rig.requirement, graphstore.LensKindPreMortem, "alice", nil)
+	riskBody := func(heading, check string) map[string]any {
+		return map[string]any{
+			"lens": premortem.Address, "heading": heading, "early_warning": "A sign.", "prevention": "A guard.", "prevented_by": check,
+		}
+	}
+	risk := func(heading, check string) riskWritten {
+		t.Helper()
+		response := rig.post("/risks", riskBody(heading, check), "alice")
+		if response.Code != http.StatusCreated {
+			t.Fatalf("write the risk %q prevented by %s: status=%d body=%s", heading, check, response.Code, response.Body.String())
+		}
+		return decodeBody[riskWritten](t, response)
+	}
+	retiring := risk("A check of a document that is then retired covers it.", rig.otherIssueCheck)
+	kept := risk("A check of a document that stands covers it.", rig.secondCheck)
+	// preventing is each risk in the backlinks of the second issue's check.
+	preventing := func(when string) []string {
+		t.Helper()
+		response := dispatchReferences(t, rig.handler, rig.otherIssueCheck, "alice")
+		if response.Code != http.StatusOK {
+			t.Fatalf("read the backlinks of %s %s: status=%d body=%s", rig.otherIssueCheck, when, response.Code, response.Body.String())
+		}
+		risks := []string{}
+		for _, edge := range decodeBody[model.GraphReferences](t, response).Edges {
+			if edge.Node.Kind == graphstore.KindRisk {
+				risks = append(risks, edge.Kind+" "+edge.Node.Ref)
+			}
+		}
+		return risks
+	}
+	// prevented is each risk of the pre-mortem with the checks the lens read answers it prevented by.
+	prevented := func() map[string][]string {
+		t.Helper()
+		read := rig.lenses(premortem.Address, "alice")
+		if read.Lens == nil {
+			t.Fatalf("the read of %s answers no lens", premortem.Address)
+		}
+		risks := map[string][]string{}
+		for _, risk := range read.Lens.Risks {
+			risks[risk.Address] = risk.PreventedBy
+		}
+		return risks
+	}
+	if got := preventing("before the retirement"); !slices.Equal(got, []string{graphstore.TuplePreventedBy + " " + retiring.Address}) {
+		t.Fatalf("before the retirement %s is in the backlinks of %s as %v, want its prevented_by", retiring.Address, rig.otherIssueCheck, got)
+	}
+	if got := prevented(); !slices.Equal(got[retiring.Address], []string{rig.otherIssueCheck}) || !slices.Equal(got[kept.Address], []string{rig.secondCheck}) {
+		t.Fatalf("before the retirement the lens read answers the risks prevented by %v", got)
+	}
+
+	var document string
+	if err := rig.database.Pool.QueryRow(ctx, `select id::text from artifacts where ref_key = $1`,
+		strings.TrimSuffix(rig.otherIssueCheckNode, "#k9")).Scan(&document); err != nil {
+		t.Fatalf("read the second issue's Verification document: %v", err)
+	}
+	retirement := retireTestDocument(t, rig.database, document)
+
+	if got := rig.current(graphstore.KindRisk, retiring.ID, graphstore.TuplePreventedBy); len(got) != 0 {
+		t.Errorf("after the retirement %s is prevented by %v, want nothing", retiring.Address, got)
+	}
+	if got := rig.current(graphstore.KindRisk, kept.ID, graphstore.TuplePreventedBy); !slices.Equal(got, []string{"block/" + rig.secondCheckNode}) {
+		t.Errorf("after the retirement %s is prevented by %v, want the check of the document that stands", kept.Address, got)
+	}
+	history, err := graphstore.History(ctx, rig.database.Pool, graphstore.KindRisk, retiring.ID, graphstore.TuplePreventedBy)
+	if err != nil {
+		t.Fatalf("read the prevented_by history of %s: %v", retiring.Address, err)
+	}
+	if last := len(history) - 1; len(history) != 2 || history[last].Asserted || history[last].ToID != rig.otherIssueCheckNode ||
+		history[last].Who.Kind != "user" || history[last].Who.ID != "alice" || history[last].SourceEvent != retirement.Event.ID {
+		t.Errorf("the prevented_by history of %s is %+v, want its assertion and then its retraction by alice under the document.retired event %d",
+			retiring.Address, history, retirement.Event.ID)
+	}
+	if got := prevented(); len(got[retiring.Address]) != 0 || got[retiring.Address] == nil || !slices.Equal(got[kept.Address], []string{rig.secondCheck}) {
+		t.Errorf("after the retirement the lens read answers the risks prevented by %v, want %s by nothing and %s by %s",
+			got, retiring.Address, kept.Address, rig.secondCheck)
+	}
+	if got := preventing("after the retirement"); len(got) != 0 {
+		t.Errorf("after the retirement the backlinks of %s hold the risks %v, want none", rig.otherIssueCheck, got)
+	}
+
+	says := "the prevented_by tuple from a risk at the check block " + rig.otherIssueCheck + " of a retired document breaks its type rule: " +
+		"prevented_by points from a risk at a check block of a document that is not retired, since nobody runs a retired document's checks"
+	risks, preventions := rig.counts(graphstore.KindRisk, graphstore.TuplePreventedBy)
+	stored := rig.storeCounts()
+	pointers := nodePath("risk/"+kept.ID, "pointers")
+	path := "/api/v1/issues/" + rig.issue + "/artifacts/" + rig.slug + "/premortem-convert"
+	for _, refused := range []struct {
+		name     string
+		response *httptest.ResponseRecorder
+		says     string
+	}{
+		{"a risk prevented by the retired document's check", rig.post("/risks", riskBody("Its check is retired.", rig.otherIssueCheck), "alice"), says},
+		{"an append at the retired document's check", rig.post(pointers,
+			map[string]any{"kind": graphstore.TuplePreventedBy, "action": pointerAppend, "to": rig.otherIssueCheck}, "alice"), says},
+		{"a retarget to the retired document's check", rig.post(pointers, map[string]any{
+			"kind": graphstore.TuplePreventedBy, "action": pointerRetarget, "from": rig.secondCheck, "to": rig.otherIssueCheck,
+		}, "alice"), says},
+		{"a conversion whose map names the retired document's check, in a dry run", dispatchRequest(t, rig.handler, http.MethodPost, path,
+			map[string]any{"prevented_by": rig.premortemMap(), "dry_run": true}, "alice"), "prevented_by entry 9 (risk 8): " + says},
+		{"a conversion whose map names the retired document's check", dispatchRequest(t, rig.handler, http.MethodPost, path,
+			map[string]any{"prevented_by": rig.premortemMap()}, "alice"), "prevented_by entry 9 (risk 8): " + says},
+	} {
+		if answer := requireRefused(t, refused.name, refused.response, http.StatusBadRequest, "INVALID_POINTER", rig.otherIssueCheck); answer.Error != refused.says {
+			t.Errorf("%s is refused %q, want %q", refused.name, answer.Error, refused.says)
+		}
+	}
+	if afterRisks, afterPreventions := rig.counts(graphstore.KindRisk, graphstore.TuplePreventedBy); afterRisks != risks || afterPreventions != preventions {
+		t.Errorf("the store holds %d risks and %d prevented_by tuples after the refusals, and held %d and %d before",
+			afterRisks, afterPreventions, risks, preventions)
+	}
+	if after := rig.storeCounts(); after != stored {
+		t.Errorf("the refusals left %v nodes and tuples, want the %v they found", after, stored)
+	}
+	if retirements := rig.retirements(rig.documentID); len(retirements) != 0 {
+		t.Errorf("after the refused conversions the pre-mortem document holds the document.retired events %v, want none", retirements)
+	}
+	if got := rig.current(graphstore.KindRisk, kept.ID, graphstore.TuplePreventedBy); !slices.Equal(got, []string{"block/" + rig.secondCheckNode}) {
+		t.Errorf("after the refusals %s is prevented by %v, want the check of the document that stands alone", kept.Address, got)
+	}
+	if _, err := rig.convert(rig.premortemMap(), false); !errors.Is(err, graphstore.ErrInvalidPointer) || !strings.Contains(err.Error(), rig.otherIssueCheck) {
+		t.Errorf("the conversion through ConvertPremortem answers %v, want the store's refusal naming %s", err, rig.otherIssueCheck)
 	}
 }
 

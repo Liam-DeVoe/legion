@@ -7,9 +7,12 @@
 # analysis answers the pre-mortem among the lenses it triggered, and the same read answers the
 # chain whole in invoked order. It adds a third lens the pre-mortem triggered and reads the chain of
 # three, retracts the pre-mortem's triggered_by tuple through the tuple route and reads that
-# neither end answers the other, and is refused a lens triggered by itself. Then it holds the walk
-# to its two rules apart: a cycle of two lenses is read within 30 s with each lens listed once, an
-# acyclic chain of 60 lenses is listed to 50 in all, across every chain of the answer, with the
+# neither end answers the other, and is refused a lens triggered by itself, naming that lens twice.
+# Then it holds the walk to its rules apart. A cycle cannot be stored: with lens B triggered by lens
+# A, a triggered_by tuple from A to B, a lens invoked after A, is refused 400 INVALID_POINTER naming
+# both lenses, and so is one from B to itself, and the store holds no tuple more out of either; the
+# read of the spec returns within 30 s and lists A and B once each, in one chain that starts at A.
+# An acyclic chain of 60 lenses is listed to 50 in all, across every chain of the answer, with the
 # lens where the walk stopped named and no chain holding it or a lens past it, and a chain of
 # exactly 50 is listed whole with no stop named. Each of those three stands on a spec of its own, so
 # no other lens joins its chain.
@@ -219,7 +222,9 @@ expect T2 "the trade-off analysis, read at its own address, answers no lens it t
 pointer "lens/$tradeoff_id" "$(jq -cn --arg t "$tradeoff" '{kind: "triggered_by", action: "append", to: $t}')"
 want_status 400 T3 "a triggered_by tuple from the trade-off analysis at itself is refused with HTTP 400"
 pass T3 "a triggered_by tuple from the trade-off analysis at itself is refused with HTTP $status"
-expect T3 "the refusal carries a code, INVALID_POINTER" '"INVALID_POINTER"' '.code'
+expect T3 "the refusal is INVALID_POINTER, naming the trade-off analysis as both of its lenses" \
+  '{"code":"INVALID_POINTER","names_the_lens_twice":true}' --arg a "$tradeoff" \
+  '{code, names_the_lens_twice: (.error | contains("the lens \($a) at that same lens \($a)"))}'
 
 person_send GET "/api/v1/references?from=$(q "$tradeoff")&kind=triggered_by"
 want_status 200 T3 "read the trade-off analysis's triggered_by tuples"
@@ -239,29 +244,69 @@ expect T4 "every lens on the spec is $login's, whom DEV_SIGNIN_LOGIN signs in" \
   "$(jq -cnS --arg l "$login" '{authors: [{id: $l, kind: "person"}], lenses: 3}')" \
   '{authors: ([.lenses[].author] | unique), lenses: (.lenses | length)}'
 
-# --- T5: a cycle is read once -------------------------------------------------------------------
+# --- T5: a cycle cannot be stored ---------------------------------------------------------------
 
 new_issue T5 "Lens trigger cycle check"
 invoke_kind T5 "invoke lens A" trade-off
 readonly cycle_a="$lens" cycle_a_id="$lens_id"
 invoke_kind T5 "invoke lens B, triggered by A" pre-mortem "$cycle_a"
-readonly cycle_b="$lens"
-pointer "lens/$cycle_a_id" "$(jq -cn --arg t "$cycle_b" '{kind: "triggered_by", action: "append", to: $t}')"
-want_status 200 T5 "append a triggered_by tuple from A to B, which closes the cycle"
-pass T5 "appended a triggered_by tuple from A to B, which closes the cycle"
+readonly cycle_b="$lens" cycle_b_id="$lens_id"
 
-lenses_on T5 "read the lenses on the spec of the cycle within 30 s" "$spec"
-pass T5 "the read of the cycle returned within 30 s"
+# tuples_of SECTION WHAT LENS FILE: every tuple out of LENS, by kind and far end, sorted, in FILE.
+tuples_of() {
+  person_send GET "/api/v1/references?from=$(q "$3")"
+  want_status 200 "$1" "$2"
+  jq -cS '[.edges[] | {kind, to: .node.ref}] | sort' "$work/body" >"$4" || fail "$1" "$2" "unreadable: $(body)"
+}
+
+# refused_trigger SECTION WHAT NODE NODE_ID TO HELD: the person writes a triggered_by tuple from
+# the lens NODE, whose uuid is NODE_ID, to the lens TO, which closes a cycle; it stores nothing out
+# of NODE - its triggered_by tuples, read before the answer is judged, are HELD alone, else the
+# tuples stored are printed, and its tuples are the ones it held before the write - and it is
+# refused 400 INVALID_POINTER naming both lenses.
+refused_trigger() {
+  local section="$1" what="$2" node="$3" node_id="$4" to="$5" held="$6" refused_status stored
+  tuples_of "$section" "read the tuples out of $node before $what" "$node" "$work/tuples-before.json"
+  pointer "lens/$node_id" "$(jq -cn --arg t "$to" '{kind: "triggered_by", action: "append", to: $t}')"
+  cp "$work/body" "$work/refusal.json"
+  refused_status="$status"
+  person_send GET "/api/v1/references?from=$(q "$node")&kind=triggered_by"
+  want_status 200 "$section" "read the triggered_by tuples out of $node after $what"
+  stored="$(jq -c --arg n "$node" --arg h "$held" \
+    '[.edges[] | select(.node.ref != $h) | {kind, from: $n, to: .node.ref, created_at}]' "$work/body")" ||
+    fail "$section" "read the triggered_by tuples out of $node after $what" "unreadable: $(body)"
+  [[ "$stored" == "[]" ]] ||
+    fail "$section" "$what is refused" \
+      "the tuple was stored: $stored (HTTP $refused_status: $(<"$work/refusal.json"))"
+  tuples_of "$section" "read the tuples out of $node after $what" "$node" "$work/tuples-after.json"
+  cmp -s "$work/tuples-before.json" "$work/tuples-after.json" ||
+    fail "$section" "after $what the store holds no tuple more out of $node" \
+      "before: $(<"$work/tuples-before.json") after: $(<"$work/tuples-after.json")"
+  pass "$section" "after $what the store holds no tuple more out of $node: $(<"$work/tuples-after.json")"
+  cp "$work/refusal.json" "$work/body"
+  status="$refused_status"
+  want_status 400 "$section" "$what is refused"
+  expect "$section" "the refusal is INVALID_POINTER, naming $node and $to" \
+    '{"code":"INVALID_POINTER","names_both":true}' --arg n "$node" --arg t "$to" \
+    '{code, names_both: (.error | contains("the lens \($n) at ") and contains(" lens \($t)"))}'
+}
+
+refused_trigger T5 "a triggered_by tuple from A to B, a lens invoked after A, which would close a cycle" \
+  "$cycle_a" "$cycle_a_id" "$cycle_b" ""
+refused_trigger T5 "a triggered_by tuple from B to itself" "$cycle_b" "$cycle_b_id" "$cycle_b" "$cycle_a"
+
+lenses_on T5 "read the lenses on the spec of A and B within 30 s" "$spec"
+pass T5 "the read of the spec of A and B returned within 30 s"
 expect T5 "the spec answers A and B once each" \
   "$(jq -cn --arg a "$cycle_a" --arg b "$cycle_b" '[$a, $b]')" '[.lenses[].address]'
-expect T5 "the cycle is one chain that lists A and B once each, which is the visited set at work" \
+expect T5 "the spec answers one chain that starts at A and lists A and B once each" \
   "$(jq -cn --arg a "$cycle_a" --arg b "$cycle_b" '[{lenses: [$a, $b], stopped_at: null}]')" \
   '[.chains[] | {lenses: [.lenses[].address], stopped_at}]'
-expect T5 "each end of the cycle answers the other both ways" \
+expect T5 "in the chain B is triggered by A and A by no lens" \
   "$(jq -cn --arg a "$cycle_a" --arg b "$cycle_b" \
-    '[{address: $a, triggered: [$b], triggered_by: [$b]}, {address: $b, triggered: [$a], triggered_by: [$a]}]')" \
+    '[{address: $a, triggered: [$b], triggered_by: []}, {address: $b, triggered: [], triggered_by: [$a]}]')" \
   '[.chains[0].lenses[] | {address, triggered, triggered_by}]'
-expect T5 "both lenses of the cycle are $login's" "$(jq -cnS --arg l "$login" '[{id: $l, kind: "person"}]')" \
+expect T5 "both lenses, A and B, are $login's" "$(jq -cnS --arg l "$login" '[{id: $l, kind: "person"}]')" \
   '[.lenses[].author] | unique'
 
 # --- T6: a chain past the bound is cut at fifty -------------------------------------------------

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // Retirement is what RetireDocument did: the document.retired event it appended, which the
@@ -57,10 +59,17 @@ var retirementEvents = events.NewBroker()
 // document's newest review where it approves the latest version; one a later version already left
 // behind was superseded by that version, and an open request for changes holds no approval.
 //
+// Nobody runs a retired document's checks, so it retracts each prevented_by the store asserts at a
+// block of the document, as actor at the retirement's own time (retiredPreventions), and the store
+// refuses any later one (graphstore's pointerRules): a risk such a check covered reads prevented
+// by nothing from then on, and the check reads preventing no risk
+// (dispatch://INFRA-1950/spec#b-r-constraint-risk).
+//
 // It takes the document's owner row first (lockArtifactOwner), then writes the store's lock order
 // as a create writes it: the node, its projection row, the event, and the node's facts under that
-// event (graphstore.WriteUncaused, graphstore.Caused). A document already retired is refused with
-// ErrDocumentRetired, and a reason that is blank with errRetirementReason.
+// event, the retractions among them (graphstore.WriteUncaused, graphstore.Caused). A document
+// already retired is refused with ErrDocumentRetired, and a reason that is blank with
+// errRetirementReason.
 func RetireDocument(ctx context.Context, tx pgx.Tx, artifactID string, actor model.Actor, reason string) (Retirement, error) {
 	reason = strings.TrimSpace(reason)
 	if reason == "" {
@@ -73,12 +82,12 @@ func RetireDocument(ctx context.Context, tx pgx.Tx, artifactID string, actor mod
 	var refKey, role string
 	var session *string
 	var createdBy []byte
-	var createdAt time.Time
+	var createdAt, at time.Time
 	var retired bool
 	if err := tx.QueryRow(ctx, `
-		select ref_key, coalesce(role, ''), session_id, created_by, created_at, retired_at is not null
+		select ref_key, coalesce(role, ''), session_id, created_by, created_at, retired_at is not null, now()
 		from artifacts where id = $1
-	`, artifactID).Scan(&refKey, &role, &session, &createdBy, &createdAt, &retired); err != nil {
+	`, artifactID).Scan(&refKey, &role, &session, &createdBy, &createdAt, &retired, &at); err != nil {
 		return Retirement{}, fmt.Errorf("read the document to retire: %w", err)
 	}
 	if retired {
@@ -88,7 +97,11 @@ func RetireDocument(ctx context.Context, tx pgx.Tx, artifactID string, actor mod
 	if err := json.Unmarshal(createdBy, &creator); err != nil {
 		return Retirement{}, fmt.Errorf("decode the creator of %s: %w", refKey, err)
 	}
-	node, err := writeRetiredNode(ctx, tx, refKey, owner.Project, session, creator, createdAt, nil)
+	retractions, err := retiredPreventions(ctx, tx, artifactID, refKey, at.UTC(), actor)
+	if err != nil {
+		return Retirement{}, err
+	}
+	node, err := writeRetiredNode(ctx, tx, refKey, owner.Project, session, creator, createdAt, retractions)
 	if err != nil {
 		return Retirement{}, err
 	}
@@ -114,6 +127,53 @@ func RetireDocument(ctx context.Context, tx pgx.Tx, artifactID string, actor mod
 		return Retirement{}, err
 	}
 	return Retirement{Event: event, SupersededApproval: superseded}, nil
+}
+
+// retiredPreventions is the retraction of every prevented_by tuple the store asserts at a block of
+// the document artifactID, stored at refKey (dispatch://INFRA-1950/spec#b-r-constraint-risk): nobody
+// runs a retired document's checks, so no risk stays prevented by one, as the index pass retracts
+// each prevented_by at a block a version drops (refs' retractGonePointers). The blocks are those
+// the document's document_blocks rows name, which a retirement keeps; a block a version dropped
+// took its pointers with it then. A constrained_by out of a requirement of the document stays:
+// what the requirement was held to is the record of the document, which stays readable. Each
+// retraction is dated at and signed by actor, the retirement's own time and writer, and rides with
+// the facts the retirement states under its document.retired event (writeRetiredNode,
+// graphstore.Caused), in the retirement's transaction.
+//
+// It logs how many it retracts, with the document's address, and answers the number to no reader:
+// the risk a check covered may be one only its author may see, and a count served beside the
+// document would tell another reader it is there.
+func retiredPreventions(ctx context.Context, tx pgx.Tx, artifactID, refKey string, at time.Time, actor model.Actor) ([]graphstore.Tuple, error) {
+	rows, err := tx.Query(ctx, `
+		select checked.from_kind, checked.from_id, checked.to_id
+		from (
+			`+graphstore.CurrentTupleRead(`t.to_kind, t.to_id, t.kind, t.from_kind, t.from_id`, `t.from_kind, t.from_id, t.to_id, t.asserted`,
+		`t.to_kind = '`+refs.BlockNodeKind+`' and t.kind = '`+graphstore.TuplePreventedBy+`'
+				and t.to_id = any(array(select held.node_id from document_blocks held where held.artifact_id = $1::uuid))`)+`
+		) checked
+		where checked.asserted
+		order by checked.to_id, checked.from_kind, checked.from_id
+	`, artifactID)
+	if err != nil {
+		return nil, fmt.Errorf("read the prevented_by tuples at the checks of %s: %w", refKey, err)
+	}
+	defer rows.Close()
+	var retracted []graphstore.Tuple
+	for rows.Next() {
+		tuple := graphstore.Tuple{Kind: graphstore.TuplePreventedBy, ToKind: refs.BlockNodeKind, At: at, Who: actor, Asserted: false}
+		if err := rows.Scan(&tuple.FromKind, &tuple.FromID, &tuple.ToID); err != nil {
+			return nil, fmt.Errorf("read the prevented_by tuples at the checks of %s: %w", refKey, err)
+		}
+		retracted = append(retracted, tuple)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the prevented_by tuples at the checks of %s: %w", refKey, err)
+	}
+	if len(retracted) > 0 {
+		slog.Info("dispatch: a retired document's checks take their prevented_by tuples with them",
+			"document", refKey, "retracted", len(retracted))
+	}
+	return retracted, nil
 }
 
 // documentRetired is whether the document whose id is room is retired (artifacts.retired_at),

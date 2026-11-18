@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -43,7 +44,9 @@ var (
 // second check whose row names no node (legacyCheck), as a row written before the store's
 // backfill or by a pod of the previous release leaves node_kind and node_address null; the three
 // lens kinds, a lens of each kind (two pre-mortems, one of which nothing hangs under), a lens of
-// no kind, two risks and a constraint.
+// no kind, two risks and a constraint. The lenses are invoked on the spec in one write, in the
+// order lensPreMortem, lensPreMortemBare, lensInversion, lensTradeOff and lensKindless, which is
+// the order of their part_of tuples.
 type pointerFixture struct {
 	database                                   *store.Store
 	requirement, check, paragraph, legacyCheck string
@@ -173,7 +176,7 @@ func TestTheStoreHoldsEachPointerToItsTypeRule(t *testing.T) {
 			tuple Tuple
 		}{
 			{"a risk under a pre-mortem", pointerTuple(KindRisk, riskPlaced, TuplePartOf, KindLens, lensPreMortem)},
-			{"a lens triggered by another lens", pointerTuple(KindLens, lensInversion, TupleTriggeredBy, KindLens, lensTradeOff)},
+			{"a lens triggered by a lens invoked before it", pointerTuple(KindLens, lensTradeOff, TupleTriggeredBy, KindLens, lensInversion)},
 			{"a requirement held to a constraint", pointerTuple(blockKind, fixture.requirement, TupleConstrainedBy, KindConstraint, constraintHeld)},
 			{"a lens kind held to a constraint", pointerTuple(KindLensKind, LensKindPreMortem, TupleConstrainedBy, KindConstraint, constraintHeld)},
 			{"a risk prevented by a check", pointerTuple(KindRisk, riskPlaced, TuplePreventedBy, blockKind, fixture.check)},
@@ -221,8 +224,8 @@ func TestTheStoreHoldsEachPointerToItsTypeRule(t *testing.T) {
 					"type rule: a lens holds exactly one kind, so its has_kind tuple is retargeted, never retracted alone"},
 			{name: "Write, a lens triggered by itself",
 				write: tuplesOnly(pointerTuple(KindLens, lensInversion, TupleTriggeredBy, KindLens, lensInversion)),
-				message: "the triggered_by tuple from a lens at that same lens breaks its type rule: " +
-					"triggered_by points from a lens at another lens"},
+				message: "the triggered_by tuple from the lens " + lensInversion + " at that same lens " + lensInversion +
+					" breaks its type rule: triggered_by points from a lens at a lens invoked before it"},
 			{name: "Write, constrained_by out of a paragraph",
 				write:   tuplesOnly(pointerTuple(blockKind, fixture.paragraph, TupleConstrainedBy, KindConstraint, constraintHeld)),
 				message: "the constrained_by tuple from a paragraph block at a constraint breaks its type rule: " + constrainedRule},
@@ -526,6 +529,201 @@ func TestTheStoreHoldsARisksCheckToTheRisksProject(t *testing.T) {
 	if named, ok := typeRefusal.NamedAt(blockKind, fixture.paragraph, address); ok {
 		t.Errorf("a refusal of the far end's type named at %s reads %q, want it not named", address, named.Error())
 	}
+}
+
+// TestTheStoreHoldsATriggerToALensInvokedBefore holds a lens's triggered_by to a lens invoked
+// before it (dispatch://INFRA-1950/spec#b-r-lens-trigger, pointerRules' earlier), in the order the
+// lens read answers: the seq of each lens's first part_of (InvokedSeqSQL). The fixture invokes its
+// lenses in one write, the pre-mortem, the bare pre-mortem, the inversion, the trade-off analysis
+// and the kindless lens, in that order. A trigger of an earlier lens is taken, through Write and
+// through a write that invokes the lens it goes out of, whose own part_of puts it after every lens
+// the store holds; two lenses one write invokes stand in the order of their part_of tuples there. A
+// trigger of a lens invoked later, and a retarget at one or at the lens itself, are refused before
+// anything is appended, with an InvalidPointerError naming both lenses, and a retarget leaves the
+// pointer where it was. A lens moved to another parent, which appends a later part_of, keeps its
+// place in the order. NamedAt names each lens by the address a route read it at, and the one lens
+// of a self-trigger twice.
+func TestTheStoreHoldsATriggerToALensInvokedBefore(t *testing.T) {
+	fixture := newPointerFixture(t)
+	database := fixture.database
+	ctx := context.Background()
+	const (
+		later = "the triggered_by tuple from the lens %s at the lens %s, which was not invoked before it, " +
+			"breaks its type rule: triggered_by points from a lens at a lens invoked before it"
+		itself = "the triggered_by tuple from the lens %s at that same lens %s " +
+			"breaks its type rule: triggered_by points from a lens at a lens invoked before it"
+	)
+	addressOf := func(lens string) string { return "dispatch://lens/" + lens }
+	spec := strings.TrimSuffix(fixture.requirement, "#req")
+
+	held := pointerTuple(KindLens, lensTradeOff, TupleTriggeredBy, KindLens, lensInversion)
+	writeInOneTransaction(t, ctx, database.Pool, nil, []Tuple{held}, "a trigger of a lens invoked before")
+	requireHolds(t, ctx, database, held)
+	invoked := "lens-invoked-with-its-trigger"
+	made := pointerTuple(KindLens, invoked, TupleTriggeredBy, KindLens, lensKindless)
+	writeInOneTransaction(t, ctx, database.Pool, []Node{pointerNode(KindLens, invoked)}, []Tuple{
+		pointerTuple(KindLens, invoked, TuplePartOf, KindArtifact, spec), made,
+	}, "a lens invoked with its trigger of the lens the store invoked last")
+	requireHolds(t, ctx, database, made)
+	first, second := "lens-invoked-first-in-one-write", "lens-invoked-second-in-one-write"
+	pair := pointerTuple(KindLens, second, TupleTriggeredBy, KindLens, first)
+	writeInOneTransaction(t, ctx, database.Pool, []Node{pointerNode(KindLens, first), pointerNode(KindLens, second)}, []Tuple{
+		pointerTuple(KindLens, first, TuplePartOf, KindArtifact, spec), pointerTuple(KindLens, second, TuplePartOf, KindArtifact, spec), pair,
+	}, "two lenses invoked in one write, the second triggered by the first")
+	requireHolds(t, ctx, database, pair)
+	// The inversion moves under the issue: its newest part_of is later than the trade-off
+	// analysis's, and its first is not.
+	writeInOneTransaction(t, ctx, database.Pool, nil, []Tuple{
+		retracted(pointerTuple(KindLens, lensInversion, TuplePartOf, KindArtifact, spec)),
+		pointerTuple(KindLens, lensInversion, TuplePartOf, KindIssue, pointerIssue),
+	}, "the inversion moved under the issue")
+
+	before := countTuples(t, ctx, database)
+	for _, refused := range []struct {
+		name     string
+		write    func(context.Context, pgx.Tx) error
+		message  string
+		near, to string
+	}{
+		{"Write, a trigger of a lens invoked later, by a lens moved since",
+			tuplesOnly(pointerTuple(KindLens, lensInversion, TupleTriggeredBy, KindLens, lensTradeOff)),
+			fmt.Sprintf(later, lensInversion, lensTradeOff), lensInversion, lensTradeOff},
+		{"Write, a trigger of the lens a write invokes after it", func(ctx context.Context, tx pgx.Tx) error {
+			return Write(ctx, tx, []Node{pointerNode(KindLens, "lens-astray-first"), pointerNode(KindLens, "lens-astray-second")}, []Tuple{
+				pointerTuple(KindLens, "lens-astray-first", TuplePartOf, KindArtifact, spec),
+				pointerTuple(KindLens, "lens-astray-second", TuplePartOf, KindArtifact, spec),
+				pointerTuple(KindLens, "lens-astray-first", TupleTriggeredBy, KindLens, "lens-astray-second"),
+			})
+		}, fmt.Sprintf(later, "lens-astray-first", "lens-astray-second"), "lens-astray-first", "lens-astray-second"},
+		{"Write, a trigger of a stored lens by a lens the write makes and places nowhere",
+			func(ctx context.Context, tx pgx.Tx) error {
+				return Write(ctx, tx, []Node{pointerNode(KindLens, "lens-astray-unplaced")}, []Tuple{
+					pointerTuple(KindLens, lensPreMortem, TupleTriggeredBy, KindLens, "lens-astray-unplaced"),
+				})
+			}, fmt.Sprintf(later, lensPreMortem, "lens-astray-unplaced"), lensPreMortem, "lens-astray-unplaced"},
+		{"Retarget, from a lens invoked before to a lens invoked later", func(ctx context.Context, tx pgx.Tx) error {
+			return Retarget(ctx, tx, held, KindLens, lensKindless)
+		}, fmt.Sprintf(later, lensTradeOff, lensKindless), lensTradeOff, lensKindless},
+		{"Retarget, from a lens invoked before to the lens itself", func(ctx context.Context, tx pgx.Tx) error {
+			return Retarget(ctx, tx, held, KindLens, lensTradeOff)
+		}, fmt.Sprintf(itself, lensTradeOff, lensTradeOff), lensTradeOff, lensTradeOff},
+	} {
+		t.Run(refused.name, func(t *testing.T) {
+			tx, err := database.Pool.Begin(ctx)
+			if err != nil {
+				t.Fatalf("begin: %v", err)
+			}
+			defer tx.Rollback(ctx)
+			err = refused.write(ctx, tx)
+			requirePointerRefused(t, err, refused.message)
+			var refusal *InvalidPointerError
+			errors.As(err, &refusal)
+			named, ok := refusal.NamedAt(KindLens, refused.near, addressOf(refused.near))
+			if ok && refused.to != refused.near {
+				named, ok = named.NamedAt(KindLens, refused.to, addressOf(refused.to))
+			}
+			want := strings.Replace(strings.Replace(refused.message, refused.near, addressOf(refused.near), 1), refused.to, addressOf(refused.to), 1)
+			if refused.to == refused.near {
+				want = strings.ReplaceAll(refused.message, refused.near, addressOf(refused.near))
+			}
+			if !ok || named.Error() != want {
+				t.Errorf("the refusal named at both lenses' addresses reads %v (named %t), want %q", named, ok, want)
+			}
+			if other, ok := refusal.NamedAt(KindLens, lensPreMortemBare, addressOf(lensPreMortemBare)); ok {
+				t.Errorf("the refusal named at a lens it does not name reads %q, want it not named", other.Error())
+			}
+			if err := tx.Rollback(ctx); err != nil {
+				t.Fatalf("roll the refused write back: %v", err)
+			}
+			if after := countTuples(t, ctx, database); after != before {
+				t.Errorf("the log holds %d tuples after the refused write, %d before it", after, before)
+			}
+		})
+	}
+	for _, lens := range []string{"lens-astray-first", "lens-astray-second", "lens-astray-unplaced"} {
+		requireNoNode(t, ctx, database, KindLens, lens)
+	}
+	requireHolds(t, ctx, database, held)
+	if triggers := readHistory(t, ctx, database, KindLens, lensInversion, TupleTriggeredBy); len(triggers) != 0 {
+		t.Errorf("the inversion holds the triggered_by tuples %+v after the refusals, want none", triggers)
+	}
+}
+
+// TestTheStoreHoldsARisksCheckToADocumentThatIsNotRetired holds a risk's prevented_by to a check
+// of a document that is not retired (dispatch://INFRA-1950/spec#b-r-constraint-risk, pointerRules'
+// unretired): a check of a retired document, whose checks nobody runs, is refused before anything
+// is appended, with an InvalidPointerError naming the check, through Write, through a write that
+// makes its risk, and through Retarget, which leaves the pointer where it was. The document_blocks
+// row of the retired document's check stays, so its type is read all the same. NamedAt names the
+// check by the address a route read it at, and names no other far end.
+func TestTheStoreHoldsARisksCheckToADocumentThatIsNotRetired(t *testing.T) {
+	fixture := newPointerFixture(t)
+	database := fixture.database
+	ctx := context.Background()
+	artifact, refKey := pointerSpec(t, ctx, database, pointerProject, pointerProject+"-3", 3, "A document that is retired")
+	check := pointerNode(blockKind, refKey+"#chk")
+	writeInOneTransaction(t, ctx, database.Pool, []Node{check}, nil, "the check of the document retired below")
+	pointerBlockRow(t, ctx, database, artifact, "chk", check.ID, BlockTypeCheck)
+	standing := pointerTuple(KindRisk, riskAstray, TuplePreventedBy, blockKind, check.ID)
+	writeInOneTransaction(t, ctx, database.Pool, nil, []Tuple{standing}, "a risk prevented by the check before its document is retired")
+	requireHolds(t, ctx, database, standing)
+	// The document retired as docs.RetireDocument retires it, its retired_at set and its role
+	// cleared; the retirement's own retraction of the tuple above is docs'.
+	if _, err := database.Pool.Exec(ctx, `update artifacts set retired_at = now(), role = null where id = $1::uuid`, artifact); err != nil {
+		t.Fatalf("retire the document: %v", err)
+	}
+	const (
+		refused = "the prevented_by tuple from a risk at the check block %s of a retired document breaks its type rule: " +
+			"prevented_by points from a risk at a check block of a document that is not retired, since nobody runs a retired document's checks"
+		address = "dispatch://PTR-3/spec#b-chk"
+	)
+	held := pointerTuple(KindRisk, riskPlaced, TuplePreventedBy, blockKind, fixture.check)
+	writeInOneTransaction(t, ctx, database.Pool, nil, []Tuple{held}, "a risk prevented by a check of a document that stands")
+	requireHolds(t, ctx, database, held)
+
+	before := countTuples(t, ctx, database)
+	for _, write := range []struct {
+		name  string
+		write func(context.Context, pgx.Tx) error
+	}{
+		{"Write, a stored risk at a check of a retired document",
+			tuplesOnly(pointerTuple(KindRisk, riskPlaced, TuplePreventedBy, blockKind, check.ID))},
+		{"Write, a risk written with its check of a retired document", func(ctx context.Context, tx pgx.Tx) error {
+			return Write(ctx, tx, []Node{pointerNode(KindRisk, "risk-astray-retired")}, []Tuple{
+				pointerTuple(KindRisk, "risk-astray-retired", TuplePartOf, KindLens, lensPreMortem),
+				pointerTuple(KindRisk, "risk-astray-retired", TuplePreventedBy, blockKind, check.ID),
+			})
+		}},
+		{"Retarget, from the risk's check to one of a retired document", func(ctx context.Context, tx pgx.Tx) error {
+			return Retarget(ctx, tx, held, blockKind, check.ID)
+		}},
+	} {
+		t.Run(write.name, func(t *testing.T) {
+			tx, err := database.Pool.Begin(ctx)
+			if err != nil {
+				t.Fatalf("begin: %v", err)
+			}
+			defer tx.Rollback(ctx)
+			err = write.write(ctx, tx)
+			requirePointerRefused(t, err, fmt.Sprintf(refused, check.ID))
+			var refusal *InvalidPointerError
+			errors.As(err, &refusal)
+			if named, ok := refusal.NamedAt(blockKind, check.ID, address); !ok || named.Error() != fmt.Sprintf(refused, address) {
+				t.Errorf("the refusal named at %s reads %v (named %t), want %q", address, named, ok, fmt.Sprintf(refused, address))
+			}
+			if other, ok := refusal.NamedAt(blockKind, fixture.check, address); ok {
+				t.Errorf("the refusal named at another far end reads %q, want it not named", other.Error())
+			}
+			if err := tx.Rollback(ctx); err != nil {
+				t.Fatalf("roll the refused write back: %v", err)
+			}
+			if after := countTuples(t, ctx, database); after != before {
+				t.Errorf("the log holds %d tuples after the refused write, %d before it", after, before)
+			}
+		})
+	}
+	requireNoNode(t, ctx, database, KindRisk, "risk-astray-retired")
+	requireHolds(t, ctx, database, held)
 }
 
 // tuplesOnly is a write of tuples alone, through Write.

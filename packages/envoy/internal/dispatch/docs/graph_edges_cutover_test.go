@@ -1310,12 +1310,13 @@ const (
 
 // writeTheStoreClass states, through the store's own writer, one tuple of each kind the view's
 // tuple arm answers as its class `store` (migration 20261117020856) and a part_of out of a lens:
-// a lens placed under CORE-1, of the kind pre-mortem, triggered by a second lens, written by
-// alice and changed by a run; a risk that a check block covers; and the target's r1, held to a
-// constraint. Their writers are api's (writeReasoningNodes, recordGoingRequest), which this package
-// cannot import, so the nodes are written here through graphstore.Write, each project-visible and
-// live, in CORE: the view reads no visibility, so the run, which its own writer reserves for its
-// author, answers the same here.
+// a lens placed under CORE-1, of the kind pre-mortem, triggered by a second lens, which is placed
+// under CORE-1 before it, since a lens is triggered only by a lens invoked before it (graphstore's
+// pointerRules), written by alice and changed by a run; a risk that a check block covers; and the
+// target's r1, held to a constraint. Their writers are api's (writeReasoningNodes,
+// recordGoingRequest), which this package cannot import, so the nodes are written here through
+// graphstore.Write, each project-visible and live, in CORE: the view reads no visibility, so the
+// run, which its own writer reserves for its author, answers the same here.
 // It answers the rows the view is to answer of the class: those, each dated by its tuple and
 // carrying no source_seq, and beside them the lens catalogue's seeded sources (seededStoreClass).
 func writeTheStoreClass(t *testing.T, database *store.Store) []graphEdgeRow {
@@ -1345,6 +1346,7 @@ func writeTheStoreClass(t *testing.T, database *store.Store) []graphEdgeRow {
 		t.Fatalf("alice names no author node: %#v", alice)
 	}
 	edges := []graphEdge{
+		{graphstore.KindLens, trigger, graphstore.TuplePartOf, "issue", "CORE-1"},
 		{graphstore.KindLens, lens, graphstore.TuplePartOf, "issue", "CORE-1"},
 		{graphstore.KindLens, lens, graphstore.TupleAuthoredBy, authorKind, author},
 		{graphstore.KindLens, lens, graphstore.TupleHasKind, graphstore.KindLensKind, "pre-mortem"},

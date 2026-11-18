@@ -41,11 +41,12 @@ const (
 //
 // TupleChangedByRun points from each node a write made for a run created or changed to that run's
 // interaction. TupleHasKind points from a lens to its lens_kind, and TupleTriggeredBy from a lens
-// to the lens whose finding invoked it. TupleConstrainedBy points from a requirement block to a
-// constraint it is held to, and TuplePreventedBy from a risk to each check block that covers it, a
-// check of any issue of the risk's own project. graph_edges answers each of them from the tuples
-// alone, with no projection row behind it (migration 20261117020856), and refs.TupleKinds lists
-// them.
+// to the lens whose finding invoked it, which was invoked before it (InvokedSeqSQL).
+// TupleConstrainedBy points from a requirement block to a constraint it is held to, and
+// TuplePreventedBy from a risk to each check block that covers it, a check of any issue of the
+// risk's own project in a document that is not retired. graph_edges answers each of them from
+// the tuples alone, with no projection row behind it (migration 20261117020856), and
+// refs.TupleKinds lists them.
 const (
 	TupleChangedByRun  = "changed_by_run"
 	TupleHasKind       = "has_kind"
@@ -125,8 +126,10 @@ type pointerRule struct {
 	// lets one out of any other node through: part_of places every node there is, and only a
 	// risk's place is ruled.
 	placement bool
-	// another refuses a tuple whose far end is its own near end.
-	another bool
+	// earlier holds the far end, a lens, to one invoked before the near end, in the order the
+	// lens read answers (InvokedSeqSQL): never the near end itself, nor a lens invoked at the same
+	// moment or later, so no tuple of the kind closes a cycle.
+	earlier bool
 	// single holds a node to one asserted tuple of the kind at a time: a second assertion is
 	// refused, and a retraction is taken only beside the assertion that replaces it.
 	single bool
@@ -138,6 +141,9 @@ type pointerRule struct {
 	// writes, since every reasoning node is written in its issue's project - is held to the types
 	// alone.
 	ownProject bool
+	// unretired holds the far end, a block, to a document that is not retired: nobody runs a
+	// retired document's checks.
+	unretired bool
 }
 
 // pointerRules are the type rules of the four pointer tuples and of a risk's place, the one table
@@ -147,24 +153,40 @@ type pointerRule struct {
 // and a move through dispatch://INFRA-1253's `/parent` meets the same one. A kind that is not here
 // is let through to any node.
 //
-// The table rules the types, and the project of a risk's prevented_by: a check of any issue of
-// the risk's own project, as the pre-mortem conversion writes one
-// (dispatch://INFRA-1950/spec#b-r-premortem-nodes), so the pointer route, the risk route and the
-// conversion are held to one rule. That the far end exists, is not gone and may be seen by the
-// caller is its route's to check, through the read registry's loader for the far end's kind (an
-// issue or a document is read off its own row), so that a far end the caller may not see answers
-// as one that does not exist and no refusal here tells that it is there: a check of another
-// project reaches this rule only once its route has read it for the caller.
+// The table rules the types, the place of a triggered_by's far end in the order lenses were
+// invoked, and the project and the document of a risk's prevented_by: a check of any issue of the
+// risk's own project, as the pre-mortem conversion writes one
+// (dispatch://INFRA-1950/spec#b-r-premortem-nodes), in a document that is not retired, so the
+// pointer route, the risk route and the conversion are held to one rule. That the far end exists,
+// is not gone and may be seen by the caller is its route's to check, through the read registry's
+// loader for the far end's kind (an issue or a document is read off its own row), so that a far
+// end the caller may not see answers as one that does not exist and no refusal here tells that it
+// is there: a check of another project or of a retired document, and a lens invoked later, reach
+// this rule only once its route has read them for the caller.
 var pointerRules = [...]pointerRule{
 	{kind: TupleHasKind, from: []pointerEnd{{kind: KindLens}}, to: []pointerEnd{{kind: KindLensKind}}, single: true},
-	{kind: TupleTriggeredBy, from: []pointerEnd{{kind: KindLens}}, to: []pointerEnd{{kind: KindLens}}, another: true},
+	{kind: TupleTriggeredBy, from: []pointerEnd{{kind: KindLens}}, to: []pointerEnd{{kind: KindLens}}, earlier: true},
 	{kind: TupleConstrainedBy,
 		from: []pointerEnd{{kind: blockKind, blockType: blockTypeRequirement}, {kind: KindLensKind}},
 		to:   []pointerEnd{{kind: KindConstraint}}},
 	{kind: TuplePreventedBy, from: []pointerEnd{{kind: KindRisk}}, to: []pointerEnd{{kind: blockKind, blockType: BlockTypeCheck}},
-		ownProject: true},
+		ownProject: true, unretired: true},
 	{kind: TuplePartOf, from: []pointerEnd{{kind: KindRisk}}, to: []pointerEnd{{kind: KindLens}},
 		placement: true, underKind: LensKindPreMortem},
+}
+
+// InvokedSeqSQL is where the lens whose id the SQL expression idExpr names stands in the order
+// lenses were invoked: the seq of its first part_of tuple (graph_tuples.seq, one order across
+// every node), asserted or since retracted, so neither a later write of its row nor a move to
+// another parent, which appends a later part_of, moves it; null for a lens the store places
+// nowhere. The lens read answers a node's lenses in this order (api's lensesOnNodeQuery), and the
+// type rule of triggered_by holds a lens to one invoked before it in the same order
+// (pointerRules), so the two read one order. It reads graph_tuples_current, the index of a read
+// out of a node.
+func InvokedSeqSQL(idExpr string) string {
+	return `(select min(invoked.seq) from graph_tuples invoked
+		where invoked.from_kind = '` + KindLens + `' and invoked.from_id = ` + idExpr + `
+			and invoked.kind = '` + TuplePartOf + `' and invoked.to_kind <> '` + KindValue + `')`
 }
 
 // pointerRuleOf is the rule a relation of kind out of a node of fromKind is held to, or nil for
@@ -188,8 +210,8 @@ func (r *pointerRule) allowed() string {
 		return fmt.Sprintf("%s belongs under %s of kind %s", namedEnds(r.from), namedEnds(r.to), r.underKind)
 	}
 	far := namedEnds(r.to)
-	if r.another {
-		far = "another " + r.to[0].word()
+	if r.earlier {
+		far = WithArticle(r.to[0].word()) + " invoked before it"
 	}
 	return fmt.Sprintf("%s points from %s at %s", r.kind, namedEnds(r.from), far)
 }
@@ -218,33 +240,38 @@ func WithArticle(word string) string {
 
 // ErrInvalidPointer is a write that appends a relation at a node its type rule does not allow
 // (pointerRules): a far end or a near end of another type, a check of another project than its
-// risk, a lens triggered by itself, a risk under a lens of any kind but pre-mortem, a lens left
-// with no kind. It is a sentinel so a route can answer it as the caller's refusal, 400
-// INVALID_POINTER; what a write is refused with is an InvalidPointerError, which wraps it and
-// names the tuple.
+// risk or of a retired document, a lens triggered by itself or by a lens not invoked before it, a
+// risk under a lens of any kind but pre-mortem, a lens left with no kind. It is a sentinel so a
+// route can answer it as the caller's refusal, 400 INVALID_POINTER; what a write is refused with is
+// an InvalidPointerError, which wraps it and names the tuple.
 var ErrInvalidPointer = errors.New("a pointer tuple is at a node its type rule does not allow")
 
 // InvalidPointerError is ErrInvalidPointer for one tuple: its kind, its two ends as the refusal
 // names them, and what its rule lets through, so the words say what the caller pointed at and
 // what it may point at instead. Retracted marks the retraction of a lens's one has_kind tuple with
-// none asserted in its place, which leaves the lens no kind. foreign is the far end of a tuple
-// refused for standing in another project than its near end (pointerRule's ownProject), which To
-// names; it is the zero foreignEnd on every other refusal.
+// none asserted in its place, which leaves the lens no kind. keyed are the ends From and To name
+// by the id the store keys each by, which a route names by address instead (NamedAt): the far end
+// of a tuple refused for standing in another project than its near end (pointerRule's ownProject)
+// or in a retired document (unretired), and both lenses of a triggered_by whose far end was not
+// invoked before its near end (earlier); it holds none on every other refusal.
 type InvalidPointerError struct {
 	Kind, From, To, Rule string
 	Retracted            bool
-	foreign              foreignEnd
+	keyed                []keyedEnd
 }
 
-// foreignEnd is a far end of another project than its tuple's near end: its kind and id as the
-// store keys it, its type as a refusal names it ("check block") and the project it stands in.
-type foreignEnd struct{ kind, id, word, project string }
-
-// named is the far end as its refusal's To names it, by name: "the check block <name> of project
-// <project>".
-func (end foreignEnd) named(name string) string {
-	return fmt.Sprintf("the %s %s of project %s", end.word, name, end.project)
+// keyedEnd is one end of a refused tuple that its refusal names by the id the store keys the end's
+// node by - a block by its document's ref_key and its block id, a lens by its uuid: its kind and
+// id, whether To names it (the far end) or From (the near end), and the words its name stands
+// between there, "the check block " and " of project FAR".
+type keyedEnd struct {
+	kind, id      string
+	far           bool
+	before, after string
 }
+
+// named is the end as its refusal names it, by name.
+func (end keyedEnd) named(name string) string { return end.before + name + end.after }
 
 func (e *InvalidPointerError) Error() string {
 	if e.Retracted {
@@ -256,17 +283,31 @@ func (e *InvalidPointerError) Error() string {
 
 func (e *InvalidPointerError) Unwrap() error { return ErrInvalidPointer }
 
-// NamedAt is the refusal naming its far end by address, where it refuses a tuple at the node the
-// store keys by kind and id for standing in another project than its near end: the store names
-// that node by the id it keys it by - a block by its document's ref_key and its block id - and a
-// route that read it at its dispatch:// address names it as its caller does. named is false, and
-// the refusal nil, for every other refusal and for an empty address.
+// NamedAt is the refusal naming the node the store keys by kind and id by address, where the
+// refusal names that node by the id the store keys it by (keyedEnd): the store names a block by
+// its document's ref_key and its block id and a lens by its uuid, and a route that read the node
+// at its dispatch:// address names it as its caller does. A lens that triggers itself is both ends
+// of its refusal, and both are named. named is false, and the refusal nil, for a node the refusal
+// names by no id, for every other refusal and for an empty address.
 func (e *InvalidPointerError) NamedAt(kind, id, address string) (refusal *InvalidPointerError, named bool) {
-	if e.foreign.id == "" || e.foreign.kind != kind || e.foreign.id != id || address == "" {
+	if address == "" {
 		return nil, false
 	}
 	at := *e
-	at.To = e.foreign.named(address)
+	for _, end := range e.keyed {
+		if end.kind != kind || end.id != id {
+			continue
+		}
+		if end.far {
+			at.To = end.named(address)
+		} else {
+			at.From = end.named(address)
+		}
+		named = true
+	}
+	if !named {
+		return nil, false
+	}
 	return &at, true
 }
 
@@ -323,14 +364,38 @@ func refusePointersInArms(tuples []Tuple, claims []Claim) error {
 type pointerTarget struct{ kind, id string }
 
 // pointerEnds is what checkPointers reads of the nodes a write's ruled tuples name: the block type
-// of each block an end of one is ruled by and the project of the document that holds it, the
-// project of each near end an ownProject rule compares with its far end's, and the kinds each lens
-// holds now.
+// of each block an end of one is ruled by, the project of the document that holds it and whether
+// that document is retired, the project of each near end an ownProject rule compares with its far
+// end's, the kinds each lens holds now, and where each lens at either end of a triggered_by stands
+// in the order lenses were invoked.
 type pointerEnds struct {
 	blockTypes    map[string]string
 	blockProjects map[string]string
+	blockRetired  map[string]bool
 	nodeProjects  map[pointerTarget]string
 	lensKinds     map[string][]pointerTarget
+	invoked       map[string]invocation
+}
+
+// invocation is where a lens stands in the order lenses were invoked (InvokedSeqSQL): at seq, the
+// seq of the first part_of tuple the store holds of it; or, for a lens the store places nowhere
+// (seq 0), after every lens it does place - at written, the position of the lens's first part_of
+// among the tuples of the write that is checked, which are appended after every tuple the store
+// holds and in their order, and last of all where that write places it nowhere either (written
+// -1). So the lens a write invokes, its part_of beside its triggered_by, stands after every lens
+// already invoked.
+type invocation struct {
+	seq     int64
+	written int
+}
+
+// before is whether a lens at a was invoked before a lens at b; a lens at the same place as
+// another, which only the lens itself is, was not.
+func (a invocation) before(b invocation) bool {
+	if a.seq > 0 || b.seq > 0 {
+		return a.seq > 0 && (b.seq == 0 || a.seq < b.seq)
+	}
+	return a.written >= 0 && (b.written < 0 || a.written < b.written)
 }
 
 // checkPointers holds every relation of tuples that pointerRules rules to its rule, in the write's
@@ -343,11 +408,13 @@ type pointerEnds struct {
 // statement here and makes nothing. A refusal ends the caller's transaction, which rolls the
 // nodes it wrote back with it, as ErrProjectMoved does.
 //
-// An assertion is held to the kinds of both its ends, and a risk's prevented_by to the project of
-// its risk: the check stands in a document of that project, read off the document that holds it
-// as its type is. A retraction is held to nothing but the has_kind rule: it ends what a write
-// already took, and a block the index pass removes has no document_blocks row left to read its
-// type off when its pointers are retracted.
+// An assertion is held to the kinds of both its ends, a risk's prevented_by to the project of its
+// risk and to a document that is not retired - the check stands in a document of that project,
+// read off the document that holds it as its type is - and a lens's triggered_by to a lens invoked
+// before it, each read off the seq of its first part_of and, for a lens the store places nowhere
+// yet, off this write's own part_of tuples (invocation). A retraction is held to nothing but the
+// has_kind rule: it ends what a write already took, and a block the index pass removes has no
+// document_blocks row left to read its type off when its pointers are retracted.
 //
 // A lens holds one kind at a time, which is read off the store and then off this write's own
 // has_kind tuples in their order, so a retarget - the retraction of one far end and the assertion
@@ -376,13 +443,14 @@ func checkPointers(ctx context.Context, tx pgx.Tx, nodes []Node, made []bool, tu
 }
 
 // readPointerEnds reads what the ruled tuples' rules ask of their ends: one statement for the
-// type of every block an end is ruled by and the project of its document, one for the project of
-// each near end of an ownProject rule that no node of the write states, the lock of every lens
-// whose has_kind tuples the write states and does not write the node of, and one for the has_kind
-// tuples each named lens holds now, which a lens the write's insert made holds none of and is not
-// read for.
+// type of every block an end is ruled by, the project of its document and whether that document is
+// retired, one for the project of each near end of an ownProject rule that no node of the write
+// states, one for where each lens at either end of a triggered_by stands in the order lenses were
+// invoked, the lock of every lens whose has_kind tuples the write states and does not write the
+// node of, and one for the has_kind tuples each named lens holds now, which a lens the write's
+// insert made holds none of and is not read for.
 func readPointerEnds(ctx context.Context, tx pgx.Tx, nodes []Node, made []bool, tuples []Tuple, ruled []int) (pointerEnds, error) {
-	var blocks, lenses, locked []string
+	var blocks, lenses, locked, invoked []string
 	var placed []pointerTarget
 	for _, index := range ruled {
 		tuple := &tuples[index]
@@ -404,15 +472,22 @@ func readPointerEnds(ctx context.Context, tx pgx.Tx, nodes []Node, made []bool, 
 			}
 		case rule.underKind != "" && tuple.Asserted && tuple.ToKind == KindLens:
 			lenses = append(lenses, tuple.ToID)
+		case rule.earlier && tuple.Asserted && tuple.FromKind == KindLens && tuple.ToKind == KindLens:
+			invoked = append(invoked, tuple.FromID, tuple.ToID)
 		}
 	}
 	var ends pointerEnds
 	if len(blocks) > 0 {
-		types, projects, err := readBlocks(ctx, tx, blocks)
+		if err := ends.readBlocks(ctx, tx, blocks); err != nil {
+			return pointerEnds{}, err
+		}
+	}
+	if len(invoked) > 0 {
+		order, err := readInvocations(ctx, tx, invoked, tuples)
 		if err != nil {
 			return pointerEnds{}, err
 		}
-		ends.blockTypes, ends.blockProjects = types, projects
+		ends.invoked = order
 	}
 	if len(placed) > 0 {
 		projects, err := readNodeProjects(ctx, tx, nodes, placed)
@@ -482,41 +557,85 @@ func readLensKinds(ctx context.Context, tx pgx.Tx, lenses []string, kinds map[st
 	return nil
 }
 
-// readBlocks is the type of each block of ids that a document holds now, and the project of that
-// document, read off its document_blocks row by node_id, the block's address that every row
-// carries, through that column's hash index (document_blocks_node_id, migration 0121), and the
-// primary key of the artifacts row it names. It is not read by node_kind and node_address: a row
-// written before the store's backfill, one a pod of the previous release writes during a roll,
-// and one past the store's address bound leave both null, and its block is still the requirement
-// or the check it is. A block no document holds - a finding of a lens, a block a version removed
-// - answers none, and no rule that names a block type lets it through. A document no project
-// holds, an agent conversation's file, answers no project.
-func readBlocks(ctx context.Context, tx pgx.Tx, ids []string) (types, projects map[string]string, err error) {
+// readInvocations reads where each of lenses stands in the order lenses were invoked
+// (invocation), in one statement: the seq of the first part_of tuple the store holds of it
+// (InvokedSeqSQL), and, for a lens the store places nowhere, the position of its first asserted
+// part_of among tuples, the write's own. The order is fixed once a lens is placed, so it takes no
+// lock: a lens another transaction places later stands later, and a lens no committed write placed
+// is no far end any route reads.
+func readInvocations(ctx context.Context, tx pgx.Tx, lenses []string, tuples []Tuple) (map[string]invocation, error) {
+	slices.Sort(lenses)
+	lenses = slices.Compact(lenses)
 	rows, err := tx.Query(ctx, `
-		select d.node_id, d.type, a.project_key
+		select named.id, coalesce(`+InvokedSeqSQL(`named.id`)+`, 0)
+		from unnest($1::text[]) as named(id)
+	`, lenses)
+	if err != nil {
+		return nil, fmt.Errorf("read where the lenses a triggered_by names were invoked: %w", err)
+	}
+	defer rows.Close()
+	order := make(map[string]invocation, len(lenses))
+	for rows.Next() {
+		var lens string
+		at := invocation{written: -1}
+		if err := rows.Scan(&lens, &at.seq); err != nil {
+			return nil, fmt.Errorf("read where the lenses a triggered_by names were invoked: %w", err)
+		}
+		if at.seq == 0 {
+			at.written = slices.IndexFunc(tuples, func(tuple Tuple) bool {
+				return tuple.Asserted && tuple.FromKind == KindLens && tuple.FromID == lens &&
+					tuple.Kind == TuplePartOf && tuple.ToKind != KindValue
+			})
+		}
+		order[lens] = at
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read where the lenses a triggered_by names were invoked: %w", err)
+	}
+	return order, nil
+}
+
+// readBlocks reads into e the type of each block of ids that a document holds now, the project of
+// that document and whether it is retired (artifacts.retired_at, docs.RetireDocument), read off its
+// document_blocks row by node_id, the block's address that every row carries, through that
+// column's hash index (document_blocks_node_id, migration 0121), and the primary key of the
+// artifacts row it names. It is not read by node_kind and node_address: a row written before the
+// store's backfill, one a pod of the previous release writes during a roll, and one past the
+// store's address bound leave both null, and its block is still the requirement or the check it
+// is. A block no document holds - a finding of a lens, a block a version removed - answers none,
+// and no rule that names a block type lets it through. A document no project holds, an agent
+// conversation's file, answers no project. A retired document keeps its document_blocks rows, so
+// its checks are read, and refused, for what they are.
+func (e *pointerEnds) readBlocks(ctx context.Context, tx pgx.Tx, ids []string) error {
+	rows, err := tx.Query(ctx, `
+		select d.node_id, d.type, a.project_key, a.retired_at is not null
 		from document_blocks d join artifacts a on a.id = d.artifact_id
 		where d.node_id = any($1::text[])
 	`, ids)
 	if err != nil {
-		return nil, nil, fmt.Errorf("read the types of the blocks a pointer names: %w", err)
+		return fmt.Errorf("read the types of the blocks a pointer names: %w", err)
 	}
 	defer rows.Close()
-	types, projects = make(map[string]string, len(ids)), make(map[string]string, len(ids))
+	e.blockTypes, e.blockProjects, e.blockRetired = make(map[string]string, len(ids)), make(map[string]string, len(ids)), map[string]bool{}
 	for rows.Next() {
 		var id, blockType string
 		var project *string
-		if err := rows.Scan(&id, &blockType, &project); err != nil {
-			return nil, nil, fmt.Errorf("read the types of the blocks a pointer names: %w", err)
+		var retired bool
+		if err := rows.Scan(&id, &blockType, &project, &retired); err != nil {
+			return fmt.Errorf("read the types of the blocks a pointer names: %w", err)
 		}
-		types[id] = blockType
+		e.blockTypes[id] = blockType
 		if project != nil {
-			projects[id] = *project
+			e.blockProjects[id] = *project
+		}
+		if retired {
+			e.blockRetired[id] = true
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return nil, nil, fmt.Errorf("read the types of the blocks a pointer names: %w", err)
+		return fmt.Errorf("read the types of the blocks a pointer names: %w", err)
 	}
-	return types, projects, nil
+	return nil
 }
 
 // readNodeProjects is the project of each of ends, the near ends of the tuples an ownProject rule
@@ -593,8 +712,8 @@ func (e pointerEnds) check(tuples []Tuple, ruled []int) error {
 		if !e.allows(rule.from, tuple.FromKind, tuple.FromID) || !e.allows(rule.to, tuple.ToKind, tuple.ToID) {
 			return e.breach(rule, tuple, e.named(rule.to, tuple.ToKind, tuple.ToID))
 		}
-		if rule.another && tuple.ToKind == tuple.FromKind && tuple.ToID == tuple.FromID {
-			return e.breach(rule, tuple, "that same "+tuple.ToKind)
+		if rule.earlier && !e.invoked[tuple.ToID].before(e.invoked[tuple.FromID]) {
+			return notInvokedBefore(rule, tuple)
 		}
 		if rule.ownProject {
 			// The far end passed its types, so it is a block, whose project is its document's.
@@ -602,6 +721,9 @@ func (e pointerEnds) check(tuples []Tuple, ruled []int) error {
 			if near != "" && far != "" && near != far {
 				return e.acrossProjects(rule, tuple, near, far)
 			}
+		}
+		if rule.unretired && e.blockRetired[tuple.ToID] {
+			return e.inRetiredDocument(rule, tuple)
 		}
 		if rule.single {
 			kinds := e.lensKinds[tuple.FromID]
@@ -667,10 +789,43 @@ func (e pointerEnds) breach(rule *pointerRule, tuple *Tuple, far string) error {
 // at an address names it by instead (InvalidPointerError.NamedAt). That route read the far end for
 // its caller before the write, so the refusal names nothing the caller may not see.
 func (e pointerEnds) acrossProjects(rule *pointerRule, tuple *Tuple, near, far string) error {
-	foreign := foreignEnd{kind: tuple.ToKind, id: tuple.ToID, word: e.word(rule.to, tuple.ToKind, tuple.ToID), project: far}
+	foreign := keyedEnd{kind: tuple.ToKind, id: tuple.ToID, far: true,
+		before: "the " + e.word(rule.to, tuple.ToKind, tuple.ToID) + " ", after: " of project " + far}
 	return &InvalidPointerError{
 		Kind: tuple.Kind, From: e.named(rule.from, tuple.FromKind, tuple.FromID) + " of project " + near,
-		To: foreign.named(tuple.ToID), Rule: rule.allowed() + " of the same project", foreign: foreign,
+		To: foreign.named(tuple.ToID), Rule: rule.allowed() + " of the same project", keyed: []keyedEnd{foreign},
+	}
+}
+
+// inRetiredDocument is the refusal of tuple, whose rule holds its far end, a block, to a document
+// that is not retired, at a block of a retired document, whose checks nobody runs: it names the far
+// end by the id the store keys it by, which the route that read it at an address names it by
+// instead (InvalidPointerError.NamedAt), as acrossProjects does.
+func (e pointerEnds) inRetiredDocument(rule *pointerRule, tuple *Tuple) error {
+	retired := keyedEnd{kind: tuple.ToKind, id: tuple.ToID, far: true,
+		before: "the " + e.word(rule.to, tuple.ToKind, tuple.ToID) + " ", after: " of a retired document"}
+	return &InvalidPointerError{
+		Kind: tuple.Kind, From: e.named(rule.from, tuple.FromKind, tuple.FromID), To: retired.named(tuple.ToID),
+		Rule:  rule.allowed() + " of a document that is not retired, since nobody runs a retired document's checks",
+		keyed: []keyedEnd{retired},
+	}
+}
+
+// notInvokedBefore is the refusal of tuple, whose rule holds its far end to a lens invoked before
+// its near end (pointerRule's earlier), at a lens that was not: the lens itself, or one invoked at
+// the same moment or later. It names both lenses, the one lens twice for a lens that triggers
+// itself, by the ids the store keys them by, which the route that read them at their addresses
+// names them by instead (InvalidPointerError.NamedAt). The route read both for its caller before
+// the write, so the refusal names nothing the caller may not see.
+func notInvokedBefore(rule *pointerRule, tuple *Tuple) error {
+	near := keyedEnd{kind: tuple.FromKind, id: tuple.FromID, before: "the " + KindLens + " "}
+	far := keyedEnd{kind: tuple.ToKind, id: tuple.ToID, far: true, before: "the " + KindLens + " ", after: ", which was not invoked before it,"}
+	if tuple.ToID == tuple.FromID {
+		far.before, far.after = "that same "+KindLens+" ", ""
+	}
+	return &InvalidPointerError{
+		Kind: tuple.Kind, From: near.named(tuple.FromID), To: far.named(tuple.ToID), Rule: rule.allowed(),
+		keyed: []keyedEnd{near, far},
 	}
 }
 

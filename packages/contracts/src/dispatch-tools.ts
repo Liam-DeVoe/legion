@@ -2448,8 +2448,9 @@ export const dispatchToolSpecs = [
       "other kind is refused with 400 INVALID_POINTER, which says a risk belongs under a " +
       "pre-mortem. prevented_by is the dispatch:// address of a check block that covers the " +
       "risk, of any issue of the issue's project " +
-      "(dispatch://KEY-1/artifact/verification-md#b-<id>); a block that is no check, and a " +
-      "check of another project, are 400 INVALID_POINTER, the second naming the check. Add a " +
+      "(dispatch://KEY-1/artifact/verification-md#b-<id>); a block that is no check, a check " +
+      "of another project and a check of a retired document are 400 INVALID_POINTER, the last " +
+      "two naming the check. Add a " +
       "second check, or move one, with dispatch pointer. A lens outside the issue, and a lens " +
       "or a check you may not see, are 404 NOT_FOUND. The result names the risk's " +
       "dispatch://risk/<uuid> address. " +
@@ -2536,14 +2537,17 @@ export const dispatchToolSpecs = [
     description:
       "Append, retract or retarget one pointer out of a node of an issue. kind is has_kind (a " +
       "lens to its kind, from and to being lens_kind ids such as trade-off), triggered_by (a " +
-      "lens to the lens of the issue whose finding asked for it), constrained_by (a requirement " +
+      "lens to a lens of the issue invoked before it, whose finding asked for it), " +
+      "constrained_by (a requirement " +
       "block of the issue's spec to a constraint of the issue or of the catalogue, " +
       "dispatch://constraint/<uuid>) or prevented_by (a risk to a check block that covers it, " +
       "of any issue of the issue's project). action append adds a pointer at to, retract " +
       "removes the one at to, and retarget moves the one at from to to in one write. node is " +
       "the dispatch:// address of the node the pointer goes out of. Dispatch holds every " +
       "pointer to its type rule: a far end of the wrong type, a prevented_by at a check of " +
-      "another project (naming the check), a lens triggered by itself and a lens left with no " +
+      "another project or of a retired document (naming the check), a triggered_by at the lens " +
+      "itself or at a lens invoked after it (naming both lenses), so no trigger closes a " +
+      "cycle, and a lens left with no " +
       "kind are refused with 400 INVALID_POINTER, and a second has_kind on a lens, or a " +
       "retarget of a pre-mortem's kind away from pre-mortem, with 409 POINTER_ALREADY_ASSERTED. " +
       "A node outside the issue, a far end outside it (but a has_kind's lens_kind, a " +
@@ -2694,15 +2698,17 @@ export const dispatchToolSpecs = [
       'that proves the model", word for word, and under it one risk for risk 0 and each ' +
       "numbered risk, each with its heading, its early warning and its prevention and a " +
       "prevented_by pointer to each check its entry names. The document is then retired: it " +
-      "leaves the issue's document list and takes no new text, and its address answers the " +
-      "lens. prevented_by holds one entry for each risk the document holds: its number as the " +
+      "leaves the issue's document list and takes no new text, its address answers the lens, " +
+      "and each prevented_by at a check it holds is removed, since nobody runs its checks. " +
+      "prevented_by holds one entry for each risk the document holds: its number as the " +
       "document numbers it, the dispatch:// addresses of the check blocks that prevent it, of " +
       "any issue of the issue's project ([] for none), and why. An entry for a number the " +
       "document does not hold, a number twice, a risk with no entry, an address that names no " +
       "check block you may see, a blank reason, and an entry of any other shape are refused " +
       "with 400 ARTIFACT_INPUT, naming the entry by its position from 1 and its risk number, " +
-      "and an entry naming a check of another project with 400 INVALID_POINTER, naming the " +
-      "entry, its risk and the check, with preview as without it; nothing is written. " +
+      "and an entry naming a check of another project or of a retired document with 400 " +
+      "INVALID_POINTER, naming the entry, its risk and the check, with preview as without it; " +
+      "nothing is written. " +
       "preview answers what the conversion would write and writes nothing; run it first. A " +
       "document converted already is answered as such, naming its lens, and nothing is " +
       "written. The result names the lens's dispatch://lens/<uuid> address and each risk's " +

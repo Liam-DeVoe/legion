@@ -109,10 +109,10 @@ type PremortemRisk struct {
 // PremortemMapError is a map the conversion refuses, naming the entry: its position in the map,
 // from 1, and the risk it names, or, with Entry 0, the risk the document holds that no entry names.
 // The route answers it 400 ARTIFACT_INPUT, and the command names the line of its file that entry
-// came from. An entry naming a check of another project than the issue's is refused by the store's
-// rule (graphstore's pointerRules) once the conversion writes: refusal is that refusal, naming the
-// check, which Problem words and the error wraps, so the route answers it 400 INVALID_POINTER; it
-// is nil for every other refusal.
+// came from. An entry naming a check of another project than the issue's, or a check of a retired
+// document, is refused by the store's rule (graphstore's pointerRules) once the conversion writes:
+// refusal is that refusal, naming the check, which Problem words and the error wraps, so the route
+// answers it 400 INVALID_POINTER; it is nil for every other refusal.
 type PremortemMapError struct {
 	Entry   int
 	Risk    int
@@ -588,9 +588,10 @@ func premortemChecks(ctx context.Context, q refs.Queryer, who model.Actor, entri
 // whose verdict is the document's verdict followed by its two closing sections, and under it one
 // risk for each risk of the document in the order of their numbers, each with its heading, its
 // early warning and its prevention and a prevented_by tuple to each check its entry names. Then it
-// retires the document and moves its address to the lens (retireConvertedDocument). It answers the
-// report and the events the conversion appended - the document.retired of the retirement - which
-// the caller publishes once tx commits.
+// retires the document and moves its address to the lens (retireConvertedDocument); the retirement
+// retracts each prevented_by at a block of the document, a check the document held among them
+// (docs.RetireDocument). It answers the report and the events the conversion appended - the
+// document.retired of the retirement - which the caller publishes once tx commits.
 //
 // With dryRun it runs every one of those writes in a savepoint of tx and rolls the savepoint back,
 // so the store's own rules hold the write as they would hold the real one and nothing of it
@@ -598,11 +599,11 @@ func premortemChecks(ctx context.Context, q refs.Queryer, who model.Actor, entri
 //
 // A map the document refuses is a PremortemMapError, and a document that is none, no pre-mortem,
 // or retired by anything but a conversion a PremortemDocumentError; each is refused before
-// anything is written. An entry naming a check of another project than the issue's is refused by
-// the store's rule as the write runs, in a dry run as in a real one, and answered as the
-// PremortemMapError of that entry, wrapping the store's graphstore.ErrInvalidPointer
-// (refusedPrevention); the write it refused is the savepoint's, rolled back, or tx's, which the
-// caller rolls back on that error, so nothing of it remains.
+// anything is written. An entry naming a check of another project than the issue's, or a check of
+// a retired document, is refused by the store's rule as the write runs, in a dry run as in a real
+// one, and answered as the PremortemMapError of that entry, wrapping the store's
+// graphstore.ErrInvalidPointer (refusedPrevention); the write it refused is the savepoint's, rolled
+// back, or tx's, which the caller rolls back on that error, so nothing of it remains.
 func ConvertPremortem(ctx context.Context, tx pgx.Tx, proving, recorded model.Actor, key, slug string, entries []PremortemEntry, dryRun bool) (PremortemReport, []model.Event, error) {
 	_, _, err := issueStatus(ctx, tx, key, ownerRowLock)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -753,16 +754,16 @@ func retireConvertedDocument(ctx context.Context, tx pgx.Tx, source premortemSou
 }
 
 // refusedPrevention is err as the entry of the map it refuses, where err is the store's refusal of
-// a risk's prevented_by at a check of another project than the risk's (graphstore's pointerRules):
-// the PremortemMapError of the entry of the first risk, in the order the conversion writes them,
-// whose entry names that check - the store holds a write's tuples in its order and refuses the
-// first that breaks its rule - wrapping the refusal with the check named by its address
-// (farEndNamed). Any other err it answers as it is.
+// a risk's prevented_by at a check of another project than the risk's or of a retired document
+// (graphstore's pointerRules): the PremortemMapError of the entry of the first risk, in the order
+// the conversion writes them, whose entry names that check - the store holds a write's tuples in
+// its order and refuses the first that breaks its rule - wrapping the refusal with the check named
+// by its address (refusalNamed). Any other err it answers as it is.
 func refusedPrevention(err error, document premortem, preventions map[int]premortemPrevention) error {
 	for _, risk := range document.risks {
 		prevention := preventions[risk.number]
 		for _, check := range prevention.checks {
-			if refusal, named := farEndNamed(err, check.end, check.node); named {
+			if refusal, named := refusalNamed(err, namedEnd{storedEnd: check.end, address: check.node.Ref}); named {
 				return &PremortemMapError{Entry: prevention.position, Risk: risk.number, Problem: refusal.Error(), refusal: refusal}
 			}
 		}
@@ -851,12 +852,12 @@ func decodePremortemEntries(raw json.RawMessage) ([]PremortemEntry, string) {
 // document.retired event of the retirement once the transaction commits. A body that is not JSON
 // is decodeJSON's 400 INVALID_JSON; a map of any other shape, and a map the document refuses, are
 // 400 ARTIFACT_INPUT naming the entry by its position and its risk, or the risk no entry names; an
-// entry naming a check of another project is the store's 400 INVALID_POINTER, naming the entry,
-// its risk and the check, in a dry run as in a real one; no document {slug} of the issue is 404
-// ARTIFACT_NOT_FOUND, and a document that is no pre-mortem, or that something other than a
-// conversion retired, 400 ARTIFACT_INPUT. Each writes nothing. A document converted already
-// answers 200 naming its lens and writes nothing, and so does a dry run, naming what it would
-// write.
+// entry naming a check of another project or of a retired document is the store's 400
+// INVALID_POINTER, naming the entry, its risk and the check, in a dry run as in a real one; no
+// document {slug} of the issue is 404 ARTIFACT_NOT_FOUND, and a document that is no pre-mortem, or
+// that something other than a conversion retired, 400 ARTIFACT_INPUT. Each writes nothing. A
+// document converted already answers 200 naming its lens and writes nothing, and so does a dry
+// run, naming what it would write.
 func (s *server) convertPremortemRoute(w http.ResponseWriter, r *http.Request) {
 	var input premortemConvertInput
 	if err := decodeJSON(r, &input); err != nil {

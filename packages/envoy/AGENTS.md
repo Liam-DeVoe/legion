@@ -1879,14 +1879,16 @@ The pointer tuples of those kinds and a risk's place are held to one table of ty
 | Tuple | From | To | Also |
 | --- | --- | --- | --- |
 | `has_kind` | a `lens` | a `lens_kind` | exactly one asserted at a time |
-| `triggered_by` | a `lens` | another `lens` | never the lens itself |
+| `triggered_by` | a `lens` | a `lens` invoked before it | never the lens itself, one invoked at the same moment or a later one: the `seq` of each lens's first `part_of` (`graphstore.InvokedSeqSQL`), the order the lens read answers, which a move to another parent does not change, and a lens a write invokes, its `part_of` in that write, stands after every lens the store holds; so no `triggered_by` closes a cycle |
 | `constrained_by` | a `requirement` block, or a `lens_kind` | a `constraint` | |
-| `prevented_by` | a `risk` | a `check` block | |
+| `prevented_by` | a `risk` | a `check` block | of the risk's own project, in a document that is not retired, since nobody runs a retired document's checks |
 | `part_of` | a `risk` | a `lens` whose `has_kind` is `pre-mortem` | a `part_of` out of any other node is ruled by none |
 
 A block carries the supertag `block` alone, so a rule that names a block type reads the block's type off its `document_blocks` row, and a block no document holds, a finding or a removed block, is of no type.
 `graphstore.Write` and `graphstore.Caused` hold every relation they append that the table rules to its rule, in the write's own transaction, once the nodes are written and before the first tuple is appended (`checkPointers`), so a write that breaks one stores nothing, and `graphstore.WriteArms` refuses such a relation outright, since an arm reads none of the nodes a rule names.
 A breach is a `graphstore.InvalidPointerError` naming the tuple kind, its near end, its far end's kind and what the rule allows (`400 INVALID_POINTER`), and so is a lens's `has_kind` retracted with none asserted in its place.
+A check of another project or of a retired document, and both lenses of a `triggered_by` that is not to a lens invoked before it, are named by the id the store keys them by, which a route that read them names by address instead (`InvalidPointerError.NamedAt`, `api`'s `refusalNamed`).
+A retirement of a document (`docs.RetireDocument`) retracts, in its transaction and under its `document.retired` event, each `prevented_by` the store asserts at a block of the document, as the index pass retracts each at a block a version drops.
 A second `has_kind` while the lens holds one (`graphstore.ErrLensKindAsserted`), and a retraction of a lens's `pre-mortem` kind, which a lens of that kind keeps (`graphstore.ErrLensKindKept`), are `409 POINTER_ALREADY_ASSERTED`, each with one body whatever hangs under the lens, so the refusal tells nothing of a risk a reader may not see;
 a move to `pre-mortem` is taken.
 `graphstore.Retarget` moves a pointer: it takes its near end's `graph_nodes` row `for no key update`, appends the old far end's retraction and the new one's assertion through `Write`, never moves a `part_of`, and answers a pointer the node does not hold with `graphstore.ErrPointerNotHeld` (`404 NOT_FOUND`).

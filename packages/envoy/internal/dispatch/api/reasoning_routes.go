@@ -13,15 +13,16 @@ package api
 // shared pool, at graphstore.NoEvent: no event is appended and no delivery is sent, so a reader
 // learns of one of these nodes by reading it. A repeat of a request under its Idempotency-Key is
 // answered from the key and writes nothing (keyedWrites). The type rules of the pointers and of
-// a risk's place, and the project of a risk's prevented_by, are the store's (graphstore's
-// pointerRules): a route keeps none of its own, and answers the store's refusals, 400
-// INVALID_POINTER and 409 POINTER_ALREADY_ASSERTED, as they are, naming a check of another project
-// by the address the caller read it at (farEndNamed). That each end a tuple names exists, is not
-// gone and may be seen by the caller is the route's: an end under {key} is found through
-// FindNodeUnderIssue, a prevented_by's check, which stands under any issue of the project, and an
-// end that stands under no issue - a lens_kind, a constraint of the catalogue - through refs.Node
-// with the caller's own visibility (pointerEnd), so an end the caller may not see answers as one
-// that does not exist.
+// a risk's place, the project and the document of a risk's prevented_by and the order of a
+// triggered_by are the store's (graphstore's pointerRules): a route keeps none of its own, and
+// answers the store's refusals, 400 INVALID_POINTER and 409 POINTER_ALREADY_ASSERTED, as they are,
+// naming a check of another project or of a retired document, and both lenses of a triggered_by
+// to a lens not invoked before its own, by the addresses the caller read them at (refusalNamed).
+// That each end a tuple names exists, is not gone and may be seen by the caller is the route's: an
+// end under {key} is found through FindNodeUnderIssue, a prevented_by's check, which stands under
+// any issue of the project, and an end that stands under no issue - a lens_kind, a constraint of
+// the catalogue - through refs.Node with the caller's own visibility (pointerEnd), so an end the
+// caller may not see answers as one that does not exist.
 
 import (
 	"cmp"
@@ -142,20 +143,33 @@ func findEndUnderIssue(ctx context.Context, q refs.Queryer, who model.Actor, key
 	return node, farEndOf(node, address), nil
 }
 
-// farEndNamed is err naming the far end end by node's address, where err is the store's refusal
-// of a tuple at end for standing in another project than the tuple's near end
-// (graphstore.InvalidPointerError.NamedAt): the store keys a block by its document's ref_key and
-// its block id, and the caller read it at its dispatch:// address. named reports that it is. Any
-// other err it answers as it is.
-func farEndNamed(err error, end storedEnd, node model.GraphNode) (refusal error, named bool) {
+// namedEnd is one end of a tuple as the route read it for its caller: the kind and the id the tuple
+// names it by, and the dispatch:// address the caller read it at.
+type namedEnd struct {
+	storedEnd
+	address string
+}
+
+// refusalNamed is err naming each of ends by its address, where err is the store's refusal of a
+// tuple that names that end by the id the store keys it by (graphstore.InvalidPointerError.NamedAt):
+// a check of another project than the tuple's near end or of a retired document, which the store
+// keys by its document's ref_key and its block id, and both lenses of a triggered_by to a lens not
+// invoked before its own, which it keys by their uuids, where the caller read each at its
+// dispatch:// address. named reports that it named one. Any other err it answers as it is.
+func refusalNamed(err error, ends ...namedEnd) (refusal error, named bool) {
 	var invalid *graphstore.InvalidPointerError
 	if !errors.As(err, &invalid) {
 		return err, false
 	}
-	if at, ok := invalid.NamedAt(end.kind, end.id, node.Ref); ok {
-		return at, true
+	for _, end := range ends {
+		if at, ok := invalid.NamedAt(end.kind, end.id, end.address); ok {
+			invalid, named = at, true
+		}
 	}
-	return err, false
+	if !named {
+		return err, false
+	}
+	return invalid, true
 }
 
 // farEndOf is the kind and the id a tuple whose far end is node names it by, where address is what
@@ -299,8 +313,10 @@ func findingWritten(node graphstore.Node, text string) lensFinding {
 // body with no kind is 400 LENS_KIND_REQUIRED, an id no lens_kind node holds 400 INVALID_POINTER,
 // a node or a triggering lens the caller may not see under the issue 404 NOT_FOUND, and `author`
 // on a credential that proves no author 403 AUTHOR_NAMES_NOBODY; each stores nothing. A second
-// has_kind cannot be asked for here, since the kind is one field, and a lens cannot trigger
-// itself, since its id is drawn here; the store holds both rules all the same.
+// has_kind cannot be asked for here, since the kind is one field, and the lens this writes cannot
+// trigger itself or a lens invoked after it, since its id is drawn here and its part_of, in the
+// same write, stands after every lens the store holds; the store holds every rule all the same,
+// and a refusal of its trigger names both lenses by address (refusalNamed).
 func (s *server) invokeLens(w http.ResponseWriter, r *http.Request) {
 	var input lensInvocationInput
 	if err := decodeJSON(r, &input); err != nil {
@@ -368,6 +384,8 @@ func (s *server) invokeLens(w http.ResponseWriter, r *http.Request) {
 		lens.attributes = map[string]any{graphstore.AttributeVerdict: *verdict}
 	}
 	var triggeredBy *string
+	// The ends a refusal of the lens's triggered_by names: the lens, then the lens it names.
+	ends := []namedEnd{{storedEnd: storedEnd{kind: graphstore.KindLens, id: id}, address: lensAddress(id)}}
 	if input.TriggeredBy != nil {
 		trigger, triggerEnd, err := findEndUnderIssue(ctx, tx, reader, key, *input.TriggeredBy)
 		if err != nil {
@@ -379,6 +397,7 @@ func (s *server) invokeLens(w http.ResponseWriter, r *http.Request) {
 			ToKind: triggerEnd.kind, ToID: triggerEnd.id,
 		})
 		triggeredBy = &trigger.Ref
+		ends = append(ends, namedEnd{storedEnd: triggerEnd, address: trigger.Ref})
 	}
 	nodes := []reasoningNode{lens}
 	for _, text := range input.Findings {
@@ -388,7 +407,8 @@ func (s *server) invokeLens(w http.ResponseWriter, r *http.Request) {
 		reasoningCaller: caller, issue: key, at: at, nodes: nodes,
 	})
 	if err != nil {
-		s.writeHandlerError(w, err)
+		refusal, _ := refusalNamed(err, ends...)
+		s.writeHandlerError(w, refusal)
 		return
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -527,9 +547,9 @@ type riskWritten struct {
 // route reads one (pointerEnd). The store holds a risk to a lens of kind pre-mortem: a risk under
 // any other lens, or under a node that is no lens, is its 400 INVALID_POINTER, which says a risk
 // belongs under a pre-mortem, and a prevented_by to a block that is no check is the same, as is
-// one to a check of another project, naming the check. A lens the caller may not see under the
-// issue, and a check the caller may not see wherever it stands, are 404 NOT_FOUND. Each stores
-// nothing.
+// one to a check of another project or of a retired document, naming the check. A lens the caller
+// may not see under the issue, and a check the caller may not see wherever it stands, are 404
+// NOT_FOUND. Each stores nothing.
 func (s *server) writeRisk(w http.ResponseWriter, r *http.Request) {
 	var input riskInput
 	if err := decodeJSON(r, &input); err != nil {
@@ -599,7 +619,7 @@ func (s *server) writeRisk(w http.ResponseWriter, r *http.Request) {
 		reasoningCaller: caller, issue: key, at: at, nodes: []reasoningNode{risk},
 	})
 	if err != nil {
-		refusal, _ := farEndNamed(err, checkEnd, check)
+		refusal, _ := refusalNamed(err, namedEnd{storedEnd: checkEnd, address: check.Ref})
 		s.writeHandlerError(w, refusal)
 		return
 	}
@@ -950,11 +970,12 @@ func pointerEnd(ctx context.Context, q refs.Queryer, who model.Actor, key, kind,
 // retracted or retargeted by the store's rules (writeReasoningPointer). {id} is the node's store
 // address. A prevented_by's far ends, to and a retarget's from, are checks of any issue of the
 // project (pointerEnd). A node or a far end the caller may not see is 404 NOT_FOUND; a far end of
-// a type the tuple's rule does not allow, a check of another project than the risk's, a lens
-// triggered by itself and a lens left with no kind are the store's 400 INVALID_POINTER, the check
-// named by its address; a second has_kind, and a retarget of a pre-mortem's away from pre-mortem,
-// are its 409 POINTER_ALREADY_ASSERTED, one body whatever hangs under the lens. A retarget touches
-// no part_of tuple, and this route writes none: a node moves to another parent through its parent
+// a type the tuple's rule does not allow, a check of another project than the risk's or of a
+// retired document, a lens triggered by itself or by a lens not invoked before it, and a lens left
+// with no kind are the store's 400 INVALID_POINTER, the check, and both lenses, named by address
+// (refusalNamed); a second has_kind, and a retarget of a pre-mortem's away from pre-mortem, are its
+// 409 POINTER_ALREADY_ASSERTED, one body whatever hangs under the lens. A retarget touches no
+// part_of tuple, and this route writes none: a node moves to another parent through its parent
 // route.
 func (s *server) writePointer(w http.ResponseWriter, r *http.Request) {
 	var input pointerInput
@@ -1028,7 +1049,8 @@ func (s *server) writePointer(w http.ResponseWriter, r *http.Request) {
 		answer.From = &answered
 	}
 	if err := writeReasoningPointer(ctx, tx, write); err != nil {
-		refusal, _ := farEndNamed(err, toEnd, to)
+		refusal, _ := refusalNamed(err, namedEnd{storedEnd: nodeEnd.stored(), address: node.Ref},
+			namedEnd{storedEnd: toEnd, address: to.Ref})
 		s.writeHandlerError(w, refusal)
 		return
 	}
