@@ -408,13 +408,12 @@ const streamFullPrefix = "envoy: the message bus refused the message because its
 
 // storedCopyUnreadablePrefix opens the body of the 503 a send, a topic publish or a role send is
 // answered when the stream already knows the message's id and the listener read no stored copy to
-// answer (errStoredCopyUnread): the copy a duplicate verdict named could not be read back, or a
-// send or a topic publish was refused while an earlier publish under the same id was still in
-// process. One string, so it matches in a test and in a deployed log filter. It says only what was
-// seen: the copy may be stored yet, or gone, deleted or aged out while the stream still remembers
-// its id. It is deliberately not busUnansweredPrefix: the bus answered the publish, and the read
-// may have been answered too, with a denial or a message that is not the copy. The route answers
-// no envelope and asks for the same request again, which gets the copy once it can be read.
+// answer (errStoredCopyUnread names the cases). One string, so it matches in a test and in a
+// deployed log filter. It says only what was seen: the copy may be stored yet, or gone, deleted or
+// aged out while the stream still remembers its id. It is deliberately not busUnansweredPrefix:
+// the bus answered the publish, and the read may have been answered too, with a denial or a
+// message that is not the copy. The route answers no envelope and asks for the same request
+// again, which gets the copy once it can be read.
 const storedCopyUnreadablePrefix = "envoy: the stream already knows this message's id, and no stored copy of it was read"
 
 // grantGuardPrefix opens the error of the answer POST /v1/roles/set gives a soft claim the grant
@@ -636,15 +635,15 @@ func (body messageBody) message(expectsReply contracts.ExpectsReply) contracts.M
 // leniency itself, on the same count ParseExpectsReply's comment names: once no deployment pins
 // a plugin build old enough to write "none".
 func expectsReplyAnswer(requested json.RawMessage, answered contracts.ExpectsReply) json.RawMessage {
+	if answered == contracts.ExpectsReplyUnset {
+		return nil
+	}
 	if spoken, err := contracts.ParseExpectsReply(requested); err == nil && spoken == answered {
-		if spoken == contracts.ExpectsReplyUnset {
-			return nil
-		}
 		return requested
 	}
 	written, err := json.Marshal(answered)
 	if err != nil {
-		// The unset value, which is never written, and a value no decoded envelope carries.
+		// A value no decoded envelope carries.
 		return nil
 	}
 	return written
@@ -989,8 +988,7 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			record.refuse(w, http.StatusConflict, outcomeSessionStopped, "the session is stopped")
 			return
 		}
-		// After a duplicate verdict item is the copy the stream holds, which this route answers
-		// and its record line names; a copy that cannot be read is the 503 that asks again.
+		// item is the copy the stream holds after a duplicate verdict (publishHeld).
 		duplicate, err := publishHeld(ctx, d.client, d.client.PublishAckWithin, charge, &item)
 		if err != nil {
 			record.refuseBusUnavailable(w, err)
@@ -1389,8 +1387,7 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		ctx, cancel := context.WithDeadline(r.Context(), arrived.Add(sendRequestBudget))
 		defer cancel()
 		item.Sender = senderStamp(ctx, d.registry, d.sessions, item.SourceSession)
-		// After a duplicate verdict item is the copy the stream holds, which this route answers
-		// and its record line names; a copy that cannot be read is the 503 that asks again.
+		// item is the copy the stream holds after a duplicate verdict (publishHeld).
 		duplicate, err := publishHeld(ctx, d.client, d.client.PublishAckWithin, charge, &item)
 		if err != nil {
 			record.refuseBusUnavailable(w, err)

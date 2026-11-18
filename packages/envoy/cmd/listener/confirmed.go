@@ -221,21 +221,19 @@ func (s *roleSend) delivered(outcome sendOutcome) {
 	s.settle(outcome)
 }
 
-// deliveredHeld answers a forward the stream already held on subject, the holder's agent subject,
-// as delivered does: 200 with the forward the stream holds at seq, read back (storedCopy) with the
+// deliveredHeld answers a forward the stream already held on the holder's agent subject, as
+// delivered does: 200 with the forward the stream holds at seq, read back (storedCopy) with the
 // forward mark taken off its dedupe key, so the answer, the request's record line and the delivery
-// line name the copy the holder reads and not the envelope this send built. forwarded is the
-// forward as this send publishes it. duplicate is whether the copy is another request's, which is
-// when its event_id is not this send's: a forward this very send made on an earlier attempt, whose
-// acknowledgement was lost, carries this send's own. A copy that cannot be read, a sequence of 0
-// among them, is the 503 refuseBusUnavailable writes for it (errStoredCopyUnread), and marks the
-// charge with nothing more than the forward already did.
-func (s *roleSend) deliveredHeld(ctx context.Context, subject string, forwarded contracts.Envelope, seq uint64, outcome sendOutcome) {
-	held, err := storedCopy(ctx, s.d.client, subject, forwarded, seq)
+// line name the copy the holder reads and not the envelope this send built. duplicate is whether
+// the copy is another request's, which is when its event_id is not this send's: a forward this
+// very send made on an earlier attempt, whose acknowledgement was lost, carries this send's own. A
+// copy that cannot be read, a sequence of 0 among them, is answered as a refused forward is
+// (refused): the 503 refuseBusUnavailable writes for errStoredCopyUnread, marking the charge with
+// nothing more than the forward already did.
+func (s *roleSend) deliveredHeld(ctx context.Context, seq uint64, outcome sendOutcome) {
+	held, err := storedCopy(ctx, s.d.client, contracts.LegacyAgentSubject(s.holder), s.forwarded(), seq)
 	if err != nil {
-		s.record.holder = s.holder
-		s.record.refuseBusUnavailable(s.w, err)
-		s.settle(sendFailed)
+		s.refused(err)
 		return
 	}
 	held.DedupeKey = strings.TrimPrefix(held.DedupeKey, roleForwardDedupePrefix)
@@ -347,9 +345,10 @@ func (s *roleSend) unresolved(err error) {
 }
 
 // refused answers a forward NATS refuses however often it is sent, or one the listener's grant
-// denies (forwardRefused), as requestRecord.refuseBusUnavailable maps it. The refused forward
-// stored nothing, so it marks nothing: an earlier forward of the same send that may have stored
-// the message has marked the charge already (sendToRole).
+// denies (forwardRefused), as requestRecord.refuseBusUnavailable maps it, and a stored copy that
+// could not be read back (deliveredHeld) the same way. The refused forward stored nothing, so it
+// marks nothing: an earlier forward of the same send that may have stored the message has marked
+// the charge already (sendToRole).
 func (s *roleSend) refused(err error) {
 	s.record.holder = s.holder
 	s.record.refuseBusUnavailable(s.w, err)
@@ -408,7 +407,7 @@ func (s *roleSend) settledBeforeForward(ctx context.Context, entry session.Sessi
 		if !recorded {
 			return false
 		}
-		s.deliveredHeld(ctx, contracts.LegacyAgentSubject(s.holder), s.forwarded(), seq, sendDedupe)
+		s.deliveredHeld(ctx, seq, sendDedupe)
 	default:
 		s.record.holder = s.holder
 		s.record.refuseWith(s.w, http.StatusForbidden, outcomeCapabilityRefused, capabilityRefusal{
@@ -511,7 +510,7 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, record *requestRecor
 				d.confirm(item.DedupeKey, send.holder, ack.Sequence)
 				send.record.charge.stored()
 				if ack.Duplicate {
-					send.deliveredHeld(ctx, subject, forwarded, ack.Sequence, sendDelivered)
+					send.deliveredHeld(ctx, ack.Sequence, sendDelivered)
 					return
 				}
 				send.delivered(sendDelivered)
@@ -522,7 +521,7 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, record *requestRecor
 				// and no later reply comes: the 503 that asks again, at once, costing what a
 				// forward that may have been stored costs.
 				send.record.charge.stored()
-				send.deliveredHeld(ctx, subject, forwarded, 0, sendDelivered)
+				send.deliveredHeld(ctx, 0, sendDelivered)
 				return
 			}
 			if forwardRefused(err) {

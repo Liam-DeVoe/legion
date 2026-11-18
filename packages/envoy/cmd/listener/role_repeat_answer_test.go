@@ -6,10 +6,8 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
-	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -43,16 +41,6 @@ func TestARolePublishRepeatedUnderOneIdempotencyKeyAnswersTheStoredCopy(t *testi
 	rig := newSenderLimitRig(t)
 	rig.limit(600, 20)
 
-	// stored is the forward the holder's agent subject holds, as the route answers it.
-	stored := func(t *testing.T, holder string) contracts.Envelope {
-		t.Helper()
-		forward := heldCopy(t, rig.harness.client, contracts.LegacyAgentSubject(holder))
-		if !strings.HasPrefix(forward.DedupeKey, roleForwardDedupePrefix) {
-			t.Fatalf("the forward stored for %s has dedupe key %q, want it under %s", holder, forward.DedupeKey, roleForwardDedupePrefix)
-		}
-		forward.DedupeKey = strings.TrimPrefix(forward.DedupeKey, roleForwardDedupePrefix)
-		return forward
-	}
 	forwards := rig.interceptForwards(func(_ int, forward func() (func() (bus.StoredAck, error), error)) (func() (bus.StoredAck, error), error) {
 		return forward()
 	})
@@ -72,7 +60,7 @@ func TestARolePublishRepeatedUnderOneIdempotencyKeyAnswersTheStoredCopy(t *testi
 			sender := "ses_role_repeat_sender_" + id.New()
 			claimRoleFor(t, rig.deps.registry, rig.deps.sessions, holder, role, nil)
 			first := held(t, rig.publishFrom(t, sender, contracts.RoleTopicPrefix+role, map[string]any{"idempotency_key": row.key}))
-			first.requireHeld(t, "the first role publish", stored(t, holder), false)
+			first.requireHeld(t, "the first role publish", heldForward(t, rig.harness.client, holder), false)
 			first.requireNamed(t, "the first role publish", sender)
 			if row.forward {
 				rig.deps.confirmed.Clear(publishDedupePrefix+row.key, holder)
@@ -80,7 +68,7 @@ func TestARolePublishRepeatedUnderOneIdempotencyKeyAnswersTheStoredCopy(t *testi
 			before := *forwards
 			repeat := held(t, rig.publishFrom(t, sender, contracts.RoleTopicPrefix+role,
 				map[string]any{"idempotency_key": row.key, "message": "the repeat's own body"}))
-			repeat.requireHeld(t, "the repeated role publish", stored(t, holder), true)
+			repeat.requireHeld(t, "the repeated role publish", heldForward(t, rig.harness.client, holder), true)
 			if repeat.Holder != holder {
 				t.Fatalf("the repeated role publish named holder %q, want %s; body %s", repeat.Holder, holder, repeat.raw)
 			}
@@ -109,9 +97,7 @@ func TestARolePublishRepeatedUnderOneIdempotencyKeyAnswersTheStoredCopy(t *testi
 		if *made != 2 {
 			t.Fatalf("the send made %d forwards, want 2: the first stored with its acknowledgement lost, the second a duplicate of it", *made)
 		}
-		forward := heldCopy(t, own.harness.client, contracts.LegacyAgentSubject(holder))
-		forward.DedupeKey = strings.TrimPrefix(forward.DedupeKey, roleForwardDedupePrefix)
-		answer.requireHeld(t, "a role send whose own first forward stored the copy", forward, false)
+		answer.requireHeld(t, "a role send whose own first forward stored the copy", heldForward(t, own.harness.client, holder), false)
 	})
 
 	t.Run("case: a repeat asking for another reply answers the stored forward's expects_reply", func(t *testing.T) {
@@ -120,15 +106,6 @@ func TestARolePublishRepeatedUnderOneIdempotencyKeyAnswersTheStoredCopy(t *testi
 		sender := "ses_role_repeat_expects_sender_" + id.New()
 		claimRoleFor(t, rig.deps.registry, rig.deps.sessions, holder, role, nil)
 		key := uuid.NewString()
-		expectsReplyOf := func(t *testing.T, what string, answer limitedAnswer) string {
-			t.Helper()
-			answer.requireStatus(t, what, http.StatusOK)
-			var fields map[string]json.RawMessage
-			if err := json.Unmarshal([]byte(answer.raw), &fields); err != nil {
-				t.Fatalf("%s: decode %s: %v", what, answer.raw, err)
-			}
-			return string(fields["expects_reply"])
-		}
 		if got := expectsReplyOf(t, "the first role publish", rig.publishFrom(t, sender, contracts.RoleTopicPrefix+role, map[string]any{"idempotency_key": key, "expects_reply": "none"})); got != `"none"` {
 			t.Fatalf("the first role publish answered expects_reply %s, want the request's own \"none\"", got)
 		}
@@ -145,7 +122,7 @@ func TestARolePublishRepeatedUnderOneIdempotencyKeyAnswersTheStoredCopy(t *testi
 		claimRoleFor(t, rig.deps.registry, rig.deps.sessions, holder, role, nil)
 		key := uuid.NewString()
 		first := held(t, rig.publishFrom(t, sender, contracts.RoleTopicPrefix+role, map[string]any{"idempotency_key": key}))
-		first.requireHeld(t, "the first role publish", stored(t, holder), false)
+		first.requireHeld(t, "the first role publish", heldForward(t, rig.harness.client, holder), false)
 		rig.deps.confirmed.Clear(publishDedupePrefix+key, holder)
 		saved := rig.deps.delivery
 		t.Cleanup(func() { rig.deps.delivery = saved })
@@ -159,7 +136,7 @@ func TestARolePublishRepeatedUnderOneIdempotencyKeyAnswersTheStoredCopy(t *testi
 		})
 		repeat := held(t, rig.publishFrom(t, sender, contracts.RoleTopicPrefix+role,
 			map[string]any{"idempotency_key": key, "message": "the repeat's own body"}))
-		repeat.requireHeld(t, "the repeat whose first forward was refused in process", stored(t, holder), true)
+		repeat.requireHeld(t, "the repeat whose first forward was refused in process", heldForward(t, rig.harness.client, holder), true)
 		if *made != 2 {
 			t.Fatalf("the repeat made %d forwards, want 2: the one refused in process and the one the stream answered a duplicate", *made)
 		}

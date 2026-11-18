@@ -324,15 +324,6 @@ func TestARepeatAnswersTheStoredCopysExpectsReply(t *testing.T) {
 	const sender = "ses_repeat_expects_reply"
 	topic := "notifications.team.repeat-expects-reply-" + id.New()
 	key := uuid.NewString()
-	expectsReplyOf := func(t *testing.T, what string, answer limitedAnswer) string {
-		t.Helper()
-		answer.requireStatus(t, what, http.StatusOK)
-		var fields map[string]json.RawMessage
-		if err := json.Unmarshal([]byte(answer.raw), &fields); err != nil {
-			t.Fatalf("%s: decode %s: %v", what, answer.raw, err)
-		}
-		return string(fields["expects_reply"])
-	}
 	if got := expectsReplyOf(t, "the first publish", rig.publishFrom(t, sender, topic, map[string]any{"idempotency_key": key, "expects_reply": "none"})); got != `"none"` {
 		t.Fatalf("the first publish answered expects_reply %s, want the request's own \"none\"", got)
 	}

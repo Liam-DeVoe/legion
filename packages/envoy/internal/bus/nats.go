@@ -2307,8 +2307,9 @@ func (f *PendingForward) Wait() (StoredAck, error) {
 			// A stream's duplicate with sequence 0 names no copy (nats-server v2.10.29 sent one for
 			// an id it had staged at 0; the 2.11 line answers that with the in-process error, and
 			// later lines stage nothing): nothing says the forward is stored, and no later reply
-			// comes.
-			if ack.Stream != "" && ack.Seq == 0 && ack.Duplicate && ack.Error == nil {
+			// comes. Any other reply that is no acknowledgement (readPublishAcknowledgement) is
+			// passed over.
+			if ack.Stream != "" && ack.Duplicate {
 				return StoredAck{}, fmt.Errorf("%w: %w", ErrForwardNotStored, ErrDuplicateWithoutSequence)
 			}
 			continue

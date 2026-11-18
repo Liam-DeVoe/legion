@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -68,4 +69,29 @@ func (a heldAnswer) requireHeld(t *testing.T, what string, kept contracts.Envelo
 	if got := a.line["event_id"]; got != kept.EventID {
 		t.Fatalf("%s: the request's line names event_id %v, want the stored copy's %s; line %v", what, got, kept.EventID, a.line)
 	}
+}
+
+// heldForward is the one forward the stream holds on holder's agent subject, as the role route
+// answers it: with the forward mark, which it must carry, taken off its dedupe key
+// (roleForwardDedupePrefix).
+func heldForward(t *testing.T, client *bus.Client, holder string) contracts.Envelope {
+	t.Helper()
+	forward := heldCopy(t, client, contracts.LegacyAgentSubject(holder))
+	if !strings.HasPrefix(forward.DedupeKey, roleForwardDedupePrefix) {
+		t.Fatalf("the forward stored for %s has dedupe key %q, want it under %s", holder, forward.DedupeKey, roleForwardDedupePrefix)
+	}
+	forward.DedupeKey = strings.TrimPrefix(forward.DedupeKey, roleForwardDedupePrefix)
+	return forward
+}
+
+// expectsReplyOf is the expects_reply of answer's body, which must be a 200, as the body wrote
+// it: "" where the answer omits the field.
+func expectsReplyOf(t *testing.T, what string, answer limitedAnswer) string {
+	t.Helper()
+	answer.requireStatus(t, what, http.StatusOK)
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(answer.raw), &fields); err != nil {
+		t.Fatalf("%s: decode %s: %v", what, answer.raw, err)
+	}
+	return string(fields["expects_reply"])
 }
