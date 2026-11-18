@@ -1664,14 +1664,29 @@ const NOT_STORED_TEXTS: readonly { file: string; written: string; holds: string 
     written: "live.text",
   },
   {
+    file: `${FEATURES}/inbox/AskCard.tsx`,
+    holds: "the waiting-on badge's text colour, a class of the theme's badge tone",
+    written: "tone.text",
+  },
+  {
     file: `${FEATURES}/inbox/useInboxSelection.ts`,
     holds: "the server's own words for why it refused a snooze",
     written: "first.reason",
   },
   {
+    file: `${FEATURES}/issue/AssigneeControl.tsx`,
+    holds: "the assignee badge's text colour, a class of the theme's badge tone",
+    written: "tone.text",
+  },
+  {
     file: `${FEATURES}/issue/DecisionsPanel.tsx`,
     holds: "a tree's words joined to match an anchor quote against, drawn nowhere",
     written: "current.text",
+  },
+  {
+    file: `${FEATURES}/issue/PriorityControl.tsx`,
+    holds: "the priority badge's text colour, a class of the theme's badge tone",
+    written: "tone.text",
   },
   {
     file: `${FEATURES}/issue/RelatedItems.tsx`,

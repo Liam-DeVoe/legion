@@ -71,6 +71,7 @@ export function MentionField({
   className,
   describedBy,
   disabled = false,
+  fieldClassName,
   fieldRef,
   hintClassName,
   inline = false,
@@ -88,6 +89,7 @@ export function MentionField({
   onPickerOpenChange,
   placeholder,
   project,
+  readOnly = false,
   rows = 1,
   writing,
 }: {
@@ -106,6 +108,9 @@ export function MentionField({
   /** Takes no typing: a draft whose own send is out, which the host shows the reader rather than
    *  letting them write over what is already on the wire. The picker is shut with it. */
   readonly disabled?: boolean;
+  /** What this host's look asks of the box's colours, in place of the field's own: the new
+   *  issue page draws its boxes in its own colours inside `NoTooltips`. */
+  readonly fieldClassName?: string;
   /** How the host reaches this field (`MentionFieldHandle`): a ref it holds, or, for a host
    *  with a field per row, a callback that files the handle under its row. */
   readonly fieldRef?: Ref<MentionFieldHandle | null>;
@@ -152,6 +157,10 @@ export function MentionField({
   /** The project whose components the picker offers, where the box names one of its own; a box
    *  on an issue needs none, the issue's key holding it. */
   readonly project?: string;
+  /** Keeps its focus and its text but takes no typing: inside `NoTooltips`, a box whose write is
+   *  out, which `disabled` would drop the focus from in a browser. The picker is shut with it,
+   *  so a pick writes nothing into the box either. */
+  readonly readOnly?: boolean;
   /** How tall the box starts, in lines. */
   readonly rows?: number;
   /** This box's row of the writing list, for the write it is making now: the line under the box
@@ -177,7 +186,7 @@ export function MentionField({
   const hintId = useId();
   const picker = useRefPicker({
     caret,
-    enabled: !disabled && focused,
+    enabled: !disabled && !readOnly && focused,
     issueKey,
     project,
     text: body,
@@ -275,7 +284,7 @@ export function MentionField({
           aria-controls={open ? listboxId : undefined}
           aria-describedby={[hintId, ...(describedBy ?? [])].join(" ")}
           aria-label={label}
-          className={`mt-1 block w-full rounded-lg border px-3 py-2 font-normal outline-none ${inline ? "min-h-11 resize-none" : "min-h-24"} ${inputClasses(true)} ${textPrimaryOnSurface} ${className ?? ""}`}
+          className={`mt-1 block w-full rounded-lg border px-3 py-2 font-normal outline-none ${inline ? "min-h-11 resize-none" : "min-h-24"} ${fieldClassName ?? `${inputClasses(true)} ${textPrimaryOnSurface}`} ${className ?? ""}`}
           disabled={disabled}
           maxLength={maxLength}
           onChange={(event) => changed(event.target.value, event.target.selectionStart)}
@@ -308,6 +317,7 @@ export function MentionField({
             setCaret(event.currentTarget.selectionStart)
           }
           placeholder={placeholder}
+          readOnly={readOnly}
           ref={bodyFieldRef}
           rows={rows}
           value={body}

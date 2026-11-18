@@ -6,7 +6,8 @@ import type {
 } from "@legion/proof-editor";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 
-import { textMutedOnCanvas } from "../../theme/classes";
+import { useTooltips } from "../../components/tooltips";
+import { pageQuietText, textMutedOnCanvas } from "../../theme/classes";
 import { RefPickerList } from "../refs/RefPickerList";
 import type { RefPickerInsertion } from "../refs/ref-picker";
 import { useRefPicker } from "../refs/useRefPicker";
@@ -58,6 +59,7 @@ export function DocumentRefPicker({
   project?: string;
 }): ReactNode {
   const writing = dispatchWritingBox("document-body", "document-text");
+  const tooltips = useTooltips();
   const [caret, setCaret] = useState<ReferencePickerCaret | undefined>(undefined);
   const picker = useRefPicker({
     caret: caret?.text.length ?? 0,
@@ -115,8 +117,13 @@ export function DocumentRefPicker({
           />
         </div>
       )}
-      {/* What a pick does here, in the writing list's own words, as every other box says it. */}
-      <p className={`mt-2 text-xs ${textMutedOnCanvas}`} data-testid="document-body-hint">
+      {/* What a pick does here, in the writing list's own words, as every other box says it.
+          Inside `NoTooltips` it is the new issue page's quiet words, as the document's other
+          lines there are the page's. */}
+      <p
+        className={`mt-2 text-xs ${tooltips ? textMutedOnCanvas : pageQuietText}`}
+        data-testid="document-body-hint"
+      >
         {writing.hint}
       </p>
     </>
