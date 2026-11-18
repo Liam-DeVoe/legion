@@ -2335,7 +2335,9 @@ var ErrForwardNotStored = errors.New("bus: the stream did not acknowledge storin
 // recipient, however many attempts it makes, and the stream acknowledges each repeat as a
 // duplicate, which counts as stored. An error here is the publish's own, before any reply could
 // arrive (a refused, denied or invalid forward, a connection that never came back within
-// timeout); every returned forward must be waited for, which releases its reply subscription.
+// timeout); every returned forward must be waited for, which releases its reply subscription. An
+// error from before the publish was made - the connection not back, the reply inbox not
+// subscribed, the window spent, nats.go's refusal to write it - is marked ErrNotSent.
 func (c *Client) StartRequestStoredTo(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (*PendingForward, error) {
 	if msgID == "" {
 		return nil, fmt.Errorf("%w: to %q", ErrNoForwardMsgID, subject)
@@ -2350,14 +2352,14 @@ func (c *Client) StartRequestStoredTo(subject string, item contracts.Envelope, m
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	if err := c.ensureConnWithContext(ctx); err != nil {
-		return nil, err
+		return nil, notSent(err)
 	}
 	deadline, _ := ctx.Deadline()
 	conn := c.Conn
 	inbox := nats.NewInbox()
 	replies, err := conn.SubscribeSync(inbox)
 	if err != nil {
-		return nil, err
+		return nil, notSent(err)
 	}
 	forward := &nats.Msg{
 		Subject: subject,

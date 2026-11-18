@@ -521,9 +521,12 @@ flush failed, or whose acknowledgement did not come for a subject the stream cap
 responders answer, or a stream answer that can change with the stream's state, such as a full
 stream - ends nothing: the lane holds the message, counted in `envoy_role_forwards_outstanding`,
 and runs its delivery again, under the same `Nats-Msg-Id`, for 71 hours at most, after which it
-keeps it on the kept lane. Once a forward of a message has been made, every later attempt is that
-forward again, to the same holder, so the stream stores the message once even when the role moves
-meanwhile. At shutdown the lane stops its forwarder, drains its connection, and only then keeps
+keeps it on the kept lane. Once a forward of a message may have been stored - it left the
+process, and no answer said the stream did not store it - every later attempt is that forward
+again, to the same holder, so the stream stores the message once even when the role moves
+meanwhile, for as long as that holder's session still has a record; a holder whose record is gone
+has no consumer to read the copy, so the message is resolved to the role's holder again. At
+shutdown the lane stops its forwarder, drains its connection, and only then keeps
 every message it holds, those still queued behind a holder's worker among them, so the handler's
 keeps of the messages its subscription still holds go over the main connection first. The lane's
 outcome is one

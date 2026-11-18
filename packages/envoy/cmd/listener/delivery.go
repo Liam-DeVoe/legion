@@ -653,9 +653,14 @@ func roleTopicDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessag
 // when it ends (roleForwarder.finish), so the role lane's handler returns without waiting for the
 // stream. A resolution that failed on NATS holds the message instead (roleForwarder.hold).
 //
-// A held message a forward of which has been made (roleHeld.pinned) resolves nothing and passes no
-// guard again: it is that forward once more, to the same holder under the same Nats-Msg-Id, so
-// the stream drops it when the first was stored, whoever holds the role now.
+// A held message a forward of which may have been stored (roleHeld.pinned) is that forward once
+// more, to the same holder under the same Nats-Msg-Id, so the stream drops it when the first was
+// stored, whoever holds the role now - while the pinned holder's session still has a record
+// (pinnedHolderStands), whose consumer delivers a copy stored on its subject. A pinned holder whose
+// session has no record has no consumer, so a copy on its subject reaches nobody: the pin is
+// dropped, with an INFO line, and the holder is resolved again, which reaches the role's live
+// holder or keeps the message for the next. A read of that record that did not answer holds the
+// message again, pin and all.
 //
 // Once the listener is stopping (roleForwarder.stopHolding), a message the lane just took is kept
 // on its role's kept lane at once, with no resolution and no slot to wait for
@@ -672,9 +677,19 @@ func deliverRoleMessage(cfg listenerDeliveryHandlerConfig, item contracts.Envelo
 		return
 	}
 	if held.pinned != "" {
-		cfg.attemptCache.Record(item.DedupeKey, held.pinned)
-		cfg.roleForwards.enqueue(roleForward{item: item, sessionID: held.pinned, held: held})
-		return
+		stands, err := pinnedHolderStands(cfg, held.pinned)
+		if err != nil {
+			cfg.roleForwards.hold(item, held.pinned, held, err)
+			return
+		}
+		if stands {
+			cfg.attemptCache.Record(item.DedupeKey, held.pinned)
+			cfg.roleForwards.enqueue(roleForward{item: item, sessionID: held.pinned, held: held})
+			return
+		}
+		cfg.logger.DeliveryLog(slog.LevelInfo, rolePinDroppedLine, held.pinned, item.Topic, item.EventID, roleHeldDeliveryStatus,
+			slog.Int("attempts", held.attempts))
+		held.pinned = ""
 	}
 	// The lane names its role in either form (contracts.CanonicalRole); the claim it resolves is
 	// keyed by the bare role name either way (store.Registry.ClaimedRole).

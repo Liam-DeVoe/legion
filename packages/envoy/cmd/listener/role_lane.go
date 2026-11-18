@@ -58,6 +58,11 @@ const (
 // attempt, and is kept once the lane's own client has drained (roleForwarder.keepWhenTheLaneHasDrained).
 const roleParkedLine = "listener role message parked until the role lane drains"
 
+// rolePinDroppedLine is the INFO line of a held message whose pinned holder's session has no record
+// any more (pinnedHolderStands): a copy an earlier forward stored on its subject reaches nobody, so
+// the message's holder is resolved again (deliverRoleMessage).
+const rolePinDroppedLine = "listener role message's pinned holder has no session record; its holder is resolved again"
+
 // roleKeptAfterUnknownForwardLine is the WARN line of a message the lane keeps on its role's kept
 // lane after a forward of it to its holder had an outcome the listener never learned
 // (roleForwarder.keepHeld): if that forward was stored and the role then moves, the kept copy's
@@ -340,18 +345,64 @@ func (f *roleForwarder) publish(sessionID string) {
 // finish ends forward with its outcome: a forward the stream acknowledged, or one an error ends
 // for good (roleForwardEnded), is reported and frees its slot (finishRoleForward). Any other error
 // leaves the listener not knowing whether the stream holds a copy, so the message is held for
-// another delivery attempt with its slot, pinned to this holder (roleHeld.pinned), and its attempt
-// record is cleared so that attempt is not taken for a repeat of it.
+// another delivery attempt with its slot, and its attempt record is cleared so that attempt is not
+// taken for a repeat of it. The message is pinned to this holder (roleHeld.pinned) only when this
+// forward may have been stored (forwardMayBeStored): a forward that left nothing on the wire, or
+// that the stream answered it did not store, leaves the holder to be resolved again.
 func (f *roleForwarder) finish(forward roleForward, err error) {
 	if err != nil && !roleForwardEnded(f.cfg.client, contracts.LegacyAgentSubject(forward.sessionID), err) {
 		f.cfg.attemptCache.Clear(forward.item.DedupeKey, forward.sessionID)
 		held := forward.held
-		held.pinned = forward.sessionID
+		if forwardMayBeStored(err) {
+			held.pinned = forward.sessionID
+		}
 		f.hold(forward.item, forward.sessionID, held, err)
 		return
 	}
 	finishRoleForward(f.cfg, forward, err)
 	f.release()
+}
+
+// forwardMayBeStored reports whether a forward that ended on err, which no rule ends
+// (roleForwardEnded), may have been stored by the stream: whether a later attempt to another
+// holder could leave a second copy of the message. A forward that left nothing on the wire
+// (bus.ErrNotSent: the window spent before the publish, the connection not back, the reply inbox
+// not subscribed, nats.go's refusal to write it) was not stored. Nor was one the stream answered
+// with its error, or one the server answered no responders: nothing took it. The stream's answer
+// that an earlier publish of the same Nats-Msg-Id is still in process (bus.ErrDuplicateInProcess)
+// says that publish may be stored. Every other error - a flush that failed or ran out after the
+// publish, a publish not known to have been accepted, an acknowledgement that did not come, a
+// reply read that failed - leaves it unknown, so the forward may have been stored.
+func forwardMayBeStored(err error) bool {
+	if errors.Is(err, bus.ErrNotSent) {
+		return false
+	}
+	if errors.Is(err, bus.ErrDuplicateInProcess) {
+		return true
+	}
+	var answered *nats.APIError
+	return !errors.As(err, &answered) && !errors.Is(err, nats.ErrNoResponders)
+}
+
+// pinnedHolderStands reports whether the session a held message is pinned to still has a session
+// record, read from the session bucket itself (session.SessionRegistry.Refresh) within
+// roleHolderReadTimeout, never from this listener's cache of it, which trails a deletion. A
+// session with a record has its own consumer, which delivers a copy the stream stored on its agent
+// subject; a session without one has none, so a copy stored there reaches nobody, and the message
+// must be resolved to the role's holder again. nats.ErrKeyNotFound is the registry's word that no
+// record stands; any other error is a read that did not answer.
+func pinnedHolderStands(cfg listenerDeliveryHandlerConfig, sessionID string) (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), roleHolderReadTimeout)
+	defer cancel()
+	_, err := cfg.sessions.Refresh(ctx, sessionID)
+	switch {
+	case err == nil:
+		return true, nil
+	case errors.Is(err, nats.ErrKeyNotFound):
+		return false, nil
+	default:
+		return false, err
+	}
 }
 
 // roleForwardEnded reports whether err ends a role forward to subject for good, under a rule no
@@ -494,12 +545,15 @@ const roleKeepRefusedLine = "listener role message refused by its keep"
 // with cause, the failure that would have held it once more) - and the end of a message the lane
 // takes once the listener stopped. Its slot is freed when it holds one.
 //
-// A message a forward of which may already be stored (roleHeld.pinned) makes that forward once
-// more first, to the same holder under the same Nats-Msg-Id: an acknowledgement, a duplicate's
-// included, ends it forwarded, and a refusal under a rule ends it as a forward's refusal does. Only
-// a forward whose outcome is again unknown leaves it to the keep, with roleKeptAfterUnknownForwardLine
-// at WARN: the kept copy's handover reaches whoever holds the role then, and a holder other than
-// the pinned one gets a second copy if the first forward was stored.
+// A message a forward of which may already be stored (roleHeld.pinned), to a holder whose session
+// still has a record (pinnedHolderStands), makes that forward once more first, to the same holder
+// under the same Nats-Msg-Id: an acknowledgement, a duplicate's included, ends it forwarded, and a
+// refusal under a rule ends it as a forward's refusal does. Only a forward whose outcome is again
+// unknown leaves it to the keep, with roleKeptAfterUnknownForwardLine at WARN: the kept copy's
+// handover reaches whoever holds the role then, and a holder other than the pinned one gets a
+// second copy if the first forward was stored. A pinned holder whose session has no record, or
+// whose record could not be read, gets no forward: a copy stored on its subject reaches nobody, so
+// the message goes to the keep, whose handover reaches the role's live holder.
 //
 // Every other message is kept once on its role's kept lane (keepRoleLaneMessage), which the role's
 // next live holder is handed by a handover of any listener. A keep a rule refuses
@@ -511,17 +565,22 @@ const roleKeepRefusedLine = "listener role message refused by its keep"
 func (f *roleForwarder) keepHeld(item contracts.Envelope, held roleHeld, reason roleKeepReason, cause error) {
 	defer f.releaseHeld(held)
 	if held.pinned != "" {
-		forward := roleForward{item: item, sessionID: held.pinned, held: held}
-		subject := contracts.LegacyAgentSubject(held.pinned)
-		err := f.cfg.forwardAndWait(subject, forward.forwarded(), forward.msgID(subject), roleForwardTimeout)
-		if err == nil || roleForwardEnded(f.cfg.client, subject, err) {
-			finishRoleForward(f.cfg, forward, err)
-			return
+		stands, readErr := pinnedHolderStands(f.cfg, held.pinned)
+		if stands {
+			forward := roleForward{item: item, sessionID: held.pinned, held: held}
+			subject := contracts.LegacyAgentSubject(held.pinned)
+			err := f.cfg.forwardAndWait(subject, forward.forwarded(), forward.msgID(subject), roleForwardTimeout)
+			if err == nil || roleForwardEnded(f.cfg.client, subject, err) {
+				finishRoleForward(f.cfg, forward, err)
+				return
+			}
+			readErr = err
 		}
-		f.cfg.logger.DeliveryLog(slog.LevelWarn, roleKeptAfterUnknownForwardLine, held.pinned, item.Topic, item.EventID, roleHeldDeliveryStatus,
-			slog.String("reason", string(reason)),
-			slog.Int("attempts", held.attempts),
-			slog.String("error", err.Error()))
+		attrs := []slog.Attr{slog.String("reason", string(reason)), slog.Int("attempts", held.attempts), slog.Bool("pinned_holder_stands", stands)}
+		if readErr != nil {
+			attrs = append(attrs, slog.String("error", readErr.Error()))
+		}
+		f.cfg.logger.DeliveryLog(slog.LevelWarn, roleKeptAfterUnknownForwardLine, held.pinned, item.Topic, item.EventID, roleHeldDeliveryStatus, attrs...)
 	}
 	_, role, _ := contracts.CanonicalRole(strings.TrimPrefix(item.Topic, contracts.RoleTopicPrefix))
 	err := keepRoleLaneMessage(f.cfg, role, item, reason, "")
