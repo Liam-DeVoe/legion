@@ -565,7 +565,7 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 		// A check CI proves: a check carrying `ci_check` is proved by the CI run it names, so no
 		// role runs it or records its result, and its results come from CI: the one `dispatch
 		// results` derives from that run, and each one a run of its CI job records through the
-		// secrets broker (dispatch://INFRA-3204, R5 of its spec). Each part that orders a check
+		// secrets broker (R5 of the spec of that rule). Each part that orders a check
 		// run, recorded or judged, or lists a check's attributes, carries the exception. The
 		// tester's and the implementer's role parts point at the worker skill's page, which a core
 		// part may not name.
