@@ -2849,22 +2849,24 @@ func (r *outbox) designGateClosed(ctx context.Context, issue record.Issue) (bool
 // start that claim has: finished, it would leave the claim suspended, and every delivery for it
 // waiting (awaitsBootStart). The row starts it instead as the boot starts a role of an earlier
 // phase: resumed by rule, with no task, and naming no phase or entry, so neither fence holds it.
-// A row of another claim, of a claim this daemon does not supervise or of no start is finished.
 // record.Store.EnqueueStart, for a start of another role it takes out, and admission's
 // finishFencedStarts, for a start whose phase alone the issue has left, write this same start for
 // such a claim in place of the row they take out before a lane runs it.
 func (r *outbox) releaseStoppedStart(row record.OutboxRow, payload record.SuperviseRequest, serves string, fields ...any) (record.SuperviseRequest, bool) {
 	stopped := false
-	if token, err := claim.NewToken(r.project, row.Issue, payload.Role); err == nil && payload.Op == "start" {
-		machine, found := r.supervisor.Machine(token)
-		stopped = found && machine.Claim().ProjectReleased()
+	if payload.Op == "start" {
+		token, err := claim.NewToken(r.project, row.Issue, payload.Role)
+		if err == nil {
+			machine, found := r.supervisor.Machine(token)
+			stopped = found && machine.Claim().ProjectReleased()
+		}
 	}
 	if !stopped {
 		r.log.Info("outbox start "+serves+"; finished without acting", fields...)
 		return payload, false
 	}
 	r.log.Info("outbox start "+serves+"; it starts the claim the project release stopped with no task", fields...)
-	return record.SuperviseRequest{Op: payload.Op, Tree: payload.Tree, Role: payload.Role, Generation: payload.Generation, RuleResume: true}, true
+	return record.ReleaseStoppedStart(payload.Tree, payload.Role, payload.Generation), true
 }
 
 // mergerWaitsForTheDesignGate is the one role fence a start carries: the merger merges nothing

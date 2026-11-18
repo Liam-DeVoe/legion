@@ -3275,7 +3275,7 @@ func (a *Admission) finishFencedStarts(ctx context.Context, tx pgx.Tx, issues []
 	finished := false
 	// finishPast finishes owed, a row the fences end, as the outbox's fence would: where
 	// startsReleased says the row's role holds a claim the project release stopped that the
-	// phase fence would start, it writes that claim's start in the row's place first.
+	// phase fence would start, it then writes that claim's start in the row's place.
 	finishPast := func(owed record.OwedStart, startsReleased bool) error {
 		// No live lease holds the row (record.Store.OwedStarts), so the token it carries is
 		// either none at all or the one a dead lane left on it, and the delete names that token:
@@ -3292,8 +3292,7 @@ func (a *Admission) finishFencedStarts(ctx context.Context, tx pgx.Tx, issues []
 			})
 			return nil
 		}
-		if err := a.enqueue(ctx, tx, owed.Issue, record.SuperviseRequest{Op: "start", Tree: byKey[owed.Issue].Tree, Role: owed.Role,
-			Generation: owed.Generation, RuleResume: true}, a.now()); err != nil {
+		if err := a.enqueue(ctx, tx, owed.Issue, record.ReleaseStoppedStart(byKey[owed.Issue].Tree, owed.Role, owed.Generation), a.now()); err != nil {
 			return err
 		}
 		intake.OnCommit(ctx, func() {
@@ -3345,9 +3344,7 @@ func (a *Admission) finishFencedStarts(ctx context.Context, tx pgx.Tx, issues []
 		return finished, err
 	}
 	for _, movedRow := range moved {
-		stopped := held[movedRow.token]
-		released := stopped != nil && stopped.State == supervise.StateSuspended && stopped.SuspendedBy == supervise.SuspendedByProjectRelease
-		if err := finishPast(movedRow.owed, released); err != nil {
+		if err := finishPast(movedRow.owed, held[movedRow.token].ProjectReleased()); err != nil {
 			return finished, err
 		}
 	}

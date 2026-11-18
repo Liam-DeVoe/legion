@@ -237,7 +237,7 @@ func (e *Engine) startReleaseStopped(ctx context.Context, tx pgx.Tx, owners phas
 		run := runs[stopped.held.Token]
 		// The claim is read again with its run, and one no longer stopped by the release — a
 		// resume between the two reads — is no longer this step's.
-		if held := run.Claim; held == nil || held.State != supervise.StateSuspended || held.SuspendedBy != supervise.SuspendedByProjectRelease {
+		if !run.Claim.ProjectReleased() {
 			continue
 		}
 		if stopped.look != nil {
@@ -302,7 +302,7 @@ func (e *Engine) startStoppedClaim(ctx context.Context, tx pgx.Tx, stopped relea
 		}
 		owns = !finished
 	}
-	request := record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role, Generation: issue.Generation, RuleResume: true}
+	request := record.ReleaseStoppedStart(issue.Tree, role, issue.Generation)
 	if owns {
 		if !StartFor(run, root, issue.Generation, issue.Phase) {
 			return nil

@@ -2185,6 +2185,13 @@ type RoleClaim struct {
 	Pending   *supervise.Delivery
 }
 
+// ProjectReleased is whether the project release stopped the claim and the claim waits for the
+// daemon's next boot to start it: the same rule as supervise.Claim.ProjectReleased, for the
+// store's read of a role's claim. A nil claim, a role that holds none, is not one.
+func (c *RoleClaim) ProjectReleased() bool {
+	return c != nil && c.State == supervise.StateSuspended && c.SuspendedBy == supervise.SuspendedByProjectRelease
+}
+
 // TreeLingers says whether tree lingers after its close: its root is recorded with a linger
 // deadline, which re-admission clears. Linger holds every member where it stood, so nothing in such
 // a tree transitions, starts a worker, or records a completion.

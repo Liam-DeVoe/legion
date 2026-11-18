@@ -312,6 +312,23 @@ func releaseClaimLine(t *testing.T, release api.ProjectReleaseResponse, token cl
 	return api.ReleasedClaim{}
 }
 
+// assertLeftForOperator checks that the release left issue's pod for an operator: the pod's
+// Sandbox still stands, the claim of the issue's role is stored suspended by an operator, and the
+// release's line of that claim says it ended operator, which the next boot does not start.
+func (r *idleWakeRig) assertLeftForOperator(release api.ProjectReleaseResponse, issue idleRigIssue) {
+	r.t.Helper()
+	if r.kube.sandbox(issue.pod) == nil {
+		r.t.Errorf("the pod %s left for an operator was deleted", issue.pod)
+	}
+	token := r.token(issue)
+	if stored := r.api.claim(token); stored.State != string(supervise.StateSuspended) || stored.SuspendedBy != string(supervise.SuspendedByOperator) {
+		r.t.Errorf("the claim is stored %s by %q, want suspended by an operator", stored.State, stored.SuspendedBy)
+	}
+	if ended := releaseClaimLine(r.t, release, token); ended.Ended != api.ReleasedClaimEnd(supervise.SuspendedByOperator) || ended.BootStarts {
+		r.t.Errorf("the claim line is %+v, want it ended operator, which the next boot does not start", ended)
+	}
+}
+
 // dispatch://INFRA-3583 R6: the release deletes the controller's pod, cutting a turn at the bound
 // at the latest. The controller's stop is asked once every issue pod has ended, and a controller
 // in a turn then is stopped at the turn's end, which can come later than the stop timeout after
@@ -418,8 +435,7 @@ func TestProjectReleaseLeavesAPodWhoseStopTheStoreDidNotTake(t *testing.T) {
 	rig := newIdleWakeRig(t, "refused")
 	refused := rig.issue("refused")
 	rig.launchAll()
-	token := rig.token(refused)
-	rig.refuseReleaseStops(token)
+	rig.refuseReleaseStops(rig.token(refused))
 
 	rig.startRelease("10s")
 	release, _ := rig.awaitReleaseFinished()
@@ -427,15 +443,7 @@ func TestProjectReleaseLeavesAPodWhoseStopTheStoreDidNotTake(t *testing.T) {
 	if line.Outcome != api.ReleaseLeft || !strings.Contains(line.Reason, "the store holds it") {
 		t.Fatalf("the pod's line is %+v, want it left for its claim the store does not hold suspended", line)
 	}
-	if rig.kube.sandbox(refused.pod) == nil {
-		t.Fatal("the pod whose claim the store does not hold suspended was deleted")
-	}
-	if stored := rig.api.claim(token); stored.State != string(supervise.StateSuspended) || stored.SuspendedBy != string(supervise.SuspendedByOperator) {
-		t.Errorf("the claim is stored %s by %q, want suspended by an operator", stored.State, stored.SuspendedBy)
-	}
-	if ended := releaseClaimLine(t, release, token); ended.Ended != api.ReleasedClaimEnd(supervise.SuspendedByOperator) || ended.BootStarts {
-		t.Errorf("the claim line is %+v, want it ended operator, which the next boot does not start", ended)
-	}
+	rig.assertLeftForOperator(release, refused)
 }
 
 // heldPodInUpdateRound is the rig the two tests below share: one pod of two roles, built by an
@@ -643,16 +651,7 @@ func TestProjectReleaseLeavesAPodWhoseAskItCouldNotWrite(t *testing.T) {
 	if len(line.Asked) != 0 || line.Commits == nil || *line.Commits != 1 {
 		t.Errorf("the pod's line is %s, want no asked role, since no ask was written, and its 1 commit", lineJSON(line))
 	}
-	if rig.kube.sandbox(unasked.pod) == nil {
-		t.Error("the pod whose roles nobody asked to push was deleted")
-	}
-	token := rig.token(unasked)
-	if stored := rig.api.claim(token); stored.State != string(supervise.StateSuspended) || stored.SuspendedBy != string(supervise.SuspendedByOperator) {
-		t.Errorf("the claim is stored %s by %q, want suspended by an operator", stored.State, stored.SuspendedBy)
-	}
-	if ended := releaseClaimLine(t, release, token); ended.Ended != api.ReleasedClaimEnd(supervise.SuspendedByOperator) || ended.BootStarts {
-		t.Errorf("the claim line is %+v, want it ended operator, which the next boot does not start", ended)
-	}
+	rig.assertLeftForOperator(release, unasked)
 	if release.FinishedAt.Before(release.BoundAt) {
 		t.Errorf("the release finished at %s, before the bound %s: it gave the ask up before the bound", release.FinishedAt, release.BoundAt)
 	}
@@ -685,31 +684,22 @@ func (r *idleWakeRig) refuseAsksBeforeTheBound() {
 }
 
 // refuseReleaseAsksWhile has the store refuse each project release's ask written to the outbox
-// (record.UpdateAsk under a round `release:<id>`) while refuse holds, and take every other one
-// (refuseWritesWhile).
+// (record.UpdateAsk under a round `release:<id>`) while refuse holds, and take every other one,
+// for the rest of the test. refuse is a PL/pgSQL condition, which may read caught, the ask's
+// number among the asks the trigger name caught. The trigger counts them with a sequence of the
+// same name, which a refused write's rollback does not take back (writesCaught).
 func (r *idleWakeRig) refuseReleaseAsksWhile(name, refuse string) {
-	r.t.Helper()
-	r.refuseWritesWhile(name, "before insert on outbox",
-		`new.kind = '`+string(record.OutboxKindUpdateAsk)+`' and new.payload::jsonb->>'round' like 'release:%'`, refuse, "the store refused the ask")
-}
-
-// refuseWritesWhile has the store refuse, with message, each write the trigger name catches while
-// refuse holds, and take every other one, for the rest of the test: on and when are refuseWrites',
-// and refuse is a PL/pgSQL condition, which may read caught, the write's number among the writes
-// the trigger caught. The trigger counts them with a sequence of the same name, which a refused
-// write's rollback does not take back (writesCaught).
-func (r *idleWakeRig) refuseWritesWhile(name, on, when, refuse, message string) {
 	r.t.Helper()
 	for _, statement := range []string{
 		`create sequence ` + name,
 		`create function ` + name + `() returns trigger language plpgsql as $$
 			declare caught bigint := nextval('` + name + `');
 			begin
-				if ` + refuse + ` then raise exception '` + message + `'; end if;
+				if ` + refuse + ` then raise exception 'the store refused the ask'; end if;
 				return new;
 			end $$`,
-		`create trigger ` + name + ` ` + on + ` for each row
-			when (` + when + `) execute function ` + name + `()`,
+		`create trigger ` + name + ` before insert on outbox for each row
+			when (new.kind = '` + string(record.OutboxKindUpdateAsk) + `' and new.payload::jsonb->>'round' like 'release:%') execute function ` + name + `()`,
 	} {
 		if _, err := r.pool.Exec(context.Background(), statement); err != nil {
 			r.t.Fatalf("make the store refuse writes with the trigger %s: %v", name, err)
@@ -717,7 +707,7 @@ func (r *idleWakeRig) refuseWritesWhile(name, on, when, refuse, message string) 
 	}
 }
 
-// writesCaught is how many writes the trigger refuseWritesWhile made under name caught.
+// writesCaught is how many writes the trigger refuseReleaseAsksWhile made under name caught.
 func (r *idleWakeRig) writesCaught(name string) int64 {
 	r.t.Helper()
 	var caught int64
@@ -788,16 +778,7 @@ func TestProjectReleaseLeavesAPodWhoseAskLandedAtTheBound(t *testing.T) {
 	if len(line.Asked) != 1 || line.Asked[0].Role != late.role || !line.Asked[0].Bound || line.Commits == nil || *line.Commits != 1 {
 		t.Errorf("the pod's line is %s, want its implementer asked with the bound passed, and its 1 commit", lineJSON(line))
 	}
-	if rig.kube.sandbox(late.pod) == nil {
-		t.Error("the pod whose role had no time to push was deleted")
-	}
-	token := rig.token(late)
-	if stored := rig.api.claim(token); stored.State != string(supervise.StateSuspended) || stored.SuspendedBy != string(supervise.SuspendedByOperator) {
-		t.Errorf("the claim is stored %s by %q, want suspended by an operator", stored.State, stored.SuspendedBy)
-	}
-	if ended := releaseClaimLine(t, release, token); ended.Ended != api.ReleasedClaimEnd(supervise.SuspendedByOperator) || ended.BootStarts {
-		t.Errorf("the claim line is %+v, want it ended operator, which the next boot does not start", ended)
-	}
+	rig.assertLeftForOperator(release, late)
 }
 
 // idleRigProcessLines is every line a rig role process wrote of its own, out of the launchers'

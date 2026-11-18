@@ -2580,7 +2580,8 @@ func (s *Postgres) EnqueueStart(ctx context.Context, tx pgx.Tx, row OutboxRow) e
 	// caller hands over rather than asked of the caller again: a payload that names no mark
 	// carries the mark's zero (SuperviseRequest.NeedsSlot is omitempty), which is a start that
 	// waits for no slot. The insert named stopped writes the start of a claim the project
-	// release stopped in place of the row taken out (the doc above).
+	// release stopped in place of the row taken out (the doc above). Its jsonb_build_object
+	// builds the same payload ReleaseStoppedStart builds.
 	if _, err := tx.Exec(ctx, `with owed as (
 			delete from outbox where id = (select id from outbox
 				where `+pendingPhaseStart+`

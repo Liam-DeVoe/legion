@@ -872,9 +872,11 @@ type SuperviseRequest struct {
 	// the entry its phases row names is given (workflow's readyWorkerTask), the silence repair's
 	// resume task to a silent worker level with that entry (workflow's workerSilent), a production
 	// check's look (workflow's startLook, and the boot's start of the open look again), the pod
-	// wake (workflow's wakeRow), the resume of a cancelled idle release (the daemon's outbox), and
-	// the start of a claim the project release stopped written in place of a start of its role
-	// that is taken out before a lane runs it (Store.EnqueueStart, admit's finishFencedStarts).
+	// wake (workflow's wakeRow), the resume of a cancelled idle release (the daemon's outbox), the
+	// outbox's start of a claim the project release stopped in place of a start its phase or entry
+	// fence would finish (the daemon's releaseStoppedStart), and the start of such a claim written
+	// in place of a start of its role that is taken out before a lane runs it (Store.EnqueueStart,
+	// admit's finishFencedStarts).
 	// Each hands its role work it was already on, or work no phase entry numbers at all.
 	Entry int64 `json:"entry,omitempty"`
 	// ResendEntry marks a start that hands the role the work of the entry its phases row already
@@ -964,6 +966,15 @@ type SuperviseRequest struct {
 }
 
 func (SuperviseRequest) OutboxKind() OutboxKind { return OutboxKindSupervise }
+
+// ReleaseStoppedStart is the start the boot, the outbox's phase and entry fences,
+// Store.EnqueueStart and admit's finishFencedStarts give a claim the project release stopped:
+// resumed by rule (RuleResume), with no phase, task, entry or slot mark, so no phase or entry
+// fence holds it. The boot's start of a phase owner level with its entry adds that owner's phase
+// and resume task to it (workflow's startStoppedClaim).
+func ReleaseStoppedStart(tree string, role claim.Role, generation uint64) SuperviseRequest {
+	return SuperviseRequest{Op: "start", Tree: tree, Role: role, Generation: generation, RuleResume: true}
+}
 
 // GateSeed records the design document version that starts a gate, and the step whose row it
 // starts: the seed reads that document from Dispatch and applies what it finds there.
