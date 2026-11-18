@@ -14,6 +14,12 @@
 #     Download into the module cache every module a `go build` of PACKAGE... in DIR needs
 #     (`go list -deps`, which compiles nothing), for tests that build those packages while they
 #     run with the module proxy turned off (cmdtest.BuildCommand, testbuild.EnvoyBinary).
+#   go-fetch.sh pulumi-consumer SRC PLUGIN
+#     Copy the Go program SRC into a directory of its own, run `pulumi package add PLUGIN` there
+#     outside any workspace, then `go build ./...`: the resolution host's
+#     TestLiveGoConsumersCanUseTheSDK makes, whose `go mod tidy` reads modules no package of this
+#     repository loads, so the test can make it again from the module cache with no proxy. Each
+#     attempt starts from a fresh copy, since package add writes into its directory.
 #
 # Each go command is tried up to GO_FETCH_ATTEMPTS times (4), the waits between them starting
 # at GO_FETCH_WAIT seconds (15) and doubling, so a fault of up to about two minutes is ridden
@@ -25,7 +31,7 @@ attempts=${GO_FETCH_ATTEMPTS:-4}
 first_wait=${GO_FETCH_WAIT:-15}
 
 usage() {
-  echo "usage: go-fetch.sh tools FILE | go-fetch.sh deps DIR PACKAGE..." >&2
+  echo "usage: go-fetch.sh tools FILE | go-fetch.sh deps DIR PACKAGE... | go-fetch.sh pulumi-consumer SRC PLUGIN" >&2
   exit 2
 }
 
@@ -85,6 +91,30 @@ case "$mode" in
     [ -d "$dir" ] || { echo "go-fetch: no directory $dir" >&2; exit 2; }
     cd "$dir"
     retry go list -deps "$@" > /dev/null
+    ;;
+  pulumi-consumer)
+    [ $# -eq 2 ] || usage
+    src=$1 plugin=$2
+    [ -f "$src/go.mod" ] || { echo "go-fetch: no Go module at $src" >&2; exit 2; }
+    [ -x "$plugin" ] || { echo "go-fetch: no plugin binary at $plugin" >&2; exit 2; }
+    src=$(cd "$src" && pwd)
+    work=$(mktemp -d)
+    trap 'rm -rf "$work"' EXIT
+    # One attempt: a fresh copy, package add in it, then the build package add's tidy prepared.
+    # The CLI runs as pulumitest.NewCLI runs it in the test: a PULUMI_HOME and a file backend of
+    # its own, so it reads and writes nothing of the runner's and asks no service who is logged
+    # in (with no backend the CLI looks up an account on Pulumi Cloud and, logged out, makes one).
+    consume() {
+      local dir
+      dir=$(mktemp -d "$work/consumer.XXXXXX")
+      cp -R "$src/." "$dir"
+      mkdir -p "$work/backend" "$work/home"
+      (cd "$dir" && GOWORK=off PULUMI_HOME="$work/home" PULUMI_BACKEND_URL="file://$work/backend" \
+        PULUMI_CONFIG_PASSPHRASE=test PULUMI_SKIP_UPDATE_CHECK=true pulumi package add "$plugin" &&
+        GOWORK=off go build ./...)
+    }
+    echo "go-fetch: the Pulumi consumer $src, on the plugin $plugin" >&2
+    retry consume
     ;;
   *)
     usage

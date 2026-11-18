@@ -161,16 +161,25 @@ func Plugin(t testing.TB) string {
 }
 
 // buildPlugin builds the plugin into a temporary directory. It returns the directory even when
-// the build fails, so Main removes it.
+// the build fails, so Main removes it. The build fetches no module: it runs with GOPROXY=off, so
+// a fault of the module proxy cannot fail the live tests, and a module the cache lacks fails the
+// build with the command that fetches it before the tests, as envoy-smoke runs it.
 func buildPlugin() (string, error) {
 	dir, err := os.MkdirTemp("", "envoy-infra-plugin-")
 	if err != nil {
 		return "", fmt.Errorf("make the plugin's directory: %w", err)
 	}
-	build := exec.Command("go", "build", "-ldflags", "-X main.version=0.0.1", "-o", filepath.Join(dir, PluginName),
-		"github.com/sjawhar/envoy/infra/cmd/pulumi-resource-envoy-infra")
+	const plugin = "github.com/sjawhar/envoy/infra/cmd/pulumi-resource-envoy-infra"
+	build := exec.Command("go", "build", "-ldflags", "-X main.version=0.0.1", "-o", filepath.Join(dir, PluginName), plugin)
+	build.Env = append(os.Environ(), "GOPROXY=off")
 	if out, err := build.CombinedOutput(); err != nil {
-		return dir, fmt.Errorf("build the plugin: %v\n%s", err, out)
+		hint := ""
+		if strings.Contains(string(out), "GOPROXY=off") {
+			hint = "\nThe module cache lacks a module the plugin needs, and a test fetches no module while it " +
+				"runs. Fetch them before the tests, from the repository root:\n  .github/scripts/go-fetch.sh deps " +
+				"packages/envoy/infra ./cmd/pulumi-resource-envoy-infra"
+		}
+		return dir, fmt.Errorf("build the plugin: %v\n%s%s", err, out, hint)
 	}
 	return dir, nil
 }

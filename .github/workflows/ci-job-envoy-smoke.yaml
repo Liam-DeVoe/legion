@@ -151,6 +151,20 @@ jobs:
       - name: Download the docker provider plugin the live tests install
         id: docker-plugin
         uses: ./.github/actions/install-docker-plugin
+      # The live tests fetch no module while they run: a fetch inside a test fails it whenever the
+      # module proxy or the checksum database does, on a change that touched nothing it tests.
+      # The plugin's build (pulumitest.Plugin) reads the module cache with GOPROXY=off, and
+      # TestLiveGoConsumersCanUseTheSDK makes its `pulumi package add` and build of
+      # host/testdata/sdk-consumer against a file proxy over that cache. So this step fetches what
+      # they read first, each tried again on failure: the plugin's modules, then the same
+      # resolution the test makes, on the same consumer and a plugin built as pulumitest.Plugin
+      # builds it, whose `go mod tidy` reads modules no package of this repository loads.
+      - name: Fetch the modules the live tests build
+        run: |
+          .github/scripts/go-fetch.sh deps packages/envoy/infra ./cmd/pulumi-resource-envoy-infra
+          plugin="$RUNNER_TEMP/sdk-consumer-plugin/pulumi-resource-envoy-infra"
+          go -C packages/envoy/infra build -ldflags "-X main.version=0.0.1" -o "$plugin" ./cmd/pulumi-resource-envoy-infra
+          .github/scripts/go-fetch.sh pulumi-consumer packages/envoy/infra/host/testdata/sdk-consumer "$plugin"
       # The live tests build container images on this runner's disk, and a job that runs out of
       # space says only that it did. The pair around the step measures it, and measures the two
       # readings beside it: `start` prints what each file system the job writes to has free and
