@@ -49,10 +49,7 @@ func uploadDocument(t *testing.T, handler http.Handler, owner, name, content str
 // each with its greatest version - a picture's and a document's with several versions too - and
 // whether it is the issue's spec, which a reference to a block of the spec names.
 func TestIssueSummaryCarriesTheIssueAndEveryDocumentsLatestVersion(t *testing.T) {
-	handler, database, _ := newTestServer(t, testServerOptions{files: filestest.NewMemory()})
-	// The issue is created as before the issue room: one born converted also lists its decisions
-	// query among its documents, and this test counts the documents of an issue's one-document rooms.
-	holdIssuesUnconverted(t, database)
+	handler, _, _ := newTestServer(t, testServerOptions{files: filestest.NewMemory()})
 	issue := createInteractionIssue(t, handler, "TEST", "Summarised", "A spec")
 	uploadImage(t, handler, issue.Key, "diagram.png", "first pixels")
 	image := uploadImage(t, handler, issue.Key, "diagram.png", "second pixels")

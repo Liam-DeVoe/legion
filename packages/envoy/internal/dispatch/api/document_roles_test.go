@@ -108,10 +108,6 @@ func TestIssueDocumentsTakeTheirRoleFromTheirName(t *testing.T) {
 func TestADecisionsDocumentIsRefusedByNameAndOneThatStandsTakesItsNextVersion(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	ctx := context.Background()
-	// The issues are created as before the issue room: one born converted holds its decisions
-	// query, a doc row slugged decisions, which the count below would take for a stored decisions
-	// document, and it never holds the decisions document a release before stored.
-	holdIssuesUnconverted(t, database)
 	issue := createInteractionIssue(t, handler, "DEC", "Decisions", "A spec\n")
 	owner := "/api/v1/issues/" + issue.Key
 
@@ -140,13 +136,20 @@ func TestADecisionsDocumentIsRefusedByNameAndOneThatStandsTakesItsNextVersion(t 
 	if project := uploadDocument(t, handler, "/api/v1/projects/DEC", "decisions.md", "# Decisions\n\nOne.\n"); project.Artifact.Role != "" {
 		t.Fatalf("project document = %#v, want it taken with no role: the refusal is an issue's", project.Artifact)
 	}
+	// The issue's decisions query (docs.DecisionsQuerySQL), a doc row slugged decisions that every
+	// issue born converted holds, is no stored decisions document.
 	var stored int
-	if err := database.Pool.QueryRow(ctx, `select count(*) from artifacts where issue_key = $1 and slug like 'decisions%'`, issue.Key).Scan(&stored); err != nil || stored != 0 {
+	if err := database.Pool.QueryRow(ctx, `
+		select count(*) from artifacts a where a.issue_key = $1 and a.slug like 'decisions%' and not `+docs.DecisionsQuerySQL("a"),
+		issue.Key).Scan(&stored); err != nil || stored != 0 {
 		t.Fatalf("the refused writes stored %d decisions documents on %s (%v), want none", stored, issue.Key, err)
 	}
 
 	// An issue that still holds a decisions document the release before stored, whose role a
-	// build older than the role left null: an upload of its name is its next version.
+	// build older than the role left null: an upload of its name is its next version. Such an
+	// issue is one that release created, of one-document rooms, so it is created unconverted:
+	// an issue born converted never holds a decisions document a release before stored.
+	holdIssuesUnconverted(t, database)
 	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{
 		"project": "DEC", "title": "Decided before the release", "spec": "Another spec\n",
 	}, "alice")

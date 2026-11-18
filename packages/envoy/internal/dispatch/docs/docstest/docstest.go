@@ -528,7 +528,7 @@ func WriteDeepChain(txn *crdt.Transaction, fragment *crdt.YXmlFragment, textLeve
 // sends to mark the first text of doc with a link whose "nested" attribute is nested.
 func NestedLinkUpdate(t testing.TB, doc *crdt.Doc, nested any) []byte {
 	t.Helper()
-	update, err := crafted.NestedLinkUpdate(doc, nested)
+	update, err := crafted.NestedLinkUpdate(doc, "prosemirror", nested)
 	if err != nil {
 		t.Fatal(err)
 	}

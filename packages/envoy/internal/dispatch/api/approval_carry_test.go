@@ -827,6 +827,11 @@ func TestADeletedAndRestoredAnsweredBlockIsApprovedOnceItsTextIsTheApprovedText(
 // the copy's text then shows his answer on its block.
 func TestAnAnswerThroughACopysSourceWritesNoVersionOfEitherDocument(t *testing.T) {
 	handler, database, _ := settlingCarryDocuments(t, 20*time.Millisecond)
+	// Held unconverted: the copy is uploaded into the source's own issue, and block ids are unique
+	// within an issue room, so on an issue born converted the copy takes fresh ids and opens its
+	// own asks (TestACopyOfASpecUploadedIntoItsConvertedIssueOpensItsOwnAsks); the copy rule this
+	// test reads holds between documents that are each their own room.
+	holdIssuesUnconverted(t, database)
 	issue := createInteractionIssue(t, handler, "TEST", "Copied block", "Context\n\n"+waveAsk)
 	asks := indexedDecisionBlocks(t, handler, issue.Key, issue.PrimaryArtifactID, map[string]string{"wave": "How many regions take the first wave?"})
 	uploaded := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]any{

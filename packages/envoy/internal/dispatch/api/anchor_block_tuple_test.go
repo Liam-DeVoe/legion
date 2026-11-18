@@ -219,9 +219,9 @@ func createBlockAnchoredComment(t *testing.T, handler http.Handler, issue string
 }
 
 // A comment's anchor block, comments.anchor's block_id, is the projection of an anchored_in tuple
-// from the comment's node to the block's node (T17b of dispatch://INFRA-1253's plan), and every
-// write that sets or moves it keeps the two level in its own transaction. Over a document that is
-// its own room: the create states the anchored_in to the block's node as the block index addresses
+// from the comment's node to the block's node (T17b of this branch's plan), and every write that
+// sets or moves it keeps the two level in its own transaction. Over a spec of an issue born
+// converted: the create states the anchored_in to the block's node as the block index addresses
 // it, under the comment.created that stored it; the anchor block backfill, over a row whose anchor
 // names no block and whose node states no anchored_in, pins the block and states it; the refresh,
 // once an upload removes a suggestion's quote, orphans its anchor and retracts it; an accept that
@@ -233,7 +233,6 @@ func createBlockAnchoredComment(t *testing.T, handler http.Handler, issue string
 func TestAnAnchorBlockIsATupleEveryAnchorWriteKeeps(t *testing.T) {
 	ctx := context.Background()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
-	holdIssuesUnconverted(t, database)
 	documentService := deps.Docs.(*docs.Service)
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	issue := createInteractionIssue(t, handler, "TEST", "Anchor blocks", "The quick brown fox.\n\nA lazy dog sleeps.\n\nThe moon is up.\n")

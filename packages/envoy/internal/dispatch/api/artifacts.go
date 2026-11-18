@@ -1641,11 +1641,13 @@ func readsAsDocument(artifact model.Artifact) bool {
 // sequential loader that every other route calls. A retired document is in no list of its
 // issue's documents (docs.RetireDocument), and its own address and id still read it. Neither is
 // the issue's tree artifact (createIssueTree): it is the issue's room, whose own fragment holds the
-// nodes written into the issue rather than into a document, and the tree read names it
-// (dispatch://INFRA-1253 R8).
+// nodes written into the issue rather than into a document, and the tree read names it. Nor is
+// the issue's decisions query (docs.DecisionsQuerySQL): Decisions is a view over decision nodes
+// and not a document (R6 and R8 of this branch's spec), which its own address and id still read.
 var issueArtifactsStatement = `
 		select ` + artifactColumns + `
-		from artifacts where issue_key = $1 and retired_at is null and kind <> 'tree' order by created_at, id
+		from artifacts where issue_key = $1 and retired_at is null and kind <> 'tree' and not ` + docs.DecisionsQuerySQL("artifacts") + `
+		order by created_at, id
 	`
 
 func (s *server) loadArtifacts(ctx context.Context, q queryer, issueKey string) ([]model.Artifact, error) {
@@ -1824,11 +1826,13 @@ func isArtifactNotFound(err error) bool {
 // loadDocumentReferences lists the documents of target, an issue or a project, in the order
 // their owner's reads show them: the list a document reference by filename is matched in, and the
 // one its refusal hints from. A retired document is in no such list, though its slug still reads
-// it (resolveDocumentReference).
+// it (resolveDocumentReference), and neither is an issue's decisions query, which is no document
+// (issueArtifactsStatement).
 func (s *server) loadDocumentReferences(ctx context.Context, q queryer, target artifactTarget) ([]model.Artifact, error) {
 	query := `
 		select ` + artifactColumns + `
-		from artifacts where issue_key = $1 and kind = 'doc' and retired_at is null order by created_at, id`
+		from artifacts where issue_key = $1 and kind = 'doc' and retired_at is null and not ` + docs.DecisionsQuerySQL("artifacts") + `
+		order by created_at, id`
 	value := target.Project
 	if target.IssueKey != nil {
 		value = *target.IssueKey

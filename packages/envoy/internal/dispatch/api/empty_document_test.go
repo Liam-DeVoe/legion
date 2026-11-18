@@ -9,6 +9,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // refusedWrite is the code and sentence a refused write answers.
@@ -207,10 +208,6 @@ func TestAContentFreeCreateTakesNoDocumentRole(t *testing.T) {
 // document has. Only its content differs, and a person writes that in Dispatch.
 func TestANewEmptyDocumentIsANodeOfItsIssue(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{})
-	// The issue is created as before the issue room: the two documents' rows are compared whole,
-	// and in an issue born converted each version's doc_update_version is the head of the one room
-	// both documents are fragments of, which the second document's write moved.
-	holdIssuesUnconverted(t, database)
 	issue := createArtifactIssue(t, handler)
 	owner := "/api/v1/issues/" + issue.Key
 	ctx := context.Background()
@@ -276,6 +273,11 @@ func TestANewEmptyDocumentIsANodeOfItsIssue(t *testing.T) {
 	// is compared as `set` or `null` rather than dropped, and a create that leaves the stamp
 	// null where an upload writes one fails here. The stamp's other two, head_version and
 	// renderer_version, name no row, so they are compared as values with the rest.
+	// doc_update_version (0041) is the version of the stored update of the document's room the
+	// version was written at: in an issue room, which every document of the issue writes, that is
+	// the write's place in the room's one history, which the second document's write moved, so it
+	// is compared as whether it names a stored update of the room the document is edited in
+	// (refs.DocumentRoomSQL).
 	rowOf := func(what, query, id string) string {
 		t.Helper()
 		var row string
@@ -285,10 +287,17 @@ func TestANewEmptyDocumentIsANodeOfItsIssue(t *testing.T) {
 		return row
 	}
 	const artifactRow = `select (to_jsonb(a) - 'id' - 'slug' - 'name' - 'ref_key' - 'node_address' - 'created_at')::text from artifacts a where a.id = $1`
-	const versionRow = `select ((to_jsonb(v) - 'id' - 'artifact_id' - 'created_at' - 'markdown' - 'search')
+	versionRow := `select ((to_jsonb(v) - 'id' - 'artifact_id' - 'created_at' - 'markdown' - 'search')
 		|| jsonb_build_object(
 			'doc_update_row', case when v.doc_update_row is null then 'null' else 'set' end,
-			'document_token', case when v.document_token is null then 'null' else 'set' end
+			'document_token', case when v.document_token is null then 'null' else 'set' end,
+			'doc_update_version', case
+				when v.doc_update_version is null then 'null'
+				when exists (select 1 from doc_updates u
+				             where u.artifact_id = ` + refs.DocumentRoomSQL("v.artifact_id") + ` and u.version = v.doc_update_version)
+				  then 'a stored update of its room'
+				else v.doc_update_version::text
+			end
 		))::text
 		from artifact_versions v where v.artifact_id = $1`
 	for _, row := range []struct {

@@ -14,6 +14,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -85,12 +86,13 @@ func issueAskCount(t *testing.T, database *store.Store, issue string) int {
 }
 
 // recordedAskAuthor is the author doc_ask_block_authors records for document's ask block
-// blockID, and whether it records one.
+// blockID, and whether it records one. The record is keyed by the room the document is edited in
+// (refs.DocumentRoomSQL), whose append records it.
 func recordedAskAuthor(t *testing.T, database *store.Store, document, blockID string) (model.Actor, bool) {
 	t.Helper()
 	var raw []byte
 	err := database.Pool.QueryRow(context.Background(), `
-		select actor from doc_ask_block_authors where artifact_id = $1 and block_id = $2
+		select actor from doc_ask_block_authors where artifact_id = `+refs.DocumentRoomSQL("$1::uuid")+` and block_id = $2
 	`, document, blockID).Scan(&raw)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return model.Actor{}, false
@@ -105,12 +107,13 @@ func recordedAskAuthor(t *testing.T, database *store.Store, document, blockID st
 	return actor, true
 }
 
-// documentOwesSettlement is whether document has a pending-settlement row.
+// documentOwesSettlement is whether the room document is edited in has a pending-settlement row,
+// the key the settlement that clears it deletes (refs.DocumentRoomSQL).
 func documentOwesSettlement(t *testing.T, database *store.Store, document string) bool {
 	t.Helper()
 	var owed bool
 	if err := database.Pool.QueryRow(context.Background(), `
-		select exists (select from doc_settlements_pending where artifact_id = $1)
+		select exists (select from doc_settlements_pending where artifact_id = `+refs.DocumentRoomSQL("$1::uuid")+`)
 	`, document).Scan(&owed); err != nil {
 		t.Fatalf("read whether %s owes a settlement: %v", document, err)
 	}

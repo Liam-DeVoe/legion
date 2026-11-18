@@ -505,8 +505,8 @@ func versionMarkdowns(t *testing.T, database *store.Store, document string) []st
 // written a moment before is indexed as an ask credited to its writer, and the document owes no
 // settlement afterwards, whatever becomes of the close.
 func TestAClientHangingUpOnItsCloseStillLetsTheDocumentsSettle(t *testing.T) {
-	// cancelOn names the document whose next settlement cancels the close's request once it holds
-	// the issue's row.
+	// cancelOn names the room whose next settlement cancels the close's request once it holds
+	// the issue's row: the room the spec is edited in (documentRoomOf), which a settlement locks.
 	var cancelOn atomic.Pointer[string]
 	var cancelClose atomic.Pointer[context.CancelFunc]
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
@@ -539,7 +539,8 @@ func TestAClientHangingUpOnItsCloseStillLetsTheDocumentsSettle(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	cancelClose.Store(&cancel)
-	cancelOn.Store(&spec)
+	specRoom, _ := documentRoomOf(t, database.Pool, spec)
+	cancelOn.Store(&specRoom)
 	request := httptest.NewRequest(http.MethodPatch, "/api/v1/issues/"+issue.Key, strings.NewReader(`{"status":"done"}`)).WithContext(ctx)
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("X-Dispatch-User", "alice")

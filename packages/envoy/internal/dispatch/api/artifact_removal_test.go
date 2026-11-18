@@ -20,6 +20,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -368,14 +369,22 @@ func TestAnUntouchedDocumentIsRemovedWholeAndATouchedOneIsRefused(t *testing.T) 
 		// A comment and an ask of an issue name one of its documents through their anchor and,
 		// for an ask written back as a question block, through block_artifact_id: the artifact_id
 		// column of each is for a project's documents (comments_one_owner, asks_one_owner), which
-		// this route does not remove.
+		// this route does not remove. An ask block of a converted document is keyed as the room's
+		// settlement writes it: its row names the room the document is edited in as its
+		// block_artifact_id, and the room's issue_room_blocks row names the document whose
+		// fragment holds the block (refs.AsksOfDocumentSQL).
 		seedExec(t, database, "a comment anchored in a document", `
 			insert into comments (issue_key, author, body, anchor)
 			values ($1, '{"kind":"user","id":"alice"}', 'A remark on the notes.', jsonb_build_object('artifact_id', $2::text))
 		`, issue.Key, commented.ID)
+		seedExec(t, database, "the question block's place in the room", `
+			insert into issue_room_blocks (tree_artifact_id, block_id, document_id)
+			select room, 'q1', $1::uuid from (select `+refs.DocumentRoomSQL("$1::uuid")+` as room) placed
+			where room <> $1::uuid
+		`, asked.ID)
 		seedExec(t, database, "an ask written back as a question block", `
 			insert into asks (issue_key, author, question, block_artifact_id, block_id)
-			values ($1, '{"kind":"user","id":"alice"}', 'Which way?', $2::uuid, 'q1')
+			values ($1, '{"kind":"user","id":"alice"}', 'Which way?', `+refs.DocumentRoomSQL("$2::uuid")+`, 'q1')
 		`, issue.Key, asked.ID)
 		if requested := sessionRequest(t, handler, http.MethodPost,
 			"/api/v1/artifacts/"+approved.ID+"/approval-requests", map[string]any{"actor": sessionActor()}); requested.Code != http.StatusCreated {

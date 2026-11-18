@@ -5237,9 +5237,7 @@ func storedText(t *testing.T, pair *dispatchPair, artifactID string) string {
 // the document and the room's own fragment otherwise.
 func storedRoomOf(t *testing.T, pair *dispatchPair, artifactID string) (room, fragment string) {
 	t.Helper()
-	if err := pair.database.Pool.QueryRow(context.Background(), docs.DocumentRoomOfStatement, artifactID).Scan(&room); err != nil {
-		t.Fatalf("read the room of %s: %v", artifactID, err)
-	}
+	room = documentRoom(t, pair.database, artifactID)
 	if room == artifactID {
 		return room, model.ArtifactFragmentOwn
 	}
@@ -6216,8 +6214,8 @@ func TestAnAskBlockKeepsItsAuthorWhenAnotherProcessSettlesIt(t *testing.T) {
 	pair.b.kill(t)
 
 	backdated, err := pair.database.Pool.Exec(context.Background(), `
-		update doc_settlements_pending set marked_at = now() - interval '2 minutes' where artifact_id = $1
-	`, artifactID)
+		update doc_settlements_pending set marked_at = now() - interval '2 minutes' where artifact_id = `+refs.DocumentRoomSQL("$1::uuid"),
+		artifactID)
 	if err != nil {
 		t.Fatalf("age the document's pending settlement: %v", err)
 	}
@@ -6635,8 +6633,8 @@ func TestRebuildResumptionQueueAndColdWritesHoldAcrossProcesses(t *testing.T) {
 		pair.a.call(t, http.MethodPost, editPath(artifactID), editBody(t, "before", "after", "", false), http.StatusOK)
 		waitForSettlementOwed(t, pair.database, artifactID, true)
 		if _, err := pair.database.Pool.Exec(context.Background(), `
-			update doc_settlements_pending set marked_at = now() - interval '2 minutes' where artifact_id = $1
-		`, artifactID); err != nil {
+			update doc_settlements_pending set marked_at = now() - interval '2 minutes' where artifact_id = `+refs.DocumentRoomSQL("$1::uuid"),
+			artifactID); err != nil {
 			t.Fatalf("age the document's pending settlement: %v", err)
 		}
 		// A period is a bucket of the clock (duty.Exclusive, migration 0115), and the row is owed

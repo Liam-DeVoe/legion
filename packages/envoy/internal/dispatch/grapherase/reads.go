@@ -22,7 +22,10 @@ import (
 
 // ownDocument is the document a block node is a block of. Its versions, its editing state, its
 // search rows and its windows hold the block's text because the block is part of it, so they
-// derive from the block (R5); no other node has a document of its own.
+// derive from the block (R5); no other node has a document of its own. A block of an issue room
+// has two: the room's tree, which keys its rows and holds the room's history (erasedRead.document),
+// and the document whose fragment holds it, whose versions, search rows, windows and events hold
+// its text (erasedRead.versioned, blockDocument).
 type ownDocument struct {
 	artifact, refKey, issue, project string
 	// spec is whether the document is its issue's spec (artifacts.is_primary), whose latest
@@ -50,8 +53,13 @@ type embeddingRow struct{ kind, id string }
 type erasedRead struct {
 	texts    []string
 	document *ownDocument
-	blockID  string
-	project  string
+	// versioned is the document the block stands in (blockDocument): document itself for a block
+	// of a one-document room, the document whose fragment holds it for a block of an issue room.
+	// Its versions, reviews, search rows, windows, events and version nodes are the block's, where
+	// document's rows and history are.
+	versioned *ownDocument
+	blockID   string
+	project   string
 	// margins are the documents a comment's body stands in the margin of, whose editing state
 	// therefore derives from the comment (marginDocuments). A node of any other kind has none.
 	margins []marginDocument
@@ -100,6 +108,9 @@ func (e *Erasure) read(ctx context.Context, tx pgx.Tx) (erasedRead, error) {
 	}
 	var err error
 	if read.document, read.blockID, err = e.ownDocument(ctx, tx); err != nil {
+		return erasedRead{}, err
+	}
+	if read.versioned, err = e.blockDocument(ctx, tx, read.document, read.blockID); err != nil {
 		return erasedRead{}, err
 	}
 	if read.margins, err = e.marginDocuments(ctx, tx); err != nil {
@@ -178,6 +189,38 @@ func (e *Erasure) ownDocument(ctx context.Context, tx pgx.Tx) (*ownDocument, str
 		return nil, "", fmt.Errorf("read the document of %s:%s: %w", e.Kind, e.ID, err)
 	}
 	return &document, blockID, nil
+}
+
+// blockDocument reads the document the block of document stands in, whose versions, search rows,
+// windows and events hold the block's text and which is its issue's spec or not. A block of an
+// issue room is a row keyed by the room's tree artifact (ownDocument), and the document it stands
+// in is the one its issue_room_blocks row names (refs.BlockDocumentSQL), at that document's own
+// version numbers (T12a of this branch's plan); a block a version dropped has no such row left,
+// and its document is the one its node's last asserted in_document names, since the index states
+// the block's membership of each document it moves into and retracts none when the block is
+// dropped. A block of a one-document room stands in the document its address names, which its
+// in_document names too, and a block neither names stands in document. Any other node answers
+// nil.
+func (e *Erasure) blockDocument(ctx context.Context, tx pgx.Tx, document *ownDocument, blockID string) (*ownDocument, error) {
+	if document == nil {
+		return nil, nil
+	}
+	var stands ownDocument
+	if err := tx.QueryRow(ctx, `
+		select d.id::text, d.ref_key, coalesce(d.issue_key, ''), coalesce(d.project_key, ''),
+		       d.is_primary and d.issue_key is not null
+		from artifacts d
+		where d.id = coalesce(
+			(select r.document_id from issue_room_blocks r
+			 where r.tree_artifact_id = $1::uuid and r.block_id = $2),
+			(select named.id from graph_tuples t join artifacts named on named.ref_key = t.to_id
+			 where t.from_kind = $3 and t.from_id = $4 and t.kind = $5 and t.to_kind = $6 and t.asserted
+			 order by t.seq desc limit 1),
+			$1::uuid)`, document.artifact, blockID, e.Kind, e.ID, refs.TupleInDocument, graphstore.KindArtifact).Scan(
+		&stands.artifact, &stands.refKey, &stands.issue, &stands.project, &stands.spec); err != nil {
+		return nil, fmt.Errorf("read the document %s:%s stands in: %w", e.Kind, e.ID, err)
+	}
+	return &stands, nil
 }
 
 // marginDocument is a document whose margin holds an erased comment's body, with what of that
@@ -635,30 +678,17 @@ func (e *Erasure) readAncestorExcerpts(ctx context.Context, tx pgx.Tx, read *era
 //
 // A version of any other document is another node's text, and stays.
 //
-// A block of an issue room is a row keyed by the room's tree artifact (read.document), whose
-// document is the one its issue_room_blocks row names (refs.BlockDocumentSQL): the versions it
-// stands in are that document's, at that document's own numbers, which its text rows under the
-// tree record, and so are the indexed versions that tell a version's blocks apart (T12a of
-// dispatch://INFRA-1253's plan). A block a version dropped has no issue_room_blocks row left, and
-// its document is the one its node's last in_document names: the index states the block's
-// membership of each document it moves into and retracts none when the block is dropped.
+// A block of an issue room is a row keyed by the room's tree artifact (read.document), and the
+// versions it stands in are those of the document it stands in (read.versioned, blockDocument),
+// at that document's own numbers, which its text rows under the tree record, and so are the
+// indexed versions that tell a version's blocks apart.
 func (e *Erasure) readVersions(ctx context.Context, tx pgx.Tx, read *erasedRead) error {
 	e.Versions = []ErasedVersion{}
 	if read.document == nil || len(read.texts) == 0 {
 		return nil
 	}
 	rows, err := tx.Query(ctx, `
-		with owner as (
-			select d.id, d.ref_key from artifacts d
-			where d.id = coalesce(
-				(select r.document_id from issue_room_blocks r
-				 where r.tree_artifact_id = $1::uuid and r.block_id = $3),
-				(select held.id from graph_tuples t join artifacts held on held.ref_key = t.to_id
-				 where t.from_kind = $4 and t.from_id = $5 and t.kind = $6 and t.to_kind = $7 and t.asserted
-				 order by t.seq desc limit 1),
-				$1::uuid)
-		)
-		select v.number, owner.id::text, owner.ref_key,
+		select v.number,
 		       exists (select 1 from (select t.text from document_block_texts t
 		                              where t.artifact_id = $1::uuid and t.block_id = $3 and t.version <= v.number
 		                              order by t.version desc limit 1) newest
@@ -666,22 +696,20 @@ func (e *Erasure) readVersions(ctx context.Context, tx pgx.Tx, read *erasedRead)
 		                 and exists (select 1 from unnest($2::text[]) as erased(text) where position(erased.text in newest.text) > 0)),
 		       exists (select 1 from document_indexed_versions i
 		               where i.artifact_id = v.artifact_id and i.version = v.number)
-		from owner
-		join artifact_versions v on v.artifact_id = owner.id
-		where exists (select 1 from unnest($2::text[]) as erased(text) where position(erased.text in v.markdown) > 0)
-		order by v.number`, read.document.artifact, read.texts, read.blockID,
-		e.Kind, e.ID, refs.TupleInDocument, graphstore.KindArtifact)
+		from artifact_versions v
+		where v.artifact_id = $4::uuid
+		  and exists (select 1 from unnest($2::text[]) as erased(text) where position(erased.text in v.markdown) > 0)
+		order by v.number`, read.document.artifact, read.texts, read.blockID, read.versioned.artifact)
 	if err != nil {
 		return fmt.Errorf("read the versions holding the erased text: %w", err)
 	}
 	type heldVersion struct {
-		number           int32
-		artifact, refKey string
-		block, indexed   bool
+		number         int32
+		block, indexed bool
 	}
 	held, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (heldVersion, error) {
 		var version heldVersion
-		err := row.Scan(&version.number, &version.artifact, &version.refKey, &version.block, &version.indexed)
+		err := row.Scan(&version.number, &version.block, &version.indexed)
 		return version, err
 	})
 	if err != nil {
@@ -696,10 +724,10 @@ func (e *Erasure) readVersions(ctx context.Context, tx pgx.Tx, read *erasedRead)
 		default:
 			continue
 		}
-		read.artifacts = append(read.artifacts, version.artifact)
+		read.artifacts = append(read.artifacts, read.versioned.artifact)
 		read.numbers = append(read.numbers, version.number)
-		erased := ErasedVersion{Document: version.refKey, Issue: read.document.issue,
-			Project: read.document.project, Version: int(version.number)}
+		erased := ErasedVersion{Document: read.versioned.refKey, Issue: read.versioned.issue,
+			Project: read.versioned.project, Version: int(version.number)}
 		e.Versions = append(e.Versions, erased)
 		read.listing.versions = append(read.listing.versions, fmt.Sprintf("%s version %d%s: %s",
 			erased.Document, erased.Version, owner(erased.Issue, erased.Project), why))

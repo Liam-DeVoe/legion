@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -679,11 +680,16 @@ func TestABlockAskBelongsToTheVersionThatAddedIt(t *testing.T) {
 	}})
 	awaitIndexedAskBlock(t, handler, spec, "decide", "Ship the decision?")
 	var askID string
-	if err := database.Pool.QueryRow(ctx, `select id::text from asks where block_artifact_id = $1 and block_id = 'decide'`, spec).Scan(&askID); err != nil {
+	// The ask is keyed by the room the spec is edited in, under the block of the spec's fragment
+	// (refs.AsksOfDocumentSQL).
+	if err := database.Pool.QueryRow(ctx, `select id::text from asks k where `+refs.AsksOfDocumentSQL("k", "$1::uuid")+` and k.block_id = 'decide'`, spec).Scan(&askID); err != nil {
 		t.Fatalf("read the block ask: %v", err)
 	}
 	askRef := "dispatch://" + issue.Key + "/ask/" + askID
-	blockRef := specRef + "#b-decide"
+	// The block is a node of the issue's room, keyed under its tree artifact, whose reference
+	// reads it; a reference written as the spec's own (`spec#b-…`) reaches a block of the room
+	// through T17 of this branch's plan.
+	blockRef := "dispatch://" + issue.Key + "/artifact/tree#b-decide"
 	want := func(what string) {
 		t.Helper()
 		node := readNode(t, handler, askRef)

@@ -157,10 +157,6 @@ func TestEveryRouteAnswersAStoredTreeOutsideTheSchemaAlike(t *testing.T) {
 	for _, test := range outsideSchemaCorruptions {
 		t.Run(test.Name, func(t *testing.T) {
 			handler, database, deps := newTestServer(t, testServerOptions{})
-			// The issue is created as before the issue room: the corruption is written into the
-			// document's own stored room (corruptDocument), which a document of an issue born
-			// converted no longer has.
-			holdIssuesUnconverted(t, database)
 			issue := createArtifactIssue(t, handler)
 			artifact := createBeforeDocument(t, handler, issue.Key, "routes.md")
 			open := createAnchoredComment(t, handler, issue.Key, artifact.ID, "open thread")
@@ -210,8 +206,6 @@ func TestEveryRouteAnswersAStoredTreeOutsideTheSchemaAlike(t *testing.T) {
 
 	t.Run("a paragraph whose text holds a string embed", func(t *testing.T) {
 		handler, database, deps := newTestServer(t, testServerOptions{})
-		// The issue is created as before the issue room, as above.
-		holdIssuesUnconverted(t, database)
 		issue := createArtifactIssue(t, handler)
 		artifact := createCorruptedDocument(t, handler, database, deps, issue.Key, "routes.md", appendStringEmbed)
 		base := "/api/v1/artifacts/" + artifact.ID
@@ -243,10 +237,6 @@ func TestOutsideSchemaArtifactIsRepairableThroughUpload(t *testing.T) {
 	for _, test := range outsideSchemaCorruptions {
 		t.Run(test.Name, func(t *testing.T) {
 			handler, database, deps := newTestServer(t, testServerOptions{})
-			// The issue is created as before the issue room: the corruption is written into the
-			// document's own stored room (corruptDocument), which a document of an issue born
-			// converted no longer has.
-			holdIssuesUnconverted(t, database)
 			issue := createArtifactIssue(t, handler)
 			artifact := createCorruptedDocument(t, handler, database, deps, issue.Key, "repair.md", test.Corrupt)
 

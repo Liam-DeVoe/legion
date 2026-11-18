@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -973,13 +974,16 @@ func requireLiveTree(t *testing.T, documents *docs.Service, document string, par
 	}
 }
 
-// awaitSettled waits until none of documents owes a settlement.
+// awaitSettled waits until none of documents owes a settlement: until no pending-settlement row
+// stands for the room any of them is edited in, the key the settlement that clears it deletes
+// (refs.DocumentRoomSQL).
 func awaitSettled(t *testing.T, database *store.Store, documents ...string) {
 	t.Helper()
 	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
 		var pending int
 		if err := database.Pool.QueryRow(context.Background(), `
-			select count(*) from doc_settlements_pending where artifact_id = any($1::uuid[])
+			select count(*) from doc_settlements_pending
+			where artifact_id in (select `+refs.DocumentRoomSQL("owed.id")+` from unnest($1::uuid[]) as owed (id))
 		`, documents).Scan(&pending); err != nil {
 			t.Fatalf("read pending settlements: %v", err)
 		}

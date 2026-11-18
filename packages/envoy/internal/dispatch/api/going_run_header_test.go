@@ -656,10 +656,6 @@ func TestAVersionWrittenForARunNamesTheBlocksItChanged(t *testing.T) {
 	handler, database, deps, _ := newRegisteredTestServer(t, testServerOptions{})
 	server := directServer(deps)
 	ctx := context.Background()
-	// The issue is created as before the issue room: the blocks are read at the spec's own
-	// addresses, `<issue>/spec#<block>`, where an issue born converted keys its blocks by its tree
-	// artifact.
-	holdIssuesUnconverted(t, database)
 	issue := createInteractionIssue(t, handler, "RVB", "A spec a run edits",
 		":::requirement{#kept}\nThe kept words stay.\n:::\n\n:::requirement{#edited}\nThe first words.\n:::\n\n:::requirement{#dropped}\nThe dropped words.\n:::\n")
 	run, err := server.recordGoingRequest(ctx, model.Actor{Kind: "user", ID: "alice"}, "", "Edit the spec for me.")
@@ -677,18 +673,19 @@ func TestAVersionWrittenForARunNamesTheBlocksItChanged(t *testing.T) {
 	if edited.Code != http.StatusOK && edited.Code != http.StatusCreated {
 		t.Fatalf("edit the spec under the run's header: status=%d body=%s", edited.Code, edited.Body.String())
 	}
-	spec := issue.Key + "/spec"
+	// Each block is read at the block index's own address of it (anchoredBlockAddress), under the
+	// room the spec is edited in.
 	for _, block := range []struct {
 		id   string
 		want int
 	}{{"edited", 1}, {"dropped", 1}, {"kept", 0}} {
-		if got := changedByRunCount(t, database, refs.BlockNodeKind, spec+"#"+block.id, run.ID); got != block.want {
+		if got := changedByRunCount(t, database, refs.BlockNodeKind, anchoredBlockAddress(t, database, issue.PrimaryArtifactID, block.id), run.ID); got != block.want {
 			t.Errorf("block %s holds %d changed_by_run tuples to the run, want %d", block.id, got, block.want)
 		}
 	}
 	var state string
 	if err := database.Pool.QueryRow(ctx, `select state from graph_nodes where kind = $1 and id = $2`,
-		refs.BlockNodeKind, spec+"#dropped").Scan(&state); err != nil || state != graphstore.StateGone {
+		refs.BlockNodeKind, anchoredBlockAddress(t, database, issue.PrimaryArtifactID, "dropped")).Scan(&state); err != nil || state != graphstore.StateGone {
 		t.Fatalf("the dropped block's node is %q (%v), want gone: the edit did not drop it", state, err)
 	}
 }
