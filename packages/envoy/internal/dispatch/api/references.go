@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -669,13 +670,19 @@ func (s *server) getIssueReferences(w http.ResponseWriter, r *http.Request) {
 			Via:      closureMember.Via,
 		})
 	}
-	etag := referencesETag(issue.LastSeq, members, truncated, latestOnly)
-	w.Header().Set("ETag", etag)
-	if r.Header.Get("If-None-Match") == etag {
-		w.WriteHeader(http.StatusNotModified)
+	// The answer is encoded once, exactly as WriteJSON writes it, trailing newline and all, so
+	// the token hashes the bytes it validates and those are the bytes written.
+	var answer bytes.Buffer
+	if err := json.NewEncoder(&answer).Encode(model.IssueReferences{Members: members, Truncated: truncated}); err != nil {
+		s.writeHandlerError(w, fmt.Errorf("encode the issue's references: %w", err))
 		return
 	}
-	WriteJSON(w, http.StatusOK, model.IssueReferences{Members: members, Truncated: truncated})
+	if answerNotModified(w, r, referencesETag(answer.Bytes(), latestOnly)) {
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(answer.Bytes())
 }
 
 func (s *server) getArtifactReferences(w http.ResponseWriter, r *http.Request) {
@@ -700,33 +707,27 @@ func (s *server) getArtifactReferences(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, model.ArtifactReferences{Outgoing: outgoing, ReferencedBy: referencedBy})
 }
 
-// referencesETag hashes what an issue references answer depends on: the issue's event sequence,
-// whether the closure was cut short, each member's latest version, and the name of every version
-// the answer carries. The trimmed answer (latestOnly) hashes one more line naming its variant, so
-// the full and trimmed answers of one issue never share an ETag; the full answer hashes no such
-// line.
+// referencesETag is an issue references answer's validator: a hash of the answer's own bytes.
+// The trimmed answer (latestOnly) hashes one more line naming its variant ahead of them, so the
+// full and trimmed answers of one issue never share an ETag, even where every member has one
+// version and the two answers are the same bytes; the full answer hashes no such line, and no
+// answer's bytes begin with it, as each begins with `{`.
 //
-// A version's name is hashed for itself because it moves while neither the sequence nor the
-// latest version does: the delete of a comment whose accepted suggestion named a version after
-// the comment's body renames that version (renameAcceptedVersion), and its transaction appends
-// its one event on the comment's owner, which owns the document (resolveAnchor) and is never this
-// issue, since no member is one of this issue's own documents (refs.Closure). Without it a reader
-// holding the ETag given before the delete would go on being answered 304 over the old name.
-func referencesETag(lastSeq int, members []model.ReferenceMember, truncated, latestOnly bool) string {
+// It hashes the answer rather than what the answer is made of because a member moves without
+// anything this issue holds moving with it. A member is a document of another owner (no member
+// is one of this issue's own documents, refs.Closure), and that owner's writes append their
+// events there: a rename of the document (artifact.renamed, renameArtifact) changes the
+// member's artifact.name, and the delete of a comment whose accepted suggestion named a version
+// after the comment's body renames that version (renameAcceptedVersion), while this issue's
+// event sequence, the closure and each member's latest version stand still. A token over those
+// would answer a reader holding it 304 over the old name; a token over the answer moves with
+// every byte a reader is shown.
+func referencesETag(answer []byte, latestOnly bool) string {
 	hash := sha256.New()
-	_, _ = fmt.Fprintf(hash, "%d\n%t\n", lastSeq, truncated)
 	if latestOnly {
 		_, _ = io.WriteString(hash, "versions=latest\n")
 	}
-	for _, member := range members {
-		versions := member.Artifact.Versions
-		_, _ = fmt.Fprintf(hash, "%s@%d\n", member.Artifact.ID, versions[len(versions)-1].Number)
-		for _, version := range versions {
-			if version.Summary != nil {
-				_, _ = fmt.Fprintf(hash, "summary %d %q\n", version.Number, *version.Summary)
-			}
-		}
-	}
+	_, _ = hash.Write(answer)
 	return `"` + hex.EncodeToString(hash.Sum(nil)) + `"`
 }
 

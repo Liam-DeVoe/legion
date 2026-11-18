@@ -2,10 +2,13 @@
 // own writes do not reach: the answer a key kept before the delete, which a repeat of the key
 // would replay (answerEndedByDelete, request_keys.go), and a conditional read whose validator was
 // given before the delete, which would answer 304 over the deleted text (referencesETag,
-// commentListETag, eventFeedETag).
+// commentListETag, eventFeedETag). The kept answer is ended whatever time its delete began, and
+// the references validator moves for every change of its answer, a rename of a cited document
+// on another issue included.
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -240,6 +243,109 @@ func TestAKeyedRepeatOfAnAnswerADeleteEndedGivesNoPartOfTheDeletedText(t *testin
 	}
 }
 
+// A delete's deleted_at is when its transaction began (clearDeletedPostBody), before it waited
+// for the owner's lock, so a keyed write that claims its key after that, takes the lock first and
+// reads the post before the delete commits keeps the body under a key newer than the delete. Each
+// row stands for that race, one row for each arm of answerEndedQuery: the write is sent under a
+// key and answers the deleted text, the post is deleted through its route, its deleted_at is moved
+// an hour back, before the key was claimed, and the same key is sent again. The repeat is a
+// replay, under the first answer's status, answered ANSWER_NOT_KEPT, with no part of the deleted
+// text: a delete ends the answer whatever time it began (answerEndedByDelete).
+func TestADeleteEndsAKeptAnswerWhateverTimeItBegan(t *testing.T) {
+	_, handler, database := browserDocumentService(t)
+	holder := createInteractionIssue(t, handler, "TEST", "Posts deleted before the key", "alpha bravo charlie")
+	// related is a related-item check for match, under a key, as alice.
+	related := func(t *testing.T, match string) func(string) *httptest.ResponseRecorder {
+		return func(key string) *httptest.ResponseRecorder {
+			return keyedRequest(t, handler, http.MethodPost, "/api/v1/projects/TEST/related",
+				map[string]any{"title": match + " calibration", "keywords_only": true}, "alice", key)
+		}
+	}
+
+	rows := []struct {
+		arm string
+		// write makes the post whose text the write's first answer carries and returns that
+		// write, sent under a key, and the delete of the post through its route, which answers
+		// the table and the id of the post it deleted.
+		write func(t *testing.T, letter, phrase string) (send func(key string) *httptest.ResponseRecorder, withdraw func() (table, id string))
+	}{
+		{"a comment the answer names: a related-item check that finds it", func(t *testing.T, letter, phrase string) (func(string) *httptest.ResponseRecorder, func() (string, string)) {
+			match := "quokkabackdated" + letter
+			comment := createThreadComment(t, handler, holder.Key, map[string]any{"body": match + " calibration drifted, " + phrase + "."}, "alice")
+			refreshTermStats(t, database, "TEST")
+			return related(t, match), func() (string, string) {
+				deleteThreadComment(t, handler, comment.ID, "alice")
+				return "comments", comment.ID
+			}
+		}},
+		{"a message the answer names: a related-item check that finds it", func(t *testing.T, letter, phrase string) (func(string) *httptest.ResponseRecorder, func() (string, string)) {
+			match := "quokkabackdated" + letter
+			message := createIssueMessage(t, handler, holder.Key, map[string]any{"body": match + " calibration drifted, " + phrase + "."}, "alice")
+			refreshTermStats(t, database, "TEST")
+			return related(t, match), func() (string, string) {
+				deleteIssueMessage(t, handler, message.ID, "alice")
+				return "messages", message.ID
+			}
+		}},
+		{"a document a deleted comment anchors on: a rename of the document an accept named a version of", func(t *testing.T, letter, phrase string) (func(string) *httptest.ResponseRecorder, func() (string, string)) {
+			document := uploadIssueDocument(t, handler, holder.Key, "backdated-"+letter+".md", "alpha bravo charlie")
+			comment := acceptSuggestion(t, handler, "/api/v1/issues/"+holder.Key+"/comments", document.Slug, "Say this instead, "+phrase+".", "alpha", "omega")
+			return func(key string) *httptest.ResponseRecorder {
+					return keyedRequest(t, handler, http.MethodPatch, "/api/v1/artifacts/"+document.ID,
+						map[string]any{"name": "backdated-" + letter + "-again.md"}, "alice", key)
+				}, func() (string, string) {
+					deleteThreadComment(t, handler, comment, "alice")
+					return "comments", comment
+				}
+		}},
+	}
+	for index, row := range rows {
+		t.Run(row.arm, func(t *testing.T) {
+			letter := string(rune('a' + index))
+			phrase := "zarquonbackdated" + letter
+			key := "backdated-delete-" + letter
+			send, withdraw := row.write(t, letter, phrase)
+			first := send(key)
+			if first.Code != http.StatusOK || !strings.Contains(first.Body.String(), phrase) {
+				t.Fatalf("the first write: status=%d body=%s, want 200 holding %q, so this row can fail",
+					first.Code, first.Body.String(), phrase)
+			}
+
+			table, id := withdraw()
+			ctx := context.Background()
+			moved, err := database.Pool.Exec(ctx, `update `+table+` set deleted_at = deleted_at - interval '1 hour' where id = $1`, id)
+			if err != nil || moved.RowsAffected() != 1 {
+				t.Fatalf("move the deleted_at of %s %s an hour back: %v (%d rows)", table, id, err, moved.RowsAffected())
+			}
+			// The control: the delete now reads as one that began before the key was claimed,
+			// which is the race this row stands for.
+			var before bool
+			if err := database.Pool.QueryRow(ctx, `
+				select p.deleted_at < k.created_at from `+table+` p, request_keys k
+				where p.id = $1 and k.idempotency_key = $2
+			`, id, key).Scan(&before); err != nil || !before {
+				t.Fatalf("the deleted_at of %s %s is before the key's created_at: %t (%v), want true", table, id, before, err)
+			}
+
+			again := send(key)
+			if again.Code != first.Code || again.Header().Get(contracts.IdempotencyReplayedHeader) != "?1" {
+				t.Fatalf("the repeat: status=%d %s=%q body=%s, want the first answer's %d, replayed",
+					again.Code, contracts.IdempotencyReplayedHeader, again.Header().Get(contracts.IdempotencyReplayedHeader),
+					again.Body.String(), first.Code)
+			}
+			if strings.Contains(again.Body.String(), phrase) {
+				t.Fatalf("the repeat after a delete that began before the key gives the deleted text %q: %s", phrase, again.Body.String())
+			}
+			var refusal struct {
+				Code string `json:"code"`
+			}
+			if err := json.Unmarshal(again.Body.Bytes(), &refusal); err != nil || refusal.Code != contracts.IdempotencyAnswerNotKept {
+				t.Fatalf("the repeat answers %s, want %s: the key no longer holds an answer it can give", again.Body.String(), contracts.IdempotencyAnswerNotKept)
+			}
+		})
+	}
+}
+
 // Every conditional read whose answer can carry a post's text, one row each: the read is made,
 // its answer holds the text and carries an ETag, the post is deleted, and the read is made again
 // under that ETag. It answers 200 with a new ETag and no part of the deleted text, never 304. The
@@ -326,6 +432,54 @@ func TestAConditionalReadAfterADeleteAnswersWithoutTheDeletedText(t *testing.T) 
 			}
 			if strings.Contains(again.Body.String(), phrase) {
 				t.Fatalf("the read after the delete gives the deleted text %q: %s", phrase, again.Body.String())
+			}
+		})
+	}
+}
+
+// The references read's validator is a hash of the answer itself (referencesETag). A member is a
+// document of another owner, and a rename of it (PATCH /api/v1/artifacts/{id}) appends its
+// artifact.renamed event on that owner, so nothing of the citing issue moves, nor the closure,
+// nor any version of the document. The read made again under the ETag given before the rename
+// answers 200 under a new ETag with the new name, never 304 over the old one. One row for each
+// variant: the full answer and ?versions=latest.
+func TestAReferencesReadAfterACitedDocumentIsRenamedAnswersTheNewName(t *testing.T) {
+	_, handler, _ := browserDocumentService(t)
+	holder := createInteractionIssue(t, handler, "TEST", "Documents the references cite", "alpha bravo charlie")
+	citer := createProjectIssue(t, handler, "TEST", "The issue that cites", "delta echo foxtrot")
+	for index, variant := range []struct{ read, query string }{
+		{"GET /api/v1/issues/{key}/references", ""},
+		{"GET /api/v1/issues/{key}/references?versions=latest", "versions=latest"},
+	} {
+		query := variant.query
+		t.Run(variant.read, func(t *testing.T) {
+			letter := string(rune('a' + index))
+			name, renamed := "cited-"+letter+".md", "renamed-"+letter+".md"
+			document := uploadIssueDocument(t, handler, holder.Key, name, "alpha bravo charlie")
+			createThreadComment(t, handler, citer, map[string]any{"body": "See dispatch://" + holder.Key + "/artifact/" + document.Slug}, "alice")
+			first := issueReferencesQueryRequest(t, handler, citer, query, "")
+			etag := first.Header().Get("ETag")
+			if first.Code != http.StatusOK || etag == "" || !strings.Contains(first.Body.String(), `"name":"`+name+`"`) {
+				t.Fatalf("the first read: status=%d ETag=%q body=%s, want 200 under an ETag naming %q",
+					first.Code, etag, first.Body.String(), name)
+			}
+			// The control: before the rename the ETag answers 304, so the 200 below is the
+			// rename's doing and not a validator that never matched.
+			if unchanged := issueReferencesQueryRequest(t, handler, citer, query, etag); unchanged.Code != http.StatusNotModified {
+				t.Fatalf("the read under its own ETag before the rename: status=%d body=%s, want 304", unchanged.Code, unchanged.Body.String())
+			}
+
+			if response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/artifacts/"+document.ID, map[string]any{"name": renamed}, "alice"); response.Code != http.StatusOK {
+				t.Fatalf("rename %s to %s: status=%d body=%s", name, renamed, response.Code, response.Body.String())
+			}
+
+			again := issueReferencesQueryRequest(t, handler, citer, query, etag)
+			if again.Code != http.StatusOK || again.Header().Get("ETag") == "" || again.Header().Get("ETag") == etag {
+				t.Fatalf("the read under the ETag given before the rename: status=%d ETag=%q (was %q), want 200 under a new ETag",
+					again.Code, again.Header().Get("ETag"), etag)
+			}
+			if !strings.Contains(again.Body.String(), `"name":"`+renamed+`"`) {
+				t.Fatalf("the read after the rename does not name the document %q: %s", renamed, again.Body.String())
 			}
 		})
 	}

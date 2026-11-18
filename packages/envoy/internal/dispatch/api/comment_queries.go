@@ -121,9 +121,8 @@ func (s *server) commentListWatermark(ctx context.Context, owner owner) (int64, 
 
 // commentListETag is a comment list answer's validator: the list it is of, the watermark every
 // write the list shows raises, and the owner's event sequence, closed with the lines both lists'
-// ETags carry (listETag). It is referencesETag's shape - one line per part, then the hash of them
-// - and, unlike the feed's, it names its owner, so two lists standing at one count never share a
-// validator.
+// ETags carry (listETag): one line per part, then the hash of them. Unlike the feed's, it names
+// its owner, so two lists standing at one count never share a validator.
 func (s *server) commentListETag(owner owner, artifactFilter string, watermark, lastSeq int64, trees bool) string {
 	hash := sha256.New()
 	_, _ = fmt.Fprintf(hash, "issue=%s\nartifact=%s\nfilter=%s\nwatermark=%d\nlast_seq=%d\n",
