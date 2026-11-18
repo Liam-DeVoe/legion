@@ -178,6 +178,10 @@ POST /api/v1/projects/{key}/artifacts/{slug}/versions
 GET /api/v1/projects/{key}/artifacts/{slug}/versions/{number}
 PUT /api/v1/projects/{key}/default-assignee
 PUT /api/v1/projects/{key}/gated-steps
+GET /api/v1/projects/{key}/legion/board # #2731, the Legion board of a project from its daemon's recorded state
+DELETE /api/v1/projects/{key}/legion/daemon # #2731, the Legion daemon a project's state is read from
+GET /api/v1/projects/{key}/legion/daemon # #2731, the Legion daemon a project's state is read from
+PUT /api/v1/projects/{key}/legion/daemon # #2731, the Legion daemon a project's state is read from
 GET /api/v1/projects/{key}/related
 POST /api/v1/projects/{key}/related
 GET /api/v1/references

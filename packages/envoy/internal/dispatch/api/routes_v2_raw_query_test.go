@@ -30,6 +30,8 @@ var rawQueryReaders = map[string]string{
 		"another request (R4 lets it read the query whole)",
 	"api.unstorableParameter": "storable_text.go: every route refuses a parameter holding U+0000 or a byte that is not " +
 		"UTF-8 before its handler runs, whatever the route declares",
+	"api.legionStateURL": "settings_legion.go: the query of the daemon URL a Legion setting's body names, read to refuse " +
+		"a URL that carries one, and no request's query",
 }
 
 // v1OnlyWriters are the response writers of package api that only a /api/v1 route's chain wraps an

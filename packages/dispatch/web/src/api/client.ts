@@ -1804,6 +1804,38 @@ export class DispatchApiClient {
     return this.put("/api/v2/settings/delivery", {}, input, bounds);
   }
 
+  /** One project's Legion daemon: the base URL its state is read from, the actor that first named
+   *  a daemon of the project and when the setting last changed, or `null` for a project that names
+   *  none (`GET /api/v2/projects/{key}/legion-daemon`). There is no list of every project's
+   *  daemon, so the Settings page's daemon section reads this once per project
+   *  (`useLegionDaemons`): `null` is an ordinary answer rather than a failure. An unknown project
+   *  is `404 PROJECT_NOT_FOUND`. */
+  getLegionDaemon(project: string) {
+    return this.read("/api/v2/projects/{key}/legion-daemon", { key: project });
+  }
+
+  /** Names the daemon a project's state is read from, and answers the setting as it was stored.
+   *  Deployment-scoped (`scopeDeployment`), so a credential naming one project is refused it; a
+   *  `state_url` that is not an absolute http(s) URL with a host and no path, carrying no user,
+   *  password, query or fragment, is `400 LEGION_SETTING_INPUT` with the server's own reason
+   *  (`legionStateURL` in packages/envoy/internal/dispatch/api/settings_legion.go), and an
+   *  unknown project is `404 PROJECT_NOT_FOUND`. A PUT of the URL the project already names
+   *  answers the setting and writes nothing. */
+  putLegionDaemon(project: string, stateUrl: string, bounds: WriteBounds) {
+    return this.put(
+      "/api/v2/projects/{key}/legion-daemon",
+      { key: project },
+      { state_url: stateUrl },
+      bounds
+    );
+  }
+
+  /** Stops reading a project's daemon: what was read stays, and nothing reads it again. Scoped
+   *  as the PUT is; a project with no daemon is `404 LEGION_NOT_CONFIGURED`. */
+  async deleteLegionDaemon(project: string, bounds: WriteBounds): Promise<void> {
+    await this.remove("/api/v2/projects/{key}/legion-daemon", { key: project }, bounds);
+  }
+
   /** Creates a Delivery session group: its sessions' pull requests take it as their Parent agent.
    *  A session another group holds is `409 SESSION_IN_GROUP`; a name another group has, or that is
    *  the title of a session outside the group, is `409` as well, the message naming which. */

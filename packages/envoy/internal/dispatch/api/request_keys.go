@@ -79,7 +79,9 @@ import (
 //     it, so a client retries a 5xx under its key only where the echo says the key was judged.
 //
 // A write without the header runs as it always did, unkeyed, and is logged at DEBUG: a script, a
-// test and the Legion daemon's outbox send writes that name no intent, and are expected to.
+// test and the Legion daemon's outbox send writes that name no intent, and are expected to. A write
+// with the header never runs unkeyed: a caller the layer cannot resolve is answered that refusal,
+// and a body past its route's limit the route's 413, and neither runs the handler.
 
 const (
 	// keyedAnswerKept is the largest answer a key keeps. A larger one is still answered in full, but
@@ -252,7 +254,7 @@ func (s *server) keyedWrites(route apiRoute, handler http.HandlerFunc) http.Hand
 	method, pattern, replay := route.Method, route.Pattern, route.Replay
 	wildcards := patternWildcards(pattern)
 	keepsAnswer := !route.AnswerHoldsSecret
-	bodyLimit := route.BodyLimit.Bytes
+	bodyLimit, tooLarge := route.BodyLimit.Bytes, route.BodyLimit.TooLarge
 	run := handler
 	if s.deps.TestHooksEnabled {
 		run = s.slowedByTestHook(handler)
@@ -270,13 +272,12 @@ func (s *server) keyedWrites(route apiRoute, handler http.HandlerFunc) http.Hand
 		}
 		actor, human, err := s.optionalActor(r)
 		if err != nil {
-			// The handler refuses a caller it cannot resolve as it always has, and nothing is kept.
-			handler(w, r)
+			s.writeAuthenticationError(w, r, err)
 			return
 		}
 		r = r.WithContext(context.WithValue(r.Context(), resolvedCallerKey{}, resolvedCaller{actor: actor, human: human}))
 		if r.ContentLength > bodyLimit {
-			handler(w, r)
+			s.writeHandlerError(w, r, tooLarge)
 			return
 		}
 		login := requestKeyLogin(actor, human)
@@ -319,8 +320,9 @@ func (s *server) keyedWrites(route apiRoute, handler http.HandlerFunc) http.Hand
 			return
 		}
 		if body.size > bodyLimit {
-			r.Body = io.NopCloser(io.MultiReader(replayable, r.Body))
-			handler(w, r)
+			// A body that declared no length and ran past the limit as it was spooled: refused as
+			// the declared one is, and no handler runs without the key.
+			s.writeHandlerError(w, r, tooLarge)
 			return
 		}
 		r.Body = io.NopCloser(replayable)
@@ -373,7 +375,7 @@ func (s *server) keyedWrites(route apiRoute, handler http.HandlerFunc) http.Hand
 // write's own limit (handoffRequestLimit) for that one, the markdown round trip's
 // (markdownRoundTripLimit) for that one, and a JSON body (decodeJSON) for every other. The
 // limit is the most the keyed layer spools before its handler runs - a body past it is
-// refused by the route's handler whatever its key, so it runs unkeyed rather than spooled - and
+// refused whatever its key, so the layer answers the 413 itself rather than spool it - and
 // the most an early answer discards before it is written (drainBeforeAnswer). One answer serves
 // all three layers and the handler, so none of them can disagree with another.
 func routeBody(method, pattern string) (limit int64, tooLarge *apiError) {
@@ -941,9 +943,9 @@ func answerHeldKey(w http.ResponseWriter, r *http.Request, key string, held held
 //
 // The body is read for at most drainTime (readFor): one that stops arriving is answered 409
 // KEY_IN_FLIGHT, which is what the key said, and the connection closes after it. A body past the
-// route's limit is answered as its route answers one (routeRow.BodyLimit), unkeyed, as a request
-// whose body is past the limit runs unkeyed. Either keeps the read's deadline for net/http's own
-// reads after the answer; only a body read to its end lifts it.
+// route's limit is answered the route's 413 (routeRow.BodyLimit), as a first request's body past
+// it is. Either keeps the read's deadline for net/http's own reads after the answer; only a body
+// read to its end lifts it.
 func (s *server) answerDrainedRepeat(
 	w http.ResponseWriter, r *http.Request, route apiRoute, wildcards []string, login, key string,
 ) {

@@ -305,12 +305,27 @@ type router struct {
 // cancelled; its ResumeDeliveries is the delivery sweep's pass the maintenance loop runs
 // (api.RunMaintenanceSweep).
 func New(ctx *AppContext) (http.Handler, api.Background) {
+	mux := http.NewServeMux()
+	r, background := mount(ctx, mux)
+	// The end of /api/v1 sits outside the cookie-origin guard, so once it has passed it answers
+	// every path under /api/v1, a cross-origin write's included, and until then each refusal the
+	// guard writes there carries the version's headers too.
+	handler := r.endAPIV1(mux, r.enforceCookieOrigin(mux))
+	if ctx.devSignInHost == "" {
+		return handler, background
+	}
+	return requireHost(ctx.devSignInHost, handler), background
+}
+
+// mount builds New's router and mounts every route the server serves on mux, the API's table
+// among them (api.Register), so a mux that keeps what is mounted on it reads the server's routes
+// from the mounting itself (TestAKeyedWriteNeverRunsUnkeyed).
+func mount(ctx *AppContext, mux api.RouteMux) (*router, api.Background) {
 	r := &router{
 		ctx:          ctx,
 		retainedHeld: semaphore.NewWeighted(maxRetainedBytesHeld),
 		assets:       newAssetCache(maxCachedAssetBytes),
 	}
-	mux := http.NewServeMux()
 	// Every route the server itself answers writes one access-log line (accesslog.Handler); the
 	// dashboard's own files, served by staticHandler, write none.
 	mux.HandleFunc("GET /auth/start", accesslog.HandlerFunc("/auth/start", r.authStart))
@@ -324,15 +339,10 @@ func New(ctx *AppContext) (http.Handler, api.Background) {
 		r.eventHead = background.EventHead
 	}
 	mux.HandleFunc("/", r.staticHandler)
-	// The end of /api/v1 sits outside the cookie-origin guard, so once it has passed it answers
-	// every path under /api/v1, a cross-origin write's included, and until then each refusal the
-	// guard writes there carries the version's headers too.
-	handler := r.endAPIV1(mux, r.enforceCookieOrigin(mux))
-	if ctx.devSignInHost == "" {
-		return handler, background
+	if ctx.devSignInHost != "" {
+		mux.HandleFunc("GET /auth/_dev/signin", accesslog.HandlerFunc("/auth/_dev/signin", r.authDevSignIn))
 	}
-	mux.HandleFunc("GET /auth/_dev/signin", accesslog.HandlerFunc("/auth/_dev/signin", r.authDevSignIn))
-	return requireHost(ctx.devSignInHost, handler), background
+	return r, background
 }
 
 // ───── auth ─────────────────────────────────────────────────────────────────

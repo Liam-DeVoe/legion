@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/cireconcile"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -593,6 +594,19 @@ var routeShapes = map[string]routeShape{
 	"GET /api/v1/settings/new-issue": {Status: http.StatusOK, Response: newIssueSettings{}},
 	"POST /api/v1/settings/new-issue/_test": {
 		Status: http.StatusOK, Response: newIssueSettings{}, Request: newIssueSettingsInput{},
+	},
+	"GET /api/v1/projects/{key}/legion/daemon": {
+		Status: http.StatusOK, Response: legion.Settings{},
+		// A project that names no daemon answers 200 and the JSON literal `null`
+		// (settings_legion.go).
+		Nullable: true,
+	},
+	"PUT /api/v1/projects/{key}/legion/daemon": {
+		Status: http.StatusOK, Response: legion.Settings{}, Request: putLegionSettingInput{},
+	},
+	"DELETE /api/v1/projects/{key}/legion/daemon": {Status: http.StatusNoContent},
+	"GET /api/v1/projects/{key}/legion/board": {
+		Status: http.StatusOK, Response: legionBoardResponse{},
 	},
 	"GET /api/v1/delivery/runs/{id}": {Status: http.StatusOK, Response: delivery.DeliveryRunDetailView{}},
 	"POST /api/v1/delivery/session-groups": {

@@ -76,6 +76,14 @@ const shellHandlers: RequestHandler[] = [
   http.get("/api/v2/projects", () =>
     Response.json(emptyPage satisfies Result<"/api/v2/projects", "get">)
   ),
+  // The Settings page's daemon section reads every project's Legion daemon with no `enabled` guard
+  // beyond the project being known (`useLegionDaemons`), so the read happens wherever that section
+  // is drawn. `null` is a project that names no daemon, not a failure (`legionDaemonQuery`'s own
+  // doc), and that is what the page drew before MSW: an empty daemon list. Every row that asserts
+  // on a daemon spies `api.getLegionDaemon` above MSW and never reaches this.
+  http.get("/api/v2/projects/:key/legion-daemon", () =>
+    Response.json(null satisfies Result<"/api/v2/projects/{key}/legion-daemon", "get">)
+  ),
   http.get("/api/v2/me/threads", () =>
     Response.json({
       ...emptyPage,

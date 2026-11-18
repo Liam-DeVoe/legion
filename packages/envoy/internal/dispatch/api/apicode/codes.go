@@ -290,6 +290,8 @@ var (
 	IssueNotFound          = both("ISSUE_NOT_FOUND", http.StatusNotFound)
 	JSONContentType        = both("JSON_CONTENT_TYPE", http.StatusUnsupportedMediaType)
 	LabelsInput            = both("LABELS_INPUT", http.StatusBadRequest)
+	LegionNotConfigured    = both("LEGION_NOT_CONFIGURED", http.StatusNotFound)
+	LegionSettingInput     = both("LEGION_SETTING_INPUT", http.StatusBadRequest)
 	MentionInput           = both("MENTION_INPUT", http.StatusBadRequest)
 	MessageIDInput         = both("MESSAGE_ID_INPUT", http.StatusBadRequest)
 	MessageInput           = both("MESSAGE_INPUT", http.StatusBadRequest)

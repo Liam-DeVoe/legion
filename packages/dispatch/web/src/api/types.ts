@@ -218,6 +218,7 @@ export type {
   ItemBlock,
   ItemBlocks,
   LauncherCredentialResp,
+  LegionSetting,
   MarkItemV2,
   MarkSetV2,
   MarksPatchV2Input,

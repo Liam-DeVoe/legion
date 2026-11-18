@@ -93,6 +93,7 @@ test("human users manage repository project mappings from the settings route", a
   const listAgentTokens = spyOn(api, "listAgentTokens").mockResolvedValue([]);
   const getCredentialPending = spyOn(api, "getCredentialPending").mockResolvedValue(null);
   const listArchitectureSources = spyOn(api, "listArchitectureSources").mockResolvedValue([]);
+  const getLegionDaemon = spyOn(api, "getLegionDaemon").mockResolvedValue(null);
   const listDefaults = spyOn(api, "listProjectDefaultAssignees").mockResolvedValue([]);
   const getDeliverySettings = spyOn(api, "getDeliverySettings").mockResolvedValue(null);
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([
@@ -179,6 +180,7 @@ test("human users manage repository project mappings from the settings route", a
     listAgentTokens.mockRestore();
     getCredentialPending.mockRestore();
     listArchitectureSources.mockRestore();
+    getLegionDaemon.mockRestore();
     listDefaults.mockRestore();
     getDeliverySettings.mockRestore();
     listProjects.mockRestore();
@@ -215,6 +217,7 @@ test("a delayed mapping response does not undo a newer default the page has read
   const listAgentTokens = spyOn(api, "listAgentTokens").mockResolvedValue([]);
   const getCredentialPending = spyOn(api, "getCredentialPending").mockResolvedValue(null);
   const listArchitectureSources = spyOn(api, "listArchitectureSources").mockResolvedValue([]);
+  const getLegionDaemon = spyOn(api, "getLegionDaemon").mockResolvedValue(null);
   const listDefaults = spyOn(api, "listProjectDefaultAssignees").mockResolvedValue([]);
   const getDeliverySettings = spyOn(api, "getDeliverySettings").mockResolvedValue(null);
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([
@@ -270,6 +273,7 @@ test("a delayed mapping response does not undo a newer default the page has read
     listAgentTokens.mockRestore();
     getCredentialPending.mockRestore();
     listArchitectureSources.mockRestore();
+    getLegionDaemon.mockRestore();
     listDefaults.mockRestore();
     getDeliverySettings.mockRestore();
     listProjects.mockRestore();
@@ -294,6 +298,7 @@ test("repository settings retries a failed mapping query", async () => {
   const listAgentTokens = spyOn(api, "listAgentTokens").mockResolvedValue([]);
   const getCredentialPending = spyOn(api, "getCredentialPending").mockResolvedValue(null);
   const listArchitectureSources = spyOn(api, "listArchitectureSources").mockResolvedValue([]);
+  const getLegionDaemon = spyOn(api, "getLegionDaemon").mockResolvedValue(null);
   const listDefaults = spyOn(api, "listProjectDefaultAssignees").mockResolvedValue([]);
   const getDeliverySettings = spyOn(api, "getDeliverySettings").mockResolvedValue(null);
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([
@@ -332,6 +337,7 @@ test("repository settings retries a failed mapping query", async () => {
     listAgentTokens.mockRestore();
     getCredentialPending.mockRestore();
     listArchitectureSources.mockRestore();
+    getLegionDaemon.mockRestore();
     listDefaults.mockRestore();
     getDeliverySettings.mockRestore();
     listProjects.mockRestore();
@@ -368,6 +374,7 @@ test("a human creates a project from Settings and it appears in the mappings sel
   const listAgentTokens = spyOn(api, "listAgentTokens").mockResolvedValue([]);
   const getCredentialPending = spyOn(api, "getCredentialPending").mockResolvedValue(null);
   const listArchitectureSources = spyOn(api, "listArchitectureSources").mockResolvedValue([]);
+  const getLegionDaemon = spyOn(api, "getLegionDaemon").mockResolvedValue(null);
   // The defaults read is the one place a project's default comes from: the page's first read
   // knows CORE alone, and the one after the create knows QA too.
   const listDefaults = spyOn(api, "listProjectDefaultAssignees")
@@ -428,6 +435,7 @@ test("a human creates a project from Settings and it appears in the mappings sel
     listAgentTokens.mockRestore();
     getCredentialPending.mockRestore();
     listArchitectureSources.mockRestore();
+    getLegionDaemon.mockRestore();
     listDefaults.mockRestore();
     getDeliverySettings.mockRestore();
     listProjects.mockRestore();
@@ -456,6 +464,7 @@ test("creating a project with a taken key shows the server's error inline", asyn
   const listAgentTokens = spyOn(api, "listAgentTokens").mockResolvedValue([]);
   const getCredentialPending = spyOn(api, "getCredentialPending").mockResolvedValue(null);
   const listArchitectureSources = spyOn(api, "listArchitectureSources").mockResolvedValue([]);
+  const getLegionDaemon = spyOn(api, "getLegionDaemon").mockResolvedValue(null);
   const listDefaults = spyOn(api, "listProjectDefaultAssignees").mockResolvedValue([]);
   const getDeliverySettings = spyOn(api, "getDeliverySettings").mockResolvedValue(null);
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([core]);
@@ -494,6 +503,7 @@ test("creating a project with a taken key shows the server's error inline", asyn
     listAgentTokens.mockRestore();
     getCredentialPending.mockRestore();
     listArchitectureSources.mockRestore();
+    getLegionDaemon.mockRestore();
     listDefaults.mockRestore();
     getDeliverySettings.mockRestore();
     listProjects.mockRestore();
@@ -564,6 +574,7 @@ function renderSettings(projects: string[]): {
     spyOn(api, "listAgentTokens").mockResolvedValue([]),
     spyOn(api, "getCredentialPending").mockResolvedValue(null),
     spyOn(api, "listArchitectureSources").mockResolvedValue([]),
+    spyOn(api, "getLegionDaemon").mockResolvedValue(null),
     spyOn(api, "getDeliverySettings").mockResolvedValue(null),
     spyOn(api, "listProjects").mockResolvedValue(
       projects.map((key) => ({

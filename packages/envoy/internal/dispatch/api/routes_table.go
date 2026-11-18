@@ -202,21 +202,27 @@ var writeClasses = map[string]writeScope{
 	"DELETE /api/v1/priorities/{id}":                       scopeDeployment,
 	"PUT /api/v1/settings/repo-projects/{owner}/{repo}":    scopeDeployment,
 	"DELETE /api/v1/settings/repo-projects/{owner}/{repo}": scopeDeployment,
-	"POST /api/v1/delivery/session-groups":                 scopeDeployment,
-	"PATCH /api/v1/delivery/session-groups/{id}":           scopeDeployment,
-	"DELETE /api/v1/delivery/session-groups/{id}":          scopeDeployment,
-	"POST /api/v1/broadcasts":                              scopeDeployment,
-	"POST /api/v1/credential-requests/{id}/approve":        scopeDeployment,
-	"POST /api/v1/credential-requests/{id}/deny":           scopeDeployment,
-	"POST /api/v1/credential-requests/machine-lookup":      scopeDeployment,
-	"POST /api/v1/credential-grants/{id}/revoke":           scopeDeployment,
-	"POST /api/v1/machine-logins/{id}/revoke":              scopeDeployment,
-	"POST /api/v1/signins/{id}/revoke":                     scopeDeployment,
-	"POST /api/v1/live/_test/disconnect":                   scopeDeployment,
-	"POST /api/v1/live/_test/rotate":                       scopeDeployment,
-	"POST /api/v1/artifacts/_test/quiesce":                 scopeDeployment,
-	"POST /api/v1/settings/new-issue/_test":                scopeDeployment,
-	"POST /api/v1/writes/_test/slow":                       scopeDeployment,
+	// Which daemon a project's Legion state is read from: addressed under the project it serves,
+	// and not belonging to it. Pointing Dispatch at a host is the deployment's write, so a
+	// credential that may write one project's issues is refused it by name, the project its path
+	// names included.
+	"PUT /api/v1/projects/{key}/legion/daemon":        scopeDeployment,
+	"DELETE /api/v1/projects/{key}/legion/daemon":     scopeDeployment,
+	"POST /api/v1/delivery/session-groups":            scopeDeployment,
+	"PATCH /api/v1/delivery/session-groups/{id}":      scopeDeployment,
+	"DELETE /api/v1/delivery/session-groups/{id}":     scopeDeployment,
+	"POST /api/v1/broadcasts":                         scopeDeployment,
+	"POST /api/v1/credential-requests/{id}/approve":   scopeDeployment,
+	"POST /api/v1/credential-requests/{id}/deny":      scopeDeployment,
+	"POST /api/v1/credential-requests/machine-lookup": scopeDeployment,
+	"POST /api/v1/credential-grants/{id}/revoke":      scopeDeployment,
+	"POST /api/v1/machine-logins/{id}/revoke":         scopeDeployment,
+	"POST /api/v1/signins/{id}/revoke":                scopeDeployment,
+	"POST /api/v1/live/_test/disconnect":              scopeDeployment,
+	"POST /api/v1/live/_test/rotate":                  scopeDeployment,
+	"POST /api/v1/artifacts/_test/quiesce":            scopeDeployment,
+	"POST /api/v1/settings/new-issue/_test":           scopeDeployment,
+	"POST /api/v1/writes/_test/slow":                  scopeDeployment,
 
 	// The row that writes nothing and reads no row: the markdown round trip, which answers what
 	// a document write would store for the text it is given.
@@ -662,7 +668,7 @@ func (s *server) routes() []apiRoute {
 		route.Successor = row.Successor
 		routes = append(routes, route)
 	}
-	for _, row := range slices.Concat(s.v2IndexRows(), s.v2Infra979Rows(), s.v2LogRows(), s.v2AskRows(), s.v2DocumentRows(), s.v2ThreadRows(), s.v2IssueRows(), s.v2RoleHolderRows(), s.v2ProjectRows(), s.v2MeRows(), s.v2CredentialRows(), s.v2MiscRows()) {
+	for _, row := range slices.Concat(s.v2IndexRows(), s.v2Infra979Rows(), s.v2LogRows(), s.v2AskRows(), s.v2DocumentRows(), s.v2ThreadRows(), s.v2IssueRows(), s.v2RoleHolderRows(), s.v2ProjectRows(), s.v2LegionRows(), s.v2MeRows(), s.v2CredentialRows(), s.v2MiscRows()) {
 		routes = append(routes, mountRow(row)...)
 	}
 	if s.deps.TestHooksEnabled {
@@ -713,6 +719,10 @@ func (s *server) v1Rows() []v1Row {
 		{http.MethodGet, "/api/v1/settings/new-issue", authAny, "What the dashboard's search bar files a person's unmatched typed words as: {label, session}, the label that new issue carries and the session it is routed to and its first message goes to, as this deployment configured them (DISPATCH_NEW_ISSUE_LABEL, DISPATCH_NEW_ISSUE_SESSION). Each is \"\" where it configured none: no label on the issue, and no conversation started on it. The bar writes the issue itself, through POST /api/v1/issues and the issue's own artifact, patch and message routes.", s.getNewIssueSettings, successorIs(http.MethodGet, "/settings/new-issue")},
 		{http.MethodPut, "/api/v1/projects/{key}/default-assignee", authAny, "Move a project's default assignee to another person {assignee} (the email of a person who has signed in): who an issue created with no assignee, by nobody, under no parent or under a parent with nobody on it, goes to, and who a question on an issue nobody holds reaches. A project always names a person, so an assignee that is absent, null or blank is 400 INVALID_PROJECT and the default cannot be cleared. Needs the person scope, as the default names a person: a credential the deployment configured, the shared token or a pod's, holds none.", s.putProjectDefaultAssignee, successorIs(http.MethodPatch, "/projects/{key}")},
 		{http.MethodPut, "/api/v1/projects/{key}/gated-steps", authAny, "Publish the design-gate steps the Legion deployment that serves this project gates {steps}: a list of decisions, criteria and spec, in the order it gates them, or [] for a deployment that gates none. The deployment's daemon writes it at every boot; a publish of the list the row already holds changes nothing and appends no event. A body without steps, or one naming anything else, is 400 INVALID_PROJECT, and an unknown project 404 PROJECT_NOT_FOUND. It declares no personal scope: the credential the deployment configured writes it, as it does the issue PATCH.", s.putProjectGatedSteps, successorIs(http.MethodPatch, "/projects/{key}")},
+		{http.MethodGet, "/api/v1/projects/{key}/legion/daemon", authAny, "The Legion daemon this project's state is read from, the one Dispatch reads `GET /legion/v1/state` from once a minute, with the actor that first named it and when it was last written; null when the project names none. No route lists every project's daemon: a page that shows them all reads each project's. 400 INVALID_PROJECT for a key that is not a project key, 404 PROJECT_NOT_FOUND for a project that does not exist.", s.getLegionSetting, successorIs(http.MethodGet, "/projects/{key}/legion-daemon")},
+		{http.MethodPut, "/api/v1/projects/{key}/legion/daemon", authAny, "Name the Legion daemon this project's state is read from {state_url}: an absolute http(s) URL with a host and no path, else 400 LEGION_SETTING_INPUT. The daemon belongs to the deployment, so a project-scoped credential is refused it, the project this path names included. 400 INVALID_PROJECT for a key that is not a project key, 404 PROJECT_NOT_FOUND for a project that does not exist.", s.putLegionSetting, successorIs(http.MethodPut, "/projects/{key}/legion-daemon")},
+		{http.MethodDelete, "/api/v1/projects/{key}/legion/daemon", authAny, "Stop reading this project's Legion daemon; what was already read stays. 404 NOT_FOUND when the project names none, 400 INVALID_PROJECT for a key that is not a project key and 404 PROJECT_NOT_FOUND for a project that does not exist.", s.deleteLegionSetting, successorIs(http.MethodDelete, "/projects/{key}/legion-daemon")},
+		{http.MethodGet, "/api/v1/projects/{key}/legion/board", authAny, "The Legion board of the project its path names, from what the sampler recorded of that project's daemon: eleven columns (queue, design, planning, implementing, testing, reviewing, accepting, retro, merging, awaiting_person, held), each card naming its issue's key, title, priority, phase and when that phase began, the slot it holds, the roles in a turn now, the issues a blocker link holds it on, what it waits on from a person, its tree root and the children of its tree that have not started; and a header with the slots in use, the slot cap, the queue's length and the last read of the daemon with its failure. 404 LEGION_NOT_CONFIGURED when the project names no daemon, 400 INVALID_PROJECT for a key that is not a project key, 404 PROJECT_NOT_FOUND for a project that does not exist.", s.getLegionBoard, successorIs(http.MethodGet, "/projects/{key}/legion-board")},
 		{http.MethodGet, "/api/v1/delivery/runs/{id}", authAny, "One deploy-repository run with every job it ran, by start, each with its result and timings; 400 RUN_ID_INPUT for an id that is not a positive integer, 404 NOT_FOUND for no such run, 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row.", s.getDeliveryRun, successorIs(http.MethodGet, "/deploy-runs/{id}")},
 		{http.MethodPost, "/api/v1/delivery/session-groups", authAny, "Create a Delivery session group {name, sessions}: the group becomes the Parent agent of every pull request whose first session it holds; 409 SESSION_IN_GROUP for a session another group holds, 409 SESSION_GROUP_NAME_TAKEN for a name another group has, 409 SESSION_GROUP_NAME_IS_SESSION_TITLE for a name that is the title of a session outside the group. The timeline lists every group (session_groups).", s.createDeliverySessionGroup, successorIs(http.MethodPost, "/session-groups")},
 		{http.MethodPatch, "/api/v1/delivery/session-groups/{id}", authAny, "Rename a Delivery session group, add sessions to it and remove sessions from it {name?, add?, remove?}, with the create route's refusals; 400 SESSION_GROUP_INPUT for an edit that would leave it empty.", s.updateDeliverySessionGroup, successorIs(http.MethodPatch, "/session-groups/{id}")},

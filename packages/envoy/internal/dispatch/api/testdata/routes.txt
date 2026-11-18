@@ -169,6 +169,10 @@ POST /api/v1/projects/{key}/artifacts/{slug}/versions any
 GET /api/v1/projects/{key}/artifacts/{slug}/versions/{number} any
 PUT /api/v1/projects/{key}/default-assignee any
 PUT /api/v1/projects/{key}/gated-steps any
+GET /api/v1/projects/{key}/legion/board any
+DELETE /api/v1/projects/{key}/legion/daemon any
+GET /api/v1/projects/{key}/legion/daemon any
+PUT /api/v1/projects/{key}/legion/daemon any
 GET /api/v1/projects/{key}/related any
 POST /api/v1/projects/{key}/related any
 GET /api/v1/references any
@@ -317,6 +321,10 @@ POST /api/v2/projects/{key}/architecture-syncs any
 GET /api/v2/projects/{key}/artifacts any
 POST /api/v2/projects/{key}/artifacts any
 GET /api/v2/projects/{key}/issues any
+GET /api/v2/projects/{key}/legion-board any
+DELETE /api/v2/projects/{key}/legion-daemon any
+GET /api/v2/projects/{key}/legion-daemon any
+PUT /api/v2/projects/{key}/legion-daemon any
 GET /api/v2/projects/{key}/near-copy-checks any
 POST /api/v2/projects/{key}/related-searches any
 GET /api/v2/references any
