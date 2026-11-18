@@ -144,6 +144,14 @@ var keepsText = map[string]bool{
 	"github.com/jackc/pgx/v5": true, "github.com/jackc/pgx/v5/pgconn": true,
 }
 
+// keepsTextFunctions are the functions of the module this program does not read that answer with
+// the text they are handed: pgsetting's two parses answer with the pgx configuration they read
+// from a connection string (its hosts, its user, its database), as pgx's own ParseConfig does.
+var keepsTextFunctions = map[string]bool{
+	"github.com/sjawhar/envoy/pgsetting.ParseConfig":     true,
+	"github.com/sjawhar/envoy/pgsetting.ParsePoolConfig": true,
+}
+
 // urlTakers are the functions that read the value they are handed as a URL, or hand it to
 // another program.
 var urlTakers = map[string]bool{

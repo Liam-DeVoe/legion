@@ -219,10 +219,10 @@ func (a *analysis) evaluateCall(call *ast.CallExpr) set {
 		}
 	}
 	// A function this program does not read, of a package whose answers and errors hold the text
-	// they are handed (keepsText), hands on the text of each argument and receiver that can hold
-	// text (texty). Any function hands on what each function it is handed answers, and, handed one,
-	// reads the setting a constant names.
-	keeps := fn != nil && keepsText[packagePath(fn)]
+	// they are handed (keepsText), or one such function of the module (keepsTextFunctions), hands
+	// on the text of each argument and receiver that can hold text (texty). Any function hands on
+	// what each function it is handed answers, and, handed one, reads the setting a constant names.
+	keeps := fn != nil && (keepsText[packagePath(fn)] || keepsTextFunctions[packagePath(fn)+"."+fn.Name()])
 	var all []set
 	if sel, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr); ok && keeps && a.info.Selections[sel] != nil && a.texty(a.info.TypeOf(sel.X)) {
 		all = append(all, a.ev(sel.X))
