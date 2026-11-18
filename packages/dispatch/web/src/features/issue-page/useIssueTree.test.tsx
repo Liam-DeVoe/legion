@@ -5235,6 +5235,37 @@ async function slotRetry(rig: Rig): Promise<void> {
   });
 }
 
+/** A composer send of the margin (`["margin-composer", documentId]`, `margin-context.tsx`), held
+ *  as `held-sends.ts:307-324` holds one: under its name until its deadline, then under
+ *  `pastDeadlineKey`, built before the name lets go. Pressed with the stage drawn; the reader
+ *  leaves 10 s in; an event of the issue 20 s in; the send past its deadline at 30 s, the reader
+ *  still away; the reader back at 35 s; an event at 40 s; the send settling at 60 s. One write of
+ *  the issue, begun while the page drew its tree: nothing of the tree is read until it settles. */
+const MARGIN_SEND_PAST_DEADLINE_AWAY: RuleWay = {
+  words:
+    "a send from the margin pressed on the page that goes past its deadline 30 s in while the reader is away, an event 20 s and 40 s in, the reader back at 35 s and the send settling at 60 s",
+  does: async (rig) => {
+    const name = ["margin-composer", "artifact-plan"];
+    const before = ruleReads(rig);
+    const settleName = holdKeyedWrite(rig, name);
+    await tick(10_000, 100);
+    leave(rig);
+    await tick(10_000, 100);
+    await commentsEvent(rig);
+    await tick(10_000, 100);
+    const settlePast = holdKeyedWrite(rig, [...name, "past-deadline"]);
+    act(() => settleName());
+    await tick(5_000, 100);
+    comeBack(rig);
+    await tick(5_000, 100);
+    await commentsEvent(rig);
+    await tick(19_000, 100);
+    expect(ruleReads(rig) - before, "the reads while the send is out").toBe(0);
+    act(() => settlePast());
+    await tick(50, 10);
+  },
+};
+
 const WAYS = {
   mount: {
     words: "a new surface mounting",
@@ -5432,6 +5463,7 @@ const WAYS = {
     slotRetry,
     1
   ),
+  marginSendPastDeadlineAway: MARGIN_SEND_PAST_DEADLINE_AWAY,
 } satisfies Record<string, RuleWay>;
 
 /** How many reads of a query a way starts: a count, or the least and the most. */
@@ -6199,6 +6231,8 @@ const READ_RULES: readonly ReadRule[] = [
     now: 1,
     back: 0,
   },
+  // A send of the margin pressed on the page is one write of the issue past its deadline too.
+  { read: "tree", state: "answered", observed: true, way: "marginSendPastDeadlineAway", now: 1 },
 ];
 
 describe("the rule for when a read of the tree or of a view starts", () => {
