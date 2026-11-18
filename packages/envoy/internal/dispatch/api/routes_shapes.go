@@ -257,7 +257,9 @@ type issueReferencesQuery struct {
 type referenceTargetsQuery struct {
 	// Ref is one reference to resolve, given once per reference, at most
 	// referenceTargetsMax of them; naming none is 400 INVALID_REFERENCE and naming more
-	// than the cap is 400 CAP_EXCEEDED.
+	// than the cap is 400 CAP_EXCEEDED. An item id or a block id written short in it is
+	// resolved in the scope the reference names, and a prefix two or more items carry
+	// answers that member gone with ambiguous: true, and every other member is answered.
 	Ref []string `query:"ref"`
 }
 
@@ -1062,6 +1064,7 @@ var routeShapes = map[string]routeShape{
 	},
 	"DELETE /api/v1/artifacts/{id}/_test/live-write-pauses/{point}": {Status: http.StatusOK, Response: liveWritePauseState{}},
 	"POST /api/v1/writes/_test/slow":                                {Status: http.StatusOK, Response: testHookOK{}, Request: slowWriteInput{}},
+	"GET /api/v1/messages/_test/queued":                             {Status: http.StatusOK, Response: queuedMessages{}},
 }
 
 // shapelessRoutes names every mounted row routeShapes does not name. A row with no shape is a

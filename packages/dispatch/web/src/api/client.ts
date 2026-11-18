@@ -12,6 +12,7 @@ import {
   type InboxThreadKind,
   NO_ROUTE_MESSAGE_PREFIX,
   NO_ROUTE_ROLLING_RELEASE_MESSAGE,
+  REFERENCE_TARGETS_MAX,
   retryNoRoute,
   type Sleep,
   sleep,
@@ -153,19 +154,24 @@ export type ReferenceSourceKind = NonNullable<
  *  it takes: the deadline is on the silence, not the transfer. */
 export const REQUEST_DEADLINE_MS = 30_000;
 
-/** How many references one `getReferenceTargets` may name, which is the server's own cap
- *  (`referenceTargetsMax`, `packages/envoy/internal/dispatch/api/reference_targets.go:29`): past
+/** How many references one `getReferenceTargets` may name: `REFERENCE_TARGETS_MAX`, the literal in
+ *  `@legion/contracts` that is generated into Go and that the server reads as its own cap
+ *  (`referenceTargetsMax` in `packages/envoy/internal/dispatch/api/reference_targets.go`). Past
  *  it the read is refused `400 CAP_EXCEEDED`, so a caller holding more reads them in batches. */
-export const REFERENCE_TARGETS_MAX = 256;
+export { REFERENCE_TARGETS_MAX };
 
-/** How many characters of query string one `getReferenceTargets` may write. The server bounds a
- *  batch by the count alone and says so (`referenceTargetsMax`,
- *  `packages/envoy/internal/dispatch/api/reference_targets.go:24-27`): it sets no limit on the
- *  request line itself, a load balancer in front of it does - 16 KB on an AWS one - and a full
- *  batch of comment or message references encodes to more than that. So a caller splits by the
- *  length it writes as well as by the count, which is the two-request read that comment
- *  describes. The budget is the query alone, which leaves the route, the verb and the version
- *  of the request line room of their own inside the 16 KB. */
+/** The budget, in characters of query string, that the batches of `referenceTargetsQuery` keep
+ *  each `getReferenceTargets` call inside (`referenceTargetBatches` in `queries.ts`), except a
+ *  batch of one address longer than the budget, which goes alone and passes it: a batch of no
+ *  address would name nothing. `getReferenceTargets` itself writes every reference it is given
+ *  and applies no budget. The server bounds a batch by the count alone and says so
+ *  (`referenceTargetsMax` in `packages/envoy/internal/dispatch/api/reference_targets.go`): it
+ *  sets no limit on the request line itself, but a proxy in front of it can set one, and 16 KB is
+ *  one known such limit (an AWS load balancer's). A full batch of comment or message references
+ *  encodes to more than that, so a caller splits by the length it writes as well as by the
+ *  count, which is the two-request read that comment describes. The budget is the query alone,
+ *  which leaves the route, the verb and the version of the request line room of their own inside
+ *  16 KB. It is set under that one known limit, not measured against the deployed Dispatch. */
 export const REFERENCE_TARGETS_MAX_QUERY_CHARS = 12_000;
 
 /** A request Dispatch went silent on for its deadline, which the page then aborted. It is no
@@ -1645,10 +1651,11 @@ export class DispatchApiClient {
   }
 
   /** What many `dispatch://` references point at, in one read: one member per `ref` in the
-   *  request's order, each `{ref, kind, name, gone}`. The issue page's tree resolves every chip
-   *  on the page through this rather than one `getReferences` per pointer, which is what keeps
-   *  its first load to one request however many nodes it draws (dispatch://INFRA-1196 R20). At
-   *  most `REFERENCE_TARGETS_MAX` references: past that the server answers `400 CAP_EXCEEDED`. */
+   *  request's order, each `{ref, kind, name, gone}`. A page that names many references can read
+   *  all their names through this, in as few requests as both bounds allow
+   *  (`referenceTargetsQuery`), rather than one `getReferences` per reference, so a page's first
+   *  load makes no request for each reference. At most `REFERENCE_TARGETS_MAX` references:
+   *  past that the server answers `400 CAP_EXCEEDED`. */
   getReferenceTargets(refs: readonly string[]) {
     return this.read("/api/v1/reference-targets", {}, { ref: [...refs] });
   }
