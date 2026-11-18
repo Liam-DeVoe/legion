@@ -235,10 +235,10 @@ func TestTheReadOfAProjectListsEachFinishedIssue(t *testing.T) {
 	} {
 		issue := want.issue
 		if issue.Plan == nil || !reflect.DeepEqual(*issue.Plan, want.plan) {
-			t.Fatalf("%s's plan is %+v, want %+v, the plan its own run wrote", issue.Issue, issue.Plan, want.plan)
+			t.Fatalf("%s's plan is %s, want %s, the plan its own run wrote", issue.Issue, asJSON(t, issue.Plan), asJSON(t, want.plan))
 		}
 		if len(issue.Ratings) != 1 || issue.Ratings[0].Rating != want.rating || issue.Ratings[0].Reason != want.reason {
-			t.Fatalf("%s's ratings are %+v, want one, %d %q", issue.Issue, issue.Ratings, want.rating, want.reason)
+			t.Fatalf("%s's ratings are %s, want one, %d %q", issue.Issue, asJSON(t, issue.Ratings), want.rating, want.reason)
 		}
 		// The retro's record and end, and the issue's title and close, each differ from a value of
 		// the same type beside it (the issue's key, its last end), so each is checked equal.
@@ -330,7 +330,7 @@ func TestARatingIsTheDaemonsAlone(t *testing.T) {
 		}
 	}
 	if steps := stepsOf(t, handler, issue); len(steps) != 1 || steps[0].ID != retro || steps[0].Rating != nil || steps[0].RatingReason != nil {
-		t.Fatalf("the refused ratings left %+v, want the one retro %s, unrated", steps, retro)
+		t.Fatalf("the refused ratings left %s, want the one retro %s, unrated", asJSON(t, steps), retro)
 	}
 
 	rated := putRatingOK(t, handler, issue, retro, withFields(retroIdentity(daemonSession("LEG"), 1), rating))
@@ -677,7 +677,7 @@ func TestAnUnknownStartCountsNoTime(t *testing.T) {
 		t.Fatalf("the time is %v to %v, %v seconds, want %s to %s, 1800 seconds", read.StartedAt, read.EndedAt, read.DurationSeconds, at(10), at(40))
 	}
 	if read.Plan != nil || len(read.Ratings) != 0 {
-		t.Fatalf("the issue with no plan node lists plan %+v and ratings %+v, want none of either", read.Plan, read.Ratings)
+		t.Fatalf("the issue with no plan node lists plan %s and ratings %s, want none of either", asJSON(t, read.Plan), asJSON(t, read.Ratings))
 	}
 }
 
@@ -768,7 +768,7 @@ func TestTheReadOfPlansRefusesAnUnknownProjectAndABadWindow(t *testing.T) {
 		requireStepRefusal(t, "the plans of LEG"+query, refused, http.StatusBadRequest, "INVALID_QUERY")
 	}
 	if read := readPlans(t, handler, "LEG", "?since=2026-11-01T00:00:00Z"); read.Issues == nil || len(read.Issues) != 0 {
-		t.Fatalf("the plans of a project with no finished issue are %+v, want an empty list", read)
+		t.Fatalf("the plans of a project with no finished issue are %s, want an empty list", asJSON(t, read))
 	}
 }
 
@@ -840,7 +840,7 @@ func TestAPlanWriteIsTheDaemonsAlone(t *testing.T) {
 	written := putPlanRecordOK(t, handler, issue, id, defaultPlanBody(daemonSession("LEG"), 1))
 	if written.ID != id || written.Issue != issue || written.Generation != 1 || written.Source != "default" ||
 		written.ArtifactID != nil || written.Version != nil || len(written.Tasks) != 1 || !slices.Equal(written.Tasks[0].Steps, defaultStepLine) {
-		t.Fatalf("the plan write answers %+v, want the default plan of %s", written, issue)
+		t.Fatalf("the plan write answers %s, want the default plan of %s", asJSON(t, written), issue)
 	}
 	if after := issueEventTypes(t, handler, issue); !slices.Equal(before, after) {
 		t.Fatalf("the issue's events went from %v to %v, want no event for a plan write", before, after)
@@ -946,6 +946,6 @@ func holdsPlan(t *testing.T, handler http.Handler, issue string) bool {
 			return finished.Plan != nil
 		}
 	}
-	t.Fatalf("the read of %s's plans does not list %s, which was just closed: %+v", project, issue, read.Issues)
+	t.Fatalf("the read of %s's plans does not list %s, which was just closed: %s", project, issue, asJSON(t, read.Issues))
 	return false
 }
