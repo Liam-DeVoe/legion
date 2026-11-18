@@ -1,9 +1,9 @@
 #!/bin/sh
 # Writes InterVariable-subset.woff2 beside this file: the typeface the Dispatch web app ships and
-# draws every page in, and the new issue page in under the family name `Dispatch Inter`
-# (`web/src/styles.css`, dispatch://INFRA-1196 R36), cut from rsms/inter's own release. It starts
-# from the release's `web/InterVariable.woff2`, the file the approved prototype of the issue page
-# embeds, checked by the SHA-256 of the release archive and of that file, and keeps:
+# draws the issue page in (`web/src/styles.css`, dispatch://INFRA-1196 R36), cut from rsms/inter's
+# own release. It starts from the release's `web/InterVariable.woff2`, the file the approved
+# prototype of the issue page embeds, checked by the SHA-256 of the release archive and of that
+# file, and keeps:
 #
 # - the weight axis from 400 to 700, the weights the app draws, and the optical size axis whole
 #   (14 to 32), which a browser sets from the font size as it did when the prototype was drawn;

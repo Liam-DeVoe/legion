@@ -1,141 +1,6 @@
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
 
-/* The typeface: Inter, the face every width of the issue page's spec and pictures is measured in
-   (dispatch://INFRA-1196 R36), shipped in the bundle so that no reader is drawn in whatever face
-   their machine happens to hold. `fonts/inter/subset.sh` cuts the file from rsms/inter's release
-   4.1 to the weights 400 to 700 and to the characters `unicode-range` lists, and the two lists
-   are one list: change both, and record the new file's SHA-256 in the script, which holds what
-   it writes to it. `fonts/inter/package.json`, beside the release's LICENSE.txt, is what lists
-   it under the SIL Open Font License 1.1 in the build's THIRD_PARTY_NOTICES.txt.
-
-   `font-display: swap` draws the text at once in the fallback below and redraws it in Inter
-   when the file arrives, so a reader on a slow network reads straight away and still ends on the
-   page the pictures show. `block` would hide the text for up to 3 s, and `optional` would keep a
-   first visit in the fallback for as long as that page stays open. The swap changes neither a
-   family's name nor a box's width, so what measures words in script and not in layout measures
-   them again on the document's `loadingdone`, as the Contents list's cut does
-   (`features/issue/one-line.ts`). */
-@font-face {
-  font-family: Inter;
-  font-style: normal;
-  font-weight: 400 700;
-  font-display: swap;
-  src: url("./fonts/inter/InterVariable-subset.woff2") format("woff2");
-  unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
-    U+2000-206F, U+20AC, U+2122, U+2190-21FF, U+2212, U+2215, U+2248, U+2298, U+2318, U+2325,
-    U+25B2, U+25BC, U+25C6, U+25CB, U+25CF, U+26A0, U+2713, U+2717, U+FEFF, U+FFFD;
-}
-
-/* What the page is drawn in while Inter has not loaded, or when it never does: a face the
-   reader's machine holds, scaled to Inter's widths and given Inter's ascent and descent, so the
-   header keeps its lines and the page its reflow (R36) and the swap to Inter moves almost
-   nothing. The values are next/font's and Fontaine's, computed from the fonts' own tables:
-   `size-adjust` is Inter's average character width over the local face's, each weighted by
-   Capsize's English character frequencies, and each override is Inter's ascent, descent or line
-   gap (1984, 494 and 0 of 2048 units per em) over that scaled em. Inter's widths are read at
-   each weight the app draws, at the optical size of its 14 px text, against the local regular
-   face for 400 and 500 and its bold face for 600 and 700, so no weight is synthesized. "Inter
-   fallback" is Arial, or Liberation Sans or Arimo, which are drawn to Arial's widths (its values
-   were read from Liberation Sans 2.1.5); "Inter fallback DejaVu" is DejaVu Sans 2.37, which the
-   browser suite's machines answer for `sans-serif` and which, unscaled, drew the issue page's
-   strings up to a quarter wider than Inter. A machine that holds none of them draws the next
-   family of the stack. */
-@font-face {
-  font-family: "Inter fallback";
-  font-weight: 400;
-  src:
-    local("Arial"), local("ArialMT"), local("Liberation Sans"), local("LiberationSans"),
-    local("Arimo"), local("Arimo-Regular");
-  size-adjust: 107.12%;
-  ascent-override: 90.44%;
-  descent-override: 22.52%;
-  line-gap-override: 0%;
-}
-
-@font-face {
-  font-family: "Inter fallback";
-  font-weight: 500;
-  src:
-    local("Arial"), local("ArialMT"), local("Liberation Sans"), local("LiberationSans"),
-    local("Arimo"), local("Arimo-Regular");
-  size-adjust: 108.21%;
-  ascent-override: 89.52%;
-  descent-override: 22.29%;
-  line-gap-override: 0%;
-}
-
-@font-face {
-  font-family: "Inter fallback";
-  font-weight: 600;
-  src:
-    local("Arial Bold"), local("Arial-BoldMT"), local("Liberation Sans Bold"),
-    local("LiberationSans-Bold"), local("Arimo Bold"), local("Arimo-Bold");
-  size-adjust: 101.53%;
-  ascent-override: 95.42%;
-  descent-override: 23.76%;
-  line-gap-override: 0%;
-}
-
-@font-face {
-  font-family: "Inter fallback";
-  font-weight: 700;
-  src:
-    local("Arial Bold"), local("Arial-BoldMT"), local("Liberation Sans Bold"),
-    local("LiberationSans-Bold"), local("Arimo Bold"), local("Arimo-Bold");
-  size-adjust: 102.54%;
-  ascent-override: 94.47%;
-  descent-override: 23.52%;
-  line-gap-override: 0%;
-}
-
-@font-face {
-  font-family: "Inter fallback DejaVu";
-  font-weight: 400;
-  src: local("DejaVu Sans"), local("DejaVuSans");
-  size-adjust: 93.95%;
-  ascent-override: 103.12%;
-  descent-override: 25.67%;
-  line-gap-override: 0%;
-}
-
-@font-face {
-  font-family: "Inter fallback DejaVu";
-  font-weight: 500;
-  src: local("DejaVu Sans"), local("DejaVuSans");
-  size-adjust: 94.91%;
-  ascent-override: 102.07%;
-  descent-override: 25.42%;
-  line-gap-override: 0%;
-}
-
-@font-face {
-  font-family: "Inter fallback DejaVu";
-  font-weight: 600;
-  src: local("DejaVu Sans Bold"), local("DejaVuSans-Bold");
-  size-adjust: 84.86%;
-  ascent-override: 114.15%;
-  descent-override: 28.42%;
-  line-gap-override: 0%;
-}
-
-@font-face {
-  font-family: "Inter fallback DejaVu";
-  font-weight: 700;
-  src: local("DejaVu Sans Bold"), local("DejaVuSans-Bold");
-  size-adjust: 85.71%;
-  ascent-override: 113.02%;
-  descent-override: 28.14%;
-  line-gap-override: 0%;
-}
-
-/* The one stack: the root draws in it, and so does Tailwind's `font-sans`. */
-@theme {
-  --font-sans:
-    Inter, "Inter fallback", "Inter fallback DejaVu", ui-sans-serif, system-ui, sans-serif;
-}
-
 /* A screen too narrow or too short for a wide sticky panel: a phone in either orientation, or a
    tablet-width window below `md`. The Agents broadcast composer compacts under it (and further
    under `short`, where two stacked rows of controls would still take half the height). The
@@ -166,7 +31,7 @@
    that mechanism and stays in exact sync with the canvas/primary-text swatches so the document
    edge does not flash the wrong scheme before React mounts. */
 :root {
-  font-family: var(--font-sans);
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
   color: #0f172b; /* slate-900 */
   background: #f8fafc; /* slate-50 */
   color-scheme: light dark;
@@ -517,32 +382,35 @@ html:has([data-issue-page]) {
 
      A markdown link's padding is sized from its own line pitch, since a `.dispatch-markdown`
      inherits its text size and line height from its call site. `1lh` is the link's computed
-     line height and `1.25em` stands for the height of its font's text box (ascent plus
+     line height and `1.2em` stands for the height of its font's text box (ascent plus
      descent): half of what that leaves of the line goes above and below the link, and its
      padded box then stops at least as far short of the text of the line above as the padding
-     itself, for any font whose text box is at most 1.25em, so two links on consecutive lines
-     keep a gap between their tap targets. A pitch tighter than 1.25em (a large heading) gets
-     no padding, since `calc()` clamps a negative padding to 0: its lines leave no gap to fill.
+     itself, for any font whose text box is at most 1.2em. A pitch tighter than 1.2em (a large
+     heading) gets no padding, since `calc()` clamps a negative padding to 0: its lines leave
+     no gap to fill.
 
-     The app draws in Inter (the `@font-face` rules at the top of this file), whose text box
-     Chromium measures at 20px at 16px: 1.25em, where its ascent and descent of 1984 and 494 of
-     2048 units per em would give 1.21em, since each is rounded up to a whole pixel. Measured
-     in Chromium at 390px on a message turn in Details, 16px on 24px lines (padding /
-     clearance from the lower link's padded box to the upper link's text): with 1.2em, 2.4px /
-     1.6px in Inter and 2.4px / 2.6px in DejaVu Sans, whose box is 19px; so the constant is
-     Inter's own box, which leaves 2px / 2px. A font whose text box is r em tall leaves a
-     clearance of (line-height - (2r - 1.25) * font-size) / 2: an Inbox ask card
-     (`AskCard.tsx`), 15px on 24.375px, 2.8px; an agent-view message body (`text-sm`), 14px on
-     20px, 1.25px; an agent turn's reasoning (`AgentThread.tsx`, `text-xs`), 12px on 16px,
-     0.5px; a document in the editor (`.milkdown p` in proof-editor's `lib.css`, line height
-     1.6), 16px on 25.6px, 2.8px; each computed for Inter rather than measured. A fixed 3px
-     measured -1px on the reasoning, reaching into the letters of the line above, and a fixed
-     4px on a message turn measured a clearance of 1px (INFRA-95).
+     Measured in Chromium at 390px with DejaVu Sans, whose text box is 19px at 16px, 18px at
+     15px and 14px at 12px (padding / clearance from the lower link's padded box to the upper
+     link's text): a message turn, 16px on 24px lines, 2.4px / 2.6px; an Inbox ask card
+     (`AskCard.tsx`), 15px on 24.375px, 3.2px / 3.2px; an agent-view message body (`text-sm`),
+     14px on 20px, 1.6px / 2.4px; a document in the editor (`.milkdown p` in proof-editor's
+     `lib.css`, line height 1.6), 16px on 25.6px, 3.2px / 3.4px; an agent turn's reasoning
+     (`AgentThread.tsx`, `text-xs`), 12px on 16px, 0.8px / 1.2px. A fixed 3px there measured
+     -1px, reaching into the letters of the line above, and a fixed 4px on a message turn
+     measured a clearance of 1px (INFRA-95).
 
      No fallback declaration: Tailwind v4's browser floor supports `lh`, and a browser
-     without it drops the declaration and gives the link no padding, which never overlaps. */
+     without it drops the declaration and gives the link no padding, which never overlaps.
+     A font whose text box is r em tall leaves a clearance of
+     (line-height - (2r - 1.2) * font-size) / 2, so it reaches into the line above wherever
+     (2r - 1.2) * font-size > line-height. Segoe UI (`system-ui` on Windows, in a window
+     narrower than 1280px) has r = 1.33 by its published metrics, ascent 2210 plus descent 514
+     of 2048 units per em, not measured here; at each pitch above that gives: reasoning,
+     12px on 16px, -0.76px (overlaps); an agent-view message body, 14px on 20px, -0.22px
+     (overlaps); a message turn, 16px on 24px, 0.32px; a document, 16px on 25.6px, 1.12px; an
+     Inbox ask card, 15px on 24.375px, 1.24px. */
   .prose a {
-    padding-block: calc((1lh - 1.25em) / 2);
+    padding-block: calc((1lh - 1.2em) / 2);
   }
 
   .dispatch-inline-link {
