@@ -897,6 +897,8 @@ go_test_step_expansion_test: &go_test_step_expansion_test
   - '.github/scripts/go_build_tags.py'
   - '.github/workflows/ci-job-envoy-go-race-docs.yaml'
   - '.github/workflows/ci-job-envoy-go-docs-finalizers.yaml'
+  - 'packages/envoy/scripts/database-skips.sh'
+  - '.github/scripts/ci_job_reads.py'
 
 # why: .github/ci-notes/ci.md#test-the-test-job-the-claude-code-plugin-build-the-changelog
 test:
