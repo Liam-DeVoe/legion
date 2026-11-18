@@ -4,10 +4,24 @@ import { type ReactNode, useState } from "react";
 import { usersQuery } from "../../api/queries";
 import { MultiSelect } from "../../components/MultiSelect";
 import { QueryError } from "../../components/QueryError";
-import { badgeLow, badgePrimary } from "../../theme/classes";
+import { usePageWords } from "../../components/tooltips";
+import {
+  badgeLow,
+  badgePrimary,
+  pageAvatar,
+  pageInkText,
+  pageLabelChip,
+  pagePaneBg,
+  pageQuietText,
+} from "../../theme/classes";
 import {
   badgeReachHandlers,
   badgeSelectBadge,
+  badgeSelectHeaderTrigger,
+  badgeSelectHeaderWrapper,
+  badgeSelectPageBadge,
+  badgeSelectPageTrigger,
+  badgeSelectPageWrapper,
   badgeSelectTrigger,
   badgeSelectWrapper,
 } from "./badge-select";
@@ -15,6 +29,14 @@ import { useIssueAssignee } from "./useIssueAssignee";
 
 /** The option that stands for nobody: the issue goes back to having no assignee. */
 const UNASSIGNED = "";
+
+/** The name the assignee picker answers to, in its words on every page: the property it sets
+ *  and the issue it is on, so a voice user saying what they read presses it (WCAG 2.5.3). The
+ *  new issue page's add menu reaches this picker by this name rather than drawing a second
+ *  one, so a word changed here changes both sides at once. */
+export function assigneeControlName(issueKey: string): string {
+  return `Assignee of ${issueKey}`;
+}
 
 /**
  * The single assignee editor: shows who answers the issue's asks as a badge (their lowercase
@@ -32,17 +54,24 @@ const UNASSIGNED = "";
  * at once and roll back together; a refused person shows the server's reason. Like
  * `PriorityControl`, the control stays enabled while a save is in flight - a disabled control
  * drops the focus it holds and leaves the tab order - and a pick made meanwhile is queued behind
- * the save. Named `Assignee of <KEY>` and then the badge's words.
+ * the save. Named by `assigneeControlName` and then the badge's words.
+ *
+ * `variant="header"` draws the new issue page header's shape (the prototype's `.person`): the
+ * person's initial in a filled circle beside their name in the ink, or Unassigned in the quiet
+ * grey. The list under it is the same either way.
  */
 export function AssigneeControl({
   assignee,
   disabled = false,
   issueKey,
+  variant = "badge",
 }: {
   assignee: string | null;
   disabled?: boolean;
   issueKey: string;
+  variant?: "badge" | "header";
 }): ReactNode {
+  const page = usePageWords();
   const [wanted, setWanted] = useState(false);
   const users = useQuery({ ...usersQuery(), enabled: wanted });
   const [open, setOpen] = useState(false);
@@ -53,10 +82,24 @@ export function AssigneeControl({
   const people = assignee === null || logins.includes(assignee) ? logins : [assignee, ...logins];
   const value = assignee ?? UNASSIGNED;
   const tone = assignee === null ? badgeLow : badgePrimary;
+  // Inside `NoTooltips` the badge is the new issue page's label chip, and Unassigned its quiet
+  // words on the same ground, as the header variant says it in the quiet grey: each colour there
+  // is one of that page's.
+  const badgeTone =
+    page === null
+      ? `${tone.bg} ${tone.text}`
+      : assignee === null
+        ? `${pagePaneBg} ${pageQuietText}`
+        : pageLabelChip;
+  const shown = assignee ?? page?.CONTROL_LABELS.unassigned ?? "Unassigned";
+  const mark = assignee === null ? page?.pageChrome : page?.authorText;
+  // Inside `NoTooltips` the person is a value, so it keeps `max-w-full` and breaks anywhere, and
+  // its wrapper and the trigger in it narrow to the line rather than keep their width. The header
+  // variant is the new page's shape alone, so it wraps on every surface.
   return (
     <>
       <span
-        className={`${badgeSelectWrapper} ${disabled ? "opacity-50" : ""}`}
+        className={`${variant === "header" ? badgeSelectHeaderWrapper : page === null ? badgeSelectWrapper : badgeSelectPageWrapper} ${disabled ? "opacity-50" : ""}`}
         {...badgeReachHandlers(() => setWanted(true))}
       >
         <MultiSelect
@@ -64,7 +107,7 @@ export function AssigneeControl({
           disabled={disabled}
           emptyMessage={users.isPending ? "Loading people…" : "Nobody matches that."}
           error={users.isError ? "Could not load the people list." : null}
-          label={`Assignee of ${issueKey}`}
+          label={assigneeControlName(issueKey)}
           mode="single"
           onOpenChange={setOpen}
           onPick={(picked) => {
@@ -74,12 +117,42 @@ export function AssigneeControl({
           optionLabel={(login) => (login === UNASSIGNED ? "Unassigned" : login)}
           options={[UNASSIGNED, ...people]}
           searchLabel="Search people"
-          triggerClassName={badgeSelectTrigger}
+          triggerClassName={
+            variant === "header"
+              ? badgeSelectHeaderTrigger
+              : page === null
+                ? badgeSelectTrigger
+                : badgeSelectPageTrigger
+          }
           value={value}
         >
-          <span className={`${badgeSelectBadge} ${tone.bg} ${tone.text}`}>
-            {assignee ?? "Unassigned"}
-          </span>
+          {variant === "header" ? (
+            <span
+              className={`inline-flex min-w-0 max-w-full items-center gap-1.5 text-sm leading-5 [overflow-wrap:anywhere] ${
+                assignee === null ? pageQuietText : pageInkText
+              }`}
+              {...mark}
+            >
+              {assignee === null ? null : (
+                // The initial is drawn, not written: the name beside it is the value a reader and
+                // a reading of the badge take, so the circle adds no letter to its text, and it is
+                // hidden from the trigger's name, which a browser would read its drawn letter in.
+                <span
+                  aria-hidden="true"
+                  className={`inline-grid size-5 shrink-0 place-items-center rounded-full text-xs leading-5 font-semibold before:content-[attr(data-initial)] ${pageAvatar}`}
+                  data-initial={assignee.charAt(0).toUpperCase()}
+                />
+              )}
+              <span className="min-w-0 [overflow-wrap:anywhere]">{shown}</span>
+            </span>
+          ) : (
+            <span
+              className={`${page === null ? badgeSelectBadge : badgeSelectPageBadge} ${badgeTone}`}
+              {...mark}
+            >
+              {shown}
+            </span>
+          )}
         </MultiSelect>
       </span>
       {write.failed ? (
