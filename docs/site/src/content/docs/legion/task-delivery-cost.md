@@ -17,7 +17,7 @@ It prints the cost of the delivery in that window, and three verdicts.
 Run this command where `kubectl` can read the logs of the `legion` namespace:
 
 ```sh
-kubectl -n legion logs deploy/legion-<project>-daemon -c legion --since-time <from> | legion task-cost --from <from> --to <to> [--claim <token>] [--take-timeout <seconds>]
+kubectl -n legion logs deploy/legion-<project>-daemon -c legion | legion task-cost --from <from> --to <to> [--claim <token>] [--take-timeout <seconds>]
 ```
 
 - `legion-<project>-daemon` is the daemon's deployment.
@@ -28,7 +28,13 @@ kubectl -n legion logs deploy/legion-<project>-daemon -c legion --since-time <fr
 
 - `<from>` and `<to>` are times in RFC 3339, for example `2026-11-14T09:00:00Z`.
   The window starts at `<from>` and stops before `<to>`.
-  Give the same `<from>` to `--since-time`, so that `kubectl` sends the lines from that time.
+  Every figure counts only what happened in the window.
+
+- The command does not give `--since-time` to `kubectl`.
+  So `kubectl` sends the whole log of the current container, from the start of the container.
+  The command reads the lines before `<from>` only to know where each claim and each task stands at `<from>`.
+  For example, a task that the daemon wrote and the worker saw before `<from>`, and that no take reaches in the window, writes no line in the window.
+  A reading of the window alone does not see that task.
 
 - `--claim <token>` is optional.
   With it, the command reads the lines of one claim only.
@@ -41,6 +47,7 @@ kubectl -n legion logs deploy/legion-<project>-daemon -c legion --since-time <fr
   No line that the daemon always writes gives this value, so the command cannot read it from the log.
 
 The command reads the log on its standard input.
+It ignores each line at `<to>` or after it.
 It writes the figures on its standard output.
 
 The command exits with status 0 when it gives a reading.
@@ -57,10 +64,17 @@ The one exception is `numbers owed that no take reached within the first bound`,
 Its entry below says when.
 
 `kubectl logs` reads the log of the current container only.
+So a reading goes back no further than the start of the current container.
 When the container restarted after `<from>`, the log of the container before the restart is not in the reading.
 To read that log, run the command a second time with `--previous` after `-c legion`.
+`--previous` reads the log of the container before the current one.
 When Kubernetes replaces the daemon's pod, the new pod starts with an empty log.
 `--previous` does not read the log of a pod that Kubernetes replaced.
+
+The log of one container holds the state of each task at `<from>`.
+When the container starts, the daemon writes the value of each task that it owes.
+After a start, the daemon writes again each value that a worker saw before the start, when the first bound passes.
+The daemon writes again each value that nobody saw, one time in each first bound.
 
 The second line of the output gives the time of the first line in the window.
 Compare that time with `<from>`.
@@ -151,6 +165,9 @@ So each figure that names a task names its claim too.
     A new write of the task stops the clock until the worker reports the new value seen.
     A report of another value also stops the clock, for example a late report of a value from the bucket before it was created again.
 
+  - A report of a seen task whose write is not in the log opens the time owed at that report, with the `epoch` and `revision` that the report gives.
+    This happens when the daemon wrote the task before the first line that the node kept.
+
   - A turn of the worker, `supervise: a turn started`, stops the clock.
     The end of that turn, `supervise: a turn ended`, starts the clock again, and the bound starts again from zero.
     A take-back of the task also ends the turn of the claim.
@@ -170,20 +187,24 @@ So each figure that names a task names its claim too.
     A daemon that starts with a report of a seen task from its database writes the task again at the first bound, and charges nobody.
     So a clock whose bound ends at a new write of the task has not passed the bound.
 
+  - Only the time of the clock in the window counts.
+    A clock that runs at `<from>` counts from `<from>`, as if the worker saw the task at `<from>`.
+    So a task that the worker saw before `<from>` and did not take is listed when one first bound after `<from>` passes before `<to>`.
+    A task that the worker took soon after `<from>` is not listed, however long it waited before `<from>`.
+
   - A task whose clock has not passed the bound at `<to>` is not listed, because the window does not show whether a take came in time.
 
   - A task can be listed more than one time: one time for each time that the daemon owed it.
 
   - The figure can count too many tasks.
     The log has no line for the time that a new process of the worker needs to start after a release, a suspension or a relaunch, for the time of a compaction, or for a hold that stands while the worker asks for nothing.
-    A turn that started before the first line of the window has no start line in the window.
+    A turn that started before the first line of the log has no start line in the log.
     The clock counts all of that time, so the figure can list a task that no worker could take in time.
-    To read a claim that was in a long turn, start the window before that turn started.
 
   - The figure can also miss a task.
     When the daemon stops a process during a turn for a reason other than a death, and takes back no task, the log has no line for the end of that turn.
     The clock then starts again only at the end of the next turn of that claim, or at the first report of the claim's next process that it saw the task.
-    A take-back of a task that the daemon last wrote before `<from>` opens no time owed that the command can measure, because the command does not know which revision the worker must report seen.
+    A take-back of a task that the daemon last wrote before the first line of the log opens no time owed that the command can measure until a report of the task seen is in the log, because the command does not know which revision the worker must report seen.
     The shim's hello has no line in the log, so after a start of the daemon the clock starts again only at the worker's next act that the log shows.
 
 - `numbers finished, by what finished each` is the number of tasks that finished.
@@ -241,34 +262,46 @@ legion task-cost --from 2026-11-14T09:00:00Z --to 2026-11-14T10:00:00Z < package
 
 ```text
 window: 2026-11-14T09:00:00Z to 2026-11-14T10:00:00Z, every claim, first bound 5m0s
-daemon lines in the window: 57, the first at 2026-11-14T09:00:05.000Z, the last at 2026-11-14T09:55:30.000Z
-turns started: 7 (by a task number 5, with no cause 2)
-turns ended: 6 (by a task number 4, with no cause 2)
+daemon lines in the window: 64, the first at 2026-11-14T09:00:05.000Z, the last at 2026-11-14T09:55:30.000Z
+turns started: 8 (by a task number 6, with no cause 2)
+turns ended: 7 (by a task number 5, with no cause 2)
 turns each number took:
   legion-infra-infra-2811-implementer task 1: 1
   legion-infra-infra-2811-implementer task 2: 1
   legion-infra-infra-2811-reviewer task 1: 1
   legion-infra-infra-2811-tester task 4: 1
   legion-infra-infra-2811-tester task 5: 1
+  legion-infra-infra-2812-planner task 1: 1
 numbers written by origin: notice 1, operator 1, phase-start 2, silence 1, wake 1 (6 in all)
 numbers written to a claim whose phase waited, by origin: notice 1, silence 1, wake 1 (3 in all)
 silence repair (origin silence), counted apart from resume: numbers written 1, to a claim whose phase waited 1
-numbers taken: 5
-numbers owed that no take reached within the first bound: 1
+numbers taken: 6
+numbers owed that no take reached within the first bound: 2
   legion-infra-infra-2811-implementer task 2: the clock started 2026-11-14T09:30:00.000Z, the bound passed 2026-11-14T09:35:00.000Z, taken 2026-11-14T09:35:20.000Z
-numbers finished, by what finished each: end-frame 1, report 3 (4 in all)
-charges by wait: take 1, turn-start 1 (2 in all)
+  legion-infra-infra-2812-planner task 1: the clock started 2026-11-14T09:00:00.000Z, the bound passed 2026-11-14T09:05:00.000Z, taken 2026-11-14T09:06:00.000Z
+numbers finished, by what finished each: end-frame 1, report 4 (5 in all)
+charges by wait: take 2, turn-start 1 (3 in all)
 retirements: 0
 verdict: no charge of a worker whose turn began within the second bound after its take: pass
 verdict: no write of origin resume to a claim that finished its last task in its session: pass
 verdict: each number taken once for each time the record owed it: fail
   legion-infra-infra-2811-implementer task 2: owed, and no take within the first bound, which passed 2026-11-14T09:35:00.000Z
+  legion-infra-infra-2812-planner task 1: owed, and no take within the first bound, which passed 2026-11-14T09:05:00.000Z
 ```
 
 The sample shows these points:
 
-- The sample holds a line before `<from>` and a line at `<to>`.
-  The command counts neither of them.
+- The sample holds two lines before `<from>` and a line at `<to>`.
+  The command counts none of them.
+  It reads the two lines before `<from>` to know where the planner of INFRA-2812 stands at `<from>`.
+
+- The daemon wrote task 1 to the planner, and the planner saw it, before `<from>`.
+  So the figures do not count that write: `numbers written by origin` counts only writes in the window.
+  The daemon charged the planner at 09:03:30.500, one first bound after the planner saw the task.
+  The planner took task 1 at 09:06:00.
+  The clock of task 1 counts only the time in the window, from `<from>`, so the bound passed at 09:05:00.
+  The figure of the numbers owed lists task 1, and the third verdict fails for it.
+  A reading of the window alone would not list task 1, because the window holds no write and no seen report of it.
 
 - The tester took task 4 two times, and the third verdict does not fail for task 4.
   No turn started within the second bound, so the daemon charged the tester and took the task back.

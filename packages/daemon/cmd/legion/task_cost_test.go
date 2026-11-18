@@ -114,8 +114,9 @@ func TestTaskCostRefusesArgumentsItCannotRead(t *testing.T) {
 	}
 	code, stdout, stderr := taskCost(t, "", "--help")
 	if code != 0 || stdout != "" || !usageOf(stderr, "task-cost") ||
-		!strings.Contains(stderr, "kubectl -n legion logs deploy/legion-<project>-daemon -c legion --since-time <from> | legion task-cost") {
-		t.Errorf("legion task-cost --help = %d, stdout %q, stderr %q; want 0 and the usage with the documented pipe", code, stdout, stderr)
+		!strings.Contains(stderr, "kubectl -n legion logs deploy/legion-<project>-daemon -c legion | legion task-cost") ||
+		strings.Contains(stderr, "--since-time") {
+		t.Errorf("legion task-cost --help = %d, stdout %q, stderr %q; want 0 and the usage with the documented pipe, which reads the container's whole log", code, stdout, stderr)
 	}
 }
 

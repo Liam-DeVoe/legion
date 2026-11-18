@@ -24,8 +24,19 @@ import (
 // The lines are the daemon's JSON lines (cmd/legion's start writes its log through slog's JSON
 // handler): one object per line, with the record's time, its message and its attributes, the
 // machine's own claim among them. A line that is no such object — a refusal the command printed
-// before its logger existed, a line kubectl added — is passed over, and so is every line outside
-// the window or of another claim than the one asked for.
+// before its logger existed, a line kubectl added — is passed over, and so is every line of another
+// claim than the one asked for, and every line at or after the window's end.
+//
+// The page's command pipes the current container's whole log, from its start, and not the window
+// alone (plan review round 33 of dispatch://INFRA-2811): a number written and seen before the
+// window that no take reaches inside it writes no line in the window, so a reading cut at the
+// window's start would never see the stranded number the never-taken figure exists to catch. So
+// the lines before From are read for one thing only, where each claim and each of its numbers
+// stands at From — its clock, its turn, its latest write and seen report, its accepted take — and
+// From and To bound everything counted: every figure counts what happened in the window alone.
+// Within one container that state is whole, since the container's boot writes every owed value
+// again, a restored seen report is written again at its first expiry (decision 20), and a value
+// nobody saw is written again once per first bound.
 //
 // What is counted, and from which line:
 //
@@ -83,25 +94,35 @@ import (
 //     registration.
 //
 // A clock that runs a whole bound has passed it, and that time owed is listed, however it ends
-// (a late take included). The bound is judged at every line of the claim the reading decodes but a
-// value write of the number itself: the first bound's own end writes the number again after a
-// daemon's start, over a seen report that daemon read from the store (takeBoundOver), so a clock
-// whose bound ends at a write of its number has not passed it. A time owed whose bound has not
-// passed at To is not listed, since the window does not show whether a take came in time. The
-// daemon writes no line that always carries the bound — only a charge of the first wait and the
-// write of a value nobody reported seeing name it — so the command is told it (TaskCostArgs.Take).
+// (a late take included). Only clock time inside the window counts: the bound is never judged
+// before From, and a clock that runs at From runs from From, as if its seen report came there
+// (enter), so a number stranded since before the window is listed once a bound passes inside it,
+// and one taken soon after From is not, however long it waited before. The bound is judged at
+// every line of the claim the reading decodes but a value write of the number itself: the first
+// bound's own end writes the number again after a daemon's start, over a seen report that daemon
+// read from the store (takeBoundOver), so a clock whose bound ends at a write of its number has
+// not passed it. A time owed whose bound has not passed at To is not listed, since the window does
+// not show whether a take came in time. The daemon writes no line that always carries the bound —
+// only a charge of the first wait and the write of a value nobody reported seeing name it — so the
+// command is told it (TaskCostArgs.Take).
+//
+// A seen report of a claim the lines hold no write for — its write fell before the log's first
+// line, which the node no longer keeps — owes its number from that report, at the epoch and
+// revision the report names, which is the write it saw: so a number written before the log and
+// taken back in it is owed again once its next seen report is read.
 //
 // What this figure cannot see can count a number too many or too few. Too many: no line marks
 // when a process the daemon started again after a release, a suspension or a relaunch is ready,
 // when a compaction holds a take off, or when a hold stands over a task its worker asked nothing
-// of, and a turn that began before the window's first line and is still running shows no start,
+// of, and a turn that began before the log's first line and is still running shows no start,
 // so a clock that runs through any of them can list a number no worker could have taken. Too
 // few: a let-go other than a death that cuts a turn off with no take-back writes no turn end, so a
 // clock stopped by that turn starts again only at the end of the claim's next turn or at the seen
 // report of the process the claim registers next; a take-back of a number whose last write fell
-// before the window owes nothing the reading can time, since it knows no revision of that number
-// to match a seen report against; and the shim's reconnect hello writes no line, so after a
-// daemon's start a clock starts again only at the worker's next act the log shows.
+// before the log's first line owes nothing the reading can time until a seen report of it is read,
+// since it knows no revision of that number to match one against; and the shim's reconnect hello
+// writes no line, so after a daemon's start a clock starts again only at the worker's next act the
+// log shows.
 //
 // And R9's three verdicts, each of which lists what fails it:
 //
@@ -126,13 +147,14 @@ import (
 // pass (TaskCost.NoEvidence), and `legion task-cost` exits non-zero for it.
 //
 // Every figure is a lower bound but the numbers no take reached, which can also count too many
-// (above): the log reaches back only as far as the node kept the daemon container's log, and a
-// take, a write or a turn that fell before the window's first line is not seen.
+// (above): the log reaches back only as far as the node kept the current container's log, and a
+// take, a write or a turn that fell before its first line is not seen.
 
-// TaskCostArgs is what `legion task-cost` is asked: the window of the daemon's log to read, From
-// included and To not, the one claim to read it for, "" for every claim, and Take, R5's first
-// bound (worker_take_timeout_seconds) as the deployment sets it, which the figure of the numbers
-// no take reached is judged by.
+// TaskCostArgs is what `legion task-cost` is asked: the window of the daemon's log to count, From
+// included and To not (the lines before From are read for where each claim stands at From alone),
+// the one claim to read it for, "" for every claim, and Take, R5's first bound
+// (worker_take_timeout_seconds) as the deployment sets it, which the figure of the numbers no take
+// reached is judged by.
 type TaskCostArgs struct {
 	From  time.Time
 	To    time.Time
@@ -315,24 +337,28 @@ type valueRevision struct {
 }
 
 // costTurn is the claim's latest turn whose start or end line named a task, which a put-back may
-// make a turn of no cause (costReading.putBack): the number its lines name, and whether its start
-// line and its end line were counted, each as a turn of that number.
+// make a turn of no cause (costReading.putBack): the number its lines name, whether its end line
+// came, and whether its start line and its end line were counted, each as a turn of that number
+// (only a line inside the window is).
 type costTurn struct {
-	number         uint64
-	started, ended bool
+	number                   uint64
+	over                     bool
+	startCounted, endCounted bool
 }
 
 // claimClock is what the reading knows of one claim's first wait: whether its turn lines show a
 // turn in progress, whether a daemon's start waits on its worker's next act, whether a death
 // waits on its next registration; the claim's latest value write and whether a seen report since
-// named it (sawLatest); and the number it owes, nil for none. It holds the claim's turns a put-back
-// recounts too: its latest turn naming a task, and the number whose put-back run's end line is
-// still to come, 0 for none, which that line names and which counts as no cause.
+// named it (sawLatest); the number it owes, nil for none; and whether the window has opened for
+// it (enter). It holds the claim's turns a put-back recounts too: its latest turn naming a task,
+// and the number whose put-back run's end line is still to come, 0 for none, which that line names
+// and which counts as no cause.
 type claimClock struct {
 	inTurn, awaitsAct, awaitsRegistration bool
 	written                               valueRevision
 	seen                                  bool
 	owed                                  *owedNumber
+	entered                               bool
 	taskTurn                              costTurn
 	putBackEnd                            uint64
 }
@@ -368,16 +394,21 @@ type costReading struct {
 	turnStarts map[string][]time.Time
 	charges    []costCharge
 	// clocks is each claim's first wait, unreached each time owed whose clock passed the bound,
-	// once that time owed ended, and alive the time of the last line of any claim in the window,
-	// which is the last the reading knows a daemon to have lived.
+	// once that time owed ended, and alive the time of the last line of any claim read, which is
+	// the last the reading knows a daemon to have lived.
 	clocks    map[string]*claimClock
 	unreached []owedNumber
 	alive     time.Time
+	// counting is whether the line being read is inside the window, which every figure counts
+	// from.
+	counting bool
 }
 
-// ReadTaskCost reads the daemon's JSON lines from r and answers what the window from args.From
-// (included) to args.To (not included) says the tasks cost, for the claim args.Claim, or for every
-// claim when it is "", with args.Take as the first bound. It fails only when r does.
+// ReadTaskCost reads the daemon's JSON lines from r — the current container's log from its start,
+// as the page's command pipes it — and answers what the window from args.From (included) to
+// args.To (not included) says the tasks cost, for the claim args.Claim, or for every claim when it
+// is "", with args.Take as the first bound; the lines before args.From say only where each claim
+// stands when the window opens. It fails only when r does.
 func ReadTaskCost(r io.Reader, args TaskCostArgs) (TaskCost, error) {
 	reading := costReading{
 		cost: TaskCost{
@@ -404,7 +435,8 @@ func ReadTaskCost(r io.Reader, args TaskCostArgs) (TaskCost, error) {
 	return reading.done(), nil
 }
 
-// line reads one line of the log.
+// line reads one line of the log: one before the window for where its claim stands at From, one
+// inside it for that and for the figures, and none at or after To.
 func (c *costReading) line(raw []byte) {
 	raw = bytes.TrimSpace(raw)
 	if len(raw) == 0 || raw[0] != '{' {
@@ -420,9 +452,10 @@ func (c *costReading) line(raw []byte) {
 	}
 	claim, _ := head.Claim.(string)
 	args := c.cost.Args
-	if head.Time.Before(args.From) || !head.Time.Before(args.To) {
+	if !head.Time.Before(args.To) {
 		return
 	}
+	c.counting = !head.Time.Before(args.From)
 	if head.Msg == DaemonStartedLine {
 		c.daemonStarted()
 	}
@@ -430,11 +463,13 @@ func (c *costReading) line(raw []byte) {
 	if args.Claim != "" && claim != args.Claim {
 		return
 	}
-	if c.cost.Lines == 0 {
-		c.cost.FirstLine = head.Time
+	if c.counting {
+		if c.cost.Lines == 0 {
+			c.cost.FirstLine = head.Time
+		}
+		c.cost.Lines++
+		c.cost.LastLine = head.Time
 	}
-	c.cost.Lines++
-	c.cost.LastLine = head.Time
 	if !costedLines[head.Msg] {
 		return
 	}
@@ -445,7 +480,24 @@ func (c *costReading) line(raw []byte) {
 	c.costed(l, claim)
 }
 
-// costed counts one line of the messages the reading decodes whole.
+// enter is the window's opening for the claim of k, at its first line inside the window, at a
+// daemon's start inside it, or, for a claim with none, at the window's end (done): only clock time
+// inside the window counts, so a clock that runs at From runs from From, as one whose seen report
+// came there. No bound of the claim was judged before it (boundPassed), so none has passed. The
+// window opens claim by claim, since only each claim's own lines are sure to be in the order they
+// were written: one machine writes them, while two claims' lines can cross in the log.
+func (c *costReading) enter(k *claimClock) {
+	if k.entered {
+		return
+	}
+	k.entered = true
+	if o := k.owed; o != nil && !o.from.IsZero() && o.from.Before(c.cost.Args.From) {
+		o.from = c.cost.Args.From
+	}
+}
+
+// costed reads one line of the messages the reading decodes whole: for where its claim stands,
+// and, for a line inside the window (counting), for the figures.
 func (c *costReading) costed(l costLine, claim string) {
 	if l.Msg == turnEndedLine && l.Sequence != nil {
 		// The turn-outcome report's line (turnoutcome.go): the report, not the turn's end.
@@ -459,6 +511,9 @@ func (c *costReading) costed(l costLine, claim string) {
 	if k == nil {
 		k = &claimClock{}
 		c.clocks[claim] = k
+	}
+	if c.counting {
+		c.enter(k)
 	}
 	// The bound is judged at every line of the claim but a write of the number its clock is on,
 	// which is the first bound's own end after a daemon's start (the reading's doc comment).
@@ -475,12 +530,16 @@ func (c *costReading) costed(l costLine, claim string) {
 		c.turnStarts[claim] = append(c.turnStarts[claim], l.Time)
 		c.turnStarted(k)
 		if l.Task == nil {
-			c.cost.TurnsStarted.None++
+			if c.counting {
+				c.cost.TurnsStarted.None++
+			}
 			return
 		}
-		c.cost.TurnsStarted.Task++
-		c.turns[key]++
-		k.taskTurn = costTurn{number: key.number, started: true}
+		if c.counting {
+			c.cost.TurnsStarted.Task++
+			c.turns[key]++
+		}
+		k.taskTurn = costTurn{number: key.number, startCounted: c.counting}
 		if open, ok := c.open[claim]; ok && open.number == key.number {
 			open.awaits = false
 			c.open[claim] = open
@@ -492,16 +551,20 @@ func (c *costReading) costed(l costLine, claim string) {
 			cause = nil
 		}
 		k.putBackEnd = 0
-		if cause == nil {
-			c.cost.TurnsEnded.None++
-		} else {
-			c.cost.TurnsEnded.Task++
-			if t := &k.taskTurn; t.number == *cause && !t.ended {
-				t.ended = true
-			} else {
-				// A turn whose start fell before the window.
-				k.taskTurn = costTurn{number: *cause, ended: true}
+		switch {
+		case cause == nil:
+			if c.counting {
+				c.cost.TurnsEnded.None++
 			}
+		default:
+			if c.counting {
+				c.cost.TurnsEnded.Task++
+			}
+			if t := &k.taskTurn; t.number != *cause || t.over {
+				// A turn whose start fell before the log's first line.
+				*t = costTurn{number: *cause}
+			}
+			k.taskTurn.over, k.taskTurn.endCounted = true, c.counting
 		}
 		// A turn that ends while the claim's take awaits its turn is the in-turn hold over that
 		// take, whose end begins its second wait again.
@@ -521,21 +584,24 @@ func (c *costReading) costed(l costLine, claim string) {
 		if open, ok := c.open[claim]; ok && open.number != key.number {
 			delete(c.open, claim)
 		}
-		mark(c.written, l.Origin, key)
-		if l.Finished {
-			mark(c.waited, l.Origin, key)
-			if _, listed := c.resume[key]; l.Origin == OriginResume && !listed {
-				c.resume[key] = l.Time
+		if c.counting {
+			mark(c.written, l.Origin, key)
+			if l.Finished {
+				mark(c.waited, l.Origin, key)
+				if _, listed := c.resume[key]; l.Origin == OriginResume && !listed {
+					c.resume[key] = l.Time
+				}
 			}
 		}
-		written := valueRevision{number: key.number, revision: l.Revision}
-		if l.Epoch != nil {
-			written.epoch = *l.Epoch
-		}
-		c.owe(k, key, written, l.Time)
+		c.owe(k, key, revisionOf(l), l.Time)
 	case taskSeenLine:
 		if l.Task == nil {
 			return
+		}
+		if k.written.number == 0 {
+			// A report of a write that fell before the log's first line: it owes the number it
+			// saw from here (the reading's doc comment).
+			c.owe(k, key, revisionOf(l), l.Time)
 		}
 		if k.seen = k.sawLatest(l); k.seen {
 			c.restart(k, l.Time)
@@ -561,10 +627,17 @@ func (c *costReading) costed(l costLine, claim string) {
 			c.endOwed(k, key.number, l.Time, "a take answered dropped")
 			return
 		}
-		if !l.Repeat {
-			c.taken[key]++
-			c.open[claim] = openTake{number: key.number, at: l.Time, from: l.Time, awaits: true}
+		if l.Repeat {
+			return
 		}
+		if c.counting {
+			c.taken[key]++
+		} else {
+			// A charge the window counts is judged by the turns since its take's second wait
+			// began, so the turns before this take, all before the window, are no longer asked.
+			c.turnStarts[claim] = c.turnStarts[claim][:0]
+		}
+		c.open[claim] = openTake{number: key.number, at: l.Time, from: l.Time, awaits: true}
 	case takeUndecidedLine:
 		if l.Task != nil {
 			c.stop(k, key.number)
@@ -573,7 +646,9 @@ func (c *costReading) costed(l costLine, claim string) {
 		if l.Task == nil {
 			return
 		}
-		c.owed[key] = max(c.owed[key], 1) + 1
+		if c.counting {
+			c.owed[key] = max(c.owed[key], 1) + 1
+		}
 		c.closeTake(claim, key.number)
 		// No turn outlives a take-back: it is the turn's end, or its process's let-go.
 		k.inTurn, k.putBackEnd = false, 0
@@ -582,7 +657,9 @@ func (c *costReading) costed(l costLine, claim string) {
 		if l.Task == nil {
 			return
 		}
-		c.finished[key] = l.By
+		if c.counting {
+			c.finished[key] = l.By
+		}
 		c.closeTake(claim, key.number)
 		c.endOwed(k, key.number, l.Time, "finished")
 	case processDiedLine:
@@ -594,6 +671,9 @@ func (c *costReading) costed(l costLine, claim string) {
 	case agentRegisteredLine:
 		c.registered(k)
 	case promptFailureLine, promptRetiredLine:
+		if !c.counting {
+			return
+		}
 		wait := cmp.Or(l.Wait, "none")
 		c.cost.ChargesByWait[wait]++
 		if l.Msg == promptRetiredLine {
@@ -602,6 +682,16 @@ func (c *costReading) costed(l costLine, claim string) {
 		c.charges = append(c.charges, costCharge{claim: claim, at: l.Time, wait: wait,
 			bound: time.Duration(l.Bound), take: c.open[claim]})
 	}
+}
+
+// revisionOf is the value write a write line or a seen line names: its number, its epoch where
+// it names one, and its revision.
+func revisionOf(l costLine) valueRevision {
+	r := valueRevision{number: *l.Task, revision: l.Revision}
+	if l.Epoch != nil {
+		r.epoch = *l.Epoch
+	}
+	return r
 }
 
 // closeTake ends the time owed of the claim's accepted take of number, if that take stands.
@@ -634,10 +724,10 @@ func (c *costReading) owe(k *claimClock, key costKey, written valueRevision, at 
 
 // boundPassed records that the claim's clock passed its bound before at, where it did. It is
 // asked at every line of the claim the reading decodes (costed), at a daemon's start, and at the
-// window's end.
+// window's end, and never before the window opened (enter), since only clock time inside it counts.
 func (c *costReading) boundPassed(k *claimClock, at time.Time) {
 	o := k.owed
-	if o == nil || o.from.IsZero() || !o.passed.IsZero() {
+	if !k.entered || o == nil || o.from.IsZero() || !o.passed.IsZero() {
 		return
 	}
 	if bound := o.from.Add(c.cost.Args.Take); at.After(bound) {
@@ -664,7 +754,7 @@ func (c *costReading) stop(k *claimClock, number uint64) {
 // takenBack is a take-back of key's number, which owes it again (the reading's doc comment): its
 // clock stops until the number's next write or the claim's next registration. A number the claim
 // no longer owes, since the take now taken back ended its time owed, is owed again from here, as a
-// time owed of its own, where the window holds the write that number was last written at: that is
+// time owed of its own, where the lines hold the write that number was last written at: that is
 // the revision the claim's next process reads and asks at, with no new write.
 func (c *costReading) takenBack(k *claimClock, key costKey) {
 	if k.owed == nil && k.written.number == key.number {
@@ -710,20 +800,21 @@ func (c *costReading) putBack(k *claimClock, key costKey, at time.Time) {
 	run := k.taskTurn
 	k.taskTurn = costTurn{}
 	if run.number != key.number {
-		// No line of the run is in the window, but its end may still come.
+		// No line of the run was read, but its end may still come.
 		run = costTurn{number: key.number}
 	}
-	if run.started {
+	if run.startCounted {
 		c.cost.TurnsStarted.Task--
 		c.cost.TurnsStarted.None++
 		if c.turns[key]--; c.turns[key] == 0 {
 			delete(c.turns, key)
 		}
 	}
-	if run.ended {
+	if run.endCounted {
 		c.cost.TurnsEnded.Task--
 		c.cost.TurnsEnded.None++
-	} else {
+	}
+	if !run.over {
 		k.putBackEnd = key.number
 	}
 	if open, ok := c.open[key.claim]; ok && open.number == key.number {
@@ -743,9 +834,13 @@ func (c *costReading) secondWaitFrom(claim string, at time.Time) {
 }
 
 // daemonStarted is a daemon's start: every clock stops as of the last line before it, and stands
-// still until its claim's worker next acts in the log (workerActs).
+// still until its claim's worker next acts in the log (workerActs). A start inside the window
+// opens it for every claim first, so the time a clock ran before From is not judged.
 func (c *costReading) daemonStarted() {
 	for _, k := range c.clocks {
+		if c.counting {
+			c.enter(k)
+		}
 		c.boundPassed(k, c.alive)
 		k.awaitsAct = true
 		if o := k.owed; o != nil {
@@ -794,9 +889,11 @@ func (c *costReading) done() TaskCost {
 		cost.FinishedBy[by]++
 	}
 	// A number still owed at the window's end is judged there: listed where its clock passed the
-	// bound before To, and left out while it has not. The list is sorted below, so the order the
-	// claims are read in here does not show.
+	// bound before To, and left out while it has not. A claim with no line in the window has the
+	// window opened here, so a clock that ran through the whole window is judged from From. The
+	// list is sorted below, so the order the claims are read in here does not show.
 	for _, k := range c.clocks {
+		c.enter(k)
 		c.boundPassed(k, c.cost.Args.To)
 		if o := k.owed; o != nil && !o.passed.IsZero() {
 			o.ended = "still owed at the window's end"

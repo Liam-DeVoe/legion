@@ -31,8 +31,9 @@ const (
 	// is named .jsonl, the daemon's JSON lines, because the repository's .gitignore ignores *.log.
 	taskCostSample         = "testdata/task-cost.jsonl"
 	taskCostSampleFromRoot = "packages/daemon/internal/supervise/" + taskCostSample
-	// taskCostCommand is the command the page gives in one fenced block.
-	taskCostCommand = "kubectl -n legion logs deploy/legion-<project>-daemon -c legion --since-time <from> | legion task-cost --from <from> --to <to> [--claim <token>] [--take-timeout <seconds>]"
+	// taskCostCommand is the command the page gives in one fenced block: it pipes the current
+	// container's whole log, from its start, with no --since-time (plan review round 33).
+	taskCostCommand = "kubectl -n legion logs deploy/legion-<project>-daemon -c legion | legion task-cost --from <from> --to <to> [--claim <token>] [--take-timeout <seconds>]"
 )
 
 // docExample is one example of the page: the arguments its fenced `legion task-cost` command
@@ -205,7 +206,10 @@ var turnCause = regexp.MustCompile(`,"task":\d+`)
 // prints every figure the page shows: for the whole sample and for one claim. The sample holds a
 // task written to a claim whose phase waited and a silence repair's write to such a claim, so the
 // waited figure and the silence count are not zero, and the resume verdict is seen not to count
-// the silence repair's write.
+// the silence repair's write. It holds a number written and seen before the window and taken late
+// inside it too, which the reading lists from the window's start; a reading cut at the window's
+// start, the never-taken test's control, lists no such number, and the page's figures do not hold
+// over it.
 //
 // The negative control is the same reading over the sample with the cause taken out of every turn
 // line: the figures the page shows do not hold, which is the proof that they come from the turn
@@ -582,11 +586,28 @@ func (b costLines) readCost(lines []string) TaskCost {
 // seen by a process that died, whose relaunched process never reported it seen, which a new
 // process is not charged for (decision 6).
 //
+// The reading reads the lines before the window for where each claim stands at its start, and
+// counts only clock time inside it (plan review round 33). Listed: a number written before the
+// window and seen inside it, from that seen report; one written and seen before the window and
+// never taken, from the window's start, as if seen there; and one whose write fell before the
+// log's first line, taken before the log too, taken back in the window from a process the daemon
+// stopped and seen by the next process, from that seen report, at the revision it names. Not
+// listed: one written and seen long before the window and taken a minute into it, since the clock
+// ran a minute inside the window; and one written and seen before the window under a turn that
+// began before it and ran twenty minutes into it, taken soon after that turn's end.
+//
 // The negative controls: with a take-back that opens no new time owed, the stopped process's task
 // is not listed; with a registration that leaves a take-back's or a refusal's stop standing,
-// neither relaunched process's task is; and with a registration that keeps the seen report of the
+// neither relaunched process's task is; with a registration that keeps the seen report of the
 // process before it, and starts the clock from the registration, the task its relaunched process
-// never saw is listed.
+// never saw is listed. With the reading cut at the window's start, the number stranded since
+// before it is not listed, and with that cut and a seen report that owes nothing where its write
+// is not in the log, as the reading was before, neither number written before the window is, nor
+// the one written before the log; with only that seen report changed, the number written before
+// the log is not listed; with the bound judged before the window, the number under a turn that
+// began before it is listed; and with a clock that runs at the window's start counted from its
+// own start, the numbers stranded since before the window and taken a minute into it are listed
+// from before the window.
 func TestTaskCostLogListsEachNumberNoTakeReachedWithinTheFirstBound(t *testing.T) {
 	b := costLines{t: t, at: time.Date(2026, 11, 14, 9, 0, 0, 0, time.UTC)}
 	lines := []string{
@@ -678,6 +699,26 @@ func TestTaskCostLogListsEachNumberNoTakeReachedWithinTheFirstBound(t *testing.T
 		b.written(0, "undecided", 1, 1, TaskValueQueued),
 		b.seen(0, "undecided", 1, 1),
 		b.line(time.Minute, takeUndecidedLine, "undecided", "task", 1, "revision", 1, "error", "the store did not answer"),
+
+		b.written(-10*time.Minute, "written-before-the-window", 1, 1, TaskValueQueued),
+		b.seen(time.Minute, "written-before-the-window", 1, 1),
+
+		b.written(-20*time.Minute, "stranded-before-the-window", 1, 1, TaskValueQueued),
+		b.seen(-20*time.Minute+time.Second, "stranded-before-the-window", 1, 1),
+
+		b.line(time.Minute, takenBackLine, "written-before-the-log", "task", 1, "cause", takenBackRetired),
+		b.line(2*time.Minute, agentRegisteredLine, "written-before-the-log", "generation", 2, "session", "ses_2"),
+		b.seenIn(2*time.Minute+time.Second, "written-before-the-log", 1, "2026-11-14T08:00:00.123456789Z", 7),
+
+		b.written(-20*time.Minute, "taken-a-minute-into-the-window", 1, 1, TaskValueQueued),
+		b.seen(-20*time.Minute, "taken-a-minute-into-the-window", 1, 1),
+		b.answered(time.Minute, "taken-a-minute-into-the-window", 1, TakeOutcomeAccepted, ""),
+
+		b.written(-30*time.Minute, "in-a-turn-at-the-window's-start", 1, 1, TaskValueQueued),
+		b.seen(-30*time.Minute, "in-a-turn-at-the-window's-start", 1, 1),
+		b.turn(-20*time.Minute, turnStartedLine, "in-a-turn-at-the-window's-start"),
+		b.turn(20*time.Minute, turnEndedLine, "in-a-turn-at-the-window's-start"),
+		b.answered(22*time.Minute, "in-a-turn-at-the-window's-start", 1, TakeOutcomeAccepted, ""),
 	}
 	cost := b.readCost(lines)
 	want := []string{
@@ -687,8 +728,11 @@ func TestTaskCostLogListsEachNumberNoTakeReachedWithinTheFirstBound(t *testing.T
 		"refused task 1: the clock started 2026-11-14T09:30:01.000Z, the bound passed 2026-11-14T09:35:01.000Z, still owed at the window's end",
 		"refused-and-relaunched task 1: the clock started 2026-11-14T09:05:01.000Z, the bound passed 2026-11-14T09:10:01.000Z, still owed at the window's end",
 		"seen-and-untaken task 1: the clock started 2026-11-14T09:00:01.000Z, the bound passed 2026-11-14T09:05:01.000Z, still owed at the window's end",
+		"stranded-before-the-window task 1: the clock started 2026-11-14T09:00:00.000Z, the bound passed 2026-11-14T09:05:00.000Z, still owed at the window's end",
 		"taken-back task 1: the clock started 2026-11-14T09:02:01.000Z, the bound passed 2026-11-14T09:07:01.000Z, still owed at the window's end",
 		"taken-back-from-a-stopped-process task 1: the clock started 2026-11-14T09:03:01.000Z, the bound passed 2026-11-14T09:08:01.000Z, still owed at the window's end",
+		"written-before-the-log task 1: the clock started 2026-11-14T09:02:01.000Z, the bound passed 2026-11-14T09:07:01.000Z, still owed at the window's end",
+		"written-before-the-window task 1: the clock started 2026-11-14T09:01:00.000Z, the bound passed 2026-11-14T09:06:00.000Z, still owed at the window's end",
 	}
 	if !slices.Equal(cost.Unreached, want) {
 		t.Fatalf("the numbers owed that no take reached within the first bound are\n%s\nwant\n%s",
@@ -707,7 +751,7 @@ func TestTaskCostLogListsEachNumberNoTakeReachedWithinTheFirstBound(t *testing.T
 	text := cost.Text()
 	for _, printed := range []string{
 		"first bound 5m0s\n",
-		"numbers taken: 8\nnumbers owed that no take reached within the first bound: 8\n  " + strings.Join(want, "\n  ") + "\nnumbers finished",
+		"numbers taken: 10\nnumbers owed that no take reached within the first bound: 11\n  " + strings.Join(want, "\n  ") + "\nnumbers finished",
 		"verdict: each number taken once for each time the record owed it: fail\n  " + strings.Join(verdict, "\n  ") + "\n",
 	} {
 		if !strings.Contains(text, printed) {

@@ -13,17 +13,20 @@ import (
 
 const taskCostUsage = `usage: legion task-cost --from <RFC 3339> --to <RFC 3339> [--claim <token>] [--take-timeout <seconds>]
 
-Reads the daemon's JSON log on standard input and prints what the window from --from (included)
-to --to (not included) says task delivery cost: the turns by cause, the turns each number took,
-the numbers written by origin, written to a claim whose phase waited, taken, owed and reached by
-no take within the first bound of the daemon's first wait, and finished, the charges by wait, the
-retirements, and three verdicts. --claim reads one claim alone. --take-timeout is the
-deployment's first bound, worker_take_timeout_seconds (300 when not given), which the log does not
-always name. Every figure is a lower bound but the owed numbers, which can also count too many
-(the page says when): the log reaches back only as far as the node kept it. A window that holds
-no daemon line, of the claim asked for, prints each verdict as "no evidence" and exits 1.
+Reads the daemon's JSON log on standard input, the current container's log from its start, and
+prints what the window from --from (included) to --to (not included) says task delivery cost: the
+turns by cause, the turns each number took, the numbers written by origin, written to a claim
+whose phase waited, taken, owed and reached by no take within the first bound of the daemon's
+first wait, and finished, the charges by wait, the retirements, and three verdicts. The lines
+before --from say only where each claim stands when the window opens: every figure counts the
+window alone. --claim reads one claim alone. --take-timeout is the deployment's first bound,
+worker_take_timeout_seconds (300 when not given), which the log does not always name. Every figure
+is a lower bound but the owed numbers, which can also count too many (the page says when): the log
+reaches back no further than the current container (--previous reads the one before), and only as
+far as the node kept it. A window that holds no daemon line, of the claim asked for, prints each
+verdict as "no evidence" and exits 1.
 
-  kubectl -n legion logs deploy/legion-<project>-daemon -c legion --since-time <from> | legion task-cost --from <from> --to <to>`
+  kubectl -n legion logs deploy/legion-<project>-daemon -c legion | legion task-cost --from <from> --to <to>`
 
 // taskCostStdin is where `legion task-cost` reads the daemon's log: the process's own standard
 // input, which a test replaces.
