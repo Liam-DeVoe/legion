@@ -52,7 +52,7 @@
 # so it needs bun and the repository's node_modules. It needs no kube context and no tmux — the
 # panes are child process groups of the driver — so it runs in a Legion pod and on a devbox alike.
 # The run around the driver is lib/live-daemon-proof.sh's, which claim-compaction.sh and
-# conflict-no-takeover.sh make too.
+# role-prompt-rule.sh make too.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)

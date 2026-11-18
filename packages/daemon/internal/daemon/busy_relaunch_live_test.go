@@ -227,7 +227,7 @@ func newBusyRelaunchLive(t *testing.T) *busyRelaunchLive {
 		t.Skipf("%s is unset, so there is no Oh My Pi for a pane to run; scripts/e2e/busy-relaunch-delivery.sh requires it", liveOmpPathEnv)
 	}
 	takeOwnDatabase(t)
-	proof := newLiveProof(t, "scripts/e2e/busy-relaunch-delivery.sh")
+	proof := newLiveProof(t)
 	key := func(n int) string { return fmt.Sprintf("%s-%d", proof.cfg.Project, n) }
 	r := &busyRelaunchLive{
 		liveAgentProof: liveAgentProof{liveProof: proof, omp: omp},

@@ -37,11 +37,13 @@ name: CI job daemon-go
 # repository's skills, are internal/daemon's three that load a plugin on the real Oh My Pi — the
 # `bun pm pack` of the two plugins and the two prompt probes, one of which stages each plugin's
 # partition of skills/ with scripts/pi-plugin-prepack.sh — which are
-# .github/workflows/ci-job-plugin-pack.yaml's now, and the race step below skips all three by
-# name. What is left here that names bun runs no pack: handoff_records_live_test.go's is behind
-# `//go:build e2e`, which no step here compiles. So this job's filter names no lockfile, no
-# workspace manifest and no skill, and a change to bun.lock or to one skill runs the plugin-pack
-# tests and no test of this job (dispatch://INFRA-1413, A4).
+# .github/workflows/ci-job-plugin-pack.yaml's now, and the whole-daemon live tests, one of which
+# runs the `dispatch` CLI under bun, which are .github/workflows/ci-job-daemon-live.yaml's; the
+# race step below skips both groups by name. What is left here that names bun runs no pack and
+# no CLI: the live proofs that drive real Oh My Pi panes are behind `//go:build e2e`, which no
+# step here compiles. So this job's filter names no lockfile, no workspace manifest and no skill,
+# and a change to bun.lock or to one skill runs the plugin-pack tests and no test of this job
+# (dispatch://INFRA-1413, A4).
 #
 # The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
 # decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
@@ -217,17 +219,21 @@ jobs:
       # 648 tests one after another, the slowest at 44 s. The 30 minutes leave it three times its
       # slowest run.
       #
-      # The -skip is the plugin-pack job's three tests, the ones of internal/daemon that
+      # The -skip is the tests of internal/daemon that jobs of their own run, in one pattern
+      # ci_job_reads.py builds from both lists. The plugin-pack job's three, which
       # ci_job_reads.py's PLUGIN_PACK_TESTS names, a fourth test of that package loading a plugin
       # on the real Oh My Pi and staying in this step (TestThePromptReferenceProbeOnTheRealOhMyPi):
       # they run in .github/workflows/ci-job-plugin-pack.yaml, so that their reads — bun.lock and
-      # skills/ among them — are that job's inputs and not this suite's, and a test run twice is a
-      # test whose second run tells nobody anything. The names are written in
-      # .github/scripts/ci_job_reads.py (PLUGIN_PACK_TESTS), which builds this step's text and the
-      # other job's from the one list and holds each step to it, so the skip and the run cannot
-      # come to name different tests.
+      # skills/ among them — are that job's inputs and not this suite's. And the daemon-live
+      # job's seven whole-daemon live tests, which DAEMON_LIVE_TESTS names: they run in
+      # .github/workflows/ci-job-daemon-live.yaml, so that the bun install and the `dispatch`
+      # CLI one of them runs are that job's inputs, and none of them holds this step's package
+      # time for the minutes each takes. A test run twice is a test whose second run tells
+      # nobody anything. The names are written in .github/scripts/ci_job_reads.py, which builds
+      # this step's text and the other jobs' from the two lists and holds each step to it, so the
+      # skip and the runs cannot come to name different tests.
       - name: Test the concurrent packages under the race detector
-        run: go test -v -count=1 -race -timeout 30m -skip '^(TestTheAgentModelCheckOnTheRealOhMyPi|TestTheImageProbeResolvesTheAgentsTheDaemonsPromptsName|TestTheRealPluginsOnTheRealOhMyPi)$' ./internal/daemon/ ./internal/sessionproxy/ ./internal/launcher/
+        run: go test -v -count=1 -race -timeout 30m -skip '^(TestABehindCompletionIsDecidedByItsHeadAndTheMoveThatRaisedTheEntryLive|TestAConflictStartsTheNextRoleAtOnceAndTakesNoTurnOverLive|TestAPhaseEntryConvergesOnARunningDaemonLive|TestAQueuedRootUnderALiveTreeJoinsItLive|TestEveryChildThatStartsRunsUnderItsOwnArchitectLive|TestHandoffRecordsLive|TestTheAgentModelCheckOnTheRealOhMyPi|TestTheImageProbeResolvesTheAgentsTheDaemonsPromptsName|TestTheMergeWaitSaysWhatAReviewRoundWaitsOnFromGitHubLive|TestTheRealPluginsOnTheRealOhMyPi)$' ./internal/daemon/ ./internal/sessionproxy/ ./internal/launcher/
         working-directory: packages/daemon
 
       # The proof builds the daemon's ./cmd/legion and boots it against the Postgres above, so it

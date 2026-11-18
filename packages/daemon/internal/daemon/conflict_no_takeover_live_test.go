@@ -1,13 +1,12 @@
-//go:build e2e
-
 // The live proof's driver for the rule a CI red follows: it takes nobody's turn over. The
 // start it makes acts at once — the role the new phase belongs to is prompted while the role whose
 // phase ended is still working a turn it has not ended — nothing is sent to that role's connection
 // to end its turn, the role is told its phase is over by one message on its own Envoy role topic,
 // and a completion the old turn reports once the issue has handed the phase out again is refused
 // HANDOFF_STALE_ENTRY, where the completion of the new phase entry, in the turn that entry's task
-// starts, is taken. scripts/e2e/conflict-no-takeover.sh builds this driver with `-tags e2e` and
-// owns the nats-server and the PostgreSQL it runs against.
+// starts, is taken. The test runs in CI's daemon-live job
+// (.github/workflows/ci-job-daemon-live.yaml), on the job's PostgreSQL and the package's test NATS
+// server.
 //
 // The daemon is the whole daemon: run, the function `legion start` calls, through this package's
 // own whole-daemon harness (startDaemonWithin), so the proof exercises the real configuration, the
@@ -28,8 +27,8 @@
 // sent nothing at all while the start acts, and that the start acts while that role's claim is
 // still `working` on a delivery it confirmed — rather than the absence of one frame type.
 //
-// What the proof stands in for lies outside the rule. The broker is a native nats-server the
-// script starts and names in LEGION_E2E_NATS_URL. GitHub is the harness's REST stand-in for the
+// What the proof stands in for lies outside the rule. The broker is the NATS server the package's
+// other tests take (workflowNATS, through testnats). GitHub is the harness's REST stand-in for the
 // one pull request the proof drives (liveGitHub, in live_issue_proof_test.go), whose base branch
 // requires the check `ci` (conflictBranchRules). Dispatch is the board the package's whole-daemon
 // live proofs share (liveDispatch, in live_proof_test.go). Envoy's listener is
@@ -125,14 +124,14 @@ func TestAConflictStartsTheNextRoleAtOnceAndTakesNoTurnOverLive(t *testing.T) {
 	r.step("step5-a-phase-ended-message-no-session-holds-finishes-and-the-start-still-acts", r.noHolderFinishesTheRow)
 }
 
-// newConflictNoTakeoverLive boots the daemon over the script's broker with the issue already
+// newConflictNoTakeoverLive boots the daemon over the package's test broker with the issue already
 // recorded: one root implementing on an open pull request whose base requires ci, holding its
 // tree's admission slot, and its implementer's claim as a launch a previous daemon began and never
 // recorded, which this boot relaunches. That last one is how the proof reaches a live implementer
 // session, serving run 1, without an operator's spawn.
 func newConflictNoTakeoverLive(t *testing.T) *conflictNoTakeoverLive {
 	t.Helper()
-	r := &conflictNoTakeoverLive{liveIssueProof: newLiveIssueProof(t, "scripts/e2e/conflict-no-takeover.sh",
+	r := &conflictNoTakeoverLive{liveIssueProof: newLiveIssueProof(t,
 		conflictBase, "the issue whose CI goes red")}
 	r.serveGitHub(&liveGitHub{sha: conflictFirstHead, also: conflictBranchRules()})
 	r.listener = newConflictListener(t, &r.liveProof)

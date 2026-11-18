@@ -28,15 +28,17 @@
 # proof editor's typechecks are dispatch_ui's, and ci.yaml's comment on dispatch-ui says why they
 # were split out), `envoy_session_stall`,
 # whose job builds and runs the stall entries, `envoy_e2e_local`, whose live proof renders
-# with @legion/envoy-client at run time, and `dispatch_two_builds` and `dispatch_two_builds_go`,
+# with @legion/envoy-client at run time, `dispatch_two_builds` and `dispatch_two_builds_go`,
 # the two-build job's gates, whose job runs the browser suite against two builds and whose Go
-# step runs this tree's dispatch command. What such a job loads is a runtime closure rather than
+# step runs this tree's dispatch command, and `daemon_live`, whose Go step runs that command and
+# scripts/e2e/completion-head.ts. What such a job loads is a runtime closure rather than
 # a tsc program, and stays a hand-kept read of ci_job_reads.py: envoy_client_dep for the
-# dispatch_browser, envoy_e2e_local and two-build gates, a read of its own for the
+# dispatch_browser, envoy_e2e_local, two-build and daemon-live gates, a read of its own for the
 # envoy_session_stall gate. Two parts of such closures this check does derive: every file the
-# dispatch command the two-build Go step runs loads, from that command's bundle (the bundles,
-# below), and the share of packages/contracts/src that dispatch_browser and the two two-build
-# gates load, from dispatch_ui's programs and that bundle (the listed blocks, below).
+# entries the two-build and daemon-live Go steps run load, from those entries' bundles (the
+# bundles, below), and the share of packages/contracts/src that dispatch_browser, the two
+# two-build gates and daemon_live load, from dispatch_ui's programs and those bundles (the listed
+# blocks, below).
 #
 # THE BUNDLES. A step that runs an entry with Bun loads that entry's runtime closure, which no
 # tsc program of its job lists: the two-build job's Go step runs cmd/dispatch/twobuild_cli_test.go,

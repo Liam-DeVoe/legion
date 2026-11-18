@@ -242,7 +242,7 @@ func newRolePromptRuleLive(t *testing.T) *rolePromptRuleLive {
 		t.Skipf("%s is unset, so there is no Oh My Pi for a pane to run; scripts/e2e/role-prompt-rule.sh requires it", liveOmpPathEnv)
 	}
 	takeOwnDatabase(t)
-	proof := newLiveProof(t, "scripts/e2e/role-prompt-rule.sh")
+	proof := newLiveProof(t)
 	r := &rolePromptRuleLive{
 		liveAgentProof: liveAgentProof{liveProof: proof, omp: omp},
 		issue:          proof.cfg.Project + "-1",

@@ -23,15 +23,19 @@
 # line tells that case apart, and names libpq and the package to install. The status does not:
 # the helper answers every refusal with one status, so a status of its own here would need this
 # file to read the helper's wording, or to ask for libpq a second time. broker starts that
-# nats-server with JetStream on a port the kernel picks. driver builds the daemon package's
-# `-tags e2e` test binary. proof runs the one test TEST against them and holds that it passed.
+# nats-server with JetStream and its monitoring endpoint, each on a port the kernel picks, and
+# names the two to the driver as LEGION_TEST_NATS_URL and LEGION_TEST_NATS_MONITOR_URL, the running
+# server the daemon package's test broker (internal/testnats) takes in place of a container. driver
+# builds the daemon package's `-tags e2e` test binary. proof runs the one test TEST against them
+# and holds that it passed.
 #
 # SLUG names the run's own files: the work directory legion-e2e-SLUG.<pid>.* under TMPDIR (or /tmp
 # when it is unset), which holds the broker's store and the driver binary SLUG.test and is removed
 # on any exit, and the evidence directory legion-e2e-SLUG-evidence.* beside it when EVIDENCE, the
 # directory the caller named, is empty. The evidence directory is kept and printed; it holds the
-# transcript (lib/transcript.sh), the nats-server's log, the daemon's own, which the driver writes
-# through LEGION_E2E_DAEMON_LOG, and the driver's output. On any exit the nats-server is stopped and
+# transcript (lib/transcript.sh), the nats-server's log, the driver's output, and a directory named
+# TEST, where the driver writes the daemon's own log (daemon.log) and the other logs of what it runs
+# through LEGION_TEST_DAEMON_LOG_DIR. On any exit the nats-server is stopped and
 # the run prints `LABEL e2e: PASS in <n>s (evidence: <dir>)`, or `LABEL e2e: FAIL at <check> after
 # <n>s (evidence: <dir>)` on stderr.
 
@@ -55,6 +59,7 @@ work=''
 driver=''
 nats_pid=''
 port_nats=''
+port_monitor=''
 check=setup
 started=''
 check_started=''
@@ -125,14 +130,14 @@ live_daemon_proof() {
 
   begin broker
   mkdir -p "$work/nats-store"
-  # Both logs are this run's, whatever an evidence directory a caller named already holds: the port
-  # below is read back out of the broker's.
+  # Every log is this run's, whatever an evidence directory a caller named already holds: the ports
+  # below are read back out of the broker's, and the driver appends to the daemon's.
   : >"$evidence/nats.log"
-  : >"$evidence/daemon.log"
-  # The port is the kernel's own pick (`-p -1`), read back from the line the server logs once it is
-  # listening: the server binds it before anything else can take it, which no free-port pick can
-  # promise, and a pod with no `ss` runs the proof all the same.
-  "$nats_bin" -js -a 127.0.0.1 -p -1 -sd "$work/nats-store" >>"$evidence/nats.log" 2>&1 &
+  rm -rf "${evidence:?}/${test_name:?}"
+  # The ports are the kernel's own pick (`-p -1`, `-m -1`), read back from the lines the server logs
+  # once it is listening: the server binds them before anything else can take them, which no
+  # free-port pick can promise, and a pod with no `ss` runs the proof all the same.
+  "$nats_bin" -js -a 127.0.0.1 -p -1 -m -1 -sd "$work/nats-store" >>"$evidence/nats.log" 2>&1 &
   nats_pid=$!
   for _ in $(seq 1 120); do
     grep -q 'Server is ready' "$evidence/nats.log" && break
@@ -142,7 +147,9 @@ live_daemon_proof() {
   grep -q 'Server is ready' "$evidence/nats.log" || fail "the nats-server was not ready within 60s; see $evidence/nats.log"
   port_nats=$(awk -F: '/Listening for client connections on/ {print $NF; exit}' "$evidence/nats.log")
   [ -n "$port_nats" ] || fail "the nats-server logged no client port; see $evidence/nats.log"
-  note "JetStream on nats://127.0.0.1:$port_nats, store $work/nats-store, log $evidence/nats.log"
+  port_monitor=$(awk -F: '/Starting http monitor on/ {print $NF; exit}' "$evidence/nats.log")
+  [ -n "$port_monitor" ] || fail "the nats-server logged no monitoring port; see $evidence/nats.log"
+  note "JetStream on nats://127.0.0.1:$port_nats, monitoring on http://127.0.0.1:$port_monitor, store $work/nats-store, log $evidence/nats.log"
   pass
 
   begin driver
@@ -155,12 +162,13 @@ live_daemon_proof() {
   # The driver's steps print their own `== <name>` / `ok <name>` pair between this check's, so the
   # run's checks and the proof's read alike. The daemon's own log goes to the evidence directory
   # rather than into them.
-  LEGION_E2E_NATS_URL="nats://127.0.0.1:$port_nats" \
-    LEGION_E2E_DAEMON_LOG="$evidence/daemon.log" \
+  LEGION_TEST_NATS_URL="nats://127.0.0.1:$port_nats" \
+    LEGION_TEST_NATS_MONITOR_URL="http://127.0.0.1:$port_monitor" \
+    LEGION_TEST_DAEMON_LOG_DIR="$evidence" \
     TMPDIR="$work" \
     "$driver" -test.count=1 -test.timeout=20m -test.v \
     -test.run "^$test_name\$" 2>&1 | tee "$evidence/proof.log" ||
-    fail "the proof's driver failed; see $evidence/proof.log and $evidence/daemon.log"
+    fail "the proof's driver failed; see $evidence/proof.log and $evidence/$test_name/daemon.log"
   # A driver that skipped, or whose -test.run matched nothing, exits 0 having proved nothing.
   grep -q "^--- PASS: $test_name" "$evidence/proof.log" ||
     fail "the proof's driver ran no step: it skipped, or -test.run matched no test; see $evidence/proof.log"

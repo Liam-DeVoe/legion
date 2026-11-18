@@ -72,7 +72,7 @@
 # the panes' working directory is a jj repository it makes with jj, with an origin it makes with
 # git. It needs no kube context, no Claude Code, no GitHub and no tmux — the panes are child
 # process groups of the driver — so it runs in a Legion pod and on a devbox alike. The run around
-# the driver is lib/live-daemon-proof.sh's, which role-prompt-rule.sh and handoff-records.sh make
+# the driver is lib/live-daemon-proof.sh's, which role-prompt-rule.sh and claim-compaction.sh make
 # too.
 set -euo pipefail
 

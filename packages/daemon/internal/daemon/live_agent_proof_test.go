@@ -1,5 +1,3 @@
-//go:build e2e
-
 // What the five live proofs that drive real Oh My Pi panes share below the daemon: the constants
 // each reads off the daemon, the run each one is (liveAgentProof) with its reads of a claim, of a
 // pane and of the daemon's own log, the database, the `legion` binary, the plugins and the pane

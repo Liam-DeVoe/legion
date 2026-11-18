@@ -1,8 +1,9 @@
 // Package testdb gives a test a Postgres database of its own on the devbox and CI Postgres that
 // LEGION_TEST_PG_DSN names, dropped when the test ends, so no test sees another's rows, and a way
 // to reach it across a network's delay (Delayed). A test is skipped without it, since there is
-// nothing to run against, and fails without it on GitHub Actions, where ci.yaml's daemon-go job
-// gives it (DSN).
+// nothing to run against, and fails without it on GitHub Actions, where the ci.yaml job that runs
+// the test gives it: daemon-go for most of this module's tests (DSN), another job for a test that
+// names its own (DSNFor).
 //
 // Database is an empty database. A test that needs the daemon's schema takes internal/testpg's
 // Clone or CloneStore instead, which copy a template that package migrated once.
@@ -57,13 +58,20 @@ const skipMessage = "LEGION_TEST_PG_DSN is unset, so there is no Postgres to tes
 	"  port=$(docker port legion-pg 5432/tcp | head -1 | sed 's/.*://')\n" +
 	"  LEGION_TEST_PG_DSN=postgres://legion:legion@127.0.0.1:$port/legion go test ./..."
 
-// DSN is the server LEGION_TEST_PG_DSN names. Without one the test skips, saying how to start
-// one, except on GitHub Actions, where ci.yaml's daemon-go job gives it and the test fails
-// (testprereq.Require).
+// DSN is DSNFor the daemon-go job, which runs most of this module's tests and gives them
+// LEGION_TEST_PG_DSN.
 func DSN(t testing.TB) string {
 	t.Helper()
+	return DSNFor(t, "daemon-go")
+}
+
+// DSNFor is the server LEGION_TEST_PG_DSN names. Without one the test skips, saying how to start
+// one, except on GitHub Actions, where job, the ci.yaml job that runs the test, gives it and the
+// test fails naming that job (testprereq.Require).
+func DSNFor(t testing.TB, job string) string {
+	t.Helper()
 	dsn := os.Getenv("LEGION_TEST_PG_DSN")
-	testprereq.Require(t, dsn != "", "daemon-go", "%s", skipMessage)
+	testprereq.Require(t, dsn != "", job, "%s", skipMessage)
 	return dsn
 }
 

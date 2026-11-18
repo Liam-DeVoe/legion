@@ -13,36 +13,6 @@
   ],
   "hosted": [
     {
-      "script": "behind-entry-fence.sh",
-      "go_version_file": "packages/daemon/go.mod",
-      "apt": [],
-      "bun": false,
-      "evidence_variable": "BEHIND_ENTRY_FENCE_EVIDENCE_DIR",
-      "timeout_minutes": 25,
-      "why_hosted": "Run it from a checkout on a Linux host with go, awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/behind-entry-fence.sh; CI's service satisfies it, and the script starts no container, installing the nats-server it needs with go install",
-      "jj": true
-    },
-    {
-      "script": "child-adoption.sh",
-      "go_version_file": "packages/daemon/go.mod",
-      "apt": [],
-      "bun": false,
-      "evidence_variable": "CHILD_ADOPTION_EVIDENCE_DIR",
-      "timeout_minutes": 25,
-      "why_hosted": "Run it from a checkout on a Linux host with go and awk, as LEGION_TEST_PG_DSN=... bash scripts/e2e/child-adoption.sh; CI's service satisfies it, and this script starts none",
-      "jj": true
-    },
-    {
-      "script": "conflict-no-takeover.sh",
-      "go_version_file": "packages/daemon/go.mod",
-      "apt": [],
-      "bun": false,
-      "evidence_variable": "CONFLICT_NO_TAKEOVER_EVIDENCE_DIR",
-      "timeout_minutes": 25,
-      "why_hosted": "Run it from a checkout on a Linux host with go, awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/conflict-no-takeover.sh; CI's service satisfies it, and the script starts no container, installing the nats-server it needs with go install",
-      "jj": true
-    },
-    {
       "script": "dispatch-claimant-delivery.sh",
       "go_version_file": "packages/envoy/go.mod",
       "apt": ["postgresql-client"],
@@ -53,36 +23,6 @@
       "jj": false
     },
     {
-      "script": "handoff-records.sh",
-      "go_version_file": "packages/daemon/go.mod",
-      "apt": [],
-      "bun": true,
-      "evidence_variable": "HANDOFF_RECORDS_EVIDENCE_DIR",
-      "timeout_minutes": 25,
-      "why_hosted": "Run it from a checkout on a Linux host with go, bun (after bun install) and awk, as LEGION_TEST_PG_DSN=... bash scripts/e2e/handoff-records.sh; CI's pgvector service is the server it needs, its role creates Dispatch's database there, it builds and starts Dispatch and the daemon itself, and it reaches no outside service; a run takes two to four minutes",
-      "jj": true
-    },
-    {
-      "script": "merge-wait-readable.sh",
-      "go_version_file": "packages/daemon/go.mod",
-      "apt": [],
-      "bun": false,
-      "evidence_variable": "MERGE_WAIT_READABLE_EVIDENCE_DIR",
-      "timeout_minutes": 25,
-      "why_hosted": "Run it from a checkout on a Linux host with go, awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/merge-wait-readable.sh; CI's service satisfies it, and the script starts no container, installing the nats-server it needs with go install",
-      "jj": true
-    },
-    {
-      "script": "phase-entry-converge.sh",
-      "go_version_file": "packages/daemon/go.mod",
-      "apt": [],
-      "bun": false,
-      "evidence_variable": "PHASE_ENTRY_CONVERGE_EVIDENCE_DIR",
-      "timeout_minutes": 20,
-      "why_hosted": "Run it from a checkout on a Linux host with go, awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/phase-entry-converge.sh; the proof needs a real PostgreSQL, which CI's service is, and a real nats-server, which it installs with go install, and it starts no container; a measured run took 88 seconds, most of it building the driver",
-      "jj": true
-    },
-    {
       "script": "stage1-skeleton.sh",
       "go_version_file": "packages/daemon/go.mod",
       "apt": ["tmux"],
@@ -91,16 +31,6 @@
       "timeout_minutes": 20,
       "why_hosted": "The daemon refuses to start without tmux on PATH, and CI's tmux is the runner's apt binary; with LEGION_E2E_PG_DSN set the script starts no container of its own, which is how ci.yaml's daemon-go job already runs it",
       "jj": false
-    },
-    {
-      "script": "sub-architect.sh",
-      "go_version_file": "packages/daemon/go.mod",
-      "apt": [],
-      "bun": false,
-      "evidence_variable": "SUB_ARCHITECT_EVIDENCE_DIR",
-      "timeout_minutes": 25,
-      "why_hosted": "Run it from a checkout on a Linux host with go, awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/sub-architect.sh; CI's service satisfies it, and the script starts no container, installing the nats-server it needs with go install",
-      "jj": true
     },
     {
       "script": "verification-results.sh",

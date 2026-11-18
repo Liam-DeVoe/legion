@@ -1,9 +1,8 @@
-//go:build e2e
-
 // The live proof's driver for the handoff records of sjawhar/legion#2354: a phase's handoff is a
 // record on the Dispatch issue, written with `dispatch handoff-write` under the worker's own
-// session, and a completion names it. scripts/e2e/handoff-records.sh builds this driver with
-// `-tags e2e` and owns the nats-server and the PostgreSQL it runs against.
+// session, and a completion names it. The test runs in CI's daemon-live job
+// (.github/workflows/ci-job-daemon-live.yaml), on the job's PostgreSQL and the package's test NATS
+// server, with the job's bun and its frozen install for the `dispatch` CLI.
 //
 // Nothing of the record path is stood in for. Dispatch is the real server: this driver builds
 // packages/envoy's cmd/dispatch and runs it, as packages/dispatch/e2e/run-server.sh does, on a
@@ -20,8 +19,8 @@
 // through scripts/e2e/completion-head.ts against this run's own Dispatch, as the pane's plugin
 // runs it.
 //
-// What is stood in for lies outside the records. The broker is a native nats-server the script
-// starts and names in LEGION_E2E_NATS_URL. GitHub is the daemon's own REST stand-in
+// What is stood in for lies outside the records. The broker is the NATS server the package's
+// other tests take (workflowNATS, through testnats). GitHub is the daemon's own REST stand-in
 // (handoffRecordsDaemonGitHub, which answers each repository with default branch main, lists the
 // one open pull request of the branch that completes rounds here, and nothing else). The Apps'
 // tokens are workflowTokenRecorder's placeholders, Envoy's listener is the package's
@@ -55,11 +54,12 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/testprereq"
+
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
-	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
@@ -101,7 +101,6 @@ type handoffRecordsLive struct {
 // TestHandoffRecordsLive drives the proof's steps against one booted daemon and one Dispatch.
 // A10 runs last, since it stops Dispatch under the daemon.
 func TestHandoffRecordsLive(t *testing.T) {
-	fixtureenv.Live(t)
 	r := newHandoffRecordsLive(t)
 	r.step("a6-a-40kb-handoff-reads-back-byte-identical-two-writes-are-versions-1-and-2", r.a6RoundTrip)
 	r.step("a6-control-a-body-one-byte-over-the-cap-is-refused", r.a6OverCap)
@@ -119,7 +118,7 @@ func TestHandoffRecordsLive(t *testing.T) {
 // daemon's store with those issues where each step starts them, and boots the daemon at Dispatch.
 func newHandoffRecordsLive(t *testing.T) *handoffRecordsLive {
 	t.Helper()
-	proof := newLiveProof(t, "scripts/e2e/handoff-records.sh")
+	proof := newLiveProof(t)
 	// A Dispatch project key is at most ten characters (contracts ProjectKeyPattern), and the
 	// daemon's project is its Dispatch project, so the run's project is a short one of its own.
 	proof.cfg.Project = "HR" + randomSuffix(t)[:6]
@@ -129,10 +128,9 @@ func newHandoffRecordsLive(t *testing.T) *handoffRecordsLive {
 	if proof.project, err = claim.ProjectToken(proof.cfg.Project); err != nil {
 		t.Fatal(err)
 	}
-	// testbuild.RootEnv names the checkout the script runs from, whose packages/envoy the driver
-	// builds Dispatch from and whose packages/envoy-client holds the CLI. The script exports it:
-	// the driver binary runs from the caller's directory, not the package's. Unset (a plain `go
-	// test -tags e2e`, which runs in the package directory), the checkout is four directories up.
+	// testbuild.RootEnv names the checkout the driver builds Dispatch from and whose
+	// packages/envoy-client holds the CLI. Unset, as in the daemon-live job's `go test`, which
+	// runs in the package directory, the checkout is four directories up.
 	root := os.Getenv(testbuild.RootEnv)
 	if root == "" {
 		root = filepath.Join("..", "..", "..", "..")
@@ -140,9 +138,8 @@ func newHandoffRecordsLive(t *testing.T) *handoffRecordsLive {
 	if root, err = filepath.Abs(root); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := exec.LookPath("bun"); err != nil {
-		t.Fatalf("bun is not on PATH, and the dispatch CLI runs under it: %v", err)
-	}
+	_, err = exec.LookPath("bun")
+	testprereq.Require(t, err == nil, liveJob, "bun is not on PATH, and the dispatch CLI runs under it: %v", err)
 	r := &handoffRecordsLive{
 		liveProof: proof, rt: fake.NewRuntime(), built: &built{}, root: root,
 		cliHome: t.TempDir(), claimants: map[claim.Token]*handoffClaimant{},
@@ -985,13 +982,13 @@ type handoffDispatch struct {
 }
 
 // startHandoffDispatch starts the run's Dispatch server from root's packages/envoy on a database
-// of its own. Dispatch's own log goes beside the daemon's in the evidence directory when the
-// script names one.
+// of its own. Dispatch's own log goes beside the daemon's, in the test's log directory
+// (liveLogDir), when there is one.
 func startHandoffDispatch(t *testing.T, root string) *handoffDispatch {
 	t.Helper()
 	options := scratchDispatchOptions{root: root}
-	if daemonLog := os.Getenv(liveDaemonLogEnv); daemonLog != "" {
-		file, err := os.OpenFile(filepath.Join(filepath.Dir(daemonLog), "dispatch.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if dir := liveLogDir(t); dir != "" {
+		file, err := os.OpenFile(filepath.Join(dir, "dispatch.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 		if err != nil {
 			t.Fatalf("open Dispatch's log: %v", err)
 		}

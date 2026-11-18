@@ -1,5 +1,3 @@
-//go:build e2e
-
 // The runtime a live proof uses when it needs a real Oh My Pi pane and the host has no tmux. A
 // Legion pod carries no tmux and may not have one added for a test (a sixth client in the worker
 // image is an image change, skill://legion-worker/references/tools.md), so
@@ -129,13 +127,13 @@ type localRuntime struct {
 
 // newLocalRuntime builds the runtime and registers the cleanup that kills every process group it
 // ever started: a proof that fails part way leaves no Oh My Pi running. Each worker's own output
-// is written beside the daemon's log, in the directory the run's script keeps as its evidence
-// (liveDaemonLogEnv), since the state directory goes with the test.
+// is written beside the daemon's log, in the test's log directory (liveLogDir), since the state
+// directory goes with the test.
 func newLocalRuntime(t *testing.T, stateDir, legion, omp, home, profile string) *localRuntime {
 	t.Helper()
 	logs := filepath.Join(stateDir, "panes")
-	if daemonLog := os.Getenv(liveDaemonLogEnv); daemonLog != "" {
-		logs = filepath.Join(filepath.Dir(daemonLog), "panes")
+	if dir := liveLogDir(t); dir != "" {
+		logs = filepath.Join(dir, "panes")
 	}
 	if err := os.MkdirAll(logs, 0o700); err != nil {
 		t.Fatalf("make the pane log directory %s: %v", logs, err)

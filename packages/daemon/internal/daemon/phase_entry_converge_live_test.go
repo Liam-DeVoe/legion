@@ -1,8 +1,7 @@
-//go:build e2e
-
 // The live proof that the work of a phase entry reaches the worker that entry names, on a running
-// daemon (dispatch://INFRA-2800's R3, R4, R5, R6 and R9). scripts/e2e/phase-entry-converge.sh
-// builds this driver with `-tags e2e` and owns the nats-server and the PostgreSQL it runs against.
+// daemon (dispatch://INFRA-2800's R3, R4, R5, R6 and R9). The test runs in CI's daemon-live job
+// (.github/workflows/ci-job-daemon-live.yaml), on the job's PostgreSQL and the package's test NATS
+// server.
 //
 // The daemon is the whole daemon: run, the function `legion start` calls, through this package's
 // own whole-daemon harness (startDaemonWithin), so the proof exercises the real configuration, the
@@ -48,11 +47,12 @@
 // One more read. The driver reads GET /legion/v1/state once and holds that the issue carries both
 // numbers on the wire, which is R6 on a booted daemon.
 //
-// What stands in lies outside the rule. The broker is a native nats-server the script starts and
-// names in LEGION_E2E_NATS_URL. GitHub is the harness's REST stand-in for the one pull request the
-// proof drives (liveGitHub, in live_issue_proof_test.go), which serves that pull request's state,
-// head, base and mergeable — the answer the driver arms to drive a conflict — and no branch rule
-// of any kind, with this proof's pause of its read of that pull request (pullRequestReadPause).
+// What stands in lies outside the rule. The broker is the NATS server the package's other tests
+// take (workflowNATS, through testnats). GitHub is the harness's REST stand-in for the one pull
+// request the proof drives (liveGitHub, in live_issue_proof_test.go), which serves that pull
+// request's state, head, base and mergeable — the answer the driver arms to drive a conflict — and
+// no branch rule of any kind, with this proof's pause of its read of that pull request
+// (pullRequestReadPause).
 // Dispatch is the board the package's whole-daemon live proofs share (liveDispatch, in
 // live_proof_test.go).
 // The two Apps' tokens are workflowTokenRecorder's placeholders. No agent runs: every claim is
@@ -75,7 +75,6 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -137,7 +136,6 @@ type phaseEntryConvergeLive struct {
 // is on reaching the tester after the entry it had been queued is refused, a start row deleted
 // before any lane runs it whose work the sweep sends all the same, and the state's two numbers.
 func TestAPhaseEntryConvergesOnARunningDaemonLive(t *testing.T) {
-	fixtureenv.Live(t)
 	r := newPhaseEntryConvergeLive(t)
 	r.step("run1-the-phase-changes-twice-while-the-testers-start-waits-for-its-launch", r.phaseChangesWhileTheStartWaits)
 	r.step("run1-the-launch-runs-and-the-entry-the-phase-is-on-is-worked", r.theLaunchRunsAndTheEntryIsWorked)
@@ -145,14 +143,14 @@ func TestAPhaseEntryConvergesOnARunningDaemonLive(t *testing.T) {
 	r.step("the-state-carries-the-phase-entry-and-the-entry-the-role-was-given", r.stateCarriesBothNumbers)
 }
 
-// newPhaseEntryConvergeLive boots the daemon over the script's broker with the issue already
+// newPhaseEntryConvergeLive boots the daemon over the package's test broker with the issue already
 // recorded: one root implementing on an open pull request at its first head, holding its
 // tree's admission slot, and its implementer's claim as a launch a previous daemon began and never
 // recorded, which this boot relaunches. That relaunch is how the proof reaches a live implementer
 // session without an operator's spawn, and it is the wake that spends the burst.
 func newPhaseEntryConvergeLive(t *testing.T) *phaseEntryConvergeLive {
 	t.Helper()
-	r := &phaseEntryConvergeLive{liveIssueProof: newLiveIssueProof(t, "scripts/e2e/phase-entry-converge.sh",
+	r := &phaseEntryConvergeLive{liveIssueProof: newLiveIssueProof(t,
 		convergeBase, "the issue whose phase entries converge")}
 	r.reads = r.newPullRequestReadPause()
 	r.seed()

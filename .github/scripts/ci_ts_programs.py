@@ -69,6 +69,14 @@ BUNDLES = [
     ("dispatch_two_builds_go", "packages/envoy-client/bin/dispatch.ts",
      at("dispatch-two-builds", "Two-build tests of the Dispatch server (cmd/dispatch/twobuild_cli_test.go:42-46 runs "
                                "`bun ../../../envoy-client/bin/dispatch.ts`, this tree's dispatch command)")),
+    # The daemon-live job's Go step runs the same dispatch command and the completion-head driver
+    # under bun, both from internal/daemon/handoff_records_live_test.go.
+    ("daemon_live", "packages/envoy-client/bin/dispatch.ts",
+     at("daemon-live", "Run the whole-daemon live tests (internal/daemon/handoff_records_live_test.go:702,716 runs "
+                       "`bun packages/envoy-client/bin/dispatch.ts`, this tree's dispatch command)")),
+    ("daemon_live", "scripts/e2e/completion-head.ts",
+     at("daemon-live", "Run the whole-daemon live tests (internal/daemon/handoff_records_live_test.go:763 runs "
+                       "`bun scripts/e2e/completion-head.ts`, the real findHandoffReport)")),
 ]
 
 # The trees a filter names file by file rather than whole: check-ts-filters.sh writes into the
@@ -130,4 +138,11 @@ LISTED = [
      "the job's browser half runs the SPA built from packages/dispatch and the Playwright config and e2e helpers "
      "of packages/dispatch/e2e, which load the contracts modules dispatch_ui's programs compile, and its Go step "
      "runs the dispatch command whose bundle dispatch_two_builds_go's row builds; no step loads any other"),
+    # The daemon-live job's Go step reaches packages/contracts through the two programs
+    # handoff_records_live_test.go runs under bun, which BUNDLES builds. A filter has one listed
+    # block, so the two pi-shared modules completion-head.ts loads stay named in the filter and
+    # declared in ci_job_reads.py, and the bundle holds them there.
+    ("daemon_live", "packages/contracts/src", ("daemon_live",),
+     "the step's internal/daemon/handoff_records_live_test.go runs `bun packages/envoy-client/bin/dispatch.ts` and "
+     "`bun scripts/e2e/completion-head.ts`, which load the contracts modules those entries' bundles load and no other"),
 ]

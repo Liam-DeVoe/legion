@@ -210,7 +210,7 @@ func newLateCompletionLive(t *testing.T) *lateCompletionLive {
 		}
 	}
 	takeOwnDatabase(t)
-	proof := newLiveProof(t, "scripts/e2e/late-completion.sh")
+	proof := newLiveProof(t)
 	// A Dispatch project key is at most ten characters (contracts ProjectKeyPattern), and the
 	// daemon's project is its Dispatch project, so the run's project is a short one of its own.
 	proof.cfg.Project = "LC" + randomSuffix(t)[:6]
