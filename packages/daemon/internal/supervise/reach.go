@@ -342,20 +342,9 @@ func (m *Machine) relaunchUnreachable(ctx context.Context, ev RequestRelaunch) e
 		return m.endHeld(ctx)
 	}
 	m.letGo(ctx, letGoCause{cause: ev.Cause, relaunch: true})
-	before := m.claim.Generation
-	if err := m.launchAfter(ctx, false, true, noEnd); err != nil || m.claim.Generation == before {
-		return err
-	}
-	// The relaunch's launch is written; the generation it left the claim at is written beside the
-	// relaunch's moment, before the machine can make any later launch, since it holds its lock
-	// until this write returns. A write the store refuses is owed, and the claim's next write
-	// carries it (owes), so it is durable before any launch after it.
-	m.claim.Reach.LastRelaunchGeneration = m.claim.Generation
-	if err := m.persist(ctx); err != nil {
-		m.log.Warn("supervise: the generation the relaunch left the claim at was not written; the claim's next write carries it",
-			"generation", m.claim.Generation, "error", err)
-	}
-	return nil
+	// The launch that starts writes the generation it left the claim at beside the relaunch, in
+	// its own write (launchNow), whether it runs now or is tried again at the probe interval.
+	return m.launchAfter(ctx, false, true, noEnd)
 }
 
 // relaunchClaim is the RequestRelaunch event's row, for the three states a settled agent stands in.

@@ -522,6 +522,15 @@ func TestARelaunchRefusedAfterItsStopLeavesNoClaimRecordingAStoppedProcess(t *te
 		if got := h.claim().EndedWork.Cause; got != relaunchCause {
 			t.Fatalf("the claim records the stop's end as caused by %q, want the relaunch's %q", got, relaunchCause)
 		}
+		// The launch the probe interval retried is the relaunch's own, so the generation it left the
+		// claim at is recorded beside the relaunch, in the store as on the claim: the keeper counts
+		// the claim's later launches from it.
+		if got := h.claim().Reach.LastRelaunchGeneration; got != generation+1 {
+			t.Fatalf("after the retried launch the claim records its relaunch's launch at generation %d, want %d", got, generation+1)
+		}
+		if got := h.store.load(h.token).Reach.LastRelaunchGeneration; got != generation+1 {
+			t.Fatalf("after the retried launch the store records its relaunch's launch at generation %d, want %d", got, generation+1)
+		}
 		h.wantBudgets(Budgets{})
 	})
 }

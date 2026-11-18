@@ -2555,6 +2555,14 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool, cause str
 			// longer what anyone must be told of.
 			m.stopUnconfirmed = false
 			m.claim.Locator = &loc
+			// The first launch that starts after a relaunch on the same session is that
+			// relaunch's own, whichever path made it: the relaunch itself, or the retry at the
+			// probe interval of a launch the relaunch's stop let go (relaunchRefused,
+			// relaunchLater). The generation it left the claim at is written beside the relaunch
+			// in this launch's own write, so the keeper counts the claim's later launches from it.
+			if !m.claim.Reach.LastRelaunch.IsZero() && m.claim.Reach.LastRelaunchGeneration == 0 {
+				m.claim.Reach.LastRelaunchGeneration = m.claim.Generation
+			}
 			m.leftPodRoundAt(loc)
 			m.armBoot()
 			m.log.Info("supervise: launched", "generation", m.claim.Generation, "incarnation", loc.Incarnation,
