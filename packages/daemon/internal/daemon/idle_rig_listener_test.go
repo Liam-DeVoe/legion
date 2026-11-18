@@ -93,8 +93,11 @@ func startIdleRigListenerOn(t *testing.T, natsURL, machine string, socket *os.Fi
 		client: &http.Client{}}
 	// The stop kills the process (exec's default Cancel, SIGKILL) and returns only once it has
 	// ended, so its NATS clients are gone before the test's server checks that it holds none
-	// (testnats' leak check). A SIGKILL cannot be caught, so only the kernel can make a killed
-	// process end late, and the wait is the shared one: its failure names the process's state.
+	// (testnats' leak check). It waited a fixed 15 s before, and on a loaded machine (load5 1,100
+	// to 2,000) a killed listener had not ended when that span did: the stop returned, the leak
+	// check found the listener's clients still on the server, and the next test to take the server
+	// failed for them. A SIGKILL cannot be caught, so only the kernel can make a killed process end
+	// late, and the wait is the shared one: its failure names the process's state.
 	var once sync.Once
 	l.stop = func() {
 		once.Do(func() {
