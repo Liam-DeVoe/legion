@@ -138,6 +138,45 @@ function carryOut(gitTar: string, treeTar: string, workspace = ws): Outcome {
   };
 }
 
+/** Runs carry-out.sh's `container` stage on one pair of archives, as the docs' Docker route runs
+ * it, in a namespace of its own whose /var/run is a fresh tmpfs holding the empty directories the
+ * worker image holds (packages/daemon/docker/worker.Dockerfile), and an empty file at `planted`
+ * when one is given. Its $TMPDIR is a fresh directory, so the $HOME the stage makes there goes with
+ * the fixture. */
+function carryOutInContainer(gitTar: string, treeTar: string, planted = ""): Outcome {
+  const bundle = join(caseDirectory(), `${key}.bundle`);
+  const setup =
+    'set -e; mount -n -t tmpfs carry-out-test /var/run; mkdir -p /var/run/legion/gh /var/run/legion/private /var/run/legion/state /var/run/legion/agent-secrets /var/run/secrets; if [ -n "$1" ]; then : >"$1"; fi; shift; exec /bin/sh "$@"';
+  const result = Bun.spawnSync(
+    [
+      "unshare",
+      ...namespace,
+      "sh",
+      "-c",
+      setup,
+      "sh",
+      planted,
+      script,
+      key,
+      ws,
+      gitTar,
+      treeTar,
+      bundle,
+    ],
+    {
+      cwd: root,
+      env: { ...gitEnvironment(), CARRY_OUT_STAGE: "container", TMPDIR: caseDirectory() },
+      stderr: "pipe",
+    }
+  );
+  return {
+    exitCode: result.exitCode,
+    stdout: result.stdout.toString(),
+    stderr: result.stderr.toString(),
+    bundle,
+  };
+}
+
 /** Holds a refusal: exit 1 and one `refused:` line that says `why`. */
 function expectRefused(outcome: Outcome, why: string): void {
   expect(outcome.exitCode).toBe(1);
@@ -407,6 +446,25 @@ describe.skipIf(skipped)("carry-out.sh", () => {
     const gitTar = join(caseDirectory(), "git.tar");
     gitArchive(stage, gitTar);
     expectRefused(carryOut(gitTar, goodTree), "worktrees/acme-1/HEAD is not a commit id");
+  }, 60_000);
+
+  test("the container stage rebuilds past the worker image's empty credential directories", () => {
+    const outcome = carryOutInContainer(goodGit, goodTree);
+    expect(outcome.stderr).not.toContain("refused:");
+    expect(outcome.exitCode).toBe(0);
+    const verify = rescued(outcome.bundle);
+    const added = run(["git", "-C", verify, "log", "--format=%s", `origin/main..rescue/${key}`]);
+    expect(added.split("\n").filter((line) => line !== "")).toEqual([
+      `Edits left in ${key}'s workspace`,
+      "unpushed work",
+    ]);
+  }, 60_000);
+
+  test("the container stage refuses a file under a credential directory, naming it", () => {
+    expectRefused(
+      carryOutInContainer(goodGit, goodTree, "/var/run/legion/gh/hosts.yml"),
+      "/var/run/legion shows entries inside the container: /var/run/legion/gh/hosts.yml"
+    );
   }, 60_000);
 
   test("it refuses to rebuild outside its own namespace", () => {

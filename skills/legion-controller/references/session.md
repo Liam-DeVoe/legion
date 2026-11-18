@@ -25,16 +25,22 @@ answer to your ask, a mention), Envoy or Slack. No `legion controller start` can
 
 ## The `legion` tool
 
-- `op: "read_state"` returns the daemon's whole state: `issues.<KEY>.phase`,
-  `issues.<KEY>.holdReason`, `issues.<KEY>.architect`, `issues.<KEY>.tree` (the root of the
-  issue's tree), `admission.cap`, `admission.active` (the issues holding a slot, roots and
-  children), `admission.waiting` (the issues in the line, in its order), `admission.trees` (the
-  roots of the live trees), `admission.blocked`, `admission.held` (every issue the record holds
-  in the workflow that stands in neither `admission.active` nor `admission.waiting`, each with
-  one word for why nothing of it runs and the issues that hold it;
-  `skill://legion-controller/references/admission.md` gives the word for each row and what ends
-  it), `capabilities[]`, `daemon.project`, and
-  `settings` (the daemon's resolved `legion.yaml`, with no credential in it).
+- `op: "read_state"` with no filter returns a summary in lines, not JSON, which its first line
+  explains: the project and when the daemon started (`daemon.project`, `daemon.startedAt`),
+  `admission.cap` and the free slots, `admission.active` (the issues holding a slot, roots and
+  children) as its `active` line, `admission.waiting` (the issues in the line, in its order) as its
+  `waiting` line, `admission.blocked` as one `blocked <KEY> on <KEYS>` line for each issue, each
+  capability's status (`capabilities[]`), and then `<KEY> <phase> <status>` for every issue the
+  daemon records, with, under each issue Legion still runs, its slot, its `holdReason`, its design
+  gate and each claim's state and last turn. It names no tree and lists no held issue. One filter
+  answers full records: `issue` or `issues` the records of those issues (`phase`, `holdReason`,
+  `architect`, `tree` (the root of the issue's tree), `why`, `waitingLine`, …), `phase` every
+  record at that phase, and `settings: true` the daemon's resolved `legion.yaml`, with no
+  credential in it. The tool's output reaches you cut at about 41 KB, so read records a few keys
+  at a time. The daemon's lists of the live trees and of the held issues (`admission.trees`,
+  `admission.held`) reach you only through each record's `tree` and `why` and the `tick` wake's
+  `held` (`skill://legion-controller/references/admission.md`, which gives the word for each held
+  row and what ends it).
 - `op: "set_status"` with `issue` and `status` (`todo`, `backlog` or `icebox`) moves an issue. Each
   call mints its grant in-process from the secret the session registered with, so a stale secret
   fails it with a 403.

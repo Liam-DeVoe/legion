@@ -38,11 +38,14 @@ func RepositoryHoldsCommit(ctx context.Context, client *githubapp.Client, repoFu
 // closed: it closed and did not merge.
 //
 // Every failure is the error: a malformed repository name, a deployment with no App key, a
-// repository the App cannot read, a pull request GitHub answers 404 or 410 for
+// repository the App is not installed on (githubapp.ErrNoInstallation, the 404 of its
+// installation lookup) or cannot read otherwise, a pull request GitHub answers 404 or 410 for
 // (ErrPullRequestNotFound), a rate limit, a 5xx, a transport failure. Each says only that
-// Dispatch cannot tell but ErrPullRequestNotFound, which is GitHub's answer that there is no such
-// pull request; the results route reads it as a pull request that does not count
-// (api/results_linked.go, linkedRepositoryHolds).
+// Dispatch cannot tell but two, which are GitHub's answers: ErrPullRequestNotFound, that there is
+// no such pull request, and githubapp.ErrNoInstallation, that the App is not installed on the
+// repository. The results route reads the first as a pull request that does not count, and the
+// second as one that does not count and that no other pull request of the repository can make
+// count (api/results_linked.go, linkedRepositoryHolds).
 func PullRequestOpenOrMerged(ctx context.Context, client *githubapp.Client, repoFull string, number int) (bool, error) {
 	owner, repo, token, err := repositoryRead(ctx, client, repoFull)
 	if err != nil {

@@ -96,14 +96,14 @@ import (
 // request merged into, the pull request heads of each issue, the stored heads of each
 // repository-and-commit pair and GitHub's answer about each repository, branch and commit are
 // each read once per read of the results, and so are the canonical name of each repository a
-// result's row names as holding its commit and the branch each issue's linked pull request
-// merged into in each such repository. The branch is in that last key of GitHub's, and not the
-// repository and the commit alone, because one issue's Verification document may hold an
-// `after_merge` check and a `default_branch` check with a result at the same commit: two
-// questions, with two answers, that one key for both would collapse into whichever was asked
-// first. Across reads, a repository's default branch, a commit's place on a branch and the
-// last read-through of a commit's pull requests are held by delivery (server.branches,
-// branch_commits and server.commitPulls).
+// result's row takes its commit to be of, which may be one no read showed to hold it, and the
+// branch each issue's linked pull request merged into in each such repository. The branch is in
+// that last key of GitHub's, and not the repository and the commit alone, because one issue's
+// Verification document may hold an `after_merge` check and a `default_branch` check with a
+// result at the same commit: two questions, with two answers, that one key for both would
+// collapse into whichever was asked first. Across reads, a repository's default branch, a
+// commit's place on a branch and the last read-through of a commit's pull requests are held by
+// delivery (server.branches, branch_commits and server.commitPulls).
 type comparisonReader struct {
 	server *server
 	// at is the one commit the reader named, and noCommitNamed where it named none.
@@ -859,7 +859,8 @@ func (c *comparisonReader) headStoredAt(ctx context.Context, repo, sha string) b
 // The canonical name is taken here, before anything asks GitHub, because everything downstream
 // takes this answer: the results read's default branch and onBranch, and the record route's
 // refusal of a commit the repository does not hold and its read-through of the pull requests
-// GitHub names for that commit (results.go, refuseUnknownCommit and readThroughPullRequests).
+// GitHub names for that commit (results_linked.go's refuseUnknownCommit, results.go's
+// readThroughPullRequests).
 // An issue recorded under a name that was renamed away would otherwise have the App asked
 // about that name, which GitHub answers 404 for, and every result of that issue would read
 // unknown. A repository with no rename is its own canonical name, so this costs one read and
@@ -883,7 +884,7 @@ func (c *comparisonReader) headStoredAt(ctx context.Context, repo, sha string) b
 // record route makes the no-App-key check at its own call site, where every use of the answer
 // is a GitHub round trip, and takes the repository alone: a resolve that did not answer stores
 // the result there exactly as an issue with no repository does, since neither is GitHub's
-// proof that the repository holds no such commit (results.go, refuseUnknownCommit).
+// proof that the repository holds no such commit (results_linked.go, refuseUnknownCommit).
 func (s *server) checkIssueRepository(ctx context.Context, q refs.Queryer, issueKey string) (*string, bool) {
 	repo, err := refs.IssueRepository(ctx, q, issueKey)
 	if err != nil {
@@ -933,9 +934,9 @@ func (c *comparisonReader) defaultBranchOf(ctx context.Context, issueKey string)
 
 // defaultBranchIn is defaultBranchOf for a repository named outright: the repository's default
 // branch and whether the App answered it, read once per repository per read of the results.
-// defaultBranchOf names the repository the check's issue resolves to, and onNamedBranch names a
-// repository a result's row says holds its commit (linkedRepositoryOf). The memo is the same
-// for both, so a repository that is both is read once.
+// defaultBranchOf names the repository the check's issue resolves to, and onNamedBranch names
+// the repository a result's row takes its commit to be of (linkedRepositoryOf). The memo is the
+// same for both, so a repository that is both is read once.
 func (c *comparisonReader) defaultBranchIn(ctx context.Context, repo string) (string, bool) {
 	if answer, memoized := c.defaults[repo]; memoized {
 		return answer.branch, answer.readable

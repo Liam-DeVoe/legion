@@ -246,13 +246,14 @@ func (s *server) linkedRepositoryHolds(ctx context.Context, link linkedRepositor
 	return false, false, err
 }
 
-// linkedRepositoryOf is the canonical name of commitRepo, the repository a result's row names
-// as holding its commit (model.CheckResult.CommitRepo), as it is called today
-// (refs.CanonicalRepo), and whether that read answered. A read that failed leaves the result's
-// repository unknown, which onNamedBranch answers as model.ReasonReadFailed rather than walking
-// a repository that holds no such commit, and readThroughHead answers by reading nothing.
+// linkedRepositoryOf is the canonical name of commitRepo, the repository a result's row takes
+// its commit to be of (model.CheckResult.CommitRepo), which may be one no read showed to hold it
+// (refuseUnknownCommit), as it is called today (refs.CanonicalRepo), and whether that read
+// answered. A read that failed leaves the result's repository unknown, which onNamedBranch
+// answers as model.ReasonReadFailed rather than walking a repository that holds no such commit,
+// and readThroughHead answers by reading nothing.
 //
-// The record route stores the name it found the commit under, which is canonical at the write.
+// The record route stores the name it took the commit to be of, which is canonical at the write.
 // It is read again here because the repository can be renamed since, and GitHub answers 404
 // for the old name's installation, so every result of it would read unknown — the reason the
 // repository of the check's issue is read under its canonical name (checkIssueRepository).
@@ -266,7 +267,7 @@ func (c *comparisonReader) linkedRepositoryOf(ctx context.Context, commitRepo st
 	if !memoized {
 		canonical, err := refs.CanonicalRepo(ctx, c.server.deps.Store.Pool, commitRepo)
 		if err != nil {
-			slog.Warn("dispatch: canonical name of the repository a result's commit is held in",
+			slog.Warn("dispatch: canonical name of the repository a result's commit is taken to be of",
 				"repo", commitRepo, "error", err)
 		}
 		answer = repositoryAnswer{repo: &canonical, answered: err == nil}
@@ -275,14 +276,14 @@ func (c *comparisonReader) linkedRepositoryOf(ctx context.Context, commitRepo st
 	return *answer.repo, answer.answered
 }
 
-// linkedBranchBases is branchBases for a result whose commit repo holds, a linked repository
-// (linkedRepositoryOf): the branches of repo that result is compared with, chosen by the rule
-// the issue's own repository's are chosen by (measuredBranches), the `after_merge` check's
-// merged branch being the one the issue's linked pull request in repo merged into
-// (baseBranchMergedIn). The walk asks them in this order (onNamedBranch), and the check goes on
-// naming its own repository's branches as its bases: these are one result's, not the check's.
-// Each names repo, so a reader can tell the branch a result stands at from the issue's own
-// repository's branch of the same name.
+// linkedBranchBases is branchBases for a result whose commit is taken to be of repo, a linked
+// repository (linkedRepositoryOf) that may be one no read showed to hold it: the branches of
+// repo that result is compared with, chosen by the rule the issue's own repository's are chosen
+// by (measuredBranches), the `after_merge` check's merged branch being the one the issue's
+// linked pull request in repo merged into (baseBranchMergedIn). The walk asks them in this order
+// (onNamedBranch), and the check goes on naming its own repository's branches as its bases:
+// these are one result's, not the check's. Each names repo, so a reader can tell the branch a
+// result stands at from the issue's own repository's branch of the same name.
 //
 // A comparison naming no branch here is always unknown for the result, never another commit,
 // so its reason is one of the two a commit's standing carries. A merge read that failed is

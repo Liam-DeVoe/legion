@@ -1019,9 +1019,10 @@ func linkedRepositoriesGitHub(t *testing.T, linked *linkedGitHub) (http.Handler,
 // result at that pull request's head names a commit of a repository the issue does not resolve
 // to. Such a commit is taken when the issue's external links name an open or merged pull request
 // of the repository that holds it, and refused as before when they do not. The issue's own
-// repository is asked first, and its links are read only when GitHub proves that repository
-// does not hold the commit. The read-through after the write reads the repository that holds
-// the commit, so the linked repository's pull request is learned from that repository.
+// repository is asked first, and its links are read only when GitHub does not say that
+// repository holds the commit: when GitHub proves it does not, and when the read of it fails.
+// The read-through after the write reads the repository that holds the commit, so the linked
+// repository's pull request is learned from that repository.
 //
 // Each row links the issue to its own set of pull requests and records one result. The rows
 // run in order on one issue, each in a subtest of its own, so a row that fails does not stop
@@ -1111,14 +1112,7 @@ func TestResultAtACommitOfARepositoryTheIssueLinksAPullRequestIn(t *testing.T) {
 		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			links := []map[string]string{}
-			for _, link := range row.links {
-				links = append(links, map[string]string{"url": link})
-			}
-			if response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key,
-				map[string]any{"external_links": links}, "alice"); response.Code != http.StatusOK {
-				t.Fatalf("link %v: status=%d body=%s", row.links, response.Code, response.Body.String())
-			}
+			linkPullRequests(t, handler, issue.Key, row.links...)
 			eventsBefore := resultEventsOn(t, database, issue.Key)
 			toolsReadsBefore, toolsAsksBefore := linked.counts("acme/tools")
 			_, widgetsAsksBefore := linked.counts("acme/widgets")
@@ -1215,33 +1209,19 @@ func TestAResultAtTheHeadOfALinkedPullRequestFollowsThatHead(t *testing.T) {
 	handler, database := linkedRepositoriesGitHub(t, linked)
 	issue := issueInRepository(t, handler, "RELH", "acme/widgets", "Heads in two repositories")
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
-	if response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]any{
-		"external_links": []map[string]string{
-			{"url": "https://github.com/acme/tools/pull/7"},
-			{"url": "https://github.com/acme/tools/pull/8"},
-			{"url": "https://github.com/acme/widgets/pull/9"},
-		},
-	}, "alice"); response.Code != http.StatusOK {
-		t.Fatalf("link the pull requests: status=%d body=%s", response.Code, response.Body.String())
-	}
+	linkPullRequests(t, handler, issue.Key,
+		"https://github.com/acme/tools/pull/7",
+		"https://github.com/acme/tools/pull/8",
+		"https://github.com/acme/widgets/pull/9")
 	// Two rows Dispatch already holds, neither attributed to the issue: the linked pull request
 	// that closed without a merge, and an open pull request of the issue's own repository.
 	writeHead(t, database, "acme/tools", 8, closedCommit, "closed", "")
 	writeHead(t, database, "acme/widgets", 9, ownCommit, "open", "")
 
-	record := func(commit string) model.CheckResult {
-		t.Helper()
-		recorded := recordResult(t, handler, issue.Key, resultBody("k1", "pass", commit, nil))
-		if recorded.Code != http.StatusCreated {
-			t.Fatalf("a result at %s: status=%d body=%s", commit, recorded.Code, recorded.Body.String())
-		}
-		return decodeBody[recordedResult](t, recorded).Result
-	}
-
 	// The record reads the pull requests of the commit through acme/tools, which stores #7 at
 	// that head, attributed to no issue; the read compares k1 with it all the same, and names
 	// acme/tools beside the number, which alone would read as a pull request of acme/widgets.
-	first := record(linkedCommit)
+	first := recordStored(t, handler, issue.Key, "k1", linkedCommit)
 	stands := standsAt(t, readResults(t, handler, issue.Key), "k1", first.ID,
 		"a result at the head of the linked open pull request", model.CommitAtBasis, false)
 	if basis := stands.Basis; basis == nil || basis.Kind != model.CheckBasisPullRequest || basis.Repo != "acme/tools" ||
@@ -1261,14 +1241,14 @@ func TestAResultAtTheHeadOfALinkedPullRequestFollowsThatHead(t *testing.T) {
 	linked.mu.Unlock()
 	standsAt(t, readResults(t, handler, issue.Key), "k1", first.ID,
 		"a result at the linked pull request's old head", model.CommitOtherCommit, false)
-	moved := record(movedCommit)
+	moved := recordStored(t, handler, issue.Key, "k1", movedCommit)
 	standsAt(t, readResults(t, handler, issue.Key), "k1", moved.ID,
 		"a result at the linked pull request's new head", model.CommitAtBasis, false)
 
 	// Neither the closed pull request's head nor the head of the own repository's pull request
 	// the attribution does not credit is a basis, and a result at either stands at another commit.
-	closed := record(closedCommit)
-	own := record(ownCommit)
+	closed := recordStored(t, handler, issue.Key, "k1", closedCommit)
+	own := recordStored(t, handler, issue.Key, "k1", ownCommit)
 	read := readResults(t, handler, issue.Key)
 	for _, basis := range checkOf(t, read, "k1").ComparedWith {
 		if basis.Commit == closedCommit || basis.Commit == ownCommit {
@@ -1326,41 +1306,20 @@ func TestABranchChecksResultAtALinkedPullRequestsMergeCommitIsComparedInThatRepo
 		trunk:       "https://github.com/acme/tools/pull/9",
 		integration: "https://github.com/acme/tools/pull/10",
 	} {
-		if response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue,
-			map[string]any{"external_links": []map[string]string{{"url": url}}}, "alice"); response.Code != http.StatusOK {
-			t.Fatalf("link %s to %s: status=%d body=%s", issue, url, response.Code, response.Body.String())
-		}
+		linkPullRequests(t, handler, issue, url)
 	}
 	// The two merges as Dispatch holds them: rows of acme/tools attributed to no issue, which
 	// only the links name as the issues'.
 	writeHeadOnBase(t, database, "acme/tools", 9, headCommit, "merged", "", "main")
 	writeHeadOnBase(t, database, "acme/tools", 10, newHeadCommit, "merged", "", "integration/x")
 
-	record := func(issue, check, commit string) model.CheckResult {
-		t.Helper()
-		recorded := recordResult(t, handler, issue, resultBody(check, "pass", commit, nil))
-		if recorded.Code != http.StatusCreated {
-			t.Fatalf("a result of %s at %s: status=%d body=%s", check, commit, recorded.Code, recorded.Body.String())
-		}
-		return decodeBody[recordedResult](t, recorded).Result
-	}
-	storedRepo := func(result model.CheckResult) *string {
-		t.Helper()
-		var repo *string
-		if err := database.Pool.QueryRow(context.Background(),
-			`select commit_repo from check_results where id = $1::uuid`, result.ID).Scan(&repo); err != nil {
-			t.Fatalf("read the repository stored with result %s: %v", result.ID, err)
-		}
-		return repo
-	}
-
-	linkedAfter := record(trunk, "k4", toolsMerge)
-	linkedDefault := record(trunk, "k5", toolsMerge)
-	own := record(trunk, "k4", ownMerge)
-	if repo := storedRepo(linkedAfter); repo == nil || *repo != "acme/tools" {
+	linkedAfter := recordStored(t, handler, trunk, "k4", toolsMerge)
+	linkedDefault := recordStored(t, handler, trunk, "k5", toolsMerge)
+	own := recordStored(t, handler, trunk, "k4", ownMerge)
+	if repo := storedCommitRepo(t, database, linkedAfter); repo == nil || *repo != "acme/tools" {
 		t.Fatalf("the result at the linked merge commit stored commit_repo %v, want acme/tools", repo)
 	}
-	if repo := storedRepo(own); repo != nil {
+	if repo := storedCommitRepo(t, database, own); repo != nil {
 		t.Fatalf("the result at a commit of the issue's own repository stored commit_repo %q, want none", *repo)
 	}
 
@@ -1398,8 +1357,8 @@ func TestABranchChecksResultAtALinkedPullRequestsMergeCommitIsComparedInThatRepo
 		t.Errorf("the read made %d compare reads of acme/widgets, want 1", got)
 	}
 
-	onIntegration := record(integration, "k4", integrationMerge)
-	offTrunk := record(integration, "k5", integrationMerge)
+	onIntegration := recordStored(t, handler, integration, "k4", integrationMerge)
+	offTrunk := recordStored(t, handler, integration, "k5", integrationMerge)
 	read = readResults(t, handler, integration)
 	stands = standsAt(t, read, "k4", onIntegration.ID,
 		"an after_merge result at the merge commit of a linked pull request merged into an integration branch",

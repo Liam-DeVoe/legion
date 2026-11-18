@@ -4390,7 +4390,7 @@ Each item below names a path with its method and identity, then its purpose.
     So an issue whose work is in two repositories takes a result at the head of the pull request it links in the second repository, also while GitHub cannot answer for the first.
 
   - Only GitHub's `422 No commit found for SHA` refuses, and only once it has said so of the issue's own repository:
-    a deployment with no App key, an issue resolving to no repository, a repository the App cannot read (GitHub answers `404` for that), a linked pull request whose state GitHub does not give, a rate limit, a timeout and a failed read all store the result as before.
+    a deployment with no App key, an issue resolving to no repository, an issue's own repository the App cannot read (GitHub answers `404` for that; a linked repository the App is not installed on is one that does not count, as above), a linked pull request whose state GitHub does not give, a rate limit, a timeout and a failed read all store the result as before.
     The stored result keeps a linked repository (`check_results.commit_repo`) where the commit is taken to be of one: a repository GitHub said holds it, or, where GitHub proved the issue's own repository does not hold it and no linked repository was shown to, the first linked repository whose read did not answer.
     Where the read of the issue's own repository did not answer and no linked repository holds the commit, the result keeps none, as before.
     After the write, the read-through of the pull requests GitHub names for the commit reads the repository the commit is taken to be of, that linked repository or the issue's own, so the pull request of a linked repository is learned from that repository.

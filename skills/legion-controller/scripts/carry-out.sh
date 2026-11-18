@@ -42,7 +42,9 @@ isolated() {
 }
 
 # arguments refuses arguments that are not the usage's: an issue key, the workspace's absolute path
-# in the pod, two archives that are files, and a bundle in a directory that exists.
+# in the pod, two archives that are files, and a bundle in a directory that exists. It sets git,
+# tree and out to the absolute paths of the two archives and the bundle, which the stage it runs in
+# hands on.
 arguments() {
   [ $# -eq 5 ] || refuse "$usage"
   printf '%s\n' "$1" | grep -Eqx '[A-Z][A-Z0-9]*-[0-9]+' || refuse "$1 is not an issue key such as ACME-41"
@@ -51,15 +53,18 @@ arguments() {
     [ -f "$archive" ] || refuse "$archive is not a file"
   done
   [ -d "$(dirname -- "$5")" ] || refuse "$(dirname -- "$5") is not a directory"
+  git=$(readlink -f -- "$3")
+  tree=$(readlink -f -- "$4")
+  out=$(readlink -f -- "$5")
 }
 
 # rebuild runs this script again as its `rebuild` stage, under an empty environment whose $HOME is
-# its first argument, on the five arguments after it and a fresh scratch directory beside the
-# bundle, which the rebuild removes when it ends.
+# its first argument, on the five arguments after the second and a fresh scratch directory in the
+# second, which the rebuild removes when it ends.
 rebuild() {
-  home=$1
-  shift
-  scratch=$(mktemp -d "$(dirname -- "$5")/carry-out.XXXXXX")
+  home=$1 parent=$2
+  shift 2
+  scratch=$(mktemp -d "$parent/carry-out.XXXXXX")
   exec /usr/bin/env -i PATH=/usr/bin:/bin HOME="$home" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
     CARRY_OUT_STAGE=rebuild /bin/sh "$0" "$1" "$2" "$3" "$4" "$5" "$scratch"
 }
@@ -68,9 +73,6 @@ case ${CARRY_OUT_STAGE-} in
 '')
   arguments "$@"
   script=$(readlink -f -- "$0")
-  git=$(readlink -f -- "$3")
-  tree=$(readlink -f -- "$4")
-  out=$(readlink -f -- "$5")
   # The rebuild never runs without its namespace: where unshare is refused, nothing runs.
   if ! refusal=$(unshare --user --map-root-user --net --mount --pid --fork --mount-proc true 2>&1); then
     refuse "unshare refused the namespace the rebuild runs in, so nothing was rebuilt: $refusal"
@@ -91,34 +93,38 @@ namespace)
     [ ! -e "$hidden" ] || [ -z "$(ls -A -- "$hidden")" ] ||
       refuse "$hidden still shows entries inside the namespace"
   done
+  # shellcheck disable=SC2015 # the refusal is meant to run when any of the three tests fails
   [ -f "$3" ] && [ -f "$4" ] && [ -d "$(dirname -- "$5")" ] ||
     refuse "the namespace hides $3, $4 or the directory of $5: put them under \$TMPDIR, outside /run and \$HOME"
   home=$(mktemp -d /run/home.XXXXXX)
-  rebuild "$home" "$@"
+  rebuild "$home" "$(dirname -- "$5")" "$@"
   ;;
 container)
   # The docs' Docker route: a container run with `--network none` and this script as its
   # entrypoint is a PID and network namespace of its own, and its /run and $HOME are the image's,
   # with nothing of the host's mounted there, so this stage mounts nothing over them. It still
-  # refuses a container that shows a credential directory of a pod.
+  # refuses a container that shows a credential directory of a pod. The worker image holds the
+  # empty directories a pod mounts its credentials on (/var/run/legion/gh, private, state and
+  # agent-secrets), so what refuses is an entry that is not a directory: a file, a socket or a link.
   isolated
   arguments "$@"
   for hidden in /var/run/legion /var/run/secrets; do
-    [ ! -e "$hidden" ] || [ -z "$(ls -A -- "$hidden")" ] ||
-      refuse "$hidden shows entries inside the container"
+    [ -e "$hidden" ] || continue
+    found=$(find "$hidden" ! -type d -print -quit) || refuse "find cannot read every entry under $hidden"
+    [ -z "$found" ] || refuse "$hidden shows entries inside the container: $found"
   done
+  # The scratch directory goes beside $HOME, in the container's own filesystem, and not beside the
+  # bundle, which is the caller's directory on the host: the unpacked tree and both repositories
+  # would land there, and stay there if the container were killed before the rebuild's exit trap.
   home=$(mktemp -d)
-  git=$(readlink -f -- "$3")
-  tree=$(readlink -f -- "$4")
-  out=$(readlink -f -- "$5")
-  rebuild "$home" "$1" "$2" "$git" "$tree" "$out"
+  rebuild "$home" "$(dirname -- "$home")" "$1" "$2" "$git" "$tree" "$out"
   ;;
 rebuild)
   isolated
   [ $# -eq 6 ] || refuse "$usage"
   ;;
 *)
-  refuse "CARRY_OUT_STAGE is '$CARRY_OUT_STAGE': run carry-out.sh with it unset"
+  refuse "CARRY_OUT_STAGE is '$CARRY_OUT_STAGE': run carry-out.sh with it unset, or as a container's entrypoint with CARRY_OUT_STAGE=container"
   ;;
 esac
 
@@ -248,11 +254,15 @@ test -z "$bad" || refuse "$tree holds an entry through a symlink of the tree: $b
 # default; the owner, uid 1000 of the pod, is not mapped there, so it takes neither. The docs'
 # container runs as the caller's own uid, which cannot restore them either.
 git init -q --bare pod.git
+# The git archive's member names, listed once for the reads below. A listing tar fails holds no
+# name, and the refusals below then say what is missing.
+tar -tf "$git" >git.names || true
 # shellcheck disable=SC2046 # packed-refs is a member name or nothing
 tar -C pod.git --no-same-owner --no-same-permissions --exclude=objects/info -xf "$git" objects refs \
-  $(tar -tf "$git" | grep -x packed-refs || true)
+  $(grep -x packed-refs git.names || true)
 id=
-for g in $(tar -tf "$git" | grep '^worktrees/[^/]*/gitdir$'); do
+# shellcheck disable=SC2013 # a worktree record is named for its workspace, a lower-case issue key
+for g in $(grep '^worktrees/[^/]*/gitdir$' git.names); do
   case $(tar -xOf "$git" "$g") in "$ws/.git" | */"${ws#/legion/}/.git") id=${g%/gitdir} ;; esac
 done
 test -n "$id" || refuse "no worktree record names $ws"

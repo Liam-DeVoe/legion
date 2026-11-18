@@ -564,10 +564,10 @@ type AttributedHead struct {
 
 // headsAttributedQuery is HeadsAttributedTo's statement, its two arms HeadAttributedTo's: the
 // attributed rows and the linked ones, the linked ones naming their repository. `distinct on`
-// drops a row both arms read, which a stale attribution can make — one judged while the issue
-// resolved to the pull request's repository — over the columns `union` dropped it by before the
-// linked arm named its repository, and keeps the linked arm's copy: the row is of a repository
-// the issue does not resolve to, which is what the name says.
+// the four columns other than linked_repo drops a row both arms read, which a stale attribution
+// can make — one judged while the issue resolved to the pull request's repository — and
+// `linked_repo desc` keeps the linked arm's copy: the row is of a repository the issue does not
+// resolve to, which is what the name says.
 var headsAttributedQuery = `with recursive ` + linkedPullRequestTerms + `
 	select number, head_sha, checked_at, event_at, linked_repo from (
 		select distinct on (number, head_sha, checked_at, event_at)

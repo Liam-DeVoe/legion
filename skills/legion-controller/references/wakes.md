@@ -45,11 +45,13 @@ end is past (`skill://legion-controller/SKILL.md#merge-holds`). Every tick turn 
 [prioritization pass](skill://legion-controller/references/backlog-stewardship.md#the-prioritization-pass).
 
 Every tick turn's summary also names the roots that Legion runs no longer while Dispatch still
-shows them at work, as step 1 of the skill's start procedure does
+shows them at work, found as step 1 of the skill's start procedure finds them
 (`skill://legion-controller/SKILL.md#what-happened-before-you-started`), because no wake tells you
-of a root taken out of the workflow in the middle of a session. Read `read_state` with
-`phase: "done"`, and name each root among those issues (its `tree` is its own key) whose `status`
-is `in_progress`, `testing`, `needs_review` or `retro`.
+of a root taken out of the workflow in the middle of a session. Take the candidates from the
+summary's `<KEY> done <status>` lines, never from `read_state` with `phase: "done"`, whose full
+record of every finished issue passes the tool's cut of about 41 KB, so a root past the cut is
+never named. Read only those keys, with `read_state` and `issues`, at most ten a call, and name
+each whose `tree` is its own key; with no candidate, read nothing more.
 
 `openCapabilities`, when present, names the open capability rows; `read_state`'s `capabilities`
 gives each one's `detail`. A deployment row (the secrets broker, model fallback, a role's CPU and
@@ -65,8 +67,9 @@ fixes a live row's session.
 start, and every issue the daemon has started that waits on another issue and gave its admission
 slot back for that wait, each with what it waits on — the unfinished Dispatch issues of its
 `blocked_by` links, or,
-for a parent, the open children beneath it that children-first holds it for. `read_state` shows the
-same list under `admission.blocked`, and `legion state` prints it as `blocked on Dispatch links:`.
+for a parent, the open children beneath it that children-first holds it for. The `read_state`
+summary prints the same list as its `blocked <KEY> on <KEYS>` lines, and `legion state` prints it
+as `blocked on Dispatch links:`.
 A link's wait ends when each blocker reaches `done` (a person's close, or the blocker's own merge) or its
 link is taken off (by a person or the tree's architect), and a children-first wait ends when the
 last open child leaves the workflow: name the waits in the day's report and
@@ -76,8 +79,9 @@ take nothing for them.
 in the workflow that stands in neither `admission.active` nor `admission.waiting`, each with one
 word for why nothing of it runs and the issues that hold it. `heldBy` is absent where no issue
 holds the one that waits. The field is absent where the project holds nothing, as `blocked` is.
-`read_state` shows the same rows under `admission.held`, with the same word for each issue, and
-`legion state` prints their counts as `admission.held:`. The word for each row, and what ends
+Your `read_state` prints no such list: read with `issue`, a held issue's record carries the
+sentence of its word in `why`, as `skill://legion-controller/references/admission.md` says, and
+`legion state` prints the rows' counts as `admission.held:`. The word for each row, and what ends
 each hold, is the table in `skill://legion-controller/references/admission.md`. The rows name the
 blocked issues again, under whichever word the daemon's order gives them, so an issue can stand
 in `blocked` and in `held` at once: `blocked` is what readers use for a link or a children-first
@@ -543,9 +547,8 @@ Read the mention and its artifact. Answer a mention that asks you for triage or 
 that `read_state` or Dispatch holds.
 Any other is for the architect of the tree that owns its issue, and you forward no agent's message.
 Write the person's words, the mention's URL and the issue key you checked as a Dispatch comment
-on the owning issue, with `--mention 'role:<token>'`: the token
-`issues.<ROOT>.architect.locator.claim` names for the tree's root in `read_state`, or, when it
-names none, `legion-<project>-<root key, lower case>-architect`, the form `roleToken` builds.
+on the owning issue, with `--mention 'role:<token>'` and the token of the tree root's architect,
+as the skill's Rules name it (`skill://legion-controller/SKILL.md#rules`).
 Then answer the person on GitHub with that comment's link. Never build a role token from a
 partial issue reference, because a wrong token reaches nobody.
 

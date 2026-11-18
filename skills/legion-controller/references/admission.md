@@ -2,14 +2,19 @@
 
 `read_state` says where each issue Legion records stands, and its `phase` alone does not: an issue
 is `admitted` from the moment the daemon records it until its first phase starts, whether it runs,
-waits, or neither. Read its key against `admission` and the root its own `tree` field names. A
-slot is one issue the daemon has started, a root or a child, not one tree, so `admission.active`
-no longer says which trees run: `admission.trees` does.
+waits, or neither. Read its key against the admission lines of the `read_state` summary, which
+prints `admission.active` as its `active` line, `admission.waiting` as its `waiting` line and
+`admission.blocked` as one `blocked <KEY> on <KEYS>` line for each issue, and read the root its
+own `tree` field names in its record (`read_state` with `issue` or `issues`). A slot is one issue
+the daemon has started, a root or a child, not one tree, so `admission.active` does not say which
+trees run. The daemon's own list of the live trees, `admission.trees`, is not in your
+`read_state`, and neither is `admission.held`: the summary prints neither, and no filter answers
+them.
 
 | What `read_state` shows | What it means | What you do |
 |---|---|---|
 | The key is in `admission.active` | An issue holding a slot, a root or a child: the daemon has started it and its work is not past its review yet. This list holds an issue at work, one `held` and one waiting on a person alike; it holds no issue past its review, in `accepting`, `retro` or `merging`, and no started issue that waits on another issue and is not one of the roots that keep their slot through such a wait, which returns its slot for that wait and is in `admission.waiting` and `admission.blocked` instead ([Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label)) | Nothing, beyond [trees waiting on a root claim](skill://legion-controller/SKILL.md#trees-waiting-on-a-root-claim) |
-| The key is in `admission.trees` | The root of a live tree: its lifecycle stands open and it does not linger, or it waits in the line or on a person. A tree is live whether or not any issue of it holds a slot, so this is the list that says which trees run, and `issues.<KEY>.tree` says which tree an issue stands in | Nothing: read it wherever you need the running trees |
+| The issue's record names its own key as `tree` | A root. Its tree is live while the root stands in `admission.active` or `admission.waiting`, waits on a person (`phase: awaiting_person`), stands at a phase past `admitted` that is not `done`, or waits under live work above it (its `why` says that its Dispatch chain reaches live work), and never while its record carries `lingerUntil`. A tree is live whether or not any issue of it holds a slot, and `tree` in each issue's record says which tree it stands in | Nothing: read it wherever you need the running trees |
 | The key is in `admission.waiting` and not in `admission.blocked` | An issue standing in the line, in its own order: first the issues whose work came back, oldest first by when it came back — one owed its worker a start, which holds no slot and waits here for one; one `waiting_on_issue`, a started issue that gave its slot back for a wait, which holds no slot and waits here for one; and two that hold the slot they were started with: a root a person answered in `awaiting_person`, and a tree's own root at `admitted` whose design gate has opened; then the issues whose first phase can start, by the Dispatch rank of their tree's root and then by their own. A root that left another tree (handed over by its finished tree, or admitted as an orphan) waits here as its own root even under a live tree, the old root's return included: no tree adopts it. Two kinds of that second part may hold a slot already: such a root, with the one it held in the tree it left, and a child the daemon started that a person set back to `todo`, with the one its run took. `issues.<KEY>.waitingLine` says where that issue stands, in its own fields: `part`, `returned` for an issue whose work came back or `starting` for one that has not started; `kind`, `returning` (a worker is owed a start), `answered` (a person answered the root), `queued_root`, `first_phase` or `waiting_on_issue` (a started issue that gave its slot back to wait on another issue: https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label); `partPlace` and `partLength`, its place among the issues of its own part and how many they are; `holdsSlot`, true where it already holds its admission slot and so takes no free one; `since`, the moment a `returned` issue's work came back; `rootRank`, `ownRank` and `rootKey`, the two Dispatch ranks that placed a `starting` issue and the key of its tree root; and `reason`, the daemon's own sentence for where it stands, which you quote in a report rather than write one of your own. Beside it, every issue that is not working now carries `why`, one answer with a `state` and a `reason` sentence: `claim_stopped`, a claim nothing will wake; `waiting`, this line; `blocked`, a Dispatch link or an open child below it; `unlisted`, the record holds it in the workflow and none of the three lists places it. An issue holding an admission slot carries no `why` unless it also stands in `admission.waiting` or `admission.blocked`, or a stranded claim names it: an answered root reads `waiting`, and an issue at work whose worker runs, one `held` and a root whose ask a person has not answered yet, which `waitingOn` answers for, read nothing. Neither does an issue the record does not hold in the workflow (`done`, `backlog`, `icebox`, `triage`). The daemon narrows its answer to the contract the reading pod records: you read `partPlace` and every member above, and `why` with them, once your own pod runs a plugin at contract 85, and you read the `place` and `length` of today until then | Nothing: an issue holding a slot is promoted on the next pass whatever the cap says, and one holding none — an issue owed a start among them — waits here for a slot and takes one by itself. Read `reason` before you report an order as wrong: an issue of the second part stands behind every issue whose work came back, however it ranks ([Free slots](skill://legion-controller/SKILL.md#free-slots)) |
 | `phase: awaiting_person`, `waitingOn` | A root that already ran and now waits only on a person: an answer to its architect's question (`waitingOn.kind` `ask`) or a review of its spec (`gate`). It keeps the slot it took when the daemon started it, its architect stays live to read the person's comments and replies, and its tree stays live. Unanswered, it is in `admission.active` and in no line; `waitingOn.answeredAt` means the daemon has put it in `admission.waiting` as well, among the issues whose work came back, oldest first, where it stands until the pass that resumes it. No wake tells you of the wait | Nothing: it is not something to admit, label or park, and its wait frees no slot to take ([Free slots](skill://legion-controller/SKILL.md#free-slots)). The daemon delivers the answer task to its architect at that promotion, which takes no further slot, so it happens however full the cap is. If its label goes or a person or outside session claims it on Dispatch, the daemon takes it out of the workflow (the last row of this table) and does not resume work under another owner |
 | The key is in `admission.blocked` | An issue waiting on a Dispatch issue nobody has finished, with what it waits on: the Dispatch issues of its `blocked_by` links that nobody has finished, or, for a parent, the open children beneath it that children-first holds it for. An issue the daemon has not started yet takes no slot until they are done, and one that is in the line stands in `admission.waiting` too; an issue the daemon has started holds no admission slot while it waits either: it gives the slot it had back, stands here and in `admission.waiting`, and takes one again by itself (https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label), with nothing of its work stopped meanwhile — no worker is suspended, no phase moves, no Dispatch status is written, and only the start of its next phase waits until it holds a slot again — and being in both lists and in neither `admission.active` is what tells it from an issue a person parked, which is in none of the three; three started roots keep their slot although a wait names them (https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label): a root in `awaiting_person`, a root at `admitted` whose design gate has never opened, and a root that arrived from another tree carrying the row it held there | Nothing: a link's wait ends when each blocker reaches `done` (a person's close, or the blocker's own merge) or its link is taken off (by a person or the tree's architect), and a children-first wait ends when the last open child leaves the workflow, which is its tree's architect's work. Name the wait in the day's report |
@@ -34,15 +39,29 @@ root by the last row, in `read_state`, as your start procedure does.
 `admission.active` nor `admission.waiting`. Each row carries the issue, one word for why nothing
 of it runs, and `heldBy`, the issues that hold it, which is absent where no issue holds it. The
 daemon reads the words in the order of the table below and takes the first that is true, so one
-issue reads one word, and that word is the same in `read_state` and in the `tick` notice. The
-list names no issue `admission.active` or `admission.waiting` names, so the three lists together
-are every issue of the workflow and what each one is doing. `admission.blocked` keeps its own
-rows beside them: it names Dispatch links and children-first waits alone, and an issue it names
-that stands in `admission.held` reads there under whichever word the daemon's order gives it,
-which can be an earlier one — a child under a shut gate that a link also holds reads
-`design_gate`. A blocked issue the line carries stands in `admission.waiting` and has no held row
-at all: a blocked root the line carries, and a started issue that gave its slot back to wait on
-another issue.
+issue reads one word. The list names no issue `admission.active` or `admission.waiting` names, so
+the three lists together are every issue of the workflow and what each one is doing.
+`admission.blocked` keeps its own rows beside them: it names Dispatch links and children-first
+waits alone, and an issue it names that stands in `admission.held` reads there under whichever
+word the daemon's order gives it, which can be an earlier one — a child under a shut gate that a
+link also holds reads `design_gate`. A blocked issue the line carries stands in
+`admission.waiting` and has no held row at all: a blocked root the line carries, and a started
+issue that gave its slot back to wait on another issue.
+
+Your `read_state` prints no such list. Two reads give it to you. The `tick` wake carries it as
+`held`, with the word of each row (`skill://legion-controller/references/wakes.md`). And
+`read_state` with `issue` or `issues` answers each issue's record, whose `why` holds the word's
+sentence, which names the issues of its `heldBy`: under `state: unlisted` for an issue that stands
+in none of `admission.active`, `admission.waiting` and `admission.blocked`, and under
+`state: blocked` for a blocked issue that one of the first six words below holds. The sentence
+tells you the word: `tree_closed` opens "Its tree is closed", `tree_parked` "Its tree is parked",
+`label_off` "It is the root of its own tree and its record says the legion label is off",
+`ancestry` "Its Dispatch chain reaches live work above it", `root_awaiting_person` "Its tree's
+root, …, has handed work to a person", `design_gate` "The design gate of its tree stands shut",
+`accepted_ancestor` "The daemon has accepted the reviewed head of", `at_work` "It stands in a
+phase that keeps no admission slot", and `unclassified` "The daemon holds it in the workflow". A
+`dispatch_blocker` or `children_first` issue, which `admission.blocked` names, reads a sentence
+that names its links and children instead.
 
 The daemon starts none of these issues by itself. Name them in the day's report and take nothing
 for them, except where the row's last column names an act of yours.

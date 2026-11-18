@@ -62,9 +62,10 @@ every issue by its `dispatch://` link and what it does for the reader, every pul
   pull request under `External links:` is the one that merged.
 - **Closed without a change.** Those with no pull request, each with the reason its closing
   message gave (the `message.created` just before `issue.closed` among `Events:`).
-- **Running.** Each root in `admission.trees`, the live trees, with its `issues.<KEY>.phase`, and
-  under it each issue of that tree in `admission.active`, the slot holders, with its own phase;
-  then the issues in `admission.waiting`. Name as waiting on a claim each root that this turn's
+- **Running.** Each root of a live tree, read as `skill://legion-controller/references/admission.md`
+  says (`read_state` prints no list of the live trees), with its `issues.<KEY>.phase`, and under it
+  each issue of that tree in `admission.active`, the slot holders, with its own phase; then the
+  issues in `admission.waiting`. Name as waiting on a claim each root that this turn's
   "Trees waiting on a root claim" check found, with the holder its `Claimed by:` line names.
 - **Waiting on Dispatch links.** Each root and child in `admission.blocked`, with what it waits
   on: the issues of its `blocked_by` links, or the open children children-first holds it for. A
@@ -78,9 +79,10 @@ every issue by its `dispatch://` link and what it does for the reader, every pul
   ([Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label)).
   That kind is the one reading that says the daemon started the issue and it gave its slot back:
   the state gives it to no issue Legion has not started.
-- **What nothing starts.** Each issue in `admission.held`, grouped by its `reason`, with the
-  issues `heldBy` names: each group's count and its issues. Say for each
-  group what ends the hold, from the table in
+- **What nothing starts.** Each entry of the tick's `held` list, grouped by its `reason`, with the
+  issues `heldBy` names: each group's count and its issues. That list arrives on the tick wake
+  alone and `read_state` prints none, so the report names the most recent tick's list. Say for
+  each group what ends the hold, from the table in
   `skill://legion-controller/references/admission.md`, so a reader sees whose act the work waits
   on. An issue whose `reason` is `unclassified` goes in the report with its `phase` and its
   `status`: the daemon could give it no word, and a person reads it.
@@ -124,8 +126,12 @@ every issue by its `dispatch://` link and what it does for the reader, every pul
   failed, a restart whose daemon pod your deployment instructions give no label for or whose read
   lists no pod or more than one, a `carry-out.sh` that refused with a `refused:` line naming
   `unshare` or the namespace, and an `agent-secrets` denial (exit 77, with no grant line). Give the
-  operation, the work it was for, and the read or the command with its answer. You ask no other
-  session to do it. With none, say nothing of them.
+  operation, the work it was for, and the read or the command with its answer. Name here as well
+  each Slack reply that `skill://legion-controller/references/slack-mentions.md` sends to this
+  report: one Slack refused (`not_in_channel`, `missing_scope`), or one the secrets broker did not
+  grant `LEGION_SLACK_BOT_TOKEN` for, with the channel, the thread and the error, and that only a
+  person in the workspace or the operator can fix it. You ask no other session to do any of them.
+  With none, say nothing of them.
 - **The week** (on the report of your first turn of each UTC week only, from
   `skill://legion-controller/references/weekly-audit.md`): the window's two times; the forced
   creates by filer with the no-answer creates apart; the tree sizes in the five buckets with the

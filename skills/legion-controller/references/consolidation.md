@@ -17,7 +17,9 @@ dispatch doc-read --issue <REPORT KEY> --artifact consolidation.md
 
 This block's pass has run when the record has a section headed `## Consolidation pass <block
 start>`, whichever controller session wrote it, so a controller that took over from another does
-not run the block again. A `not found` answer means no pass has run yet.
+not run the block again. A `not found` answer means no pass has run yet. Any other failed read,
+such as Dispatch not answering or refusing your token, decides nothing: run no pass on it, name
+the failed read with its first line in your summary, and read the record again at your next turn.
 
 ## 1. Duplicates
 
@@ -61,10 +63,8 @@ issue with the spec, copy to it what only the other has, and close the other
 or another holder's claim, is not yours to close: comment the kept issue's name on it instead. A
 pair inside a Legion tree goes to that tree's architect, which decides it, as the skill's Rules
 send your own request to an architect: a Dispatch comment on the tree's root that names both
-issues, with `--mention 'role:<token>'` and the token `issues.<ROOT>.architect.locator.claim`
-names in `read_state`, or, when it names none, `legion-<project>-<root key, lower case>-architect`
-(`skill://legion-worker/references/findings.md#write-to-the-owner`). Dispatch delivers the
-mention and retries it.
+issues, with `--mention 'role:<token>'` and the token of the root's architect that those Rules name
+(`skill://legion-controller/SKILL.md#rules`). Dispatch delivers the mention and retries it.
 
 The record (below) lists every pair you judged the same work, with what you did about it, and
 every pair you skipped with what settles it: the event, or the parent link.

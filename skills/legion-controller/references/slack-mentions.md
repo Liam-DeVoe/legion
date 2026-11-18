@@ -101,7 +101,8 @@ person in the workspace can fix either, so say so in the next daily report rathe
 When it answers that the secrets broker has not granted `LEGION_SLACK_BOT_TOKEN` (its request waits
 for approval, or was denied), nothing was posted and no reply can be until the operator stores the
 token as a shared agent secret, owner `shared` and tier `agent`: name the error in the next daily
-report.
+report. Both go under its operations you lack
+(`skill://legion-controller/references/daily-report.md#what`).
 
 ## Decide what the person wants
 
@@ -154,11 +155,10 @@ these that fits.
   `Links:` up through each `child_of` parent with `dispatch read` until you reach the issue
   `read_state` records with an `architect`. Write the person's words, with the channel id and
   `thread_ts` you reply on, as a Dispatch comment on the issue they are about, with
-  `--mention 'role:<token>'`: the token `issues.<ROOT>.architect.locator.claim` names, or, when
-  it names none, `legion-<project>-<root key, lower case>-architect`, the form `roleToken`
-  builds. Dispatch delivers the mention and retries it. Reply in the thread with that comment's
-  link, and say that the architect that owns `<ROOT>` answers on the issue. Never invent a role
-  token.
+  `--mention 'role:<token>'` and the token of `<ROOT>`'s architect, as the skill's Rules name it
+  (`skill://legion-controller/SKILL.md#rules`). Dispatch delivers the mention and retries it.
+  Reply in the thread with that comment's link, and say that the architect that owns `<ROOT>`
+  answers on the issue. Never invent a role token.
 - **Anything else** (a greeting, a question about Legion itself): answer it briefly in the thread.
 
 A request to approve a design is answered as `skill://legion-controller/references/wakes.md`

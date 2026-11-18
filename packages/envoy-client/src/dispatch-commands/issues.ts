@@ -687,11 +687,11 @@ function branchName(basis: CheckBasis): string {
 function basisText(basis: CheckBasis): string {
   const learned = basis.learned_at === undefined ? "" : ` (${learnedText(basis.learned_at)})`;
   if (basis.kind === "pull_request") {
-    const number =
+    const pullRequest =
       basis.pull_request === undefined
         ? "pull request "
         : `${pullRequestName(basis, basis.pull_request)} `;
-    return `the head of ${number}at ${basis.commit ?? "an unnamed commit"}${learned}`;
+    return `the head of ${pullRequest}at ${basis.commit ?? "an unnamed commit"}${learned}`;
   }
   if (basis.kind === "branch") return `branch ${branchName(basis)}${learned}`;
   return `the commit you named, ${basis.commit ?? ""}${learned}`;

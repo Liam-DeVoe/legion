@@ -9,7 +9,10 @@ The placeholders mean the same in every command:
 
 - `<KEY>`: the issue key, such as `ACME-41`. `<key>` is the same key in lower case.
 - `<owner>` and `<repo>`: the issue's repository on GitHub.
-- `<pod>`: the name of a pod in the namespace `legion`.
+- `<pod>`: the name of a pod in `<namespace>`.
+- `<namespace>`: the Kubernetes namespace your project's pods run in, which `legion.yaml` sets as
+  `runtime.kubernetes.namespace` and which has no default. Read it from `read_state` with
+  `settings: true`, at `settings.runtime.kubernetes.namespace`.
 - `<daemon label>`: the label of your project's daemon pod, as `key=value`, which your deployment
   instructions give ([A restart of your project's daemon](#a-restart-of-your-projects-daemon)).
 - `<id>`: the id of a GitHub Actions run, the number after `/actions/runs/` in its URL.
@@ -23,8 +26,8 @@ The placeholders mean the same in every command:
 Make these two reads first, each time:
 
 ```sh
-kubectl auth can-i create pods/exec -n legion
-kubectl auth can-i delete pods -n legion
+kubectl auth can-i create pods/exec -n <namespace>
+kubectl auth can-i delete pods -n <namespace>
 ```
 
 Each prints `yes` or `no`. Only a controller whose pod runs as its own ServiceAccount
@@ -46,9 +49,10 @@ The claim operations and the re-run of a CI run need no `kubectl`.
 **When.** A claim of your project needs action: a worker that stalled or went silent, a worker
 that holds its task and does not run it, a session that a provider keeps refusing, a claim that a
 wake gives you (`provider-errors`, an escalated hold, `worker-died`), or a claim that a person asks
-you to act on. A tree's architect holds the same six operations for the claims of its own tree,
-but not for its own claim (`skill://legion-architect/SKILL.md#escalation-judgment`). A tree's
-architect claim is yours.
+you to act on. A tree's architect holds the same six operations for the claims of the issues it
+owns, but not for its own claim (`skill://legion-architect/SKILL.md#escalation-judgment`): a
+sub-architect's operation on its tree's root or on a sibling's subtree is refused
+`403 ISSUE_NOT_OWNED`. A tree's architect claim is yours.
 
 **The command.** `legion({ op: "<op>", issue: "<KEY>", role: "<role>" })`, with `<op>` one of
 the six below. Each refuses your own claim (role `controller`).
@@ -73,7 +77,7 @@ is back either way. The answer of `fresh_session` is empty when the claim came b
 `phaseNotRestarted` says why nothing restarted the claim's phase. Then read the claim in
 `read_state`.
 
-**A refusal** changes nothing of the claim, but for the one `fresh_session` named below. It says
+**A refusal** changes nothing of the claim, but for the two of `fresh_session` named below. It says
 what the claim does now and which operation reaches each state. It names no time to come back:
 ask again later, and read the claim in `read_state`. Under the operator's own suspension, landed
 or held for a turn, `stop`, `retry`, `suspend`, `resume` and `fresh_session` are refused
@@ -83,14 +87,21 @@ because the claim runs no agent (`CLAIM_NOT_RUNNING`), or because a suspension i
 suspension after its own suspension of the claim ran. Its `SUSPENDED_BY_OPERATOR` refusal then
 says that it `went no further than its own suspension of the claim, which that suspension then
 took over`: the claim is then suspended under the operator's suspension, with the session it
-recorded. [A claim the operator holds](#a-claim-the-operator-holds) says what to do then.
+recorded. A `fresh_session` of a claim it found suspended can also meet the operator's suspension
+at its resume, after it left the recorded session behind. Its refusal then says that it `went no
+further than leaving behind the session the claim recorded`: the claim is then suspended under the
+operator's suspension with no session to resume, and starts in a new session once it is started.
+[A claim the operator holds](#a-claim-the-operator-holds) says what to do then.
 
 **The wake pacing.** The start that your `resume`, `retry` or `fresh_session` raises waits its
 turn under `worker_wakes_per_minute`, as the start an architect asks for does, so a controller
-that lifts many holds after a deploy does not start every claim in the same minute. Only the
-operator's own resume and retry skip the pacing (`exemptWake` in
-`packages/daemon/internal/supervise/wake.go`). So while a wave runs, a claim you started can take
-minutes to come up: ask for nothing again, and read the claim in `read_state` at a later turn.
+that lifts many holds after a deploy does not start every claim in the same minute. Two kinds of
+start skip the pacing. One is the operator's own: its resume, its retry, its spawn of a claim, and
+the start of a suspended claim that a task it hands that claim raises (`exemptWake` in
+`packages/daemon/internal/supervise/wake.go`, `deliverResuming` in `table.go`). The other is
+every start of your own claim, which the pacing lets through whoever raises it (`reserveWake`).
+So while a wave runs, a claim you started can take minutes to come up: ask for nothing again, and
+read the claim in `read_state` at a later turn.
 
 ## A restart of your project's daemon
 
@@ -113,7 +124,7 @@ the operation you lack in the day's report.
 1. Read the daemon's pod:
 
    ```sh
-   kubectl -n legion get pods -l '<daemon label>' -o wide
+   kubectl -n <namespace> get pods -l '<daemon label>' -o wide
    ```
 
    It lists one pod. Write down its name. When it lists no pod, or more than one, delete nothing,
@@ -122,7 +133,7 @@ the operation you lack in the day's report.
 2. Delete the pod:
 
    ```sh
-   kubectl -n legion delete pod -l '<daemon label>'
+   kubectl -n <namespace> delete pod -l '<daemon label>'
    ```
 
    It prints `pod "<pod>" deleted`. The daemon's Deployment then creates a new pod. The new pod
@@ -162,7 +173,7 @@ clone's configuration is every role's to write, so a program it names would run 
 Find the pod. `<pod>` is the name this read lists:
 
 ```sh
-kubectl -n legion get pods -l legion.dev/issue=<KEY> --field-selector=status.phase=Running
+kubectl -n <namespace> get pods -l legion.dev/issue=<KEY> --field-selector=status.phase=Running
 ```
 
 The issue's agents run while you copy. Work they write after step 1 goes with the pod.
@@ -173,11 +184,11 @@ The issue's agents run while you copy. Work they write after step 1 goes with th
    after `file changed as we read it` is no failure, because the agents still write:
 
    ```sh
-   kubectl -n legion exec <pod> -c roles -- sh -c 'set -e; cd -P "$1/.git"
+   kubectl -n <namespace> exec <pod> -c roles -- sh -c 'set -e; cd -P "$1/.git"
      test "$(pwd -P)" = "$1/.git"
      tar --hard-dereference -cf - refs worktrees $(test -f packed-refs && echo packed-refs) objects
      ' sh /legion/repos/github.com/<owner>/<repo> > "$TMPDIR/<KEY>-git.tar"
-   kubectl -n legion exec <pod> -c roles -- sh -c 'set -e; cd -P "$1"; test "$(pwd -P)" = "$1"
+   kubectl -n <namespace> exec <pod> -c roles -- sh -c 'set -e; cd -P "$1"; test "$(pwd -P)" = "$1"
      tar --hard-dereference --ignore-case --exclude=.git --exclude=.jj --exclude=./.codegraph \
      -cf - .' sh /legion/workspaces/<owner>/<repo>/<key> > "$TMPDIR/<KEY>-tree.tar"
    ```
@@ -243,6 +254,15 @@ The issue's agents run while you copy. Work they write after step 1 goes with th
    git -C "$s" log --stat --oneline "origin/legion/<KEY>..rescue/<KEY>"
    ```
 
+   The fetch from GitHub worked when it exits 0 after the
+   `agent-secrets: LEGION_IMPLEMENT_APP from <source>` line. Any other exit leaves nothing to read
+   the bundle against, so delete nothing. GitHub's
+   `fatal: couldn't find remote ref refs/heads/legion/<KEY>` is an issue branch no role ever
+   pushed, and another line is a refused token or a read that did not answer: tell the issue's
+   architect by a mention that names git's first line. Without the grant line, the status is the
+   client's own, and 77 is a denial: name it in the day's report, and ask no other session to make
+   the fetch.
+
    `fetch.fsckObjects` has git check each object of the bundle before it stores any, as
    `transfer.fsckObjects` checks a fetch from a remote. A malformed object refuses the fetch, with
    `fatal: fsck error in packed object`. With git 2.47.3 on 2026-11-18, a bundle that held a commit
@@ -269,7 +289,7 @@ The issue's agents run while you copy. Work they write after step 1 goes with th
    exact paths (`$s` is the path step 3 printed):
 
    ```sh
-   kubectl -n legion delete pod <pod>
+   kubectl -n <namespace> delete pod <pod>
    rm -rf -- "$s" "$TMPDIR/<KEY>-git.tar" "$TMPDIR/<KEY>-tree.tar" "$TMPDIR/<KEY>.bundle"
    ```
 

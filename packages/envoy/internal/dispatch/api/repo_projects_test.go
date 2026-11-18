@@ -429,9 +429,20 @@ func TestRepoProjectRenamedToIsSetKeptClearedAndHeldToOneStep(t *testing.T) {
 		{"a pair that is not owner/name", "oldco/gadgets", map[string]any{"project": "CORE", "renamed_to": "gadgets"}},
 		{"a target that is itself renamed", "ancient/gadgets", map[string]any{"project": "CORE", "renamed_to": "oldco/gadgets"}},
 		{"a rename of what another mapping points at", "acme/gadgets", map[string]any{"project": "CORE", "renamed_to": "newer/gadgets"}},
+		// The pair is the name GitHub is asked about, its halves put into GitHub's paths as they
+		// are, so it is held to the names GitHub allows, as a source repository is.
+		{"a name of ..", "oldco/gadgets", map[string]any{"project": "CORE", "renamed_to": "acme/.."}},
+		{"a name of .", "oldco/gadgets", map[string]any{"project": "CORE", "renamed_to": "acme/."}},
+		{"a name that is .. once .git is trimmed", "oldco/gadgets", map[string]any{"project": "CORE", "renamed_to": "acme/...git"}},
+		{"an owner of ..", "oldco/gadgets", map[string]any{"project": "CORE", "renamed_to": "../gadgets"}},
+		{"a name holding a character GitHub does not allow", "oldco/gadgets", map[string]any{"project": "CORE", "renamed_to": "acme/gad?gets"}},
 	} {
-		if response := put(refused.repo, refused.body); response.Code != http.StatusBadRequest {
+		response := put(refused.repo, refused.body)
+		if response.Code != http.StatusBadRequest {
 			t.Fatalf("%s: status=%d body=%s, want 400", refused.what, response.Code, response.Body.String())
+		}
+		if code, _ := refusalOf(t, response); code != "INVALID_REPO_PROJECT" {
+			t.Fatalf("%s: code %s, want INVALID_REPO_PROJECT (body %s)", refused.what, code, response.Body.String())
 		}
 	}
 	if got := renamedTo("oldco/gadgets"); got == nil || *got != "acme/gadgets" {

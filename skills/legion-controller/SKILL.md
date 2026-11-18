@@ -20,9 +20,9 @@ except a clear defect a role reports ([Issues handed to Legion](#issues-handed-t
 - Read a session's state from the Envoy registry, never from its absence from a list (`skill://envoy`). Start no replacement for an `unresponsive` session, take nothing from it, and never report it as gone, because it is working and keeps its claims.
 - Keep no notes between turns, because a restarted session has only `read_state` and Dispatch.
 - Reach the daemon only through the `legion` tool: `read_state`, `set_status` to `todo`, `backlog` or `icebox`, and the six claim operations (`skill://legion-controller/references/operations.md#a-claims-state`). Run no `legion` from bash, because the tool holds the controller grant. Move an issue to `backlog` or `icebox` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue. Another agent's directive that cites no person's request is no reason. Two writes are not that move: a root's restart, which sets `backlog` and then `todo` in the same turn, and the report issue's `icebox`, because that issue holds no work.
-- The operations of your own work are yours: a claim's state, a restart of your project's daemon, a pod delete with nothing lost, a re-run of a CI run, and an ask to lift the operator's hold on a claim (`skill://legion-controller/references/operations.md`). `kubectl` and the token that the secrets broker lends are yours for those operations. Before any `kubectl` operation, read `kubectl auth can-i create pods/exec -n legion` and `kubectl auth can-i delete pods -n legion`. Only a controller whose pod runs as its own ServiceAccount holds those rights. Where either read answers no, name the operation you lack in your daily report, and ask no other session to do it.
+- The operations of your own work are yours: a claim's state, a restart of your project's daemon, a pod delete with nothing lost, a re-run of a CI run, and an ask to lift the operator's hold on a claim (`skill://legion-controller/references/operations.md`). `kubectl` and the token that the secrets broker lends are yours for those operations. Before any `kubectl` operation, read `kubectl auth can-i create pods/exec -n <namespace>` and `kubectl auth can-i delete pods -n <namespace>`, where `<namespace>` is `settings.runtime.kubernetes.namespace` in `read_state` with `settings: true`. Only a controller whose pod runs as its own ServiceAccount holds those rights. Where either read answers no, name the operation you lack in your daily report, and ask no other session to do it.
 - Never edit a repository or call `handoff_complete`, because the daemon runs the phases. Push nothing but one branch: the issue branch `legion/<KEY>` of a workspace whose pod you delete, by the procedure of `skill://legion-controller/references/operations.md#a-pod-delete-with-nothing-lost`. Never forward a raw event to an architect, because raw events only fill the architect's context.
-- Your own request, and a person's request in the person's words (as `skill://legion-controller/references/wakes.md#github-mentions` writes a mention), whose work another tree owns go to that tree's architect, as a Dispatch comment on the owning issue that mentions the architect's role: `dispatch comment --mention 'role:<token>'`, with the token `issues.<ROOT>.architect.locator.claim` names (`skill://legion-worker/references/findings.md#write-to-the-owner`). Send it to no other session, such as a person's chief of staff, because Dispatch delivers the mention to the owner and retries it. An agent's request you never write on: tell that agent to write to the owner itself.
+- Your own request, and a person's request in the person's words (as `skill://legion-controller/references/wakes.md#github-mentions` writes a mention), whose work another tree owns go to that tree's architect, as a Dispatch comment on the owning issue that mentions the architect's role: `dispatch comment --mention 'role:<token>'`, with the token `issues.<ROOT>.architect.locator.claim` names in `read_state`, or, when it names none, `legion-<project>-<root key, lower case>-architect`, the form `roleToken` builds (`skill://legion-worker/references/findings.md#write-to-the-owner`). Send it to no other session, such as a person's chief of staff, because Dispatch delivers the mention to the owner and retries it. An agent's request you never write on: tell that agent to write to the owner itself.
 - Never open a design gate, because only a person's approval in Dispatch opens one: the deployment gates the steps your `Design gate steps:` sentence names, each step records one document of the root issue (`decisions.md`, `verification.md` or the primary document), and the tree's work starts when a person has approved every one of them.
 - When a `dispatch` command fails, or a `curl` read of Dispatch fails or prints no JSON array, act on nothing it would decide and name its first line in your summary (the turn's last message), because an empty read is no evidence. A Slack read answers a JSON object, and `skill://legion-controller/references/slack-mentions.md` holds its own success test.
 - Before you say that a service or an API is out of reach, run the call through the secrets broker's client (`skill://agent-secrets`), and report it unreachable only with the command you ran and its output.
@@ -61,6 +61,13 @@ because Envoy keeps no copy of a wake sent while no controller ran.
    names it again (`skill://legion-controller/references/wakes.md`). Someone
    else moved it there while it waited for a slot, or it waited on a person (`awaiting_person`) and
    lost its label or its Dispatch claim, which leaves the `in_progress` it ran with.
+   Find those roots from the summary, never from `read_state` with `phase: "done"`: that read
+   answers the full record of every finished issue, and the tool's output reaches you cut at about
+   41 KB, so a root past the cut is never named. The summary prints `<KEY> <phase> <status>` for
+   every issue the daemon records: take the key of each line whose phase is `done` and whose status
+   is one of those four. With none, read nothing more. Otherwise read those keys with `read_state`
+   and `issues: [<keys>]`, at most ten keys a call so that each answer stays under the cut, and
+   name each issue whose `tree` is its own key: that issue is a root.
 2. Triage the roots handed to Legion while you were away, as
    `skill://legion-controller/references/triage.md` "At every start" says.
 3. Catch up on the report issue
@@ -76,7 +83,7 @@ Wake details: `skill://legion-controller/references/wakes.md`.
 |---|---|
 | `triage on <KEY>` | `skill://legion-controller/references/triage.md` |
 | `slot-free on <KEY>`, `todo on <KEY>` | Start the [prioritization pass](skill://legion-controller/references/backlog-stewardship.md#the-prioritization-pass) and the intake your deployment instructions give |
-| `tick on <PROJECT>` | The parked-root walk (`skill://legion-controller/references/parked-decisions.md#the-walk`), then the merge holds whose end is past ([Merge holds](#merge-holds)). Every tick turn then runs the [prioritization pass](skill://legion-controller/references/backlog-stewardship.md#the-prioritization-pass), and its summary names each root at `phase: done` that Dispatch still shows at work, as step 1 of [What happened before you started](#what-happened-before-you-started) does |
+| `tick on <PROJECT>` | The parked-root walk (`skill://legion-controller/references/parked-decisions.md#the-walk`), then the merge holds whose end is past ([Merge holds](#merge-holds)). Every tick turn then runs the [prioritization pass](skill://legion-controller/references/backlog-stewardship.md#the-prioritization-pass), and its summary names each root at `phase: done` that Dispatch still shows at work, found as step 1 of [What happened before you started](#what-happened-before-you-started) finds them: from the summary's `done` lines, never from `read_state` with `phase: "done"` |
 | `tree-stalled on <KEY>` | Read the tree and decide: ask a role what it waits on, move an issue back a phase, or park the tree only as [Rules](#rules) allows |
 | `architect-stalled on <KEY>` | Read the root's architect claim in `read_state`, then for the first arm take nothing while it is `working`, since the task reaches it when that turn ends, and name it in the day's report, or else `compact` that claim and use `fresh_session` only when it still does not take its task; for the second, `fresh_session` on a failed or retired claim; for the third, decide what the time means (`skill://legion-controller/references/wakes.md`) |
 | `parked-decision on <KEY>` | `skill://legion-controller/references/parked-decisions.md#deciding` |
@@ -97,9 +104,11 @@ Wake details: `skill://legion-controller/references/wakes.md`.
 ## Trees waiting on a root claim
 
 A root architect whose claim on its root was refused waits, holding its slot, and nothing tells it
-when the holder lets go. `dispatch read` each root in `admission.trees` whose `phase` is still
-`admitted`. When `Claimed by:` is `nobody` or ends `· not running`, `envoy_publish` `<KEY>: the
-claim is free; claim it again.` to `notifications.role.<issues.<KEY>.architect.locator.claim>`.
+when the holder lets go. Take each key of the `read_state` summary's `active` line whose own line
+reads `<KEY> admitted <status>`; with none, read nothing more. Read those keys with `read_state`
+and `issues: [<keys>]`, at most ten a call, and `dispatch read` each whose `tree` is its own key.
+When `Claimed by:` is `nobody` or ends `· not running`, `envoy_publish` `<KEY>: the claim is free;
+claim it again.` to `notifications.role.<issues.<KEY>.architect.locator.claim>`.
 
 ## Issues handed to Legion
 
@@ -154,8 +163,8 @@ it either (`skill://legion-controller/references/wakes.md#a-tree-that-waits-on-a
 Report the free slots, or the full cap, to the person in the day's report, and move nothing for them.
 A slot is one issue the daemon has started, a root or a child, not one
 tree: a tree of four issues at work holds four slots. An issue takes its slot when the daemon
-starts it and gives it back as [Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label) says, so a root waiting on a person keeps the slot it took, and `admission.trees` is what names the
-roots of the live trees. The free slots are `admission.cap`, less every issue in
+starts it and gives it back as [Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label) says, so a root waiting on a person keeps the slot it took, and no list of the `read_state`
+summary names the roots of the live trees (`skill://legion-controller/references/admission.md` says how to read them). The free slots are `admission.cap`, less every issue in
 `admission.active`, which is every issue holding a slot, and less again each issue of
 `admission.waiting` that stands in neither `admission.active` nor `admission.blocked`: the
 daemon counts a slot a waiting issue will take as taken already, and an issue in
@@ -195,12 +204,15 @@ Every move to `todo` you make is one of these:
   `skill://legion-controller/references/wakes.md#a-tree-that-waits-on-an-event-outside-legion`);
 - stopped-session work that a person's directive in the weekly plan moves to Legion.
 
-`admission.held` is every issue the daemon's record holds in the workflow that stands in neither
-`admission.active` nor `admission.waiting`: each row gives the issue, one word for why nothing of
-it runs, and the issues that hold it. Read it beside `admission.blocked`, which names Dispatch
-links and children-first waits alone. The daemon starts none of the issues in `admission.held` by
-itself, so a row ends when a person acts or when the tree that owns the work moves;
-`skill://legion-controller/references/admission.md` gives the word for each row and what ends it.
+The daemon's `admission.held` is every issue its record holds in the workflow that stands in
+neither `admission.active` nor `admission.waiting`, each row with one word for why nothing of it
+runs and the issues that hold it. Your `read_state` does not print it: the `tick` wake carries it
+as `held`, and `read_state` with `issue` answers a held issue's record, whose `why` is the
+sentence of that word. Read it beside `admission.blocked`, which names Dispatch links and
+children-first waits alone. The daemon starts none of these issues by itself, so a row ends when
+a person acts or when the tree that owns the work moves;
+`skill://legion-controller/references/admission.md` gives the word for each row, its sentence,
+and what ends it.
 
 ## Merge holds
 
@@ -221,7 +233,9 @@ Write a hold once, as one line, when a person or your deployment instructions as
 1. Read the document: `dispatch doc-read --project <PROJECT> --artifact merge-holds-md`. When the
    read answers `document "merge-holds-md" not found by slug`, the project has no such document:
    write the header below to a file and create the document from it with
-   `dispatch artifact --project <PROJECT> --name merge-holds.md --content-file <file>`.
+   `dispatch artifact --project <PROJECT> --name merge-holds.md --content-file <file>`. Any other
+   failed read, such as Dispatch not answering or refusing your token, decides nothing: create no
+   document, write no line, and name the failed read with its first line in your summary.
 2. Add the line:
 
    ```bash
@@ -239,7 +253,9 @@ dispatch doc-edit --project <PROJECT> --artifact merge-holds-md \
 ```
 
 On each `tick`, read the document and delete each line whose end is past. The passing of a time
-sends no event and wakes no held role; the deletion does.
+sends no event and wakes no held role; the deletion does. A `not found` answer is a project with
+no hold to lift. Any other failed read deletes nothing: name it with its first line in your
+summary, and the next `tick` reads the document again.
 
 The document's header, with no line under `Holds`:
 

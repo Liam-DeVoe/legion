@@ -112,8 +112,8 @@ One round wakes you once, however many sweeps find it open, so handle it when it
 Read `read_state` and the issue first, as for every wake: a round that finished since needs
 nothing.
 
-Take the wake by what its `reason` names. A `reason` can name more than one hold, one sentence
-for each holder: do what the row of each says.
+Take the wake by what its `reason` names. A `reason` can name more than one hold, two sentences
+for each holder, its "… suspended" and its "… can resume": do what the row of each says.
 
 | `reason` names | What holds the round | What you do |
 |---|---|---|

@@ -156,7 +156,7 @@ Your transcript keeps everything a command prints.
   ```sh
   agent-secrets NAME --reason '…' -- sh -c '
     token=$(printf %s "$NAME" | jq -er ".path.to.token" 2>/dev/null) || { echo "no token at .path.to.token" >&2; exit 1; }
-    curl -sS -H "Authorization: Bearer $token" https://api.example.com/'
+    printf "Authorization: Bearer %s" "$token" | curl -sS -H @- https://api.example.com/'
   ```
 
   For a GitHub App secret, `--github-owner <account> --github-token` hands the command that one
