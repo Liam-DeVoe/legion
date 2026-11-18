@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
+	"github.com/sjawhar/envoy/internal/testnats"
 )
 
 // A cache whose every read could not read its bucket past a barrier - the barrier is never written
@@ -86,6 +87,87 @@ func TestHealthzIsUnhealthyOnceACachesReadsCannotReadPastABarrierForTheBound(t *
 		!strings.Contains(reported, natsgo.ErrConnectionClosed.Error()) {
 		t.Fatalf("/healthz past the stale bound = %d %v, want 503 unhealthy naming the session KV read and its watcher's bucket, %q and the reads' own %q",
 			code, body, kvwatch.ErrUnverified, natsgo.ErrConnectionClosed)
+	}
+}
+
+// The known-session store is none of the listener's caches, so its reads that cannot read its bucket
+// past a barrier for longer than the store's stale bound are reported apart: 200 "degraded", naming
+// the store's KV read, its watcher and its bucket, with the healthy answer's fields kept. The store
+// is on a server of its own, whose one user may do everything the store does except publish to the
+// bucket's subjects, so every read's barrier is refused, as a denied publish is in production. The
+// bucket is made first with a maximum age of 2 s, which the store keeps, so the stale bound is 1 s
+// and the answer comes on the first read that fails.
+func TestHealthzIsDegradedOnceTheKnownSessionStoresReadsCannotReadPastABarrier(t *testing.T) {
+	const consumer = "listener-healthz-known-read"
+	client := setupTestNATS(t)
+	bindBoundDurable(t, client, consumer, func(msg *natsgo.Msg) { _ = msg.Ack() })
+	registry, err := store.Open(client.Conn, store.WithReplicas(1))
+	if err != nil {
+		t.Fatalf("open interest registry: %v", err)
+	}
+	t.Cleanup(registry.StopWatch)
+	sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1))
+	if err != nil {
+		t.Fatalf("open session registry: %v", err)
+	}
+	t.Cleanup(sessions.StopWatch)
+	readyCtx, readyCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer readyCancel()
+	if err := registry.WaitForCacheReady(readyCtx); err != nil {
+		t.Fatalf("wait for the registry's caches: %v", err)
+	}
+	if err := sessions.WaitForCacheReady(readyCtx); err != nil {
+		t.Fatalf("wait for the session cache: %v", err)
+	}
+
+	stream := "KV_" + bus.KnownSessionBucket
+	seed, public := testnats.User(t)
+	grant := testnats.StartNkeyGranted(t, public,
+		"$JS.API.INFO",
+		"$JS.API.STREAM.INFO."+stream,
+		"$JS.API.STREAM.CREATE."+stream,
+		"$JS.API.DIRECT.GET."+stream+".>",
+		"$JS.API.STREAM.MSG.GET."+stream,
+		"$JS.API.CONSUMER.CREATE."+stream+".>",
+		"$JS.API.CONSUMER.DELETE."+stream+".>",
+		"$JS.FC."+stream+".>")
+	conn, err := testnats.ConnectSeed(t, grant.URL, seed)
+	if err != nil {
+		t.Fatalf("connect as the user who may not publish to the bucket: %v", err)
+	}
+	t.Cleanup(conn.Close)
+	js, err := conn.JetStream()
+	if err != nil {
+		t.Fatalf("jetstream: %v", err)
+	}
+	if _, err := bus.EnsureKeyValue(conn, js, &natsgo.KeyValueConfig{Bucket: bus.KnownSessionBucket, TTL: 2 * time.Second, Storage: natsgo.MemoryStorage}); err != nil {
+		t.Fatalf("make the known-session bucket with a 2 s maximum age: %v", err)
+	}
+	known, err := session.OpenKnownSessions(conn, session.WithKnownSessionReplicas(1))
+	if err != nil {
+		t.Fatalf("open the known-session store: %v", err)
+	}
+	t.Cleanup(known.StopWatch)
+
+	var state atomic.Pointer[listenerDeps]
+	state.Store(&listenerDeps{client: client, registry: registry, sessions: sessions, known: known,
+		caches: listenerCaches(registry, sessions, nil), consumer: consumer})
+	var code int
+	var body map[string]any
+	waitFor(t, 60*time.Second, "/healthz to report the known-session store's reads", func() bool {
+		recorder := httptest.NewRecorder()
+		healthzHandler(&state).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+		code, body = recorder.Code, nil
+		_ = json.Unmarshal(recorder.Body.Bytes(), &body)
+		return body["status"] != "healthy"
+	})
+	reported, _ := body["error"].(string)
+	want := "known session KV read unavailable: known session store (KV bucket " + bus.KnownSessionBucket + "): " + kvwatch.ErrUnverified.Error()
+	if code != http.StatusOK || body["status"] != "degraded" || !strings.HasPrefix(reported, want) {
+		t.Fatalf("/healthz once the known-session store's reads failed past its bound = %d %v, want 200 degraded starting %q", code, body, want)
+	}
+	if _, kept := body["num_pending"]; !kept {
+		t.Fatalf("the degraded answer %v dropped the healthy answer's fields", body)
 	}
 }
 

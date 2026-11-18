@@ -589,6 +589,14 @@ func sessionHealthFields(sessions *session.SessionRegistry) map[string]interface
 // /v1/sessions keeps answering the copy, which it refuses only when the view cannot be served. The
 // answers writeDependencyHealth gives carry only status and error, as before: they report a fault
 // below the copy, not its freshness.
+//
+// The known-session store's reads are judged after the role claim checks. A store whose reads have
+// not read its bucket past a barrier for longer than its stale bound (session.KnownSessions.ReadErr)
+// is 200 "degraded" with the error "known session KV read unavailable: …", keeping every other
+// field. Degraded and never unhealthy: the store is none of the listener's caches
+// (listenerDeps.known), so neither the self-health monitor nor a readiness probe is to act on it,
+// and until a read completes the store answers no record (session.KnownSessions.Opened), so a send
+// to a stopped session answers 404 and a publish carries no recipient counts.
 func healthzHandler(deps *atomic.Pointer[listenerDeps]) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
