@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/experiment"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/notify"
+	stepplan "github.com/sjawhar/legion/daemon/internal/plan" // the package's own `plan` type holds the bare name
 	"github.com/sjawhar/legion/daemon/internal/prompts"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -195,6 +196,11 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 	addressing, err := AddressingFragment(s.project, c, spec.Repository, spec.DefaultBranch, s.repositories())
 	if err != nil {
 		return runtime.SpawnSpec{}, err
+	}
+	// Every architect owns a plan, whose steps name the roles this sentence lists; it stands
+	// before the tree architect's design-gate line, which ends that addressing.
+	if c.Role == claim.RoleArchitect {
+		addressing += " " + DeploymentRolesFragment(s.roles)
 	}
 	if claim.IsTreeArchitect(c.Role, c.Issue, c.Tree) {
 		addressing += " " + DesignGateFragment(s.designSteps)
@@ -497,6 +503,31 @@ func DesignGateFragment(steps []record.DesignStep) string {
 	}
 	return fmt.Sprintf("Design gate steps: %s.", strings.Join(quoted, ", "))
 }
+
+// DeploymentRolesFragment is the sentence every architect is told after its addressing: the roles
+// a step of its plan may name, each with the type of its step — Legion's five (BuiltinRoles,
+// whose types it reads), then each role the deployment defines (roles, config.Config.Roles) in the
+// file's order, `<name> (<type>)`, with ` with the model <model>` where the role's settings give
+// one, the model its agent starts with. It is exported for the rigs under packages/pi-legion,
+// which restate it, as AddressingFragment is.
+func DeploymentRolesFragment(roles []config.Role) string {
+	builtin := stepplan.BuiltinRoles()
+	entries := make([]string, 0, len(stepRoleOrder)+len(roles))
+	for _, name := range stepRoleOrder {
+		entries = append(entries, fmt.Sprintf("%s (%s)", name, builtin[name].Type))
+	}
+	for _, role := range roles {
+		entry := fmt.Sprintf("%s (%s)", role.Name, role.Type)
+		if role.Model != "" {
+			entry += " with the model " + role.Model
+		}
+		entries = append(entries, entry)
+	}
+	return "The roles of this deployment, each with the type of its step: " + strings.Join(entries, ", ") + "."
+}
+
+// stepRoleOrder is the order the owner is told Legion's five roles of a step in: the line's own.
+var stepRoleOrder = []string{"planner", "implementer", "tester", "reviewer", "acceptance"}
 
 // SlackChannelsFragment names the project's Slack channels, the list the controller answers
 // mentions from: its plugin subscribes to each one's mention topic itself, while the session holds
