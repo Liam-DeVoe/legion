@@ -193,8 +193,9 @@ export function useInboxSelection({
       setSnoozeRefusal(snoozeRefusalText(failed, ids.length));
       const refused = new Set(failed.map(({ askId }) => askId));
       const taken = ids.filter((id) => !refused.has(id));
+      const takenIds = new Set(taken);
       setMarked((current) => {
-        const next = new Set([...current].filter((id) => !taken.includes(id)));
+        const next = new Set([...current].filter((id) => !takenIds.has(id)));
         for (const id of refused) next.add(id);
         return next;
       });

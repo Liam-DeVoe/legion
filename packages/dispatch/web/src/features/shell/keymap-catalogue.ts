@@ -5,10 +5,7 @@
  * command bar and Settings read one label for it, and its keys are the person's where they
  * changed them (`keymap-keys.ts`) and these defaults everywhere else.
  *
- * The keys are the defaults of the spec's table "The keys" (dispatch://INFRA-2160/spec, R13). An
- * action named here that no component registers yet is an action another part of that work
- * builds: it is here so that the refusal check (`keymap-refusal.ts`) holds every default key at
- * once, and so that a person's key never takes a key such an action will take.
+ * The keys are the defaults of the spec's table "The keys" (dispatch://INFRA-2160/spec, R13).
  */
 
 /** A scope an action is listed under; `dialog` is no scope of its own here, since a dialog
@@ -63,6 +60,9 @@ export interface CatalogueEntry {
 
 export const KEYMAP_CATALOGUE = {
   // Global: `app.tsx`.
+
+  // Fires while the reader is writing, so the key reaches the bar from inside a document's
+  // editor too.
   "global.search": {
     scope: "global",
     id: "search",
@@ -72,6 +72,8 @@ export const KEYMAP_CATALOGUE = {
     inEditable: true,
     surface: "global",
   },
+  // No row: chosen from the bar it would only reopen the bar. Not `inEditable`, so a slash typed
+  // into a document stays a slash, and the Agents page shadows it with its own filter box.
   "global.search-only": {
     scope: "global",
     id: "search-only",
@@ -128,6 +130,7 @@ export const KEYMAP_CATALOGUE = {
     palette: true,
     surface: "global",
   },
+  // No row, for `global.search-only`'s reason.
   "global.go-project": {
     scope: "global",
     id: "go-project",
@@ -186,6 +189,9 @@ export const KEYMAP_CATALOGUE = {
   },
 
   // The Inbox: `inbox/Inbox.tsx`, on its page and, under the `dialog` scope, in its drawer.
+
+  // Movement is what the arrow keys are for: a palette row that moves the cursor helps nobody,
+  // so neither `j`, `k` nor the arrows is a row.
   "inbox.next": {
     scope: "inbox",
     id: "next",
@@ -329,6 +335,7 @@ export const KEYMAP_CATALOGUE = {
     palette: true,
     surface: "inbox",
   },
+  // Marking walks the list with the row in hand, as `j`/`k` do, so it is no palette row.
   "inbox.select": {
     scope: "inbox",
     id: "select",
@@ -361,6 +368,9 @@ export const KEYMAP_CATALOGUE = {
     palette: true,
     surface: "inbox",
   },
+  // Not `inEditable`: inside the box itself a `search` input takes typed text (`keymap.ts`'s
+  // `TEXT_INPUT_TYPES`), so the registry passes the key through and the reader types an `f`
+  // rather than re-focusing what they are already in.
   "inbox.search": {
     scope: "inbox",
     id: "search",
@@ -1337,6 +1347,12 @@ export const NO_PERSON_KEYS: PersonKeys = Object.freeze({});
 /** The entry of `action`, read as the one shape every entry has. */
 export function catalogueEntry(action: KeymapActionId): CatalogueEntry {
   return KEYMAP_CATALOGUE[action];
+}
+
+/** Whether every key of `entry` keeps its own action: it has no default key a person can change,
+ *  and fixed keys its run reads through `event.key`, so it takes no key of a person's. */
+export function keepsOwnKeys(entry: CatalogueEntry): boolean {
+  return entry.keys.length === 0 && (entry.fixedKeys?.length ?? 0) > 0;
 }
 
 /** Whether `name` is an action of the catalogue: a stored map may hold one a later build

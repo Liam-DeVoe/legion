@@ -9,8 +9,6 @@
  *  each write at the server's own route, so they run on the real stack. They import nothing this
  *  tree adds to or changes in `web/src`: what they need from the app they read off the page or
  *  work out in `e2e/keyboard-complete.ts`. */
-import { setTimeout as sleep } from "node:timers/promises";
-
 import { CONTROL } from "../web/src/components/control-names";
 import { openAgents, setLiveSessions, shownAgentRows } from "./agents";
 import {
@@ -3147,9 +3145,6 @@ test("k-filter-keys: on the Agents page and the Delivery page, in both of its vi
 // question, both send nothing.
 // ---------------------------------------------------------------------------
 
-/** How late the reading pane's read of the first request's document is served, in milliseconds. */
-const LATE_READ_MS = 1000;
-
 /** The reason the rows' Request changes gives. */
 const ROLLBACK_REASON = "Name the rollback path.";
 
@@ -3183,8 +3178,8 @@ function inboxKeyHelp(page: Page): Locator {
     .getByRole("listitem");
 }
 
-// SLOW(>=2s): three approval requests seeded at version 2, one document's read held for a second,
-// two reviews read back, and the help opened once.
+// SLOW(>=2s): three approval requests seeded at version 2, one document's read held while `a` is
+// pressed, two reviews read back, and the help opened once.
 test("k-approval-keys: beside the reading pane a approves the version the request shows once its document is read, Shift+R opens Request changes, and on a question both send nothing", async ({
   page,
 }) => {
@@ -3210,14 +3205,10 @@ test("k-approval-keys: beside the reading pane a approves the version the reques
   const approve = head.getByRole("button", { disabled: false, exact: true, name: "Approve" });
   const dialog = page.getByRole("dialog", { name: "Request changes" });
 
-  // The first request's document is read late, and `a` is pressed while that read is out.
+  // The first request's document read is held until after `a`, so the key is pressed while that
+  // read is out.
   const documentPath = `/api/v1/artifacts/${first.artifactId}`;
-  const documentRead = `**${documentPath}`;
-  await page.route(documentRead, async (route) => {
-    // Served late on purpose: a key pressed while the read is out must find nothing to press.
-    await sleep(LATE_READ_MS);
-    await route.continue().catch(() => undefined);
-  });
+  const release = await holdReads(page, [`**${documentPath}`]);
   const requested = page.waitForRequest(
     (request) => new URL(request.url()).pathname === documentPath
   );
@@ -3235,12 +3226,12 @@ test("k-approval-keys: beside the reading pane a approves the version the reques
     approve,
     step("the head's Approve takes no press yet, so a was pressed before the read returned")
   ).toHaveCount(0);
-  expect(sent(), step("a before the document's read returns sends nothing")).toBe(0);
+  await release();
   await expect(
     approve,
     step("the read returns and the head's Approve takes a press")
   ).toBeVisible();
-  await page.unroute(documentRead);
+  expect(sent(), step("a before the document's read returns sends nothing")).toBe(0);
   await expect(firstRow, step("the focus is still on the request's row")).toBeFocused();
   await page.keyboard.press("a");
   await expect
@@ -3290,7 +3281,6 @@ test("k-approval-keys: beside the reading pane a approves the version the reques
   await page.keyboard.press("a");
   await page.keyboard.press("Shift+R");
   await expect(dialog, step("on the question Shift+R opens nothing")).toHaveCount(0);
-  expect(sent(), step("on the question a and Shift+R send nothing")).toBe(2);
   await page.keyboard.press("?");
   for (const label of ["Approve", "Request changes"]) {
     await expect(
@@ -3300,6 +3290,7 @@ test("k-approval-keys: beside the reading pane a approves the version the reques
   }
   await page.keyboard.press("Escape");
   await expect(page.getByRole("dialog", { name: "Keyboard shortcuts" })).toHaveCount(0);
+  expect(sent(), step("on the question a and Shift+R send nothing")).toBe(2);
 });
 
 /** The steps of k-approval-keys where `place` draws the approval request as a card, with

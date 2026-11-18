@@ -17,3 +17,11 @@ export function heldPress(
     },
   };
 }
+
+/** What a text field spreads onto itself to be held while its write is out, rather than
+ *  disabled, for the reason `heldPress` gives: `aria-disabled`, and `readOnly`, so the field
+ *  keeps the focus and its Tab stop and takes no typing then. Its class paints it held
+ *  (`aria-disabled:opacity-50`). */
+export function heldField(held: boolean): { "aria-disabled": true | undefined; readOnly: boolean } {
+  return { "aria-disabled": held || undefined, readOnly: held };
+}

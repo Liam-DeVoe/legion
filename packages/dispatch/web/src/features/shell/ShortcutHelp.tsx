@@ -19,6 +19,7 @@ import {
   type KeyBindingDescription,
   type KeymapScope,
   MOD_KEY_LABEL,
+  stepsOf,
 } from "./keymap";
 import { useCloseOnNavigation, useDialog } from "./useDialog";
 
@@ -33,22 +34,17 @@ const KEY_GLYPHS: Record<string, string> = {
   ArrowRight: "→",
   ArrowUp: "↑",
   Escape: "Esc",
-  // The registry's own name for the space bar (`keymap.ts`), which reads as the key it names.
-  Space: "Space",
 };
 
 /** Each step of a chord as shown (`$mod+k` → `⌘+k`), keyed by its position so `g g` renders twice. */
 export function keyTokens(keys: string): { key: string; token: string }[] {
-  return keys
-    .trim()
-    .split(/\s+/)
-    .map((combo, position) => ({
-      key: `${position}:${combo}`,
-      token: combo
-        .split("+")
-        .map((part) => (part === "$mod" ? MOD_KEY_LABEL : (KEY_GLYPHS[part] ?? part)))
-        .join("+"),
-    }));
+  return stepsOf(keys).map((combo, position) => ({
+    key: `${position}:${combo}`,
+    token: combo
+      .split("+")
+      .map((part) => (part === "$mod" ? MOD_KEY_LABEL : (KEY_GLYPHS[part] ?? part)))
+      .join("+"),
+  }));
 }
 
 /** Every scope's heading in `?`; the compiler checks this record covers `KeymapScope`. */
@@ -205,7 +201,12 @@ export function ShortcutHelp({
   );
 }
 
-const kbdClass = `rounded px-1.5 py-0.5 font-mono text-xs font-medium ${kbdHint}`;
+/** The class of a `<kbd>` that draws a key: in the help, the palette, the chord hint and
+ *  Settings. */
+export const kbdClass = `rounded px-1.5 py-0.5 font-mono text-xs font-medium ${kbdHint}`;
+
+/** The class of the `<kbd>` that draws the digit beside a menu's choice or a card's option. */
+export const digitKbdClass = `rounded px-1.5 font-mono text-xs ${kbdHint}`;
 
 /**
  * The keys that run a binding, as `?` and the palette both show them: a run of single keys in a

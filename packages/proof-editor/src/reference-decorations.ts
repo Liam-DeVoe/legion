@@ -272,6 +272,23 @@ function drawnEnd(candidate: Decoration, target: ReferenceTarget): number {
     : Math.min(candidate.to, candidate.from + target.length);
 }
 
+/** Each resolved candidate of `candidates` between `from` and `to` whose title touches `from` (a
+ *  caret inside it or at either end, or a range overlapping it), in the order `find` gives them,
+ *  with its target and where its title ends (`drawnEnd`). */
+function* titlesTouching(
+  candidates: DecorationSet,
+  targets: ReadonlyMap<string, ReferenceTarget | null>,
+  from: number,
+  to: number
+): Generator<{ candidate: Decoration; end: number; target: ReferenceTarget }> {
+  for (const candidate of candidates.find(from, to)) {
+    const target = targets.get((candidate.spec as CandidateSpec).key);
+    if (!target) continue;
+    const end = drawnEnd(candidate, target);
+    if (end > candidate.from && from <= end) yield { candidate, end, target };
+  }
+}
+
 /** The ranges each resolved candidate's title stands for that the selection touches (a caret
  *  inside or at either end, or a range overlapping one), while the editor has focus; empty
  *  otherwise. */
@@ -284,13 +301,13 @@ function revealedRanges(
   if (!focused) return "";
   const ranges: string[] = [];
   for (const range of state.selection.ranges) {
-    for (const candidate of candidates.find(range.$from.pos, range.$to.pos)) {
-      const target = targets.get((candidate.spec as CandidateSpec).key);
-      if (!target) continue;
-      const to = drawnEnd(candidate, target);
-      if (to > candidate.from && range.$from.pos <= to) {
-        ranges.push(`${candidate.from}:${to}`);
-      }
+    for (const { candidate, end } of titlesTouching(
+      candidates,
+      targets,
+      range.$from.pos,
+      range.$to.pos
+    )) {
+      ranges.push(`${candidate.from}:${end}`);
     }
   }
   return ranges.sort().join(" ");
@@ -302,11 +319,8 @@ function revealedRanges(
 export function referenceAt(state: EditorState, pos: number): ReferenceTarget | undefined {
   const value = referencesKey.getState(state);
   if (value === undefined || value.references === null) return undefined;
-  for (const candidate of value.candidates.find(pos, pos)) {
-    const target = value.references.targets.get((candidate.spec as CandidateSpec).key);
-    if (!target) continue;
-    const to = drawnEnd(candidate, target);
-    if (to > candidate.from && pos <= to) return target;
+  for (const { target } of titlesTouching(value.candidates, value.references.targets, pos, pos)) {
+    return target;
   }
   return undefined;
 }

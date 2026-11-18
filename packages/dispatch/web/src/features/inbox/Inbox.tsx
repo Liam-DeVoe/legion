@@ -21,6 +21,7 @@ import { controlPadding } from "../../components/control-names";
 import { DisplayMenu, type DisplayMenuSection } from "../../components/DisplayMenu";
 import { EmptyState } from "../../components/EmptyState";
 import { type FilterChip, filterChips } from "../../components/filter-chips";
+import { openerOf } from "../../components/focus-place";
 import { heldPress } from "../../components/held-press";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { MultiSelect } from "../../components/MultiSelect";
@@ -47,6 +48,7 @@ import {
   textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { searchWords } from "../agents/agent-search";
+import { openReplyBox, REPLY_BOX } from "../conversation/turn-keys";
 import { CredentialRequestsSection } from "../credentials/CredentialRequestsSection";
 import { type CredentialRequests, useCredentialRequests } from "../credentials/pending";
 import { badgeMenuTrigger, badgeSelectBadge } from "../issue/badge-select";
@@ -67,15 +69,9 @@ import {
   NO_FILTER_VALUE,
 } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
-import {
-  DIALOG_SCOPE,
-  type KeymapScope,
-  PANEL_ATTRIBUTE,
-  useKeymap,
-  useKeymapScope,
-} from "../shell/keymap";
+import { DIALOG_SCOPE, type KeymapScope, useKeymap, useKeymapScope } from "../shell/keymap";
 import type { KeymapActionId } from "../shell/keymap-catalogue";
-import { linkHref, openInNewTab } from "../shell/new-tab";
+import { openLinkInNewTab } from "../shell/new-tab";
 import { closestMatching, focusedMatching, roveFocus } from "../shell/roving";
 import { READING_PANE_QUERY, useMediaQuery } from "../shell/useDialog";
 import { ViewportAnchor } from "../shell/ViewportAnchor";
@@ -119,7 +115,7 @@ import {
 } from "./list-row";
 import { MARK_ALL_REFUSED_TEXT, useMarkAllRead } from "./mark-all";
 import { useMotionHold } from "./motion-hold";
-import { OptionDigitsContext } from "./option-digits";
+import { OptionDigitsContext, optionIndex } from "./option-digits";
 import { PaneDivider, usePaneWidth } from "./PaneDivider";
 import { PANE_READER_MOVE } from "./pane-placement";
 import { InboxHandOffContext, type PlacedRow, usePaneSelection } from "./pane-selection";
@@ -262,9 +258,6 @@ const PAGE_STEP = 0.875;
 const OWN_SPACE_SELECTOR =
   'button, a[href], summary, input[type="checkbox"], input[type="radio"], [aria-haspopup]';
 
-/** A thread's reply box (`MentionComposer`, `AskReplyComposer`): where `r` puts the caret. */
-const REPLY_BOX_SELECTOR = "[data-reply-box]";
-
 /** The row that holds keyboard focus itself — not one merely containing a focused control. */
 function focusedRow(): HTMLElement | null {
   return focusedMatching(ROW_SELECTOR);
@@ -279,13 +272,10 @@ function rowAround(node: Element | null): HTMLElement | null {
  *  the page, portalled out of the column, and hands the focus back into it as it closes. Such a
  *  panel is the one a control of the column names as what it opened (`aria-controls`). */
 function inColumn(column: HTMLElement | null, node: EventTarget | null): boolean {
-  if (column === null || !(node instanceof Element)) return false;
-  if (column.contains(node)) return true;
-  const panel = node.closest(`[${PANEL_ATTRIBUTE}]`);
   return (
-    panel !== null &&
-    panel.id !== "" &&
-    column.querySelector(`[aria-controls="${CSS.escape(panel.id)}"]`) !== null
+    column !== null &&
+    node instanceof Element &&
+    (column.contains(node) || column.contains(openerOf(node)))
   );
 }
 
@@ -1363,7 +1353,7 @@ export function Inbox({
     const row = handRow();
     if (row?.kind !== "thread") return null;
     return (
-      inHand(`[data-inbox-thread-body] ${REPLY_BOX_SELECTOR}`) ??
+      inHand(`[data-inbox-thread-body] ${REPLY_BOX}`) ??
       inHand(`[data-reply-opener="${CSS.escape(row.thread.thread_id)}"]`)
     );
   };
@@ -1492,7 +1482,6 @@ export function Inbox({
   ];
   useKeymapScope(keymapScope);
   useKeymap(keymapScope, [
-    // Movement is what the arrow keys are for; a palette row that moves the cursor helps nobody.
     // With the reading column on, movement is the selection's: the column follows it, and the
     // focus stays where the reader left it in the list.
     { action: "inbox.next", run: () => move(1), when: () => rows().length > 0 },
@@ -1554,7 +1543,7 @@ export function Inbox({
       action: "inbox.option",
       run: (event) => {
         const options = answerHand()?.querySelectorAll<HTMLElement>(OPTION_SELECTOR);
-        options?.[event.key === "0" ? 9 : Number(event.key) - 1]?.click();
+        options?.[optionIndex(event.key)]?.click();
       },
       when: () => inAnswerHand(OPTION_SELECTOR) !== null,
     },
@@ -1579,17 +1568,11 @@ export function Inbox({
       action: "inbox.reply",
       run: () => {
         const target = replyTarget();
-        if (target === null || target.matches(REPLY_BOX_SELECTOR)) {
+        if (target === null || target.matches(REPLY_BOX)) {
           target?.focus();
           return;
         }
-        // "Write a reply" draws its box under it as it is pressed: the press is flushed here,
-        // so the box stands in the page when the panel the control names is read.
-        if (target.getAttribute("aria-expanded") !== "true") flushSync(() => target.click());
-        document
-          .getElementById(target.getAttribute("aria-controls") ?? "")
-          ?.querySelector<HTMLElement>(REPLY_BOX_SELECTOR)
-          ?.focus();
+        openReplyBox(target);
       },
       when: () => atItem() && replyTarget() !== null,
     },
@@ -1602,10 +1585,7 @@ export function Inbox({
       // What `o` opens, in a new tab of the browser rather than this one, which keeps its
       // address (R20): the page's own Inbox and its drawer alike.
       action: "inbox.open-new-tab",
-      run: () => {
-        const href = linkHref(inHand("[data-inbox-owner]"));
-        if (href !== null) openInNewTab(href);
-      },
+      run: () => openLinkInNewTab(inHand("[data-inbox-owner]")),
       when: () => inHand("[data-inbox-owner]") !== null,
     },
     {
@@ -1674,7 +1654,6 @@ export function Inbox({
       when: () => paneShown && paneScroller() !== null,
     },
     {
-      // Marking walks the list with the row in hand, as `j`/`k` do, so it is no palette row.
       action: "inbox.select",
       run: () => {
         const id = markableRow();
@@ -1743,10 +1722,7 @@ export function Inbox({
       when: () => bulkBarShown && !barOpen,
     },
     {
-      // The box is one key away from anywhere on the page, and `f` is not `inEditable`: inside
-      // the box itself a `search` input takes typed text (`keymap.ts`'s `TEXT_INPUT_TYPES`), so
-      // the registry passes the key through and the reader types an `f` rather than re-focusing
-      // what they are already in.
+      // The box is one key away from anywhere on the page.
       action: "inbox.search",
       run: () => searchRef.current?.focus(),
       when: () => searchRef.current !== null,

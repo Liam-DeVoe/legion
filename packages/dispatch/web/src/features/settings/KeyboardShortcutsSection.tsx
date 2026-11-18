@@ -19,7 +19,6 @@ import {
   calloutInfoTitleText,
   dangerText,
   hoverToDangerText,
-  kbdHint,
   linkHoverText,
   linkText,
   successText,
@@ -34,11 +33,13 @@ import {
   catalogueEntry,
   KEYMAP_ACTIONS,
   type KeymapActionId,
+  keepsOwnKeys,
 } from "../shell/keymap-catalogue";
 import { resetAllKeys, setActionKeys } from "../shell/keymap-keys";
 import { refusalOf } from "../shell/keymap-refusal";
 import {
   KeyHints,
+  kbdClass,
   keyTokens,
   SCOPE_LABELS,
   SCOPE_ORDER,
@@ -76,8 +77,6 @@ function spoken(key: string): string {
     .map(({ token }) => token)
     .join(" then ");
 }
-
-const kbdClass = `rounded px-1.5 py-0.5 font-mono text-xs font-medium ${kbdHint}`;
 
 /** A key as the help draws it, with `then` between the two presses of a key of two. */
 function KeyText({ keys }: { keys: string }): ReactNode {
@@ -363,8 +362,7 @@ export function KeyboardShortcutsSection(): ReactNode {
                 const fixed = entry.fixedKeys ?? [];
                 // An action whose every key keeps its own action reads the key pressed, and
                 // takes no other (`refusalOf`).
-                const changeable =
-                  login !== undefined && !(entry.keys.length === 0 && fixed.length > 0);
+                const changeable = login !== undefined && !keepsOwnKeys(entry);
                 const ours = recording?.action === action ? recording : undefined;
                 const refusalId = `${SHORTCUTS_SECTION_ID}-${action}-refusal`;
                 return (

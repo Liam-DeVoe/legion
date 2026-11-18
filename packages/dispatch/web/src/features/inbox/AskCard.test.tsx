@@ -11,7 +11,7 @@ import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { dwellOn, installIntersectionObserver } from "../../__tests__/intersection-observer";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
-import { listOf, textBoxes } from "../../__tests__/list-picks";
+import { highlightedRow, listOf, textBoxes } from "../../__tests__/list-picks";
 import { answerThreadReads } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
 import { myRepliesOwnerQuery, usersQuery } from "../../api/queries";
@@ -585,7 +585,6 @@ test("a compact approval card marks its options, and Escape in its reason drops 
     await user.keyboard("{Escape}");
     expect((requestChanges as HTMLInputElement).checked).toBe(false);
     expect(card.getByLabelText("Reason")).toHaveValue("Name the rollback path.");
-    expect(card.getByLabelText("Reason")).toBeInTheDocument();
   } finally {
     view.unmount();
   }
@@ -1029,11 +1028,6 @@ test("the hand-on badge's keys open its list and move the highlight, reach no pa
     if (!event.defaultPrevented) pageKeys.push(event.key);
   };
   window.addEventListener("keydown", listen);
-  const highlighted = () => {
-    const box = document.querySelector('[role="combobox"][aria-label="Search people"]');
-    const id = box?.getAttribute("aria-activedescendant");
-    return document.getElementById(id ?? "")?.textContent?.replace("✓", "");
-  };
   try {
     const control = await within(view.container).findByLabelText("Hand this question to");
     act(() => control.focus());
@@ -1048,7 +1042,10 @@ test("the hand-on badge's keys open its list and move the highlight, reach no pa
       ["b", "bob"],
     ] as const) {
       await user.keyboard(keys);
-      expect(highlighted(), `${keys} highlights ${to}`).toBe(to);
+      expect(
+        highlightedRow(document.querySelector('[role="combobox"][aria-label="Search people"]')),
+        `${keys} highlights ${to}`
+      ).toBe(to);
       await user.keyboard("{Escape}");
       expect(within(document.body).queryByRole("listbox")).not.toBeInTheDocument();
       expect(control).toHaveFocus();

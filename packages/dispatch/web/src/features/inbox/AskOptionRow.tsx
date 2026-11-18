@@ -4,7 +4,6 @@ import type { AskOptionWithTrees } from "../../api/types";
 import {
   borderDefault,
   cardHoverBorder,
-  kbdHint,
   linkText,
   selectedCardBg,
   selectedCardBorder,
@@ -12,6 +11,7 @@ import {
   textPrimaryOnSurface,
 } from "../../theme/classes";
 import { MarkdownBody } from "../refs/MarkdownBody";
+import { digitKbdClass } from "../shell/ShortcutHelp";
 import { type OptionDigit, ROW_IN_HAND_CLASS } from "./option-digits";
 
 /** Which of an approval request's two options a row is: Approve, or Request changes. */
@@ -98,7 +98,7 @@ export function AskChoiceRow({
           aria-hidden="true"
           className={`ml-auto shrink-0 ${digit.whileRowInHand ? ROW_IN_HAND_CLASS : ""}`}
         >
-          <kbd className={`rounded px-1.5 font-mono text-xs ${kbdHint}`}>{digit.key}</kbd>
+          <kbd className={digitKbdClass}>{digit.key}</kbd>
         </span>
       )}
     </label>

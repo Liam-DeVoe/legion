@@ -1,6 +1,6 @@
 import { type KeyboardEvent, type ReactNode, useRef, useState } from "react";
 
-import { heldPress } from "../../components/held-press";
+import { heldField, heldPress } from "../../components/held-press";
 import {
   backdrop40,
   card,
@@ -81,11 +81,10 @@ export function NameVersionDialog({
           <label className={`block text-sm font-medium ${textSecondaryOnSurface}`}>
             What changed?
             <input
-              aria-disabled={held || undefined}
+              {...heldField(held)}
               className={`mt-1 block w-full rounded-lg border px-2 py-1.5 text-sm font-normal outline-none aria-disabled:opacity-50 ${inputClasses(false)}`}
               onChange={(event) => setSummary(event.target.value)}
               onKeyDown={handleInputKeyDown}
-              readOnly={held}
               ref={inputRef}
               type="text"
               value={summary}

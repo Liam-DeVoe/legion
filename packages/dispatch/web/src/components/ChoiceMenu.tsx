@@ -10,12 +10,11 @@ import {
 } from "react";
 
 import { focusOnDocument } from "../features/shell/roving";
-import { ControlKeyHint, keyshortcutsOf } from "../features/shell/ShortcutHelp";
+import { ControlKeyHint, digitKbdClass, keyshortcutsOf } from "../features/shell/ShortcutHelp";
 import {
   borderDefault,
   card,
   focusVisibleRing,
-  kbdHint,
   selectedCardBg,
   surfaceMutedHoverBg,
   textMutedOnSurface,
@@ -226,6 +225,7 @@ export function ChoiceMenu<V extends string>({
 
   // The press outside, in the capture phase: a board card's priority and an ask's hand-on stop
   // their own presses from bubbling, and a press on either must still close this menu.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `wayBack` reads only refs, so the listener the menu's opening adds is current for as long as the menu stays open
   useEffect(() => {
     if (!open) return;
     const press = (event: PointerEvent) => {
@@ -254,7 +254,7 @@ export function ChoiceMenu<V extends string>({
     };
     document.addEventListener("pointerdown", press, true);
     return () => document.removeEventListener("pointerdown", press, true);
-  });
+  }, [open, menuId]);
 
   const onChoiceKeyDown = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
     if (event.altKey || event.ctrlKey || event.metaKey) return;
@@ -350,9 +350,7 @@ export function ChoiceMenu<V extends string>({
                 {/* The digit is for the eye; assistive tech hears it as `aria-keyshortcuts`. */}
                 {choice.digit === undefined ? null : (
                   <span aria-hidden="true" className="shrink-0">
-                    <kbd className={`rounded px-1.5 font-mono text-xs ${kbdHint}`}>
-                      {choice.digit}
-                    </kbd>
+                    <kbd className={digitKbdClass}>{choice.digit}</kbd>
                   </span>
                 )}
               </button>

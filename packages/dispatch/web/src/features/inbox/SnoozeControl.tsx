@@ -1,4 +1,4 @@
-import { type ReactNode, useContext, useEffect } from "react";
+import { type ReactNode, useContext, useEffect, useRef } from "react";
 import { ChoiceMenu } from "../../components/ChoiceMenu";
 import { heldPress } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
@@ -59,13 +59,35 @@ export function SnoozeControl({
     onLive(askId, true);
     return () => onLive(askId, false);
   }, [askId, live, onLive]);
+  /** The ask whose hand-off this control began and whose press has not settled. A press's own
+   *  callbacks run only while this control is mounted, and only for its latest press (TanStack's
+   *  `mutate`), so a hand-off the settling can no longer reach is dropped here: kept, the Inbox
+   *  would give its target the focus at every commit that finds the focus on the page. */
+  const unsettled = useRef<string | undefined>(undefined);
+  const dropHandOff = handOff?.dropHandOff;
+  useEffect(
+    () => () => {
+      if (unsettled.current !== undefined) dropHandOff?.([unsettled.current]);
+      unsettled.current = undefined;
+    },
+    [dropHandOff]
+  );
   /** Begins the hand-off a snooze press makes, at the press, before its optimistic write moves
    *  the row, and says what its settling tells the Inbox: a landing hands the reader on, a
-   *  refusal drops it. An un-snooze, and a control outside an Inbox, hand nothing on. */
+   *  refusal drops it. An un-snooze, and a control outside an Inbox, hand nothing on. Any press
+   *  first drops the hand-off of the press before it that has not settled. */
   const handingOn = (until: string | null | undefined): SnoozeSettled | undefined => {
-    if (until === null || until === undefined || handOff === undefined) return undefined;
+    if (handOff === undefined) return undefined;
+    if (unsettled.current !== undefined) handOff.dropHandOff([unsettled.current]);
+    unsettled.current = undefined;
+    if (until === null || until === undefined) return undefined;
     handOff.beginHandOff([askId]);
-    return (landed) => (landed ? handOff.landHandOff([askId]) : handOff.dropHandOff([askId]));
+    unsettled.current = askId;
+    return (landed) => {
+      unsettled.current = undefined;
+      if (landed) handOff.landHandOff([askId]);
+      else handOff.dropHandOff([askId]);
+    };
   };
   // `basis-full` inside the header's wrapping row: a refusal is wider than the badge it
   // replaces, so it takes a line of its own rather than drawing over the issue key.
@@ -113,7 +135,7 @@ export function SnoozeControl({
           aria-label={`Un-snooze ${label}`}
           className={secondaryButtonCompact}
           data-inbox-action="unsnooze"
-          {...heldPress(write.pending, () => write.submit(null))}
+          {...heldPress(write.pending, () => write.submit(null, handingOn(null)))}
           type="button"
         >
           {pendingLabel ?? "Un-snooze"}

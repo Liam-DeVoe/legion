@@ -96,7 +96,7 @@ not reach them:
 | `src/tests/harness.ts` | The `bun test` registration the copied suites call instead of their own `test()` tally |
 | `src/dispatch-link-open.ts` | How the document's links open, in place of upstream's `markdownLinkClickPlugin` and its Open link card (INFRA-2160): installed only with the host's `openLink` option, through which it opens a link mark's anchor, a reference title and a link a node view draws as its own (Dispatch's picture fallback) on a plain primary click in every access mode and inside commented text (unless a drag selected text across it), in a new tab on a Ctrl, Cmd or middle click, and prevents a middle button's press and release so the browser pastes nothing; an anchor deeper inside a host island (a `contenteditable="false"` element below the root that is neither the anchor nor its parent) is the host's. `linkAtCaret` reads the link or the reference title (`referenceAt`) at the caret, which the handle's `linkAtCaret` and `openLinkAtCaret` answer and open; Alt+Enter is the host's key for it, so with a link at the caret the editor leaves the press to the host, and prevents it once it has passed only where nothing after the editor took it, so the browser writes no new line. It has no fork counterpart at 24a5fc94, so it is in this table rather than the copied files' despite its `dispatch-` name; it is also biome-checked |
 
-Twenty-eight kinds of edit are allowed in the copied files, and no others: the import specifiers of
+Thirty kinds of edit are allowed in the copied files, and no others: the import specifiers of
 upstream modules; `bun test` registration in the suites (`src/tests/harness.ts` replaces each
 file's own `test()` tally and its `process.exit` tail); `src/tests/headless-no-dom.test.ts`,
 whose entry named the fork's built `dist/headless.js` and now names `../lib-headless.js` — its
@@ -226,7 +226,7 @@ each of which erases before runtime (below).
 To audit a copied file, diff it against `jj --ignore-working-copy -R <proof-sdk> file show -r
 24a5fc94 root:src/<file>`; every file in the copied-files table but `src/directive-factories.ts`
 and `src/html-flow.ts` has that counterpart, and the only lines that differ should be the
-twenty-eight kinds.
+thirty kinds.
 `src/directive-factories.ts`'s counterparts are those three files of micromark-extension-directive
 4.0.0 (`node_modules/.bun/micromark-extension-directive@4.0.0` at the repository root, or the
 package's npm tarball); each function there differs from its source by the join and the type

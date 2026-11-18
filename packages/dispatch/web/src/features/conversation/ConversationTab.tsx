@@ -109,7 +109,9 @@ import type { CarriedBlockIds } from "./send-request";
 import { capabilitiesForTarget, TargetedMessageCard } from "./TargetedMessageCard";
 import {
   ConversationTurns,
+  openReplyBox,
   ownControl,
+  REPLY_BOX,
   ROOT_TURN,
   TURN_FOLD,
   TURN_ROW,
@@ -146,9 +148,6 @@ const FILTERS: readonly { readonly label: string; readonly value: ConversationFi
  *  pressed on and leaves the thread open. A thread a click or a link opened is neither: its box
  *  takes the focus, and Escape in it closes the thread. */
 type KeyedThread = "standing" | "reply";
-
-/** A reply box (`MentionComposer`, `AskReplyComposer`): where `r` puts the caret. */
-const REPLY_BOX = "[data-reply-box]";
 
 /** A turn's Reply (`ReplyButton`), which `r` presses on a message. */
 const REPLY_BUTTON = 'button[aria-label="Reply"]';
@@ -1354,17 +1353,7 @@ export function ConversationTab({
       };
     }
     const opener = root.querySelector<HTMLElement>("[data-reply-opener]");
-    if (opener !== null) {
-      return () => {
-        // "Write a reply" draws its box under it as it is pressed: the press is flushed, so the
-        // box stands in the page when the panel the control names is read.
-        if (opener.getAttribute("aria-expanded") !== "true") flushSync(() => opener.click());
-        document
-          .getElementById(opener.getAttribute("aria-controls") ?? "")
-          ?.querySelector<HTMLElement>(REPLY_BOX)
-          ?.focus();
-      };
-    }
+    if (opener !== null) return () => openReplyBox(opener);
     const reply = ownControl(turn, REPLY_BUTTON) ?? ownControl(root, REPLY_BUTTON);
     if (reply === null || reply.getAttribute("aria-disabled") === "true") return null;
     return () => {

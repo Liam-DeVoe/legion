@@ -39,6 +39,12 @@ export function optionKey(index: number): string | undefined {
   return index === 9 ? "0" : undefined;
 }
 
+/** The place among the options of the option a digit `key` picks, the other way round from
+ *  `optionKey`: `1` is the first, and `0` the tenth. */
+export function optionIndex(key: string): number {
+  return key === "0" ? 9 : Number(key) - 1;
+}
+
 /** The digit of each option of the card of `askId`, by the option's place among the card's
  *  options with Other last; undefined for every option where the card draws none. */
 export function useOptionDigits(askId: string): (index: number) => OptionDigit | undefined {

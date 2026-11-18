@@ -10,7 +10,7 @@ import {
   type PersonKeys,
 } from "./keymap-catalogue";
 import { refusalOf } from "./keymap-refusal";
-import { userPreferenceStorageKey } from "./userPreference";
+import { preferenceStore, userPreferenceStorageKey } from "./userPreference";
 
 /**
  * The keys a person gave the actions of the keymap (R14), kept in this browser for the signed-in
@@ -23,23 +23,9 @@ import { userPreferenceStorageKey } from "./userPreference";
  * `KeymapProvider` reads it and hands it to the registry through `KeymapPersonContext`.
  */
 
-/** Every reader mounted now, each told when the stored keys may have changed. */
-const listeners = new Set<() => void>();
-
-function notify(): void {
-  for (const listener of listeners) listener();
-}
-
-/** Adds a reader. While any reader is mounted the window's `storage` event tells them all,
- *  which is how a key changed in another tab of this browser reaches this one. */
-function subscribe(listener: () => void): () => void {
-  if (listeners.size === 0) window.addEventListener("storage", notify);
-  listeners.add(listener);
-  return () => {
-    listeners.delete(listener);
-    if (listeners.size === 0) window.removeEventListener("storage", notify);
-  };
-}
+/** The readers of the stored keys, each told when they may have changed: by a write here, or by
+ *  another tab of this browser. */
+const { notify, subscribe } = preferenceStore();
 
 /** Where this browser keeps `login`'s keys. */
 function storageKey(login: string): string {

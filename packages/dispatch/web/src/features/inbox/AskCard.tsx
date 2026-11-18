@@ -23,7 +23,7 @@ import type {
 import { CopyButton } from "../../components/CopyButton";
 import { ChevronIcon } from "../../components/DisclosureToggle";
 import { focusOnMount } from "../../components/focus-place";
-import { heldPress } from "../../components/held-press";
+import { heldField, heldPress } from "../../components/held-press";
 import { MultiSelect } from "../../components/MultiSelect";
 import { QueryError } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
@@ -607,7 +607,7 @@ export function AskCard({
           {reasonRequired ? "Reason (required)" : isApproval ? "Reason" : "Your answer"}
         </span>
         <textarea
-          aria-disabled={held || undefined}
+          {...heldField(held)}
           className={`block w-full rounded-lg px-3 py-2 font-normal outline-none aria-disabled:opacity-50 ${inputClasses(true)}`}
           data-ask-answer=""
           id={answerFieldId}
@@ -634,7 +634,6 @@ export function AskCard({
               : (event) => upload.paste(event, uploadOwner)
           }
           placeholder={answerPlaceholder}
-          readOnly={held}
           ref={answerFieldRef}
           rows={2}
           value={answerText}

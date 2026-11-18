@@ -3402,20 +3402,12 @@ test("p opens the priority menu of an ask of an issue, keeps the focus on its ro
   });
   const getAsk = mockAskReads(rows);
   const { unmount } = renderInbox();
-  const offered = () =>
-    appKeymap.describe().find((entry) => entry.scope === "inbox" && entry.id === "priority")
-      ?.enabled;
-  const rowOf = (id: string) => {
-    const row = document.querySelector<HTMLElement>(`[data-inbox-row="${id}"]`);
-    if (row === null) throw new Error(`no row ${id}`);
-    return row;
-  };
 
   try {
     await screen.findByText("Which approach?");
     const issueRow = rowOf("ask-a");
     act(() => issueRow.focus());
-    expect(offered()).toBe(true);
+    expect(offered("priority")).toBe(true);
     await user.keyboard("p");
     const menu = screen.getByRole("menu", { name: "Priority of CORE-1" });
     const checked = within(menu).getByRole("menuitemradio", { name: "P2" });
@@ -3450,7 +3442,7 @@ test("p opens the priority menu of an ask of an issue, keeps the focus on its ro
 
     // A question on a project document has no issue, so no priority to open.
     act(() => rowOf("ask-1").focus());
-    expect(offered()).toBe(false);
+    expect(offered("priority")).toBe(false);
     await user.keyboard("p");
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
   } finally {
@@ -5835,6 +5827,68 @@ test("below the column's width a snooze gives the next row the focus, and an ans
   } finally {
     unmount();
     answerAsk.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    snoozeAsk.mockRestore();
+  }
+});
+
+// A press's own callbacks run only while the control that made it is mounted (TanStack's
+// `mutate` callbacks), so a snooze whose Snooze goes before the server answers is one whose
+// landing the Inbox never hears. The hand-off it began goes with the control: kept, it would give
+// the row after the snoozed one the focus at every later commit that finds the focus on the page.
+test("a snooze whose row the search hides before it lands leaves no hand-off to pull the focus later", async () => {
+  const user = userEvent.setup();
+  const rows = [
+    inboxIssue("ask-a", "CORE-1", "Which approach?"),
+    inboxIssue("ask-b", "CORE-2", "Which format?"),
+    inboxIssue("ask-c", "CORE-3", "Which owner?"),
+  ];
+  const arriving = inboxIssue("ask-d", "CORE-4", "Which week?");
+  let served: InboxRow[] = rows;
+  const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
+  const landing = Promise.withResolvers<void>();
+  let landed = false;
+  const snoozeAsk = answerAskSnoozes().mockImplementation(async (id, { snoozed_until: until }) => {
+    await landing.promise;
+    served = served.map((row) => (row.id === id ? { ...row, snoozed_until: until } : row));
+    landed = true;
+    return { snoozed_until: until };
+  });
+  const getAsk = mockAskReads([...rows, arriving]);
+  const { queryClient, unmount } = renderInbox();
+
+  try {
+    await screen.findByTestId("ask-ask-a");
+    act(() => rowOf("ask-a").focus());
+    await user.keyboard("b");
+    await user.keyboard("2");
+    await waitFor(() => expect(snoozeAsk).toHaveBeenCalledTimes(1));
+
+    // The search hides the snoozed row while its write is out, and the row's Snooze goes with it;
+    // the write lands after that.
+    await user.keyboard("f");
+    const box = screen.getByRole("searchbox", { name: "Search asks" });
+    expect(box).toHaveFocus();
+    await user.keyboard("owner");
+    await waitFor(() => expect(rowIds()).toEqual(["ask-c"]));
+    await act(async () => {
+      landing.resolve();
+      await landing.promise;
+    });
+    await waitFor(() => expect(landed).toBe(true));
+    await user.clear(box);
+    await waitFor(() => expect(rowIds()).toEqual(["ask-b", "ask-c"]));
+
+    // With the focus on the page, the next commit - an ask arriving - leaves it there.
+    act(() => box.blur());
+    expect(document.activeElement).toBe(document.body);
+    served = [...served, arriving];
+    await act(() => queryClient.invalidateQueries());
+    await screen.findByTestId("ask-ask-d");
+    expect(document.activeElement).toBe(document.body);
+  } finally {
+    unmount();
     getAsk.mockRestore();
     getInbox.mockRestore();
     snoozeAsk.mockRestore();

@@ -14,6 +14,7 @@ import { useProjectArtifact } from "../document/useProjectArtifact";
 import { writePin } from "../issue/pin-write";
 import { eventItemId } from "../issue/pins";
 import { parseIssuePath, parseProjectPath } from "../refs/routes";
+import { focusOnDocument } from "../shell/roving";
 import { COMPACT_VIEWPORT_QUERY, PHONE_VIEWPORT_QUERY } from "../shell/useDialog";
 import type { MarginComposer } from "./CommentsTab";
 import type { MarginSheetModel } from "./MarginSheet";
@@ -66,10 +67,7 @@ function focusedItemFor(
  *  composer that unmounted or a dialog that closed leaves it: the reader is still at the comment,
  *  and its end may take them back to the document. */
 function focusAtComposer(): boolean {
-  const active = document.activeElement;
-  return (
-    active === null || active === document.body || active.closest("[data-margin-composer]") !== null
-  );
+  return focusOnDocument() || document.activeElement?.closest("[data-margin-composer]") != null;
 }
 
 /**

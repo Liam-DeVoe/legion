@@ -1,4 +1,5 @@
 import { createContext } from "react";
+import { flushSync } from "react-dom";
 
 import { focusVisibleRing } from "../../theme/classes";
 import { buildDispatchReference, type DispatchReferenceRoute } from "../refs/routes";
@@ -51,4 +52,20 @@ export function ownControl(turn: HTMLElement, selector: string): HTMLElement | n
     if (control.closest(TURN_ROW) === turn) return control;
   }
   return null;
+}
+
+/** A reply box (`MentionComposer`, `AskReplyComposer`): where `r` puts the caret, on the
+ *  Conversation tab and in the Inbox. */
+export const REPLY_BOX = "[data-reply-box]";
+
+/** Puts the caret in the reply box behind `opener`, an answered ask's "Write a reply"
+ *  (`data-reply-opener`, `AskThreadDisclosure`), which draws its box under it as it is pressed:
+ *  the press is flushed, so the box stands in the page when the panel the control names is
+ *  read. */
+export function openReplyBox(opener: HTMLElement): void {
+  if (opener.getAttribute("aria-expanded") !== "true") flushSync(() => opener.click());
+  document
+    .getElementById(opener.getAttribute("aria-controls") ?? "")
+    ?.querySelector<HTMLElement>(REPLY_BOX)
+    ?.focus();
 }

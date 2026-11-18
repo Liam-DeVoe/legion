@@ -5,7 +5,15 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
-import { listOf, openList, pick, pickNamed, rows, textBoxes } from "../../__tests__/list-picks";
+import {
+  highlightedRow,
+  listOf,
+  openList,
+  pick,
+  pickNamed,
+  rows,
+  textBoxes,
+} from "../../__tests__/list-picks";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
 import { projectDefaultAssigneesQuery, usersQuery } from "../../api/queries";
@@ -173,14 +181,6 @@ const ASSIGNEE = "Assignee of CORE-1";
 
 function trigger(): HTMLButtonElement {
   return screen.getByRole("button", { name: pickNamed(ASSIGNEE) }) as HTMLButtonElement;
-}
-
-/** The person the open list's text box highlights. */
-function highlighted(): string | undefined {
-  const id = screen
-    .getByRole("combobox", { name: "Search people" })
-    .getAttribute("aria-activedescendant");
-  return document.getElementById(id ?? "")?.textContent?.replace("✓", "");
 }
 
 /** Resolves once who has signed in has been read. */
@@ -463,7 +463,10 @@ test("AssigneeControl's keys on its closed badge only move the list's highlight,
       ["b", "bob"],
     ] as const) {
       await user.keyboard(keys);
-      expect(highlighted(), `${keys} highlights ${to}`).toBe(to);
+      expect(
+        highlightedRow(screen.getByRole("combobox", { name: "Search people" })),
+        `${keys} highlights ${to}`
+      ).toBe(to);
       await user.keyboard("{Escape}");
       expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
       expect(trigger()).toHaveFocus();

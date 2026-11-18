@@ -1,13 +1,12 @@
 import { screen, within } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 
+import { controlledBy } from "./list-picks";
+
 /** The open menu `trigger` names in `aria-controls`: only its choices count, never a control of
  *  the page behind it or of another menu. */
-export function menuOf(trigger: HTMLElement): HTMLElement {
-  const id = trigger.getAttribute("aria-controls");
-  const menu = id === null ? null : document.getElementById(id);
-  if (menu === null) throw new Error("the trigger names no open menu");
-  return menu;
+function menuOf(trigger: HTMLElement): HTMLElement {
+  return controlledBy(trigger, "the trigger names no open menu");
 }
 
 /** The choice of `trigger`'s open menu that `name` names: an action (`menuitem`) or a value

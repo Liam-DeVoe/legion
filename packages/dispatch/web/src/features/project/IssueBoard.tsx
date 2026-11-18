@@ -53,7 +53,7 @@ import { closeRefPreview, referenceTriggerProps } from "../refs/RefPreview";
 import { buildDispatchReference, buildIssuePath } from "../refs/routes";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
 import { useActionKeys } from "../shell/keymap-keys";
-import { linkHref, openInNewTab } from "../shell/new-tab";
+import { openLinkInNewTab } from "../shell/new-tab";
 import { closestMatching } from "../shell/roving";
 import { useUserPreference } from "../shell/userPreference";
 import {
@@ -669,12 +669,8 @@ export function IssueBoard({
     {
       // R20: `o` in a new tab, from the card itself or a control of it; this page stays.
       action: "board.open-new-tab",
-      run: () => {
-        const href = linkHref(
-          cardAround(document.activeElement)?.querySelector(ISSUE_LINK) ?? null
-        );
-        if (href !== null) openInNewTab(href);
-      },
+      run: () =>
+        openLinkInNewTab(cardAround(document.activeElement)?.querySelector(ISSUE_LINK) ?? null),
       when: focusedCard,
     },
     {

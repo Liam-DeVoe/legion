@@ -548,15 +548,12 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   useKeymap("global", [
     {
       // Opens only: while the bar is open the `dialog` scope is the only one consulted, and
-      // the bar's own `$mod+k` binding closes it. It fires while the reader is writing, so
-      // the key reaches the bar from inside a document's editor too.
+      // the bar's own `$mod+k` binding closes it.
       action: "global.search",
       run: () => setBarOpen(true),
     },
     {
-      // The same bar. No row: chosen from the bar it would only reopen the bar. Not
-      // `inEditable`, so a slash typed into a document stays a slash, and the Agents page
-      // shadows it with its own filter box.
+      // The same bar.
       action: "global.search-only",
       run: () => setBarOpen(true),
     },
@@ -581,7 +578,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
     },
     {
       // The same bar again, where a reader after a project types its name: its projects are
-      // rows of the one list. No row, for `/`'s reason.
+      // rows of the one list.
       action: "global.go-project",
       run: () => setBarOpen(true),
     },

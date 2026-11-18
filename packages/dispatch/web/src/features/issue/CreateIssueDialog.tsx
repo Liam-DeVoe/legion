@@ -6,7 +6,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { ApiError, api, type WriteBounds } from "../../api/client";
 import { projectsQuery } from "../../api/queries";
 import type { CreateIssueInput, Issue } from "../../api/types";
-import { heldPress } from "../../components/held-press";
+import { heldField, heldPress } from "../../components/held-press";
 import { MultiSelect } from "../../components/MultiSelect";
 import { QueryError } from "../../components/QueryError";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
@@ -195,14 +195,13 @@ export function CreateIssueDialog({
           <label className={`block text-sm font-medium ${textSecondaryOnSurface}`}>
             Title
             <input
-              aria-disabled={held || undefined}
+              {...heldField(held)}
               className={`mt-1 block min-h-11 w-full rounded-lg border px-3 py-2 text-sm font-normal outline-none aria-disabled:opacity-50 ${inputClasses(true)}`}
               maxLength={ISSUE_TITLE_MAX}
               onChange={(event) => {
                 mutation.forgetUnanswered();
                 setTitle(event.target.value);
               }}
-              readOnly={held}
               ref={titleRef}
               type="text"
               value={title}
@@ -211,11 +210,10 @@ export function CreateIssueDialog({
           <label className={`block text-sm font-medium ${textSecondaryOnSurface}`}>
             Spec <span className={`font-normal ${textMutedOnSurface}`}>(optional)</span>
             <textarea
-              aria-disabled={held || undefined}
+              {...heldField(held)}
               className={`mt-1 block w-full rounded-lg border px-3 py-2 text-sm font-normal outline-none aria-disabled:opacity-50 ${inputClasses(true)}`}
               onChange={(event) => setSpec(event.target.value)}
               onKeyDown={(event) => submitOnModifiedEnter(event)}
-              readOnly={held}
               rows={3}
               value={spec}
             />

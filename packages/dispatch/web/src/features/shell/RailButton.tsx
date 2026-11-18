@@ -1,9 +1,10 @@
 import type { ReactNode } from "react";
 
 import { kbdHint, railHoverBg, railHoverText, railSecondaryText } from "../../theme/classes";
-import { ALT_KEY_LABEL, ariaKeyshortcuts, MOD_KEY_LABEL } from "./keymap";
+import { ALT_KEY_LABEL, MOD_KEY_LABEL, stepsOf } from "./keymap";
 import type { KeymapActionId } from "./keymap-catalogue";
 import { useActionKeys } from "./keymap-keys";
+import { keyshortcutsOf } from "./ShortcutHelp";
 
 const ON_MAC = MOD_KEY_LABEL === "⌘";
 
@@ -20,9 +21,7 @@ const MODIFIER_TEXT: Record<string, string> = {
 /** One key as the rail writes it: `⌘K` on a Mac and `Ctrl K` elsewhere for `$mod+k`, a key with
  *  no modifier as it is typed (`c`), and each press of a chord in turn (`g i`). */
 function railText(key: string): string {
-  return key
-    .trim()
-    .split(/\s+/)
+  return stepsOf(key)
     .map((step) => {
       const parts = step.split("+");
       const last = parts.pop() ?? "";
@@ -49,10 +48,9 @@ export function RailButton({
   onOpen: () => void;
 }): ReactNode {
   const keys = useActionKeys(action);
-  const shortcuts = ariaKeyshortcuts(keys);
   return (
     <button
-      aria-keyshortcuts={shortcuts === "" ? undefined : shortcuts}
+      aria-keyshortcuts={keyshortcutsOf(keys)}
       className={`${className} flex min-h-11 w-full items-center justify-between rounded-lg px-3 text-left text-sm font-medium ${railSecondaryText} ${railHoverBg} ${railHoverText}`}
       onClick={onOpen}
       type="button"

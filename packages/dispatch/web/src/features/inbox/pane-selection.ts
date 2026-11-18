@@ -117,10 +117,6 @@ export interface PaneSelection extends InboxHandOff {
   id: string | undefined;
   /** Selects a row, or nothing, and writes it to the address. */
   select: (id: string | undefined) => void;
-  /** The selection as it stands now, for a callback whose closure is older than it: an answer's
-   *  own card holds the `onAnswered` of the render its write began in, and by the time the
-   *  server records that answer the row has left the list and the selection has moved on. */
-  selectedNow: RefObject<string | undefined>;
   /** The selected row's own element, or null while the list holds none. */
   selectedRow: () => HTMLElement | null;
   /** Selects the row `delta` from the selected one, in the order the reader sees: what `j`, `k`
@@ -542,7 +538,6 @@ export function usePaneSelection({
       focusTo.current === undefined ? null : targetElement(focusTo.current.target),
     id: selectedId,
     select,
-    selectedNow,
     selectedRow,
     showing,
     step,

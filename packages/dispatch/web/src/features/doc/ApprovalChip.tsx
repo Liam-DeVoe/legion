@@ -9,7 +9,7 @@ import {
 } from "../../api/client";
 import { inboxQuery } from "../../api/queries";
 import type { Artifact, ArtifactApproval } from "../../api/types";
-import { heldPress } from "../../components/held-press";
+import { heldField, heldPress } from "../../components/held-press";
 import { approvalPillClassName } from "../../components/Pill";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
@@ -193,7 +193,7 @@ function RequestChangesDialog({
           >
             Reason
             <textarea
-              aria-disabled={held || undefined}
+              {...heldField(held)}
               className={`mt-1 block w-full rounded-lg border px-2 py-1.5 text-sm font-normal outline-none aria-disabled:opacity-50 ${inputClasses(false)}`}
               id={reasonId}
               onChange={(event) => setReason(event.target.value)}
@@ -206,7 +206,6 @@ function RequestChangesDialog({
                   },
                 })
               }
-              readOnly={held}
               ref={textareaRef}
               value={reason}
             />

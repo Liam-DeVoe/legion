@@ -4,7 +4,7 @@ import { type ReactNode, useId, useRef, useState } from "react";
 
 import { apiErrorMessage, type DeclineAskInput, type WriteBounds } from "../../api/client";
 import type { Ask, AskRead } from "../../api/types";
-import { heldPress } from "../../components/held-press";
+import { heldField, heldPress } from "../../components/held-press";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import {
@@ -87,7 +87,7 @@ function DeclineDialog({
             Note (optional)
             <textarea
               aria-describedby={countId}
-              aria-disabled={held || undefined}
+              {...heldField(held)}
               className={`mt-1 block w-full rounded-lg border px-2 py-1.5 text-sm font-normal outline-none aria-disabled:opacity-50 ${inputClasses(false)}`}
               id={noteId}
               maxLength={DISPATCH_EVENT_BODY_MAX}
@@ -99,7 +99,6 @@ function DeclineDialog({
                   },
                 })
               }
-              readOnly={held}
               ref={textareaRef}
               value={note}
             />

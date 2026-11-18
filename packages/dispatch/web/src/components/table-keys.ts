@@ -2,7 +2,7 @@ import type { Row } from "@tanstack/react-table";
 import { type RefObject, useLayoutEffect, useRef } from "react";
 import { type KeymapScope, useKeymap } from "../features/shell/keymap";
 import type { KeymapActionId } from "../features/shell/keymap-catalogue";
-import { linkHref, openInNewTab } from "../features/shell/new-tab";
+import { linkHref, openLinkInNewTab } from "../features/shell/new-tab";
 import { closestMatching } from "../features/shell/roving";
 import { CONTROL } from "./control-names";
 
@@ -155,10 +155,7 @@ export function useRowKeymap<TData>({
       : [
           {
             action: openInNewTabAction,
-            run: () => {
-              const href = linkHref(focusedLink());
-              if (href !== null) openInNewTab(href);
-            },
+            run: () => openLinkInNewTab(focusedLink()),
             when: () => linkHref(focusedLink()) !== null,
           },
         ]),

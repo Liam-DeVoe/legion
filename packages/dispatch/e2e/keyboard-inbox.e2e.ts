@@ -278,10 +278,10 @@ test.describe("inbox selection", () => {
       await requested.promise;
       await expect(bar).toContainText("Snoozing 2…");
 
-      // The pick handed the focus back to the row `h` was pressed on, so Escape steps off that
-      // row, and Escape from off the rows clears the selection while the pick is still in the air.
-      await page.keyboard.press("Escape");
-      await expect(page.locator("[data-inbox-row]:focus")).toHaveCount(0);
+      // `h` was pressed with the focus on nothing, so the pick hands the focus back to the bar's
+      // Snooze, which keeps it while the pick is in the air; Escape from off the rows clears the
+      // selection then.
+      await expect(bulkSnooze(page)).toBeFocused();
       await page.keyboard.press("Escape");
       await expect(bar).toContainText("Snoozing 2…");
       held.resolve();

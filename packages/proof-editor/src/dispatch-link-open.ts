@@ -36,6 +36,7 @@ import { type EditorState, Plugin, PluginKey } from "@milkdown/kit/prose/state";
 import type { EditorView } from "@milkdown/kit/prose/view";
 import { $prose } from "@milkdown/kit/utils";
 
+import { asElement } from "./record-mark-target";
 import { referenceAt } from "./reference-decorations";
 
 /** Opens a link's own target for the host - a `dispatch://` reference, a web address, a `mailto:`
@@ -75,8 +76,7 @@ interface EditorLink {
 /** The link the editor drew that `target` is inside, if any; a target that is no element is
  *  inside none. */
 function linkAt(view: EditorView, target: EventTarget | null): EditorLink | undefined {
-  const element = target as Partial<Element> | null;
-  const anchor = typeof element?.closest === "function" ? (element as Element).closest("a") : null;
+  const anchor = asElement(target)?.closest("a") ?? null;
   if (anchor === null || !view.dom.contains(anchor) || inIsland(view, anchor)) {
     return undefined;
   }

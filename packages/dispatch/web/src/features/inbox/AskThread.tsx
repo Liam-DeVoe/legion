@@ -4,6 +4,7 @@ import { type FormEvent, type ReactNode, useContext, useId, useState } from "rea
 
 import { type ArtifactOwner, api, type WriteBounds } from "../../api/client";
 import type { Ask, AskRead, Comment, CommentWithTrees, CreateCommentInput } from "../../api/types";
+import { heldField } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
 import { useSending } from "../../hooks/useSending";
@@ -191,7 +192,7 @@ export function AskReplyComposer({
         Reply
         {/* `data-reply-box`: the box a page's reply key hands the caret (the Inbox's `r`). */}
         <textarea
-          aria-disabled={held || undefined}
+          {...heldField(held)}
           className={`mt-1 block w-full rounded-lg px-3 py-2 font-normal outline-none aria-disabled:opacity-50 ${inputClasses(true)}`}
           data-reply-box=""
           id={fieldId}
@@ -207,7 +208,6 @@ export function AskReplyComposer({
               ? undefined
               : (event) => upload.paste(event, uploadOwner)
           }
-          readOnly={held}
           value={body}
         />
       </label>

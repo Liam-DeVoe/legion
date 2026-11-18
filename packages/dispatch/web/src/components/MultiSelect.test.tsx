@@ -4,7 +4,7 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 
-import { panelOf, pickNamed } from "../__tests__/list-picks";
+import { highlightedRow, panelOf, pickNamed } from "../__tests__/list-picks";
 import { type ListMarks, MultiSelect } from "./MultiSelect";
 
 function Host({ onCreate, options }: { onCreate?: (value: string) => void; options: string[] }) {
@@ -783,14 +783,6 @@ function keysThePageReads(): { readonly keys: string[]; readonly stop: () => voi
   return { keys, stop: () => window.removeEventListener("keydown", listen) };
 }
 
-/** The option the open list's text box highlights, by its row text. */
-function highlighted(): string | null | undefined {
-  const id = screen
-    .getByRole("combobox", { name: "Search epics" })
-    .getAttribute("aria-activedescendant");
-  return id === null ? null : document.getElementById(id)?.textContent?.replace("✓", "");
-}
-
 // dispatch://INFRA-2160, R6: a host that writes the moment a value is picked - the assignee, the
 // repository, an ask's hand-on - takes the keys a `<select>` takes on its closed trigger, and
 // each only moves the list's highlight.
@@ -818,7 +810,10 @@ test("with keysOnTrigger, a move key on the closed trigger opens the list on the
       ).toBeTruthy();
       expect(screen.getByRole("combobox", { name: "Search epics" })).toHaveFocus();
       expect(screen.getByRole("combobox", { name: "Search epics" })).toHaveValue("");
-      expect(highlighted(), `${key} highlights ${to}`).toBe(to);
+      expect(
+        highlightedRow(screen.getByRole("combobox", { name: "Search epics" })),
+        `${key} highlights ${to}`
+      ).toBe(to);
       await user.keyboard("{Escape}");
       expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
       expect(trigger).toHaveFocus();
@@ -851,7 +846,7 @@ test("with keysOnTrigger, a printable key on the closed trigger opens the list w
       "docs",
       "frontend",
     ]);
-    expect(highlighted()).toBe("docs");
+    expect(highlightedRow(screen.getByRole("combobox", { name: "Search epics" }))).toBe("docs");
     // The key is the search's first letter, and the next ones follow it there.
     await user.keyboard("o");
     expect(search).toHaveValue("do");
@@ -869,7 +864,7 @@ test("with keysOnTrigger, a printable key on the closed trigger opens the list w
     expect(page.keys).toEqual(["o", "Control", "k"]);
     await user.keyboard(" ");
     expect(screen.getByRole("combobox", { name: "Search epics" })).toHaveValue("");
-    expect(highlighted()).toBe("docs");
+    expect(highlightedRow(screen.getByRole("combobox", { name: "Search epics" }))).toBe("docs");
   } finally {
     page.stop();
     view.unmount();

@@ -15,3 +15,10 @@ export function linkHref(element: Element | null): string | null {
   const link = element?.closest("a[href]") ?? element?.querySelector("a[href]") ?? null;
   return link instanceof HTMLAnchorElement ? link.href : null;
 }
+
+/** Opens the address `element` links to (`linkHref`) in a new tab, and nothing where it links to
+ *  none: what each Shift+O runs on the item it is pressed on. */
+export function openLinkInNewTab(element: Element | null): void {
+  const href = linkHref(element);
+  if (href !== null) openInNewTab(href);
+}

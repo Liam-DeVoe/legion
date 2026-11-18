@@ -31,6 +31,33 @@ export function userPreferenceStorageKey(login: string, preference: UserPreferen
   return `dispatch.${preference}:${login}`;
 }
 
+/** A store of stored preferences that every reader reads for the tab (`useSyncExternalStore`). */
+export interface PreferenceStore {
+  /** Tells every reader mounted now that the stored value may have changed. */
+  readonly notify: () => void;
+  /** Adds a reader. While any reader is mounted the window's `storage` event tells them all,
+   *  which is how a write in another tab of this browser reaches this one. */
+  readonly subscribe: (listener: () => void) => () => void;
+}
+
+/** A new store with readers of its own, for a module that keeps one preference this way
+ *  (`issue-page/choice.ts`, `keymap-keys.ts`). */
+export function preferenceStore(): PreferenceStore {
+  const listeners = new Set<() => void>();
+  const notify = (): void => {
+    for (const listener of listeners) listener();
+  };
+  const subscribe = (listener: () => void): (() => void) => {
+    if (listeners.size === 0) window.addEventListener("storage", notify);
+    listeners.add(listener);
+    return () => {
+      listeners.delete(listener);
+      if (listeners.size === 0) window.removeEventListener("storage", notify);
+    };
+  };
+  return { notify, subscribe };
+}
+
 /**
  * Where this browser kept the Agents page's pins before they became the person's own, held by
  * Dispatch (INFRA-812). Nothing writes it any more, so it is no `UserPreference`: the shell

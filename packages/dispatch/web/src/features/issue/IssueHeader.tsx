@@ -285,10 +285,7 @@ export function IssueHeader({
   const approvalAskId = documentArtifact?.approval?.ask_id;
   const approvalWaitsOnReader =
     viewer !== undefined &&
-    openAsks.some(
-      (ask) =>
-        ask.id === approvalAskId && ask.waiting_on === "human" && ask.waiting_on_person === viewer
-    );
+    waitingForHuman.some((ask) => ask.id === approvalAskId && ask.waiting_on_person === viewer);
   /** The header's Approve or Request changes, while the key that presses it is the reader's:
    *  drawn, taking a press, and the request waiting on them. */
   const approvalControl = (action: "approve" | "request-changes"): HTMLElement | null =>

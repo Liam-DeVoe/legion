@@ -4,6 +4,7 @@ import {
   KEYMAP_ACTIONS,
   type KeymapActionId,
   type KeySurface,
+  keepsOwnKeys,
   keysOfAction,
   type PersonKeys,
 } from "./keymap-catalogue";
@@ -82,13 +83,23 @@ function sameChord(a: readonly KeyCombo[], b: readonly KeyCombo[]): boolean {
   return a.length === b.length && a.every((combo, index) => sameCombo(combo, b[index] as KeyCombo));
 }
 
+/** Each key's presses as `chordOf` read them first: a check reads every action's keys, and the
+ *  same text always gives the same presses. The keys are the catalogue's and the ones a person
+ *  records, so the map stays small. */
+const chords = new Map<string, readonly KeyCombo[] | null>();
+
 /** The presses of `key`, or null where the text names no key. */
-function chordOf(key: string): KeyCombo[] | null {
+function chordOf(key: string): readonly KeyCombo[] | null {
+  const known = chords.get(key);
+  if (known !== undefined) return known;
+  let chord: readonly KeyCombo[] | null;
   try {
-    return parseChord(key);
+    chord = parseChord(key);
   } catch {
-    return null;
+    chord = null;
   }
+  chords.set(key, chord);
+  return chord;
 }
 
 function refused(message: string, other?: KeymapActionId): KeyVerdict {
@@ -111,10 +122,10 @@ export function refusalOf(
   personKeys: PersonKeys
 ): KeyVerdict {
   const entry = catalogueEntry(action);
-  if (keys.length > 0 && entry.keys.length === 0 && (entry.fixedKeys?.length ?? 0) > 0) {
+  if (keys.length > 0 && keepsOwnKeys(entry)) {
     return refused(`${entry.label} keeps its own keys.`);
   }
-  const taken: { chord: KeyCombo[]; key: string }[] = [];
+  const taken: { chord: readonly KeyCombo[]; key: string }[] = [];
   for (const key of keys) {
     const chord = chordOf(key);
     if (chord === null) return refused(`${key} is not a key.`);

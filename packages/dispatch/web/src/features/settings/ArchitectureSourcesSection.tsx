@@ -3,7 +3,7 @@ import { type FormEvent, type ReactNode, useState } from "react";
 
 import { api, apiErrorMessage } from "../../api/client";
 import { architectureSourcesQuery, projectsQuery } from "../../api/queries";
-import { heldPress } from "../../components/held-press";
+import { heldField, heldPress } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import {
   TableBody,
@@ -237,13 +237,12 @@ export function ArchitectureSourcesSection(): ReactNode {
             <label className={settingsFieldLabel} htmlFor="architecture-source-repository">
               Source repository
               <input
-                aria-disabled={saveHeld || undefined}
+                {...heldField(saveHeld)}
                 className={`${settingsMonoInput} aria-disabled:opacity-50`}
                 id="architecture-source-repository"
                 onChange={(event) => setRepository(event.target.value)}
                 pattern={ownerRepoPattern}
                 placeholder="owner/repo"
-                readOnly={saveHeld}
                 required
                 value={repository}
               />
@@ -251,11 +250,10 @@ export function ArchitectureSourcesSection(): ReactNode {
             <label className={settingsFieldLabel} htmlFor="architecture-source-branch">
               Branch
               <input
-                aria-disabled={saveHeld || undefined}
+                {...heldField(saveHeld)}
                 className={`${settingsMonoInput} aria-disabled:opacity-50`}
                 id="architecture-source-branch"
                 onChange={(event) => setBranch(event.target.value)}
-                readOnly={saveHeld}
                 required
                 value={branch}
               />

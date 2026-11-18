@@ -193,7 +193,7 @@ function parseCombo(text: string): KeyCombo {
 }
 
 /** The steps of one key as written: `"g i"` is `["g", "i"]`, a chord of two presses. */
-function stepsOf(keys: string): string[] {
+export function stepsOf(keys: string): string[] {
   return keys.trim().split(/\s+/);
 }
 
@@ -439,24 +439,27 @@ export function createKeymap(options: KeymapOptions = {}): Keymap {
         if (
           scope !== stack[depth] ||
           binding.beforeScopes === true ||
-          (editable && binding.inEditable !== true) ||
-          binding.when?.() === false
+          (editable && binding.inEditable !== true)
         ) {
           continue;
         }
+        // The keys this binding's chords take next, read before its `when`: few bindings
+        // continue the chord pressed, and a `when` reads the page.
+        const keys: string[] = [];
         chords.forEach((combos, alternative) => {
           const key = steps[alternative]?.[presses.length];
-          if (
-            key === undefined ||
-            combos.length <= presses.length ||
-            !matches(combos, presses) ||
-            listed.has(key)
-          ) {
-            return;
+          if (key !== undefined && combos.length > presses.length && matches(combos, presses)) {
+            keys.push(key);
           }
+        });
+        if (keys.length === 0 || binding.when?.() === false) {
+          continue;
+        }
+        for (const key of keys) {
+          if (listed.has(key)) continue;
           listed.add(key);
           next.push({ key, label: binding.label });
-        });
+        }
       }
     }
     return next;
@@ -736,7 +739,7 @@ export const appKeymap = createKeymap({ strict: import.meta.env.DEV });
 
 /** Who the keys are for: the signed-in login, and the keys they changed. `KeymapProvider` gives
  *  it; with no provider (a unit test) nobody is signed in and every action takes its defaults. */
-export interface KeymapPerson {
+interface KeymapPerson {
   readonly login: string | undefined;
   readonly personKeys: PersonKeys;
 }

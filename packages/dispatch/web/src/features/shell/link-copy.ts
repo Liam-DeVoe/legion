@@ -2,19 +2,19 @@ import { copyText } from "../../lib/clipboard";
 import { linkAddress } from "../refs/link-address";
 import { useKeymap } from "./keymap";
 
-/** The link the keyboard's focus is on, where it is one `y` copies the address of: a link that is
- *  not editable - a link inside a document the reader edits takes `y` as a letter typed - and
- *  that has an address (`linkAddress`). */
-function focusedLink(): Element | null {
+/** The address of the link the keyboard's focus is on, where it is one `y` copies: a link that
+ *  is not editable - a link inside a document the reader edits takes `y` as a letter typed - and
+ *  that has an address (`linkAddress`). Undefined anywhere else. */
+function focusedLinkAddress(): string | undefined {
   const active = document.activeElement;
   if (
     !(active instanceof HTMLElement) ||
     active.isContentEditable ||
     !active.matches("a[href], [role='link']")
   ) {
-    return null;
+    return undefined;
   }
-  return linkAddress(active) === undefined ? null : active;
+  return linkAddress(active);
 }
 
 /**
@@ -35,13 +35,12 @@ export function useLinkCopy(): void {
       keys: "y",
       label: "Copy the focused link's address",
       run: () => {
-        const link = focusedLink();
-        const address = link === null ? undefined : linkAddress(link);
+        const address = focusedLinkAddress();
         if (address !== undefined) {
           void copyText(address);
         }
       },
-      when: () => focusedLink() !== null,
+      when: () => focusedLinkAddress() !== undefined,
     },
   ]);
 }

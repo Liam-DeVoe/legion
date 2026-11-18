@@ -9,7 +9,7 @@ export function textBoxes(): Element[] {
 }
 
 /** The element `control` names in `aria-controls`, else a throw saying `missing`. */
-function controlledBy(control: Element, missing: string): HTMLElement {
+export function controlledBy(control: Element, missing: string): HTMLElement {
   const id = control.getAttribute("aria-controls");
   const element = id === null ? null : document.getElementById(id);
   if (element === null) throw new Error(missing);
@@ -20,6 +20,13 @@ function controlledBy(control: Element, missing: string): HTMLElement {
  *  options count, never a control of the page behind it or of another list. */
 export function listOf(box: Element): HTMLElement {
   return controlledBy(box, "the text box names no list");
+}
+
+/** The row a list's text box `box` highlights (`aria-activedescendant`), as its text without the
+ *  tick of the picked one; undefined while the box highlights none, or there is no box. */
+export function highlightedRow(box: Element | null): string | undefined {
+  const id = box?.getAttribute("aria-activedescendant");
+  return document.getElementById(id ?? "")?.textContent?.replace("✓", "");
 }
 
 /** The panel of the list `trigger` opened: the list is portalled to the body, outside the

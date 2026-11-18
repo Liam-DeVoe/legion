@@ -329,7 +329,7 @@ function recentPress(): { opener: Element | null; target: Element } | null {
  *  the reader's act on the control that opened it: a snooze picked from the selection bar's
  *  menu, which closes the menu, hands the focus back to its trigger and then takes the bar away,
  *  is a press the reader made in the bar. */
-function openerOf(target: Element): Element | null {
+export function openerOf(target: Element): Element | null {
   const panel = target.closest(`[${PANEL_ATTRIBUTE}][id]`);
   return panel === null
     ? null
@@ -352,8 +352,7 @@ function pressPlaces(element: Element): Element[] {
  * `keydown`, or a `change` they committed (a select's pick) - came within the wait before it and
  * landed on the element, inside the row it was in, or inside the dialog, panel or selection bar it
  * was lost from (`pressPlaces`), itself or in a panel a control there opened (`openerOf`). A loss
- * the
- * reader caused keeps the hand-off that pulls the focus to the control now at the lost one's
+ * the reader caused keeps the hand-off that pulls the focus to the control now at the lost one's
  * place; one they did not - a live update taking a row away, a refetch emptying a bar - moves the
  * focus into no row and scrolls nothing. The rescue and every component hand-off that can move the
  * focus to a row read this one rule.

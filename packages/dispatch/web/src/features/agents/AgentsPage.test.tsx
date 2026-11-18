@@ -4015,7 +4015,7 @@ test("a row back after its session left mid-send holds the send it left until it
     expect(choose()).toHaveAttribute("aria-disabled", "true");
     // Held, not disabled: it keeps its Tab stop, and a press on it opens no list mid-send.
     await user.click(choose());
-    expect(screen.queryByRole("listbox", { name: "Issue" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("listbox", { name: "Issue options" })).not.toBeInTheDocument();
     expect(held()).toBe(true);
     expect(field().value).toBe("Status please");
 

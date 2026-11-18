@@ -1,9 +1,8 @@
 import type { ReactNode } from "react";
 
-import { card, kbdHint, textMutedOnSurface } from "../../theme/classes";
+import { card, textMutedOnSurface } from "../../theme/classes";
 import { usePendingChord } from "./keymap";
-
-const kbdClass = `rounded px-1.5 py-0.5 font-mono text-xs font-medium ${kbdHint}`;
+import { kbdClass } from "./ShortcutHelp";
 
 /** Shows a half-typed chord (`g …`) until it completes or times out, and under it each key that
  *  can follow with what it does (`i` Go to Inbox), as Emacs's which-key does. */

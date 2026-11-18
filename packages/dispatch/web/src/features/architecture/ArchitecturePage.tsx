@@ -38,7 +38,7 @@ import {
 } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
-import { linkHref, openInNewTab } from "../shell/new-tab";
+import { openLinkInNewTab } from "../shell/new-tab";
 import { closestMatching, roveFocus } from "../shell/roving";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { AttachmentLists, type AttachmentView } from "./AttachmentLists";
@@ -318,12 +318,8 @@ function ArchitectureTreeView({
       // R20: what `o` opens, in a new tab: the row's own link, on a leaf its details and on a
       // component with children the level of them, which is the same address.
       action: "architecture.open-new-tab",
-      run: () => {
-        const href = linkHref(
-          rowAround(document.activeElement)?.querySelector(COMPONENT_LINK) ?? null
-        );
-        if (href !== null) openInNewTab(href);
-      },
+      run: () =>
+        openLinkInNewTab(rowAround(document.activeElement)?.querySelector(COMPONENT_LINK) ?? null),
       when: () => rowAround(document.activeElement)?.querySelector(COMPONENT_LINK) != null,
     },
   ]);

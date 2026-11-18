@@ -5,7 +5,15 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
-import { listOf, openList, pick, pickNamed, rows, textBoxes } from "../../__tests__/list-picks";
+import {
+  highlightedRow,
+  listOf,
+  openList,
+  pick,
+  pickNamed,
+  rows,
+  textBoxes,
+} from "../../__tests__/list-picks";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
 import type { Issue, IssueDetails, IssueSummary, RepoProject } from "../../api/types";
@@ -186,12 +194,6 @@ const NOT_OWNER_NAME = "Write the repository as owner/name.";
 /** The open list's text box. */
 function searchBox(): HTMLInputElement {
   return screen.getByRole("combobox", { name: "Search repositories" }) as HTMLInputElement;
-}
-
-/** The row the open list's text box highlights, as its label. */
-function highlighted(): string | undefined {
-  const id = searchBox().getAttribute("aria-activedescendant");
-  return document.getElementById(id ?? "")?.textContent?.replace("✓", "");
 }
 
 /** Resolves once the project's mappings have been read. */
@@ -474,7 +476,7 @@ test("RepoControl's keys on its closed trigger only move the list's highlight, a
       ["a", "acme/gadgets"],
     ] as const) {
       await user.keyboard(keys);
-      expect(highlighted(), `${keys} highlights ${to}`).toBe(to);
+      expect(highlightedRow(searchBox()), `${keys} highlights ${to}`).toBe(to);
       await user.keyboard("{Escape}");
       expect(screen.queryByRole("listbox", { name: `${REPOSITORY} options` })).toBeNull();
       expect(trigger()).toHaveFocus();

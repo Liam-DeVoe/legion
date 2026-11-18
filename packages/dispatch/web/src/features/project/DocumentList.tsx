@@ -33,7 +33,7 @@ import { CopyRefButton } from "../refs/CopyRefButton";
 import { buildIssuePath, buildProjectPath, documentRoute } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { useKeymap } from "../shell/keymap";
-import { linkHref, openInNewTab } from "../shell/new-tab";
+import { linkHref, openLinkInNewTab } from "../shell/new-tab";
 import { closestMatching, focusedMatching, roveFocus } from "../shell/roving";
 
 /** Each document's row, which the list's keys walk and open, and its name link, which they
@@ -143,10 +143,7 @@ export function DocumentList({ project }: { project: string }): ReactNode {
     },
     {
       action: "project.open-new-tab",
-      run: () => {
-        const href = linkHref(linkInHand());
-        if (href !== null) openInNewTab(href);
-      },
+      run: () => openLinkInNewTab(linkInHand()),
       when: () => linkHref(linkInHand()) !== null,
     },
   ]);
