@@ -1,7 +1,10 @@
 /**
- * The daemon's state as a stub daemon answers `GET /legion/v1/state` with, shared by the suites of
- * every host's `legion` tool: the golden `state.json` the daemon's own test writes
- * (`packages/contracts/fixtures/daemon-api`, `packages/daemon/internal/api`), with one issue moved.
+ * The daemon's state as a stub daemon answers `GET /legion/v1/state` with, shared by the two
+ * suites that stub the daemon's routes for the `legion` tool's phase ops: pi-shared's executor
+ * (`src/legion-phase-ops.test.ts`) and claude-envoy's host
+ * (`packages/claude-envoy/tests/legion-tool.test.ts`). It is the golden `state.json` the daemon's
+ * own test writes (`packages/contracts/fixtures/daemon-api`, `packages/daemon/internal/api`), with
+ * one issue moved.
  */
 import { readFileSync } from "node:fs";
 import path from "node:path";
