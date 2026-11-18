@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -193,7 +195,10 @@ const movedParents = "block_parent_moved"
 //   - a comment's node and its visibility and state (graphstore.Write), the authored_by and the
 //     aliases of whoever wrote it (graphstore.AuthorFacts), and the artifacts it is anchored to
 //     and owned by (api's commentStored);
-//   - a delivery to a comment's mention, one delivered_to (outbox.deliveredGraph);
+//   - a delivery to a comment's mention, one delivered_to (outbox.deliveredGraph), and the same
+//     one tuple for each session or role the bus reached with a comment event
+//     (outbox.deliveredGraph) and for each fallback copy the outbox published
+//     (outbox.fallbackDelivered);
 //   - a version's blocks as refs.IndexBlocks states them: a block it inserts afresh, its node, its
 //     two base attributes, its in_document and its part_of; a block it restores, its state and
 //     its in_document, with at most the retraction and the assertion of a parent the restore
@@ -251,6 +256,21 @@ func storeKinds() []StoreKind {
 		Driver: "comment_deliveries.created_at, taken by the listener: a delivered_to for each attempt that reached its destination",
 		count: `(select count(*) from comment_deliveries where state in ` + model.DeliveryTakenStatesSQL +
 			` and created_at > ` + sizingWindow + `)`,
+	}, {
+		Name: "bus_delivery", MovedBy: movedHere, Tuples: 1,
+		Driver: "events.published_destinations of the comment events written in the window, each a session's or a role's" +
+			" topic as the outbox reads one: a delivered_to for each destination the bus reached",
+		count: `(select count(*) from events e cross join lateral unnest(e.published_destinations) reached (topic)
+			where e.type like 'comment.%' and e.created_at > ` + sizingWindow + `
+			  and jsonb_typeof(e.payload->'id') = 'string' and e.payload->>'id' <> ''
+			  and octet_length(e.payload->>'id') <= ` + addressBound + `
+			  and ` + reachesANode("reached.topic") + `)`,
+	}, {
+		Name: "fallback_delivery", MovedBy: movedHere, Tuples: 1,
+		Driver: "comment_fallback_copies.settled_at of the copies the outbox published in the window, each to a session's" +
+			" or a role's topic: a delivered_to for each",
+		count: `(select count(*) from comment_fallback_copies f
+			where f.published and f.settled_at > ` + sizingWindow + ` and ` + reachesANode("f.destination") + `)`,
 	}, {
 		Name: "block", MovedBy: movedHere, Nodes: 1, Tuples: 4,
 		Driver: "document_block_texts of the versions written in the window, a block's first row: its node, its visibility" +
@@ -519,6 +539,19 @@ func storeKinds() []StoreKind {
 			" production writes no risk before dispatch://INFRA-1950: its node, its visibility and state, its part_of" +
 			" its lens and one prevented_by",
 	}}
+}
+
+// reachesANode is true of a topic the outbox reads as a node of the store (outbox's
+// nodeOfSubject): a session's own topic or a role's, with a name after the prefix, and that name
+// inside the store's address bound, since the outbox leaves out a delivered_to whose far end is
+// past it (outbox.deliveredGraph, outbox.fallbackDelivered). topic is the SQL expression that
+// holds the topic. The prefixes are ASCII, so the bytes past the prefix are the name's.
+func reachesANode(topic string) string {
+	names := func(prefix string) string {
+		return `(` + topic + ` like '` + prefix + `_%' and octet_length(` + topic + `) - ` +
+			strconv.Itoa(len(prefix)) + ` <= ` + addressBound + `)`
+	}
+	return `(` + names(contracts.AgentTopicPrefix) + ` or ` + names(contracts.RoleTopicPrefix) + `)`
 }
 
 // sizingWritesWith is the sets of rows several terms count over, each read once for every term
