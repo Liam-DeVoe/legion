@@ -135,7 +135,9 @@ type reachMark struct {
 	project *store.ReachProjectNotice
 }
 
-// reachKeeperOptions are what a keeper is built from (reachKeeper says what each is).
+// reachKeeperOptions are what a keeper is built from, every field of it that is not its own state
+// (reachKeeper says what each is). A daemon builds its keeper once, from all of them, and never
+// sets one afterwards.
 type reachKeeperOptions struct {
 	log                *slog.Logger
 	project            string
@@ -148,12 +150,15 @@ type reachKeeperOptions struct {
 	enqueue            func(context.Context, string, record.Notice, []reachMark) error
 	alerts             *fleetalert.Writer
 	relaunchController func(context.Context, supervise.Claim, time.Time) (supervise.Claim, error)
+	step               func(context.Context, claim.Token) (supervise.StepRecord, error)
+	notices            reachNotices
 }
 
 func newReachKeeper(o reachKeeperOptions) *reachKeeper {
 	return &reachKeeper{
 		log: o.log, project: o.project, boot: o.boot, daemonController: o.daemonController, now: o.now,
 		list: o.list, put: o.put, tell: o.tell, enqueue: o.enqueue, alerts: o.alerts, relaunchController: o.relaunchController,
+		step: o.step, notices: o.notices,
 		records: map[claim.Token]supervise.Reach{}, dirty: map[claim.Token]bool{}, seen: map[string]time.Time{},
 	}
 }
@@ -171,7 +176,7 @@ func (k *reachKeeper) wait() {
 // it counts only when it is later than every registration of the session already read, so a
 // claim whose session registered in the last 20 minutes is never marked.
 func (k *reachKeeper) registrationRead(session string, lastSeen time.Time) {
-	if k == nil || session == "" || lastSeen.IsZero() {
+	if session == "" || lastSeen.IsZero() {
 		return
 	}
 	k.mu.Lock()
@@ -348,9 +353,6 @@ func (k *reachKeeper) clearNoLive(ctx context.Context) {
 // the record of a claim the sweep no longer reads is forgotten (forgetGone). The lock-out notices
 // the minute sweep resends are no reading of the list and are kept apart (lockOutNotices.resend).
 func (k *reachKeeper) sweep(ctx context.Context, claims []supervise.Claim) {
-	if k == nil {
-		return
-	}
 	k.mu.Lock()
 	k.forgetGone(claims)
 	k.mu.Unlock()

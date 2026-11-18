@@ -11,13 +11,14 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/stream"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // lockOutNotices keeps the project controller's notices of R3's lock-outs: a claim whose newer
 // process the worker stream has refused for stream.LockOutReportAfter, because an older
 // generation's connection will not close, which only a person can end
-// (record.WorkerLockedOutNotice). The stream reports a lock-out once (supervision.reportLockOut),
-// and each notice is told once whatever the daemon's restarts: it is written with the project's
+// (record.WorkerLockedOutNotice). The stream reports a lock-out once (report), and each notice
+// is told once whatever the daemon's restarts: it is written with the project's
 // record that it was told (store.ReachProjectNotice), so no daemon tells the same lock-out — the
 // same newer process refused for the same older one — twice. A notice the controller's lane did
 // not queue is kept, in this daemon's memory and in that record, and told again at each minute
@@ -32,10 +33,12 @@ type lockOutNotices struct {
 	// (workflowRuntime.tellControllerQueued); nil in a deployment with no workflow, which tells
 	// nobody. records is the store of the project's own notice records; nil keeps them in this
 	// daemon's memory alone. lockedOut is the worker stream's open lock-out of a claim
-	// (stream.Listener.LockedOut); nil reads none open. alerts writes R6's lines.
+	// (stream.Listener.LockedOut); nil reads none open. claimOf is the claim the daemon
+	// supervises for a token, as its machine holds it. alerts writes R6's lines.
 	tell      func(context.Context, record.ControllerNotice, string, []reachMark) (bool, error)
 	records   reachNotices
 	lockedOut func(claim.Token) (stream.LockOut, bool)
+	claimOf   func(claim.Token) (supervise.Claim, bool)
 	alerts    *fleetalert.Writer
 
 	mu sync.Mutex
@@ -63,24 +66,42 @@ type lockOutOptions struct {
 	tell      func(context.Context, record.ControllerNotice, string, []reachMark) (bool, error)
 	records   reachNotices
 	lockedOut func(claim.Token) (stream.LockOut, bool)
+	claimOf   func(claim.Token) (supervise.Claim, bool)
 	alerts    *fleetalert.Writer
 }
 
 func newLockOutNotices(o lockOutOptions) *lockOutNotices {
 	return &lockOutNotices{log: o.log, project: o.project, tell: o.tell, records: o.records, lockedOut: o.lockedOut,
-		alerts: o.alerts, kept: map[claim.Token]untoldLockOut{}, told: map[claim.Token][2]uint64{}}
+		claimOf: o.claimOf, alerts: o.alerts, kept: map[claim.Token]untoldLockOut{}, told: map[claim.Token][2]uint64{}}
 }
 
-// report tells the controller of the lock-out out, on issue, as notice. One its lane did not
-// queue — no controller registered, a notice of the same claim still waiting unsent, a store that
-// refused it — is kept, and told again at each sweep (resend): the stream reports a lock-out
-// once, so a notice not kept would be lost. Whether it was told already is not known until the
-// records are read, so until then it is kept and told at the sweep that reads them.
-func (l *lockOutNotices) report(ctx context.Context, out stream.LockOut, notice record.ControllerNotice, issue string) {
+// report is the worker stream's report of a claim whose newer process it has refused for
+// stream.LockOutReportAfter because an older generation's connection will not close (R3,
+// stream.Options.ReportLockOut): only a person can end that process. The stream calls it once per
+// lock-out, on a goroutine of its own, so the notice is written here with a budget of its own. A
+// claim the daemon does not supervise, and a deployment with no workflow, tell nobody, and the
+// stream's own R6 line stands for it.
+func (l *lockOutNotices) report(out stream.LockOut) {
 	if l.tell == nil {
 		l.log.Warn("worker stream: a lock-out has nobody to tell it to", "claim", out.Claim, "newer", out.Newer, "older", out.Older)
 		return
 	}
+	c, ok := l.claimOf(out.Claim)
+	if !ok {
+		l.log.Warn("worker stream: a lock-out of a claim this daemon does not supervise tells nobody", "claim", out.Claim)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), reachNoticeBudget)
+	defer cancel()
+	l.notify(ctx, out, record.ControllerNotice{Kind: record.WorkerLockedOutNotice, Role: c.Role, Claim: string(out.Claim), Reason: out.Reason()}, c.Issue)
+}
+
+// notify tells the controller of the lock-out out, on issue, as notice. One its lane did not
+// queue — no controller registered, a notice of the same claim still waiting unsent, a store that
+// refused it — is kept, and told again at each sweep (resend): the stream reports a lock-out
+// once, so a notice not kept would be lost. Whether it was told already is not known until the
+// records are read, so until then it is kept and told at the sweep that reads them.
+func (l *lockOutNotices) notify(ctx context.Context, out stream.LockOut, notice record.ControllerNotice, issue string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	untold := untoldLockOut{notice: notice, issue: issue, newer: out.Newer, older: out.Older}
@@ -241,4 +262,16 @@ func tellQueued(ctx context.Context, log *slog.Logger, tell func(context.Context
 		return false
 	}
 	return told
+}
+
+// supervisedClaimOf is sup's claim of a token, as its machine holds it, for the lock-out
+// notices' claimOf: false for a claim sup does not supervise.
+func supervisedClaimOf(sup *supervisor) func(claim.Token) (supervise.Claim, bool) {
+	return func(token claim.Token) (supervise.Claim, bool) {
+		m, ok := sup.Machine(token)
+		if !ok {
+			return supervise.Claim{}, false
+		}
+		return m.Claim(), true
+	}
 }

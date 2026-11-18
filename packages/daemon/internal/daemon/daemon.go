@@ -433,7 +433,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	if workflow != nil {
 		apps = workflow.apps
 	}
-	s, err := openSupervision(boot, cfg, log, plan, st, apps, reserveWake, refreshGate)
+	s, err := openSupervision(boot, cfg, log, plan, st, apps, reserveWake, refreshGate, workflow.reachNotify())
 	if err != nil {
 		listener.Close()
 		workflow.stop()
@@ -1506,7 +1506,7 @@ func pacedCatchUps(ctx context.Context, tx pgx.Tx, records record.Store, project
 // every machine of this daemon asks the same gate, and the supervision keeps the same reference,
 // because the refresh pass corrects it from the wakes those machines publish and asks it for
 // each claim it posts (refreshStalePlugins, waitingWakes).
-func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, p plan, st *store.Store, apps appauth.Source, reserve func(time.Time) time.Time, refreshGate supervise.RefreshAdmitter) (*supervision, error) {
+func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, p plan, st *store.Store, apps appauth.Source, reserve func(time.Time) time.Time, refreshGate supervise.RefreshAdmitter, notices reachNotify) (*supervision, error) {
 	claims, err := st.Claims(boot)
 	if err != nil {
 		return nil, err
@@ -1528,18 +1528,17 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 	draining, endDrain := context.WithCancel(context.Background())
 	tokens := api.NewBootTokens(st)
 	sup := newSupervisor(supervising, st, p.project, cfg.StateDir, log)
-	// The lock-out's notice is the controller's, which the workflow's admission queues, and the
-	// workflow attaches after this listener is up; the report waits LockOutReportAfter after a
-	// first refused hello, by which time supervision is built (reportLockOut).
-	var reporting atomic.Pointer[supervision]
-	listener, err := stream.Listen(draining, p.stream,
+	// The lock-out's notices are the controller's, which the workflow's admission queues
+	// (notices), and the stream reports each lock-out to them LockOutReportAfter after a first
+	// refused hello. They read the stream's own lock-outs back, so the listener is named here and
+	// set just below, before any report or sweep can read it.
+	var listener *stream.Listener
+	lockOuts := newLockOutNotices(lockOutOptions{log: log, project: cfg.Project, tell: notices.tell, records: st, alerts: alerts,
+		lockedOut: func(token claim.Token) (stream.LockOut, bool) { return listener.LockedOut(token) },
+		claimOf:   supervisedClaimOf(sup)})
+	listener, err = stream.Listen(draining, p.stream,
 		sup.helloResolver(tokens, cfg.WorkerRPCTimeout), stream.Options{RPCTimeout: cfg.WorkerRPCTimeout, Log: log,
-			Alerts: alerts,
-			ReportLockOut: func(out stream.LockOut) {
-				if s := reporting.Load(); s != nil {
-					s.reportLockOut(out)
-				}
-			}})
+			Alerts: alerts, ReportLockOut: lockOuts.report})
 	if err != nil {
 		cancel()
 		endDrain()
@@ -1636,18 +1635,18 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 	sup.deps.StallBackstopped = supervisionOf.stallBackstopped
 	supervisionOf.reach = newReachKeeper(reachKeeperOptions{
 		log: log, project: cfg.Project, boot: p.clock.Now(), now: p.clock.Now,
-		daemonController: cfg.ControllerLaunch == config.ControllerLaunchDaemon,
-		list:             listSessions(cfg.EnvoyURL, p.secrets["ENVOY_TOKEN"]),
-		put:              st.PutClaimReach,
-		alerts:           alerts,
+		daemonController:   cfg.ControllerLaunch == config.ControllerLaunchDaemon,
+		list:               listSessions(cfg.EnvoyURL, p.secrets["ENVOY_TOKEN"]),
+		put:                st.PutClaimReach,
+		tell:               notices.tell,
+		enqueue:            notices.enqueue,
+		alerts:             alerts,
+		relaunchController: supervisionOf.relaunchOwnController,
+		step:               st.ClaimStep,
+		notices:            st,
 	})
-	supervisionOf.reach.relaunchController = supervisionOf.relaunchOwnController
-	supervisionOf.reach.step = st.ClaimStep
-	supervisionOf.reach.notices = st
-	supervisionOf.lockOuts = newLockOutNotices(lockOutOptions{log: log, project: cfg.Project, records: st,
-		lockedOut: listener.LockedOut, alerts: alerts})
+	supervisionOf.lockOuts = lockOuts
 	sup.deps.SessionGone = cleanSessionStop(supervising, cfg.EnvoyURL, p.secrets["ENVOY_TOKEN"], log, supervisionOf.reach.registrationRead)
-	reporting.Store(supervisionOf)
 	return supervisionOf, nil
 }
 
@@ -2393,9 +2392,7 @@ func (s *supervision) stop() {
 		s.supervisor.stop()
 		s.supervisor.wait()
 		s.wg.Wait()
-		if s.reach != nil {
-			s.reach.wait()
-		}
+		s.reach.wait()
 	})
 }
 

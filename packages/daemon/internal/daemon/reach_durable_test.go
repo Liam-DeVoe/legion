@@ -674,6 +674,7 @@ func (d *durableReach) lockOutsOf(w *workflowRuntime, out stream.LockOut, claims
 		lockedOut: lockOutOf(out), alerts: fleetalert.New(quietLogger(), "legion")})
 	s := d.daemon(d.projectNotifying(w), nil, claims...)
 	s.lockOuts = l
+	l.claimOf = supervisedClaimOf(s.supervisor)
 	return l, s
 }
 
@@ -701,7 +702,7 @@ func TestALockOutNoticeIsToldOnceAcrossARestart(t *testing.T) {
 	out := stream.LockOut{Claim: worker.Token, Newer: 4, Older: 3, Since: reachBoot}
 	reported := func() int {
 		_, s := d.lockOutsOf(w, out, d.claim(worker.Token))
-		s.reportLockOut(out)
+		s.lockOuts.report(out)
 		return d.delivered(lockedOut)
 	}
 	if told := reported(); told != 1 {
@@ -724,7 +725,7 @@ func TestAKeptLockOutNoticeIsToldOnceByTheNextDaemon(t *testing.T) {
 
 	first, s := d.lockOutsOf(w, out, d.claim(worker.Token))
 	first.tell = func(context.Context, record.ControllerNotice, string, []reachMark) (bool, error) { return false, nil }
-	s.reportLockOut(out)
+	s.lockOuts.report(out)
 	if told := d.delivered(lockedOut); told != 0 {
 		t.Fatalf("the first daemon told %d notices its controller's lane refused, want none", told)
 	}
@@ -733,10 +734,10 @@ func TestAKeptLockOutNoticeIsToldOnceByTheNextDaemon(t *testing.T) {
 	if told := d.resendEach(1, 1, lockedOut, next); told != 1 {
 		t.Fatalf("the next daemon's first sweep told %d notices of the lock-out the first kept, want 1", told)
 	}
-	s.reportLockOut(out)
+	s.lockOuts.report(out)
 	told := d.delivered(lockedOut) + d.resendEach(2, 3, lockedOut, next)
 	third, s := d.lockOutsOf(w, out, d.claim(worker.Token))
-	s.reportLockOut(out)
+	s.lockOuts.report(out)
 	if told += d.delivered(lockedOut) + d.resendEach(4, 5, lockedOut, third); told != 0 {
 		t.Fatalf("the lock-out was told %d more times after the next daemon told it, want none", told)
 	}

@@ -160,6 +160,7 @@ func lockOutRig(t *testing.T, locked *atomic.Bool) (*supervision, *reachRig, sup
 	r.lockOuts.lockedOut = func(token claim.Token) (stream.LockOut, bool) {
 		return stream.LockOut{Claim: token, Newer: 4, Older: 3, Since: reachBoot}, token == worker.Token && locked.Load()
 	}
+	r.lockOuts.claimOf = supervisedClaimOf(sup)
 	return &supervision{log: quietLogger(), supervisor: sup, reach: r.k, lockOuts: r.lockOuts}, r, worker
 }
 
@@ -172,7 +173,7 @@ func TestARefusedLockOutNoticeIsToldAgainUntilItIsQueued(t *testing.T) {
 	r.mu.Lock()
 	r.refuseTell = true
 	r.mu.Unlock()
-	s.reportLockOut(stream.LockOut{Claim: worker.Token, Newer: 4, Older: 3, Since: reachBoot})
+	s.lockOuts.report(stream.LockOut{Claim: worker.Token, Newer: 4, Older: 3, Since: reachBoot})
 	if told := r.notices(record.WorkerLockedOutNotice); len(told) != 0 {
 		t.Fatalf("lock-out notices = %+v while the controller's lane refuses them, want none", told)
 	}
@@ -199,7 +200,7 @@ func TestALockOutNoticeIsToldNoMoreOnceItsLockOutEnds(t *testing.T) {
 	r.mu.Lock()
 	r.refuseTell = true
 	r.mu.Unlock()
-	s.reportLockOut(stream.LockOut{Claim: worker.Token, Newer: 4, Older: 3, Since: reachBoot})
+	s.lockOuts.report(stream.LockOut{Claim: worker.Token, Newer: 4, Older: 3, Since: reachBoot})
 
 	locked.Store(false)
 	r.mu.Lock()

@@ -15,7 +15,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
-	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -30,6 +29,23 @@ func listSessions(envoyURL, token string) func(context.Context) ([]notify.Listed
 		return nil
 	}
 	return notify.New(envoyURL, token).ListSessions
+}
+
+// reachNotify is the workflow's two writes the reach keeper and the lock-out notices tell through:
+// a controller notice with its marks (tellControllerQueued) and an architect's notice with its
+// marks (enqueueReachNotice). Both are nil in a deployment with no workflow, which tells nobody.
+type reachNotify struct {
+	tell    func(context.Context, record.ControllerNotice, string, []reachMark) (bool, error)
+	enqueue func(context.Context, string, record.Notice, []reachMark) error
+}
+
+// reachNotify is w's reach writes, and none for a deployment with no workflow (w nil), which
+// openSupervision is handed before the workflow attaches to it.
+func (w *workflowRuntime) reachNotify() reachNotify {
+	if w == nil {
+		return reachNotify{}
+	}
+	return reachNotify{tell: w.tellControllerQueued, enqueue: w.enqueueReachNotice}
 }
 
 // tellControllerQueued queues one controller notice in a transaction of its own and answers
@@ -98,27 +114,6 @@ func putReachMarks(ctx context.Context, tx pgx.Tx, marks []reachMark) error {
 	return nil
 }
 
-// reportLockOut tells the project's controller of a claim whose newer process the worker stream
-// has refused for stream.LockOutReportAfter because an older generation's connection will not close
-// (R3, stream.Options.ReportLockOut): only a person can end that process. The stream calls it once
-// per lock-out, on a goroutine of its own, so the notice is written here with a budget of its own.
-// It is told once whatever the daemon's restarts, and one the controller's lane did not queue is
-// kept and told again at each sweep for as long as the stream still refuses that newer process
-// (lockOutNotices). A claim the daemon does not supervise, and a deployment with no workflow,
-// tell nobody, and the stream's own R6 line stands for it.
-func (s *supervision) reportLockOut(out stream.LockOut) {
-	m, ok := s.supervisor.Machine(out.Claim)
-	if !ok {
-		s.log.Warn("worker stream: a lock-out of a claim this daemon does not supervise tells nobody", "claim", out.Claim)
-		return
-	}
-	c := m.Claim()
-	ctx, cancel := context.WithTimeout(context.Background(), reachNoticeBudget)
-	defer cancel()
-	notice := record.ControllerNotice{Kind: record.WorkerLockedOutNotice, Role: c.Role, Claim: string(out.Claim), Reason: out.Reason()}
-	s.lockOuts.report(ctx, out, notice, c.Issue)
-}
-
 // relaunchOwnController is the daemon's relaunch of its own controller at at (reachKeeper's
 // relaunchController): RequestRelaunch to the controller claim's machine, which may replace the
 // controller's pod, with the step the store holds as the guard's freshest durable reading. It
@@ -157,9 +152,6 @@ func (s *supervision) relaunchOwnController(ctx context.Context, c supervise.Cla
 // none of its two or more live claims fails each worker at its deaths limit and recovers none, so
 // that pod is a case for a person.
 func (s *supervision) relaunch(ctx context.Context, m *supervise.Machine) error {
-	if s.reach == nil {
-		return supervise.ErrClaimReachable
-	}
 	c := m.Claim()
 	now := s.reach.now()
 	s.reach.mu.Lock()
