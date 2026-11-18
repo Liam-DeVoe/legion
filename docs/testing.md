@@ -31,6 +31,10 @@ Each bullet says what the helper does not do, so a site that must keep its own b
   One body holds `ENVOY_TEST_GO_OVERLAY`, the output under the test's own temporary directory and the failure; the overlay that variable names must be an absolute path, because a build whose `Dir` is another directory reads it from there.
   A `go build` that produces no binary, such as a compile check of a generated module, is not a build of this kind, and neither is one that takes no `testing.TB`: `infra/internal/pulumitest/pulumitest.go` builds the test binary's own plugin once per binary, under a `sync.Once` and removed by its `Main`, and returns an error rather than failing a test.
 
+- A go command a test starts reads the module cache alone: it runs with `GOPROXY=off`, and the CI job that runs the test fetches the modules it needs in a step before the tests (`.github/scripts/go-fetch.sh deps DIR PACKAGE...`, tried again on failure), so a fault of the module proxy or the checksum database fails no test.
+  `cmdtest.BuildCommand` (envoy) and `testbuild.EnvoyBinary` (daemon) do this for Go tests, and refuse a module the cache lacks naming that fetch; a go command started any other way, in any language, sets `GOPROXY=off` itself or carries a `go-offline: <why>` comment saying why it reads no module or which job alone runs it.
+  `.github/scripts/check-go-offline.sh` finds every place a Go, TypeScript, Python or shell file starts a go command and refuses one with neither, and every job that runs a test built through `testbuild` with no fetch step before it.
+
 - A peer that is not there is the module's `internal/testport`: `Refused(t)` is a loopback address whose port the test holds bound, never listening, until it ends, so every dial to it is refused and no other program can bind the port, with or without `SO_REUSEADDR` or `SO_REUSEPORT`.
   It replaces the address of a server or listener the test closed: a freed port is any program's to take, and on a shared machine one took it and answered HTTP (dispatch://INFRA-3904).
   It holds no listening socket and hands nothing to a child: a process the test starts takes a socket the test holds (`cmdtest.HoldPort` and `Pass`, `DISPATCH_LISTEN_FD`, `ENVOY_LISTEN_FD`, `LEGION_LISTEN_FD`) or binds port 0 and names its port, never a port the test picked and let go of.
@@ -136,6 +140,13 @@ itself, whose tests import its sources by relative path.
   both builds the two halves into a single list and prints one line, rather than calling
   `skipWithout` beside a warning of its own, so a host that has neither reads one line naming both
   (`hostTool` with the variable, in that file and in `harness-stacks.test.ts`).
+
+- A suite that builds or runs a Go program takes `goCommandSync` or `goCommand`
+  (`@legion/test-fixtures/go-command`), which runs `go build` or `go run` with `GOPROXY=off` over the
+  caller's environment and returns the exit code and both streams whatever the exit. A failure that
+  says `GOPROXY=off` is thrown with the `go-fetch.sh deps` command that prevents it; any other
+  failure is the caller's to report. The job that runs the suite fetches those modules in a step
+  before its tests.
 
 - Start a container with `docker run --rm` and register its removal the moment `docker run` returns,
   not once the whole start has succeeded: a start that throws half-way has already made the

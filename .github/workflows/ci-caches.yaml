@@ -14,25 +14,27 @@ name: CI caches
 # would reach nobody.
 #
 # Five Go families, each one a restore step of ci.yaml's run names, keyed on the runner's
-# architecture and on the Go version the family's own module installs (go-envoy-infra on the hash
-# of its module files too, for the reason its job gives): go-notices (lint's notices step),
-# go-daemon (typecheck, daemon-go, plugin-pack and pi-legion), go-envoy (envoy-go-checks,
-# envoy-go-race-docs, envoy-go-docs-finalizers, listener-server-change, envoy-e2e-local and
-# envoy-session-stall, and the embedder job of .github/workflows/dispatch-browser.yaml),
-# go-envoy-test (envoy-go, and the binaries, multiprocess and visual jobs of
-# .github/workflows/dispatch-browser.yaml, which ci.yaml's dispatch-browser job calls: those three
-# build the Dispatch server and the real broker's commands, whose packages the go-envoy entry's
-# build of the listener and natsd alone does not hold) and go-envoy-infra (envoy-infra-go, and
-# the build job of release-envoy-infra.yaml).
+# architecture and on the Go version the family's own module installs (go-envoy and
+# go-envoy-infra on the hash of their module files too, for the reason each job gives):
+# go-notices (lint's notices step), go-daemon (typecheck, daemon-go, plugin-pack and pi-legion),
+# go-envoy (envoy-go-checks, envoy-go-race-docs, envoy-go-docs-finalizers, listener-server-change,
+# envoy-e2e-local and envoy-session-stall, and the embedder job of
+# .github/workflows/dispatch-browser.yaml), go-envoy-test (envoy-go, and the binaries,
+# multiprocess and visual jobs of .github/workflows/dispatch-browser.yaml, which ci.yaml's
+# dispatch-browser job calls: those three build the Dispatch server and the real broker's
+# commands, whose packages the go-envoy entry's build of the listener and natsd alone does not
+# hold) and go-envoy-infra (envoy-infra-go, envoy-smoke, and the build job of
+# release-envoy-infra.yaml).
 # The key carries `runner.arch` because Go's build cache holds the objects of the architecture
 # that compiled them: an entry an x86_64 runner filled gives an arm64 job its modules and none of
 # its objects. So each family is filled on every architecture one of its readers runs on, one
 # matrix leg per runner: go-notices on ubuntu-24.04-arm alone, where lint runs, and go-daemon,
 # go-envoy, go-envoy-test and go-envoy-infra on ubuntu-24.04-arm and on ubuntu-24.04 both, since
 # each has a reader on each (typecheck and the envoy lanes on the first; daemon-go, plugin-pack,
-# pi-legion, envoy-go-checks, the browser lane and the release builds on the second). A leg builds
-# what that runner's readers build and no more: go-daemon's arm64 reader is typecheck alone, so its
-# arm64 leg runs typecheck's vet and leaves the test and race builds to the x86_64 leg. One
+# pi-legion, envoy-go-checks, envoy-smoke, the browser lane and the release builds on the second).
+# A leg builds what that runner's readers build and no more: go-daemon's arm64 reader is
+# typecheck alone, so its arm64 leg runs typecheck's vet and leaves the test and race builds to
+# the x86_64 leg. One
 # Go setup per leg, since the key carries the version that module's go.mod names: the daemon's
 # go.mod for go-daemon and for go-notices, which lint installs the daemon's Go for; the envoy
 # module's for go-envoy and go-envoy-test; the infra module's for go-envoy-infra. Each family is
@@ -77,9 +79,9 @@ name: CI caches
 
 # A push to main is what writes the default branch's cache scope; workflow_dispatch fills a family
 # by hand, after a Go bump, a move of the Lean toolchain or an eviction. No `paths:`: a key holds
-# a Go version, that toolchain file's hash, the hash of packages/envoy/go.sum or, for
-# go-envoy-infra, the hash of the infra workspace's module files, not a file list, so what the
-# push touched decides nothing, and a run whose keys are all there is seconds.
+# a Go version, that toolchain file's hash, the hash of packages/envoy/go.sum or, for go-envoy and
+# go-envoy-infra, the hash of their workspace's module files, not a file list, so what the push
+# touched decides nothing, and a run whose keys are all there is seconds.
 on:
   push:
     branches: [main]
@@ -94,9 +96,9 @@ concurrency:
   cancel-in-progress: false
 
 # Reading the tree and the caches is all this workflow does but in one job: the cache scope needs no
-# token scope of its own, and nothing here reports a check or writes an artifact. The
-# envoy-infra-superseded job alone takes `actions: write`, to delete the go-envoy-infra entries a
-# fill replaced, and builds nothing.
+# token scope of its own, and nothing here reports a check or writes an artifact. The superseded
+# job alone takes `actions: write`, to delete the go-envoy and go-envoy-infra entries a fill
+# replaced, and builds nothing.
 permissions:
   contents: read
 
@@ -243,6 +245,14 @@ jobs:
     # Compiling the test binary of every package of the envoy module on a cold module cache is
     # the long step; the listener and natsd are minutes.
     timeout-minutes: 60
+    outputs:
+      # The go-envoy key each leg looked up, and whether it filled it, by the leg's architecture,
+      # as the envoy-infra job below names its own and for the reason it gives: the superseded job
+      # deletes the go-envoy entries each fill replaced.
+      key-x64: ${{ steps.leg.outputs.key-x64 }}
+      filled-x64: ${{ steps.leg.outputs.filled-x64 }}
+      key-arm64: ${{ steps.leg.outputs.key-arm64 }}
+      filled-arm64: ${{ steps.leg.outputs.filled-arm64 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -254,14 +264,32 @@ jobs:
           go-version-file: packages/envoy/go.mod
           cache: false
 
+      # go-envoy's key carries the hash of the module files the builds of its readers read, as
+      # go-envoy-infra's does: a build in packages/envoy runs in the root workspace, so those are
+      # go.work, go.work.sum and the go.mod and go.sum of both modules it binds. Keyed on the Go
+      # version alone, an entry went stale as those files moved, and every reader then fetched
+      # what moved; with the hash, a push to main that changes them misses the lookup and fills a
+      # fresh entry, and a pull request that changes them restores the newest by prefix.
       - id: go-envoy
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum') }}
           lookup-only: true
+
+      # The lookup's key and whether this leg fills it, as the job's outputs name them: RUNNER_ARCH
+      # is X64 or ARM64, lowercased here.
+      - name: Name this leg's key by its architecture
+        id: leg
+        env:
+          KEY: ${{ steps.go-envoy.outputs.cache-primary-key }}
+          FILLED: ${{ steps.go-envoy.outputs.cache-hit != 'true' }}
+        run: |
+          arch=${RUNNER_ARCH,,}
+          echo "key-$arch=$KEY" >>"$GITHUB_OUTPUT"
+          echo "filled-$arch=$FILLED" >>"$GITHUB_OUTPUT"
 
       # The two binaries envoy-e2e-local's scripts/e2e-local.sh and envoy-session-stall's
       # test/envoy-stack.ts build, and whose packages listener-server-change compiles too: the
@@ -269,10 +297,16 @@ jobs:
       # directory, as envoy-stack.ts's build does, so both main packages build in one command.
       # envoy-go-checks' darwin vet is left out: its darwin objects, about 1.6 GB of build cache on
       # a devbox, would ride in an entry every job that restores go-envoy downloads, and the step
-      # builds them in under three minutes (run 43990864191).
-      - name: Build the listener and natsd of the envoy module
+      # builds them in under three minutes (run 43990864191). Then the modules of every other
+      # command a reader's tests build, which those builds read with GOPROXY=off and the readers'
+      # fetch steps fetch before the tests: the Dispatch server (envoy-session-stall's
+      # test/dispatch-stack.ts, and the embedder job of dispatch-browser.yaml) and the real
+      # broker's three commands (that job's harness, e2e/run-broker.sh).
+      - name: Build the listener and natsd, and fetch the modules of the other commands the readers build
         if: steps.go-envoy.outputs.cache-hit != 'true'
-        run: go build -o "$RUNNER_TEMP/envoy-bin/" ./cmd/listener ./internal/testnats/cmd/natsd
+        run: |
+          go build -o "$RUNNER_TEMP/envoy-bin/" ./cmd/listener ./internal/testnats/cmd/natsd
+          ../../.github/scripts/go-fetch.sh deps . ./cmd/listener ./internal/testnats/cmd/natsd ./cmd/dispatch ./cmd/broker ./cmd/dev-oidc-issuer ./internal/broker/brokertest/requestseed
         working-directory: packages/envoy
 
       - if: steps.go-envoy.outputs.cache-hit != 'true'
@@ -281,7 +315,7 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum') }}
 
       - id: go-envoy-test
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -450,60 +484,72 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-infra-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('packages/envoy/infra/go.work', 'packages/envoy/infra/go.work.sum', 'packages/envoy/infra/go.mod', 'packages/envoy/infra/go.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/envoy/infra/gcp/testdata/live-tools.txt') }}
 
-  # The go-envoy-infra entries the fill above superseded, deleted once it has saved the new one. A
-  # module-file change gives the family a new key, and the entry under the old key, about 1.4 GB,
-  # is then read by no run of this ref: left alone it would hold its space until GitHub drops it
-  # after seven days unread, and over the repository's cache limit GitHub evicts the least recently
-  # used entries, which can be another family's live one. An entry the new one supersedes is one of
-  # this ref whose key is the new key but for its 64-hex module-file hash: the same family, runner
-  # and Go, with older module files, the hashless key of the fill before this one included. An
-  # entry of another runner or another Go is no such entry and stays, so a fill that runs once per
+  # The go-envoy and go-envoy-infra entries the fills above superseded, deleted once each has saved
+  # the new one. A module-file change gives each family a new key, and the entry under the old key,
+  # about 1.4 GB for go-envoy-infra, is then read by no run of this ref: left alone it would hold
+  # its space until GitHub drops it after seven days unread, and over the repository's cache limit
+  # GitHub evicts the least recently used entries, which can be another family's live one. An entry
+  # the new one supersedes is one of this ref whose key is the new key but for its 64-hex
+  # module-file hash: the same family, runner and Go, with older module files, the hashless key of
+  # the fill before this one included. An entry of another runner, another Go or another family is
+  # no such entry and stays: go-envoy-test's key and go-envoy-infra's differ from go-envoy's before
+  # any hash, so a deletion of go-envoy entries reaches neither, and a fill that runs once per
   # architecture deletes nothing the other leg saved. None is deleted unless the new key is among
   # this ref's entries, so a save that did not land leaves the old entry in place. A job of its
   # own, so the token that may delete caches is in no job that builds code. A cache key is text any
   # build that saves on this ref chose, so the step never splits or prints one raw: the list stays
   # JSON, jq selects the numeric ids of the superseded entries, and each id is checked to be a
   # number before `gh cache delete` gets it. A key holding a newline then cannot add a line of its
-  # own, such as `--all`, to that list. One leg per architecture of the fill, each keeping the key
-  # that architecture's leg saved, under the output names the envoy-infra job gives it; a leg whose
-  # architecture filled nothing skips its step. Both legs run on ubuntu-24.04-arm: gh and jq need
-  # nothing of an x64 machine.
-  envoy-infra-superseded:
-    needs: envoy-infra
-    if: needs.envoy-infra.outputs.filled-x64 == 'true' || needs.envoy-infra.outputs.filled-arm64 == 'true'
+  # own, such as `--all`, to that list. One leg per family and architecture of the fills, each
+  # keeping the key that leg of that fill saved, under the output names its fill job gives it; a
+  # leg whose fill filled nothing skips its step. Every leg runs on ubuntu-24.04-arm: gh and jq
+  # need nothing of an x64 machine.
+  superseded:
+    needs: [envoy, envoy-infra]
+    # !cancelled(), not the default success(): a failed leg of one fill must not keep the other
+    # fill's superseded entries. Each step below runs only for a leg that filled, and a leg whose
+    # save did not land leaves a key that is not among this ref's entries, so it deletes nothing.
+    if: >-
+      !cancelled() && (needs.envoy.outputs.filled-x64 == 'true' || needs.envoy.outputs.filled-arm64 == 'true'
+      || needs.envoy-infra.outputs.filled-x64 == 'true' || needs.envoy-infra.outputs.filled-arm64 == 'true')
     strategy:
       fail-fast: false
       matrix:
-        arch: [x64, arm64]
+        include:
+          - { fill: envoy, family: go-envoy, arch: x64 }
+          - { fill: envoy, family: go-envoy, arch: arm64 }
+          - { fill: envoy-infra, family: go-envoy-infra, arch: x64 }
+          - { fill: envoy-infra, family: go-envoy-infra, arch: arm64 }
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 5
     permissions:
       actions: write
     steps:
-      - name: Delete this ref's go-envoy-infra entries the new one supersedes
-        if: needs.envoy-infra.outputs[format('filled-{0}', matrix.arch)] == 'true'
+      - name: Delete this ref's entries of the family the new one supersedes
+        if: needs[matrix.fill].outputs[format('filled-{0}', matrix.arch)] == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          KEEP: ${{ needs.envoy-infra.outputs[format('key-{0}', matrix.arch)] }}
+          FAMILY: ${{ matrix.family }}
+          KEEP: ${{ needs[matrix.fill].outputs[format('key-{0}', matrix.arch)] }}
           REF: ${{ github.ref }}
         run: |
           set -euo pipefail
-          entries=$(gh cache list --ref "$REF" --key go-envoy-infra- --limit 100 --json id,key,ref)
+          entries=$(gh cache list --ref "$REF" --key "$FAMILY-" --limit 100 --json id,key,ref)
           if ! jq -e --arg keep "$KEEP" --arg ref "$REF" 'any(.[]; .key == $keep and .ref == $ref)' <<<"$entries" >/dev/null; then
-            echo "::warning::the new go-envoy-infra entry is not among this ref's entries, so none is deleted"
+            echo "::warning::the new $FAMILY entry is not among this ref's entries, so none is deleted"
             exit 0
           fi
-          jq -r --arg keep "$KEEP" --arg ref "$REF" \
+          jq -r --arg keep "$KEEP" --arg ref "$REF" --arg family "$FAMILY" \
             'def base: gsub("-[0-9a-f]{64}"; "");
-             .[] | select(.ref == $ref and (.key | startswith("go-envoy-infra-")) and .key != $keep
+             .[] | select(.ref == $ref and (.key | startswith($family + "-")) and .key != $keep
                           and (.key | base) == ($keep | base)) | .id' <<<"$entries" |
             while read -r id; do
               if ! [[ $id =~ ^[0-9]+$ ]]; then
                 echo "::error::the cache list gave an id that is not a number, so nothing more is deleted"
                 exit 1
               fi
-              echo "Deleting go-envoy-infra entry $id, which the new entry supersedes"
+              echo "Deleting $FAMILY entry $id, which the new entry supersedes"
               gh cache delete "$id"
             done
 

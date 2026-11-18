@@ -46,10 +46,27 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
           cache: false
+      # go-envoy-infra, restored only, under the key .github/workflows/ci-caches.yaml's envoy-infra
+      # job fills on this runner (its x64 leg, which release-envoy-infra.yaml's build reads too):
+      # the runner's architecture, the Go version and the hash of the infra workspace's module
+      # files. Its fill builds every package of the infra module, so the fetch step below finds
+      # the plugin's modules there and downloads only what moved since and what the SDK
+      # consumer's `go mod tidy` reads beyond them; with no restore it downloaded everything on
+      # each run. The Go version is packages/envoy/go.mod's, which this job builds with and which
+      # names the same version as packages/envoy/infra/go.mod; a version the two do not share
+      # misses the key and restores the newest entry by prefix.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-envoy-infra-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('packages/envoy/infra/go.work', 'packages/envoy/infra/go.work.sum', 'packages/envoy/infra/go.mod', 'packages/envoy/infra/go.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/envoy/infra/gcp/testdata/live-tools.txt') }}
+          restore-keys: ${{ format('go-envoy-infra-{0}-{1}-', runner.os, runner.arch) }}
       # Every image the build or the test starts (testnats.HubImage and the smoke image's base
       # images) is pulled first, for the reason .github/actions/pull-test-images gives. Every
       # FROM of docker/Dockerfile names a digest and no ARG, so the substitution below expands
@@ -198,13 +215,14 @@ jobs:
       # reached by its path from the repository root, and the binary goes under $RUNNER_TEMP as
       # the docker provider's tarball above does. The CLI runs on a file backend, as every pulumi
       # command of this job does: one with no backend set that needs one logs in to a new
-      # ephemeral Pulumi Cloud account.
+      # ephemeral Pulumi Cloud account. It runs with no update check, which asks api.pulumi.com
+      # for the CLI's latest version while the command runs.
       - name: The envoy-infra plugin's schema carries the version and the download URL it was built with
         run: |
           url=$(GITHUB_REPOSITORY=cybermonklabs/legion ../../../.github/scripts/repo-paths.sh plugin_download_url)
           go build -ldflags "-X main.version=1.2.3 -X 'github.com/sjawhar/envoy/infra/provider.downloadURL=$url'" -o "$RUNNER_TEMP/pr" ./cmd/pulumi-resource-envoy-infra
           # shellcheck disable=SC2016 # ${VERSION} is Pulumi's placeholder, not a shell expansion
-          PULUMI_BACKEND_URL="file://$RUNNER_TEMP" pulumi package get-schema "$RUNNER_TEMP/pr" | jq -e '.version == "1.2.3" and .pluginDownloadURL == "https://github.com/cybermonklabs/legion/releases/download/envoy-infra-v${VERSION}"'
+          PULUMI_BACKEND_URL="file://$RUNNER_TEMP" PULUMI_SKIP_UPDATE_CHECK=true pulumi package get-schema "$RUNNER_TEMP/pr" | jq -e '.version == "1.2.3" and .pluginDownloadURL == "https://github.com/cybermonklabs/legion/releases/download/envoy-infra-v${VERSION}"'
         working-directory: packages/envoy/infra
 
       - name: Report ci-ok when this job decides a merge-group run

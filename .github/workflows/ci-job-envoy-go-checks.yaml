@@ -110,7 +110,7 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum') }}
           restore-keys: ${{ format('go-envoy-{0}-{1}-', runner.os, runner.arch) }}
       - name: Check Go formatting
         run: |
@@ -179,6 +179,12 @@ jobs:
       - name: Lock test for loadtest/common.sh (inherited lock, refusals, holders in another PID namespace; no stack)
         run: bash loadtest/common.test.sh
         working-directory: packages/envoy
+      # cluster.test.sh renders nats.yaml with helm under GOPROXY=off, since a fetch inside a test
+      # fails it whenever the module proxy does, on a change that touched nothing it tests. This
+      # step installs tools.txt's helm first, tried again on failure, into legion-live-tools under
+      # GOPATH, where render-nats.sh takes it from after checking its build against the pin.
+      - name: Fetch the helm the cluster test renders with
+        run: .github/scripts/go-fetch.sh tools packages/envoy/loadtest/cluster/tools.txt
       - name: Test loadtest/cluster/cluster.sh (fakes kubectl, gh and curl; no cluster) and compare nats.yaml with a fresh render
         run: bash loadtest/cluster/cluster.test.sh
         working-directory: packages/envoy

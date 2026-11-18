@@ -65,11 +65,13 @@ name: CI
 # it while it ran the daemon's Go suite and does not now), go-docs (docs, and the build job
 # of docs-pages.yaml, which saves it), go-envoy (envoy-e2e-local and envoy-session-stall, which
 # build the same listener and natsd, listener-server-change and envoy-go-checks, which build the
-# listener, and envoy-go-race-docs and envoy-go-docs-finalizers), go-envoy-test (envoy-go, which
+# listener, envoy-go-race-docs and envoy-go-docs-finalizers, and dispatch-browser.yaml's embedder
+# job, whose harness builds the Dispatch server and the real broker's commands from the modules
+# the fill fetches), go-envoy-test (envoy-go, which
 # builds the test binary of every package of the envoy module, and the binaries, multiprocess
 # and visual jobs of dispatch-browser.yaml, which build the Dispatch server and the real
-# broker's commands out of that same set), go-envoy-infra
-# (envoy-infra-go) and go-notices (lint's notices step). Every family but go-docs is filled by
+# broker's commands out of that same set), go-envoy-infra (envoy-infra-go and envoy-smoke) and
+# go-notices (lint's notices step). Every family but go-docs is filled by
 # .github/workflows/ci-caches.yaml, which builds those sets on a push to main and saves them;
 # go-docs stays with docs-pages.yaml, which saves it on that same push. Each family keeps one
 # entry per runner architecture, keyed on the runner's architecture and on the Go version its
@@ -79,10 +81,12 @@ name: CI
 # entry is
 # refreshed only when Go is bumped. A go.sum change downloads only the changed modules, and Go's
 # build cache is content-addressed, so a stale entry costs a run only what changed; a key on the
-# go.sum files left a whole entry, up to a gigabyte, per change for seven days. go-envoy-infra is
-# the exception: what changed under it in eleven days cost its linux vet 83 to 85% of what the
-# same vet for darwin took with nothing cached, so its key carries the hash of its module files
-# too, and ci-caches.yaml deletes the entry each fill replaces (its envoy-infra job says how). The
+# go.sum files left a whole entry, up to a gigabyte, per change for seven days. go-envoy and
+# go-envoy-infra are the exceptions. What changed under go-envoy-infra in eleven days cost its
+# linux vet 83 to 85% of what the same vet for darwin took with nothing cached; go-envoy's readers
+# build commands inside their tests that read the module cache alone (GOPROXY=off), after a fetch
+# step that downloads whatever the entry lacks. So both keys carry the hash of their module files
+# too, and ci-caches.yaml deletes the entry each fill replaces (its superseded job says how). The
 # fallback by
 # prefix, when the exact key misses, now applies on every run, a dispatched one on main
 # included: it was held off main so that the entry a run saved after a Go bump held nothing the
@@ -2204,12 +2208,14 @@ jobs:
               - 'packages/envoy/infra/gcp/testdata/dispatch-pod.golden'
             # The shared test fixtures every other Bun package's tests import: its own sources and
             # tests (it imports nothing outside itself), and the Bun install, the Bun it runs and
-            # Biome, whose root config packages/test-fixtures/biome.json extends.
+            # Biome, whose root config packages/test-fixtures/biome.json extends. And the Go its
+            # go-command test runs, which setup-go installs from the daemon's go.mod.
             test_fixtures:
               - *ci_router
               - '.github/workflows/ci-job-test-fixtures.yaml'
               - *bun_install
               - 'packages/test-fixtures/**'
+              - 'packages/daemon/go.mod'
             # The conflict measurement script's lint, typecheck and tests: its own directory (tests
             # and fixtures included; it imports nothing outside it), the Bun install and Bun it runs
             # (the root manifest and lockfile pin its TypeScript and Bun types), and Biome.
@@ -2331,6 +2337,8 @@ jobs:
               - *ci_router
               - '.github/workflows/ci-job-pi-legion.yaml'
               - *bun_install
+              # Its fetch step runs this script before the tests.
+              - '.github/scripts/go-fetch.sh'
               - 'packages/pi-legion/**'
               # extensions/legion.test.ts:121 and legion-role-claim.test.ts:61 load the Envoy
               # plugin's entry beside this one, and the typecheck reaches its sources.
@@ -2838,6 +2846,8 @@ jobs:
               - *ci_router
               - '.github/workflows/ci-job-envoy-go-checks.yaml'
               - *bun_install
+              # Its fetch step runs this script before the cluster test.
+              - '.github/scripts/go-fetch.sh'
               - *go_workspace
               - 'packages/envoy/**'
               # `bun run check:go` (packages/contracts/scripts/gen-go.ts) reads contracts' schemas
@@ -3348,6 +3358,8 @@ jobs:
               - '.github/workflows/ci-job-envoy-e2e-local.yaml'
               - *bun_install
               - *go_workspace
+              # Its fetch step runs this script before the acceptance run.
+              - '.github/scripts/go-fetch.sh'
               - 'packages/envoy/scripts/e2e-local.sh'
               - 'packages/envoy/scripts/e2e-local.test.sh'
               # e2e-local.sh:47,410-441 posts each fixture.
@@ -3379,6 +3391,8 @@ jobs:
               - '.github/workflows/ci-job-envoy-session-stall.yaml'
               - *bun_install
               - *go_workspace
+              # Its fetch step runs this script before the tests.
+              - '.github/scripts/go-fetch.sh'
               - 'packages/envoy/**'
               - 'packages/envoy-client/**'
               - 'packages/pi-envoy/**'
