@@ -4628,7 +4628,8 @@ A read-only broker token carries no project either, but none of the three checks
   a change to the stream's subjects, age, duplicate window or discard takes a new generation and a new row in `TestTheStreamConfigEqualsItsGenerationsPinnedRow`.
   A client that owns no stream reads the deployed stream's subjects at connect and again every `streamSubjectsRefresh`, so it publishes each topic on the transport the deployed stream calls for (`bus.Client.UsesCoreTransport`), and a topic under a subject only the newer build adds takes JetStream from the older build too; a test decides when a client reads them again (`bus.WithStreamSubjectsReads`).
   A topic under a subject this build compiles keeps JetStream even where a newer build's stream has dropped that subject, so its publish fails rather than succeed over core NATS with no copy kept for any session's consumer (`TestASendIsAnsweredOnlyOnceTheStreamHoldsIt`).
-  Where the server answers that no stream took the publish, or that a stream other than `ENVOY_NOTIFICATIONS` refused it, and the subject is one this build stores that the client's last read of the deployed stream leaves out, the failure is `bus.ErrStreamLacksSubject`, which names the subject and the generation of the stream the client read;
+
+- Where the server answers that no stream took a stored publish, or that a stream other than `ENVOY_NOTIFICATIONS` refused it, and the subject is one this build stores that the client's last read of the deployed stream leaves out, the failure is `bus.ErrStreamLacksSubject`, which names the subject and the generation of the stream the client read;
   a send to a subject this build never stores, a role lane among them, keeps its own error.
   Every stored send of the bus names it so: a publish, a cursor write, a window's two sends and its request, and a forward's wait (`TestEveryStoredPublishTheDeployedStreamLeavesOutIsNamedErrStreamLacksSubjectAtOnce`);
   a resend refused so says the stream stored nothing, not that it may hold the message, since the first send went to the same stream (`bus.ErrUnacknowledged`).
@@ -4754,7 +4755,8 @@ Each item below names an endpoint and its method, then its contract, and an item
   Its `machine` and `cwd` are the interest row's, which the session's latest registration wrote, so they name the listener the session is registered through now and the directory that registration sent (dispatch://INFRA-889;
   before it, both named the listener the session first registered through).
   The connection probe (below) runs beside that stamp on a goroutine of its own, under the same second (`connectionProbeTimeout`), so a send that both stamps and probes spends one second on the pair and the budget is unchanged by the probe.
-  The publish row's 403 for a denied publish reaches this route too:
+
+- The publish row's 403 for a denied publish reaches this route too:
   it publishes `contracts.LegacyAgentSubject(target)`, the target's agent subject in the old form, with no project (`contracts.AgentSubject` builds the new form, which no producer writes yet), and the stream's `notifications.agent.>` captures it, so the publish goes through JetStream, and a JetStream publish the server refuses under this listener's own grant is `bus.ErrPublishDenied` as a core one is (`deniedPublish`, `internal/bus/denials.go`), answered `403 {"error":"envoy: the message bus denied the publish under this listener's own permissions: <reason>"}` with no `Retry-After` (`writeBusUnavailable`) and recorded `outcome=publish_denied`.
   That was the retried `503` with `Retry-After: 1` before, so a sender that met it retried and now meets a refusal it must report instead.
   Dispatch uses `source: "dispatch"`, an idempotency key, and a `payload` JSON string whose frame is `{event, delivery}`;
