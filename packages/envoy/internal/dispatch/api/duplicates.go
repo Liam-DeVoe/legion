@@ -349,8 +349,8 @@ func (s *server) gateBounds(ctx context.Context) (context.Context, context.Cance
 //
 // It runs in a read transaction of its own, bounded by duplicateGateBound on the server's clock
 // (gateBounds) and by statement_timeout inside it, because the create waits on it. One bound for
-// both paths: with two, a read of 1.2 seconds would refuse an unforced create while recording for
-// a forced one that the check did not answer.
+// both paths: with two, a read that ends between the two deadlines would refuse an unforced create
+// while recording for a forced one that the check did not answer.
 //
 // A read that does not answer refuses nothing: the create goes in and the filer is told, in the
 // words nearCopyNotMadeNote gives its reason, that no near-copy check was made. The bound and a
@@ -519,7 +519,7 @@ func nearCopyCheckNotMade(bound time.Duration) string {
 // nearCopyCheckFailed is model.Suggestions.NearCopyCheck when the gate's read failed outright: a
 // SQL error, a connection lost, anything that is not the bound. It is worded apart from a slow
 // read because it is deterministic - every create of every project meets it until it is fixed -
-// and a filer told its create "was not answered in 500ms" would wait for a bound that was never
+// and a filer told its create "did not answer in 2s" would wait for a bound that was never
 // the cause.
 const nearCopyCheckFailed = "the near-copy check before this create failed, so the create was " +
 	"not checked against the project's open issues"
