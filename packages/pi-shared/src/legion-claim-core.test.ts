@@ -36,7 +36,7 @@ const registration = {
  * handed. */
 function claimHost(options: {
   readonly register?: () => Response;
-  readonly ready?: () => Response;
+  readonly ready?: () => Response | Promise<Response>;
   readonly task?: () => Response | Promise<Response>;
   readonly overrides?: Partial<LegionClaimHost>;
 }) {
@@ -193,7 +193,7 @@ const TASK_TEXT = ACCEPTED.outcome === "accepted" ? ACCEPTED.text : "";
  * boots. `turns` is every turn the session starts, in order: the take's text, and a card's own
  * (`card`).
  */
-function takingHost(options: Pick<Parameters<typeof claimHost>[0], "register" | "task">) {
+function takingHost(options: Pick<Parameters<typeof claimHost>[0], "register" | "ready" | "task">) {
   resetEnvoyPluginInterfaceForTests();
   publishEnvoyPluginInterface("pi-envoy");
   const turns: string[] = [];
@@ -305,6 +305,42 @@ for (const [name, answer, logged] of [
     resetEnvoyPluginInterfaceForTests();
   });
 }
+
+// A ready the daemon refuses with a 4xx (a spent secret, a stale claim) is not tried again, and
+// the boot stops the session, as any failure after a registration does: the read after the ready
+// is never made and never answers, so the hold the take took at the registration is never ended
+// by it, and ends only with the session. A card that reaches the session while the ready is on its
+// way, or as the session ends, starts no turn.
+test("a ready the daemon refuses with a 4xx stops the session, whose hold ends only with it: no card starts a turn, during the ready or after its refusal", async () => {
+  const readying = Promise.withResolvers<void>();
+  const refused = Promise.withResolvers<void>();
+  const host = takingHost({
+    register: () => Response.json({ ...registered, task: null, finished: 4 }),
+    ready: async () => {
+      readying.resolve();
+      await refused.promise;
+      return Response.json({ error: "Invalid session secret" }, { status: 403 });
+    },
+  });
+
+  const booting = bootLegionClaim(host.host);
+  await readying.promise;
+  host.card("the session's own direct message");
+  refused.resolve();
+  await expect(booting).resolves.toBeUndefined();
+
+  expect(host.steps.at(-1)).toBe("stop");
+  expect(host.steps.some((step) => step.startsWith("claims/task"))).toBe(false);
+  expect(host.steps).not.toContain("afterReadyRead");
+  expect(host.lines).toEqual([
+    `claim boot failed after claims/register registered ${claimToken}; exiting so the daemon launches it again: POST /legion/v1/claims/ready failed with 403: Invalid session secret`,
+  ]);
+  // The session is on its way out with its hold still up.
+  host.card("a card as the session ends");
+  expect(envoyPluginInterface().taskTurnPending).toEqual({ session: SESSION });
+  expect(host.turns).toEqual([]);
+  resetEnvoyPluginInterfaceForTests();
+});
 
 test("a value read after the ready that fails is logged, and the role is claimed all the same", async () => {
   const { host, steps, values, lines } = claimHost({
