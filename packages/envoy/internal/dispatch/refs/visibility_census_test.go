@@ -170,6 +170,8 @@ var readsWithoutAViewer = map[string]string{
 	"AskPartIDs":           nodeDetail,
 	"BlockChanges":         nodeDetail,
 	"BlockEmbeddingStates": nodeDetail,
+	"BlockTexts": nodeDetail + " - GET /api/v1/reference-targets reads the text of a block only once TargetNames, which binds " +
+		"each block kind's predicate, has answered that block to the reader",
 	"BlockTargets":         serverWork + " - the write of a document checks the block pointers it holds against the blocks they name",
 	"BlockTextAt":          nodeDetail,
 	"CanonicalRepo":        noNode,
@@ -330,8 +332,9 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 			return database.Pool.SendBatch(ctx, batch).Close()
 		})
 	}
-	// Nodes is Node over a batch, and ExcerptedNodes is Nodes with each node's excerpt: one
-	// target of every kind, so each kind's loader issues its statement in the one call.
+	// Nodes is Node over a batch, ExcerptedNodes is Nodes with each node's excerpt, and
+	// TargetNames is Nodes with each node's name: one target of every kind, so each kind's loader
+	// issues its statement in the one call.
 	everyKind := make([]Target, len(nodeKinds))
 	for index, kind := range nodeKinds {
 		everyKind[index] = Target{Kind: kind, ID: "no-such-node"}
@@ -342,6 +345,10 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 	})
 	record("ExcerptedNodes", "ExcerptedNodes of every kind at once", func() error {
 		_, err := ExcerptedNodes(ctx, recorder, who, true, everyKind)
+		return err
+	})
+	record("TargetNames", "TargetNames of every kind at once", func() error {
+		_, err := TargetNames(ctx, recorder, who, everyKind)
 		return err
 	})
 	record("ReferencedBy", "ReferencedBy of CORE-1/spec", func() error {
@@ -386,6 +393,19 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 			if errors.Is(err, pgx.ErrNoRows) {
 				return nil
 			}
+			return err
+		})
+	}
+	// ResolvePrefixes reads each kind in a statement of its own, a pinned block's included, so
+	// each kind is a call of its own here and is held to the registry on its own.
+	for _, asked := range []ShortID{
+		{Kind: "ask", Prefix: "00000000"}, {Kind: "comment", Scope: Scope{IssueKey: "CORE-1"}, Prefix: "00000000"},
+		{Kind: "message", Scope: Scope{IssueKey: "CORE-1"}, Prefix: "00000000"}, {Kind: "artifact", Prefix: "00000000"},
+		{Kind: "block", Scope: Scope{Document: "CORE-1/spec"}, Prefix: "00000000"},
+		{Kind: "block", Scope: Scope{Document: "CORE-1/spec", Version: 1}, Prefix: "00000000"},
+	} {
+		record("ResolvePrefixes", fmt.Sprintf("ResolvePrefixes of kind %s in %+v", asked.Kind, asked.Scope), func() error {
+			_, _, err := ResolvePrefixes(ctx, recorder, who, []ShortID{asked})
 			return err
 		})
 	}

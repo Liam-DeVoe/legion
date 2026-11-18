@@ -128,6 +128,18 @@ func (c *credentialReads) node(address string) model.GraphNode {
 	return decodeBody[model.GraphReferences](c.t, response).Node
 }
 
+// targets is what GET /api/v1/reference-targets answers for addresses, one member each in their
+// order, failing on anything but 200 or on a member count that is not theirs.
+func (c *credentialReads) targets(addresses ...string) []model.ReferenceTarget {
+	c.t.Helper()
+	query := url.Values{"ref": addresses}
+	answered := decodeBody[model.ReferenceTargets](c.t, c.ok("/api/v1/reference-targets?"+query.Encode())).Targets
+	if len(answered) != len(addresses) {
+		c.t.Fatalf("%s: the reference targets of %v answer %d members, want one each", c.name, addresses, len(answered))
+	}
+	return answered
+}
+
 // countedNode is a node whose backlink count the test keeps: what it is called, and its kind and
 // id as the count keys it.
 type countedNode struct{ name, kind, id string }
@@ -727,6 +739,28 @@ func TestAnAuthorOnlyNodeIsAnsweredToItsAuthorAndToNobodyElse(t *testing.T) {
 		for _, direction := range []string{"to", "from"} {
 			requireNobodysAnswer(t, fmt.Sprintf("%s: GET /api/v1/references?%s=%s, %s holding %q", bobToken.name, direction, node.address, node.name, node.text),
 				bobToken.references(direction, node.address), bobToken.references(direction, node.nobodys), node.id, node.nobodysID)
+		}
+	}
+
+	// The batched reference read answers bob each of alice's five as it answers him an address of
+	// its kind nobody holds: gone, named nothing. Alice's cookie, which wrote them, is answered each
+	// of them, and her personal token each of the four whose kind compares the author it proved.
+	for _, node := range hidden {
+		for _, reads := range []*credentialReads{aliceCookie, aliceToken, bobCookie, bobToken} {
+			answered := reads.targets(node.address, node.nobodys)
+			held, nobodys := answered[0], answered[1]
+			switch {
+			case reads == aliceCookie || reads == aliceToken && node.authorCompared:
+				if held.Gone || held.Kind != nobodys.Kind {
+					t.Errorf("%s: GET /api/v1/reference-targets answers %s, %s, as %+v, want it answered under the kind %q", reads.name, node.address, node.name, held, nobodys.Kind)
+				}
+			case reads == bobCookie || reads == bobToken:
+				if !held.Gone || held.Name != "" || held.Kind != nobodys.Kind || held.Ambiguous ||
+					!nobodys.Gone || nobodys.Name != "" || nobodys.Ambiguous {
+					t.Errorf("%s: GET /api/v1/reference-targets answers %s, %s holding %q, as %+v, and %s, which nobody holds, as %+v: want the two alike, gone and naming nothing",
+						reads.name, node.address, node.name, node.text, held, node.nobodys, nobodys)
+				}
+			}
 		}
 	}
 

@@ -312,16 +312,17 @@ func resolveEdges(ctx context.Context, q Queryer, who model.Actor, query Query) 
 	return edges, nil
 }
 
-// excerptOf is the excerpt an edge at node shows: a block's stored excerpt with its block id, the
-// head of any other node's own text, and nil for a node that has no text.
+// excerptOf is the excerpt an edge at node shows: its name (resolvedNode.name), a block's stored
+// excerpt with its block id and the head of any other node's own text, and nil for a node that
+// has no text.
 func excerptOf(node resolvedNode) *model.GraphExcerpt {
 	switch {
 	case node.BlockID != "":
 		// A block's stored excerpt is already cut to BlockExcerptRunes, the excerpt a
 		// document's mention shows.
-		return &model.GraphExcerpt{BlockID: node.BlockID, Text: node.text}
+		return &model.GraphExcerpt{BlockID: node.BlockID, Text: node.name()}
 	case node.text != "":
-		return &model.GraphExcerpt{Text: text.HeadRunes(node.text, excerptRunes)}
+		return &model.GraphExcerpt{Text: node.name()}
 	}
 	return nil
 }
@@ -583,6 +584,31 @@ func ExcerptedNodes(ctx context.Context, q Queryer, who model.Actor, byRefKey bo
 	return nodes, nil
 }
 
+// TargetNames is the words each of targets is named by where a reader is shown a reference to it
+// rather than its own text: an issue's title, a document's name, an ask's question, a comment's
+// or a message's body, a component's title and a block's text, each cut to the bound an edge's
+// excerpt is cut to (resolvedNode.name), which is what GET /api/v1/references already shows
+// beside an edge at that node. The targets are addressed as the to side of an edge addresses
+// them (TargetOf), so an artifact's id is its ref_key.
+//
+// One entry per target that resolves for who, as Nodes resolves it: a target with no entry is
+// one nothing addresses now — its node was deleted or is gone, its kind is one this build cannot
+// address (resolveNodes), or it is reserved for an author who is not who, which answers what an
+// address nobody holds answers — and that is what a caller draws as a reference whose target is
+// gone. Each kind is read in one statement whatever the number of targets, so a batch costs a
+// statement per kind, not per target.
+func TargetNames(ctx context.Context, q Queryer, who model.Actor, targets []Target) (map[Target]string, error) {
+	resolved, err := resolveTargets(ctx, q, who, true, targets)
+	if err != nil {
+		return nil, err
+	}
+	names := make(map[Target]string, len(resolved))
+	for key, node := range resolved {
+		names[Target{Kind: key[0], ID: key[1]}] = node.name()
+	}
+	return names, nil
+}
+
 // resolveTargets resolves each target for who through its kind's loader, as Node resolves one.
 func resolveTargets(ctx context.Context, q Queryer, who model.Actor, byRefKey bool, targets []Target) (map[[2]string]resolvedNode, error) {
 	rows := make([]edgeRow, len(targets))
@@ -602,6 +628,15 @@ type resolvedNode struct {
 	text      string
 	refKey    string
 	wholeText bool
+}
+
+// name is the words shown for the node in place of its text: its own text cut to excerptRunes. A
+// block's text is its stored excerpt, already cut to BlockExcerptRunes.
+func (n resolvedNode) name() string {
+	if n.BlockID != "" {
+		return n.text
+	}
+	return text.HeadRunes(n.text, excerptRunes)
 }
 
 // resolveNodes loads every distinct other end by kind, each loader answering only what who may
