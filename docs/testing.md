@@ -363,7 +363,10 @@ These rules are how a file leaves nothing behind:
   `temporaryTmpdir(prefix)` (`@legion/test-fixtures/temporary-tmpdir`) is the same shape for a whole file's `TMPDIR`:
   it reserves one root, and makes it and points `TMPDIR` at it in a `beforeAll` whose `afterAll` puts the name back and removes the root.
   Anything staged under that root is staged in a hook too, since the name holds the caller's value until that `beforeAll` has run.
-  Both forms take `root`, the directory the temporary one is made in, for a test that needs another filesystem, such as `/dev/shm` for a rename that must cross one.
+
+- `temporaryDirectory` and `temporaryDirectories` take `root`, the directory the temporary one is made in, for a test that needs another filesystem, such as `/dev/shm` for a rename that must cross one.
+  A file whose one hook or row makes or removes hundreds of entries takes `root: memoryRoot()`, the same module's `/dev/shm` where it is a writable tmpfs that allows exec and `tmpdir()` otherwise:
+  on the dev box's shared disk each entry waits for metadata and I/O that every session of the box shares, 0.2 ms to 6 ms, and `score.test.ts`'s 5,004 entries took 1,122 ms to 12,608 ms there and 49 ms to 65 ms on `/dev/shm` (dispatch://INFRA-4311).
   Both remove a tree a test left read-only:
   the removal chmods `u+rwX` down the tree first, following no symlink out of it and leaving a file's own mode alone, because `rmSync` alone fails on the 0555 directories and 0444 files a Go module cache writes, and because a file in such a tree can be a hard link to one outside it.
 
