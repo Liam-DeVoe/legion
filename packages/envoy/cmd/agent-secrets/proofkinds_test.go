@@ -23,6 +23,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/brokertest"
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 	"github.com/sjawhar/envoy/internal/broker/proof"
@@ -83,7 +84,7 @@ func TestARoleKeysProofsAreNotInterchangeable(t *testing.T) {
 	if err := os.WriteFile(subjectFile, []byte(rig.MintSubjectToken(t, brokertest.ExchangeAccount, uuid.NewString())), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	client, err := brokerclient.New(brokerclient.Config{BrokerURL: rig.URL, Key: machineKey, Subject: brokerclient.NewProjectedToken(subjectFile)})
+	client, err := brokerclient.New(brokerclient.Config{BrokerURL: brokeraddr.New(rig.URL), Key: machineKey, Subject: brokerclient.NewProjectedToken(subjectFile)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +158,7 @@ func TestARoleKeysProofsAreNotInterchangeable(t *testing.T) {
 		sign func(t *testing.T, check proofCheck) (string, error)
 	}{
 		{requestObjectKind, func(*testing.T, proofCheck) (string, error) {
-			return session.SignRequestObject(rig.URL, []string{"TEST_SECRET"}, "a role asks for its secret", nil)
+			return session.SignRequestObject(brokeraddr.New(rig.URL), []string{"TEST_SECRET"}, "a role asks for its secret", nil)
 		}},
 		{perRequestKind, func(_ *testing.T, check proofCheck) (string, error) {
 			return session.Sign(check.method, check.target)

@@ -14,7 +14,7 @@ body: |-
   `AGENT_SECRETS_MACHINE_IDENTITY=kubernetes` and `AGENT_SECRETS_MACHINE_TOKEN_FILE`. It refuses
   to boot when one of them is missing, when the broker refuses the trade for good, and when
   `GET /api/v1/whoami` answers another session, another project or no owner for the token.
-  `legion start --check-config` needs none of these variables. The boot logs one line,
+  `legion config check` needs none of these variables. The boot logs one line,
   `legion daemon's Dispatch credential`, which names the credential (`credential=broker` and the
   session, or `credential=file` and the file) and no token. Without the setting the daemon sends
   the bearer from `dispatch_token_file`, byte for byte as before.

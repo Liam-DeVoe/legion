@@ -73,6 +73,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/brokerclient"
 	"github.com/sjawhar/envoy/brokertest"
 
@@ -675,7 +676,7 @@ func (r *dispatchBrokerRig) otherProjectDaemonClient() *dispatch.HTTPClient {
 		r.t.Fatal(err)
 	}
 	client, err := brokerclient.New(brokerclient.Config{
-		BrokerURL: r.broker.URL, Key: key, Subject: identity, Session: brokertest.OtherProjectSession,
+		BrokerURL: brokeraddr.New(r.broker.URL), Key: key, Subject: identity, Session: brokertest.OtherProjectSession,
 		NoLauncherCredential: true, HTTP: brokerclient.HTTPClient(), Log: quietLogger(),
 	})
 	if err != nil {

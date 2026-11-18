@@ -97,7 +97,7 @@ func tradeThumbprint(t *testing.T, key *ecdsa.PrivateKey) string {
 		return 200, map[string]any{"access_token": "role-token-not-a-secret", "token_type": "DPoP", "expires_in": 600}
 	})
 	client, err := New(Config{
-		BrokerURL: broker.URL(), Key: key,
+		BrokerURL: broker.Address(), Key: key,
 		Subject: &scriptedSource{token: "projected.role.token", tokenType: oauthwire.SubjectTokenTypeKubernetes, describe: "the role's projected token"},
 	})
 	if err != nil {

@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"github.com/go-jose/go-jose/v4"
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/brokerclient"
 	"github.com/sjawhar/envoy/brokertest"
 
@@ -305,7 +306,7 @@ func (r *releaseRig) trade() error {
 	if err != nil {
 		r.t.Fatal(err)
 	}
-	client, err := brokerclient.New(brokerclient.Config{BrokerURL: r.broker.URL, Key: r.key, Session: releaseSession, Subject: subject})
+	client, err := brokerclient.New(brokerclient.Config{BrokerURL: brokeraddr.New(r.broker.URL), Key: r.key, Session: releaseSession, Subject: subject})
 	if err != nil {
 		r.t.Fatal(err)
 	}

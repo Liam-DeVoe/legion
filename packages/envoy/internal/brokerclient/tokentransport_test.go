@@ -40,7 +40,7 @@ func TestAnInactiveTokenIsDroppedAndTradedAgain(t *testing.T) {
 		}
 		_, _ = io.WriteString(w, `{"kind":"agent"}`)
 	})
-	client, err := New(Config{BrokerURL: broker.URL(), Key: testKey(t), Subject: projectedStub()})
+	client, err := New(Config{BrokerURL: broker.Address(), Key: testKey(t), Subject: projectedStub()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +112,7 @@ func TestATokenTransportPresentsTheLiveTokenWhileARenewalHangs(t *testing.T) {
 		mu.Unlock()
 		_, _ = io.WriteString(w, `{"kind":"agent"}`)
 	})
-	client, err := New(Config{BrokerURL: broker.URL(), Key: testKey(t), Subject: projectedStub()})
+	client, err := New(Config{BrokerURL: broker.Address(), Key: testKey(t), Subject: projectedStub()})
 	if err != nil {
 		t.Fatal(err)
 	}

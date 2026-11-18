@@ -24,6 +24,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/brokerclient"
 	"github.com/sjawhar/envoy/brokertest"
 )
@@ -114,7 +115,7 @@ func TestTheDaemonCallsDispatchWithItsOwnBrokerToken(t *testing.T) {
 		t.Fatal(err)
 	}
 	client, err := brokerclient.New(brokerclient.Config{
-		BrokerURL: rig.URL, Key: proved, Subject: identity, Session: DaemonSession(key),
+		BrokerURL: brokeraddr.New(rig.URL), Key: proved, Subject: identity, Session: DaemonSession(key),
 		NoLauncherCredential: true, HTTP: brokerclient.HTTPClient(),
 	})
 	if err != nil {
