@@ -224,6 +224,7 @@ const movedParents = "block_parent_moved"
 //   - dispatch://INFRA-1950's interaction and its frames, a lens and its finding blocks, a lens
 //     kind, a constraint and a risk (#b-r-interaction, #b-r-lens, #b-r-lens-catalogue,
 //     #b-r-constraint-risk), every one of them assumed.
+//
 // storeKinds is every term the sizing counts. messagesNamed is the predicate that says a messages
 // row names its node, which the session term reads through recordedSessions: `false` on a database
 // this branch's migrations have not reached, whose messages table holds no such column and whose

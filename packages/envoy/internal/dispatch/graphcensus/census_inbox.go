@@ -264,8 +264,8 @@ func itemProjections() []projection {
 			unmarked:    `select count(*) from ` + blocks + ` b where b.node_kind is null and ` + fits(`b.node_id`),
 			populations: createdPopulations(blocks+` b`, `b.created_at`, `b.node_kind is not null`),
 			narrowings: []narrowing{{
-				name: "removed_blocks",
-				note: "blocks the item no longer holds, whose rows name nodes the store holds gone and state no part_of a live node holds",
+				name:  "removed_blocks",
+				note:  "blocks the item no longer holds, whose rows name nodes the store holds gone and state no part_of a live node holds",
 				count: `select count(*) from ` + blocks + ` b where b.node_kind is not null and b.position is null`,
 			}},
 			emptyAgrees: true,
@@ -648,7 +648,7 @@ var userThreadsProjection = func() projection {
 		unmarked: `
 		select count(*) from user_threads u where u.marked_seq is null and ` + userThreadsKeyed,
 		populations: userThreadsPopulations,
-		emptyAgrees:  true,
+		emptyAgrees: true,
 	}
 	for _, narrowed := range userThreadsNarrowings {
 		kind.narrowings = append(kind.narrowings, narrowing{
