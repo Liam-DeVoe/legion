@@ -46,10 +46,9 @@ const idleRigHeldPasses = 4
 // the session reports that nothing runs, and the next pass that reads the pod quiet releases it:
 // the hold stood exactly as long as the report did.
 func TestIdleReleaseHoldsForARunningSubagent(t *testing.T) {
-	rig := newIdleWakeRig(t, idleRigSubagent)
+	rig := newIdleWakeRig(t, nil, idleRigSubagent)
 	issue := rig.issue(idleRigSubagent)
 	token := rig.token(issue)
-	rig.launchAll()
 	rig.awaitStartTask(issue)
 	rig.agents.setPlan(issue.key, string(issue.role), idleRigPlan{TakeTurn: true, Background: []string{"subagent"}})
 	rig.awaitReported(token, "subagent")
@@ -104,10 +103,9 @@ func TestIdleReleaseHoldsForARunningSubagent(t *testing.T) {
 // quiet past the idle bound the daemon's idle tick releases it, and nothing held it for
 // background work on the way.
 func TestIdleReleaseReleasesASessionWithNothingRunning(t *testing.T) {
-	rig := newIdleWakeRig(t, idleRigNothingRunning)
+	rig := newIdleWakeRig(t, nil, idleRigNothingRunning)
 	issue := rig.issue(idleRigNothingRunning)
 	token := rig.token(issue)
-	rig.launchAll()
 	rig.awaitStartTask(issue)
 	rig.awaitReported(token, "")
 

@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/requests"
 	"github.com/sjawhar/envoy/internal/broker/wire"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/ratelimit"
 )
@@ -147,6 +148,11 @@ type Deps struct {
 	// never stops in the first place - brokertest and the in-process rigs - for which the broker
 	// is never draining.
 	Draining func() bool
+	// Clock is the time a held read of GET /v1/requests/{id}?wait= counts its wait on (readHeld),
+	// from the request's arrival, which the answer recorder reads on the clock answer.Middleware
+	// is given: the two are one clock. nil is clock.Real(), as cmd/broker leaves both; a test of
+	// the hold hands one clocktest.Fake to both.
+	Clock clock.Clock
 }
 
 type server struct {
@@ -163,6 +169,8 @@ type server struct {
 	// route of the approval page share.
 	tokenLimiter   *ratelimit.Keyed
 	accountLimiter *ratelimit.Keyed
+	// clock is Deps.Clock, clock.Real() when it names none.
+	clock clock.Clock
 }
 
 func Register(mux *http.ServeMux, deps Deps) {
@@ -203,6 +211,10 @@ func Register(mux *http.ServeMux, deps Deps) {
 	if deps.AccountLimit != nil {
 		account = *deps.AccountLimit
 	}
+	clk := deps.Clock
+	if clk == nil {
+		clk = clock.Real()
+	}
 	s := &server{
 		deps:            deps,
 		launcherLimiter: newLauncherLimiter(limits, deps.TrustedProxyHeader),
@@ -210,6 +222,7 @@ func Register(mux *http.ServeMux, deps Deps) {
 		rereadOverall:   rereadBucket,
 		tokenLimiter:    ratelimit.NewKeyed(token),
 		accountLimiter:  ratelimit.NewKeyed(account),
+		clock:           clk,
 	}
 	for _, route := range routes() {
 		// A broker with no provider serves neither the OAuth routes nor the document that names

@@ -15,8 +15,11 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/answer"
+	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/metrics"
@@ -36,9 +39,15 @@ type rig struct {
 // the request with a context of its own, as withRequestDeadline does.
 func newRig(t *testing.T, next http.Handler) *rig {
 	t.Helper()
+	return newRigOn(t, nil, next)
+}
+
+// newRigOn is newRig with the recorder reading each arrival on clk (nil for clock.Real()).
+func newRigOn(t *testing.T, clk clock.Clock, next http.Handler) *rig {
+	t.Helper()
 	r := &rig{log: &logtest.Recorder{}, registry: metrics.New()}
 	logtest.SetDefault(t, r.log)
-	recorded := answer.Middleware(next, answer.NewAnswers(r.registry))
+	recorded := answer.Middleware(next, answer.NewAnswers(r.registry), clk)
 	r.handler = http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
@@ -284,6 +293,61 @@ func TestACodeNotedForARefusalNamesNoOtherAnswer(t *testing.T) {
 	}
 }
 
+// An answer whose caller had gone (NoteCallerEnded) is counted cancelled, under the code its
+// status gives, and writes no line: a 503 is not counted failed, nor a refusal refused, since
+// nobody reads the answer.
+func TestAnAnswerWhoseCallerEndedIsCountedCancelled(t *testing.T) {
+	for _, row := range []struct {
+		name, body, code, otherwise string
+		status                      int
+	}{
+		{"a 503", `{"code":"REQUEST_ENDED","error":"the request ended"}`, "HTTP_503", `outcome="failed",code="HTTP_503"`, http.StatusServiceUnavailable},
+		{"a refusal", `{"code":"NOT_YOURS","error":"another session's"}`, "NOT_YOURS", `outcome="refused",code="NOT_YOURS"`, http.StatusForbidden},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			r := newRig(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				answer.FromContext(req.Context()).NoteCallerEnded()
+				writeJSON(w, row.status, row.body)
+			}))
+			if w := r.serve(httptest.NewRequest(http.MethodGet, "/", nil)); w.Code != row.status {
+				t.Fatalf("answer = %d, want %d", w.Code, row.status)
+			}
+			if lines := r.lines(t); len(lines) != 0 {
+				t.Errorf("an answer whose caller ended wrote %v, want no line", lines)
+			}
+			if got := r.count(t, `outcome="cancelled",code="`+row.code+`",caller_class="public"`); got != "1" {
+				t.Errorf("counted %s cancelled under %s, want 1", got, row.code)
+			}
+			if got := r.count(t, row.otherwise+`,caller_class="public"`); got != "0" {
+				t.Errorf("counted %s under %s, want 0", got, row.otherwise)
+			}
+		})
+	}
+}
+
+// Arrived is when Middleware first saw the request, on the clock it was given, before the handler
+// ran, and, on a request no Recorder records, the present of the clock it is asked on.
+func TestArrivedIsWhenTheRequestReachedTheRecorder(t *testing.T) {
+	fake := clocktest.New(time.Now())
+	reached := fake.Now()
+	var arrived, handled time.Time
+	r := newRigOn(t, fake, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		// The handler's own work before it reads the arrival, a proof check say, takes 50 ms on
+		// the recorder's clock.
+		fake.Advance(50 * time.Millisecond)
+		arrived, handled = answer.FromContext(req.Context()).Arrived(fake), fake.Now()
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	r.serve(httptest.NewRequest(http.MethodGet, "/", nil))
+	if !arrived.Equal(reached) || handled.Sub(arrived) != 50*time.Millisecond {
+		t.Errorf("Arrived() = %s, want %s, when the recorder saw the request, 50 ms before the handler read it at %s", arrived, reached, handled)
+	}
+	fake.Advance(time.Second)
+	if got := answer.FromContext(context.Background()).Arrived(fake); !got.Equal(fake.Now()) {
+		t.Errorf("Arrived() on no Recorder = %s, want the present of the clock it is asked on, %s", got, fake.Now())
+	}
+}
+
 // The line names the pattern of the route the mux matched, read from the request the recorder
 // hands the mux, though a handler outside the recorder handed it a request of its own, and an empty
 // route for the mux's own 404 and 405. A caller's X-Correlation-Id is kept as its printable ASCII,
@@ -365,7 +429,7 @@ func TestARefusalsLineBoundsTheNamesItLists(t *testing.T) {
 			handler := answer.Middleware(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 				answer.FromContext(req.Context()).NoteSecrets(row.names...)
 				writeJSON(w, http.StatusBadRequest, `{"code":"NAMES_REFUSED","error":"no"}`)
-			}), nil)
+			}), nil, nil)
 			handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/v1/requests", nil))
 
 			var refusals []string
@@ -508,7 +572,7 @@ func TestARefusalsLineCountsTheNamesAsItWritesThem(t *testing.T) {
 	handler := answer.Middleware(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		answer.FromContext(req.Context()).NoteSecrets(named...)
 		writeJSON(w, http.StatusBadRequest, `{"code":"NAMES_REFUSED","error":"no"}`)
-	}), nil)
+	}), nil, nil)
 	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/v1/requests", nil))
 
 	var refusals []string
@@ -580,7 +644,7 @@ func TestEveryFieldTheCallerWroteIsCutToItsFirst256Bytes(t *testing.T) {
 		edit(req)
 		answer.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			writeJSON(w, http.StatusBadRequest, `{"code":"NAMES_REFUSED","error":"no"}`)
-		}), nil).ServeHTTP(httptest.NewRecorder(), req)
+		}), nil, nil).ServeHTTP(httptest.NewRecorder(), req)
 	}
 	// airlockLine is a refusal's line as the airlock's proxy port fills it (refusalFields).
 	airlockLine := answer.RefusalLine{ID: answer.NewID(), Status: http.StatusForbidden, Code: "NOT_ALLOWED",

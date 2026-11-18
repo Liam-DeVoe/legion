@@ -188,7 +188,7 @@ func TestTheRateLimitedPagePrintsNoAnswerID(t *testing.T) {
 	logtest.SetDefault(t, capture)
 	limited := answer.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		new(approval.Page).WriteRateLimited(w, 1)
-	}), nil)
+	}), nil, nil)
 	w := httptest.NewRecorder()
 	limited.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/approve/not-a-record", nil))
 	id := w.Header().Get(answer.Header)

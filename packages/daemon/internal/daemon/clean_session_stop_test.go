@@ -9,11 +9,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -44,13 +47,14 @@ type askedRoute struct {
 // id while the stop is in flight. The delete is judged as deleteSessionHandler judges it
 // (packages/envoy/cmd/listener/api.go), under both conditions at the moment it lands, and
 // entryRemoved says whether the registration went. readStatus is a registry route that refuses
-// the read instead of answering it, and hangRead one that never answers at all until the
-// request's own context ends.
+// the read instead of answering it, and heldRead one that answers only once the test closes it
+// (or the request's own context ends first): a read still in flight when the daemon's stop
+// begins, or, never closed, a read held past the stop's own budget.
 type listenerRecorder struct {
 	held         storedRegistration
 	relaunched   *storedRegistration
 	readStatus   int
-	hangRead     bool
+	heldRead     chan struct{}
 	read, delete askedRoute
 	entryRemoved bool
 	// arrived is closed when the first request of a stop reaches the listener, and settled once
@@ -97,9 +101,12 @@ func (l *listenerRecorder) server(t *testing.T) *httptest.Server {
 // relaunch the test staged takes the entry's place once this answer is written, so the delete
 // that follows meets what the relaunch wrote and not what the read reported.
 func (l *listenerRecorder) answerRead(w http.ResponseWriter, r *http.Request) {
-	if l.hangRead {
-		<-r.Context().Done()
-		return
+	if l.heldRead != nil {
+		select {
+		case <-l.heldRead:
+		case <-r.Context().Done():
+			return
+		}
 	}
 	if l.readStatus != 0 {
 		w.WriteHeader(l.readStatus)
@@ -177,7 +184,9 @@ func TestCleanSessionStopDeletesARegistrationWrittenBeforeTheProbesMoment(t *tes
 		settled: make(chan struct{}),
 	}
 	server := listener.server(t)
-	stop := cleanSessionStop(context.Background(), server.URL, "envoy-token", quietLogger())
+	var inFlight sessionStopsInFlight
+	defer inFlight.wait()
+	stop := cleanSessionStop(&inFlight, clocktest.New(time.Now()), server.URL, "envoy-token", quietLogger())
 
 	stop("ses_dead")
 
@@ -198,7 +207,7 @@ func TestCleanSessionStopNamesTheEntrysInstanceAndTheProbesMoment(t *testing.T) 
 	stop := sessionStop{sessions: notify.New(server.URL, "envoy-token"), log: bufferedLogger(&logged)}
 	goneAt := time.Now()
 
-	stop.send(context.Background(), "ses_dead", goneAt)
+	stop.send("ses_dead", goneAt)
 
 	if listener.read.method != http.MethodGet || listener.read.path != "/v1/registry/ses_dead" || listener.read.requests != 1 {
 		t.Fatalf("the registry was asked %s %s %d times, want one read of the dead session's entry",
@@ -235,7 +244,7 @@ func TestCleanSessionStopReportsARelaunchsRegistrationTheListenerKept(t *testing
 	var logged bytes.Buffer
 	stop := sessionStop{sessions: notify.New(server.URL, "envoy-token"), log: bufferedLogger(&logged)}
 
-	stop.send(context.Background(), "ses_relaunched", time.Now())
+	stop.send("ses_relaunched", time.Now())
 
 	if listener.entryRemoved {
 		t.Fatal("the relaunch's registration was deleted by a stop that belonged to the process it replaced")
@@ -248,6 +257,43 @@ func TestCleanSessionStopReportsARelaunchsRegistrationTheListenerKept(t *testing
 	}
 	if strings.Contains(logged.String(), "the Envoy session of a role whose process is gone was stopped") {
 		t.Fatalf("logged %q, want no claim that a registration the listener kept was stopped", logged.String())
+	}
+}
+
+// The race only the moment covers: a suspended claim's later wake resumed it under the same
+// session id, and the relaunch registered before the stop's read was answered, so the read hands
+// back the relaunch's own instance id and the delete names it. The id cannot tell that entry from
+// the ended process's; the moment can, since the listener stamped the relaunch's registration
+// after it. So the listener keeps the registration and the stop reports it kept, with the
+// listener's own reason, and the woken session stays reachable.
+func TestCleanSessionStopKeepsARelaunchThatRegisteredBeforeItsRead(t *testing.T) {
+	goneAt := time.Now()
+	listener := &listenerRecorder{held: storedRegistration{clientInstanceID: "inst_relaunched", lastSeen: goneAt.Add(2 * time.Second)}}
+	server := listener.server(t)
+	var logged bytes.Buffer
+	stop := sessionStop{sessions: notify.New(server.URL, "envoy-token"), log: bufferedLogger(&logged)}
+
+	stop.send("ses_released", goneAt)
+
+	if listener.entryRemoved {
+		t.Fatalf("the relaunch's registration was removed by the delete %q, which belonged to the process before it", listener.delete.query)
+	}
+	if listener.delete.requests != 1 {
+		t.Fatalf("the listener was asked %d deletes, want the one stop, judged there", listener.delete.requests)
+	}
+	conditions := listener.deleteConditions(t)
+	if got := conditions.Get("client_instance_id"); got != "inst_relaunched" {
+		t.Fatalf("the delete named client instance %q, want the one the read answered, inst_relaunched", got)
+	}
+	if got := conditions.Get("if_not_registered_after"); got != strconv.FormatInt(goneAt.UnixMilli(), 10) {
+		t.Fatalf("the delete named the moment %q, want the stop's own, %d", got, goneAt.UnixMilli())
+	}
+	kept := slices.IndexFunc(strings.Split(logged.String(), "\n"), func(line string) bool {
+		return strings.Contains(line, "the Envoy listener kept the registration of a dead role's session") &&
+			strings.Contains(line, "the registration was written after the moment the delete belongs to")
+	})
+	if kept < 0 {
+		t.Fatalf("logged %q, want the registration reported kept for being written after the moment", logged.String())
 	}
 }
 
@@ -265,7 +311,7 @@ func TestCleanSessionStopKeptLineCarriesTheListenersOwnReason(t *testing.T) {
 	var logged bytes.Buffer
 	stop := sessionStop{sessions: notify.New(server.URL, "envoy-token"), log: bufferedLogger(&logged)}
 
-	stop.send(context.Background(), "ses_relaunched", time.Now())
+	stop.send("ses_relaunched", time.Now())
 
 	if !strings.Contains(logged.String(), "the registration belongs to another client instance") {
 		t.Fatalf("logged %q, want the listener's own reason for keeping the registration", logged.String())
@@ -287,7 +333,7 @@ func TestCleanSessionStopDeletesOnTheMomentAloneWhenTheEntryNamesNoInstance(t *t
 	stop := sessionStop{sessions: notify.New(server.URL, "envoy-token"), log: bufferedLogger(&logged)}
 	goneAt := time.Now()
 
-	stop.send(context.Background(), "ses_old_client", goneAt)
+	stop.send("ses_old_client", goneAt)
 
 	conditions := listener.deleteConditions(t)
 	if _, named := conditions["client_instance_id"]; named {
@@ -313,7 +359,7 @@ func TestCleanSessionStopSendsNoDeleteWhenTheListenerHoldsNoRegistration(t *test
 	var logged bytes.Buffer
 	stop := sessionStop{sessions: notify.New(server.URL, "envoy-token"), log: bufferedLogger(&logged)}
 
-	stop.send(context.Background(), "ses_already_gone", time.Now())
+	stop.send("ses_already_gone", time.Now())
 
 	if listener.delete.requests != 0 {
 		t.Fatalf("the listener was asked %d deletes, want none for a session it holds no registration of", listener.delete.requests)
@@ -326,14 +372,14 @@ func TestCleanSessionStopSendsNoDeleteWhenTheListenerHoldsNoRegistration(t *test
 // A read the listener refuses leaves unknown whether the entry names a client process, so a
 // delete sent then would rest on the moment alone for an entry that may name one (sessionStop.send
 // says why that is not sent). So nothing is deleted and nothing is tried again, and the
-// registration lapses at the gone horizon, which is the wait the session already had.
+// registration lapses when its record expires, which is the wait the session already had.
 func TestCleanSessionStopSendsNoDeleteWhenTheListenerRefusesTheRead(t *testing.T) {
 	listener := &listenerRecorder{readStatus: http.StatusInternalServerError}
 	server := listener.server(t)
 	var logged bytes.Buffer
 	stop := sessionStop{sessions: notify.New(server.URL, "envoy-token"), log: bufferedLogger(&logged)}
 
-	stop.send(context.Background(), "ses_dead", time.Now())
+	stop.send("ses_dead", time.Now())
 
 	if listener.read.requests != 1 || listener.delete.requests != 0 {
 		t.Fatalf("the listener was asked %d reads and %d deletes, want the one read and no delete at all",
@@ -345,42 +391,69 @@ func TestCleanSessionStopSendsNoDeleteWhenTheListenerRefusesTheRead(t *testing.T
 }
 
 // A listener that never answers does not leave the stop in flight for as long as it likes: the
-// work is bounded, by cleanSessionStopBudget and by supervision's own end, and the stop that is
-// abandoned there sends no delete either.
-func TestCleanSessionStopIsAbandonedWhenSupervisionEnds(t *testing.T) {
-	arrived := make(chan struct{})
-	listener := &listenerRecorder{hangRead: true, arrived: arrived}
+// read and the delete share one budget, cleanSessionStopBudget on the stop's clock, and nothing
+// else ends them, since the daemon's stop does not cut a stop in flight short
+// (sessionStopsInFlight). Here the listener holds the read and the test moves the stop's clock
+// through that budget: the stop is still in flight with its budget armed until the clock reaches
+// it, and ends then. A read that runs the budget out sends no delete, and it is the listener's
+// failure to answer, logged at WARN with the budget's own error.
+func TestCleanSessionStopEndsAtItsOwnBudgetWhenTheListenerNeverAnswers(t *testing.T) {
+	listener := &listenerRecorder{heldRead: make(chan struct{}), arrived: make(chan struct{})}
 	server := listener.server(t)
-	supervising, endSupervision := context.WithCancel(context.Background())
-	defer endSupervision()
-	go func() {
-		<-arrived
-		endSupervision()
-	}()
 	var logged bytes.Buffer
-	stop := sessionStop{sessions: notify.New(server.URL, ""), log: bufferedLogger(&logged)}
+	fake := clocktest.New(time.Now())
+	stop := sessionStop{sessions: notify.New(server.URL, ""), log: bufferedLogger(&logged), clock: fake}
 
-	stop.send(supervising, "ses_hung", time.Now())
+	began := fake.Now()
+	ended := make(chan struct{})
+	go func() {
+		defer close(ended)
+		stop.send("ses_hung", began)
+	}()
 
-	if listener.delete.requests != 0 {
-		t.Fatalf("the listener was asked %d deletes, want none from a stop whose read never answered", listener.delete.requests)
+	testwait.Receive(t, "the stop's read to reach the listener", listener.arrived)
+	armed := fake.AwaitArmed(t, "the clean stop's budget", 1)
+	if want := began.Add(cleanSessionStopBudget); !slices.ContainsFunc(armed, want.Equal) {
+		t.Fatalf("the stop armed %v, want its budget armed for cleanSessionStopBudget (%s) from its start, %v",
+			armed, cleanSessionStopBudget, want)
 	}
-	if !strings.Contains(logged.String(), "the Envoy listener did not answer what a dead role's session registration is") {
-		t.Fatalf("logged %q, want the abandoned stop reported", logged.String())
+	select {
+	case <-ended:
+		t.Fatal("the stop ended with the listener still holding its read and its budget not yet run out")
+	default:
+	}
+	fake.Advance(cleanSessionStopBudget)
+	testwait.Receive(t, "the stop to end once its budget ran out", ended)
+
+	if listener.read.requests != 1 || listener.delete.requests != 0 {
+		t.Fatalf("the listener was asked %d reads and %d deletes, want the one read and no delete after a read nobody answered",
+			listener.read.requests, listener.delete.requests)
+	}
+	unanswered := slices.ContainsFunc(strings.Split(logged.String(), "\n"), func(line string) bool {
+		return strings.Contains(line, "level=WARN") &&
+			strings.Contains(line, "the Envoy listener did not answer what a dead role's session registration is") &&
+			strings.Contains(line, context.DeadlineExceeded.Error())
+	})
+	if !unanswered {
+		t.Fatalf("logged %q, want the unanswered read reported at WARN, ended by its budget (%v)", logged.String(), context.DeadlineExceeded)
 	}
 }
 
 // The machine calls the stop inside its own decision, under its lock, so what cleanSessionStop
 // returns reads the moment there — where no lock is waited on — and leaves the read and the
-// delete to a goroutine.
+// delete to a goroutine, here while the listener still holds the read. That goroutine is counted
+// in flight until its delete has been answered (sessionStopsInFlight). The stop's budget runs on a
+// clock nothing moves, so the read ends when the test lets it go and never at the budget.
 func TestCleanSessionStopRunsOffTheMachinesDecision(t *testing.T) {
-	arrived := make(chan struct{})
 	listener := &listenerRecorder{
-		held:    storedRegistration{clientInstanceID: "inst_dead", lastSeen: time.Now().Add(-time.Second)},
-		arrived: arrived,
+		held:     storedRegistration{clientInstanceID: "inst_dead", lastSeen: time.Now().Add(-time.Second)},
+		heldRead: make(chan struct{}),
+		arrived:  make(chan struct{}),
+		settled:  make(chan struct{}),
 	}
 	server := listener.server(t)
-	stop := cleanSessionStop(context.Background(), server.URL, "envoy-token", quietLogger())
+	var inFlight sessionStopsInFlight
+	stop := cleanSessionStop(&inFlight, clocktest.New(time.Now()), server.URL, "envoy-token", quietLogger())
 
 	returned := make(chan struct{})
 	go func() {
@@ -389,13 +462,168 @@ func TestCleanSessionStopRunsOffTheMachinesDecision(t *testing.T) {
 	}()
 
 	testwait.Receive(t, "the clean stop to return to the machine's decision", returned)
-	testwait.Receive(t, "the clean stop to reach the listener", arrived)
+	testwait.Receive(t, "the clean stop to reach the listener", listener.arrived)
+	close(listener.heldRead)
+	inFlight.wait()
+	select {
+	case <-listener.settled:
+	default:
+		t.Fatal("the clean stop was counted done before the listener answered its delete")
+	}
 }
 
 // With no listener configured there is nothing to tell, and the machines are given no SessionGone
 // at all.
 func TestNoCleanSessionStopWithoutAListener(t *testing.T) {
-	if stop := cleanSessionStop(context.Background(), "", "", quietLogger()); stop != nil {
+	if stop := cleanSessionStop(&sessionStopsInFlight{}, clocktest.New(time.Now()), "", "", quietLogger()); stop != nil {
 		t.Fatal("a daemon with no Envoy listener was given a clean stop to call")
 	}
+}
+
+// A stop sent once the daemon's stop has begun its final wait is left out of that wait
+// (sessionStopsInFlight), not out of the work: it still reads the registration and deletes it, on
+// its own budget. Dropped instead, it would leave the ended process's registration standing until
+// its record expires, and a message to a released role would be stored for a session nothing
+// reads, with no wake. The budget runs on a clock nothing moves, as in the row above.
+func TestCleanSessionStopSentAfterTheFinalWaitBeganStillDeletesTheRegistration(t *testing.T) {
+	listener := &listenerRecorder{
+		held:     storedRegistration{clientInstanceID: "inst_dead", lastSeen: time.Now().Add(-time.Second)},
+		heldRead: make(chan struct{}),
+		arrived:  make(chan struct{}),
+		settled:  make(chan struct{}),
+	}
+	server := listener.server(t)
+	var inFlight sessionStopsInFlight
+	stop := cleanSessionStop(&inFlight, clocktest.New(time.Now()), server.URL, "envoy-token", quietLogger())
+	// Nothing is counted yet, so the wait returns at once, and from here it has begun.
+	inFlight.wait()
+
+	stop("ses_dead")
+	testwait.Receive(t, "the clean stop sent after the final wait began to reach the listener", listener.arrived)
+	close(listener.heldRead)
+	testwait.Receive(t, "the clean stop sent after the final wait began to send its delete", listener.settled)
+	if !listener.entryRemoved {
+		t.Fatalf("the listener kept the registration asked for with %q, want the ended process's registration deleted",
+			listener.delete.query)
+	}
+}
+
+// Each stop sessionStopsInFlight counts before its final wait began holds that wait until the stop
+// ends. The type does no I/O, so the test runs it in a bubble (testing/synctest): once
+// synctest.Wait returns, the wait's goroutine has either returned or is blocked for good on the
+// stops it still waits for, so what it has not done by then it does not do.
+func TestSessionStopsInFlightWaitsForEveryStopStartedBeforeTheFinalWait(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var stops sessionStopsInFlight
+		if !stops.start() || !stops.start() {
+			t.Fatal("a stop started before the final wait was not counted")
+		}
+		returned := make(chan struct{})
+		go func() {
+			stops.wait()
+			close(returned)
+		}()
+		synctest.Wait()
+		if stops.start() {
+			t.Fatal("a stop started while the final wait was blocked was counted: the wait had not begun")
+		}
+
+		stops.end()
+		synctest.Wait()
+		select {
+		case <-returned:
+			t.Fatal("the final wait returned with a stop it counted still in flight")
+		default:
+		}
+		stops.end()
+		synctest.Wait()
+		select {
+		case <-returned:
+		default:
+			t.Fatal("the final wait did not return once every stop it counted had ended")
+		}
+	})
+}
+
+// A stop started once the daemon's stop has begun its final wait is not counted, so the wait ends
+// when the stops it did count end (sessionStopsInFlight). It runs in a bubble for the reason the
+// test above gives.
+func TestSessionStopsInFlightDoesNotWaitForAStopStartedAfterTheFinalWaitBegan(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var stops sessionStopsInFlight
+		if !stops.start() {
+			t.Fatal("a stop started before the final wait was not counted")
+		}
+		returned := make(chan struct{})
+		go func() {
+			stops.wait()
+			close(returned)
+		}()
+		synctest.Wait()
+
+		if stops.start() {
+			t.Fatal("a stop started once the final wait had begun was counted, so the wait would wait for it")
+		}
+		stops.end()
+		synctest.Wait()
+		select {
+		case <-returned:
+		default:
+			t.Fatal("the final wait did not return once the stop it counted ended: it waited for the stop started after it began")
+		}
+	})
+}
+
+// Nothing orders a decision's clean stop before the daemon's final wait (sessionStopsInFlight), so
+// a stop can start from a count of zero while that wait begins. Here the two run on two goroutines
+// with nothing between them that the race detector reads as an order — no channel, no bubble, no
+// gate — so either may come first; the start, made at once on the test's goroutine, comes first
+// on any runner that is not stalled, and the wait then blocks on the stop it counted until the
+// test ends that stop. On a sync.WaitGroup that is an Add from zero beside a Wait that blocks,
+// which -race reports as a data race. This type takes both under one mutex, so the run is clean
+// whichever comes first, and the wait returns once the stop it counted has ended.
+func TestSessionStopsInFlightTakesAStopStartedFromZeroBesideTheFinalWait(t *testing.T) {
+	var stops sessionStopsInFlight
+	returned := make(chan struct{})
+	go func() {
+		stops.wait()
+		close(returned)
+	}()
+	counted := stops.start()
+	if counted {
+		// The wait begun is one that found the counted stop in flight, so it cannot have
+		// returned: its drain closes only once that stop ends, below.
+		awaitFinalWaitBegun(t, &stops)
+		select {
+		case <-returned:
+			t.Fatal("the final wait returned with the stop it counted still in flight")
+		default:
+		}
+		stops.end()
+	}
+	testwait.Receive(t, "the final wait to return once the stop started beside it had ended", returned)
+}
+
+// The daemon's stop waits for the clean stops sessionStopsInFlight counts, and each ends within
+// cleanSessionStopBudget of being sent. At half of stopBudget or less, a stop sent before the
+// halt or in the first half of the stop's budget ends inside that budget: only one sent later in
+// the drain can still be in flight when run stops waiting at the budget (awaitStop).
+func TestCleanSessionStopFitsTwiceInTheStopBudget(t *testing.T) {
+	if 2*cleanSessionStopBudget > stopBudget {
+		t.Fatalf("cleanSessionStopBudget is %s, more than half of stopBudget's %s: a clean stop sent in the first half of the daemon's stop budget could still be in flight when that budget runs out",
+			cleanSessionStopBudget, stopBudget)
+	}
+}
+
+// awaitFinalWaitBegun waits until stops' final wait has begun, which is the moment start stops
+// counting: each stop the poll counts before then it ends again at once.
+func awaitFinalWaitBegun(t *testing.T, stops *sessionStopsInFlight) {
+	t.Helper()
+	testwait.Eventually(t, "the final wait to begin", func() bool {
+		if stops.start() {
+			stops.end()
+			return false
+		}
+		return true
+	})
 }

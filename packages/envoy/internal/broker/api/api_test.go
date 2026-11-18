@@ -41,6 +41,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 	"github.com/sjawhar/envoy/internal/broker/store"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
@@ -109,6 +110,14 @@ func newTestServer(t *testing.T) *testServer {
 // that needs one dependency wired otherwise, such as a tighter rate limit.
 func newTestServerWith(t *testing.T, adjust func(*api.Deps)) *testServer {
 	t.Helper()
+	return newTestServerOn(t, nil, adjust)
+}
+
+// newTestServerOn is newTestServerWith on clk: the clock the answer recorder reads each request's
+// arrival on and the server counts a held read's wait on (api.Deps.Clock), nil for clock.Real().
+// A test of the hold hands it a clocktest.Fake.
+func newTestServerOn(t *testing.T, clk clock.Clock, adjust func(*api.Deps)) *testServer {
+	t.Helper()
 	st := storetest.Open(t)
 
 	local := secrets.NewLocal(
@@ -123,7 +132,7 @@ func newTestServerWith(t *testing.T, adjust func(*api.Deps)) *testServer {
 	// withRequestDeadline, counting on a registry of the server's own, so every answer a test reads
 	// is the one a deployment sends.
 	registry := metrics.New()
-	srv := httptest.NewServer(answer.Middleware(mux, answer.NewAnswers(registry)))
+	srv := httptest.NewServer(answer.Middleware(mux, answer.NewAnswers(registry), clk))
 	t.Cleanup(srv.Close)
 
 	issuer := oidctest.New(t)
@@ -166,6 +175,8 @@ func newTestServerWith(t *testing.T, adjust func(*api.Deps)) *testServer {
 		Policy: cur, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN,
 		// The page signs people in at the same local issuer, which stands in for every provider.
 		Approval: brokertest.NewApprovalPage(t, brokertest.SignIn(issuer, podKey), srv.URL, st, reqMachine),
+		// The recorder above reads each arrival on the same clock.
+		Clock: clk,
 	}
 	adjust(&deps)
 	api.Register(mux, deps)
@@ -268,9 +279,13 @@ func (ts *testServer) record(t *testing.T, recordID string) requests.RecordDetai
 	return detail
 }
 
+// session calls method path as the session enrollmentID, with a proof signed by key over the path
+// without its query, as agent-secrets signs it: the broker checks a proof's htu against
+// BROKER_PUBLIC_URL and the request's path, never its query.
 func (ts *testServer) session(t *testing.T, key *ecdsa.PrivateKey, enrollmentID, method, path string, body any) (int, []byte) {
 	t.Helper()
-	p, err := proof.Sign(key, enrollmentID, method, ts.URL+path, time.Now())
+	signed, _, _ := strings.Cut(path, "?")
+	p, err := proof.Sign(key, enrollmentID, method, ts.URL+signed, time.Now())
 	if err != nil {
 		t.Fatalf("proof.Sign: %v", err)
 	}

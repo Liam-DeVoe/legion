@@ -102,6 +102,13 @@ type testServerOptions struct {
 	// agentStream is the live agent conversation relay; nil is the deployment with no NATS,
 	// where an agent view is refused STREAM_UNAVAILABLE.
 	agentStream agentstream.Source
+	// agentPublisher queues a targeted message for a session no store of the listener's holds
+	// (Deps.AgentPublisher). Nil is a recorder of the server's own, as a deployment with NATS
+	// queues every such message; a test reads it through the Deps newTestServer answers
+	// (publishedBy). noAgentPublisher is the deployment with neither NATS nor test hooks, which
+	// queues none.
+	agentPublisher   AgentPublisher
+	noAgentPublisher bool
 	// embedder wires meaning search (LEGION-549); nil (every test but the meaning search tests'
 	// own) is the deployment with no embedder configured, where search answers keyword-only.
 	embedder embed.Embedder
@@ -247,6 +254,13 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	if options.clock == nil {
 		takeoverWindow = testTakeoverWindow
 	}
+	agentPublisher := options.agentPublisher
+	switch {
+	case options.noAgentPublisher:
+		agentPublisher = nil
+	case agentPublisher == nil:
+		agentPublisher = NewAgentPublishRecorder()
+	}
 	deps, err := NewDeps(DepsInput{
 		Store:                  database,
 		Identity:               people,
@@ -272,6 +286,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		OIDC:              options.oidc,
 		BrokerTokens:      brokerTokens,
 		AgentStream:       options.agentStream,
+		AgentPublisher:    agentPublisher,
 		Embedder:          options.embedder,
 		Answerer:          options.answerer,
 		Files:             options.files,

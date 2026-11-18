@@ -96,8 +96,7 @@ func idleRigEarlierBundle(issue string, at time.Time) runtime.WorkspaceBundle {
 // each holding a live claim ready or idle, each one the idle rule would otherwise take — stand
 // with their claims untouched.
 func TestAStartAfterTheReleaseOfAnIssueWithNoLiveClaimMakesThePodAgain(t *testing.T) {
-	rig := newIdleWakeRig(t, idleRigOperatorRetry, idleRigFreshSession, idleRigQueuedStart)
-	rig.launchAll()
+	rig := newIdleWakeRig(t, nil, idleRigOperatorRetry, idleRigFreshSession, idleRigQueuedStart)
 	// From here no pod of the rig is released for being idle: the listener's report is aged out of
 	// its window before every idle pass the rig runs (keepListenerGateShut, idlePass), so a pass
 	// never finds the gate open on the pods this test holds quiet. Only the release of a pod no

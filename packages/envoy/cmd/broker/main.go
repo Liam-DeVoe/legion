@@ -658,7 +658,7 @@ func main() {
 	// port serves, and the airlock's proxy port counts its answers on it too.
 	answers := answer.NewAnswers(registry)
 	srv := &http.Server{
-		Handler:           withRequestDeadline(answer.Middleware(mux, answers), requestDeadline),
+		Handler:           withRequestDeadline(answer.Middleware(mux, answers, nil), requestDeadline),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      writeTimeout,

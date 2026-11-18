@@ -86,7 +86,7 @@ func newRig(t *testing.T) *rig {
 	// Behind the answer recorder (answer.Middleware), which cmd/broker wraps the mux in, inside
 	// withRequestDeadline, so every answer of the page a test reads is the one a deployment sends,
 	// its answer id included.
-	srv := httptest.NewTLSServer(answer.Middleware(mux, nil))
+	srv := httptest.NewTLSServer(answer.Middleware(mux, nil, nil))
 	t.Cleanup(srv.Close)
 
 	issuer := oidctest.New(t)

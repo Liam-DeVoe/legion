@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -649,6 +650,173 @@ func TestEveryUndeliverableShapeIsGivenUpUnderTheOneRecordedCause(t *testing.T) 
 	if strings.Contains(logs, "listener agent session not found anywhere") {
 		t.Fatalf("a delivery still logs the line that lost these messages, instead of deferring or giving up:\n%s", logs)
 	}
+}
+
+// agentWakesHeld counts the agent wake reports for sessionID that subscription, a core
+// subscription to bus.LegionWakeTopic on conn, holds once reporter has no report in flight. A
+// report is raised on the handler's own path, which takes a slot of reporter before it returns
+// (wakeReporter.report), and the slot goes back once the report is published. So, called once the
+// code that could raise one has returned (settle, exceptionsAfter) or once a report it counts has
+// arrived (awaitWake), every report raised by then has been published when no slot is taken, and
+// a round trip on conn after that has the subscription hold each one: a second report of one
+// message is counted too.
+func agentWakesHeld(t *testing.T, reporter *wakeReporter, conn *natsgo.Conn, subscription *natsgo.Subscription, sessionID string) int {
+	t.Helper()
+	testwait.Eventually(t, "the wake reporter to have no report in flight", func() bool { return len(reporter.slots) == 0 })
+	if err := conn.FlushWithContext(testwait.Context(t)); err != nil {
+		t.Fatalf("a round trip on the wake subscription's connection: %v", err)
+	}
+	count := 0
+	for {
+		// A timeout of zero reads what the subscription already holds and waits for nothing.
+		message, err := subscription.NextMsg(0)
+		if errors.Is(err, natsgo.ErrTimeout) {
+			return count
+		}
+		if err != nil {
+			t.Fatalf("read %s: %v", bus.LegionWakeTopic, err)
+		}
+		if wakeNamed(wakeReportIn(t, message), wakeKindAgent, sessionID) {
+			count++
+		}
+	}
+}
+
+// A released Legion role's session loses its record when the daemon stops it, while its interest
+// row, which names the listener it registered through, stays until the reaper's pass minutes
+// later. A copy on its agent subject - a person's answer Dispatch routes to it, say - must then
+// take the path a session with no interest takes: held for the retry window, then given up with
+// the agent wake that brings the pod back. Before, the interest path failed the copy as
+// delivery_failed, NAKed it for a redelivery that failed the same way, and reported no wake, so
+// the pod stayed released and the message never reached it.
+//
+// The negative control is the second subtest: the same interest row over a record that names no
+// way of receiving is still NAKed as delivery_failed with no wake, so the rig takes the interest
+// path and the first subtest's give-up is the missing record's doing.
+func TestACopyForASessionWithNoRecordIsGivenUpWithTheWakeEvenWhenItsInterestNamesThisListener(t *testing.T) {
+	// start registers target's interest row naming the harness's own listener and, when entry is
+	// not nil, its record, then drives one envelope on target's agent subject through a handler
+	// that reports wakes, at a window of one deferral. It returns the run, a subscription to the
+	// wake reports, made before anything is delivered, and the reporter that raises them.
+	start := func(t *testing.T, target string, entry *session.SessionEntry) (unplaceableDeliveryRun, *natsgo.Subscription, *wakeReporter) {
+		t.Helper()
+		harness := newListenerDeliveryHarness(t)
+		interest := store.Interest{SessionID: target, MachineID: harness.config.machineID}
+		if _, err := harness.registry.Upsert(interest, []string{contracts.LegacyAgentSubject(target)}); err != nil {
+			t.Fatalf("register %s's interest naming this listener: %v", target, err)
+		}
+		if entry != nil {
+			if err := harness.sessions.Put(target, *entry); err != nil {
+				t.Fatalf("register %s's record: %v", target, err)
+			}
+		}
+		wakes, err := harness.client.Conn.SubscribeSync(bus.LegionWakeTopic)
+		if err != nil {
+			t.Fatalf("subscribe to %s: %v", bus.LegionWakeTopic, err)
+		}
+		t.Cleanup(func() { _ = wakes.Unsubscribe() })
+		if err := harness.client.Conn.Flush(); err != nil {
+			t.Fatalf("flush the wake subscription: %v", err)
+		}
+		lifetime, stop := context.WithCancel(context.Background())
+		t.Cleanup(stop)
+		cfg := harness.config
+		cfg.unplaceableRetryWindow = oneDeferralWindow
+		cfg.wakes = newWakeReporter(lifetime, harness.client)
+		return startUnplaceableDelivery(t, harness, cfg, target, 0), wakes, cfg.wakes
+	}
+
+	t.Run("a session with no record is held, then given up with the wake", func(t *testing.T) {
+		const target = "ses_interest_no_record"
+		run, wakes, reporter := start(t, target, nil)
+		harness := run.harness
+
+		testwait.Eventually(t, "the first delivery to be deferred or failed", func() bool {
+			logs := harness.logs.String()
+			return len(recordsFor(deliveryRecords(t, logs, "listener agent delivery deferred"), target))+
+				len(recordsFor(deliveryRecords(t, logs, "listener agent delivery failed"), target)) > 0
+		})
+		if failures := recordsFor(deliveryRecords(t, harness.logs.String(), "listener agent delivery failed"), target); len(failures) != 0 {
+			t.Fatalf("the delivery to %s was NAKed as delivery_failed (%s), want it held and then given up with one wake - a session with no record is unplaceable whatever its interest row names:\n%s",
+				target, failures[0].Error, harness.logs.String())
+		}
+		deferrals := recordsFor(deliveryRecords(t, harness.logs.String(), "listener agent delivery deferred"), target)
+		if deferrals[0].Reason != "no_session_record" || deferrals[0].Attempt != 1 {
+			t.Fatalf("the deferral names reason %q at attempt %d, want no_session_record at the first delivery:\n%s", deferrals[0].Reason, deferrals[0].Attempt, harness.logs.String())
+		}
+
+		testwait.Eventually(t, "the redelivered message to be given up", func() bool {
+			return len(recordsFor(deliveryRecords(t, harness.logs.String(), "listener agent delivery given up"), target)) > 0
+		})
+		logs := harness.logs.String()
+		if failures := deliveryRecords(t, logs, "listener agent delivery failed"); len(failures) != 0 {
+			t.Fatalf("%d lines fail the delivery as delivery_failed, want none:\n%s", len(failures), logs)
+		}
+		if got := len(deliveryRecords(t, logs, "listener agent delivery deferred")); got != 1 {
+			t.Fatalf("%d deferral lines, want exactly the one the window buys:\n%s", got, logs)
+		}
+		giveUps := deliveryRecords(t, logs, "listener agent delivery given up")
+		if len(giveUps) != 1 || giveUps[0].Reason != "no_session_record" || giveUps[0].DeliveryStatus != "unplaceable_no_record" {
+			t.Fatalf("want exactly one give-up line naming no_session_record and unplaceable_no_record, got %d:\n%s", len(giveUps), logs)
+		}
+		body := metricsBody(t, harness)
+		if got := counterValue(t, body, deliveredSeries("failed")); got != -1 {
+			t.Fatalf("%s = %d, want no series at all - the message was given up, never failed:\n%s", deliveredSeries("failed"), got, body)
+		}
+		if got := counterValue(t, body, deliveredSeries("unplaceable_no_record")); got != 1 {
+			t.Fatalf("%s = %d, want 1:\n%s", deliveredSeries("unplaceable_no_record"), got, body)
+		}
+		if got := counterValue(t, body, nakedCounter); got != 1 {
+			t.Fatalf("%s = %d, want 1 - the deferral's NAK and no other:\n%s", nakedCounter, got, body)
+		}
+		// The give-up's no_holder notice is the one exception of the message: a delivery_failed
+		// one would have been published first, at the failed delivery.
+		assertDeliveryException(t, run.exceptions, run.item, "no_holder")
+		// Once the durable holds nothing pending and the handler has returned from both
+		// deliveries, nothing raises another exception or another wake for the message.
+		run.settle(t)
+		run.noExceptionHeld(t, "a second delivery exception went out for one message")
+		if got := agentWakesHeld(t, reporter, harness.client.Conn, wakes, target); got != 1 {
+			t.Fatalf("%d agent wake reports for %s, want exactly one, beside the give-up:\n%s", got, target, logs)
+		}
+	})
+
+	t.Run("a record that names no way of receiving is still NAKed, with no wake", func(t *testing.T) {
+		const target = "ses_interest_no_way_to_receive"
+		run, wakes, reporter := start(t, target, &session.SessionEntry{MachineID: "test-machine"})
+		harness := run.harness
+
+		testwait.Eventually(t, "the delivery to be disposed of", func() bool {
+			logs := harness.logs.String()
+			return len(deliveryRecords(t, logs, "listener agent delivery failed"))+
+				len(deliveryRecords(t, logs, "listener agent delivery deferred"))+
+				len(deliveryRecords(t, logs, "listener agent delivery given up")) > 0
+		})
+		logs := harness.logs.String()
+		failures := deliveryRecords(t, logs, "listener agent delivery failed")
+		if len(failures) != 1 || !strings.Contains(failures[0].Error, session.ErrNoSessionRecord.Error()) {
+			t.Fatalf("want exactly one line failing the delivery on %q, got %d - a record that names no way of receiving is the interest path's failure:\n%s", session.ErrNoSessionRecord, len(failures), logs)
+		}
+		if got := len(deliveryRecords(t, logs, "listener agent delivery deferred")) + len(deliveryRecords(t, logs, "listener agent delivery given up")); got != 0 {
+			t.Fatalf("%d deferral or give-up lines, want none - the interest path NAKs this record:\n%s", got, logs)
+		}
+		assertDeliveryException(t, run.exceptions, run.item, "delivery_failed")
+		// The failed line is written before the handler's NAK is counted, so the count is waited
+		// for rather than read once.
+		testwait.Eventually(t, "the failed delivery's NAK to be counted", func() bool {
+			return counterValue(t, metricsBody(t, harness), nakedCounter) >= 1
+		})
+		body := metricsBody(t, harness)
+		if got := counterValue(t, body, nakedCounter); got != 1 {
+			t.Fatalf("%s = %d, want 1 - the failed delivery is NAKed for redelivery:\n%s", nakedCounter, got, body)
+		}
+		// The handler has returned from the failed delivery, so a wake it raised is one the
+		// reporter holds a slot for or has published.
+		run.exceptionsAfter(t, 1)
+		if got := agentWakesHeld(t, reporter, harness.client.Conn, wakes, target); got != 0 {
+			t.Fatalf("%d agent wake reports for %s, want none - a failed delivery reports no wake:\n%s", got, target, logs)
+		}
+	})
 }
 
 // preloadDeferrals takes n slots of set for messages no test stream will ever number: sequences

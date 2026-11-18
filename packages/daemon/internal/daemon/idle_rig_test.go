@@ -130,11 +130,17 @@ type idleRigIssue struct {
 	role claim.Role
 }
 
-// newIdleWakeRig readies every part and boots the daemon, with one issue per name given. Each
-// issue is its own tree root, in the workflow at `implementing` with its implementer's claim
-// suspended, which the rig then resumes: that launch is what makes the pod, its launcher and its
-// role process.
-func newIdleWakeRig(t *testing.T, issues ...string) *idleWakeRig {
+// newIdleWakeRig readies every part, boots the daemon, and waits until every seeded issue's pod
+// runs its role, in order, with one issue per name given. Each issue is its own tree root, in the
+// workflow at `implementing` with its implementer's claim suspended by the daemon, a source the
+// boot's resume by rule acts on (supervise.SuspendSource.ByRule): the boot itself resumes each
+// claim, and that launch is what makes the pod, its launcher and its role process, which can all
+// start before the boot returns.
+//
+// plans is what the role process of each issue it names does, by the name the test calls the
+// issue; an issue it does not name, and every issue when plans is nil, runs the default plan. They
+// are set before the boot (idleRigPlan says why).
+func newIdleWakeRig(t *testing.T, plans map[string]idleRigPlan, issues ...string) *idleWakeRig {
 	t.Helper()
 	pool := isolatedOutboxPool(t)
 	if _, err := pool.Exec(context.Background(), idleRigSessionTable()); err != nil {
@@ -193,8 +199,15 @@ func newIdleWakeRig(t *testing.T, issues ...string) *idleWakeRig {
 	for i, name := range issues {
 		rig.issues = append(rig.issues, rig.seed(name, cfg.Project+"-"+strconv.Itoa(i+1), i))
 	}
+	for name, plan := range plans {
+		issue := rig.issue(name)
+		rig.agents.setPlan(issue.key, string(issue.role), plan)
+	}
 	rig.boot()
 	rig.awaitListenerReady()
+	for _, issue := range rig.issues {
+		rig.launch(issue)
+	}
 	return rig
 }
 
@@ -260,16 +273,6 @@ func (r *idleWakeRig) issue(name string) idleRigIssue {
 	}
 	r.t.Fatalf("the rig seeded no issue called %s", name)
 	return idleRigIssue{}
-}
-
-// launchAll launches every seeded issue's pod, in order. It is apart from the rig's construction
-// so a test can tell a role process what to do — the topics it takes with envoy_subscribe, whether
-// it takes a turn — before the process starts.
-func (r *idleWakeRig) launchAll() {
-	r.t.Helper()
-	for _, issue := range r.issues {
-		r.launch(issue)
-	}
 }
 
 // idleRigDatabase and idleRigUser are the rig's own database and login, which its launchers'
@@ -861,10 +864,11 @@ func (r *idleWakeRig) awaitReleased(issues ...idleRigIssue) {
 		// first: a release the pass did not make is a release nothing made, and the rows are
 		// the clock the idle rule is measured against (idlePass).
 		r.idlePass()
-		// One listing for the eleven pods, not one each: the operator's route answers every claim
-		// at once (daemon.claims, which daemon.claim reads to find one), and the pass this waits
-		// for reads the same rows through the same pool, so a wait that asked eleven times a poll
-		// would be taking the daemon's own Postgres away from the release it is waiting for.
+		// One listing for every pod of the rig, not one each: the operator's route answers every
+		// claim at once (daemon.claims, which daemon.claim reads to find one), and the pass this
+		// waits for reads the same rows through the same pool, so a wait that asked once for each
+		// pod every poll would be taking the daemon's own Postgres away from the release it is
+		// waiting for.
 		claims := r.api.claims()
 		released := true
 		for i, issue := range issues {
@@ -1035,15 +1039,8 @@ func (r *idleWakeRig) releaseRecords(issue idleRigIssue) api.ReleaseRecordsRespo
 // check_wake_test.go's rig reads them.
 func (r *idleWakeRig) logged(msg string, attributes map[string]string) int {
 	count := 0
-	for _, line := range strings.Split(r.logs.String(), "\n") {
-		if line == "" {
-			continue
-		}
-		var entry map[string]any
-		if json.Unmarshal([]byte(line), &entry) != nil {
-			continue
-		}
-		matches := entry["msg"] == msg
+	for _, entry := range r.loggedEntries(msg) {
+		matches := true
 		for key, want := range attributes {
 			matches = matches && fmt.Sprint(entry[key]) == want
 		}
@@ -1052,4 +1049,23 @@ func (r *idleWakeRig) logged(msg string, attributes map[string]string) int {
 		}
 	}
 	return count
+}
+
+// loggedEntries is every line of the daemon's log that says msg, decoded, read in one pass over
+// the log. A line that does not decode as JSON is skipped.
+func (r *idleWakeRig) loggedEntries(msg string) []map[string]any {
+	var entries []map[string]any
+	for _, line := range strings.Split(r.logs.String(), "\n") {
+		if line == "" {
+			continue
+		}
+		var entry map[string]any
+		if json.Unmarshal([]byte(line), &entry) != nil {
+			continue
+		}
+		if entry["msg"] == msg {
+			entries = append(entries, entry)
+		}
+	}
+	return entries
 }

@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // idleRigURLVariable names the rig's own service in the environment of every process the rig's
@@ -88,10 +89,31 @@ type idleRigAdoption struct {
 // (packages/pi-legion/extensions/legion.ts): at every turn's end whatever it says, and between
 // turns whenever it changes (idleRigRoleProcess.watchActivity), so a test that changes it
 // mid-run is a subagent starting or ending in a live session.
+//
+// ExitsAsReleasedInProduction is a process that ends as a released Oh My Pi does in production:
+// it registers again every idleRigRegistrationRefresh while it runs and deletes nothing when it
+// stops (idleRigRoleProcess.run).
+//
+// HoldsBeforeEnvoy is a process that registers with the daemon and then waits, before it
+// registers with the Envoy listener and claims its role, until the rig sets it a plan without
+// HoldsBeforeEnvoy: a woken Oh My Pi still starting, whose session holds no role yet while the
+// daemon publishes to it. The stand-in otherwise claims its role within a second of its pod's
+// start, far sooner than an Oh My Pi does, and a test that needs the daemon's publish to meet a
+// role its woken session has not claimed yet would be racing it.
+//
+// A process reads Topics and ExitsAsReleasedInProduction once, as it starts
+// (idleRigRoleProcess.run), after the plan no longer holds it, and TakeTurn and Background at
+// each task and each activity report. So a plan that sets either of the first two, or
+// HoldsBeforeEnvoy, reaches only a process that starts after it is set. The daemon's boot starts
+// the role process of every pod of the rig, so a plan for that process is given to
+// newIdleWakeRig, which sets it before the boot; a plan for a woken process is set before its
+// wake.
 type idleRigPlan struct {
-	TakeTurn   bool     `json:"takeTurn"`
-	Topics     []string `json:"topics"`
-	Background []string `json:"background"`
+	TakeTurn                    bool     `json:"takeTurn"`
+	Topics                      []string `json:"topics"`
+	Background                  []string `json:"background"`
+	ExitsAsReleasedInProduction bool     `json:"exitsAsReleasedInProduction"`
+	HoldsBeforeEnvoy            bool     `json:"holdsBeforeEnvoy"`
 }
 
 // idleRigAgents is the rig's own service: it hands each role process the boot token its pod's
@@ -136,7 +158,8 @@ func (a *idleRigAgents) setPrivate(pod, role, dir string) {
 	a.private[idleRigKey(pod, role)] = dir
 }
 
-// setPlan is what the role's next prompts do.
+// setPlan is what the role's process does from here, in the parts of the plan it has still to read
+// (idleRigPlan).
 func (a *idleRigAgents) setPlan(pod, role string, plan idleRigPlan) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -329,7 +352,7 @@ func TestIdleRigRoleProcess(t *testing.T) {
 
 // The subjects, headers and replies of a session's own delivery, which the role process reads
 // and answers as a plugin in consumer mode does. They are packages/envoy's: bus.DeliverSubject
-// and contracts.AgentSubject build the two subjects, cmd/listener/session_relay.go names the
+// and contracts.LegacyAgentSubject build the two subjects, cmd/listener/session_relay.go names the
 // frame header and the replies, internal/bus/stream.go the probe header
 // (bus.ConnectionProbeHeader), and cmd/listener/session_delivery.go the mode the registration
 // answers. The rig writes them out because they are another module's, and an Envoy that renamed
@@ -338,6 +361,9 @@ const (
 	// idleRigDeliverSubjectPrefix and the session id are the session's relay subject, where the
 	// listener that owns the session publishes each message of its durable consumer.
 	idleRigDeliverSubjectPrefix = "notifications.envoy.deliver."
+	// idleRigAgentSubjectPrefix and the session id are the session's agent subject, the subject
+	// the stream stores every message to the session on.
+	idleRigAgentSubjectPrefix = "notifications.agent."
 	// idleRigStreamSeqHeader is a relay frame's stream sequence, in decimal.
 	idleRigStreamSeqHeader = "Envoy-Stream-Seq"
 	// idleRigProbeHeader, "1", with no body, is the listener's connection probe on the relay
@@ -354,6 +380,13 @@ const (
 	idleRigDeliveryConsumer = "consumer"
 )
 
+// idleRigRegistrationRefresh is how often a process whose plan sets ExitsAsReleasedInProduction
+// registers again. The plugin does so every 90 s (SESSION_HEARTBEAT_MS); five seconds put the
+// last registration moments before the release's stop, so the stop's delete is weighed against a
+// registration about as close to its moment as a release can leave one
+// (notify.DeleteConditions.NotRegisteredAfter).
+const idleRigRegistrationRefresh = 5 * time.Second
+
 // idleRigEnvelope is what the rig reads of an Envoy envelope, the frame's data unchanged: the
 // event it carries and the message itself.
 type idleRigEnvelope struct {
@@ -363,7 +396,7 @@ type idleRigEnvelope struct {
 }
 
 // text is the message a sender sent: its payload, which the listener fills only for a message
-// longer than the one-line summary it also carries (cmd/listener's messageEnvelope).
+// longer than the one-line summary it also carries (envoy's contracts.MessageEnvelope).
 func (e idleRigEnvelope) text() string {
 	if e.Payload != "" {
 		return e.Payload
@@ -416,6 +449,12 @@ type idleRigRoleProcess struct {
 	reportMu sync.Mutex
 	reported []string
 	taken    bool
+
+	// refreshMu is held across each registration refresh (refreshRegistration), and stopped
+	// says the process is ending, after which no refresh starts: the process ends with no
+	// refresh in flight, so its last registration lands before the daemon dates the stop.
+	refreshMu sync.Mutex
+	stopped   bool
 }
 
 // newIdleRigRoleProcess builds the role process from its pod's environment and from argv, the
@@ -469,8 +508,9 @@ func newIdleRigRoleProcess(rig string, argv []string) (*idleRigRoleProcess, erro
 	return p, nil
 }
 
-// run connects, registers, claims the role, reports ready, and then serves the daemon's frames
-// until it is shut down.
+// run connects, registers, waits while its plan holds it (idleRigPlan.HoldsBeforeEnvoy),
+// registers with the Envoy listener, claims the role, reports ready, and then serves the daemon's
+// frames until it is shut down.
 func (p *idleRigRoleProcess) run() error {
 	bootToken, err := p.bootToken()
 	if err != nil {
@@ -491,6 +531,21 @@ func (p *idleRigRoleProcess) run() error {
 	if err != nil {
 		return err
 	}
+	if plan.HoldsBeforeEnvoy {
+		// The rig lets the process go on by setting a plan without HoldsBeforeEnvoy. This process
+		// has no test of its own to fail, so it waits through the shared wait's form for one that
+		// has none (testwait.InMain), whose one bound is this binary's deadline.
+		var planErr error
+		if err := testwait.InMain("the rig to let "+p.pod+"'s "+p.role+" go on to the Envoy listener (idleRigPlan.HoldsBeforeEnvoy)", func() bool {
+			plan, planErr = p.plan()
+			return planErr != nil || !plan.HoldsBeforeEnvoy
+		}); err != nil {
+			return err
+		}
+		if planErr != nil {
+			return planErr
+		}
+	}
 	if err := p.subscribe(plan.Topics); err != nil {
 		return err
 	}
@@ -504,24 +559,61 @@ func (p *idleRigRoleProcess) run() error {
 		return err
 	}
 	go p.watchActivity()
-	// The registration goes when the process does, and the role claim stays: unregister sends the
-	// daemon's clean stop of a role's session (notify's DeleteSession, DELETE /v1/sessions/<id>)
-	// and nothing else, so the listener holds what that stop leaves behind, the session's record
-	// gone and its claim still naming the session. A message published to the role topic then
-	// finds a holder that is not live: the listener keeps it for the role's next live holder
-	// (kept_reason holder_lapsed), or answers one that keeps nothing 404 holder_lapsed, and reports
-	// the wake either way. A record left standing would have the message forwarded to a session
-	// nothing is left of instead. This stand-in gives the listener the state after that clean stop;
-	// it does not claim to show what Oh My Pi does on its own when its process ends.
-	defer p.unregister()
+	// Once the process ends, the listener holds what the daemon's clean stop of a role's session
+	// leaves (notify's DeleteSession, DELETE /v1/sessions/<id>): the session's record gone and its
+	// role claim and interest record still naming the session. A message published to the role
+	// topic then finds a holder that is not live: the listener keeps it for the role's next live
+	// holder (kept_reason holder_lapsed), or answers one that keeps nothing 404 holder_lapsed, and
+	// reports the wake either way. A record left standing would have the message forwarded to a
+	// session nothing is left of instead.
+	//
+	// The default stand-in leaves that state itself: it deletes its registration as it stops
+	// (unregister), so its session is gone whether or not the daemon's stop reached the listener
+	// first. Oh My Pi's plugin sends its own DELETE of the registration in its session_shutdown
+	// handler, but at a production release that DELETE does not take effect. A process whose plan
+	// sets ExitsAsReleasedInProduction ends that way: it registers again while it runs, as the
+	// plugin's heartbeat does, and deletes nothing as it stops, so the daemon's clean stop is what
+	// makes its session gone.
+	end := p.unregister
+	if plan.ExitsAsReleasedInProduction {
+		go p.refreshRegistration(plan.Topics)
+		end = p.stopRefreshing
+	}
+	defer end()
 	stopping := make(chan os.Signal, 1)
 	signal.Notify(stopping, syscall.SIGTERM, syscall.SIGINT)
 	go func() {
 		<-stopping
-		p.unregister()
+		end()
 		os.Exit(0)
 	}()
 	return p.serve()
+}
+
+// refreshRegistration registers the session again, under the same epoch, every
+// idleRigRegistrationRefresh until the process stops, as the plugin's heartbeat does. A refresh
+// the listener refuses is reported and the next one tried: one failed heartbeat stops nothing.
+func (p *idleRigRoleProcess) refreshRegistration(topics []string) {
+	ticker := time.NewTicker(idleRigRegistrationRefresh)
+	defer ticker.Stop()
+	for range ticker.C {
+		p.refreshMu.Lock()
+		if p.stopped {
+			p.refreshMu.Unlock()
+			return
+		}
+		if err := p.subscribe(topics); err != nil {
+			fmt.Fprintf(os.Stderr, "idle rig role process: refresh the registration of %s: %v\n", p.session, err)
+		}
+		p.refreshMu.Unlock()
+	}
+}
+
+// stopRefreshing waits for a refresh in flight to be answered and lets no other start.
+func (p *idleRigRoleProcess) stopRefreshing() {
+	p.refreshMu.Lock()
+	defer p.refreshMu.Unlock()
+	p.stopped = true
 }
 
 // unregister removes the session's registration with the listener, as the daemon's clean stop
