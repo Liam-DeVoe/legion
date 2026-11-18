@@ -194,7 +194,7 @@ func nodesRead() string {
 		where g.kind = '` + refs.BlockNodeKind + `' and b.node_kind = '` + refs.BlockNodeKind + `' and b.node_address = g.id
 		union all
 		select b.artifact_id, b.block_id, b.changed_version from document_blocks b
-		where g.kind = '` + graphstore.KindAsk + `' and b.artifact_id = q.block_artifact_id and b.block_id = q.block_id
+		where g.kind = '` + graphstore.KindAsk + `' and b.artifact_id = q.block_artifact_id and b.block_id = q.block_id and b.type = 'ask'
 	) row on true
 	left join lateral (
 		select coalesce(row.block_id, case when g.kind = '` + graphstore.KindAsk + `' then q.block_id

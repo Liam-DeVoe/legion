@@ -333,7 +333,7 @@ func decisionEntriesRead() string {
 		       coalesce(doc.kind, ''), doc.issue_key, coalesce(doc.project_key, ''), doc.session_id, coalesce(doc.is_primary, false),
 		       doc.id is not null and (
 		         exists (select 1 from document_blocks b
-		                 where m.kind = '` + graphstore.KindAsk + `' and b.artifact_id = doc.id and b.block_id = q.block_id offset 0)
+		                 where m.kind = '` + graphstore.KindAsk + `' and b.artifact_id = doc.id and b.block_id = q.block_id and b.type = 'ask' offset 0)
 		         or exists (select 1 from document_blocks b
 		                    where m.kind = '` + refs.BlockNodeKind + `' and b.node_kind = m.kind and b.node_address = m.id offset 0)
 		         or not exists (select 1 from document_block_versions v
@@ -394,8 +394,10 @@ func decisionEntriesRead() string {
 //     block index is listed.
 //
 // An entry names the document that holds its node's block where a document_blocks row holds that
-// block, or where the document owes its block index and no row can say so yet: an answered ask
-// whose block left its document keeps its row, which still names that document, and names none.
+// block - for an ask, a row of type ask at the ask's block id - or where the document owes its block
+// index and no row can say so yet: an answered ask whose block left its document keeps its row,
+// which still names that document, and names none, and so does one whose block id a block of
+// another type took, since that block is not the ask's.
 // kept_by and kept_text_sum are the Keep decisionread read (model.Decision's Kept), so they and
 // `kept` are one read of the node.
 //
