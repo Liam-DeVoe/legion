@@ -65,16 +65,13 @@ type issueDecisions struct {
 
 // decisionSection is one decision as the document's own blocks give it, before the links, asks and
 // keeps that complete it are read. Start and End are its first and last block's bounds in the
-// document's canonical markdown. alone is whether its heading block stands in no other block of
-// the document - a list item, a quote, a footnote definition or a typed block - so its text is
-// whole top-level blocks, which read alone as they stand (markKeptAcrossRenderers).
+// document's canonical markdown.
 type decisionSection struct {
 	headingBlock string
 	heading      string
 	level        int
 	replaced     bool
 	unsure       bool
-	alone        bool
 	blockIDs     []string
 	start        int
 	end          int
@@ -231,6 +228,13 @@ func (s *server) specOpenQuestions(
 // names where its sum is not the decision's (markKeptAcrossRenderers). specID is "" when the
 // issue has no spec, and every decision then has no links.
 //
+// The document is cut into its decisions once (decisionCuts), and that cut is the one reader of
+// the document as it stands for both the keeps and the links (markStaleLinks): each decision is
+// its cut that starts where its heading block does, named by that cut's key, the same key a
+// stored version's cut gives it. A decision whose heading stands in a list item, a quote or a
+// footnote definition has no cut, since its heading line does not start at column 0; its key
+// names no cut of any version (noCut), so it is never read as another decision of its heading.
+//
 // reader is the answer's own, and each decision registers its text with it once the slice has
 // stopped growing, as the open questions beside them do (specOpenQuestions): a shaping registers
 // a pointer into the row, and an append that moved the backing array would leave the reader
@@ -261,14 +265,19 @@ func (s *server) readDecisions(
 	if err != nil {
 		return nil, err
 	}
+	current := decisionCuts(markdown)
+	keyAt := make(map[int]sectionKey, len(current))
+	for key, cut := range current {
+		keyAt[cut.start] = key
+	}
 	decisions := make([]model.Decision, 0, len(sections))
 	keys := make([]sectionKey, 0, len(sections))
-	alone := make([]bool, 0, len(sections))
-	seen := map[string]int{}
 	for _, section := range sections {
-		keys = append(keys, sectionKey{heading: section.heading, occurrence: seen[section.heading]})
-		alone = append(alone, section.alone)
-		seen[section.heading]++
+		key, cut := keyAt[section.start]
+		if !cut {
+			key = sectionKey{heading: section.heading, occurrence: noCut}
+		}
+		keys = append(keys, key)
 		decision := model.Decision{
 			BlockID:  section.headingBlock,
 			Heading:  section.heading,
@@ -314,10 +323,10 @@ func (s *server) readDecisions(
 	for index := range decisions {
 		reader.text(&decisions[index].TextTree, decisions[index].Text)
 	}
-	if err := s.markKeptAcrossRenderers(ctx, document.ID, decisions, keys, alone); err != nil {
+	if err := s.markKeptAcrossRenderers(ctx, document.ID, decisions, keys, current); err != nil {
 		return nil, err
 	}
-	if err := s.markStaleLinks(ctx, document.ID, markdown, decisions, keys); err != nil {
+	if err := s.markStaleLinks(ctx, document.ID, decisions, keys, current); err != nil {
 		return nil, err
 	}
 	return decisions, nil
@@ -336,15 +345,17 @@ func (s *server) readDecisions(
 // A version this document does not hold, and a spec block Dispatch records no change for, each
 // leave the link as it is: the view marks nothing it cannot read, as the block index's first
 // pass over a document marks nothing. Each decision is named across versions by its heading and
-// its occurrence among the decisions of that heading (sectionKey), the same pair the view's own
-// walk gives it, so a document that carries one heading twice still names each of them. A
-// version another renderer version stored, or none stamped, holds the decision's text where this
-// build reads its text of the decision, alone, as the text now (storedDecisions.holds), so a
-// renderer change, which leaves every version stored before it in its renderer's spelling, marks
-// no link. A text that holds `[^`, and a text cut from inside a typed block then or now
-// (decisionCut.alone), are compared by their sums alone (pmdoc.FragmentReadsAs).
+// its occurrence among the cuts of that heading (sectionKey), and current is the document as it
+// stands cut by the same rule (readDecisions), so a document that carries one heading twice still
+// names each of them, and a decision with no cut leaves its links as they are. A version another
+// renderer version stored, or none stamped, holds the decision's text where this build reads its
+// text of the decision, alone, as the text now (storedDecisions.holds), so a renderer change,
+// which leaves every version stored before it in its renderer's spelling, marks no link. A text
+// that holds `[^`, and a text cut from inside a typed block then or now (decisionCut.alone), are
+// compared by their sums alone (pmdoc.FragmentReadsAs).
 func (s *server) markStaleLinks(
-	ctx context.Context, artifactID, markdown string, decisions []model.Decision, keys []sectionKey,
+	ctx context.Context, artifactID string, decisions []model.Decision, keys []sectionKey,
+	current map[sectionKey]decisionCut,
 ) error {
 	times := map[int64]time.Time{}
 	numbers := map[int]bool{}
@@ -370,7 +381,6 @@ func (s *server) markStaleLinks(
 	if err != nil {
 		return err
 	}
-	current := decisionCuts(markdown)
 	for i := range decisions {
 		decision := &decisions[i]
 		now, ok := current[keys[i]]
@@ -471,14 +481,15 @@ func (s *server) versionsAtTimes(
 }
 
 // decisionCut is one decision as a document's markdown holds it: its text, with the blank lines
-// at its end removed, that text's sum (decisionTextSum), and whether it stands alone: no typed
-// block is open at its heading's line or where it ends (decisionCuts). Its text read alone loses
-// every container it was cut from, so only a cut that stands alone is read alone
-// (pmdoc.FragmentReadsAs): a cut that starts inside a typed block, or ends inside one it opened,
-// is compared by its sum alone.
+// at its end removed, that text's sum (decisionTextSum), where its heading's line starts in the
+// markdown, and whether it stands alone: no typed block is open at its heading's line or where it
+// ends (decisionCuts). Its text read alone loses every container it was cut from, so only a cut
+// that stands alone is read alone (pmdoc.FragmentReadsAs): a cut that starts inside a typed block,
+// or ends inside one it opened, is compared by its sum alone.
 type decisionCut struct {
 	text  string
 	sum   string
+	start int
 	alone bool
 }
 
@@ -489,17 +500,20 @@ type decisionCut struct {
 // a deeper heading is text of the decision it stands in.
 //
 // A stored version holds no block id, so a decision is keyed by its heading and by how many
-// decisions before it carry that heading (sectionKey): a document that carries one heading twice,
-// which a replaced decision made again does, is two decisions here as it is two in the view,
-// rather than one the sum cannot name. Its text is the section's with the blank lines at its end
-// removed, so the same section of two versions sums alike whatever follows it; the text is a
-// slice of markdown, so the cut copies nothing.
+// decisions before it this cut gives that heading (sectionKey): a document that carries one
+// heading twice, which a replaced decision made again does, is two decisions here as it is two in
+// the view, rather than one the sum cannot name. Its text is the section's with the blank lines at
+// its end removed, so the same section of two versions sums alike whatever follows it; the text is
+// a slice of markdown, so the cut copies nothing.
 //
 // A heading line starts at column 0, so a cut never starts inside a list item, a quote or a
 // footnote definition, whose lines carry their container's prefix or marker; it can start inside
-// a typed block, whose lines carry none. The cut tracks the typed blocks open at each line
-// outside fenced code (typedFences), and a cut stands alone where none is open at its heading's
-// line or where it ends.
+// a typed block, whose lines carry none. A heading inside fenced code is the code's text: the cut
+// reads each fence's line as pmdoc's parser reads it (pmdoc.OpeningCodeFence,
+// pmdoc.CodeFence.ClosedBy), so a paragraph that opens with a code span of three backticks or more
+// opens no code, and a line that holds an info string closes none. The cut tracks the typed blocks
+// open at each line outside fenced code (typedFences), and a cut stands alone where none is open
+// at its heading's line or where it ends.
 func decisionCuts(markdown string) map[sectionKey]decisionCut {
 	cuts := map[sectionKey]decisionCut{}
 	seen := map[string]int{}
@@ -511,7 +525,7 @@ func decisionCuts(markdown string) map[sectionKey]decisionCut {
 	}
 	var open *section
 	inReplaced := false
-	fenced := ""
+	var fence pmdoc.CodeFence
 	var typed []int
 	offset := 0
 	closeAt := func(end int) {
@@ -519,7 +533,7 @@ func decisionCuts(markdown string) map[sectionKey]decisionCut {
 			return
 		}
 		text := strings.TrimRight(markdown[open.start:end], "\n")
-		cuts[open.key] = decisionCut{text: text, sum: decisionTextSum(text), alone: open.alone && len(typed) == 0}
+		cuts[open.key] = decisionCut{text: text, sum: decisionTextSum(text), start: open.start, alone: open.alone && len(typed) == 0}
 		open = nil
 	}
 	for _, line := range strings.SplitAfter(markdown, "\n") {
@@ -527,36 +541,36 @@ func decisionCuts(markdown string) map[sectionKey]decisionCut {
 			break
 		}
 		trimmed := strings.TrimRight(line, "\n")
-		if fence := codeFence(trimmed); fence != "" {
-			if fenced == "" {
-				fenced = fence
-			} else if strings.HasPrefix(fence, fenced[:1]) && len(fence) >= len(fenced) {
-				fenced = ""
+		if fence.Open() {
+			if fence.ClosedBy(trimmed) {
+				fence = pmdoc.CodeFence{}
 			}
 			offset += len(line)
 			continue
 		}
-		if fenced == "" {
-			if level, heading := markdownHeading(trimmed); level > 0 {
-				if open != nil && level <= open.level {
-					closeAt(offset)
-				}
-				if level <= 2 {
-					inReplaced = level == 2 && heading == replacedHeading
-				}
-				if open == nil && isDecisionHeading(level, inReplaced) {
-					occurrence := seen[heading]
-					seen[heading] = occurrence + 1
-					open = &section{
-						key:   sectionKey{heading: heading, occurrence: occurrence},
-						level: level,
-						start: offset,
-						alone: len(typed) == 0,
-					}
-				}
-			} else {
-				typed = typedFences(typed, trimmed)
+		if fence = pmdoc.OpeningCodeFence(trimmed); fence.Open() {
+			offset += len(line)
+			continue
+		}
+		if level, heading := markdownHeading(trimmed); level > 0 {
+			if open != nil && level <= open.level {
+				closeAt(offset)
 			}
+			if level <= 2 {
+				inReplaced = level == 2 && heading == replacedHeading
+			}
+			if open == nil && isDecisionHeading(level, inReplaced) {
+				occurrence := seen[heading]
+				seen[heading] = occurrence + 1
+				open = &section{
+					key:   sectionKey{heading: heading, occurrence: occurrence},
+					level: level,
+					start: offset,
+					alone: len(typed) == 0,
+				}
+			}
+		} else {
+			typed = typedFences(typed, trimmed)
 		}
 		offset += len(line)
 	}
@@ -566,67 +580,41 @@ func decisionCuts(markdown string) map[sectionKey]decisionCut {
 
 // typedFences is the fences of the typed blocks open after line, a line outside fenced code
 // without its line feed, where typed holds those open before it, outermost first, as pmdoc's
-// parser reads them. A line indented less than four columns that holds colons alone, at least as
-// many as an open block's fence, closes the outermost such block and every block inside it; a line
-// indented less than four columns that pmdoc reads as a typed block's opening line
-// (pmdoc.ParseTypedDirectiveOpen) opens one, whose fence is the colons it starts with. A typed
-// block inside a list item or a quote opens on a line that starts with the container's marker,
-// and no decision cut starts inside one, so it is not tracked.
+// parser reads that line (pmdoc.TypedFenceLine): a line of colons alone closes the outermost
+// block whose fence is at most that many colons and every block inside it, and a typed block's
+// opening line opens one. A typed block inside a list item or a quote opens on a line that starts
+// with the container's marker, and no decision cut starts inside one, so it is not tracked.
+//
+// It differs from the parser at a line of colons inside fenced code: the parser closes a typed
+// block there, as the browser editor's parser does, and the cut, which reads no line of fenced
+// code, closes none. The renderer writes a typed block's fence longer than every line of colons
+// inside it (pmdoc's closingColons), so no version it stored holds a line the two read otherwise.
 func typedFences(typed []int, line string) []int {
-	column, at := 0, 0
-	for at < len(line) && column < 4 && (line[at] == ' ' || line[at] == '\t') {
-		if line[at] == '\t' {
-			column += 4 - column%4
-		} else {
-			column++
-		}
-		at++
-	}
-	if column >= 4 || at == len(line) || line[at] != ':' {
-		return typed
-	}
-	text := line[at:]
-	colons := len(text) - len(strings.TrimLeft(text, ":"))
-	if strings.TrimRight(text[colons:], " \t") == "" {
+	colons, closes, opens := pmdoc.TypedFenceLine(line)
+	switch {
+	case closes:
 		for index, fence := range typed {
 			if colons >= fence {
 				return typed[:index]
 			}
 		}
-		return typed
-	}
-	if _, _, opens := pmdoc.ParseTypedDirectiveOpen(text); opens {
+	case opens:
 		return append(typed, colons)
 	}
 	return typed
 }
 
 // sectionKey names one decision of a document across its versions: its heading, and how many
-// decisions before it carry that heading.
+// decisions before it the document's cut gives that heading (decisionCuts). A decision the view
+// reads that has no cut - its heading stands in a list item, a quote or a footnote definition -
+// is keyed by the occurrence noCut, which no cut of any version holds.
 type sectionKey struct {
 	heading    string
 	occurrence int
 }
 
-// codeFence is the fence a line opens or closes a fenced code block with (three or more
-// backticks or tildes, at most three spaces in), else "". A heading inside such a block is the
-// code's own text.
-func codeFence(line string) string {
-	trimmed := strings.TrimLeft(line, " ")
-	if len(line)-len(trimmed) > 3 {
-		return ""
-	}
-	for _, marker := range []string{"```", "~~~"} {
-		if strings.HasPrefix(trimmed, marker) {
-			run := 0
-			for run < len(trimmed) && trimmed[run] == marker[0] {
-				run++
-			}
-			return trimmed[:run]
-		}
-	}
-	return ""
-}
+// noCut is the occurrence of a decision that has no cut (sectionKey).
+const noCut = -1
 
 // markdownHeading is a line's ATX heading level and title, or level 0 for a line that is no
 // heading. It reads a title as `headingOf` reads one off a heading block's own markdown, closing
@@ -673,10 +661,7 @@ func decisionTextSum(text string) string {
 
 // decisionSections cuts the decisions document into its sections: each `##` heading outside
 // `## Replaced`, and each `###` heading under it, with every block after the heading up to the
-// next heading of its level or higher. The blocks are read in document order, each parent before
-// its children, and the renderer writes a blank line between two top-level blocks, so a block
-// that starts at or before the end of the last top-level block before it stands inside that
-// block: a section is alone where its heading block does not.
+// next heading of its level or higher.
 func (s *server) decisionSections(ctx context.Context, artifactID string) (string, []decisionSection, error) {
 	markdown, blocks, err := s.deps.Docs.TextWithBlocks(ctx, artifactID)
 	if err != nil {
@@ -686,12 +671,7 @@ func (s *server) decisionSections(ctx context.Context, artifactID string) (strin
 	var sections []decisionSection
 	var current *decisionSection
 	inReplaced := false
-	end := -1
 	for _, block := range blocks {
-		topLevel := block.From > end
-		if topLevel {
-			end = block.To
-		}
 		level, title := headingOf(markdown, block)
 		if level > 0 {
 			if current != nil && level <= current.level {
@@ -710,7 +690,6 @@ func (s *server) decisionSections(ctx context.Context, artifactID string) (strin
 					heading:      title,
 					level:        level,
 					replaced:     inReplaced,
-					alone:        topLevel,
 					blockIDs:     []string{block.ID},
 					start:        block.From,
 					end:          block.To,

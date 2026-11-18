@@ -72,3 +72,81 @@ func TestFencedCodeDropsAWhitespaceLineShortOfTheFenceIndent(t *testing.T) {
 		},
 	})
 }
+
+// OpeningCodeFence and CodeFence.ClosedBy read a fence's line as the parser reads it. Each row is
+// held to Parse: a document opens with fenced code holding the line after the row's line exactly
+// where the reader says that line opens a fence, and that code ends at the row's closing line
+// exactly where the reader says the line closes it. A line reads alike with its line feed.
+func TestCodeFenceReadsALineAsTheParserDoes(t *testing.T) {
+	// fencedCode is the text of the code block markdown's first block holds, if it is one.
+	fencedCode := func(t *testing.T, markdown string) string {
+		t.Helper()
+		doc, err := Parse(markdown)
+		if err != nil {
+			t.Fatalf("Parse(%q): %v", markdown, err)
+		}
+		if first := doc.Children[0]; first.Type == "code_block" && len(first.Children) > 0 {
+			return first.Children[0].Text
+		}
+		return ""
+	}
+	for _, row := range []struct {
+		name, line string
+		opens      bool
+	}{
+		{"three backticks", "```", true},
+		{"four backticks", "````", true},
+		{"three tildes", "~~~", true},
+		{"a backtick fence with an info string", "```go", true},
+		{"a tilde fence whose info string holds a backtick", "~~~ a`b", true},
+		{"a backtick run with a backtick later on the line", "```a``b``` x", false},
+		{"two backticks", "``", false},
+		{"indented three spaces", "   ```", true},
+		{"indented four spaces", "    ```", false},
+		{"indented by a tab", "\t```", false},
+		{"a space and a tab, four columns", " \t```", false},
+	} {
+		t.Run("opening/"+row.name, func(t *testing.T) {
+			fence := OpeningCodeFence(row.line)
+			if fence.Open() != row.opens || OpeningCodeFence(row.line+"\n") != fence {
+				t.Fatalf("OpeningCodeFence(%q) = %#v, want open %t, and alike with its line feed", row.line, fence, row.opens)
+			}
+			markdown := row.line + "\nx\n"
+			if parsed := fencedCode(t, markdown) == "x"; parsed != fence.Open() {
+				t.Fatalf("Parse(%q) opens fenced code holding x: %t; the reader says the line opens a fence: %t", markdown, parsed, fence.Open())
+			}
+		})
+	}
+	for _, row := range []struct {
+		name, opener, closer string
+		closes               bool
+	}{
+		{"the same run", "```", "```", true},
+		{"a longer run", "```", "````", true},
+		{"trailing spaces", "```", "```   ", true},
+		{"a trailing tab", "~~~", "~~~\t", true},
+		{"indented three spaces", "```", "   ```", true},
+		{"indented four spaces", "```", "    ```", false},
+		{"an info string", "```", "```go", false},
+		{"a shorter run", "````", "```", false},
+		{"the other character", "```", "~~~", false},
+	} {
+		t.Run("closing/"+row.name, func(t *testing.T) {
+			fence := OpeningCodeFence(row.opener)
+			if !fence.Open() {
+				t.Fatalf("OpeningCodeFence(%q) opens no fence", row.opener)
+			}
+			closes := fence.ClosedBy(row.closer)
+			if closes != row.closes || fence.ClosedBy(row.closer+"\n") != closes {
+				t.Fatalf("%#v.ClosedBy(%q) = %t, want %t, and alike with its line feed", fence, row.closer, closes, row.closes)
+			}
+			markdown := row.opener + "\nx\n" + row.closer + "\ny\n"
+			if code := fencedCode(t, markdown); (code == "x") != closes {
+				t.Fatalf("Parse(%q) holds the code %q; the reader says the line closes the fence: %t", markdown, code, closes)
+			}
+		})
+	}
+	if fence := (CodeFence{}); fence.Open() || fence.ClosedBy("```") {
+		t.Fatal("the zero CodeFence is open or closed by a fence")
+	}
+}

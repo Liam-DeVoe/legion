@@ -16,4 +16,7 @@ body: |-
   typed block then and stands in no container now. A block or a decision whose text holds `[^` is
   not read alone either, because whether that text is a footnote reference depends on the labels its
   document defines. A check result's words read as moved only when the check's sum and its
-  changed version both moved.
+  changed version both moved. The decisions view reads a code fence's line as the parser does, so
+  a paragraph that opens with a code span no longer hides the decisions after it from the
+  stale-link check, and each decision is compared by the cut of its own heading, so a heading of
+  the same name inside a quote or a list item no longer shifts it onto another decision's text.

@@ -331,20 +331,21 @@ type questionBlock struct {
 // questionBlocks is every question block markdown declares, in document order, the first of each
 // id: each line that, past its containers' quote and list markers, opens a typed block named ask
 // holding an id, outside fenced code. A fenced example of a directive is code to pmdoc, so a
-// `copied_from` it carries names no question of this document.
+// `copied_from` it carries names no question of this document. A fence's lines are read by the one
+// reader of that grammar outside the parser (pmdoc.OpeningCodeFence, pmdoc.CodeFence.ClosedBy).
 func questionBlocks(markdown string) []questionBlock {
 	blocks := []questionBlock{}
 	seen := map[string]struct{}{}
-	var fence codeFence
+	var fence pmdoc.CodeFence
 	for line := range strings.Lines(markdown) {
 		rest := trimContainerMarkers(line)
-		if fence.run > 0 {
-			if fence.closedBy(rest) {
-				fence = codeFence{}
+		if fence.Open() {
+			if fence.ClosedBy(rest) {
+				fence = pmdoc.CodeFence{}
 			}
 			continue
 		}
-		if fence = openingFence(rest); fence.run > 0 {
+		if fence = pmdoc.OpeningCodeFence(rest); fence.Open() {
 			continue
 		}
 		block, ok := askBlock(rest)
@@ -358,44 +359,6 @@ func questionBlocks(markdown string) []questionBlock {
 		blocks = append(blocks, block)
 	}
 	return blocks
-}
-
-// codeFence is the fence a fenced code block opened with: its character, a backtick or a tilde,
-// and how many of it the run holds, none when no fence is open.
-type codeFence struct {
-	char byte
-	run  int
-}
-
-// openingFence is the fence text, a line past its containers' markers, opens, as CommonMark reads
-// one: a run of three or more backticks or tildes, a backtick run followed by no other backtick
-// (such a line is an inline code span). Text that opens none is the zero codeFence.
-func openingFence(text string) codeFence {
-	fence := fenceRun(text)
-	if fence.run < 3 || fence.char == '`' && strings.ContainsRune(text[fence.run:], '`') {
-		return codeFence{}
-	}
-	return fence
-}
-
-// closedBy reports whether text, a line past its containers' markers, closes the fence: a run of
-// its character at least as long, followed by nothing but whitespace. A fence nothing closes runs
-// to the document's end.
-func (fence codeFence) closedBy(text string) bool {
-	closer := fenceRun(text)
-	return closer.char == fence.char && closer.run >= fence.run && strings.TrimRight(text[closer.run:], " \t\r\n") == ""
-}
-
-// fenceRun is the run of backticks or tildes text opens with, if any.
-func fenceRun(text string) codeFence {
-	if text == "" || text[0] != '`' && text[0] != '~' {
-		return codeFence{}
-	}
-	run := 1
-	for run < len(text) && text[run] == text[0] {
-		run++
-	}
-	return codeFence{char: text[0], run: run}
 }
 
 // askBlock is the question block one line opens, the line past its containers' markers

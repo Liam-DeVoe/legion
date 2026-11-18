@@ -664,22 +664,31 @@ const calloutDecision = "Ship the notices beside the callout"
 // the callout ending it, where the decision now stands outside the callout; or outside it, where
 // the decision now stands inside. Each text reads alone as the other, though the decision moved
 // across the callout, so the decision is compared by its text's sum: it waits for review, and
-// the spec block it links is out of date.
+// the spec block it links is out of date. So it does where a paragraph opening with a code span
+// of three backticks, which holds two in a row, stands before the callout and another inside it
+// before the decision: such a line opens no fenced code, and the callout's opening line between
+// them is read.
 func TestADecisionKeptOnOneSideOfATypedBlockWaitsOnceItStandsOnTheOther(t *testing.T) {
 	for _, test := range []struct {
 		name       string
 		keptInside bool
+		codeSpans  bool
 	}{
-		{"kept inside a callout and standing outside it now", true},
-		{"kept outside a callout and standing inside it now", false},
+		{"kept inside a callout and standing outside it now", true, false},
+		{"kept outside a callout and standing inside it now", false, false},
+		{"kept inside a callout after paragraphs opening with a code span, and standing outside it now", true, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			fixture := newDecisionsFixture(t)
 			handler, database, key, id := fixture.handler, fixture.database, fixture.issue.Key, fixture.decisions.ID
 			section := "## " + calloutDecision + "\n\nShapes dispatch://" + key + "/spec#b-hold-it.\n\n- first\n\n- second\n\n- third"
 			kept := strings.Replace(section, "- first\n\n- second", "- first\n- second", 1)
+			codeSpan := ""
+			if test.codeSpans {
+				codeSpan = "```a``b``` x\n\n"
+			}
 			inside := func(text string) string {
-				return ":::callout{#aside kind=\"note\" title=\"\"}\n" + text + "\n\n# Notes\n:::"
+				return codeSpan + ":::callout{#aside kind=\"note\" title=\"\"}\n" + codeSpan + text + "\n\n# Notes\n:::"
 			}
 			outside := func(text string) string { return text + "\n\n# Notes" }
 			now, then := outside(section), inside(kept)
@@ -732,6 +741,185 @@ func TestADecisionKeptOnOneSideOfATypedBlockWaitsOnceItStandsOnTheOther(t *testi
 				t.Errorf("the decision kept across the callout marks %v out of date, want hold-it", staleTargets(decision))
 			}
 		})
+	}
+}
+
+// A stored version is cut into its decisions line by line (decisionCuts), and a heading inside
+// fenced code is the code's text, so a fence's line is read as pmdoc's parser reads it. A
+// paragraph that opens with a code span of three backticks holding two in a row opens no code: the
+// decision after it is cut, and a callout opened after another such paragraph is open at a
+// decision inside it. A line of backticks that also holds an info string closes no code: a heading
+// after it inside the code opens no decision.
+func TestDecisionCutsReadCodeFencesAsTheParserDoes(t *testing.T) {
+	for _, test := range []struct {
+		name, markdown, text string
+		alone                bool
+	}{
+		{
+			name:     "a paragraph that opens with a code span",
+			markdown: "```a``b``` x\n\n## D\n\nText.\n",
+			text:     "## D\n\nText.",
+			alone:    true,
+		},
+		{
+			name:     "a callout after a paragraph that opens with a code span",
+			markdown: "```a``b``` x\n\n:::callout{#aside kind=\"note\" title=\"\"}\n```a``b``` x\n\n## D\n\nText.\n:::\n",
+			text:     "## D\n\nText.\n:::",
+		},
+		{
+			name:     "a line of backticks with an info string inside code",
+			markdown: "## D\n\n```\ncode\n```go\n## X\n```\n",
+			text:     "## D\n\n```\ncode\n```go\n## X\n```",
+			alone:    true,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cuts := decisionCuts(test.markdown)
+			cut, ok := cuts[sectionKey{heading: "D"}]
+			if len(cuts) != 1 || !ok || cut.text != test.text || cut.alone != test.alone {
+				t.Fatalf("decisionCuts(%q) = %#v, want the one decision D, alone %t, written %q", test.markdown, cuts, test.alone, test.text)
+			}
+		})
+	}
+}
+
+// sharedHeading is the heading of the tests whose decisions.md writes one heading twice: once
+// inside a quote or a list item, and once at the document's level.
+const sharedHeading = "Ship the notices once"
+
+// decisionsNamed is each decision of the view whose heading is heading, in document order.
+func decisionsNamed(view issueDecisions, heading string) []model.Decision {
+	named := []model.Decision{}
+	for _, decision := range view.Decisions {
+		if decision.Heading == heading {
+			named = append(named, decision)
+		}
+	}
+	return named
+}
+
+// afterAQuotedHeading is newDecisionsFixture with a quote that holds a sharedHeading heading
+// written into decisions.md, and after it a decision of that heading at the document's level that
+// links hold-it and ends in a loose list. It returns the version that wrote them and the
+// decision at the document's level as the view then read it.
+func afterAQuotedHeading(t *testing.T) (decisionsFixture, model.Version, model.Decision) {
+	t.Helper()
+	fixture := newDecisionsFixture(t)
+	key := fixture.issue.Key
+	section := "## " + sharedHeading + "\n\nShapes dispatch://" + key + "/spec#b-hold-it.\n\n- first\n\n- second\n\n- third"
+	version := editIssueDocument(t, fixture.handler, key, fixture.decisions.Slug, []map[string]any{{
+		"op": "insert", "markdown": "> ## " + sharedHeading + "\n>\n> Quoted.\n\n" + section, "before": "## Replaced",
+	}})
+	named := decisionsNamed(readIssueDecisions(t, fixture.handler, key), sharedHeading)
+	if len(named) != 2 || named[1].Text != section || named[1].ChangedVersion != version.Number ||
+		fmt.Sprint(linkTargets(named[1])) != "[hold-it]" {
+		t.Fatalf("the decisions headed %q = %#v, want the quoted one and then one written %q at version %d linking hold-it",
+			sharedHeading, named, section, version.Number)
+	}
+	return fixture, version, named[1]
+}
+
+// A heading inside a quote starts no cut (decisionCuts), so the cut names a decision at the
+// document's level after a quoted decision of its heading as the first decision of that heading,
+// in every version and in the document as it stands. alice keeps that decision, and a build of
+// another renderer version stored the version her keep names, its loose list spelled otherwise:
+// the decision stays kept, and the spec block it links is not out of date.
+func TestADecisionAfterAQuotedHeadingOfItsNameStaysKeptAcrossARendererChange(t *testing.T) {
+	fixture, version, written := afterAQuotedHeading(t)
+	handler, database, key, id := fixture.handler, fixture.database, fixture.issue.Key, fixture.decisions.ID
+	keepBlock(t, handler, id, written.BlockID, written.TextSHA256)
+	another := pmdoc.RendererVersion - 1
+	respellVersion(t, database, id, version.Number, &another)
+	kept := strings.Replace(written.Text, "- first\n\n- second", "- first\n- second", 1)
+	if _, err := database.Pool.Exec(context.Background(), `
+		update decision_keeps set text_sha256 = $3 where artifact_id = $1 and block_id = $2
+	`, id, written.BlockID, decisionTextSum(kept)); err != nil {
+		t.Fatalf("keep the decision as another renderer version spelled it: %v", err)
+	}
+
+	decision := decisionsNamed(readIssueDecisions(t, handler, key), sharedHeading)[1]
+	if decision.BlockID != written.BlockID || decision.Kept == nil || decision.Kept.ChangedVersion != version.Number || decision.WaitingReview {
+		t.Errorf("the decision after the quoted heading = %#v, want %s kept at version %d and waiting for no review",
+			decision, written.BlockID, version.Number)
+	}
+	if stale := staleTargets(decision); len(stale) != 0 {
+		t.Errorf("the decision after the quoted heading marks %v out of date", stale)
+	}
+}
+
+// A decision at the document's level after a quoted decision of its heading is read by its own
+// cut for its links too: once its content changes, the spec block it links is out of date.
+func TestADecisionAfterAQuotedHeadingOfItsNameMarksItsLinkOnceItsContentChanges(t *testing.T) {
+	fixture, _, written := afterAQuotedHeading(t)
+	handler, key := fixture.handler, fixture.issue.Key
+	editIssueDocument(t, handler, key, fixture.decisions.Slug, []map[string]any{
+		{"op": "replace", "find": "third", "with": "third, after measuring"},
+	})
+	changed := decisionsNamed(readIssueDecisions(t, handler, key), sharedHeading)[1]
+	if changed.BlockID != written.BlockID || !strings.Contains(changed.Text, "third, after measuring") {
+		t.Fatalf("the decision after the quoted heading = %#v, want %s holding the changed item", changed, written.BlockID)
+	}
+	if got := fmt.Sprint(staleTargets(changed)); got != "[hold-it]" {
+		t.Errorf("after its content changed the decision after the quoted heading marks %v out of date, want hold-it", staleTargets(changed))
+	}
+}
+
+// A decision whose heading stands in a list item has no cut. alice keeps such a decision, its
+// heading alone, and the version her keep names, which a build of another renderer version
+// stored, holds the decision at the document's level in another spelling of that heading, before
+// another decision of its heading. This build reads that kept text alone as the decision's text
+// now (pmdoc.FragmentReadsAs): a heading line carries no prefix of the list item, as every later
+// line of a decision inside one does. The decision waits for review, since it moved into the list
+// item, and the first cut of its heading now is the other decision's, which says nothing of it.
+func TestADecisionKeptBeforeItMovedIntoAListItemWaitsBesideADecisionOfItsName(t *testing.T) {
+	fixture := newDecisionsFixture(t)
+	handler, database, key, id := fixture.handler, fixture.database, fixture.issue.Key, fixture.decisions.ID
+	heading, other := "## "+sharedHeading, "## "+sharedHeading+"\n\nOther."
+	now := "- Intro.\n\n  " + heading + "\n\n" + other
+	version := editIssueDocument(t, handler, key, fixture.decisions.Slug, []map[string]any{{
+		"op": "insert", "markdown": now, "before": "## Replaced",
+	}})
+	named := decisionsNamed(readIssueDecisions(t, handler, key), sharedHeading)
+	if len(named) != 2 || named[0].Text != heading || named[0].ChangedVersion != version.Number || named[1].Text != other {
+		t.Fatalf("the decisions headed %q = %#v, want %q in a list item, changed at version %d, and then %q",
+			sharedHeading, named, heading, version.Number, other)
+	}
+	written := named[0]
+	keepBlock(t, handler, id, written.BlockID, written.TextSHA256)
+
+	ctx := context.Background()
+	var stored string
+	if err := database.Pool.QueryRow(ctx, `
+		select markdown from artifact_versions where artifact_id = $1 and number = $2
+	`, id, version.Number).Scan(&stored); err != nil {
+		t.Fatalf("read version %d: %v", version.Number, err)
+	}
+	if !strings.Contains(stored, now+"\n") {
+		t.Fatalf("version %d = %q; the test needs it to hold %q", version.Number, stored, now)
+	}
+	// The kept heading reads alone as the heading now, so the decision waits only because it
+	// stands in a list item.
+	kept := "##  " + sharedHeading
+	if !pmdoc.FragmentReadsAs(kept, heading) {
+		t.Fatalf("%q does not read alone as %q; the test needs it to", kept, heading)
+	}
+	then := "- Intro.\n\n" + kept + "\n\n" + other
+	another := pmdoc.RendererVersion - 1
+	if _, err := database.Pool.Exec(ctx, `
+		update artifact_versions set markdown = $3, renderer_version = $4 where artifact_id = $1 and number = $2
+	`, id, version.Number, strings.Replace(stored, now+"\n", then+"\n", 1), another); err != nil {
+		t.Fatalf("store version %d as another renderer version stored the decision at the document's level: %v", version.Number, err)
+	}
+	if _, err := database.Pool.Exec(ctx, `
+		update decision_keeps set text_sha256 = $3 where artifact_id = $1 and block_id = $2
+	`, id, written.BlockID, decisionTextSum(kept)); err != nil {
+		t.Fatalf("keep the decision as that version held it: %v", err)
+	}
+
+	decision := decisionsNamed(readIssueDecisions(t, handler, key), sharedHeading)[0]
+	if decision.BlockID != written.BlockID || decision.Kept == nil || decision.Kept.ChangedVersion != version.Number || !decision.WaitingReview {
+		t.Errorf("the decision in the list item = %#v, want %s kept at version %d and waiting for review",
+			decision, written.BlockID, version.Number)
 	}
 }
 

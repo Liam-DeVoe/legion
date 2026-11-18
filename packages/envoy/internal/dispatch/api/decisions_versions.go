@@ -19,15 +19,17 @@ import (
 // version's text of the decision (decisionCuts, named by its sectionKey) has the keep's sum,
 // which makes it the text the keep agreed with, the decision stood in no container there and
 // stands in none now, and this build reads that text, alone, as the decision's text now
-// (pmdoc.FragmentReadsAs). alone[i] is whether decision i's heading block stands in no other
-// block of the document now (decisionSection.alone), and decisionCut.alone whether the kept text
-// stood in none: a decision's text read alone loses the list item, quote, footnote definition or
-// typed block it stands in, so two trees can read as one. The decision waits for review
-// otherwise: a version that holds no such text - the decision's heading changed since, or a block
-// left the decision after that version - a decision inside a container then or now, kept text
-// that reads otherwise alone, and kept text or text now that holds `[^`, which reads as a
-// footnote reference or as text by the labels the whole document defines (another section among
-// them), leave it waiting, as a version this renderer version stored does.
+// (pmdoc.FragmentReadsAs). Both sides are read by one cut (decisionCuts): the stored version's,
+// and the document's as it stands (current, readDecisions), each cut's decisionCut.alone saying
+// whether no typed block holds the decision's text there or now; a decision whose heading stands
+// in a list item, a quote or a footnote definition has no cut now. A decision's text read alone
+// loses the list item, quote, footnote definition or typed block it stands in, so two trees can
+// read as one. The decision waits for review otherwise: a version that holds no such text - the
+// decision's heading changed since, or a block left the decision after that version - a decision
+// inside a container then or now, kept text that reads otherwise alone, and kept text or text now
+// that holds `[^`, which reads as a footnote reference or as text by the labels the whole document
+// defines (another section among them), leave it waiting, as a version this renderer version
+// stored does.
 //
 // Of the versions the keeps of decisions standing in no container name, those another renderer
 // version stored, or none stamped, are read in one query (otherRendererDecisionsAt), and a
@@ -35,11 +37,17 @@ import (
 // whose version this renderer version wrote; only such a keep whose version holds the keep's sum
 // pays a parse and a render.
 func (s *server) markKeptAcrossRenderers(
-	ctx context.Context, artifactID string, decisions []model.Decision, keys []sectionKey, alone []bool,
+	ctx context.Context, artifactID string, decisions []model.Decision, keys []sectionKey,
+	current map[sectionKey]decisionCut,
 ) error {
+	// A candidate is a decision waiting for review that a keep names and that stands alone now.
+	candidate := func(i int) bool {
+		now, ok := current[keys[i]]
+		return decisions[i].WaitingReview && decisions[i].Kept != nil && ok && now.alone
+	}
 	numbers := map[int]bool{}
 	for i, decision := range decisions {
-		if decision.WaitingReview && decision.Kept != nil && alone[i] {
+		if candidate(i) {
 			numbers[decision.Kept.ChangedVersion] = true
 		}
 	}
@@ -52,7 +60,7 @@ func (s *server) markKeptAcrossRenderers(
 	}
 	for i := range decisions {
 		decision := &decisions[i]
-		if !decision.WaitingReview || decision.Kept == nil || !alone[i] {
+		if !candidate(i) {
 			continue
 		}
 		version, read := versions[decision.Kept.ChangedVersion]

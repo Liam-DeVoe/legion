@@ -279,6 +279,30 @@ func ParseTypedDirectiveOpen(line string) (string, Attrs, bool) {
 	return name, attrs, true
 }
 
+// TypedFenceLine reads one line as a typed block's fence line, as the parser reads it
+// (typedDirectiveParser), indented less than four columns, a tab advancing to the next multiple
+// of four (util.IndentWidth). A line that holds colons alone, with spaces and tabs around them,
+// closes each open typed block whose fence is at most colons long, and every block inside it
+// (closes, Continue); a line ParseTypedDirectiveOpen reads as a typed block's opening line opens
+// one whose fence is colons, the colons it starts with (opens, Open). Any other line answers 0 and
+// neither. The line is passed past its containers' markers, with or without its line feed, and
+// its indentation is measured from there. With ParseTypedDirectiveOpen this is the one reader of
+// that grammar outside the parser: api's decisionCuts, which follows the typed blocks a stored
+// version's lines open and close, reads a line with it rather than with a grammar of its own.
+func TypedFenceLine(line string) (colons int, closes, opens bool) {
+	text := strings.TrimLeft(line, " \t")
+	if textColumn(line, 0) >= 4 || text == "" {
+		return 0, false, false
+	}
+	if colons := fenceColons(text); colons > 0 {
+		return colons, true, false
+	}
+	if _, _, ok := ParseTypedDirectiveOpen(strings.TrimRight(text, "\n")); ok {
+		return colonRun([]byte(text)), false, true
+	}
+	return 0, false, false
+}
+
 func parseDirectiveAttributes(value string) (Attrs, error) {
 	attrs := Attrs{}
 	for offset := 0; offset < len(value); {

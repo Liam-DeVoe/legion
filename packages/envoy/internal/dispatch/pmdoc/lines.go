@@ -391,6 +391,63 @@ func (p fenceClosure) Continue(node ast.Node, reader gmtext.Reader, pc parser.Co
 	return state
 }
 
+// CodeFence is the fence a fenced code block opened with: its character, a backtick or a tilde,
+// and how many of it the run holds. The zero CodeFence is no fence.
+//
+// OpeningCodeFence and CodeFence.ClosedBy read a fence's line as the parser reads it (goldmark's
+// fenced code parser, which fenceClosure wraps), and they are the one reader of that grammar: a
+// caller outside the document parser - refs.questionBlocks and api's decisionCuts, which scan a
+// stored version's lines for its question blocks and its decisions - reads a line with them
+// rather than with a grammar of its own. A line is passed past its containers' markers, with or
+// without its line ending, and its indentation is measured from there.
+type CodeFence struct {
+	char byte
+	run  int
+}
+
+// OpeningCodeFence is the fence line opens a fenced code block with: indented at most three
+// columns, a tab advancing to the next multiple of four (util.IndentWidth), then a run of three or
+// more backticks or tildes, a backtick run followed by no other backtick, since CommonMark takes
+// no backtick in a backtick fence's info string: such a line is a paragraph that opens with a code
+// span, as the renderer writes inline code holding two backticks in a row at a paragraph's start
+// (inlineCodeFence). A line that opens none is the zero CodeFence.
+func OpeningCodeFence(line string) CodeFence {
+	fence, rest := codeFenceRun(line)
+	if fence.run < 3 || fence.char == '`' && strings.IndexByte(rest, '`') >= 0 {
+		return CodeFence{}
+	}
+	return fence
+}
+
+// Open reports whether a line opened the fence, which is no zero CodeFence.
+func (fence CodeFence) Open() bool {
+	return fence.run > 0
+}
+
+// ClosedBy reports whether line closes the fenced code block the fence opened: indented at most
+// three columns, then a run of the fence's character at least as long as the fence's, followed by
+// nothing but spaces, tabs and the line ending, so a line that also holds an info string is a line
+// of the code. A fence nothing closes runs to the end of its container.
+func (fence CodeFence) ClosedBy(line string) bool {
+	closer, rest := codeFenceRun(line)
+	return fence.Open() && closer.char == fence.char && closer.run >= fence.run && strings.TrimRight(rest, " \t\r\n") == ""
+}
+
+// codeFenceRun is the run of backticks or tildes line starts with past at most three columns of
+// indentation, as textColumn measures them, and the rest of the line after the run: the zero
+// CodeFence where there is none.
+func codeFenceRun(line string) (CodeFence, string) {
+	text := strings.TrimLeft(line, " \t")
+	if textColumn(line, 0) > 3 || text == "" || text[0] != '`' && text[0] != '~' {
+		return CodeFence{}, ""
+	}
+	run := 1
+	for run < len(text) && text[run] == text[0] {
+		run++
+	}
+	return CodeFence{char: text[0], run: run}, text[run:]
+}
+
 // codeColumns is goldmark's indented code parser measuring a blank line's indentation from the
 // column it stands at, as it measures a line of code's: four columns are the code's indentation,
 // and what the line holds past them, a tab split there written as the columns it has left, is the
