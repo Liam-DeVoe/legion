@@ -1123,16 +1123,32 @@ type StepRecord struct {
 	*PlanRating
 }
 
-// PlanRating is a retro's rating of the plan its issue ran: Rating, from 1 (the plan cost the
-// work) to 5 (the plan fit the work), and Reason, why. The two are one value, so a step record
-// carries a rating with its reason or no rating. It mirrors dispatch.PlanRating, which the
-// publication converts it to (publishStepRecord), because the dispatch package imports no record
-// of the daemon's; internal/daemon's TestAStepRecordReachesDispatchWithEveryField holds the two to
-// the same fields.
+// PlanRating is a retro's rating of the plan its issue ran: Rating, from PlanRatingLeast (the plan
+// cost the work) to PlanRatingMost (the plan fit the work), and Reason, why. The two are one
+// value, so a step record carries a rating with its reason or no rating. It mirrors
+// dispatch.PlanRating, which the publication converts it to (publishStepRecord), because the
+// dispatch package imports no record of the daemon's; internal/daemon's
+// TestAStepRecordReachesDispatchWithEveryField holds the two to the same fields.
 type PlanRating struct {
 	Rating int    `json:"rating"`
 	Reason string `json:"rating_reason"`
 }
+
+// The bounds of a rating of the plan, which the completion route holds a retro's rating to (api's
+// planRatingOf) and the retro's prompt states (internal/prompts). api's TestPlanRatingGolden
+// writes the three to `packages/contracts/fixtures/daemon-api/plan-rating.json`, and
+// `packages/contracts`'s legion-api.test.ts and Dispatch's textcheck hold their own bounds equal
+// to that file, so a bound moved on one side alone fails a test on the other.
+const (
+	// PlanRatingLeast and PlanRatingMost are the scale: 1, the plan cost the work, to 5, the plan
+	// fit the work.
+	PlanRatingLeast = 1
+	PlanRatingMost  = 5
+	// PlanReasonMax is the most characters, counted as Unicode code points, a rating's reason
+	// holds: Dispatch's record of the retro takes a reason of one to 2,000 characters, so a longer
+	// one taken by the daemon could never be written there.
+	PlanReasonMax = 2000
+)
 
 func (StepRecord) OutboxKind() OutboxKind { return OutboxKindStepRecord }
 

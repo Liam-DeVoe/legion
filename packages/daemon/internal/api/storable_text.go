@@ -91,7 +91,7 @@ func unstorableJSONValue(path string, decoder *json.Decoder) error {
 }
 
 // unstorableText refuses value when it holds U+0000, naming place and where the first one
-// stands, counted from 1 in code points as the daemon's caps count (planReasonMax).
+// stands, counted from 1 in code points as the daemon's caps count (record.PlanReasonMax).
 func unstorableText(place, value string) error {
 	at := strings.IndexByte(value, 0)
 	if at < 0 {

@@ -1,8 +1,6 @@
 package prompts
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -679,36 +677,6 @@ func TestTheComposedReviewerPromptWritesTheHeadItReviewedInItsFooter(t *testing.
 	}
 }
 
-// daemonRatingBounds is the file the daemon's TestPlanRatingGolden writes from the bounds api's
-// planRatingOf holds a retro's rating to (planRatingLeast, planRatingMost and planReasonMax in
-// internal/api/handoff.go), which this package cannot import.
-const daemonRatingBounds = "../../../contracts/fixtures/daemon-api/plan-rating.json"
-
-// ratingBounds is the scale and the most characters of a reason daemonRatingBounds holds. A file
-// that leaves one of the three out, or adds a bound, stops the test, since the retro's prompt is
-// held to all three and to nothing else.
-func ratingBounds(t *testing.T) (least, most, reasonMost int) {
-	t.Helper()
-	text, err := os.ReadFile(daemonRatingBounds)
-	if err != nil {
-		t.Fatalf("read %s: %v", daemonRatingBounds, err)
-	}
-	var bounds struct {
-		Least      *int `json:"least"`
-		Most       *int `json:"most"`
-		ReasonMost *int `json:"reasonMost"`
-	}
-	decoder := json.NewDecoder(bytes.NewReader(text))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&bounds); err != nil {
-		t.Fatalf("decode %s: %v; the retro's prompt is held to least, most and reasonMost alone", daemonRatingBounds, err)
-	}
-	if bounds.Least == nil || bounds.Most == nil || bounds.ReasonMost == nil {
-		t.Fatalf("%s is %s, want least, most and reasonMost, the bounds the retro's prompt states", daemonRatingBounds, text)
-	}
-	return *bounds.Least, *bounds.Most, *bounds.ReasonMost
-}
-
 // inThousands is n as the prompts write a count: its digits grouped in threes by commas, 2000 as
 // 2,000.
 func inThousands(n int) string {
@@ -726,9 +694,10 @@ func inThousands(n int) string {
 // planRatingOf, PLAN_RATING_INPUT). The role the daemon starts on the retro (phase.RoleFor)
 // therefore reads, in its composed prompt, which plan it rates (the issue's steps and the role that
 // worked each, never the planner's plan.md), the two fields its completion carries, both ends of
-// the scale and the most characters of a reason, as the daemon holds them (daemonRatingBounds),
-// and both refusals. No other phase worker ends the retro, and the daemon refuses a rating
-// on its completion (PLAN_RATING_UNEXPECTED), so no other composed prompt teaches one.
+// the scale and the most characters of a reason, as the daemon holds them (record.PlanRatingLeast,
+// record.PlanRatingMost and record.PlanReasonMax, which api's planRatingOf reads), and both
+// refusals. No other phase worker ends the retro, and the daemon refuses a rating on its
+// completion (PLAN_RATING_UNEXPECTED), so no other composed prompt teaches one.
 //
 // The same prompt reaches a tool that takes neither field: a claim whose launch installs no plugin
 // (a Claude Code role in a pod) is served on the contract of the plugin its image carries until the
@@ -738,7 +707,7 @@ func inThousands(n int) string {
 // than to send fields its tool refuses.
 // This shows the text is loaded, never that a role follows it.
 func TestTheComposedRetroRatesThePlanTheIssueRan(t *testing.T) {
-	least, most, reasonMost := ratingBounds(t)
+	least, most, reasonMost := record.PlanRatingLeast, record.PlanRatingMost, record.PlanReasonMax
 	composer, err := New(t.TempDir())
 	if err != nil {
 		t.Fatalf("New: %v", err)

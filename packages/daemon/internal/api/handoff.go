@@ -79,21 +79,6 @@ type HandoffCompleteRequest struct {
 // serves its claim (staleClaim), completes with no rating.
 const PlanRatingContract = 161
 
-// The bounds of a rating of the plan. TestPlanRatingGolden writes the three to
-// `packages/contracts/fixtures/daemon-api/plan-rating.json`, and `packages/contracts`'s
-// legion-api.test.ts holds the contract's own bounds equal to that file, so a bound moved on one
-// side alone fails a test on the other.
-const (
-	// planRatingLeast and planRatingMost are the scale: 1, the plan cost the work, to 5, the plan
-	// fit the work.
-	planRatingLeast = 1
-	planRatingMost  = 5
-	// planReasonMax is the most characters, counted as Unicode code points, a rating's reason
-	// holds: Dispatch's record of the retro takes a reason of one to 2,000 characters, so a longer
-	// one taken here could never be written there.
-	planReasonMax = 2000
-)
-
 // HandoffCompleteResponse confirms that the completion fact committed. It carries nothing: the
 // daemon merges nothing and reads no head, so no completion has anything to answer with.
 type HandoffCompleteResponse struct{}
@@ -446,13 +431,14 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 //   - PLAN_RATING_REQUIRED: the completion that ends the retro names neither, from a claim whose
 //     plugin declared PlanRatingContract or a later one, whose tool takes the two. A plugin before
 //     it, and a claim that recorded no contract (0), never sends them and completes unrated.
-//   - PLAN_RATING_INPUT: a rating outside 1 to 5, one of the two without the other, or a reason
-//     that is blank or holds more than planReasonMax characters, counted as Unicode code points.
+//   - PLAN_RATING_INPUT: a rating outside record.PlanRatingLeast to record.PlanRatingMost, one of
+//     the two without the other, or a reason that is blank or holds more than record.PlanReasonMax
+//     characters, counted as Unicode code points.
 func planRatingOf(req HandoffCompleteRequest, endsRetro bool, pluginContract int, what string) (*intake.PlanRating, *intake.Refusal) {
 	if req.PlanRating == nil && req.PlanReason == nil {
 		if endsRetro && pluginContract >= PlanRatingContract {
 			return nil, &intake.Refusal{Status: http.StatusBadRequest, Code: "PLAN_RATING_REQUIRED", Message: fmt.Sprintf(
-				"%s carries no rating of the plan, and the completion that ends the retro rates it: rate the plan the issue ran from %d (the plan cost the work) to %d (the plan fit the work) in planRating, say why in planReason, and send it again; nothing was recorded", what, planRatingLeast, planRatingMost)}
+				"%s carries no rating of the plan, and the completion that ends the retro rates it: rate the plan the issue ran from %d (the plan cost the work) to %d (the plan fit the work) in planRating, say why in planReason, and send it again; nothing was recorded", what, record.PlanRatingLeast, record.PlanRatingMost)}
 		}
 		return nil, nil
 	}
@@ -466,21 +452,21 @@ func planRatingOf(req HandoffCompleteRequest, endsRetro bool, pluginContract int
 	switch {
 	case req.PlanRating == nil:
 		wrong = "planReason comes with no planRating"
-	case *req.PlanRating < planRatingLeast || *req.PlanRating > planRatingMost:
-		wrong = fmt.Sprintf("planRating %d is outside %d to %d", *req.PlanRating, planRatingLeast, planRatingMost)
+	case *req.PlanRating < record.PlanRatingLeast || *req.PlanRating > record.PlanRatingMost:
+		wrong = fmt.Sprintf("planRating %d is outside %d to %d", *req.PlanRating, record.PlanRatingLeast, record.PlanRatingMost)
 	case req.PlanReason == nil:
 		wrong = fmt.Sprintf("planRating %d comes with no planReason", *req.PlanRating)
 	case strings.TrimSpace(*req.PlanReason) == "":
 		wrong = "planReason is blank"
 	default:
 		length := utf8.RuneCountInString(*req.PlanReason)
-		if length <= planReasonMax {
+		if length <= record.PlanReasonMax {
 			return &intake.PlanRating{Score: *req.PlanRating, Reason: *req.PlanReason}, nil
 		}
-		wrong = fmt.Sprintf("planReason is %d characters, and it holds at most %d", length, planReasonMax)
+		wrong = fmt.Sprintf("planReason is %d characters, and it holds at most %d", length, record.PlanReasonMax)
 	}
 	return nil, &intake.Refusal{Status: http.StatusBadRequest, Code: "PLAN_RATING_INPUT", Message: fmt.Sprintf(
-		"%s: a rating of the plan is a whole number from %d to %d in planRating with why in planReason, one to %d characters, the two together; nothing was recorded", wrong, planRatingLeast, planRatingMost, planReasonMax)}
+		"%s: a rating of the plan is a whole number from %d to %d in planRating with why in planReason, one to %d characters, the two together; nothing was recorded", wrong, record.PlanRatingLeast, record.PlanRatingMost, record.PlanReasonMax)}
 }
 
 // handoffRecord reads the Dispatch handoff record a completion of issue's file-backed phase of,

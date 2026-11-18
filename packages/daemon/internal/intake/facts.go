@@ -896,10 +896,10 @@ func (HandoffComplete) isFact() {}
 
 // PlanRating is a retro's rating of the plan its issue ran: Score, from 1 (the plan cost the work)
 // to 5 (the plan fit the work), and Reason, why. The type holds the pair, so a fact carries the
-// rating with its reason or none; it keeps no rule of either. That Score is 1 to 5 and Reason is
-// not blank and at most api's planReasonMax code points is the completion route's rule (api's
-// planRatingOf), and that route, which builds the value only where the rule has held, is its one
-// producer.
+// rating with its reason or none; it keeps no rule of either. That Score is within
+// record.PlanRatingLeast to record.PlanRatingMost and Reason is not blank and at most
+// record.PlanReasonMax code points is the completion route's rule (api's planRatingOf), and that
+// route, which builds the value only where the rule has held, is its one producer.
 type PlanRating struct {
 	Score  int
 	Reason string
