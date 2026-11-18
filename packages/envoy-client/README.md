@@ -659,9 +659,16 @@ reached Dispatch may have landed with its answer lost, whatever the command thro
 `DispatchWriteUnsettledError`, Dispatch's own 5xx, a transport failure, a timeout or a
 cancellation while an attempt was out, a final answer Dispatch's keyed layer did not judge after
 such an attempt (a near-copy refusal the command returns among them), or a 2xx whose body was lost
-while it was read (`#answer`). A connection never made (`ECONNREFUSED`, `ENOTFOUND`, `EAI_AGAIN`,
-read through the `cause` `sessionContext` keeps) carried the request nowhere and is no such
-attempt. The client tells the command's `CommandKey` (`markUnsettled`, per write key), and the
+while it was read or is no JSON object or list (`#answer`). A 2xx that does not name the write's
+key is lost too, whatever it holds: Dispatch's keyed layer sets the key on every answer to a
+keyed write before its handler runs (`keyedWrites`, packages/envoy/internal/dispatch/api/
+request_keys.go), so such an answer came from something in Dispatch's place. Only a Dispatch whose
+`/healthz` says it keeps no keys, a build before the layer, names none, and its 2xx is its answer;
+where `/healthz` cannot be read, nothing says the answer is Dispatch's. Every write command's 2xx
+names its key against a real Dispatch (`write-echoes-key.live.test.ts`). A connection never made
+(`ECONNREFUSED`, `ENOTFOUND`, `EAI_AGAIN`, read through the `cause` `sessionContext` keeps) carried
+the request nowhere and is no such attempt, and a write follows no redirect: the redirect is its
+answer. The client tells the command's `CommandKey` (`markUnsettled`, per write key), and the
 command exits 75 (sysexits' `EX_TEMPFAIL`, as `envoy-send` exits for a send it cannot confirm)
 rather than 1, which a caller reads as a refusal and runs again under a new key, a second write.
 

@@ -2100,15 +2100,19 @@ export class DispatchClient {
   }
 
   /**
-   * `#response` for the answer to a call sent under `key`. A write's 2xx is handed on before its
-   * body is read (`writeAnswer`), so the body can still be lost on the way: the connection breaks,
-   * or the deadline ends the read. A write's 2xx (but a 204) whose body is no JSON object or list
-   * with something in it (`null`, JSON cut short, a page, nothing, `{}`, `[]`) is lost the same way:
-   * Dispatch answers every write it makes with what it made, so nothing the command can use came
-   * back. Either way a write of a `dispatch` command tells `commandKey` (`#unsettle`) before the
-   * failure is thrown on, and what the answer said is quoted with the credential taken out
-   * (`excerpt`). A confirmed answer or landing resolves that key alone: an earlier no-route
-   * attempt may have left it uncertain, while another write of the command may still be so.
+   * `#response` for the answer to a call sent under `key`. Dispatch's keyed layer names a write's
+   * key on every answer to it (`keyedWrites`, packages/envoy/internal/dispatch/api/request_keys.go),
+   * so a write's 2xx without its key, from a Dispatch that keeps keys or one this client cannot
+   * tell, is no answer of Dispatch's: something in its place wrote it, and whatever it holds, the
+   * write may have landed with its answer lost. Only a Dispatch whose `/healthz` says it keeps no
+   * keys (`#keyedLayer`: a build before the layer) names none, and its 2xx is its answer. A write's
+   * 2xx is also handed on before its body is read (`writeAnswer`), so the body can still be lost on
+   * the way: the connection breaks, or the deadline ends the read; and a 2xx (but a 204) whose body
+   * is no JSON object or list (`null`, JSON cut short, a page, nothing) brought nothing back either.
+   * Each way a write of a `dispatch` command tells `commandKey` (`#unsettle`) before the failure is
+   * thrown on, and what the answer said is quoted with the credential taken out (`excerpt`). A
+   * confirmed answer or landing resolves that key alone: an earlier no-route attempt may have left
+   * it uncertain, while another write of the command may still be so.
    */
   async #answer<T>(
     method: string,
@@ -2117,12 +2121,18 @@ export class DispatchClient {
     key: string | undefined
   ): Promise<T> {
     try {
+      if (key !== undefined && response.ok && !keyEchoed(response, key)) {
+        const layer =
+          this.#commandKey?.keyedLayer === "absent" ? "absent" : await this.#keyedLayer(false);
+        if (layer !== "absent") {
+          throw new Error(
+            `${method} ${withoutUserinfo(url)} was answered ${response.status} without its Idempotency-Key, which Dispatch names on every answer to a write, so the answer is not Dispatch's and the write may have landed with its answer lost`
+          );
+        }
+      }
       const answer = await this.#response<T>(method, url, response);
       const read: unknown = answer;
-      const holds =
-        typeof read === "object" &&
-        read !== null &&
-        (Array.isArray(read) ? read.length > 0 : Object.keys(read).length > 0);
+      const holds = typeof read === "object" && read !== null;
       if (key !== undefined && response.status !== 204 && !holds) {
         const said = typeof read === "string" ? read : JSON.stringify(read);
         const quoted = excerpt(said, this.token);
@@ -2525,21 +2535,29 @@ export class DispatchClient {
 
   /**
    * Whether this Dispatch runs the keyed layer, so a failed write may be asked again under its
-   * key: true while an answer that echoed a key, or a `/healthz` saying `idempotency_keys: true`,
-   * is younger than `KEYED_LAYER_MEMORY_MS`, and otherwise what `/healthz` says now, which writes
-   * failing together ask once. `unjudged` (Dispatch's own refusal that echoed no key) sets aside
-   * what the process remembers, since that answer itself says the layer did not judge the
-   * request: the probe decides. Only a yes is kept. What it finds is told to `commandKey`
-   * (`markKeyedLayer`): a resend under a key is safe only where the layer runs.
-   * It runs only after a write has already failed, so the normal path costs nothing.
+   * key: `#keyedLayer` is `runs`.
    */
   async #runsKeyedLayer(unjudged: boolean): Promise<boolean> {
+    return (await this.#keyedLayer(unjudged)) === "runs";
+  }
+
+  /**
+   * What this Dispatch keeps of a write's key: `runs` while an answer that echoed a key, or a
+   * `/healthz` saying `idempotency_keys: true`, is younger than `KEYED_LAYER_MEMORY_MS`, and
+   * otherwise what `/healthz` says now (`#probeKeyedLayer`), which writes failing together ask
+   * once. `unjudged` (Dispatch's own refusal that echoed no key) sets aside what the process
+   * remembers, since that answer itself says the layer did not judge the request: the probe
+   * decides. Only a yes is kept. What it finds is told to `commandKey` (`markKeyedLayer`): a resend
+   * under a key is safe only where the layer runs. It runs only after a write has already failed
+   * or answered without its key, so the normal path costs nothing.
+   */
+  async #keyedLayer(unjudged: boolean): Promise<KeyedLayer> {
     const origin = this.#baseUrl;
     if (unjudged) KEYED_LAYER_SEEN.delete(origin);
     const seen = KEYED_LAYER_SEEN.get(origin);
     if (seen !== undefined && this.#now() - seen < KEYED_LAYER_MEMORY_MS) {
       this.#commandKey?.markKeyedLayer("runs");
-      return true;
+      return "runs";
     }
     let probe = KEYED_LAYER_PROBES.get(origin);
     if (probe === undefined) {
@@ -2548,9 +2566,8 @@ export class DispatchClient {
     }
     const layer = await probe;
     this.#commandKey?.markKeyedLayer(layer);
-    if (layer !== "runs") return false;
-    KEYED_LAYER_SEEN.set(origin, this.#now());
-    return true;
+    if (layer === "runs") KEYED_LAYER_SEEN.set(origin, this.#now());
+    return layer;
   }
 
   /**

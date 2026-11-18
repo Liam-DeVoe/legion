@@ -112,6 +112,11 @@ jobs:
       - name: A write whose answer is lost, over the real CLI against a real Dispatch
         run: bun test src/__tests__/unsettled-write.live.test.ts
         working-directory: packages/envoy-client
+      # Every write command's 2xx names its Idempotency-Key against the same real Dispatch: the
+      # dispatch command takes a write's 2xx without its key for a lost answer.
+      - name: Every write command's answer names its key, over the real CLI against a real Dispatch
+        run: bun test src/__tests__/write-echoes-key.live.test.ts
+        working-directory: packages/envoy-client
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
         uses: ./.github/actions/ci-ok-report

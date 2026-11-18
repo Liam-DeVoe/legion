@@ -2,9 +2,10 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { readFileSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
 import { dispatchToolSpecs } from "@legion/contracts";
+// Every fake here stands for Dispatch, whose keyed layer names a write's key on its answer.
+import { executeDispatchToolUnderKey as executeDispatchTool } from "../../test/under-key";
 import { bearerCredential } from "../bearer";
 import type { ExecFn } from "../dispatch-cwd";
-import { executeDispatchTool } from "../dispatch-execute";
 import { DISPATCH_WRITE_RETRY, type DispatchWriteRetry } from "../dispatch-http";
 import { answerFor, ISSUE, OTHER_UUID, SESSION, UUID } from "./command-surface-answers";
 

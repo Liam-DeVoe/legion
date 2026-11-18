@@ -102,6 +102,9 @@ interface DispatchOptions {
   readonly noRoute?: Route;
   /** The write Dispatch judges a near copy of an issue it holds: `409 POSSIBLE_DUPLICATE`. */
   readonly nearCopy?: Route;
+  /** The write something in Dispatch's place answers `201` with `body`, naming no key and running
+   *  nothing. */
+  readonly forged?: { readonly route: Route; readonly body: string };
 }
 
 function matches(route: Route | undefined, method: string, path: string): boolean {
@@ -255,6 +258,12 @@ function keyedDispatch(options: DispatchOptions = {}) {
       return reply(response({ code: "INVALID", error: "refused" }, 400));
     }
     if (matches(options.nearCopy, method, url.pathname)) return reply(nearCopyRefusal());
+    if (matches(options.forged?.route, method, url.pathname)) {
+      return new Response(options.forged?.body, {
+        status: 201,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
     const ran = await answer(method, url.pathname, init?.body);
     const text = await ran.text();
     if (key !== null) kept.set(key, { digest, status: ran.status, text, lost: false });
@@ -723,6 +732,21 @@ describe("a write whose answer is lost", () => {
     expect(first.stdout).not.toContain("Run: dispatch");
     expect(dispatch.sent).toHaveLength(1);
   });
+
+  // Something in Dispatch's place answers the message's write 201 with an object of another shape
+  // and names no key, where Dispatch's keyed layer names it on every answer: it is no answer of
+  // Dispatch's, so the write may have landed with its answer lost, never "Posted message
+  // undefined", exit 0.
+  for (const body of ['{"unexpected":true}', "[{}]", '{"id":null}']) {
+    test(`a write answered 201 ${body} without its key exits 75, not a success`, async () => {
+      const dispatch = keyedDispatch({ forged: { route: MESSAGE_WRITE, body } });
+      const first = await run(MESSAGE, dispatch.fetchImpl);
+      expect(first.code, first.stdout).toBe(75);
+      expect(first.stdout).not.toContain("undefined");
+      const { key, words } = resendOf(first.stdout);
+      expect(words).toEqual(["dispatch", ...MESSAGE, "--idempotency-key", key]);
+    });
+  }
 
   // A 2xx whose body is lost comes from a Dispatch that made the write. Whether a resend under its
   // key is safe is what Dispatch's /healthz says: one that names no keyed layer gets no command.

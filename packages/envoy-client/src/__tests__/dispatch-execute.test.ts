@@ -25,13 +25,14 @@ import {
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { z } from "zod";
 import goUnicodeIsSpace from "../../../contracts/fixtures/go-unicode-isspace.json";
+// Every fake here stands for Dispatch, whose keyed layer names a write's key on its answer.
+import { executeDispatchToolUnderKey as executeDispatchTool } from "../../test/under-key";
 import { bearerCredential } from "../bearer";
 import { cliRefusals } from "../dispatch-cli";
 import type { ExecFn } from "../dispatch-cwd";
 import {
   type DispatchToolResult,
   dispatchRefFromUrl,
-  executeDispatchTool,
   formatOpenAsksSummary,
   goBlankPattern,
   positionText,
@@ -42,6 +43,7 @@ import {
   DispatchClient,
   DispatchWriteLandedError,
   type DispatchWriteRetry,
+  forgetKeyedLayerMemory,
 } from "../dispatch-http";
 import { followedAsk } from "../dispatch-subscribe";
 import { renderSessionAnswersList } from "../session-answers";
@@ -367,6 +369,9 @@ describe("executeDispatchTool", () => {
   // that fits the method: a read may succeed on a retry, a write may already have landed. The
   // message's wording is pinned in dispatch-http.test.ts.
   test("hands the agent the request and status, not a gateway's HTML, when Dispatch's host answers non-2xx", async () => {
+    // What an earlier test's answers showed of the keyed layer is set aside: here only the
+    // gateway answers, and nothing says this Dispatch keeps keys.
+    forgetKeyedLayerMemory();
     const requests: string[] = [];
     const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       requests.push(`${init?.method ?? "GET"} ${new URL(String(url)).pathname}`);

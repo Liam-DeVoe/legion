@@ -1130,7 +1130,10 @@ describe("DispatchClient's writes", () => {
       ...Array.from({ length: NO_ROUTE_RETRY_DELAYS_MS.length + 1 }, noRoute),
       json({ repo: "a/b" }, 200),
     ];
-    const { fetchImpl, sent } = scripted(answers, { echo: false });
+    // No route was matched, so no keyed layer named the key; the older route's answer names it.
+    const { fetchImpl, sent } = scripted(answers, {
+      echo: (request) => request === answers.length,
+    });
     const { dispatch } = commandClient(fetchImpl, pacing().retry);
     await dispatch.syncArchitectureSources("DSP");
     const keys = sent.map((request) => request.headers["Idempotency-Key"]);
@@ -1443,38 +1446,91 @@ describe("DispatchClient's writes", () => {
     }
   });
 
-  // A 2xx whose body is no JSON object or list with something in it (`null`, JSON cut short, a
-  // page, nothing, `{}`, `[]`) answers a write Dispatch made with nothing the command can use:
-  // Dispatch answers every write it makes with what it made. The answer is lost, as a cut body's
-  // is, and the command says the write may have landed rather than failing as a refusal or
-  // printing an empty success.
-  test("a command's write answered 2xx with no JSON object may have landed unanswered", async () => {
-    for (const text of ["null", '{"id":', "<html>OK</html>", "", "{}", "[]"]) {
+  // Dispatch's keyed layer names a write's key on every answer to it, so a 2xx without the key,
+  // from a Dispatch that keeps keys, came from something in Dispatch's place: whatever it holds
+  // (`{}`, `[]`, or an object of another shape: the reviewer's `{"unexpected":true}`, `[{}]`,
+  // `{"id":null}`), it is no answer of Dispatch's, so the write may have landed with its answer
+  // lost. A 2xx that names the key but whose body is no JSON object or list (`null`, JSON cut
+  // short, a page, nothing) is lost the same way.
+  test("a command's write answered 2xx without its key, or with no JSON object, may have landed unanswered", async () => {
+    for (const [text, echo] of [
+      ["{}", false],
+      ["[]", false],
+      ['{"unexpected":true}', false],
+      ["[{}]", false],
+      ['{"id":null}', false],
+      ["null", true],
+      ['{"id":', true],
+      ["<html>OK</html>", true],
+      ["", true],
+    ] as const) {
       const answer = new Response(text, {
         status: 201,
         headers: { "Content-Type": text.startsWith("<") ? "text/html" : "application/json" },
       });
-      const { fetchImpl } = scripted([answer]);
+      const { fetchImpl } = scripted([answer], { echo });
       const { dispatch, commandKey } = commandClient(fetchImpl, pacing().retry);
       const failed = await failure(dispatch.comment("DSP-1", comment));
-      expect({ text, failed: failed instanceof Error }).toEqual({ text, failed: true });
-      expect({ text, unsettled: commandKey.unsettled }).toEqual({ text, unsettled: true });
+      expect({ text, echo, failed: failed instanceof Error }).toEqual({ text, echo, failed: true });
+      expect({ text, echo, unsettled: commandKey.unsettled }).toEqual({
+        text,
+        echo,
+        unsettled: true,
+      });
     }
   });
 
+  // The controls. An answer that names its key is Dispatch's whatever its shape, an empty list
+  // included: the key says whose answer it is, and a shape rule would read an answer Dispatch gave
+  // as lost on every resend under the key, which replays it. And a Dispatch whose /healthz says it
+  // keeps no keys (a build before the keyed layer) names none on any answer, so its 2xx is its
+  // answer.
+  test("a 2xx that names its key, or from a Dispatch that keeps no keys, is the write's answer", async () => {
+    const named = scripted([json([], 200)]);
+    const synced = commandClient(named.fetchImpl, pacing().retry);
+    expect(await synced.dispatch.syncArchitectureSources("DSP")).toEqual([]);
+    expect(synced.commandKey.unsettled).toBe(false);
+
+    forgetKeyedLayerMemory();
+    const old = scripted([json(posted, 201)], { echo: false, health: { ok: true, db: true } });
+    const before = commandClient(old.fetchImpl, pacing().retry);
+    expect(await before.dispatch.comment("DSP-1", comment)).toEqual(posted);
+    expect(before.commandKey.unsettled).toBe(false);
+
+    // A Dispatch whose /healthz cannot be read: nothing says the 2xx is Dispatch's.
+    forgetKeyedLayerMemory();
+    const unknown = scripted([json(posted, 201)], {
+      echo: false,
+      health: new Error("fetch failed"),
+    });
+    const unread = commandClient(unknown.fetchImpl, pacing().retry);
+    expect(await failure(unread.dispatch.comment("DSP-1", comment))).toBeInstanceOf(Error);
+    expect(unread.commandKey.unsettled).toBe(true);
+  });
+
   // What such an answer says is quoted in the error, which the CLI prints and keeps in the
-  // session's ledger: a page that echoes the request's credential has it taken out, as a refusal's
-  // page has.
+  // session's ledger: an answer that names its key and holds no JSON object has the credential it
+  // echoes taken out, as a refusal's page has. A page that names no key is not Dispatch's, and the
+  // error quotes none of it.
   test("an unusable 2xx's excerpt names no credential", async () => {
+    const echoed = new Response(JSON.stringify("Authorization: Bearer secret"), {
+      status: 201,
+      headers: { "Content-Type": "application/json" },
+    });
     const page = new Response("<html>Authorization: Bearer secret</html>", {
       status: 201,
       headers: { "Content-Type": "text/html" },
     });
-    const { fetchImpl } = scripted([page]);
-    const { dispatch } = commandClient(fetchImpl, pacing().retry);
-    const failed = await failure(dispatch.comment("DSP-1", comment));
-    expect((failed as Error).message).not.toContain("secret");
-    expect((failed as Error).message).toContain("Authorization");
+    for (const [answer, quoted] of [
+      [echoed, true],
+      [page, false],
+    ] as const) {
+      const { fetchImpl } = scripted([answer]);
+      const { dispatch } = commandClient(fetchImpl, pacing().retry);
+      const { message } = (await failure(dispatch.comment("DSP-1", comment))) as Error;
+      expect(message).not.toContain("secret");
+      expect({ quoted: message.includes("Authorization") }).toEqual({ quoted });
+    }
   });
 
   // A Dispatch whose /healthz answers its health (`healthzHandler`: `ok` and `db` on every build)

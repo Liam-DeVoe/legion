@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { ArtifactBlock } from "@legion/contracts";
 import { DISPATCH_BLOCK_UNITS, IDEMPOTENCY_KEY_HEADER, PROJECT_KEY_RULE } from "@legion/contracts";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { underKey } from "../../test/under-key";
 import { cliRefusals, fitOutput, runDispatchCli } from "../dispatch-cli";
 import { resetAdviceMemory } from "../dispatch-execute";
 import { forgetKeyedLayerMemory, KEYED_LAYER_MEMORY_MS } from "../dispatch-http";
@@ -562,7 +563,8 @@ async function run(
     },
     readText: (path) => (path === "-" ? stdin : readFileSync(path, "utf-8")),
     cwd: stateDir,
-    ...(fetchImpl === undefined ? {} : { fetchImpl }),
+    // The fake stands for Dispatch, whose keyed layer names a write's key on its answer.
+    fetchImpl: underKey(fetchImpl ?? fetch),
   });
   return { code, stdout, stderr };
 }
@@ -2200,7 +2202,7 @@ describe("the dispatch CLI's subscription note", () => {
         stderr: () => {},
         readText: () => "",
         cwd: stateDir,
-        fetchImpl,
+        fetchImpl: underKey(fetchImpl),
       }
     );
     expect(code).toBe(0);
