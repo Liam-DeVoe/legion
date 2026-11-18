@@ -684,11 +684,11 @@ func (s *server) landingIssuePage(ctx context.Context, caller model.Actor, key s
 	state, err := s.loadUserState(ctx, caller.ID)
 	page.UserState = landingPart(ctx, "issue.user_state", state, err)
 
-	// Shaped as the comments route shapes them, over a reader of their own.
+	// Shaped as the comments route shapes them, over a reader of their own, which the coverage
+	// part below registers with too, so the page reads the stored trees once for both.
 	comments, err := s.loadOwnerComments(ctx, s.deps.Store.Pool, issueOwner(key), "")
 	reader := s.readDisplayTrees(ctx, trees)
 	page.Comments = shapedComments(landingPart(ctx, "issue.comments", comments, err), reader)
-	reader.resolve()
 
 	// With no thread, as the reader the page seeds this part for asks for it: the list is
 	// unpaged, so a thread read here is read for every ask of the issue and drawn by no one.
@@ -706,8 +706,9 @@ func (s *server) landingIssuePage(ctx context.Context, caller model.Actor, key s
 	if page.Issue != nil {
 		// The coverage route answers 404 for an issue nobody has, so the landing reads it only
 		// for an issue it has already read; a key that is no issue leaves this part null and the
-		// page reads that 404 from the route itself.
-		coverage, err := s.issueCoverage(ctx, s.deps.Store.Pool, key)
+		// page reads that 404 from the route itself. Each requirement registers its tree with the
+		// page's reader, as the route's do with the route's (issueCoverage).
+		coverage, err := s.issueCoverage(ctx, s.deps.Store.Pool, key, reader)
 		page.Coverage = landingPart(ctx, "issue.coverage", &coverage, err)
 
 		// The sources of the issue's own project. The project is in the issue read above, so the
@@ -719,6 +720,7 @@ func (s *server) landingIssuePage(ctx context.Context, caller model.Actor, key s
 
 		page.Document = s.landingIssueDocument(ctx, caller, page.Issue, trees)
 	}
+	reader.resolve()
 	return page
 }
 
