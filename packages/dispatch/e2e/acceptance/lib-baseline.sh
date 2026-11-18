@@ -12,15 +12,15 @@
 # below. The three functions it gives the caller:
 #
 #   baseline_start
-#       Inputs. Each of these four is optional; the database and the bearer follow them.
+#       Inputs. BASELINE_SHA or BASELINE_BINARY must be set; LEGION_WORKSPACE and
+#       BASELINE_EXTRA_ENV are optional. The database and the bearer follow them.
 #
 #       BASELINE_SHA, the commit the baseline server is built from (any revision this repository
-#       resolves to a commit). Unset or empty, it is `git merge-base origin/main HEAD` in the
-#       checkout: the commit of main this branch was built on. The upgrade a check reads is then
-#       the one this branch's own commits make, and every check of one branch starts from the
-#       same commit without any of them naming it. A checkout with no origin/main, or one whose
-#       origin/main shares no history with HEAD, has no default, and the run is refused:
-#       BASELINE_SHA names the commit then.
+#       resolves to a commit): the release this branch lands after. It has no default. Unset or
+#       empty, with BASELINE_BINARY unset too, the run is refused by name before anything is read
+#       out of the checkout or made. A default of the merge base with main would be older than any
+#       sibling branch this one is stacked on, so a check built on it could pass without being
+#       able to fail; only the caller knows which release the branch lands after.
 #
 #       LEGION_WORKSPACE names the checkout the commit is read from, whose
 #       scripts/e2e/lib/held-port.py also holds each server's port; unset, the checkout this file
@@ -89,12 +89,13 @@
 #           baseline_url            the baseline server's address, http://127.0.0.1:<port>
 #           baseline_token          the agent bearer both servers accept, for a driver that writes
 #                                   the old release's rows through its API. It is printed nowhere.
-#           baseline_commit         the commit the baseline was built from and stamped with, in
-#                                   full, whether BASELINE_SHA named it or its default found it;
-#                                   empty when BASELINE_BINARY was booted
+#           baseline_commit         the commit the baseline was built from and stamped with, the
+#                                   one BASELINE_SHA named, in full; empty when BASELINE_BINARY
+#                                   was booted
 #           baseline_binary         the absolute path of the binary booted as the baseline
 #       It prints, one per line on stdout, `baseline commit <commit>` (or `baseline binary <path>`)
-#       and then the first two, so that a run's log names its baseline even when no input named it.
+#       and then the first two, so that a run's log names its baseline in full even when
+#       BASELINE_SHA named it by a branch or a short hash.
 #
 #   baseline_stop_server
 #       Stops the baseline server and KEEPS the database. This is the one a caller calls before it
@@ -120,23 +121,43 @@
 # --selftest
 #
 #   `bash e2e/acceptance/lib-baseline.sh --selftest`, from packages/dispatch, takes
-#   baseline_start's inputs above, of which only a database is required (LEGION_TEST_PG_DSN, or
-#   the run's DATABASE_URL), and proves the harness end to end: it starts the baseline server,
-#   prints the high-water mark of the `schema_migrations` table that server migrated, stops that
-#   server while keeping the database, builds and boots this branch's own server over the same
-#   database, prints the mark again, and passes when the baseline mark is at or below the branch
-#   mark. Equal is the expected state of a branch no migration has landed on yet and passes; the
-#   run says which of the two it is, so that a reader sees the upgrade once a child's migration
-#   lands. A baseline mark above the branch mark fails: this branch would be missing a migration
-#   the previous release already has. The baseline's line names the commit it was built from, or
-#   the binary BASELINE_BINARY gave. This branch's server is built whatever the baseline was, from
-#   the checkout's working copy, and stamped as the baseline build is, with the commit
-#   `git rev-parse HEAD` names there, so that each server registers the commit it came from; a
-#   HEAD that names no commit fails the run, and the stamp names that commit even when the working
-#   copy holds edits it does not. Building and stamping this server needs go and git even with
-#   BASELINE_BINARY set, and it gets BASELINE_EXTRA_ENV's pairs as the baseline did. It prints one
-#   `PASS:` or `FAIL:` line per assertion, exits 2 on a missing or bad input, and exits 1 on the
-#   first failure, as the drivers in this directory do.
+#   baseline_start's inputs above, of which BASELINE_SHA (or BASELINE_BINARY) and a database
+#   (LEGION_TEST_PG_DSN, or the run's DATABASE_URL) are required. With neither BASELINE_SHA nor
+#   BASELINE_BINARY set it is refused at once, with status 2, and starts nothing. Before it starts
+#   any server it proves that refusal: baseline_start, run in a subshell with neither set, must
+#   exit 2, and the first line it prints on stderr must name BASELINE_SHA. Then it proves the
+#   harness end to end: it starts the baseline server, reads the version of every migration that
+#   server applied out of the `schema_migrations` table, stops that server while keeping the
+#   database, builds and boots this branch's own server over the same database, and reads the
+#   versions again. A baseline that applied none fails: it did not migrate its own database. Then
+#   the two sets of versions are compared. A version the baseline's set holds and the branch's
+#   lacks fails the run, which names every such version: this branch would be missing a migration
+#   the previous release already has, and since both sets are read from one database, whose
+#   schema_migrations a migration only adds to, a server deleted it. Otherwise the run passes and
+#   names each version the branch's set adds, on a line of its own, and how many there are: the
+#   migrations this branch applied over the old schema, so that a reader sees the upgrade once a
+#   child's migration lands. A branch that added none says so and passes: that is where a branch
+#   no migration has landed on yet stands.
+#
+#   The sets are compared, never their high-water marks, the highest version in each. Dispatch
+#   applies each migration by its own version alone (applyMigration, in
+#   packages/envoy/internal/dispatch/store/store.go, asks whether that one version is in
+#   schema_migrations), so a migration of this branch dated before the baseline's newest is applied
+#   without moving the mark, and a comparison of marks reads that upgrade as no migration landed.
+#   That happens whenever the baseline holds a migration dated after one this branch adds, as when
+#   this branch is stacked on a merge whose newest migration was written after this branch's. The
+#   comparison is baseline_compare_versions, defined above the selftest so that a script can source
+#   this file and feed it two lists of versions without booting a server.
+#
+#   The baseline's line names the commit it was built from, or the binary BASELINE_BINARY gave.
+#   This branch's server is built whatever the baseline was, from the checkout's working copy, and
+#   stamped as the baseline build is, with the commit `git rev-parse HEAD` names there, so that
+#   each server registers the commit it came from; a HEAD that names no commit fails the run, and
+#   the stamp names that commit even when the working copy holds edits it does not. Building and
+#   stamping this server needs go and git even with BASELINE_BINARY set, and it gets
+#   BASELINE_EXTRA_ENV's pairs as the baseline did. It prints one `PASS:` or `FAIL:` line per
+#   assertion, exits 2 on a missing or bad input, and exits 1 on the first failure, as the drivers
+#   in this directory do.
 
 set -euo pipefail
 
@@ -147,13 +168,14 @@ set -euo pipefail
 if ! declare -F usage >/dev/null; then
   usage() {
     cat >&2 <<'USAGE'
-Usage: [BASELINE_SHA=<commit> | BASELINE_BINARY=<path>] [BASELINE_EXTRA_ENV=$'NAME=value\n...'] \
+Usage: {BASELINE_SHA=<commit> | BASELINE_BINARY=<path>} [BASELINE_EXTRA_ENV=$'NAME=value\n...'] \
          LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<db>?sslmode=disable \
          bash e2e/acceptance/lib-baseline.sh --selftest
-       (BASELINE_SHA unset is git merge-base origin/main HEAD; BASELINE_BINARY boots that prebuilt
-       server and builds none; BASELINE_EXTRA_ENV is one NAME=value per line, given to every
-       server. LEGION_WORKSPACE names the checkout the commit is read from; unset, this file's own.
-       Sourced instead, it gives baseline_start, baseline_stop_server and baseline_stop)
+       (BASELINE_SHA is the commit of the release this branch lands after, and has no default:
+       only the caller knows which release that is. BASELINE_BINARY, set instead, boots that
+       prebuilt server and builds none. BASELINE_EXTRA_ENV is one NAME=value per line, given to
+       every server. LEGION_WORKSPACE names the checkout the commit is read from; unset, this
+       file's own. Sourced instead, it gives baseline_start, baseline_stop_server and baseline_stop)
 USAGE
   }
 fi
@@ -243,11 +265,69 @@ baseline_dsn_for() {
   printf '%s/%s%s\n' "${rest%/*}" "$name" "$query"
 }
 
-# baseline_high_water URL: prints the high-water mark of that database's schema_migrations table,
-# the version of the last migration applied, and 0 for a database no migration has touched.
-baseline_high_water() {
-  baseline_psql "$1" -tAc 'select coalesce(max(version), 0) from schema_migrations' ||
+# baseline_applied_versions URL: prints the version of every migration applied to that database,
+# out of its schema_migrations table, one per line and sorted as text (LC_ALL=C sort), the order
+# baseline_compare_versions takes them in; nothing for a database no migration has touched.
+baseline_applied_versions() {
+  baseline_psql "$1" -tAc 'select version from schema_migrations' | LC_ALL=C sort ||
     baseline_fail "could not read schema_migrations"
+}
+
+# baseline_compare_versions BASELINE BRANCH: compares two sets of applied migration versions, each
+# a list of versions one per line, sorted as text as baseline_applied_versions prints it: BASELINE,
+# read once the baseline server migrated the database, and BRANCH, read once this branch's server
+# booted over it. When BASELINE holds versions BRANCH lacks, it prints how many and then each one on
+# a line of its own, and returns 1: this branch would be missing a migration the previous release
+# already has, and since both lists are read from one database, whose schema_migrations a migration
+# only adds to, a server deleted it. Otherwise it prints how many versions BRANCH adds and then each
+# one, the migrations this branch applied over the old schema, or says that it adds none, and
+# returns 0. A comparison comm cannot make returns 1 too, and says so.
+#
+# The sets are compared, never their high-water marks. Dispatch applies each migration by its own
+# version alone: applyMigration, in packages/envoy/internal/dispatch/store/store.go, asks whether
+# that one version is in schema_migrations and applies the migration when it is not, whatever newer
+# versions are there. A migration of this branch dated before the baseline's newest is then applied
+# without moving the mark, and a comparison of marks would read that upgrade as no migration landed.
+#
+# comm compares lines as text and reads each list in order, so a list sorted any other way,
+# numerically say, would be misread; comm reports a list it finds out of order and fails. Each list
+# reaches comm through printf '%s', never '%s\n', so that an empty list is no line at all rather
+# than one empty line: comm reads a last line with no newline after it as a line.
+baseline_compare_versions() {
+  local missing added
+  local -a versions
+  missing="$(LC_ALL=C comm -23 <(printf '%s' "$1") <(printf '%s' "$2"))" || {
+    printf 'comm could not compare the two lists of versions, which must be sorted as text\n'
+    return 1
+  }
+  if [[ -n "$missing" ]]; then
+    mapfile -t versions < <(printf '%s' "$missing")
+    printf "baseline versions this branch's database lacks: %d\n" "${#versions[@]}"
+    printf '  %s\n' "${versions[@]}"
+    return 1
+  fi
+  added="$(LC_ALL=C comm -13 <(printf '%s' "$1") <(printf '%s' "$2"))" || {
+    printf 'comm could not compare the two lists of versions, which must be sorted as text\n'
+    return 1
+  }
+  if [[ -z "$added" ]]; then
+    printf 'this branch added no migration over the baseline\n'
+    return 0
+  fi
+  mapfile -t versions < <(printf '%s' "$added")
+  printf 'versions this branch added over the baseline: %d\n' "${#versions[@]}"
+  printf '  %s\n' "${versions[@]}"
+}
+
+# baseline_require_sha_or_binary: refuses a run that names no baseline, with BASELINE_SHA and
+# BASELINE_BINARY both unset or empty. Nothing stands in for them, for the reason the head comment
+# gives under BASELINE_SHA. baseline_start calls it first, before it reads the checkout or makes
+# anything, and the --selftest run below calls it before anything else too.
+baseline_require_sha_or_binary() {
+  [[ -n "${BASELINE_SHA:-}" || -n "${BASELINE_BINARY:-}" ]] ||
+    baseline_refuse "BASELINE_SHA is unset: set it to the commit of the release this branch" \
+      "lands after (any revision this repository resolves to one), or set BASELINE_BINARY to a" \
+      "server already built from it. It has no default: only the caller knows that release"
 }
 
 # baseline_read_extra_env: checks BASELINE_EXTRA_ENV line by line and keeps its pairs in
@@ -421,14 +501,17 @@ baseline_stop() {
   baseline_signin_key=""
 }
 
-# baseline_start: the baseline server of BASELINE_SHA, of its default, or of BASELINE_BINARY,
-# serving the run's database or one of its own. The head comment above is its contract.
+# baseline_start: the baseline server of BASELINE_SHA or of BASELINE_BINARY, serving the run's
+# database or one of its own. The head comment above is its contract.
 baseline_start() {
   # Read before anything else: a driver that calls lib.sh's read_bearer after this unsets
   # DISPATCH_TOKEN, and the run's DATABASE_URL must be the one every server here is booted on.
   # shellcheck disable=SC2031 # the run's own DATABASE_URL, which no server's subshell changes
   local given_database_url="${DATABASE_URL:-}" given_token="${DISPATCH_TOKEN:-}"
   local given_binary="${BASELINE_BINARY:-}" sha="${BASELINE_SHA:-}"
+  # Refused before anything is read out of the checkout or made: a run that names no baseline has
+  # nothing to build or boot, and none is guessed for it.
+  baseline_require_sha_or_binary
   [[ -n "$given_database_url" ]] || require_env LEGION_TEST_PG_DSN
   # A binary given is booted as it is, with whatever stamp its caller's build gave it: nothing
   # reads the repository and nothing is built.
@@ -438,7 +521,7 @@ baseline_start() {
     require_commands env git go openssl psql python3 sleep tar
   fi
   baseline_read_extra_env
-  # The checkout comes before the commit: BASELINE_SHA's default is read out of it.
+  # The checkout comes before the commit: BASELINE_SHA is resolved in it.
   baseline_workspace="${LEGION_WORKSPACE:-}"
   if [[ -z "$baseline_workspace" ]]; then
     baseline_workspace="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../../.." && pwd)" ||
@@ -457,12 +540,6 @@ baseline_start() {
   else
     git -C "$baseline_workspace" rev-parse --git-dir >/dev/null 2>&1 ||
       baseline_refuse "$baseline_workspace holds no git repository to read the commit out of"
-    if [[ -z "$sha" ]]; then
-      sha="$(git -C "$baseline_workspace" merge-base origin/main HEAD)" ||
-        baseline_refuse "BASELINE_SHA is unset, and its default, git merge-base origin/main HEAD," \
-          "found no commit in $baseline_workspace:" \
-          "set BASELINE_SHA to the commit the baseline server is built from"
-    fi
     baseline_commit="$(git -C "$baseline_workspace" rev-parse --verify --quiet "${sha}^{commit}")" ||
       baseline_refuse "BASELINE_SHA '$sha' names no commit of $baseline_workspace"
   fi
@@ -530,16 +607,42 @@ fi
   usage
   exit 2
 }
+# A run that names no baseline is refused at once, as baseline_start refuses it, before the
+# refusal is proved below and before anything else is checked or made.
+baseline_require_sha_or_binary
 # Every input is baseline_start's own, which refuses a missing or bad one by name. This run builds
 # this branch's server itself whatever baseline_start boots, and stamps it with the commit HEAD
-# names, so it needs git and go even when BASELINE_BINARY spares baseline_start its own build.
-require_commands git go
+# names, so it needs git and go even when BASELINE_BINARY spares baseline_start its own build. It
+# compares the two sets of versions with sort and comm.
+require_commands comm git go sort
 
 pass() { printf 'PASS: %s %s\n' "$1" "$2"; }
 fail() {
   printf 'FAIL: %s %s: %s\n' "$1" "$2" "$3" >&2
   exit 1
 }
+
+# The refusal of a run that names no baseline, proved before any server starts: baseline_start, in
+# a subshell with BASELINE_SHA and BASELINE_BINARY unset, must exit 2, and the first line it prints
+# on stderr must name BASELINE_SHA. Only that line is read: the usage text after it names
+# BASELINE_SHA whatever was refused. The subshell drops DATABASE_URL and LEGION_TEST_PG_DSN as well,
+# so that it could make nothing even if the refusal ever moved below baseline_start's first check:
+# lib.sh's require_env would then refuse first, naming LEGION_TEST_PG_DSN, and this step would fail
+# naming that line.
+refusal_status=0
+refusal="$(
+  unset BASELINE_SHA BASELINE_BINARY DATABASE_URL LEGION_TEST_PG_DSN
+  baseline_start 2>&1 >/dev/null
+)" || refusal_status=$?
+refusal_line="${refusal%%$'\n'*}"
+[[ "$refusal_status" -eq 2 ]] ||
+  fail refusal "baseline_start with neither BASELINE_SHA nor BASELINE_BINARY exits 2" \
+    "it exited $refusal_status, saying first: $refusal_line"
+[[ "$refusal_line" == *BASELINE_SHA* ]] ||
+  fail refusal "baseline_start with neither BASELINE_SHA nor BASELINE_BINARY names BASELINE_SHA" \
+    "the first line it printed on stderr was: $refusal_line"
+pass refusal \
+  "baseline_start with neither BASELINE_SHA nor BASELINE_BINARY exits 2 and names BASELINE_SHA"
 
 branch_pid=""
 cleanup() {
@@ -556,22 +659,24 @@ trap 'exit 143' TERM
 
 baseline_start
 
-baseline_mark="$(baseline_high_water "$baseline_database_url")" ||
-  fail baseline "read the baseline database's schema_migrations high-water mark" "psql refused it"
-printf 'baseline schema_migrations high-water mark: %s\n' "$baseline_mark"
-[[ "$baseline_mark" =~ ^[0-9]+$ ]] ||
-  fail baseline "the baseline high-water mark is a number" "got '$baseline_mark'"
-[[ "$baseline_mark" -gt 0 ]] ||
-  fail baseline "the baseline server migrated its own database" "schema_migrations is still at 0"
-# The baseline is named by what was booted: the commit it was built from, whether BASELINE_SHA
-# named it or its default found it, or the binary BASELINE_BINARY gave, whose commit nothing here
-# can vouch for.
+# The set of versions the baseline applied, which the set this branch's server leaves is compared
+# with below: the sets and never their high-water marks, for the reason baseline_compare_versions
+# gives.
+baseline_versions="$(baseline_applied_versions "$baseline_database_url")" ||
+  fail baseline "read the versions in the baseline database's schema_migrations" "psql refused it"
+mapfile -t baseline_version_list < <(printf '%s' "$baseline_versions")
+baseline_count="${#baseline_version_list[@]}"
+printf 'baseline schema_migrations holds %d versions\n' "$baseline_count"
+[[ "$baseline_count" -gt 0 ]] ||
+  fail baseline "the baseline server migrated its own database" "schema_migrations is empty"
+# The baseline is named by what was booted: the commit it was built from, which BASELINE_SHA named,
+# or the binary BASELINE_BINARY gave, whose commit nothing here can vouch for.
 if [[ -n "$baseline_commit" ]]; then
   baseline_booted="the server built from $baseline_commit"
 else
   baseline_booted="the prebuilt server $baseline_binary"
 fi
-pass baseline "$baseline_booted migrated its own database to $baseline_mark"
+pass baseline "$baseline_booted migrated its own database: $baseline_count migrations applied"
 
 # The server goes and the database stays: what this branch's server migrates next is the schema the
 # old release wrote.
@@ -590,26 +695,15 @@ baseline_boot branch-server "$baseline_work/bin/dispatch-branch" "$baseline_data
 branch_pid="$baseline_boot_pid"
 pass upgrade "this branch's server booted over the baseline's database at $baseline_boot_url"
 
-branch_mark="$(baseline_high_water "$baseline_database_url")" ||
-  fail upgrade "read the branch's schema_migrations high-water mark" "psql refused it"
-printf 'branch schema_migrations high-water mark: %s\n' "$branch_mark"
-[[ "$branch_mark" =~ ^[0-9]+$ ]] ||
-  fail upgrade "the branch high-water mark is a number" "got '$branch_mark'"
+branch_versions="$(baseline_applied_versions "$baseline_database_url")" ||
+  fail upgrade "read the versions in the branch's schema_migrations" "psql refused it"
+mapfile -t branch_version_list < <(printf '%s' "$branch_versions")
+printf 'branch schema_migrations holds %d versions\n' "${#branch_version_list[@]}"
 
-[[ "$baseline_mark" -le "$branch_mark" ]] ||
-  fail upgrade "the baseline mark is at or below the branch mark" \
-    "baseline $baseline_mark is above branch $branch_mark: this branch is missing a migration the baseline has"
-# Equal is where a branch no migration has landed on stands, and it passes; the line says which of
-# the two it is, so that the upgrade shows the moment a child's migration lands. A version is the
-# migration's own timestamp rather than a count, so the migrations this branch applied over the old
-# schema are counted and not taken as the difference of the two marks.
-if [[ "$baseline_mark" -eq "$branch_mark" ]]; then
-  relation="the two marks are equal at $branch_mark: no migration of this branch has landed yet"
-else
-  landed="$(baseline_psql "$baseline_database_url" -tAc \
-    "select count(*) from schema_migrations where version > $baseline_mark")" ||
-    fail upgrade "count the migrations this branch applied over the baseline's schema" "psql refused it"
-  relation="the branch is ahead by $landed migrations: baseline $baseline_mark, branch $branch_mark"
-fi
-printf '%s\n' "$relation"
-pass upgrade "baseline $baseline_mark is at or below branch $branch_mark"
+# A baseline version the branch's set lacks fails, named. Otherwise the lines name each version
+# this branch added, so that the upgrade shows the moment a child's migration lands, or say that it
+# added none, which is where a branch no migration has landed on stands, and the run passes.
+comparison="$(baseline_compare_versions "$baseline_versions" "$branch_versions")" ||
+  fail upgrade "this branch's database holds every migration the baseline applied" "$comparison"
+printf '%s\n' "$comparison"
+pass upgrade "this branch's database holds every migration the baseline applied"
