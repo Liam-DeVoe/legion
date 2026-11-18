@@ -966,9 +966,10 @@ jobs:
         # this step took over the nine legs the job's head lists is 69 s, well under
         # webkit-alone's 141 s there, so the pooled maximum the rule reads is still 141 s.
         # e2e/failed-room.e2e.ts joined chromium-alone after those readings, one row of about
-        # 40 s: over the nine full lanes of dispatch-browser-nightly.yaml from 2026-11-17T20:27Z
-        # to 2026-11-18T12:52Z this step took 34 to 50 s on chromium-alone (job 134435368009 the
-        # most), so with that row it is about 90 s, and 141 s is still the maximum the rule reads.
+        # 3 s (2.8 s in job 135123723304, where the whole step took 40 s): over the nine full
+        # lanes of dispatch-browser-nightly.yaml from 2026-11-17T20:27Z to 2026-11-18T12:52Z this
+        # step took 34 to 50 s on chromium-alone (job 134435368009 the most), so with that row it
+        # is about 55 s, and 141 s is still the maximum the rule reads.
         timeout-minutes: 3
         run: |
           # $RUNNER_TEMP holds everything this step writes, the run directory the stack pool

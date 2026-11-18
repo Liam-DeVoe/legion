@@ -2569,8 +2569,8 @@ post-update text selection; Yjs document transport and local editing remain acti
 
 `e2e/failed-room.e2e.ts` runs in `chromium-alone`, on the full lane of
 `.github/workflows/dispatch-browser.yaml`, one row at a time on a machine of its own: it holds
-the room's next durable append for 20 s with a `doc_updates` trigger and cancels that backend, so
-it costs about 40 s, and what it asserts rests on that clock (`clockSpecNames` in
+the room's next durable append with a `doc_updates` trigger for up to 20 s and cancels that
+backend, and what it asserts rests on the clock (`clockSpecNames` in
 `e2e/configurations.ts` says why it is listed with the wall-clock specs).
 One run of it alone is
 `bun run e2e -- --project=chromium-alone e2e/failed-room.e2e.ts --workers=1`,
@@ -2579,10 +2579,13 @@ It is the end-to-end check for a failed document room: the writer inside the doc
 room fails is answered `503 DOC_SERVICE_UNAVAILABLE` rather than waiting for a recovery that
 cannot finish, the writer behind it is answered the same way or admitted once the room has
 reloaded, and the room then reloads with the browser's own paragraph in the document the server
-serves. The trigger it installs makes every `doc_updates` insert on that database sleep, so it is
-dropped in a `finally` and again in `test.afterEach` - a timeout or a Ctrl-C leaves nothing
-behind. The `FAILED-ROOM` lines it prints are what a run on a change is read against a run on
-its base with, when the docs layer's locking, recovery or publish paths move.
+serves. The trigger it installs sleeps the first `doc_updates` insert after it and no other, so
+nothing is taken off `doc_updates` while the probe's writers are inside their transactions: a
+drop of the trigger locks the table, and a lock asked for there then holds the read of the stored
+document such a writer waits for, until its client gives up at 30 s. The trigger is dropped in
+`test.afterEach`, which waits for that lock 100 ms at a time - a timeout or a Ctrl-C leaves
+nothing behind. The `FAILED-ROOM` lines it prints are what a run on a change is read against a
+run on its base with, when the docs layer's locking, recovery or publish paths move.
 
 `e2e/fake-envoy.ts` is a stub Envoy listener the harness starts on
 `FAKE_ENVOY_PORT` (unset, a port the OS chooses, which it reports) and the only Envoy a local
