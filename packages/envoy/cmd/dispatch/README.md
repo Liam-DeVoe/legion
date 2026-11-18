@@ -4353,10 +4353,12 @@ Each item below names a path with its method and identity, then its purpose.
     A subject of a check CI proves carries `ci`, the read of the named run at that head, and reads `unknown` with the reason `read_failed` where GitHub's check runs at that head could not be read, whatever the other heads read.
     The check's own `roles` then name a role only where each subject names it, in the order of the first subject.
     A pass and a fail that count at one commit of a `before_merge` check make that commit `unknown` with the reason `pass_and_fail`, from any role and in either order, with `results` naming the newest pass and the newest fail there, and no pass stands there; a read with `?at=` gives the same answer.
-    A later pass at that commit does not end it. A retraction of the wrong one ends it, and so does a change of the check's words.
+    A later pass at that commit does not end it.
+    A retraction of the wrong one ends it, and so does a change of the check's words.
     An `after_merge` or `default_branch` check takes its newest result that counts at one of its branches, or that Dispatch could not place on one, with and without `?at=`, and `results` names that result:
     `yes` only where it is a pass, with the roles of each pass at a branch newer than the newest fail there; `no` where it is a fail, or where no result decides; `unknown` where Dispatch could not place it.
-    So a later fail cancels an earlier pass. A deploy after the newest result changes no state here.
+    So a later fail cancels an earlier pass.
+    A deploy after the newest result changes no state here.
 
   - `currency` is a compatibility field for `dispatch` clients older than pi-envoy 17.1.0, which print it beside each result and read none of the fields above (`api/results_currency.go`).
     It is `current` where `commit_stands` is `at_basis`, `check_words_moved` is false and no retraction stands, and `older` where `commit_stands` is `other_commit` or it is `at_basis` and `check_words_moved` is true.
@@ -4378,8 +4380,7 @@ Each item below names a path with its method and identity, then its purpose.
     or a read has already been told of a pull request whose head is another commit, which answers about this commit for now and holds the pair off for `delivery.CommitPullSettledFor` (one hour, `delivery.CommitPullReads`), after which it is read through again, since a pull request opened later can have its head at that commit.
 
   A check CI proves is one whose `ci_check` names a GitHub check run, with `when` `before_merge`, no `run` and a `negative_control` (`validCICheck`, `docs.CICheckRule`): its block's attributes, read at each read.
-  No role records its result (POST below refuses one), and nothing is stored of the run that `ci_check` names:
-  each read takes the head of each of the issue's `open` pull requests (`delivery.HeadsAttributedTo`), else the final head of its `merged` one of the highest number (`delivery.NewestPullRequestHead`), and reads each such commit's check runs once, every page, in the repository of that pull request's own row, never in the issue's where they differ (`api/results_ci.go`, `deriveCIResults`).
+  No role records its result (POST below refuses one), and nothing is stored of the run that `ci_check` names: each read takes the head of each of the issue's `open` pull requests (`delivery.HeadsAttributedTo`), else the final head of its `merged` one of the highest number (`delivery.NewestPullRequestHead`), and reads each such commit's check runs once, every page, in the repository of that pull request's own row, never in the issue's where they differ (`api/results_ci.go`, `deriveCIResults`).
   At most 8 heads are read at one time, and one 10-second deadline bounds the reads of every head together; a head whose read did not end by then is `unread` there alone.
   Of the runs named exactly as `ci_check` says, the one of the highest id decides at each head.
   An issue holding no such check makes no read of check runs at all.
@@ -4442,8 +4443,7 @@ Each item below names a path with its method and identity, then its purpose.
   - A screenshot names an image document of the recording issue or of the check's issue.
 
   The result is appended as `result.recorded` on the check's own issue, naming the recording issue.
-  A closed issue, the recording one or the check's, takes a result only for a check whose `when` is `after_merge` or `default_branch` — the production check after the merge
-  — and refuses every other with `409 ISSUE_CLOSED`; every other write on a closed issue stays refused.
+  A closed issue, the recording one or the check's, takes a result only for a check whose `when` is `after_merge` or `default_branch` — the production check after the merge — and refuses every other with `409 ISSUE_CLOSED`; every other write on a closed issue stays refused.
   The answer is `{result, line}`, `line` the pull-request body line the result implies, which carries no link to Dispatch.
 
 - `/api/v1/issues/{key}/coverage` (GET; cookie, trusted header, or bearer)
