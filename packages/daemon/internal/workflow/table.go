@@ -164,10 +164,11 @@ func backwardRows(line []phase.Phase) []Row {
 
 // PhaseStatus is the Dispatch status an issue standing in to shows: what a row that moves an issue
 // into to writes, and what the status repair writes for an issue whose status is not its phase's.
-// An issue in planning or implementing is in_progress, which is where a child first shows that
-// Legion works it, and merging keeps the retro that the phase before it wrote. The phases where an
-// issue waits rather than works have no status of their own: the issue keeps the one it already
-// shows, which is what the empty status does, since no write is enqueued for one (Engine.status).
+// An issue in planning, implementing or step is in_progress, which is where a child first shows
+// that Legion works it, and merging keeps the retro that the phase before it wrote. The phases
+// where an issue waits rather than works have no status of their own: the issue keeps the one it
+// already shows, which is what the empty status does, since no write is enqueued for one
+// (Engine.status).
 func PhaseStatus(to phase.Phase) string {
 	return phaseStatus[to]
 }
@@ -185,6 +186,7 @@ var phaseStatus = map[phase.Phase]string{
 	phase.Implementing:   "in_progress",
 	phase.Testing:        "testing",
 	phase.Reviewing:      "needs_review",
+	phase.Step:           "in_progress",
 	phase.Accepting:      "needs_review",
 	phase.Retro:          "retro",
 	phase.Merging:        "retro",
