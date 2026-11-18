@@ -115,6 +115,7 @@ type Runtime struct {
 	adoptTimeout            time.Duration
 	tokens                  ProvisionTokens
 	gitHubCredential        runtime.GitHubCredential
+	actsAs                  runtime.ActsAs
 	controllerCredential    runtime.ControllerCredential
 	gitHubDirs              func(repo ghrepo.Repository, roles []appauth.AppRole) []string
 	store                   Store
@@ -379,7 +380,7 @@ func configureProber(opts Options) (*Runtime, error) {
 		launchBound:   launchBound(opts.BootTimeout, provisionBound, opts.TerminationGrace),
 		probeInterval: opts.ProbeInterval, adoptTimeout: opts.AdoptTimeout, agent: opts.Agent, setup: slices.Clone(opts.Setup),
 		testPostgres: opts.TestPostgres, skills: opts.SkillsRepository, memoryGuard: opts.MemoryGuard,
-		tokens: opts.Tokens, gitHubCredential: opts.GitHubCredential, controllerCredential: opts.ControllerCredential,
+		tokens: opts.Tokens, gitHubCredential: opts.GitHubCredential, actsAs: opts.ActsAs, controllerCredential: opts.ControllerCredential,
 		gitHubDirs: opts.GitHubDirs,
 		store:      opts.Store, conns: opts.Conns, now: opts.Now, log: opts.Log,
 		changed: make(chan struct{}), watch: map[claim.Token]runtime.Locator{}, podTurns: map[string]chan struct{}{}, stranded: map[string]string{},

@@ -642,7 +642,12 @@ func (r *Runtime) mintGitHubCredential(ctx context.Context, spec runtime.SpawnSp
 	if spec.Role == claim.RoleController {
 		bundle, err = r.controllerCredential(ctx, "")
 	} else {
-		bundle, err = r.gitHubCredential(ctx, spec.Role, spec.Repository)
+		// The pane holds the App of the step its claim does now (runtime.SlotRole), which is the
+		// claim's stored role: the spec's role, which the machine builds from it.
+		var role claim.Role
+		if role, err = runtime.SlotRole(ctx, r.actsAs, spec.Claim, spec.Role); err == nil {
+			bundle, err = r.gitHubCredential(ctx, role, spec.Repository)
+		}
 	}
 	noOwner := spec.Role == claim.RoleController && errors.Is(err, runtime.ErrNoGitHubOwner)
 	if err != nil && !noOwner {

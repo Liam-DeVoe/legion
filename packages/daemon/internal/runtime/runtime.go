@@ -569,3 +569,29 @@ func (id GitIdentity) Env() map[string]string {
 		"GIT_COMMITTER_NAME": id.Name, "GIT_COMMITTER_EMAIL": id.Email,
 	}
 }
+
+// ActsAs answers, for a claim token, the role whose App the claim's slot holds while it does some
+// other work than its stored role's, and false where it gives none: the owner's step is such work,
+// which the daemon's owner function decides. A runtime is given one in its options (nil by
+// default), and SlotRole, the one function that answers a slot's App role, reads it.
+type ActsAs func(ctx context.Context, token claim.Token) (claim.Role, bool, error)
+
+// SlotRole is the role whose App the slot of token holds: the role actsAs gives the token where
+// actsAs is set and gives one, else role, the claim's stored role, which is the role of the step
+// its agent does now (a claim takes the role of each step its agent runs). It is never the slot's
+// name: a keyed agent's slot is named by its agent, and that agent can do a step of another role.
+// Each write of a slot's gh credential asks it, at a launch and at each refresh, so a re-roled
+// claim's slot holds its new role's App.
+func SlotRole(ctx context.Context, actsAs ActsAs, token claim.Token, role claim.Role) (claim.Role, error) {
+	if actsAs == nil {
+		return role, nil
+	}
+	acting, ok, err := actsAs(ctx, token)
+	if err != nil {
+		return "", fmt.Errorf("the role whose App the slot of %s holds: %w", token, err)
+	}
+	if ok {
+		return acting, nil
+	}
+	return role, nil
+}

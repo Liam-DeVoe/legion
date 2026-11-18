@@ -92,6 +92,10 @@ type Options struct {
 	// way (appauth.AppRoleFor). Nil is a daemon with no GitHub Apps (Stage 2's, which configures no
 	// workflow): its panes are told no gh variable, hold no gh files, and the refresher does nothing.
 	GitHubCredential runtime.GitHubCredential
+	// ActsAs answers the role whose App a claim's pane holds while the claim does work other than
+	// its stored role's (runtime.ActsAs), which runtime.SlotRole reads at each mint of a pane's gh
+	// files. Optional: nil gives every pane its claim's stored role.
+	ActsAs runtime.ActsAs
 	// ControllerCredential is the daemon's function for the controller's own gh bundle
 	// (appauth.ControllerCredential). The refresher asks it for the owner the pane's launch
 	// recorded (trackedProcess.ghDefault); a launch asks for none, taking the first owner, which
@@ -179,6 +183,8 @@ type Runtime struct {
 	dispatchURL      string
 	dispatchToken    string
 	gitHubCredential runtime.GitHubCredential
+	// actsAs is Options.ActsAs.
+	actsAs runtime.ActsAs
 	// controllerCredential is the controller pane's bundle by default owner
 	// (Options.ControllerCredential), set with gitHubCredential and nil without it.
 	controllerCredential runtime.ControllerCredential
@@ -342,6 +348,7 @@ func New(opts Options) (*Runtime, error) {
 		dispatchURL:          opts.DispatchURL,
 		dispatchToken:        opts.DispatchTokenFile,
 		gitHubCredential:     opts.GitHubCredential,
+		actsAs:               opts.ActsAs,
 		controllerCredential: opts.ControllerCredential,
 		gh:                   opts.GH,
 		claimRepository:      opts.ClaimRepository,
