@@ -54,7 +54,7 @@
 #
 # Last it builds `legion` from packages/daemon/cmd/legion into a directory of its own under
 # TMPDIR (LEGION_BINARY names a build to run in its place, which a negative control's scratch copy
-# makes), never the /opt/legion/bin/legion on PATH, and runs `legion start --check-config` three
+# makes), never the /opt/legion/bin/legion on PATH, and runs `legion config check` three
 # times: over a legion.yaml it accepts as written (`gates.design: [spec]`), printing that
 # acceptance; over a copy whose gates.design holds decisions, criteria and spec, which must be
 # refused, the refusal naming gates.design and the steps that remain (criteria and spec), since
@@ -429,7 +429,7 @@ done < <(sentences "$root/$page_path")
 pass words "$page_path calls the view no reading of the decisions document"
 
 # ---------------------------------------------------------------------------------------------
-# The daemon refuses the step: this branch's `legion start --check-config`.
+# The daemon refuses the step: this branch's `legion config check`.
 # ---------------------------------------------------------------------------------------------
 if [[ -n "${LEGION_BINARY:-}" ]]; then
   [[ -f "$LEGION_BINARY" && -x "$LEGION_BINARY" ]] ||
@@ -453,8 +453,8 @@ chmod 600 "$work/config/operator-token"
 printf '#!/bin/sh\nexit 0\n' >"$work/config/omp"
 chmod 700 "$work/config/omp"
 
-# check_config NAME STEPS: writes $work/config/NAME.yaml gating STEPS, runs `legion start
-# --check-config` over it in an environment holding only PATH, a home and that stand-in, so no
+# check_config NAME STEPS: writes $work/config/NAME.yaml gating STEPS, runs `legion config
+# check` over it in an environment holding only PATH, a home and that stand-in, so no
 # LEGION_ setting of the calling shell reaches it, and leaves the exit in $config_code and both
 # streams in $work/NAME.out.
 check_config() {
@@ -470,9 +470,9 @@ YAML
   config_code=0
   # shellcheck disable=SC2031 # this shell's own PATH: only lib.sh's cli subshell sets another
   (cd "$work/config" && env -i PATH="$PATH" HOME="$work" XDG_STATE_HOME="$work/state" \
-    LEGION_OMP_PATH="$work/config/omp" "$legion" start --check-config --config "$work/config/$1.yaml") \
+    LEGION_OMP_PATH="$work/config/omp" "$legion" config check --config "$work/config/$1.yaml") \
     >"$work/$1.out" 2>&1 || config_code=$?
-  printf -- '--- legion start --check-config, gates.design: [%s], exited %s:\n%s\n' "$2" "$config_code" "$(<"$work/$1.out")"
+  printf -- '--- legion config check, gates.design: [%s], exited %s:\n%s\n' "$2" "$config_code" "$(<"$work/$1.out")"
 }
 
 check_config accepted spec
