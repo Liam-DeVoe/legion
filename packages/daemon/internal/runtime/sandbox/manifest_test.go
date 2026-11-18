@@ -2507,6 +2507,9 @@ func TestAgentArgvCarriesTheConfiguredModel(t *testing.T) {
 	resuming := workerSpec(t)
 	resuming.Generation, resuming.BootToken, resuming.ResumeSessionFile = 2, "boot-g2", resumeSession
 	resumed := launchOf(t, r, resuming)
+	modelled := workerSpec(t)
+	modelled.Model = "checker-model"
+	named := launchOf(t, r, modelled)
 	for _, tc := range []struct {
 		name string
 		l    launch
@@ -2518,6 +2521,9 @@ func TestAgentArgvCarriesTheConfiguredModel(t *testing.T) {
 		{"a launch that resumes one", resumed, append(slices.Clone(r.agent),
 			"--extension", envoyPlugin, "--extension", legionPlugin, "--model", "@default",
 			"--resume="+resumeSession, "--mode", "rpc", "--append-system-prompt", systemPromptPath(resumed.spec.Generation))},
+		{"a launch whose spec names its role's model", named, append(slices.Clone(r.agent),
+			"--extension", envoyPlugin, "--extension", legionPlugin, "--model", "checker-model",
+			"--mode", "rpc", "--append-system-prompt", systemPromptPath(named.spec.Generation))},
 	} {
 		if got := tc.l.agentArgv(r.agent); !slices.Equal(got, tc.want) {
 			t.Errorf("%s runs %q, want %q", tc.name, got, tc.want)

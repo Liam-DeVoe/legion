@@ -597,8 +597,9 @@ func SessionFromVolume(file, root string) (string, error) {
 
 // agentArgv is the command the shim runs, the launch's own harness: the Claude Code command for a
 // Claude role (claudeArgv), and otherwise the image's Oh My Pi with its two explicit extensions,
-// the Envoy plugin first, `--model @default` so the session runs the model the pod's overlay puts
-// on the `default` role, `--resume` on the recorded session when resuming, then RPC mode and
+// the Envoy plugin first, `--model` on the model the spec names, `@default` where it names none so
+// the session runs the model the pod's overlay puts on the `default` role, `--resume` on the
+// recorded session when resuming, then RPC mode and
 // `--append-system-prompt` naming the file the launcher writes the launch's system prompt to
 // (systemPromptPath), never the text: Oh My Pi 18.16.0 reads a value with no newline as a path
 // and appends that file's contents, so the prompt meets no argv bound however long the
@@ -618,13 +619,15 @@ func SessionFromVolume(file, root string) (string, error) {
 // image leaves unlinked from its profile: Oh My Pi loads a plugin that is both installed and named
 // by --extension twice, which the boot gate's pod lane refuses an image for.
 //
-// `--model @default` rides every launch, not the resuming one alone: @default is Oh My Pi's name
-// for the `default` model role, which every pod's operator overlay sets, and a resumed session
-// otherwise runs the model its first launch saved for ever. A launch under the flag writes no
-// `model_change` entry of its own, so the saved pin stays in the session file and a later launch
-// without the flag would read it again. A profile with no `default` role is not refused here: Oh
-// My Pi launches silently on a built-in model instead, which is the deployment's to notice
-// (deploy/kubernetes/operator-route/README.md, "Changing a role's model").
+// A model rides every launch, not the resuming one alone. Where the spec names none, it is
+// @default, Oh My Pi's name for the `default` model role, which every pod's operator overlay sets,
+// and a resumed session otherwise runs the model its first launch saved for ever. A launch under
+// the flag writes no `model_change` entry of its own, so the saved pin stays in the session file
+// and a later launch without the flag would read it again. A profile with no `default` role is not
+// refused here: Oh My Pi launches silently on a built-in model instead, which is the deployment's
+// to notice (deploy/kubernetes/operator-route/README.md, "Changing a role's model"). Where the spec
+// names a model (a role of the deployment's `model`, runtime.SpawnSpec.Model), that model is named
+// in the same place.
 func (l launch) agentArgv(agent []string) []string {
 	if l.runsClaude() {
 		return l.claudeArgv()
@@ -633,7 +636,11 @@ func (l launch) agentArgv(agent []string) []string {
 	if l.spec.Plugins != nil {
 		envoy, legion = pluginRoots(pluginGenDir(roleStateHome(l.spec.Role), l.spec.Generation))
 	}
-	argv := append(slices.Clone(agent), "--extension", envoy, "--extension", legion, "--model", "@default")
+	model := "@default"
+	if l.spec.Model != "" {
+		model = l.spec.Model
+	}
+	argv := append(slices.Clone(agent), "--extension", envoy, "--extension", legion, "--model", model)
 	if l.spec.ResumeSessionFile != "" {
 		argv = append(argv, "--resume="+l.spec.ResumeSessionFile)
 	}

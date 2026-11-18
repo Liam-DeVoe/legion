@@ -46,9 +46,10 @@ type ompLauncher struct {
 	invocation string
 }
 
-// Launch is innerCommand on promptFile; an Oh My Pi pane carries no pairs of its own.
+// Launch is innerCommand on promptFile, naming the spec's model; an Oh My Pi pane carries no
+// pairs of its own.
 func (l ompLauncher) Launch(spec runtime.SpawnSpec, _ Host, promptFile string) (string, []string, error) {
-	return innerCommand(l.prefix, l.invocation, spec.ResumeSessionFile, promptFile), nil, nil
+	return innerCommand(l.prefix, l.invocation, spec.Model, spec.ResumeSessionFile, promptFile), nil, nil
 }
 
 // Marker is "omp", which the invocation in an Oh My Pi pane's command line names.

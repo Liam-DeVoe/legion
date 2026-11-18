@@ -361,7 +361,9 @@ func (k Known) Validate() error {
 // `commit_issue_trailer_repos` (which internal/daemon's specs reads); "" for a repository the
 // project does not name, for a launch with no repository, and for the controller, which works
 // neither. Backend is the harness the process runs (`worker_backends`,
-// Backends); "" is Oh My Pi (Of).
+// Backends); "" is Oh My Pi (Of). Model is the model the harness runs, the `model` the settings
+// give a role of the deployment (`roles.<name>.model`); "" is the profile's own: Oh My Pi's
+// `@default` role, and no model named to Claude Code.
 type SpawnSpec struct {
 	Claim             claim.Token
 	Project           string
@@ -380,6 +382,7 @@ type SpawnSpec struct {
 	Variants          []Variant
 	IssueTrailer      string
 	Backend           Backend
+	Model             string
 }
 
 // Variant is one arm of one declared experiment a launch runs in (SpawnSpec.Variants): the
