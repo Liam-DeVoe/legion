@@ -67,9 +67,11 @@ interface SharedProps {
   /** The trigger is busy with what the last close committed: it stays focusable, and says so
    *  rather than looking actionable and doing nothing. */
   readonly ariaDisabled?: boolean;
-  /** Takes the focus on its trigger as it is drawn: a list that is the first control of a form
-   *  the reader opened with a control the form takes the place of, as **Add a priority**'s does.
-   *  Read once, when the list is drawn. */
+  /** Takes the focus on its trigger as it is drawn, when the focus is lost then: a list that is
+   *  the first control of a form the reader opened with a control the form takes the place of,
+   *  as **Add a priority**'s does, whose press took the focus away with that control. A list drawn
+   *  while the focus is anywhere else takes none, so a form drawn again without a press (a
+   *  remount on a live update) never pulls the focus from where the reader is. */
   readonly autoFocus?: boolean;
   /** Shown under the list, e.g. a host's validation message for a rejected `onCreate`. */
   readonly error?: string | null;
@@ -212,9 +214,10 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   const opensOn = useRef<string | undefined>(undefined);
   // In the commit that draws the list, so the focus is on its trigger before the browser hands a
   // focus the commit took away to the page: Firefox and WebKit report that loss only afterwards,
-  // and the page's rescue then lands it elsewhere.
+  // and the page's rescue then lands it elsewhere. Only a lost focus is taken (`focusLost`, which
+  // reads a focus still on the removed control as lost): one the reader holds elsewhere stays.
   useLayoutEffect(() => {
-    if (autoFocus) triggerRef.current?.focus();
+    if (autoFocus && focusLost()) triggerRef.current?.focus();
   }, [autoFocus]);
 
   const searchText = query.trim();
