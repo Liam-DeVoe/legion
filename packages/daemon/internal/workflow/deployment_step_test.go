@@ -2,6 +2,8 @@ package workflow
 
 import (
 	"context"
+	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -345,5 +347,96 @@ func TestTheStartOfADeploymentStepNamesItsAgent(t *testing.T) {
 	})
 	if got != want {
 		t.Fatalf("the agent of the checker's step = %q, want %q", got, want)
+	}
+}
+
+// phaseEndsOf is every phase-ended message key's outbox holds, oldest first.
+func phaseEndsOf(t *testing.T, pool *pgxpool.Pool, key string) []record.PhaseEnded {
+	t.Helper()
+	var ends []record.PhaseEnded
+	for _, row := range issueOutboxOf(t, pool, key, string(record.OutboxKindPhaseEnded)) {
+		payload, err := record.DecodeOutboxPayload(record.OutboxRow{ID: row.id, Kind: record.OutboxKindPhaseEnded, Issue: key, Payload: row.payload})
+		if err != nil {
+			t.Fatalf("decode phase-ended row %d of %s: %v", row.id, key, err)
+		}
+		if ended, ok := payload.(record.PhaseEnded); ok {
+			ends = append(ends, ended)
+		}
+	}
+	return ends
+}
+
+// A head that conflicts with its base takes the issue from a step of a role the deployment defines
+// back to implementing, and that role is told its phase ended, as a tester is told when the
+// conflict ends testing; the implementer starts as it does for every conflict.
+func TestAConflictOutOfADeploymentStepTellsItsRole(t *testing.T) {
+	pool := migratedPool(t)
+	engine := returnEngine()
+	root := checkerAtStep2(t, pool)
+
+	move(t, pool, engine, root.Key, TriggerConflict, record.TaskPlace{}, record.PhaseRow{})
+
+	assertWalksAt(t, pool, engine, root.Key, phase.Implementing, stepPlace(1))
+	if ends := phaseEndsOf(t, pool, root.Key); len(ends) != 1 || ends[0].Role != "checker" || ends[0].From != phase.Step || ends[0].To != phase.Implementing {
+		t.Fatalf("the phase-ended messages = %+v, want the checker's one, from step to implementing", ends)
+	}
+	if starts := startsOf(t, pool, root.Key, claim.RoleImplementer); len(starts) != 1 {
+		t.Fatalf("the implementer's starts = %+v, want one", starts)
+	}
+}
+
+// A move back to step does not say which step where two earlier steps run as step, so it is
+// refused naming the two nearest and the returnTo that names one, and nothing moves; with one
+// earlier step that runs as step, the move goes there and starts its role.
+func TestABackwardMoveToStepNamesWhichStep(t *testing.T) {
+	const refusal = "task a of LEGION-208 has two earlier steps that run as step, %s and %s, so a move back to step does not say which one the " +
+		"task returns to; this move changed nothing. The agent of a step names the place with handoff_complete, the verdict fail and returnTo; " +
+		"the owner names it with request_backward_move and returnTo."
+	moveBack := intake.BackwardMove{Issue: "LEGION-208", Requester: claim.RoleArchitect, To: phase.Step, Reason: "the check missed a case"}
+	for _, tc := range []struct {
+		name     string
+		words    []string
+		two      []record.TaskPlace
+		named    [2]string
+		returnTo record.TaskPlace
+	}{
+		{"two earlier steps", []string{"implementer", "checker", "linter", "acceptance:owner"}, []record.TaskPlace{stepPlace(2), stepPlace(3)},
+			[2]string{"2 (checker)", "3 (linter)"}, record.TaskPlace{}},
+		{"three earlier steps, the two nearest named", []string{"implementer", "checker", "critic", "linter", "acceptance:owner"},
+			[]record.TaskPlace{stepPlace(3), stepPlace(4)}, [2]string{"3 (critic)", "4 (linter)"}, record.TaskPlace{}},
+		{"one earlier step", []string{"implementer", "checker", "acceptance:owner"}, nil, [2]string{}, stepPlace(2)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			engine := returnEngine()
+			root := stepRoot(t, pool, phase.Accepting)
+			at := len(tc.words)
+			seedStepsAt(t, pool, root.Key, root.Generation, at, map[string]string{"checker": "testing", "critic": "review", "linter": "testing"}, tc.words...)
+
+			_, w := issueAndWalkOf(t, pool, engine, root.Key)
+			place, found, two := w.backwardPlace(phase.Step)
+			if place != tc.returnTo || found != (tc.two == nil) || !slices.Equal(two, tc.two) {
+				t.Fatalf("backwardPlace(step) = %+v, %t, %+v; want %+v, %t, %+v", place, found, two, tc.returnTo, tc.two == nil, tc.two)
+			}
+
+			result := applyFacts(t, pool, engine)("move-back", moveBack)
+			if tc.two == nil {
+				if result.Refusal != nil {
+					t.Fatalf("the move back to the one earlier step was refused: %+v", result.Refusal)
+				}
+				assertWalksAt(t, pool, engine, root.Key, phase.Step, tc.returnTo)
+				if starts := startsOf(t, pool, root.Key, "checker"); len(starts) != 1 {
+					t.Fatalf("the checker's starts = %+v, want one", starts)
+				}
+				return
+			}
+			want := fmt.Sprintf(refusal, tc.named[0], tc.named[1])
+			if result.Refusal == nil || result.Refusal.Code != "BACKWARD_REFUSED" || result.Refusal.Message != want {
+				t.Fatalf("the move back to step = %+v, want BACKWARD_REFUSED %q", result.Refusal, want)
+			}
+			if issue := issueOf(t, pool, engine, root.Key); issue.Phase != phase.Accepting {
+				t.Fatalf("after the refused move %s stands in %s, want accepting", root.Key, issue.Phase)
+			}
+		})
 	}
 }

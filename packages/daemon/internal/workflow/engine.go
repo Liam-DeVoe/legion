@@ -1471,13 +1471,21 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 }
 
 // backwardRefusal is why the guard refuses fact, and "" where it does not: the one sentence that
-// names which of the guard's three readings failed. served is whether the table holds a backward
-// row of the issue's phase for the move's target.
-func backwardRefusal(issue record.Issue, fact intake.BackwardMove, served bool) string {
+// names which of the guard's readings failed. served is whether the table holds a backward row of
+// the issue's phase for the move's target. two is the two earlier places of w's task that run as
+// step, nearest first in the task's order (Walk.backwardPlace), where the move names step and
+// more than one serves it: the move does not say which, and the refusal names both and the field
+// that names one.
+func backwardRefusal(issue record.Issue, w Walk, fact intake.BackwardMove, served bool, two []record.TaskPlace) string {
 	switch {
 	case fact.To == "":
 		return fmt.Sprintf("a backward move names the phase it moves to; the %s's move of %s named none, so it changed nothing",
 			fact.Requester, issue.Key)
+	case len(two) == 2:
+		return fmt.Sprintf("task %s of %s has two earlier steps that run as step, %d (%s) and %d (%s), so a move back to step does not say "+
+			"which one the task returns to; this move changed nothing. The agent of a step names the place with handoff_complete, "+
+			"the verdict fail and returnTo; the owner names it with request_backward_move and returnTo.",
+			w.Task, issue.Key, two[0].Position, w.RoleAt(two[0]), two[1].Position, w.RoleAt(two[1]))
 	case !served:
 		return fmt.Sprintf("a backward move reaches an earlier phase, and no backward row of %s serves %s; the %s's move of %s changed nothing",
 			issue.Phase, fact.To, fact.Requester, issue.Key)
@@ -1523,12 +1531,12 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 	}
 	// The move reaches the one earlier place of its task that runs as its target (backwardPlace);
 	// where none or more than one does, no row serves it.
-	target, found := w.backwardPlace(fact.To)
+	target, found, two := w.backwardPlace(fact.To)
 	served := false
 	if found {
 		_, served = w.row(issue.Phase, TriggerBackward, target, Snapshot{Phase: issue.Phase})
 	}
-	if why := backwardRefusal(*issue, fact, served); why != "" {
+	if why := backwardRefusal(*issue, w, fact, served, two); why != "" {
 		return refused("BACKWARD_REFUSED", why), nil
 	}
 	lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree)
@@ -1831,7 +1839,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 			return err
 		}
 	}
-	if err := e.phaseEnded(ctx, tx, issue, trigger, from, row.To, starting, reason); err != nil {
+	if err := e.phaseEnded(ctx, tx, issue, trigger, from, row.To, starting, ended, reason); err != nil {
 		return err
 	}
 	if mergedAlready {
@@ -1883,16 +1891,16 @@ func noticeFor(trigger TriggerKind, from, to phase.Phase, handoff record.PhaseRo
 // the merge the daemon raises of its own leave a role that has just finished the work they report,
 // with no reason of the kind this message carries. A CI result moves no issue
 // (dispatch://INFRA-714 R1), so the trigger is a head that starts conflicting with its base.
-// The recipient is phase.RoleFor(from) whenever that is a role other than the architect, read from
-// the transition alone rather than from what the role had done: the tester in testing, the reviewer
-// in reviewing whether or not it completed its round, the merger in merging, and the implementer in
-// retro, which is also the role starting, told that its task for the new phase follows. Accepting
-// sends none — its role is the architect, which the conflict notice tells (noticeFor). Without the
-// message nothing tells that role: no transition stops a worker, and the daemon's next task for a
-// role is delivered only once that role's turn ends, while this message reaches its session at its
-// next model turn and ends a wait.
-func (e *Engine) phaseEnded(ctx context.Context, tx pgx.Tx, issue record.Issue, trigger TriggerKind, from, to phase.Phase, starting claim.Role, reason string) error {
-	ended := phase.RoleFor(from)
+// The recipient is ended, the role whose step the move ends (transition reads it from the task's
+// place), whenever that is a role other than the architect, read from the transition alone rather
+// than from what the role had done: the tester in testing, the reviewer in reviewing whether or not
+// it completed its round, the role of a step that runs as step, the merger in merging, and the
+// implementer in retro, which is also the role starting, told that its task for the new phase
+// follows. Accepting sends none — its role is the architect, which the conflict notice tells
+// (noticeFor). Without the message nothing tells that role: no transition stops a worker, and the
+// daemon's next task for a role is delivered only once that role's turn ends, while this message
+// reaches its session at its next model turn and ends a wait.
+func (e *Engine) phaseEnded(ctx context.Context, tx pgx.Tx, issue record.Issue, trigger TriggerKind, from, to phase.Phase, starting, ended claim.Role, reason string) error {
 	if trigger != TriggerConflict || ended == "" || ended == claim.RoleArchitect {
 		return nil
 	}

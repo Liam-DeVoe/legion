@@ -330,10 +330,13 @@ func (w Walk) placeOfRole(role claim.Role) (record.TaskPlace, bool) {
 // serves it: for a walk with no plan rows the place of to on today's line, whose phases each stand
 // once (PlaceOf); for a stored walk the one place before w.Place whose step, retro or merge runs
 // as to. Where no earlier place runs as to, or more than one does (two steps that run as step), no
-// backward row serves the move.
-func (w Walk) backwardPlace(to phase.Phase) (record.TaskPlace, bool) {
+// backward row serves the move. Where to is step and two or more places before w.Place run as
+// step, its third answer is the two of them nearest w.Place, the lower first, which the move's
+// refusal names (backwardRefusal); it is nil in every other case.
+func (w Walk) backwardPlace(to phase.Phase) (record.TaskPlace, bool, []record.TaskPlace) {
 	if !w.Stored {
-		return w.PlaceOf(to)
+		place, ok := w.PlaceOf(to)
+		return place, ok, nil
 	}
 	var found []record.TaskPlace
 	for at, p := range w.Line {
@@ -341,10 +344,13 @@ func (w Walk) backwardPlace(to phase.Phase) (record.TaskPlace, bool) {
 			found = append(found, place)
 		}
 	}
-	if len(found) != 1 {
-		return record.TaskPlace{}, false
+	switch {
+	case len(found) == 1:
+		return found[0], true, nil
+	case len(found) >= 2 && to == phase.Step:
+		return record.TaskPlace{}, false, found[len(found)-2:]
 	}
-	return found[0], true
+	return record.TaskPlace{}, false, nil
 }
 
 // table is the table of w's line: Table for a run with no plan rows, which is TableOf(phase.Order)
