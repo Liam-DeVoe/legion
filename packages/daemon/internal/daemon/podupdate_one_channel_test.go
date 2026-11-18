@@ -19,24 +19,35 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// asks is every update-ask row the sweep enqueued, decoded, oldest first, each on the rig's issue:
-// the rows the outbox holds now and every row the rig's lane has finished and deleted since
-// (runLane), which this read kept the first time it saw them.
+// asks is every update-ask row the sweep enqueued on the rig's issue, decoded, oldest first: the
+// rows the outbox holds now and every row the rig's lane has finished and deleted since
+// (runLane), which this read kept the first time it saw them (asksOn).
 func (r *podUpdateRig) asks() []record.UpdateAsk {
 	r.t.Helper()
+	return r.asksOn(podUpdateIssue)
+}
+
+// asksOn is asks for issue, the rig's own or one secondIssue seeded. Each read records every row
+// the outbox holds with its issue, so a row the lane deletes later is still answered; a row of any
+// other issue fails, since nothing in the rig seeds one.
+func (r *podUpdateRig) asksOn(issue string) []record.UpdateAsk {
+	r.t.Helper()
 	for _, row := range r.rows(record.OutboxKindUpdateAsk) {
-		if row.Issue != podUpdateIssue {
-			r.t.Fatalf("update ask %d is on %s, want %s", row.ID, row.Issue, podUpdateIssue)
+		if row.Issue != podUpdateIssue && !r.second[row.Issue] {
+			r.t.Fatalf("update ask %d is on %s, want %s or an issue secondIssue seeded", row.ID, row.Issue, podUpdateIssue)
 		}
 		var ask record.UpdateAsk
 		if err := json.Unmarshal(row.Payload, &ask); err != nil {
 			r.t.Fatalf("decode update ask %d: %v", row.ID, err)
 		}
 		r.asked[row.ID] = ask
+		r.askedOn[row.ID] = row.Issue
 	}
 	ids := make([]int64, 0, len(r.asked))
 	for id := range r.asked {
-		ids = append(ids, id)
+		if r.askedOn[id] == issue {
+			ids = append(ids, id)
+		}
 	}
 	slices.Sort(ids)
 	asks := make([]record.UpdateAsk, len(ids))

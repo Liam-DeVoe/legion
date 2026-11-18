@@ -15,7 +15,6 @@ package daemon
 
 import (
 	"context"
-	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -224,26 +223,22 @@ func TestRepositoryCorrectionOpensAnOrdinaryRoundForEachIssueADefaultChangeMoved
 		t.Fatalf("both issues are in the round %q, want a round of each issue's own pod", first.UpdateRound)
 	}
 	// Each round asks its own issue's role over Envoy, naming its own round and pod and both
-	// repositories, and no ask of one issue names the other's pod.
+	// repositories, and no ask of one issue names the other's pod. The lane has run and deleted
+	// each row by now (awaitAsked), so they are read from the rig's record of every row it saw.
 	rounds := map[string]string{podUpdateIssue: podUpdateRound, defaultChangeSecondIssue: defaultChangeSecondRound}
 	pods := map[string]string{podUpdateIssue: podUpdatePod, defaultChangeSecondIssue: defaultChangeSecondPod}
-	asked := map[string]int{}
-	for _, row := range rig.rows(record.OutboxKindUpdateAsk) {
-		var ask record.UpdateAsk
-		if err := json.Unmarshal(row.Payload, &ask); err != nil {
-			t.Fatalf("decode update ask %d: %v", row.ID, err)
-		}
-		asked[row.Issue]++
-		if ask.Round != rounds[row.Issue] || ask.Pod != pods[row.Issue] {
-			t.Errorf("the ask on %s = %+v, want round %s of pod %s", row.Issue, ask, rounds[row.Issue], pods[row.Issue])
-		}
-		if !strings.Contains(ask.Text, podUpdateRepo) || !strings.Contains(ask.Text, podUpdateCorrectedRepo) {
-			t.Errorf("the ask on %s says %q, want it to name both %s and %s", row.Issue, ask.Text, podUpdateRepo, podUpdateCorrectedRepo)
-		}
-	}
 	for issue := range rounds {
-		if asked[issue] != 1 {
-			t.Errorf("%s was asked %d times, want once, by its own round", issue, asked[issue])
+		asks := rig.asksOn(issue)
+		if len(asks) != 1 {
+			t.Errorf("%s was asked %d times, want once, by its own round", issue, len(asks))
+		}
+		for _, ask := range asks {
+			if ask.Round != rounds[issue] || ask.Pod != pods[issue] {
+				t.Errorf("the ask on %s = %+v, want round %s of pod %s", issue, ask, rounds[issue], pods[issue])
+			}
+			if !strings.Contains(ask.Text, podUpdateRepo) || !strings.Contains(ask.Text, podUpdateCorrectedRepo) {
+				t.Errorf("the ask on %s says %q, want it to name both %s and %s", issue, ask.Text, podUpdateRepo, podUpdateCorrectedRepo)
+			}
 		}
 	}
 }
@@ -254,6 +249,7 @@ func TestRepositoryCorrectionOpensAnOrdinaryRoundForEachIssueADefaultChangeMoved
 // claim's token.
 func (r *podUpdateRig) secondIssue(issue, pod string) claim.Token {
 	r.t.Helper()
+	r.second[issue] = true
 	token := mustClaimToken(r.t, issue, claim.RoleImplementer)
 	c := supervise.Claim{
 		Token: token, Project: podUpdateProject, Tree: issue, Issue: issue, Role: claim.RoleImplementer,

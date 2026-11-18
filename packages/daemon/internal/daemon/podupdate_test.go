@@ -152,6 +152,11 @@ type podUpdateRig struct {
 	// asked is every update-ask row the sweep has written, by id, kept once read: the lane
 	// deletes each row it finishes, as the outbox does, and asks reads every row ever written.
 	asked map[int64]record.UpdateAsk
+	// askedOn is the issue of each row asked holds, by the same id, and second is every issue
+	// secondIssue seeded beside the rig's own: a case of two issues reads each issue's asks
+	// (asksOn), and asks answers the rig's own issue's.
+	askedOn map[int64]string
+	second  map[string]bool
 }
 
 func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
@@ -273,7 +278,8 @@ func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
 	// held one would pass every test of this rig (INFRA-3169).
 	rig := &podUpdateRig{t: t, ctx: store.ForConcurrentWorker(ctx), s: s, sup: sup, rt: rt, pool: pool, records: records, clock: clock, conns: conns,
 		workers: map[claim.Role]*fake.Conn{}, tokens: tokens, st: st, logs: logs, log: log,
-		listener: &holderPublisher{}, asked: map[int64]record.UpdateAsk{}}
+		listener: &holderPublisher{}, asked: map[int64]record.UpdateAsk{}, askedOn: map[int64]string{},
+		second: map[string]bool{}}
 	rig.lane = &outbox{project: podUpdateProject, notices: rig.listener, supervisor: sup, log: log}
 	for _, role := range roles {
 		if !role.session {
@@ -1616,7 +1622,7 @@ func (r *podUpdateRig) restart() *podUpdateRig {
 	}
 	next := &podUpdateRig{t: r.t, ctx: r.ctx, sup: sup, rt: rt, pool: r.pool, records: r.records, clock: r.clock,
 		conns: conns, workers: workers, tokens: r.tokens, st: st, logs: r.logs, log: r.log,
-		listener: r.listener, asked: r.asked}
+		listener: r.listener, asked: r.asked, askedOn: r.askedOn, second: r.second}
 	next.lane = &outbox{project: podUpdateProject, notices: next.listener, supervisor: sup, log: r.log}
 	next.s = &supervision{
 		cfg: r.s.cfg, log: quietLogger(), plan: r.s.plan, runtime: rt, supervisor: sup,
