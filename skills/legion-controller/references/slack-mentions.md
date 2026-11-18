@@ -149,18 +149,22 @@ architect for it, whatever it asks. For a person's mention, take the first of th
   person's request says to wait or puts it out of scope. That request is the request itself, the
   deployment instructions, or a line of the weekly plan that names the person's request behind it.
 - **Something an issue's architect owns.** A question about a tree's design, a change of direction,
-  a decision only the tree's architect can make about an issue Legion runs. Find the tree: follow
-  `Links:` up through each `child_of` parent with `dispatch read` until you reach the issue
-  `read_state` records with an `architect`. When `issues.<ROOT>.architect.locator.claim` is there,
-  `envoy_publish` the person's words to `notifications.role.` followed by it, with the channel id
-  and `thread_ts` you reply on, and reply in the thread that you passed it to the architect that
-  owns `<ROOT>`, which answers on the issue. When the architect is not running (no locator) and
-  `read_state` shows `settings.answers` (the daemon answers for stopped agents), `envoy_send` the
-  same to its session, `issues.<ROOT>.architect.session`: the send succeeds, and the daemon's answer
-  comes back to you as a direct message in the architect's name, which you post in the thread as
-  the architect's. Otherwise, or when the send answers 404 or `state: stopped` (Envoy stored it for
-  the architect's next start and no daemon took it), say in the thread that the architect is not
-  running and what `read_state` shows for the tree. Never invent a role token.
+  a decision only an architect of its tree can make about an issue Legion runs. Find the issue:
+  follow `Links:` up through each `child_of` parent with `dispatch read` until you reach an issue
+  `read_state` records, `<KEY>`. Its `issues.<KEY>.tree` is `<ROOT>`, the tree's root. Send it to
+  the nearest architect that runs on the chain from `<KEY>` up to `<ROOT>`: the first issue of
+  that chain, from `<KEY>` up, whose `issues.<ISSUE>.architect.locator.claim` is there.
+  `envoy_publish` the person's words to `notifications.role.` followed by that claim, with the
+  channel id and `thread_ts` you reply on, and reply in the thread that you passed it to that
+  architect, which answers on the issue. When no issue of that chain has a locator, no architect
+  of it is running. Where `read_state` then shows `settings.answers` (the daemon answers for
+  stopped agents), `envoy_send` the same to the session of the first issue of that chain, from
+  `<KEY>` up, that records one (`issues.<ISSUE>.architect.session`): the send succeeds, and the
+  daemon's answer comes back to you as a direct message in the architect's name, which you post
+  in the thread as the architect's. Otherwise, or when the send answers 404 or `state: stopped`
+  (Envoy stored it for the architect's next start and no daemon took it), say in the thread that
+  no architect of the tree is running and what `read_state` shows for the tree. Never invent a
+  role token.
 - **Anything else** (a greeting, a question about Legion itself): answer it briefly in the thread.
 
 A request to approve a design is answered as `skill://legion-controller/references/wakes.md`

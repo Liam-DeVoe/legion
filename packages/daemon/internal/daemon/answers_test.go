@@ -194,22 +194,29 @@ func TestOutboxAgentQuestionIsQueuedAndDeliveredOncePerQuestion(t *testing.T) {
 	}
 }
 
-// A person's decision on an ask a stopped tester of a parked child opened goes on as one
-// agent-decision notice: to the tree's architect while it holds its role, and otherwise to the
-// controller — its claim suspended, none the daemon supervises, or its root lingering on a status
-// someone moved back into the workflow, which is nobody's parked tree, so #2163's relay sends
-// nothing for it (record.RelayNotParked). Handed off again, again after a restart, and again after
-// the notice went, it queues nothing more, and the notice names the decision's id, the agent's
-// issue, role and session, the person, where and what they decided.
+// A person's decision on an ask a stopped tester of a child opened goes on as one agent-decision
+// notice, to the architect that owns the child's issue as the outbox routes any notice
+// (noticeArchitect): the child's own architect while it holds its role, else the tree's while it
+// holds its own, and otherwise the controller — the tree's claim suspended, none the daemon
+// supervises, or its root lingering on a status someone moved back into the workflow, which is
+// nobody's parked tree, so #2163's relay sends nothing for it (record.RelayNotParked). Handed off
+// again, again after a restart, and again after the notice went, it queues nothing more, and the
+// notice names the decision's id, the agent's issue, role and session, the person, where and what
+// they decided.
 func TestADecisionGoesOnceToTheRunningArchitectElseToTheController(t *testing.T) {
 	const controller = "notifications.legion.legion.controller"
 	for _, tc := range []struct {
 		name      string
 		architect supervise.ClaimState
-		lingers   bool
-		toArch    bool
+		// child is the state of the child's own architect claim, "" for a parked child that has
+		// none; a child with one is in the workflow, at testing.
+		child   supervise.ClaimState
+		lingers bool
+		to      string
 	}{
-		{name: "the tree's architect holds its role", architect: supervise.StateWorking, toArch: true},
+		{name: "the tree's architect holds its role", architect: supervise.StateWorking, to: "LEGION-1"},
+		{name: "the child's own architect holds its role", architect: supervise.StateWorking, child: supervise.StateWorking, to: "LEGION-4"},
+		{name: "the child's own architect is suspended and the tree's holds its role", architect: supervise.StateWorking, child: supervise.StateSuspended, to: "LEGION-1"},
 		{name: "the tree's architect is suspended", architect: supervise.StateSuspended},
 		{name: "no architect of the tree is supervised"},
 		{name: "the root lingers on a status someone moved back into the workflow", architect: supervise.StateWorking, lingers: true},
@@ -220,14 +227,21 @@ func TestADecisionGoesOnceToTheRunningArchitectElseToTheController(t *testing.T)
 			records := record.NewStore()
 			noticeTree(t, pool, records, tc.lingers)
 			root := "LEGION-1"
-			putOutboxIssue(t, pool, records, record.Issue{Key: "LEGION-4", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION",
-				Tree: root, Parent: &root, Title: "Parked child", Phase: phase.Done, Generation: 1, Status: "backlog"})
+			child := record.Issue{Key: "LEGION-4", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION",
+				Tree: root, Parent: &root, Title: "Parked child", Phase: phase.Done, Generation: 1, Status: "backlog"}
+			if tc.child != "" {
+				child.Title, child.Phase, child.Status = "Child at testing", phase.Testing, "testing"
+			}
+			putOutboxIssue(t, pool, records, child)
 			if tc.lingers {
 				movedBackIntoTheWorkflow(t, pool, records, root)
 			}
 			sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 			if tc.architect != "" {
 				architectClaim(t, sup, root, tc.architect)
+			}
+			if tc.child != "" {
+				architectClaim(t, sup, child.Key, tc.child)
 			}
 			publisher := &holderPublisher{}
 			now := time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC)
@@ -266,8 +280,8 @@ func TestADecisionGoesOnceToTheRunningArchitectElseToTheController(t *testing.T)
 				t.Fatalf("publishes = %+v with %d rows left; want one and none", delivered, outboxRows(t, pool))
 			}
 			want := controller
-			if tc.toArch {
-				want = architectTopic(t, root)
+			if tc.to != "" {
+				want = architectTopic(t, tc.to)
 			}
 			if delivered[0].topic != want || delivered[0].message != "agent-decision on LEGION-4" {
 				t.Fatalf("published to %q as %q; want %q, as an agent-decision on the agent's issue", delivered[0].topic, delivered[0].message, want)

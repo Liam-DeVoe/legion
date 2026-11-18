@@ -332,7 +332,7 @@ func relayOwns(decision answerloop.Decision) bool {
 
 // decisionRoute is where a decision on the agent's issue key goes once it is this loop's to pass
 // on (relayCarries), read through tx as the outbox reads a notice's route (readNoticeRoute,
-// owningArchitect): the architect that owns the issue when it holds its role (holdsItsRole) and
+// noticeArchitect): the architect that owns the issue when it holds its role (holdsItsRole) and
 // its tree neither lingers nor has closed. No architect is the controller's: the tree's architect
 // is suspended, being stopped, failed, retired or not supervised, its root lingers — parked, or
 // on a status someone moved back into the workflow — or the issue is not recorded in a tree the
@@ -347,7 +347,7 @@ func (d routedDecisions) decisionRoute(ctx context.Context, tx pgx.Tx, key strin
 	case route.root.Lingers():
 		return "", nil
 	}
-	architect, err := owningArchitect(route.project, route.issues, issue, record.AgentDecisionNotice, d.outbox.holdsItsRole)
+	architect, err := noticeArchitect(route.project, route.issues, issue, record.Notice{Kind: record.AgentDecisionNotice}, d.outbox.holdsItsRole)
 	if err != nil || !d.outbox.holdsItsRole(architect) {
 		return "", nil
 	}
