@@ -283,8 +283,9 @@ func TestStoredKeysListsEveryKeyTheStoreHoldsWhateverChangesBetweenItsPages(t *t
 			fails: ErrKeyListBehind,
 		},
 		{
-			// The preferred member of a scale-up answers while n1 leads (jetstream_api.go:2112-2133):
-			// it names n1 the leader, among the peers other than itself.
+			// The preferred member of a scale-up answers while n1 leads
+			// (jetstream_api.go:2112-2133): it names n1 the leader, among the peers other than
+			// itself.
 			name:  "a page from a member while another server leads",
 			pages: map[int]answer{0: {total: 1, first: 1, last: 3, msgs: 3, subjects: []string{"a"}, leader: "n1", others: []string{"n1", "n3"}}},
 			fails: ErrKeyListBehind,

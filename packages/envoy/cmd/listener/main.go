@@ -702,7 +702,8 @@ func healthzHandler(deps *atomic.Pointer[listenerDeps]) http.HandlerFunc {
 		} else if err := d.known.ReadErr(); err != nil {
 			// The known-session store is none of the caches above, so its reads that cannot read
 			// its bucket past a barrier answer degraded, not 503, and restart no listener: until a
-			// read completes it answers no record past its stale bound (session.KnownSessions.Opened).
+			// read completes it answers no record past its stale bound
+			// (session.KnownSessions.Opened).
 			response["status"] = "degraded"
 			response["error"] = dependencyUnavailable("known session KV read", err)
 		}
