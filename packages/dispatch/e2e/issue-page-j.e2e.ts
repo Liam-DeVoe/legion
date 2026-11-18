@@ -287,6 +287,7 @@ test("a Contents entry draws a node's first line, cut at a word", async ({ brows
       contentsPane(page).locator(`[data-contents-entry="${seeded.comments.threads[0]}"]`),
       "the reader's own thread is no entry of the list"
     ).toHaveCount(1);
+    // Both entries the list waits on are drawn now, so one read of its rows is the list.
     const drawn = await entries.evaluateAll((rows) =>
       rows.map((row) => ({
         id: row.getAttribute("data-contents-entry") ?? "",
@@ -747,6 +748,7 @@ test("a spec node shows the decisions that shaped it at every version", async ({
     // read as a change the pointer made.
     await expectLoadSettled(traffic);
     const before = await body.innerText();
+    // The page has stopped reading, so the cells drawn now are every cell the view draws.
     for (const cell of await issuePage(page).locator("[data-spec-cell]").all()) await cell.hover();
     expect(await body.innerText(), "the body changed under the pointer").toBe(before);
 
@@ -999,6 +1001,7 @@ test("the Spec view stands as the approved picture draws it @phone", async ({ br
       .toBeGreaterThan(0);
 
     if (phone) {
+      // The poll above saw the decisions drawn, so one read of the runs is the whole view.
       const runs = await specRuns(page);
       expect(runs.length, `the Spec view draws no run of statements at ${at}`).toBeGreaterThan(0);
       for (const { cell, first } of runs) {
@@ -1118,6 +1121,7 @@ test("the Spec view stands as the approved picture draws it @phone", async ({ br
         { message: `${longId} on Spec at ${at} draws no link in its words` }
       )
       .toBeGreaterThan(0);
+    // The poll above saw the row's link drawn, so one read of its groups holds the link.
     const linked = (await rowGroups(page)).find((one) => one.id === longId);
     for (const link of linked?.links ?? []) {
       expect(
@@ -1175,6 +1179,7 @@ test("the Spec view stands as the approved picture draws it @phone", async ({ br
         { message: "t s does not put the focus on a statement of the Spec view" }
       )
       .toBe(true);
+    // The poll above saw a statement take the focus, so one read names that statement.
     const focused = (await focusedNodeId(page)) ?? "";
     await expect
       .poll(() => onScreen(nodeRow(page, focused)), {

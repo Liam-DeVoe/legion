@@ -14,6 +14,7 @@ export const TYPEFACE = "Dispatch Inter";
 /** The address the page's stylesheet loads the typeface from, read from its own `@font-face`
  *  rule. Throws when no rule declares the family. c-typeface. */
 export async function typefaceAddress(page: Page): Promise<string> {
+  // Every caller reads this once the page is drawn, when its stylesheet's rules no longer change.
   const address = await page.evaluate((family) => {
     const find = (rules: CSSRuleList, base: string): string | null => {
       for (const rule of rules) {
