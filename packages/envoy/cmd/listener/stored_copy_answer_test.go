@@ -219,32 +219,34 @@ func TestADuplicateVerdictThatNamesNoCopyAnswers503AtOnce(t *testing.T) {
 
 	rig := newSenderLimitRig(t)
 	rig.limit(60, 5)
-	roleSend := func(t *testing.T, waitErr error) (limitedAnswer, time.Duration) {
+	roleSend := func(t *testing.T, waitErr error) (limitedAnswer, int) {
 		t.Helper()
 		role := "no-copy-" + id.New()
 		claimRoleFor(t, rig.deps.registry, rig.deps.sessions, "ses_no_copy_holder_"+id.New(), role, nil)
 		saved := rig.deps.delivery
 		t.Cleanup(func() { rig.deps.delivery = saved })
-		rig.interceptForwards(func(int, func() (func() (bus.StoredAck, error), error)) (func() (bus.StoredAck, error), error) {
+		forwards := rig.interceptForwards(func(int, func() (func() (bus.StoredAck, error), error)) (func() (bus.StoredAck, error), error) {
 			return func() (bus.StoredAck, error) { return bus.StoredAck{}, waitErr }, nil
 		})
-		started := time.Now()
 		answer := rig.publishFrom(t, "ses_no_copy_sender", contracts.RoleTopicPrefix+role, map[string]any{"idempotency_key": uuid.NewString()})
-		return answer, time.Since(started)
+		return answer, *forwards
 	}
 
 	t.Run("case: a role forward acknowledged as a duplicate with no sequence, which costs one", func(t *testing.T) {
-		answer, took := roleSend(t, fmt.Errorf("%w: %w", bus.ErrForwardNotStored, bus.ErrDuplicateWithoutSequence))
+		answer, forwards := roleSend(t, fmt.Errorf("%w: %w", bus.ErrForwardNotStored, bus.ErrDuplicateWithoutSequence))
 		requireUnread(t, "a role forward acknowledged with no sequence", answer.status, answer.retryAfter, answer.raw, answer.line["outcome"])
-		if took >= publishRetryPause {
-			t.Fatalf("the role send answered after %s, want at once, before any retry of the forward", took)
+		if forwards != 1 {
+			t.Fatalf("the role send made %d forwards, want 1: answered at once, with no retry of the forward", forwards)
 		}
 		answer.requireNamed(t, "a role forward acknowledged with no sequence", "ses_no_copy_sender")
 	})
 
-	t.Run("control: a role forward the stream never acknowledges is answered 504 when the window ends", func(t *testing.T) {
-		answer, _ := roleSend(t, bus.ErrForwardNotStored)
+	t.Run("control: a role forward the stream never acknowledges is tried again and answered 504 when the window ends", func(t *testing.T) {
+		answer, forwards := roleSend(t, bus.ErrForwardNotStored)
 		answer.requireStatus(t, "a role forward never acknowledged", http.StatusGatewayTimeout)
 		answer.requireOutcome(t, "a role forward never acknowledged", outcomeDeliveryFailed)
+		if forwards < 2 {
+			t.Fatalf("the role send made %d forwards, want it tried again until the window ends", forwards)
+		}
 	})
 }
