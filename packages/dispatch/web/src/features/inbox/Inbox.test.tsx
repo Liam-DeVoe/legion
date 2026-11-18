@@ -12,7 +12,11 @@ import { type FakeEditor, fakeDocumentRuntime } from "../../__tests__/document-r
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { pickNamed } from "../../__tests__/list-picks";
 import { pickFromMenu } from "../../__tests__/menu-picks";
-import { answerAskSnoozes, answerIssuePatches } from "../../__tests__/send-answers";
+import {
+  answerAskSnoozes,
+  answerInboxDismisses,
+  answerIssuePatches,
+} from "../../__tests__/send-answers";
 import { wholeText } from "../../__tests__/whole-text";
 import { ApiError, api } from "../../api/client";
 import type {
@@ -5833,6 +5837,58 @@ test("below the column's width a snooze gives the next row the focus, and an ans
   }
 });
 
+// WebKit scrolls a focused element into view only a frame later, by when the list's own scroll
+// keeping may have moved the page again, so the hand-off scrolls the row it focuses into view
+// itself, as the page's focus rescue does (`focusIntoView`): at a phone's width the row after a
+// snoozed one is in the reader's sight the moment it has the focus.
+test("the row a hand-off gives the focus to is scrolled into view once it holds the focus", async () => {
+  const user = userEvent.setup();
+  const rows = [
+    inboxIssue("ask-a", "CORE-1", "Which approach?"),
+    inboxIssue("ask-b", "CORE-2", "Which format?"),
+    inboxIssue("ask-c", "CORE-3", "Which owner?"),
+  ];
+  let served: InboxRow[] = rows;
+  const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
+  const snoozeAsk = answerAskSnoozes().mockImplementation(async (id, { snoozed_until: until }) => {
+    served = served.map((row) => (row.id === id ? { ...row, snoozed_until: until } : row));
+    return { snoozed_until: until };
+  });
+  const getAsk = mockAskReads(rows);
+  /** Each row scrolled into view, with how, and whether it held the focus as it was. */
+  const scrolled: { focused: boolean; options: unknown; row: string | null }[] = [];
+  const scrolls = spyOn(Element.prototype, "scrollIntoView").mockImplementation(function (
+    this: Element,
+    options?: boolean | ScrollIntoViewOptions
+  ) {
+    scrolled.push({
+      focused: document.activeElement === this,
+      options,
+      row: this.getAttribute("data-inbox-row"),
+    });
+  });
+  const { unmount } = renderInbox();
+
+  try {
+    await screen.findByTestId("ask-ask-b");
+    act(() => rowOf("ask-b").focus());
+    await user.keyboard("b");
+    await user.keyboard("2");
+    await waitFor(() => expect(rowOf("ask-c")).toHaveFocus());
+    expect(scrolled).toContainEqual({
+      focused: true,
+      options: { block: "nearest", inline: "nearest" },
+      row: "ask-c",
+    });
+  } finally {
+    unmount();
+    scrolls.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    snoozeAsk.mockRestore();
+  }
+});
+
 // A press's own callbacks run only while the control that made it is mounted (TanStack's
 // `mutate` callbacks), so a snooze whose Snooze goes before the server answers is one whose
 // landing the Inbox never hears. The hand-off it began goes with the control: kept, it would give
@@ -5929,6 +5985,94 @@ test("an answer to the only item a search leaves gives the empty message the foc
     narrow();
     answerAsk.mockRestore();
     getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+  }
+});
+
+// The column keeps an answered question past its row until the server decides the answer. Where
+// it was the only item in the Inbox, nothing is left once the server records it: the question
+// goes with the selection, and the address names no row, even though the list then holds no row
+// for the selection's settling to read.
+test("an answer to the only item in the Inbox leaves the column showing nothing and the empty message focused", async () => {
+  const user = userEvent.setup();
+  const narrow = widenToReadingPane();
+  const only = inboxIssue("ask-a", "CORE-1", "Which approach?", {
+    options: [{ label: "Ship" }, { label: "Hold" }],
+  });
+  let served: InboxRow[] = [only];
+  const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
+  const answerAsk = spyOn(api, "answerAsk").mockImplementation(async () => {
+    served = [];
+    return answeredWith(only, "Ship");
+  });
+  const getAsk = mockAskReads([only]);
+  const getIssue = mockIssueReads();
+  const { unmount } = renderInbox();
+
+  try {
+    const pane = await screen.findByTestId("inbox-pane");
+    expect(address()).toBe("/?item=ask-a");
+    await user.click(within(pane).getByRole("radio", { name: "Ship" }));
+    await user.click(within(pane).getByRole("button", { name: "Answer" }));
+
+    const empty = await screen.findByRole("region", { name: "Inbox empty state" });
+    await waitFor(() => expect(empty).toHaveFocus());
+    await waitFor(() => expect(screen.queryByTestId("inbox-pane")).not.toBeInTheDocument());
+    expect(screen.queryByTestId("ask-ask-a")).not.toBeInTheDocument();
+    expect(address()).toBe("/");
+    expect(answerAsk).toHaveBeenCalledTimes(1);
+  } finally {
+    unmount();
+    narrow();
+    answerAsk.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+  }
+});
+
+// A dismiss takes its row off the list at once, so the row the column showed goes at the next
+// commit. Where it was the last row, the list then holds no row, and the address must not keep
+// the dismissed row's name: a reload or a link reads it.
+test("a dismiss of the last row beside the column leaves the address naming no row", async () => {
+  const user = userEvent.setup();
+  const narrow = widenToReadingPane();
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
+  let threads = [replyRow("thread-1")];
+  const listMyReplies = spyOn(api, "listMyReplies").mockImplementation(async () => ({
+    as_of: "2026-10-12T00:00:00Z",
+    limit: 200,
+    offset: 0,
+    rows: threads,
+    total: threads.length,
+  }));
+  const listComments = spyOn(api, "listComments").mockResolvedValue([]);
+  const getIssue = mockIssueReads();
+  const dismissed = answerInboxDismisses().mockImplementation(async () => {
+    threads = [];
+    return { dismissed: 1 };
+  });
+  const { unmount } = renderInbox();
+
+  try {
+    await screen.findByTestId("inbox-pane");
+    await waitFor(() => expect(selectedIds()).toEqual(["reply:thread-1"]));
+    expect(address()).toBe("/?item=reply%3Athread-1");
+
+    await user.keyboard("e");
+
+    const empty = await screen.findByRole("region", { name: "Inbox empty state" });
+    await waitFor(() => expect(empty).toHaveFocus());
+    expect(dismissed).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId("inbox-pane")).not.toBeInTheDocument();
+    await waitFor(() => expect(address()).toBe("/"));
+  } finally {
+    unmount();
+    narrow();
+    dismissed.mockRestore();
+    listComments.mockRestore();
+    listMyReplies.mockRestore();
     getInbox.mockRestore();
     getIssue.mockRestore();
   }

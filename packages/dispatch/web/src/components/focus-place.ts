@@ -214,8 +214,9 @@ export function focusLost(): boolean {
 
 /** Focuses `element` and, once it holds the focus, scrolls it into view: WebKit scrolls a focused
  *  control into view only a frame later, by when a list's own scroll keeping may have moved the
- *  page again. Answers whether it took the focus. */
-function land(element: HTMLElement): boolean {
+ *  page again. Answers whether it took the focus. The rescue's landing for a loss the reader
+ *  caused, and the Inbox's hand-off after the reader's action (`pane-selection.ts`). */
+export function focusIntoView(element: HTMLElement): boolean {
   element.focus();
   if (document.activeElement !== element) return false;
   element.scrollIntoView({ block: "nearest", inline: "nearest" });
@@ -651,15 +652,15 @@ function handOnQuietly(candidates: readonly HTMLElement[], region: Element): voi
  *  Only where nothing new stands there does the focus walk back. A loss the reader caused keeps
  *  the walk it always had: to the control the region now draws at its place, else the nearest one
  *  before it however many went together (`placesFrom`), else the region itself, which is every
- *  region but the document, and that control is scrolled into view (`land`). A loss they did not
- *  cause lands in no row and scrolls nothing (`handOnQuietly`): a candidate in no row takes the
- *  focus where it is, a candidate in a row sends it to the box that row is drawn in, and nothing
- *  moves where the reader cannot see it. From a region that has gone - a dialog that closed, or
- *  one hidden while it stays mounted - the focus goes only back to the place the dialog was opened
- *  from (its `opener`, or that dialog's own opener where it has gone too): that element, the
- *  control that opened it, if it can still take the focus, else the control now at its place, else
- *  the nearest one before it. A dialog opened from the body hands the focus nowhere: the body is
- *  where the reader was. */
+ *  region but the document, and that control is scrolled into view (`focusIntoView`). A loss they
+ *  did not cause lands in no row and scrolls nothing (`handOnQuietly`): a candidate in no row takes
+ *  the focus where it is, a candidate in a row sends it to the box that row is drawn in, and
+ *  nothing moves where the reader cannot see it. From a region that has gone - a dialog that
+ *  closed, or one hidden while it stays mounted - the focus goes only back to the place the dialog
+ *  was opened from (its `opener`, or that dialog's own opener where it has gone too): that
+ *  element, the control that opened it, if it can still take the focus, else the control now at
+ *  its place, else the nearest one before it. A dialog opened from the body hands the focus
+ *  nowhere: the body is where the reader was. */
 function handOn(loss: Loss, main: HTMLElement | null, caused: boolean): void {
   const { region } = loss;
   let candidates: HTMLElement[] = [];
@@ -684,11 +685,11 @@ function handOn(loss: Loss, main: HTMLElement | null, caused: boolean): void {
   }
   for (const candidate of candidates) {
     if (!candidate.isConnected || !rendered(candidate)) continue;
-    if (land(candidate)) return;
+    if (focusIntoView(candidate)) return;
   }
   if (!present(region) || region === document.body || !(region instanceof HTMLElement)) return;
   if (!region.hasAttribute("tabindex")) region.tabIndex = -1;
-  land(region);
+  focusIntoView(region);
 }
 
 /**
@@ -765,8 +766,8 @@ function handOn(loss: Loss, main: HTMLElement | null, caused: boolean): void {
  * away or leaves - the issue title's editor, whose heading would open it again if it took the
  * focus - is the reader leaving it, and the focus stays where Escape left it, as the Inbox's and
  * the Board's own Escape leave it on the page. The control a loss the reader caused walks back to
- * is scrolled into view (`land`); what stands where the element stood, and anything a loss they
- * did not cause lands on, is focused with no scroll.
+ * is scrolled into view (`focusIntoView`); what stands where the element stood, and anything a
+ * loss they did not cause lands on, is focused with no scroll.
  *
  * A loss the reader can no longer see is not answered: the element was scrolled out of their
  * sight - out of the viewport, or out of a scroll box around it - before it went, or before the
@@ -840,7 +841,7 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
           return;
         }
         if (element.isConnected && rendered(element)) {
-          if (loss.caused ? land(element) : focusNoScroll(element)) return;
+          if (loss.caused ? focusIntoView(element) : focusNoScroll(element)) return;
         }
         handOn(loss, main.current, loss.caused);
       };
@@ -887,7 +888,7 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
       } else if (element.matches(":disabled")) {
         pending = { arrived: loss.arrived, cancel: wait(loss) };
       } else if (loss.taken) {
-        if (loss.caused) land(element);
+        if (loss.caused) focusIntoView(element);
         else focusNoScroll(element);
       }
     };

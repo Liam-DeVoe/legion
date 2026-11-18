@@ -1,5 +1,6 @@
 import { createContext, type RefObject, useCallback, useEffect, useRef, useState } from "react";
 
+import { focusIntoView } from "../../components/focus-place";
 import { focusOnDocument } from "../shell/roving";
 import { answerDraft } from "./answer-drafts";
 import { type InboxRoute, useInboxRoute } from "./inbox-route";
@@ -343,9 +344,18 @@ export function usePaneSelection({
       target,
     };
     if (!stillThere(handOff)) return;
-    // The empty message is no row to select: the selection stays on the acted row and leaves
-    // with it, as the settling effect hands it on.
-    if (paneShown && target !== null) select(target);
+    // The empty message is no row to select. Beside the column, a selected row the action took
+    // off the list - an answered question, which the column kept past its row until the server
+    // decided it - goes with the selection, so the column shows nothing once nothing is left:
+    // the settling effect leaves a question the column keeps where it is. A row the list still
+    // draws - a snooze of the last rows with the Later band open, or a dismiss whose rows go at
+    // the next commit - keeps the selection, which leaves with it as the settling effect hands
+    // it on.
+    if (paneShown && target !== null) {
+      select(target);
+    } else if (paneShown && !drawsAny(acted) && acted.has(selectedNow.current ?? "")) {
+      select(undefined);
+    }
     focusTo.current = handOff;
     // The target can wait on a commit still to come - the empty message is drawn once the acted
     // rows go - and the reader's next press says they have moved on without it: a snooze of the
@@ -443,9 +453,13 @@ export function usePaneSelection({
   // selected and the address rewritten, once every part of the list has come. Otherwise the
   // selection is the reader's, and the address follows it.
   useEffect(() => {
+    if (!paneShown) return;
     // A list that holds nothing - still loading, failed, or genuinely empty - answers no
-    // address: `?item=` is left unread until there are rows to read it against.
-    if (!paneShown || listedRows.current.length === 0) {
+    // address: `?item=` is left unread until there are rows to read it against. A selected row
+    // that went with the rest - the last row dismissed, or taken away by the server - leaves the
+    // selection and the address, unless the column keeps its question for the reader's answer.
+    if (listedRows.current.length === 0) {
+      if (selectedId !== undefined && paneSubject.current?.kept !== true) select(undefined);
       return;
     }
     const visible = presented.current;
@@ -492,11 +506,13 @@ export function usePaneSelection({
   });
 
   // The hand-off's focus, after every commit: the row the reader's action sends them to, or the
-  // list's empty message, takes the keyboard focus once the page draws it. After every commit,
-  // because the acted row and the control that held the focus leave in their own commits - a
-  // closing dialog's own return of the focus (`useDialog`), the column's card swapped for the
-  // next one, a row taken off the list - and a passive effect runs after their cleanups, so the
-  // target wins over each of them and over the page's rescue, which waits a frame and a task.
+  // list's empty message, takes the keyboard focus once the page draws it, and is scrolled into
+  // view as the rescue's landing is (`focusIntoView`), since WebKit scrolls a focused element into
+  // view only a frame later. After every commit, because the acted row and the control that held
+  // the focus leave in their own commits - a closing dialog's own return of the focus
+  // (`useDialog`), the column's card swapped for the next one, a row taken off the list - and a
+  // passive effect runs after their cleanups, so the target wins over each of them and over the
+  // page's rescue, which waits a frame and a task.
   // The empty message is drawn only once the acted rows have gone, so the hand-off waits for it
   // while they are still drawn, and is spent once they have gone without it.
   //
@@ -509,7 +525,7 @@ export function usePaneSelection({
       const target = targetElement(handOff.target);
       if (target !== null) {
         focusTo.current = undefined;
-        target.focus();
+        focusIntoView(target);
       } else if (!drawsAny(handOff.acted)) {
         focusTo.current = undefined;
       }
@@ -518,7 +534,8 @@ export function usePaneSelection({
     if (!focusOnDocument()) return;
     for (const handOff of [...begun.current].reverse()) {
       if (drawsAny(handOff.acted)) continue;
-      targetElement(handOff.target)?.focus();
+      const target = targetElement(handOff.target);
+      if (target !== null) focusIntoView(target);
       return;
     }
   });
