@@ -89,14 +89,14 @@ func unstorableJSON(prefix string, data []byte) *apiError {
 		at := prefix
 		if len(open) > 0 {
 			frame := &open[len(open)-1]
-			switch {
-			case !frame.object:
+			switch frame.next {
+			case nextElement:
 				at = fmt.Sprintf("%s[%d]", frame.path, frame.elements)
 				frame.elements++
-			case !frame.named:
+			case nextName:
 				// The token is a member's name; its value is the next one.
 				name, _ := token.(string)
-				frame.member, frame.named = escapedName(name), true
+				frame.member, frame.next = escapedName(name), nextValue
 				if frame.path != "" {
 					frame.member = frame.path + "." + frame.member
 				}
@@ -104,13 +104,17 @@ func unstorableJSON(prefix string, data []byte) *apiError {
 					return refusal
 				}
 				continue
-			default:
-				at, frame.named = frame.member, false
+			case nextValue:
+				at, frame.next = frame.member, nextName
 			}
 		}
 		switch token := token.(type) {
 		case json.Delim:
-			open = append(open, jsonFrame{path: at, object: token == '{'})
+			frame := jsonFrame{path: at, next: nextElement}
+			if token == '{' {
+				frame.next = nextName
+			}
+			open = append(open, frame)
 		case string:
 			if refusal := unstorableText(jsonField(at), token); refusal != nil {
 				return refusal
@@ -122,17 +126,25 @@ func unstorableJSON(prefix string, data []byte) *apiError {
 	}
 }
 
-// jsonFrame is an array or an object unstorableJSON reads inside: where it stands, and where its
-// value read next stands, an array's next index or the object's member just named.
+// jsonFrame is an array or an object unstorableJSON reads inside: where it stands, what the token
+// read next stands for in it, its count of elements read for an array, and, for an object, the
+// path of the member whose name was read last.
 type jsonFrame struct {
 	path     string
-	object   bool
+	next     jsonNext
 	elements int
-	// member is the path of the member whose name was read last, and named whether its value is
-	// the token read next.
-	member string
-	named  bool
+	member   string
 }
+
+// jsonNext is what the token read next inside a jsonFrame stands for: an array's next element,
+// an object's next member name, or the value of the member just named.
+type jsonNext int
+
+const (
+	nextElement jsonNext = iota
+	nextName
+	nextValue
+)
 
 // jsonField names a JSON value at path, "body" for the body itself.
 func jsonField(path string) string {
