@@ -374,7 +374,9 @@ test("an open search palette prints none of a comment its author deletes", async
     await page.keyboard.press("Control+k");
     await expect(box).toBeFocused();
     await box.fill("zarquonpalette");
-    await page.waitForTimeout(1_500);
+    // The reopened palette has answered before the absence is read: its "No results" line is
+    // drawn from the answer it holds for these words (SearchPalette.tsx).
+    await expect(dialog).toContainText('No results for "zarquonpalette"');
     await expect(dialog).not.toContainText("window closes at noon");
   } finally {
     await alice.close();

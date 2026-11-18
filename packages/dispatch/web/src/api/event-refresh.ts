@@ -1485,6 +1485,20 @@ function askThreadsOn(issue: string): RefreshTarget {
   };
 }
 
+/** The search palette keeps each answer under its words for its `staleTime`
+ *  (`useTieredSearch.ts`, `["search", words, request]`) and prints each hit's snippet and marks, so
+ *  an edit or a delete of a post reads every kept answer again: a hit of the post may be in any of
+ *  them, and its words may be gone. A create needs none: a kept answer that misses a post written
+ *  since shows no text of it, and the next words typed read afresh. */
+const SEARCH_CORRECTIONS: Partial<Record<EventType, true>> = {
+  "comment.edited": true,
+  "comment.deleted": true,
+  "message.edited": true,
+  "message.deleted": true,
+};
+
+const EVERY_SEARCH_ANSWER: RefreshTarget = { queryKey: ["search"] };
+
 /**
  * The reads one event of the feed can change, each a query key (a prefix unless `exact`) and, where
  * only some of a family's reads can have moved, a test of the read's data. `signedInLogin` is the
@@ -1495,6 +1509,9 @@ export function eventRefreshTargets(event: DispatchEvent, signedInLogin?: string
   const threadsIssue = askThreadsIssue(event);
   if (threadsIssue !== null) {
     targets.push(askThreadsOn(threadsIssue));
+  }
+  if (SEARCH_CORRECTIONS[event.type] === true) {
+    targets.push(EVERY_SEARCH_ANSWER);
   }
   return targets;
 }

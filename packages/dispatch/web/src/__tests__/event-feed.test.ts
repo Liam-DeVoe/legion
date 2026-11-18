@@ -179,6 +179,8 @@ const READS = {
   replies: { key: myRepliesCountQuery().queryKey },
   rootComment: { key: commentQuery("root-1").queryKey },
   rootMessage: { key: messageQuery("CORE-1", "message-0").queryKey },
+  // An answer the search palette keeps under the words typed (`useTieredSearch.ts`).
+  searchAnswer: { key: ["search", "zarquon", { query: "zarquon", limit: 20 }] },
   // A block of CORE-1's spec, read by a link to it (its panel shares the key) and, pinned to
   // version 2, by another link.
   specBlock: {
@@ -1547,6 +1549,11 @@ const correctedReads: readonly (readonly [string, readonly Correction[], readonl
     "the issue's message reads, which the Conversation and every reference to a message draw",
     messageCorrections,
     ["conversationMessages", "message", "rootMessage"],
+  ],
+  [
+    "every answer the search palette keeps, which can hold a hit of the post",
+    [...commentCorrections, ...messageCorrections],
+    ["searchAnswer"],
   ],
 ];
 
