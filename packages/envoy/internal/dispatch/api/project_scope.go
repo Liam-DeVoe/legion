@@ -379,7 +379,11 @@ func refuseWriteOutsideProjectScope(w http.ResponseWriter, r *http.Request, cove
 //
 // Every other row returns the handler unchanged, so no route it does not cover pays for it. A
 // /api/v2 row whose path names a session for one kind of object alone, or whose body names
-// several, is held to the same rule by gateV2Authorities (sessionAddressing).
+// several, is held by gateV2Authorities (sessionAddressing) to the session the credential proved,
+// and there the row's OAuth scopes exempt nothing (refusesSessionOtherThanProved): the agent
+// marks of PATCH /api/v2/me/marks/{kind}/{id} and PATCH /api/v2/me/marks need the person scope,
+// and a broker token of one session that holds it is still refused 403 SESSION_SCOPE for another
+// session's agent mark (c-authority of dispatch://INFRA-4071).
 func (s *server) withinSessionScope(route apiRoute, handler http.HandlerFunc) http.HandlerFunc {
 	if !addressesOneSession(route) {
 		return handler
@@ -393,12 +397,23 @@ func (s *server) withinSessionScope(route apiRoute, handler http.HandlerFunc) ht
 }
 
 // refusesAnotherSession holds one session a route's write goes into, addressed, to the rule
-// withinSessionScope's comment gives: it answers 403 SESSION_SCOPE and reports true when the
-// caller's credential proved another session and the row declares no OAuth scopes, and otherwise
-// writes nothing and reports false.
+// withinSessionScope's comment gives: on a row that declares no OAuth scopes it refuses as
+// refusesSessionOtherThanProved does, and on a row that declares any it writes nothing and
+// reports false.
 func (s *server) refusesAnotherSession(w http.ResponseWriter, r *http.Request, route apiRoute, addressed string) bool {
+	return len(route.OAuthScopes) == 0 && s.refusesSessionOtherThanProved(w, r, route, addressed)
+}
+
+// refusesSessionOtherThanProved holds one session a route's write goes into, addressed, to the
+// session the caller's credential proved, whatever OAuth scopes the row declares: it answers 403
+// SESSION_SCOPE and reports true when the credential proved a session other than addressed, and
+// otherwise writes nothing and reports false. A credential that proves no session (callerSession)
+// is held to none. gateV2Authorities holds each session a /api/v2 body names to it
+// (sessionAddressing), and refusesAnotherSession holds a path's session to it on a row that
+// declares no OAuth scopes.
+func (s *server) refusesSessionOtherThanProved(w http.ResponseWriter, r *http.Request, route apiRoute, addressed string) bool {
 	proved, provedOne := s.callerSession(r)
-	if !provedOne || addressed == proved || len(route.OAuthScopes) > 0 {
+	if !provedOne || addressed == proved {
 		return false
 	}
 	writeError(w, r, apicode.SessionScope, fmt.Sprintf(

@@ -24,9 +24,12 @@ package api
 // A write to the rows of one session the path names is held to that session by
 // withinSessionScope (the row's SessionPath). Where the path names a session only for one kind
 // of object, or the body names several, the body's type names them (sessionAddressing), and this
-// gate holds each to the same rule. No row of the table declares such a body: the agent marks of
-// PATCH /api/v2/me/marks and /api/v2/me/marks/{kind}/{id} name a session, but both rows declare
-// the person scope, which no session rule binds (marksPatchV2Input).
+// gate holds each to the session the caller's credential proved whatever OAuth scopes the row
+// declares (refusesSessionOtherThanProved). Two rows declare such a body: PATCH
+// /api/v2/me/marks/{kind}/{id}, whose {id} is a session when {kind} is `agent`, and PATCH
+// /api/v2/me/marks, whose `agent` items each name one. Both need the person scope, and a broker
+// token of one session that holds it marks that session's agent conversation alone: another
+// session's is 403 SESSION_SCOPE (marksPatchV2Input).
 
 import (
 	"context"
@@ -40,9 +43,11 @@ import (
 )
 
 // sessionAddressing is a decoded body, or one arm of a union, that names the sessions its write
-// goes into where the row's path does not name one alone, such as a path whose {id} is a session
-// for one arm of the body only. gateV2Authorities holds each session it names to the rule
-// withinSessionScope holds a path's session to (refusesAnotherSession), so a credential that
+// goes into where the row's path does not name one alone: the `agent` arm of PATCH
+// /api/v2/me/marks/{kind}/{id}, whose {id} is a session only for that kind, answers the path's
+// {id}, and the body of PATCH /api/v2/me/marks answers the session of each of its `agent` items.
+// gateV2Authorities holds each session it names to the session the caller's credential proved,
+// whatever OAuth scopes the row declares (refusesSessionOtherThanProved), so a credential that
 // proved one session writes into no other's rows by naming it in a body. The decoder decodes a
 // body as a value of its type, so the type implements it with a value receiver.
 type sessionAddressing interface {
@@ -73,11 +78,12 @@ func addressesSessions(body requestBody) bool {
 // values needs (the row's Authorities), and a write whose body names a session the credential may
 // not write into (sessionAddressing). register wraps it after the decoder has read the query and
 // the body, and outside the keyed layer, so a refused write claims no idempotency key: the person
-// who ticks the scope back is not answered the stored refusal under the same key. A refusal is
-// 403 OAUTH_SCOPE_REQUIRED naming the scope, under the challenge refuseMissingScope gives it, and
-// a caller that does not resolve at all is answered through writeAuthenticationError, as at the
-// route's own gate. A route that declares no rule and whose body names no session is returned
-// unwrapped and pays nothing.
+// who ticks the scope back is not answered the stored refusal under the same key. A missing scope
+// is 403 OAUTH_SCOPE_REQUIRED naming the scope, under the challenge refuseMissingScope gives it; a
+// session other than the one the credential proved is 403 SESSION_SCOPE naming both; and a caller
+// that does not resolve at all is answered through writeAuthenticationError, as at the route's own
+// gate. A route that declares no rule and whose body names no session is returned unwrapped and
+// pays nothing.
 func (s *server) gateV2Authorities(route apiRoute, handler http.HandlerFunc) http.HandlerFunc {
 	rules, sessions := route.Authorities, addressesSessions(route.Body)
 	if len(rules) == 0 && !sessions {
@@ -119,7 +125,7 @@ func (s *server) gateV2Authorities(route apiRoute, handler http.HandlerFunc) htt
 		}
 		if addressing, ok := decoded.body.(sessionAddressing); ok {
 			for _, session := range addressing.sessionsAddressed(r) {
-				if s.refusesAnotherSession(w, r, route, session) {
+				if s.refusesSessionOtherThanProved(w, r, route, session) {
 					return
 				}
 			}

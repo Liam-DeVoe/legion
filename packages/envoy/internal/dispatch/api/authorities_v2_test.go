@@ -233,10 +233,12 @@ func TestTheV2AuthorityGateCarriesTheCallerItResolved(t *testing.T) {
 	}
 }
 
-// A body that names the sessions its write goes into (sessionAddressing) is held to the rule
-// withinSessionScope holds a path's session to: a credential that proved one session writes into
-// no other session's rows, and an arm whose id is no session is not held to it (the agent marks of
-// PATCH /api/v2/me/marks/{kind}/{id}).
+// A body that names the sessions its write goes into (sessionAddressing) is held to the session
+// the caller's credential proved (refusesSessionOtherThanProved): a credential that proved one
+// session writes into no other session's rows, and an arm whose id is no session is not held to
+// it. The made-up row, which declares no OAuth scopes, stands for the agent marks of PATCH
+// /api/v2/me/marks/{kind}/{id} and PATCH /api/v2/me/marks, which declare the person scope and
+// which TestV2DeclaredAuthority holds to the same rule.
 func TestTheV2AuthorityGateHoldsANamedSessionToTheCallersOwn(t *testing.T) {
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)

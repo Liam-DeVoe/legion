@@ -221,8 +221,9 @@ func (s *server) v2MeRows() []routeRow {
 				"false, dismissed_through?}, putting back every dismissed thread it narrows to, dismissed at or before " +
 				"dismissed_through where it is given. Each time is RFC3339 and no more than a minute ahead of the server " +
 				"(400 INVALID_STATE). Both forms at once, neither, and a malformed filter are 400 INVALID_QUERY. " +
-				markWriteText + " Needs the person scope, which a project-scoped session's token does not hold: an agent " +
-				"mark is the person's own, written on any session by a credential that acts as the person.",
+				markWriteText + " Needs the person scope, which a project-scoped session's token does not hold. A " +
+				"credential that proved a session, a token the secrets broker issued, writes the agent marks of that " +
+				"session alone: an agent item of another session is 403 SESSION_SCOPE, and no item is written.",
 			Handler:  s.patchMarksV2,
 			Resource: "marks", Kind: kindCollection, Key: "{kind}/{id}",
 			Body: requestBody{Kind: bodyJSON, Type: marksPatchV2Input{}},
@@ -253,10 +254,10 @@ func (s *server) v2MeRows() []routeRow {
 			Description: "Write the caller's mark of one kind on one object, the fields the body names under that kind's " +
 				"rules, and answer the mark. The body's fields are the path's kind's: " + markWriteText + " A kind that is " +
 				"none of the six is 400 INVALID_KIND. Needs the person scope, which a project-scoped session's token does " +
-				"not hold: an agent mark is the person's own, written on any session by a credential that acts as the " +
-				"person. The target must exist: 404 ISSUE_NOT_FOUND, " +
-				"ARTIFACT_NOT_FOUND, THREAD_NOT_FOUND, MESSAGE_NOT_FOUND or ASK_NOT_FOUND by kind; an agent mark's " +
-				"session is not held to exist.",
+				"not hold. A credential that proved a session, a token the secrets broker issued, writes the agent mark of " +
+				"that session alone: an agent mark of another session is 403 SESSION_SCOPE. The target must exist: 404 " +
+				"ISSUE_NOT_FOUND, ARTIFACT_NOT_FOUND, THREAD_NOT_FOUND, MESSAGE_NOT_FOUND or ASK_NOT_FOUND by kind; an " +
+				"agent mark's session is not held to exist.",
 			Handler:  s.patchMarkV2,
 			Resource: "marks", Kind: kindItem, Key: "{kind}/{id}",
 			Body: requestBody{Kind: bodyKindUnion, Arms: markArms},
@@ -495,18 +496,39 @@ type (
 	}
 )
 
+// sessionsAddressed is the session an agent mark's write goes into: the path's {id}, which is a
+// session for this kind alone (sessionAddressing).
+func (agentMarkV2Input) sessionsAddressed(r *http.Request) []string {
+	return []string{r.PathValue("id")}
+}
+
 // marksPatchV2Input is PATCH /api/v2/me/marks's body: the named items, or the Inbox's narrowing
 // and what to set on the threads it narrows to, never both.
 //
-// An agent mark names a session, in the path's {id} or in an item's, and no session rule holds
-// it: both marks writes declare the person scope, so a broker token that lacks it is refused by
-// the route's own gate (gateRouteScopes) before any session rule, and one that holds it acts as
-// the person, whose agent marks are theirs on every session (refusesAnotherSession binds no row
-// that declares OAuth scopes).
+// An agent mark names a session, in the path's {id} or in an item's, and gateV2Authorities holds
+// each to the session the caller's credential proved (sessionAddressing). Both marks writes need
+// the person scope, so a broker token that lacks it is refused by the route's own gate
+// (gateRouteScopes) before any session rule; one that holds it marks its own session's agent
+// conversation and is refused 403 SESSION_SCOPE for any other's, though the row declares OAuth
+// scopes (refusesSessionOtherThanProved, which exempts no such row as refusesAnotherSession
+// does). A credential that proves no session, a browser cookie or a personal token, marks the
+// person's agent conversation with any session.
 type marksPatchV2Input struct {
 	Items  []markItemV2        `json:"items"`
 	Filter *inboxThreadFilters `json:"filter"`
 	Set    *markSetV2          `json:"set"`
+}
+
+// sessionsAddressed is the session of each agent item: the item's id, which a broker token's
+// session is held to as an agent mark's path is (sessionAddressing).
+func (body marksPatchV2Input) sessionsAddressed(*http.Request) []string {
+	var sessions []string
+	for _, item := range body.Items {
+		if item.Kind == "agent" {
+			sessions = append(sessions, item.ID)
+		}
+	}
+	return sessions
 }
 
 // markItemV2 is one item of PATCH /api/v2/me/marks: a mark's kind and id, and the members of its

@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -20,8 +21,10 @@ import (
 // naming person for a comment's accept, an ask's answer, an ask's asked_of, waiting_on=me,
 // pinned=true, a claim's force and a project's default assignee; a person's token without approve
 // is refused an approval naming approve; a broker token scoped to one project is refused an agent
-// mark naming person, whichever session it marks, and one held to no project marks another
-// session's. A case whose route /api/v2 does not serve fails (requireMounted).
+// mark naming person, whichever session it marks, and one held to no project, which holds person,
+// marks its own session's agent conversation and is refused 403 SESSION_SCOPE for another
+// session's, on PATCH /api/v2/me/marks/{kind}/{id} and in an agent item of PATCH
+// /api/v2/me/marks alike. A case whose route /api/v2 does not serve fails (requireMounted).
 //
 // Each refusal of a declared value must be the wrapper's own, whose text names the rule
 // (assertGateRefused): the comment's accept and the ask's answer are refused by their handlers
@@ -138,30 +141,49 @@ func TestV2DeclaredAuthority(t *testing.T) {
 	})
 
 	t.Run("an agent mark by a broker token", func(t *testing.T) {
-		// The row needs the person scope, which a session's token scoped to one project does not
-		// hold: an agent mark is the person's own, and on a row that declares OAuth scopes no
-		// session check holds the mark to the session the token proved (refusesAnotherSession).
-		// So the project-scoped token is refused whichever session the path names, its own among
-		// them, and a token held to no one project, which holds person, marks another session's.
-		route := tour.requireMounted(t, http.MethodPatch, "/me/marks/{kind}/{id}")
+		// The rows need the person scope, which a session's token scoped to one project does not
+		// hold, so the project-scoped token is refused naming person whichever session it marks,
+		// its own among them. A token held to no one project holds person, and is held to the
+		// session it proved though the rows declare OAuth scopes (refusesSessionOtherThanProved):
+		// it marks its own session's agent conversation and is refused another session's.
 		caller := newBrokerCaller(t)
 		const scoped, unscoped = "a-broker-token-for-one-project", "a-broker-token-for-no-one-project"
 		tour.brokerTokens.Says(scoped, liveNamedToken(caller.jkt))
 		person := liveNamedToken(caller.jkt)
 		person.ProjectScope, person.Projects = brokertoken.ProjectScopePerson, nil
 		tour.brokerTokens.Says(unscoped, person)
-		mark := func(token, session string) *httptest.ResponseRecorder {
-			response := httptest.NewRecorder()
-			tour.handler.ServeHTTP(response, caller.presenting(t, route.Method, "/api/v2/me/marks/agent/"+session, token,
-				map[string]any{"pinned": true}))
-			return response
-		}
-		for _, session := range []string{"session-someone-else", brokerTestSession} {
-			assertScopeRefused(t, "a broker token scoped to one project marking "+session, mark(scoped, session), model.ScopePerson)
-		}
-		if marked := mark(unscoped, "session-someone-else"); marked.Code != http.StatusOK {
-			t.Errorf("a broker token for %s held to no one project marking another session: %d %s, want 200",
-				brokerTestSession, marked.Code, marked.Body.String())
+		for _, write := range []struct {
+			name    string
+			pattern string
+			target  func(session string) (string, any)
+		}{
+			{"PATCH /api/v2/me/marks/agent/{id}", "/me/marks/{kind}/{id}", func(session string) (string, any) {
+				return "/api/v2/me/marks/agent/" + session, map[string]any{"pinned": true}
+			}},
+			{"an agent item of PATCH /api/v2/me/marks", "/me/marks", func(session string) (string, any) {
+				return "/api/v2/me/marks", map[string]any{"items": []map[string]any{{"kind": "agent", "id": session, "pinned": true}}}
+			}},
+		} {
+			route := tour.requireMounted(t, http.MethodPatch, write.pattern)
+			mark := func(token, session string) *httptest.ResponseRecorder {
+				target, body := write.target(session)
+				response := httptest.NewRecorder()
+				tour.handler.ServeHTTP(response, caller.presenting(t, route.Method, target, token, body))
+				return response
+			}
+			for _, session := range []string{"session-someone-else", brokerTestSession} {
+				assertScopeRefused(t, write.name+" by a broker token scoped to one project marking "+session, mark(scoped, session), model.ScopePerson)
+			}
+			if own := mark(unscoped, brokerTestSession); own.Code != http.StatusOK {
+				t.Errorf("%s by a broker token for %s held to no one project, marking its own session: %d %s, want 200",
+					write.name, brokerTestSession, own.Code, own.Body.String())
+			}
+			refused := mark(unscoped, "session-someone-else")
+			if code, text := refusalOf(t, refused); refused.Code != http.StatusForbidden || code != "SESSION_SCOPE" ||
+				!strings.Contains(text, brokerTestSession) || !strings.Contains(text, "session-someone-else") {
+				t.Errorf("%s by a broker token for %s held to no one project, marking another session: %d %s, "+
+					"want 403 SESSION_SCOPE naming both sessions", write.name, brokerTestSession, refused.Code, refused.Body.String())
+			}
 		}
 	})
 }
