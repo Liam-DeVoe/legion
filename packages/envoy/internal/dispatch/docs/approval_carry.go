@@ -62,21 +62,25 @@ import (
 // and a block of A that no longer stands in N refuses the carry.
 //
 // A version whose text is the approved text carries that approval too. The document's newest
-// review approves version A; a later version, N, is stored with A's markdown byte for byte - an
-// accidental edit undone exactly, or a version a route wrote over a document that changed nothing -
-// and each decision block of N is as its row has it (rowBackedBlocks), so no block in it shows
-// other than what was decided: a block A showed open that someone answered since comes back in A's
-// bytes while its row holds that answer, and carries nothing. Such an N holds nothing its
-// reviewer has not agreed to, so Dispatch records that reviewer's approval of N in their name
-// and of their review's own kind, in the transaction that writes N, rather than asking them to
-// approve A's text again: the newest review of a plan.md is the plan review that approved A, so
-// a restored plan version reads approved by that plan review and not by the session whose write
-// restored it. Only the newest review carries this way: when it requests changes no approval
-// stands, and an older approval was superseded by it.
-// A's markdown is compared as it was stored, so a renderer change between A and N leaves N a
-// change, as N's diff against A shows. A version whose decision blocks differ from A's does not
-// hold A's text, so the answer carry decides it, or the rule below where the blocks it changes
-// are questions open again.
+// review approves version A; a later version, N, is stored with A's text - an accidental edit
+// undone exactly, or a version a route wrote over a document that changed nothing - and each
+// decision block of N is as its row has it (rowBackedBlocks), so no block in it shows other than
+// what was decided: a block A showed open that someone answered since comes back in A's text
+// while its row holds that answer, and carries nothing. Such an N holds nothing its reviewer has
+// not agreed to, so Dispatch records that reviewer's approval of N in their name and of their
+// review's own kind, in the transaction that writes N, rather than asking them to approve A's
+// text again: the newest review of a plan.md is the plan review that approved A, so a restored
+// plan version reads approved by that plan review and not by the session whose write restored
+// it. Only the newest review carries this way: when it requests changes no approval stands, and
+// an older approval was superseded by it.
+// N holds A's text when N's markdown is A's stored markdown byte for byte. An A that another
+// renderer version stored, or that no renderer version stamped (anotherRenderer), is compared as
+// this build renders it: a renderer change (pmdoc.RendererVersion) leaves every version stored
+// before it in its renderer's spelling of its tree, so N also holds A's text when A's markdown,
+// read and rendered again by this build, is N's (readsAs), though N's diff against A shows the
+// spelling the change made. An A this renderer version wrote is compared byte for byte alone. A
+// version whose decision blocks differ from A's does not hold A's text, so the answer carry
+// decides it, or the rule below where the blocks it changes are questions open again.
 //
 // A version whose text is the approved text with questions open again carries that approval too.
 // An issue's close withdraws every open ask of the issue and writes each one's block resolved, a
@@ -89,11 +93,12 @@ import (
 // before it, and the settlement after the reopen, which rendered that version's text again, wrote
 // none, so the approval stood. So N carries the newest review's approval of A when every decision
 // block of N is as its row has it (rowBackedBlocks); N, with each block whose row is open shown
-// resolved as the close shows it (withOpenBlocksResolved), renders to A's stored text byte for
-// byte, as the restore compares it (restoresVersionText); and every one of those open rows is an
-// ask the close withdrew before A was written and the reopen restored after it, which nothing has
-// moved since (reopenRestoredSince, read from the asks' own events). It is carried in the
-// reviewer's name and of their review's kind.
+// resolved as the close shows it (withOpenBlocksResolved), renders A's text, as the restore
+// compares it (restoresVersionText: A's stored markdown byte for byte, or, for an A another
+// renderer version stored or none stamped, as this build renders it); and every one of those open
+// rows is an ask the close withdrew before A was written and the reopen restored after it, which
+// nothing has moved since (reopenRestoredSince, read from the asks' own events). It is carried in
+// the reviewer's name and of their review's kind.
 //
 // So the rule carries over exactly the questions the close withdrew and the reopen opened again:
 // each was open when the issue closed, in the version such an approval reviewed before a closed
@@ -193,13 +198,13 @@ func (s *Service) carryStandingApproval(ctx context.Context, tx pgx.Tx, artifact
 // rather than through writeVersionTx - an upload that replaces a document (the api package's
 // storeArtifact) - once that version, number, is written with markdown and the open approval
 // request has moved to it (MoveApprovalAsk). tree is markdown's read-back, which the caller holds
-// when its write left one, and nil otherwise, when markdown is parsed here if the bytes match.
-// The answer carry has nothing to read there: an upload's markdown writes no answer, since the
-// server takes a block's server-owned attributes off an upload. The version's blocks are read
-// only once the bytes match: the text alone is not the approved document, since a block the
-// approved version showed open, answered by someone since, comes back in the same bytes while its
-// row holds a decision nobody approved, which settlement then writes into the next version. It
-// returns the events it appended, as carryApproval does.
+// when its write left one, and nil otherwise, when markdown is parsed here if it holds the
+// approved text (restoresVersionText). The answer carry has nothing to read there: an upload's
+// markdown writes no answer, since the server takes a block's server-owned attributes off an
+// upload. The version's blocks are read only once the text matches: the text alone is not the
+// approved document, since a block the approved version showed open, answered by someone since,
+// comes back in the same text while its row holds a decision nobody approved, which settlement
+// then writes into the next version. It returns the events it appended, as carryApproval does.
 func CarryRestoredApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, number int, markdown string, tree *pmdoc.Node, serverURL string) ([]model.Event, error) {
 	newest, err := NewestReview(ctx, tx, artifactID)
 	if err != nil || newest == nil || newest.State != "approved" {
@@ -243,9 +248,9 @@ func versionBlocks(ctx context.Context, tx pgx.Tx, artifactID string, tree *pmdo
 // (versionBlocks), when that version holds a block whose row is open, each of those open rows is
 // an ask the close withdrew before A was written and the reopen restored after it
 // (reopenRestoredSince), and the version, rendered with every such block shown resolved
-// (withOpenBlocksResolved), is byte for byte A's stored text (restoresVersionText); it appends
-// nothing otherwise. The rows are decided first, from the asks' events: a version write whose open
-// blocks hold any other ask renders nothing more.
+// (withOpenBlocksResolved), holds A's stored text as the restore compares it
+// (restoresVersionText); it appends nothing otherwise. The rows are decided first, from the asks'
+// events: a version write whose open blocks hold any other ask renders nothing more.
 func reopenedApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, number int, tree *pmdoc.Node, blocks map[string]model.Ask, newest model.ArtifactReview, serverURL string) ([]model.Event, error) {
 	var opened []string
 	for _, ask := range blocks {
@@ -389,24 +394,45 @@ func writeCarriedReview(ctx context.Context, tx pgx.Tx, broker *events.Broker, a
 }
 
 // restoresVersionText reports whether markdown, the text a new version of artifactID is written
-// with, or the text a version rendered with its open blocks shown resolved (reopenedApproval), is
-// byte for byte the stored text of its version earlier. A version that stores no markdown, a
-// file's, holds no text and compares false. octet_length reads a stored text's size without
-// decompressing it, so only a stored text of the same size is read, and the write of any other
-// text reads no document.
+// with, or the text a version rendered with its open blocks shown resolved (reopenedApproval),
+// holds the stored text of its version earlier: byte for byte, or, where another renderer version
+// stored that text or none stamped it (anotherRenderer), as stored text this build reads and
+// renders again as markdown (readsAs), so a renderer change between the two versions leaves the
+// text held. A version that stores no markdown, a file's, holds no text and compares false. The
+// first read takes the stored text's stamp, and the text itself only where its size is
+// markdown's (octet_length, which reads a stored text's size without decompressing it): a version
+// this renderer version wrote is read only for a text of its size, so the write of any other text
+// reads no document, and the version of another renderer version is read whole, parsed and
+// rendered only once its bytes are not markdown's.
 func restoresVersionText(ctx context.Context, tx pgx.Tx, artifactID string, earlier int, markdown string) (bool, error) {
-	var stored string
+	var sized *string
+	var stamp *int
 	err := tx.QueryRow(ctx, `
-		select markdown from artifact_versions
-		where artifact_id = $1 and number = $2 and octet_length(markdown) = $3
-	`, artifactID, earlier, len(markdown)).Scan(&stored)
+		select case when octet_length(markdown) = $3 then markdown end, renderer_version
+		from artifact_versions
+		where artifact_id = $1 and number = $2 and markdown is not null
+	`, artifactID, earlier, len(markdown)).Scan(&sized, &stamp)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
 	if err != nil {
 		return false, fmt.Errorf("read document version %d: %w", earlier, err)
 	}
-	return stored == markdown, nil
+	if sized != nil && *sized == markdown {
+		return true, nil
+	}
+	if !anotherRenderer(stamp) {
+		return false, nil
+	}
+	var stored string
+	if sized != nil {
+		stored = *sized
+	} else if err := tx.QueryRow(ctx, `
+		select markdown from artifact_versions where artifact_id = $1 and number = $2
+	`, artifactID, earlier).Scan(&stored); err != nil {
+		return false, fmt.Errorf("read document version %d: %w", earlier, err)
+	}
+	return readsAs(stored, markdown), nil
 }
 
 // carriedAtNamedVersion reports whether the version this carry approves is the version the open

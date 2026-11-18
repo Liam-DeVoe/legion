@@ -68,15 +68,16 @@ func OpenApprovalAskForDocuments(ctx context.Context, tx pgx.Tx, artifactIDs []s
 // (versionWrite.settlement), or the reopen's follow of a version written while the issue was
 // closed, which a settlement or a comment anchor's snapshot wrote, and which no stored version
 // tells apart (FollowClosedIssueVersions). Only then, when the document waits on the human (its
-// requested_version is the version the request names) and markdown is byte for byte the stored
-// text of that version (restoresVersionText), does its requested_version move with its version,
-// quietly: a settlement saves what the room already holds, such as the blocks a close and a reopen
-// wrote back, so the text the person was asked about did not change and the request keeps its
-// turn as if it had not moved, waking nobody. A version a route writes - a named version, an
-// upload, an edit or a summary edit - moves the request to its agent whatever text it stores, as
-// every move did before the rule: the Legion daemon answers an agent's gate wait with such a
-// version's artifact.version, telling the agent the request is back on its turn, which this keeps
-// true.
+// requested_version is the version the request names) and markdown holds the stored text of that
+// version as the approval's restore compares it (restoresVersionText: byte for byte, or, for a
+// version another renderer version stored or none stamped, as this build renders it), does its
+// requested_version move with its version, quietly: a settlement saves what the room already
+// holds, such as the blocks a close and a reopen wrote back, so the text the person was asked
+// about did not change and the request keeps its turn as if it had not moved, waking nobody. A
+// version a route writes - a named version, an upload, an edit or a summary edit - moves the
+// request to its agent whatever text it stores, as every move did before the rule: the Legion
+// daemon answers an agent's gate wait with such a version's artifact.version, telling the agent
+// the request is back on its turn, which this keeps true.
 func MoveApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, version model.Version, markdown string, mover model.Actor, bySettlement bool, serverURL string) ([]model.Event, error) {
 	return moveApprovalAsk(ctx, tx, broker, artifactID, version, markdown, mover, nil, bySettlement, serverURL)
 }
@@ -137,11 +138,11 @@ func moveApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, arti
 // document version move (MoveApprovalAsk) also takes (rewriteApprovalAsk). A version move, a
 // request with a new summary and a request that changes which documents it covers all reword;
 // none hands the request back, so each document's requested_version stays as it was. The one
-// exception is a settlement's version move that stores byte for byte the text of the version the
-// person was asked about, which moves that document's requested_version with its version,
-// quietly (MoveApprovalAsk). A move of a request that an earlier version already moved since it
-// was opened or handed back, a document's requested_version below the version it named, is
-// recorded quiet (model.AskEditEventPayload.Quiet): it changes only that version, so like a
+// exception is a settlement's version move that stores the text of the version the person was
+// asked about (restoresVersionText), which moves that document's requested_version with its
+// version, quietly (MoveApprovalAsk). A move of a request that an earlier version already moved
+// since it was opened or handed back, a document's requested_version below the version it named,
+// is recorded quiet (model.AskEditEventPayload.Quiet): it changes only that version, so like a
 // human's unnamed version it wakes nobody.
 func RewriteApprovalAsk(
 	ctx context.Context,
