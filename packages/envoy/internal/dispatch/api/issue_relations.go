@@ -394,7 +394,8 @@ func stateFiledFromNode(ctx context.Context, tx pgx.Tx, item *filedFromItem) err
 // issueRelationFacts is what one create or PATCH states of an issue's relations, held until the
 // issue's own event is appended, which causes every one of them (stateIssueRelations): the claims
 // of its single-valued relations - child_of, duplicate_of and filed_from - and the tuples of its
-// waits and of the conversation words it no longer hangs from.
+// waits, of its affects to the components of its own and of the conversation words it no longer
+// hangs from.
 type issueRelationFacts struct {
 	claims []graphstore.Claim
 	tuples []graphstore.Tuple
@@ -411,8 +412,9 @@ func (f *issueRelationFacts) claim(issue, kind, toKind, toID string, at time.Tim
 // stateIssueRelations appends what facts holds, written by who and caused by event, the issue's
 // own event, which the write appended before it: the claims as single-valued relations, which
 // append only what moved (graphstore.Claim), and the tuples as they are, in one statement of the
-// store's arms (graphstore.WriteArms). The projection rows - issues.parent_key and the issue_links
-// rows - were written before the event, in the same transaction, so the two commit together.
+// store's arms (graphstore.WriteArms). The projection rows - issues.parent_key, the issue_links
+// rows and the issue_component_members rows - were written before the event, in the same
+// transaction, so the two commit together.
 func stateIssueRelations(ctx context.Context, tx pgx.Tx, facts issueRelationFacts, who model.Actor, event int64) error {
 	if len(facts.claims) == 0 && len(facts.tuples) == 0 {
 		return nil

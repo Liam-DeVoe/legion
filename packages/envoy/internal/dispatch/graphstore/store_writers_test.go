@@ -263,6 +263,26 @@ var storeWriteCallSites = []string{
 	// read again under them, then their needs tuples through Write, then the rows naming the issue's
 	// node (graphcensus' TestTheIssueLinkBatchTakesTheStoreLockOrder).
 	"graphcensus/census_issues.go#writeIssueLinkBatch",
+	// The backfill's passes over the components a process of the release before wrote with no
+	// node (dispatch://INFRA-1253 R9): the architecture source rows of the batch's projects first,
+	// in ascending (project, id), then the rows read again under them, then the component nodes and
+	// their part_of, or the depends_on of a component whose node stands, in one Write at the
+	// sentinel, then the rows naming the node; and over the issues' components, the issue rows
+	// first, then the rows read again under them, then their affects through Write, then the rows
+	// naming the issue's node (graphcensus' TestTheComponentBatchesTakeTheStoreLockOrder).
+	"graphcensus/census_components.go#writeComponentBatch",
+	"graphcensus/census_components.go#writeComponentDependsBatch",
+	"graphcensus/census_components.go#writeIssueComponentMemberBatch",
+	// A component's node and its relations as an import and a source's removal state them
+	// (dispatch://INFRA-1253 R9): the import's one Write of every component node of the source,
+	// each component it drops stated gone, and the part_of and depends_on that moved, at the
+	// sentinel, after the row locks of every source of the project and before the components and
+	// component_depends rows it replaces (architecture's TestTheImportTakesTheStoreLockOrder); and
+	// a source's removal's Write of each of its components gone with every relation it held
+	// retracted, after the source's row and before the delete whose cascade takes the rows (api's
+	// TestEveryApiStoreWriterTakesTheStoreLockOrder).
+	"architecture/importer.go#RetireComponents",
+	"architecture/importer.go#stateComponents",
 	// The erase, the one writer that deletes from the store, through EraseNode: the tuples on both
 	// sides of the node, then the node's row. It takes the owner rows it writes under before that
 	// row, and its projection rows after it (grapherase's TestTheEraseTakesTheStoreLockOrder).

@@ -15,7 +15,8 @@ import (
 // file, with the arm set it states. A migration stating the view from this set on is one of them:
 // the first of them is where the function became the view's one source.
 var graphEdgesViewMigrations = map[string]GraphEdgesArms{
-	"20261117140000_issue_tree_relations.up.sql": GraphEdgesIssueRelations,
+	"20261117140000_issue_tree_relations.up.sql":  GraphEdgesIssueRelations,
+	"20261118023219_issue_tree_components.up.sql": GraphEdgesComponents,
 }
 
 // graphEdgesStatement is the head of the statement that states the view, as GraphEdgesView writes

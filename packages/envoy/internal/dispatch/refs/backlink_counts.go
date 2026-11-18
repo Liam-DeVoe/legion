@@ -259,10 +259,14 @@ func rowNamesNoNode(column string) string { return column + ` is null` }
 // release before this one deletes a row and appends no retraction, so the tuple outlives the row,
 // and only the row can say the edge still stands; that build may also write the row again with
 // no node, which its table's arm then answers alone. graph_edges' tuple arm makes the same join
-// (migrations 20261109215947, 20261116094101 and 20261117140000). An ask holds a follower row per
-// session, so the follower row that carries a followed_by is the one of the session the tuple
-// reaches; an issue's row carries its child_of while it names that parent, and an issue_links row
-// the needs of its own pair.
+// (migrations 20261109215947, 20261116094101, 20261117140000 and 20261118023219). An ask holds a
+// follower row per session, so the follower row that carries a followed_by is the one of the
+// session the tuple reaches; an issue's row carries its child_of while it names that parent, and
+// an issue_links row the needs of its own pair; a component's row carries its part_of while it
+// names that parent, a component_depends row the depends_on of its own pair and an
+// issue_component_members row the affects of its own issue and component. A component's tables
+// carry no index over their node columns, so their probe also binds the address each indexes
+// (migrations 0037 and 0038), which the node columns of a marked row repeat.
 func projectionCarries(table, fromKind, alias string) string {
 	pair := ""
 	switch table {
@@ -272,6 +276,12 @@ func projectionCarries(table, fromKind, alias string) string {
 		pair = ` and projected.key = ` + alias + `.from_id and projected.parent_key = ` + alias + `.to_id`
 	case "issue_links":
 		pair = ` and projected.issue_key = ` + alias + `.from_id and projected.kind = 'blocked_by' and projected.target_key = ` + alias + `.to_id`
+	case "components":
+		pair = ` and projected.project_key || '/' || projected.id = ` + alias + `.from_id and projected.project_key || '/' || projected.parent = ` + alias + `.to_id`
+	case "component_depends":
+		pair = ` and projected.project_key || '/' || projected.from_id = ` + alias + `.from_id and projected.project_key || '/' || projected.to_id = ` + alias + `.to_id`
+	case "issue_component_members":
+		pair = ` and projected.issue_key = ` + alias + `.from_id and projected.project_key || '/' || projected.component_id = ` + alias + `.to_id`
 	}
 	return `exists (select 1 from ` + table + ` projected
 		where projected.node_kind = '` + fromKind + `' and projected.node_address = ` + alias + `.from_id` + pair + `)`
@@ -297,21 +307,24 @@ func blockRefCarries(fromKind, alias string) string {
 // store class, migrations 20261116184707 and 20261117020856): changed_by_run, has_kind,
 // triggered_by, constrained_by and prevented_by out of any node, and part_of and authored_by out
 // of a node of the kinds dispatch://INFRA-1950 adds (graphstore.KindInteraction and the three
-// beside it); and an issue's relations, child_of and needs, which issues and issue_links project,
+// beside it); an issue's relations, child_of and needs, which issues and issue_links project,
 // and duplicate_of and filed_from, which no row does, beside a document's attached_to, the part_of
-// to its issue the view answers by that name (dispatch://INFRA-1253, migration 20261117140000).
-// It is the list the view's tuple arms render (migrations 20261109215947, 20261116094101,
-// 20261116184707, 20261117020856 and 20261117140000) and the list the announcer writes into
+// to its issue the view answers by that name (dispatch://INFRA-1253, migration 20261117140000);
+// and a component's part_of its parent and depends_on another component and an issue's affects a
+// component, which components, component_depends and issue_component_members project
+// (dispatch://INFRA-1253, migration 20261118023219). It is the list the view's tuple arms render
+// (migrations 20261109215947, 20261116094101, 20261116184707, 20261117020856, 20261117140000 and
+// 20261118023219) and the list the announcer writes into
 // server_build_announcements.tuple_kinds (startup.Deps), which is how the release that deletes an
 // old arm of the view reads whether the release a rollback would reach writes that arm's kinds as
 // tuples too. A child that moves another relation into the store adds its kinds here, so the arm
 // and the announcement read one list.
 //
 // The announcement names a kind alone, and part_of in it is no claim about every part_of the store
-// holds: this build writes a part_of the view answers only out of a lens, a lens_block, a risk or
-// a constraint, and a document's to its issue as attached_to. A session's, a page's and a block's
-// placement are part_of tuples no arm renders, and a block's membership of its document stays
-// in_document.
+// holds: this build writes a part_of the view answers only out of a lens, a lens_block, a risk, a
+// constraint or a component, and a document's to its issue as attached_to. A session's, a page's
+// and a block's placement are part_of tuples no arm renders, and a block's membership of its
+// document stays in_document.
 //
 // The list carries this build's capabilities too (processes.Capabilities): issue_room, which no
 // relation kind spells, is how a reader of the announcements tells a build that serves the issue
@@ -325,7 +338,7 @@ func TupleKinds() []string {
 		graphstore.TupleConstrainedBy, graphstore.TuplePreventedBy,
 		graphstore.TuplePartOf, graphstore.TupleAuthoredBy,
 		graphstore.TupleChildOf, graphstore.TupleNeeds, graphstore.TupleDuplicateOf, graphstore.TupleFiledFrom,
-		TupleAttachedTo,
+		TupleAttachedTo, graphstore.TupleDependsOn, graphstore.TupleAffects,
 	}, pmdoc.LinkKinds()...)
 	kinds = append(kinds, processes.Capabilities...)
 	slices.Sort(kinds)
@@ -437,11 +450,12 @@ type backlinkArm struct {
 	projected   string
 	tupleKind   string
 	projectedIn string
-	// moved is, for an arm over a column a process of the release before updates in place while
-	// leaving the row's node columns as they were, the test that a row naming its node names a
-	// far end its node's tuple does not: the arm counts such a row as naming no node (R9 of
-	// dispatch://INFRA-1253), as graph_edges' old arm answers it. Only an issue's parent has one
-	// (store.IssueParentMoved), since the release before's issue PATCH sets parent_key in place.
+	// moved is, for an arm over a column that may be updated in place while the row's node columns
+	// are left as they were, the test that a row naming its node names a far end its node's tuple
+	// does not: the arm counts such a row as naming no node (R9 of dispatch://INFRA-1253), as
+	// graph_edges' old arm answers it. An issue's parent has one (store.IssueParentMoved), since
+	// the release before's issue PATCH sets parent_key in place, and a component's parent the same
+	// (store.ComponentParentMoved).
 	moved string
 	// storedFrom makes the arm the store's alone: the current tuples of kind out of a node of one
 	// of these kinds, which graph_edges answers from the tuples with no projection row behind
@@ -674,15 +688,25 @@ var backlinkArms = map[string][]backlinkArm{
 		filedFrom,
 	},
 	"component": {
-		// components_parent_node, on the same expression the arm selects.
-		{kind: "part_of", from: `components c`, where: `c.parent is not null`, toID: `c.project_key || '/' || c.parent`,
-			fromKind: "component", fromID: `c.project_key || '/' || c.id`},
-		// component_depends_to_node.
-		{kind: "depends_on", from: `component_depends d`, toID: `d.project_key || '/' || d.to_id`,
-			fromKind: "component", fromID: `d.project_key || '/' || d.from_id`},
-		// issue_component_members_node.
-		{kind: "affects", from: `issue_component_members m`, toID: `m.project_key || '/' || m.component_id`,
-			fromKind: "issue", fromID: `m.issue_key`},
+		// components_parent_node, on the same expression the arm selects, over the rows that
+		// name no node and the rows whose parent was moved in place (store.ComponentParentMoved);
+		// the store states the same fact as the component's part_of, answered while the
+		// component's row carries its node and names that parent (migration 20261118023219).
+		{kind: graphstore.TuplePartOf, from: `components c`, where: `c.parent is not null`, toID: `c.project_key || '/' || c.parent`,
+			fromKind: graphstore.KindComponent, fromID: `c.project_key || '/' || c.id`, projected: `c.node_kind`,
+			moved: store.ComponentParentMoved, tupleKind: graphstore.TuplePartOf, projectedIn: "components"},
+		// component_depends_to_node, over the rows that name no node; the store states the
+		// dependency as the component's depends_on, answered while the row of the pair carries
+		// its node.
+		{kind: graphstore.TupleDependsOn, from: `component_depends d`, toID: `d.project_key || '/' || d.to_id`,
+			fromKind: graphstore.KindComponent, fromID: `d.project_key || '/' || d.from_id`, projected: `d.node_kind`,
+			tupleKind: graphstore.TupleDependsOn, projectedIn: "component_depends"},
+		// issue_component_members_node, over the rows that name no node; the store states the
+		// attachment as the issue's affects, answered while the row of the issue and the
+		// component carries the issue's node.
+		{kind: graphstore.TupleAffects, from: `issue_component_members m`, toID: `m.project_key || '/' || m.component_id`,
+			fromKind: graphstore.KindIssue, fromID: `m.issue_key`, projected: `m.node_kind`,
+			tupleKind: graphstore.TupleAffects, projectedIn: "issue_component_members"},
 	},
 	"session": {
 		// ask_followers_session_id (migration 20261101182419), which exists for this arm; the

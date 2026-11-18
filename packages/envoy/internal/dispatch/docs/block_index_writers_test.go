@@ -560,6 +560,13 @@ var indexPasses = map[string]string{
 	// writes it. Neither reads one side of a projection to mend the other.
 	"api/issue_relations.go#stateIssueRelations": "the request's relations and the issue's own event",
 	"api/issue_relations.go#stateFiledFromNode":  "the row of the item the request's filed_from names",
+	// A component's node and its relations (dispatch://INFRA-1253 R9): an import states them from
+	// the model it fetched, read against the part_of and depends_on each node states now only to
+	// state what moved, and the components it drops from the source's rows as they stood; a
+	// source's removal states its components gone from the rows its delete is about to take.
+	// Neither reads one side of a projection to mend the other.
+	"architecture/importer.go#stateComponents":  "the model the import fetched and the source's components before it",
+	"architecture/importer.go#RetireComponents": "the components the source's removal deletes",
 	// A run of the command bar: its interaction node, its author's node and their tuples, written
 	// from the POST alone before the going_requests row that projects them, and each frame's value,
 	// written from the frame its writer hands it before the going_events row that projects it.
@@ -671,6 +678,16 @@ var indexPasses = map[string]string{
 	// no node, its own content, read again under its issue's row, and that issue's own row, whose
 	// node the object pass wrote first.
 	"graphcensus/census_issues.go#writeIssueLinkBatch": "each pre-store issue_links row's own content and its issue's row",
+	// The backfill of the components a process of the release before wrote (dispatch://INFRA-1253
+	// R9): each components row its marker does not mark, its own content and the parent it names,
+	// read again under its source's row, with the part_of its node holds now, so it states only the
+	// part_of that moved into that same node; each component_depends row naming no node, its own
+	// content, under the same row; and each issue_component_members row naming no node, its own
+	// content, read again under its issue's row. None reads one side of a projection to mend the
+	// other.
+	"graphcensus/census_components.go#writeComponentBatch":            "each components row its marker does not mark, its own content and its snapshot's time",
+	"graphcensus/census_components.go#writeComponentDependsBatch":     "each pre-store component_depends row's own content and its component's row",
+	"graphcensus/census_components.go#writeIssueComponentMemberBatch": "each pre-store issue_component_members row's own content and its issue's row",
 	// The erase (R5), the one statement of the tree that removes bytes. Its input is the node
 	// the operator named and what the store itself holds about it, which is neither side of a
 	// projection read to mend the other: it deletes both sides together, the store's through

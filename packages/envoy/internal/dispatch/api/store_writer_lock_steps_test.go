@@ -67,7 +67,7 @@ func TestEveryApiStoreWriterTakesTheStoreLockOrder(t *testing.T) {
 			ownerRowStep(documentOwnerStatement, "artifacts", `select 1 from artifacts where id = $1::uuid for no key update`, rig.document)),
 		rig.mentionReply(), rig.commentDeliverySettle(), rig.messageDeliverySettle(),
 		rig.goingRecord(), rig.goingFrame(), rig.issuePatchForRun(), rig.issuePatchRelations(), rig.issuePatchFiledFrom(), rig.artifactRemoval(),
-		rig.askEditForRun(), rig.commentEditForRun(),
+		rig.askEditForRun(), rig.commentEditForRun(), rig.architectureSourceRemoval(),
 	} {
 		t.Run(writer.name, func(t *testing.T) {
 			requireTheWrittenOrderAdmits(t, writer)
@@ -683,6 +683,101 @@ func (r *storeWriterRig) issuePatchFiledFrom() storeWriter {
 					response := dispatchRequest(t, r.call, http.MethodPatch, "/api/v1/issues/"+r.issue,
 						map[string]any{"filed_from": ref}, "alice")
 					if response.Code != http.StatusOK {
+						return fmt.Errorf("status=%d body=%s", response.Code, response.Body.String())
+					}
+					return nil
+				},
+			}
+		},
+	}
+}
+
+// architectureSourceRemoval is a source's removal (deleteArchitectureSource, dispatch://INFRA-1253
+// R9), through its route: it takes the source's row (`for update`, as every writer of the source's
+// components takes it first), states the node of each component the source holds gone, with each
+// part_of it holds retracted, in one Write at the sentinel (architecture.RetireComponents): the
+// node rows, then the tuples. Then it deletes the source's row, whose cascade takes the components
+// rows, and appends the project's settings.architecture_source.updated, which takes the project's
+// row as its owner. Each run removes a source no run has seen, whose two components - a parent and
+// a child hanging under it, each naming its node - its ready writes: the node rows are there, so
+// the node step is held as the child's row; the tuples are appended at the sentinel, which no
+// repeat key holds, so their step is held as the table.
+func (r *storeWriterRig) architectureSourceRemoval() storeWriter {
+	event := eventAppendStep()
+	event.takes = append(event.takes, tableLock{"projects", rowShareMode})
+	var repo, child string
+	return storeWriter{
+		name: "deleteArchitectureSource stating its components gone",
+		steps: []storeStep{
+			{
+				name: "the owner row", order: ownerStep,
+				hold: func(t *testing.T, ctx context.Context, holder pgx.Tx, _ storeWriterRun) {
+					holdRow(t, ctx, holder, `select 1 from architecture_sources where project_key = 'LOCK' and repo = $1 for update`, repo)
+				},
+				at:    "select id from architecture_sources where project_key = $1 and repo = $2 for update",
+				takes: []tableLock{{"architecture_sources", rowShareMode}},
+			},
+			{
+				name: "the components' nodes", order: nodeStep,
+				hold: func(t *testing.T, ctx context.Context, holder pgx.Tx, _ storeWriterRun) {
+					holdRow(t, ctx, holder, `select 1 from graph_nodes where kind = 'component' and id = $1 for update`,
+						graphstore.ComponentAddress("LOCK", child))
+				},
+				at:    nodeWriteStatement,
+				takes: []tableLock{{"graph_nodes", rowExclusiveMode}},
+			},
+			{
+				name: "the components' facts at the sentinel", order: tupleStep,
+				hold: holdTableWrites("graph_tuples"), at: tupleAppendStatement,
+				takes: []tableLock{{"graph_tuples", rowExclusiveMode}},
+			},
+			{
+				name: "the source's row and its components rows", order: projectionStep,
+				hold: func(t *testing.T, ctx context.Context, holder pgx.Tx, _ storeWriterRun) {
+					holdRow(t, ctx, holder, `select 1 from components where project_key = 'LOCK' and id = $1 for update`, child)
+				},
+				at:    "delete from architecture_sources where project_key = $1 and id = $2",
+				takes: []tableLock{{"architecture_sources", rowExclusiveMode}, {"components", rowExclusiveMode}},
+			},
+			event,
+		},
+		locksOwnProject: true,
+		ready: func(t *testing.T, ctx context.Context) storeWriterRun {
+			repo, child = "lock/"+r.fresh("arch"), r.fresh("child")
+			parent := r.fresh("parent")
+			at := time.Now().UTC()
+			if err := pgx.BeginFunc(ctx, r.database.Pool, func(tx pgx.Tx) error {
+				var source, snapshot int64
+				if err := tx.QueryRow(ctx, `
+					insert into architecture_sources (project_key, repo, branch, installation_id, created_by)
+					values ('LOCK', $1, 'main', 1, '{"kind":"user","id":"alice"}') returning id
+				`, repo).Scan(&source); err != nil {
+					return err
+				}
+				if err := tx.QueryRow(ctx, `
+					insert into architecture_snapshots (project_key, commit, files) values ('LOCK', $1, '{}') returning id
+				`, repo).Scan(&snapshot); err != nil {
+					return err
+				}
+				if _, err := tx.Exec(ctx, `
+					insert into components (project_key, id, title, prose, parent, snapshot_id, source_id, node_kind, node_address) values
+						('LOCK', $1, 'Parent', 'The parent.', null, $3, $4, 'component', 'LOCK/' || $1),
+						('LOCK', $2, 'Child', 'The child.', $1, $3, $4, 'component', 'LOCK/' || $2)
+				`, parent, child, snapshot, source); err != nil {
+					return err
+				}
+				return graphstore.Write(ctx, tx, []graphstore.Node{
+					graphstore.ComponentNode("LOCK", parent, model.Actor{}, at), graphstore.ComponentNode("LOCK", child, model.Actor{}, at),
+				}, []graphstore.Tuple{graphstore.ComponentRelation(graphstore.KindComponent, graphstore.ComponentAddress("LOCK", child),
+					graphstore.TuplePartOf, graphstore.ComponentAddress("LOCK", parent), true, model.Actor{}, at)})
+			}); err != nil {
+				t.Fatalf("write the source the run removes: %v", err)
+			}
+			return storeWriterRun{
+				made: graphstore.Node{Kind: graphstore.KindComponent, ID: graphstore.ComponentAddress("LOCK", child)},
+				write: func() error {
+					response := dispatchRequest(t, r.call, http.MethodDelete, sourcePath("LOCK", repo), nil, "alice")
+					if response.Code != http.StatusNoContent {
 						return fmt.Errorf("status=%d body=%s", response.Code, response.Body.String())
 					}
 					return nil

@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"slices"
@@ -89,27 +90,60 @@ func outboundAnswers(t *testing.T, handler http.Handler, issue, kind, targetKind
 	return answered
 }
 
+// rollbackComponentFiles is the model of project ROLL's one architecture source: legion holds
+// daemon and envoy, daemon holds workspace and depends on envoy, and envoy holds listener and
+// server, which depends on listener.
+func rollbackComponentFiles() map[string]string {
+	return map[string]string{
+		"legion.md":    "---\ntitle: Legion\n---\nThe swarm.\n",
+		"daemon.md":    "---\ntitle: Daemon\nparent: legion\ndepends_on: [envoy]\n---\nThe daemon.\n",
+		"envoy.md":     "---\ntitle: Envoy\nparent: legion\n---\nRouting.\n",
+		"workspace.md": "---\ntitle: Workspace\nparent: daemon\n---\nIssue workspaces.\n",
+		"listener.md":  "---\ntitle: Listener\nparent: envoy\n---\nThe listener.\n",
+		"server.md":    "---\ntitle: Server\nparent: envoy\ndepends_on: [listener]\n---\nThe server.\n",
+	}
+}
+
+// movedInPlace is one relation the release before moved in place on a marked row: the edge its
+// new value names and the edge its old value named, the column's owner for a failure, and the old
+// arm that answers the row while its marker does not mark it.
+type movedInPlace struct {
+	what       string
+	now, left  rollbackEdge
+	oldArmName string
+	oldArm     string
+}
+
 // TestGraphEdgesKeepsEveryRelationAcrossARollback holds the arms of dispatch://INFRA-1253's split
-// of the issue relations (c-view-arms): the arms over issues (child_of), issue_links (blocked_by)
-// and artifacts (attached_to) answer the rows that name no node, and the store answers the rest
-// while the projection row that names each edge carries its node. A database is seeded as the
-// release before this one leaves it: beside a stamped issue link and a stamped parent written
-// through this build's routes, a link and a parent that release wrote naming no node, a stamped
-// link and a stamped parent that release deleted with no retraction, a stamped parent that release
-// moved in place, setting parent_key to a new issue and leaving the row's node columns as they
-// were, and a document on an issue it wrote naming no node. graph_edges, refs.BacklinkCounts and
-// the outbound references read each answer every standing relation once and every deleted one
-// nowhere; graph_edges names the issue link blocked_by, as a process of the release before reads
-// it, in its old arm and in the tuple arm, and the references read answers it as needs. The moved
-// parent reads once, to its new value, through the old child_of arm alone, and its old value
-// nowhere (R9: the row counts as unmarked while its node's newest child_of naming its parent_key
-// does not assert it). After this child's backfill each relation the release before wrote is
-// answered once, by the store, dated at its row's own created_at, and the old arms answer none of
-// them: the moved parent reads once through the tuple arm, and the store holds its new parent
-// alone, the old one retracted. The cases of the component arms, an artifact's citations and the
-// deletion of dispatch://INFRA-1149's four arms are T8b's, T8c's and T9's.
+// of the issue relations and of a component's (c-view-arms): the arms over issues (child_of),
+// issue_links (blocked_by), artifacts (attached_to), components (part_of), component_depends
+// (depends_on) and issue_component_members (affects) answer the rows that name no node, and the
+// store answers the rest while the projection row that names each edge carries its node. A
+// database is seeded as the release before this one leaves it: beside a stamped issue link, a
+// stamped parent, a stamped component's parent, a stamped component dependency and a stamped
+// issue's component written through this build's routes, the same five that release wrote naming
+// no node, the same five stamped that release deleted with no retraction, a stamped parent and a
+// stamped component's parent that release moved in place, setting the column to a new value and
+// leaving the row's node columns as they were, and a document on an issue it wrote naming no node.
+// graph_edges, refs.BacklinkCounts and the outbound references read each answer every standing
+// relation once and every deleted one nowhere; graph_edges names the issue link blocked_by, as a
+// process of the release before reads it, in its old arm and in the tuple arm, and the references
+// read answers it as needs. Each moved relation reads once, to its new value, through its old arm
+// alone, and its old value nowhere (R9: the row counts as unmarked while its node's newest tuple
+// naming the column's value does not assert it). After this child's backfill each relation the
+// release before wrote is answered once, by the store, dated at the time its old arm dates it - a
+// row's own created_at, a component's snapshot's imported_at, an issue's components' updated_at -
+// and the old arms answer none of them: each moved relation reads once through the tuple arm, and
+// the store holds its new value alone, the old one retracted. The cases of an artifact's citations
+// and the deletion of dispatch://INFRA-1149's four arms are T8c's and T9's.
 func TestGraphEdgesKeepsEveryRelationAcrossARollback(t *testing.T) {
-	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	fake := &fakeGitHubApp{
+		installations: map[string]string{"legion/roll": "read"},
+		repos:         map[string]*fakeArchitectureRepo{"legion/roll": {commit: shaOne, files: rollbackComponentFiles()}},
+	}
+	options := architectureAppOptions(t, fake)
+	options.settle = time.Hour
+	handler, database, _ := newTestServer(t, options)
 	ctx := context.Background()
 	keys := createListedIssues(t, handler, "ROLL", 5)
 	parent, target, oldWaiter, oldChild, movedTo := keys[0], keys[1], keys[2], keys[3], keys[4]
@@ -129,6 +163,18 @@ func TestGraphEdgesKeepsEveryRelationAcrossARollback(t *testing.T) {
 	deletedLink := create("Its link deleted by the release before", map[string]any{"needs": []string{target}})
 	deletedParent := create("Its parent cleared by the release before", map[string]any{"parent": parent})
 	moved := create("Its parent moved in place by the release before", map[string]any{"parent": parent})
+	// The components, their parents and their dependencies, through this build's import, and the
+	// component the stamped issue and the issue whose link is deleted each hold as their own,
+	// through this build's PATCH.
+	putSource(t, handler, "ROLL", "legion/roll", "main")
+	if synced := syncSource(t, handler, "ROLL", "legion/roll"); synced.LastError != nil {
+		t.Fatalf("sync rejected ROLL's model: %s", *synced.LastError)
+	}
+	for _, attach := range []struct{ issue, component string }{{stamped.Key, "daemon"}, {deletedLink.Key, "envoy"}} {
+		if response := patchComponents(t, handler, attach.issue, map[string]any{"mode": "explicit", "ids": []string{attach.component}}); response.Code != http.StatusOK {
+			t.Fatalf("attach %s to %s: status=%d body=%s", attach.issue, attach.component, response.Code, response.Body.String())
+		}
+	}
 
 	// What the release before writes and deletes, by SQL, as it writes with no node and deletes
 	// with no retraction.
@@ -141,6 +187,17 @@ func TestGraphEdgesKeepsEveryRelationAcrossARollback(t *testing.T) {
 		{"its delete of a stamped link", `delete from issue_links where issue_key = $1 and target_key = $2`, []any{deletedLink.Key, target}},
 		{"its clear of a stamped parent", `update issues set parent_key = null where key = $1`, []any{deletedParent.Key}},
 		{"its move of a stamped parent, in place", `update issues set parent_key = $2 where key = $1`, []any{moved.Key, movedTo}},
+		{"its component, naming no node", `
+			insert into components (project_key, id, title, prose, parent, snapshot_id, source_id)
+			select project_key, 'relay', 'Relay', 'The relay.', 'legion', snapshot_id, source_id
+			from components where project_key = 'ROLL' and id = 'legion'`, nil},
+		{"its component dependency, naming no node", `insert into component_depends (project_key, from_id, to_id) values ('ROLL', 'daemon', 'listener')`, nil},
+		{"its delete of a stamped component", `delete from components where project_key = 'ROLL' and id = 'workspace'`, nil},
+		{"its delete of a stamped component dependency", `delete from component_depends where project_key = 'ROLL' and from_id = 'server' and to_id = 'listener'`, nil},
+		{"its move of a stamped component's parent, in place", `update components set parent = 'daemon' where project_key = 'ROLL' and id = 'listener'`, nil},
+		{"its issue's components, naming no node", `insert into issue_components (issue_key, mode) values ($1, 'explicit')`, []any{oldWaiter}},
+		{"its issue's component, naming no node", `insert into issue_component_members (issue_key, project_key, component_id) values ($1, 'ROLL', 'envoy')`, []any{oldWaiter}},
+		{"its delete of a stamped issue's component", `delete from issue_component_members where issue_key = $1`, []any{deletedLink.Key}},
 	} {
 		if _, err := database.Pool.Exec(ctx, statement.sql, statement.args...); err != nil {
 			t.Fatalf("write %s as the release before: %v", statement.what, err)
@@ -162,29 +219,52 @@ func TestGraphEdgesKeepsEveryRelationAcrossARollback(t *testing.T) {
 		{"issue", oldChild, "child_of", "issue", parent},
 		{"artifact", document, "attached_to", "issue", stamped.Key},
 		{"issue", moved.Key, "child_of", "issue", movedTo},
+		{"component", "ROLL/envoy", "part_of", "component", "ROLL/legion"},
+		{"component", "ROLL/relay", "part_of", "component", "ROLL/legion"},
+		{"component", "ROLL/listener", "part_of", "component", "ROLL/daemon"},
+		{"component", "ROLL/daemon", "depends_on", "component", "ROLL/envoy"},
+		{"component", "ROLL/daemon", "depends_on", "component", "ROLL/listener"},
+		{"issue", stamped.Key, "affects", "component", "ROLL/daemon"},
+		{"issue", oldWaiter, "affects", "component", "ROLL/envoy"},
 	}
 	deleted := []rollbackEdge{
 		{"issue", deletedLink.Key, "blocked_by", "issue", target},
 		{"issue", deletedParent.Key, "child_of", "issue", parent},
 		{"issue", moved.Key, "child_of", "issue", parent},
+		{"component", "ROLL/workspace", "part_of", "component", "ROLL/daemon"},
+		{"component", "ROLL/server", "depends_on", "component", "ROLL/listener"},
+		{"component", "ROLL/listener", "part_of", "component", "ROLL/envoy"},
+		{"issue", deletedLink.Key, "affects", "component", "ROLL/envoy"},
 	}
-	movedParent, leftParent := standing[5], deleted[2]
-	oldChildOfArm := graphEdgesArm(t, database, "the child_of arm over issues", "'child_of'::text AS kind", "\n   FROM issues")
 	tupleArm := graphEdgesArm(t, database, "the arm over the store's tuples", "edge.from_kind", "graph_tuples tuple")
-	// throughArm holds the moved parent to one arm: its new value is answered once by arm and
-	// never by other, and its old value by neither.
-	throughArm := func(stage, name, arm, otherName, other string) {
+	movedRelations := []movedInPlace{{
+		what: moved.Key + "'s parent", now: standing[5], left: deleted[2],
+		oldArmName: "old child_of arm", oldArm: graphEdgesArm(t, database, "the child_of arm over issues", "'child_of'::text AS kind", "\n   FROM issues"),
+	}, {
+		what: "component ROLL/listener's parent", now: standing[8], left: deleted[5],
+		oldArmName: "old part_of arm over components", oldArm: graphEdgesArm(t, database, "the part_of arm over components", "'part_of'::text AS kind", "\n   FROM components c"),
+	}}
+	// throughArm holds each moved relation to one arm: its new value is answered once by the old
+	// arm before the backfill and by the tuple arm after it, never by the other, and its old value
+	// by neither.
+	throughArm := func(stage string, viaOld bool) {
 		t.Helper()
-		if rows := armAnswers(t, database, arm, movedParent); rows != 1 {
-			t.Errorf("%s the %s answers %v %d times, want once: %s moved its parent to %s in place",
-				stage, name, movedParent, rows, moved.Key, movedTo)
-		}
-		if rows := armAnswers(t, database, other, movedParent); rows != 0 {
-			t.Errorf("%s the %s answers %v %d times, want none: the %s answers it", stage, otherName, movedParent, rows, name)
-		}
-		for _, each := range []string{arm, other} {
-			if rows := armAnswers(t, database, each, leftParent); rows != 0 {
-				t.Errorf("%s an arm of graph_edges answers %v, the parent %s left, %d times, want none", stage, leftParent, moved.Key, rows)
+		for _, moved := range movedRelations {
+			name, arm, otherName, other := moved.oldArmName, moved.oldArm, "tuple arm", tupleArm
+			if !viaOld {
+				name, arm, otherName, other = otherName, other, name, arm
+			}
+			if rows := armAnswers(t, database, arm, moved.now); rows != 1 {
+				t.Errorf("%s the %s answers %v %d times, want once: %s moved to %s %s in place",
+					stage, name, moved.now, rows, moved.what, moved.now.toKind, moved.now.toID)
+			}
+			if rows := armAnswers(t, database, other, moved.now); rows != 0 {
+				t.Errorf("%s the %s answers %v %d times, want none: the %s answers it", stage, otherName, moved.now, rows, name)
+			}
+			for _, each := range []string{arm, other} {
+				if rows := armAnswers(t, database, each, moved.left); rows != 0 {
+					t.Errorf("%s an arm of graph_edges answers %v, which %s left, %d times, want none", stage, moved.left, moved.what, rows)
+				}
 			}
 		}
 	}
@@ -219,9 +299,22 @@ func TestGraphEdgesKeepsEveryRelationAcrossARollback(t *testing.T) {
 		if attached[stamped.Key] != 2 {
 			t.Errorf("%s %s counts %d backlinks, want its spec and the release before's document", stage, stamped.Key, attached[stamped.Key])
 		}
+		// legion holds daemon and envoy, stamped, and the release before's relay; daemon holds
+		// listener, moved in place to it, and not workspace, deleted, and the stamped issue's
+		// affects; envoy holds server and not listener, moved away from it, daemon's stamped
+		// dependency and the release before's issue's affects, and not the deleted one; listener is
+		// the release before's dependency of daemon's, and not server's deleted one.
+		components, err := refs.BacklinkCounts(ctx, database.Pool, alice, "component",
+			[]string{"ROLL/legion", "ROLL/daemon", "ROLL/envoy", "ROLL/listener"}, nil)
+		if err != nil {
+			t.Fatalf("%s count the components' backlinks: %v", stage, err)
+		}
+		if want := map[string]int{"ROLL/legion": 3, "ROLL/daemon": 2, "ROLL/envoy": 3, "ROLL/listener": 1}; !maps.Equal(components, want) {
+			t.Errorf("%s the components' backlink counts are %v, want %v", stage, components, want)
+		}
 		for _, outbound := range []struct {
-			issue, kind, targetKind, target string
-			want                            int
+			from, kind, targetKind, target string
+			want                           int
 		}{
 			{stamped.Key, model.EdgeKindNeeds, "issue", target, 1},
 			{oldWaiter, model.EdgeKindNeeds, "issue", target, 1},
@@ -231,9 +324,19 @@ func TestGraphEdgesKeepsEveryRelationAcrossARollback(t *testing.T) {
 			{deletedParent.Key, "child_of", "issue", parent, 0},
 			{moved.Key, "child_of", "issue", movedTo, 1},
 			{moved.Key, "child_of", "issue", parent, 0},
+			{"ROLL/component/envoy", "part_of", "component", "ROLL/legion", 1},
+			{"ROLL/component/relay", "part_of", "component", "ROLL/legion", 1},
+			{"ROLL/component/listener", "part_of", "component", "ROLL/daemon", 1},
+			{"ROLL/component/listener", "part_of", "component", "ROLL/envoy", 0},
+			{"ROLL/component/daemon", "depends_on", "component", "ROLL/envoy", 1},
+			{"ROLL/component/daemon", "depends_on", "component", "ROLL/listener", 1},
+			{"ROLL/component/server", "depends_on", "component", "ROLL/listener", 0},
+			{stamped.Key, "affects", "component", "ROLL/daemon", 1},
+			{oldWaiter, "affects", "component", "ROLL/envoy", 1},
+			{deletedLink.Key, "affects", "component", "ROLL/envoy", 0},
 		} {
-			if got := outboundAnswers(t, handler, outbound.issue, outbound.kind, outbound.targetKind, outbound.target); got != outbound.want {
-				t.Errorf("%s GET /api/v1/references?from=%s answers %s to %s %d times, want %d", stage, outbound.issue, outbound.kind, outbound.target, got, outbound.want)
+			if got := outboundAnswers(t, handler, outbound.from, outbound.kind, outbound.targetKind, outbound.target); got != outbound.want {
+				t.Errorf("%s GET /api/v1/references?from=%s answers %s to %s %d times, want %d", stage, outbound.from, outbound.kind, outbound.target, got, outbound.want)
 			}
 		}
 		if got := outboundAnswers(t, handler, stamped.Key, "blocked_by", "issue", target); got != 0 {
@@ -241,20 +344,33 @@ func TestGraphEdgesKeepsEveryRelationAcrossARollback(t *testing.T) {
 		}
 	}
 	read("before the backfill:")
-	throughArm("before the backfill:", "old child_of arm", oldChildOfArm, "tuple arm", tupleArm)
+	throughArm("before the backfill:", true)
 
 	if _, err := graphcensus.Backfill(ctx, database, io.Discard); err != nil {
 		t.Fatalf("backfill: %v", err)
 	}
 	read("after the backfill:")
-	throughArm("after the backfill:", "tuple arm", tupleArm, "old child_of arm", oldChildOfArm)
-	var movedCreated time.Time
+	throughArm("after the backfill:", false)
+	var movedCreated, listenerImported time.Time
 	if err := database.Pool.QueryRow(ctx, `select created_at from issues where key = $1`, moved.Key).Scan(&movedCreated); err != nil {
 		t.Fatalf("read %s's row: %v", moved.Key, err)
 	}
 	if held := currentRelations(t, database, moved.Key, graphstore.TupleChildOf); len(held) != 1 || held[0].ToID != movedTo || !held[0].At.Equal(movedCreated) {
 		t.Errorf("after the backfill %s states child_of %v, want the one parent its row names, %s, dated at its row's created_at %s",
 			moved.Key, held, movedTo, movedCreated)
+	}
+	const componentImported = `select s.imported_at from components c join architecture_snapshots s on s.id = c.snapshot_id
+		where c.project_key = 'ROLL' and c.id = $1`
+	if err := database.Pool.QueryRow(ctx, componentImported, "listener").Scan(&listenerImported); err != nil {
+		t.Fatalf("read listener's snapshot: %v", err)
+	}
+	held, err := graphstore.CurrentOut(ctx, database.Pool, graphstore.KindComponent, "ROLL/listener", []string{graphstore.TuplePartOf})
+	if err != nil {
+		t.Fatalf("read listener's part_of: %v", err)
+	}
+	if len(held) != 1 || held[0].ToID != "ROLL/daemon" || !held[0].At.Equal(listenerImported) {
+		t.Errorf("after the backfill ROLL/listener states part_of %v, want the one parent its row names, ROLL/daemon, dated at its snapshot's imported_at %s",
+			held, listenerImported)
 	}
 	for _, written := range []struct {
 		edge              rollbackEdge
@@ -267,13 +383,25 @@ func TestGraphEdgesKeepsEveryRelationAcrossARollback(t *testing.T) {
 			`select count(*) from issues where key = $1 and node_kind is null`, []any{oldChild}},
 		{standing[4], `select created_at from artifacts where id = $1::uuid`,
 			`select count(*) from artifacts where id = $1::uuid and node_kind is null`, []any{document}},
+		{standing[7], componentImported,
+			`select count(*) from components where project_key = 'ROLL' and id = $1 and node_kind is null`, []any{"relay"}},
+		{standing[10], `select s.imported_at from component_depends d
+				join components c on c.project_key = d.project_key and c.id = d.from_id
+				join architecture_snapshots s on s.id = c.snapshot_id
+				where d.project_key = 'ROLL' and d.from_id = $1 and d.to_id = $2`,
+			`select count(*) from component_depends where project_key = 'ROLL' and from_id = $1 and to_id = $2 and node_kind is null`,
+			[]any{"daemon", "listener"}},
+		{standing[12], `select c.updated_at from issue_component_members m join issue_components c using (issue_key)
+				where m.issue_key = $1 and m.component_id = $2`,
+			`select count(*) from issue_component_members where issue_key = $1 and component_id = $2 and node_kind is null`,
+			[]any{oldWaiter, "envoy"}},
 	} {
 		var createdAt time.Time
 		if err := database.Pool.QueryRow(ctx, written.createdAt, written.args...).Scan(&createdAt); err != nil {
 			t.Fatalf("read the row behind %v: %v", written.edge, err)
 		}
 		if _, at := viewAnswers(t, database, written.edge); !at.Equal(createdAt) {
-			t.Errorf("after the backfill graph_edges dates %v at %s, want its row's created_at %s", written.edge, at, createdAt)
+			t.Errorf("after the backfill graph_edges dates %v at %s, want the time its old arm dates it, %s", written.edge, at, createdAt)
 		}
 		var unmarked int
 		if err := database.Pool.QueryRow(ctx, written.oldArm, written.args...).Scan(&unmarked); err != nil {

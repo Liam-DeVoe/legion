@@ -403,16 +403,19 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// The relations this write states, each caused by the issue's own event below
+	// (stateIssueRelations), whose projection rows are written here: its components' affects
+	// among them (writeIssueComponents).
+	relationsAt := time.Now().UTC()
+	var relations issueRelationFacts
 	if componentsProvided {
-		if err := writeIssueComponents(r.Context(), tx, key, before.Project, *components); err != nil {
+		affects, err := writeIssueComponents(r.Context(), tx, key, before.Project, *components, relationsAt)
+		if err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
+		relations.tuples = append(relations.tuples, affects...)
 	}
-	// The relations this write states, each caused by the issue's own event below
-	// (stateIssueRelations), whose projection rows are written here.
-	relationsAt := time.Now().UTC()
-	var relations issueRelationFacts
 	if waitsProvided {
 		needs, err := writeIssueNeeds(r.Context(), tx, key, before.Project, callerProject, waits, relationsAt)
 		if err != nil {

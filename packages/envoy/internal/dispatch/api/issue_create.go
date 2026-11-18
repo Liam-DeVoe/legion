@@ -437,8 +437,9 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	// The relations the new issue states, each caused by issue.created below
 	// (stateIssueRelations): its child_of, dated at its row's created_at, which the arm over the
-	// rows that name no node dates the same edge by, its waits, whose rows are written here, and
-	// its duplicate_of and filed_from.
+	// rows that name no node dates the same edge by, its waits, whose rows are written here, its
+	// duplicate_of and filed_from, and its affects to each component of its own, whose rows are
+	// written below (writeIssueComponents).
 	var relations issueRelationFacts
 	if parentKey != "" {
 		relations.claim(key, graphstore.TupleChildOf, graphstore.KindIssue, parentKey, issueCreatedAt)
@@ -465,10 +466,12 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if componentsProvided {
-		if err := writeIssueComponents(r.Context(), tx, key, input.Project, *components); err != nil {
+		affects, err := writeIssueComponents(r.Context(), tx, key, input.Project, *components, issueCreatedAt)
+		if err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
+		relations.tuples = append(relations.tuples, affects...)
 	}
 	if input.External != "" {
 		if _, err := tx.Exec(r.Context(), `
