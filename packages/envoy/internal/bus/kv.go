@@ -848,10 +848,10 @@ func (kv KeyValue) Status() (nats.KeyValueStatus, error) {
 // buffer off refuses every send at once, call waits for the connection within ctx
 // (awaitConnected). A ctx that ends in that wait starts no call: answered is false, and err is
 // ErrReconnecting with ctx's error, `bus: NATS is reconnecting: context deadline exceeded`, so the
-// caller's answer says why the bus did not answer. ctx is read before the wait and again once the
-// wait ends, before the call starts, so a call never starts after its caller's ctx has ended. A
-// ctx found ended there starts no call either, and its err is the same ErrReconnecting while
-// nats.go reconnects conn, and ctx's bare error while conn can take a send (endedUnsent). A
+// caller's answer says why the bus did not answer. ctx is read again once the wait ends, before
+// the call starts, so a call never starts after its caller's ctx has ended. A ctx found ended
+// there starts no call either, and its err is the same ErrReconnecting while nats.go reconnects
+// conn, and ctx's bare error while nats.go is not connecting or reconnecting conn (endedUnsent). A
 // connection that drops again after the wait refuses the call itself, which a KeyValue call names
 // ErrReconnecting (kvAnswer).
 //
@@ -868,9 +868,6 @@ func Bounded[T any](ctx context.Context, conn *nats.Conn, call func() (T, error)
 	if ctx.Done() == nil {
 		value, err = call()
 		return value, true, err
-	}
-	if ctx.Err() != nil {
-		return value, false, endedUnsent(ctx, conn)
 	}
 	if err := awaitConnected(ctx, conn); err != nil {
 		return value, false, err

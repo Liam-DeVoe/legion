@@ -247,8 +247,9 @@ first copy arrived (`DELIVERY_DUPLICATE_WINDOW_MS` names the rare cases a recipi
 still sees it twice). A send
 refused with a 4xx on every attempt stays an `EnvoyApiError`. Listener error responses preserve their
 `error` and optional `expected` fields. `isBusUnanswered` tells the listener's bus-outage answer
-apart: an `EnvoyApiError` with status 503 whose `error` begins `envoy: the message bus did not
-answer`. Part of the request can have landed before it: an unsubscribe gets it after the record
+apart: an `EnvoyApiError` with status 503 whose `error` begins with `BUS_UNANSWERED_PREFIX`
+(`@legion/contracts`), `envoy: the message bus did not answer`. Part of the request can have
+landed before it: an unsubscribe gets it after the record
 was written, when only the update of the consumer's filter met a NATS reconnect. The listener's
 bearer is the `token` the client is given (`envoySettings`); without one it sends no
 `Authorization` header.

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { ROLE_TOPIC_PREFIX } from "@legion/contracts";
+import { BUS_UNANSWERED_PREFIX, ROLE_TOPIC_PREFIX } from "@legion/contracts";
 import { messageFor } from "@legion/envoy-client/errors";
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
 import {
@@ -92,8 +92,7 @@ const busOutageAnswer = (status: number): EnvoyApiError =>
     url: "/v1/interests/unsubscribe",
     status,
     responseBody: JSON.stringify({
-      error:
-        "envoy: the message bus did not answer: set the filter of ses_a's session consumer: bus: NATS is reconnecting",
+      error: `${BUS_UNANSWERED_PREFIX}: set the filter of ses_a's session consumer: bus: NATS is reconnecting`,
     }),
   });
 

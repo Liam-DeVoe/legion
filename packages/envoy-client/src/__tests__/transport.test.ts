@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS, MINTED_DEDUPE_KEY_PATTERN } from "@legion/contracts";
+import {
+  BUS_UNANSWERED_PREFIX,
+  ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS,
+  MINTED_DEDUPE_KEY_PATTERN,
+} from "@legion/contracts";
 import noInterestsFixture from "../../../contracts/fixtures/envoy-session-no-interests.json";
 import { consumerDelivery } from "../../test/subscribe-answer";
 import { bearerCredential, type RequestCredential } from "../bearer";
@@ -1481,8 +1485,9 @@ describe("EnvoyClient", () => {
   });
 
   // The listener answers a request its message bus did not answer 503 under one prefix
-  // (`busUnansweredPrefix` in packages/envoy/cmd/listener/api.go). A caller tells that answer
-  // apart by both, since the starting gate's 503 and a 500 mean other things.
+  // (`BUS_UNANSWERED_PREFIX`, which the listener's `busUnansweredPrefix` is generated from). A
+  // caller tells that answer apart by both, since the starting gate's 503 and a 500 mean other
+  // things.
   test("isBusUnanswered is true only for a 503 whose error begins with the bus-outage prefix", () => {
     const answer = (status: number, error: string) =>
       new EnvoyApiError({
@@ -1491,8 +1496,7 @@ describe("EnvoyClient", () => {
         status,
         responseBody: JSON.stringify({ error }),
       });
-    const outage =
-      "envoy: the message bus did not answer: set the filter of ses_a's session consumer: bus: NATS is reconnecting";
+    const outage = `${BUS_UNANSWERED_PREFIX}: set the filter of ses_a's session consumer: bus: NATS is reconnecting`;
 
     expect(isBusUnanswered(answer(503, outage))).toBe(true);
     expect(isBusUnanswered(answer(503, "service starting"))).toBe(false);

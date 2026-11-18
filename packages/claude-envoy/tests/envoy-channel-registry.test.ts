@@ -1,5 +1,6 @@
 import { expect, spyOn, test } from "bun:test"
 import {
+  BUS_UNANSWERED_PREFIX,
   canonicalTopic,
   legacyDispatchIssueSubject,
   uncapturedTopicRefusal,
@@ -271,8 +272,7 @@ test("a registry removal that fails is reconciled by the next heartbeat, without
 test("a removal's registry write the listener's message bus did not answer is reported as that outage, and any other failure as not dropped", async () => {
   const stateDirectory = scratchState()
   const nats = new FakeNats()
-  const outage =
-    "envoy: the message bus did not answer: set the filter of ses_claude's session consumer: bus: NATS is reconnecting"
+  const outage = `${BUS_UNANSWERED_PREFIX}: set the filter of ses_claude's session consumer: bus: NATS is reconnecting`
   let failure: unknown
   const client = recordingClient([], {
     unsubscribe: async () => {

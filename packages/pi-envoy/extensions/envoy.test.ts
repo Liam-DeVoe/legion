@@ -29,6 +29,7 @@ import {
 import { hostname, tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import {
+  BUS_UNANSWERED_PREFIX,
   canonicalTopic,
   legacyDispatchIssueSubject,
   type SessionAnswer,
@@ -1409,11 +1410,11 @@ function response(body: unknown): Response {
   });
 }
 
-/** The listener's bus-outage body under `status`: with 503 it is the answer a request its message
- *  bus did not answer gets (`isBusUnanswered`), and with any other status it is not. */
+/** The listener's bus-outage body under `status`: with 503 it is the answer `isBusUnanswered`
+ *  reads as a bus outage, and with any other status it is not. */
 function busOutageAnswer(status: number): Response {
   return Response.json(
-    { error: "envoy: the message bus did not answer: bus: NATS is reconnecting" },
+    { error: `${BUS_UNANSWERED_PREFIX}: bus: NATS is reconnecting` },
     { status }
   );
 }
