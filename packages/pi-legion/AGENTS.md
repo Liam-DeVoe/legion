@@ -792,8 +792,14 @@ names no `kept_until` and answers a repeated key as the first copy for 72 hours,
 clears the key, and the next attempt mints a new one. The stall watch's notice of a stuck tool
 call (`src/stall-evidence.ts`), to the architect the owed answer it asks for then names, else the
 tree's, or, for a root architect's own call, to the controller, also sends no `keep` field, and a
-kept answer reports that no owner was told. A kept notice that no session takes in its hour comes
-back to this worker's session as a dead letter, an Envoy card that names it, unless Envoy drops it
+kept answer reports that no owner was told. The listener answers a session past its send limit
+with 429 `sender_rate_limited` and the whole seconds until it takes the next message: the stall
+watch waits that long and sends its notice again under the same key, at most 3 times, so the
+notice is sent at most 4 times. It sends again in the background, so no wait holds a step of the
+ladder, and a resend that is answered and not kept records the owner as told. The phase reminder's
+notice needs no such resend: a refused publish leaves it unreported, and the next reminder
+publishes it again. A kept notice that no session takes in its hour comes back to this worker's
+session as a dead letter, an Envoy card that names it, unless Envoy drops it
 more than an hour late. A reminder is dropped when the daemon answers that the claim owes nothing:
 its phase finished, through the tool, from the shell or by a move of the issue it did not make, or
 the daemon failed the claim. A worker the daemon relaunched is reminded from a timer
