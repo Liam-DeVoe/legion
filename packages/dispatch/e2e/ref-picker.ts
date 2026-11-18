@@ -49,6 +49,8 @@ export function pickerRows(list: Locator): Promise<string[]> {
  *  kinds it found rows for (`kindOrder`). */
 export async function pickerHeadings(list: Locator): Promise<string[]> {
   const headings: string[] = [];
+  // One reading is what this helper answers: every caller polls it, or reads it after a poll
+  // that waited for the rows it orders.
   for (const row of await pickerRows(list)) {
     const heading = row.slice(0, row.indexOf(": "));
     if (headings[headings.length - 1] !== heading) headings.push(heading);

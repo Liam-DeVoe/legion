@@ -378,9 +378,9 @@ test("a link its author worded keeps its words in the document, and an address w
 async function expectWordsWithNoLink(scope: Locator, address: string): Promise<void> {
   const words = scope.locator(`[data-dispatch-missing="${address}"]`);
   await expect(words.first()).toHaveText(address);
-  for (const each of await words.all()) {
-    await expect(each).toHaveText(address);
-    await expect(each).not.toHaveAttribute("href");
-  }
+  // Each of them, read until it holds: none reads other words, and none carries a link.
+  const exactly = new RegExp(`^\\s*${address.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*$`);
+  await expect(words.filter({ hasNotText: exactly })).toHaveCount(0);
+  await expect(scope.locator(`[data-dispatch-missing="${address}"][href]`)).toHaveCount(0);
   await expect(scope.locator(`[data-dispatch-ref="${address}"]`)).toHaveCount(0);
 }
