@@ -199,17 +199,18 @@ const sessionProxyAccountFlag = "--session-impersonate-service-account"
 // legionVolumeNames are the volumes Legion puts in a pod, an issue pod's, the controller's or the
 // probe's, whose names the operator's volumes may not take: the shared ones, the role homes, the
 // test database's, the skills clone's and its fetch's TMPDIR, and each launcher role's private
-// ones. The agent-secrets volumes are reserved
+// ones, for every role of roles (the runtime's issue roles, a role the deployment defines among
+// them, then the controller). The agent-secrets volumes are reserved
 // whether or not this deployment enrolls, the test database's whether or not it sets
 // `runtime.kubernetes.test_postgres`, and the skills volumes whether or not it names a
 // `runtime.kubernetes.skills_repository`: an operator's pod may never claim them. Every launcher
 // role, the controller's included, has a key volume when the pod enrolls and a gh volume always.
-func legionVolumeNames() []string {
+func legionVolumeNames(roles []claim.Role) []string {
 	names := []string{
 		issueVolume, provisionVolume, tempVolume, configVolume, providersVolume, agentSecretsTokenVolume, roleHomesVolume, roleProbeVolume, testPGVolume,
 		skillsVolume, skillsTempVolume,
 	}
-	for _, role := range launcherRoles {
+	for _, role := range roles {
 		names = append(names, roleVolume("launcher", role), roleVolume("private", role), roleVolume(stateVolume, role), roleVolume(ghVolume, role),
 			roleVolume(agentSecretsKeyVolume, role))
 	}
@@ -542,7 +543,7 @@ func (r *Runtime) prepare(spec runtime.SpawnSpec) (launch, error) {
 	case named != l.kind:
 		return launch{}, refuse("its pod's labels %v name another kind of pod than the one it builds", r.labels(l))
 	}
-	l.roles = named.roles()
+	l.roles = named.roles(r)
 	prompt, err := runtime.ComposePrompt(spec.Prompt)
 	if err != nil {
 		return launch{}, refuse("%w", err)
@@ -596,8 +597,9 @@ func SessionFromVolume(file, root string) (string, error) {
 
 // agentArgv is the command the shim runs, the launch's own harness: the Claude Code command for a
 // Claude role (claudeArgv), and otherwise the image's Oh My Pi with its two explicit extensions,
-// the Envoy plugin first, `--model @default` so the session runs the model the pod's overlay puts
-// on the `default` role, `--resume` on the recorded session when resuming, then RPC mode and
+// the Envoy plugin first, `--model` on the model the spec names, `@default` where it names none so
+// the session runs the model the pod's overlay puts on the `default` role, `--resume` on the
+// recorded session when resuming, then RPC mode and
 // `--append-system-prompt` naming the file the launcher writes the launch's system prompt to
 // (systemPromptPath), never the text: Oh My Pi 18.16.0 reads a value with no newline as a path
 // and appends that file's contents, so the prompt meets no argv bound however long the
@@ -617,13 +619,15 @@ func SessionFromVolume(file, root string) (string, error) {
 // image leaves unlinked from its profile: Oh My Pi loads a plugin that is both installed and named
 // by --extension twice, which the boot gate's pod lane refuses an image for.
 //
-// `--model @default` rides every launch, not the resuming one alone: @default is Oh My Pi's name
-// for the `default` model role, which every pod's operator overlay sets, and a resumed session
-// otherwise runs the model its first launch saved for ever. A launch under the flag writes no
-// `model_change` entry of its own, so the saved pin stays in the session file and a later launch
-// without the flag would read it again. A profile with no `default` role is not refused here: Oh
-// My Pi launches silently on a built-in model instead, which is the deployment's to notice
-// (deploy/kubernetes/operator-route/README.md, "Changing a role's model").
+// A model rides every launch, not the resuming one alone. Where the spec names none, it is
+// @default, Oh My Pi's name for the `default` model role, which every pod's operator overlay sets,
+// and a resumed session otherwise runs the model its first launch saved for ever. A launch under
+// the flag writes no `model_change` entry of its own, so the saved pin stays in the session file
+// and a later launch without the flag would read it again. A profile with no `default` role is not
+// refused here: Oh My Pi launches silently on a built-in model instead, which is the deployment's
+// to notice (deploy/kubernetes/operator-route/README.md, "Changing a role's model"). Where the spec
+// names a model (a role of the deployment's `model`, runtime.SpawnSpec.Model), that model is named
+// in the same place.
 func (l launch) agentArgv(agent []string) []string {
 	if l.runsClaude() {
 		return l.claudeArgv()
@@ -632,7 +636,11 @@ func (l launch) agentArgv(agent []string) []string {
 	if l.spec.Plugins != nil {
 		envoy, legion = pluginRoots(pluginGenDir(roleStateHome(l.spec.Role), l.spec.Generation))
 	}
-	argv := append(slices.Clone(agent), "--extension", envoy, "--extension", legion, "--model", "@default")
+	model := "@default"
+	if l.spec.Model != "" {
+		model = l.spec.Model
+	}
+	argv := append(slices.Clone(agent), "--extension", envoy, "--extension", legion, "--model", model)
 	if l.spec.ResumeSessionFile != "" {
 		argv = append(argv, "--resume="+l.spec.ResumeSessionFile)
 	}
@@ -651,13 +659,15 @@ func (l launch) agentArgv(agent []string) []string {
 // The session is the launch's own (claudeInputs): `--resume <uuid>` of the transcript a replaced
 // pod left, by the id prepare read from the recorded path, and `--session-id <fresh uuid>` when
 // the launch starts a session. Claude Code resumes by id and never by path, so the recorded file
-// name itself is never passed. Options.Agent, the operator's Oh My Pi override, does not reach
-// here: the Claude command is the runtime's, as the tmux lane's is the host's boot-resolved one.
+// name itself is never passed. The model is the spec's (runtime.SpawnSpec.Model, a role of the
+// deployment's `model`), named as `--model` where it is not "". Options.Agent, the operator's Oh
+// My Pi override, does not reach here: the Claude command is the runtime's, as the tmux lane's is
+// the host's boot-resolved one.
 func (l launch) claudeArgv() []string {
 	claude := claudeCodeBinary(roleStateHome(l.spec.Role), l.spec.Generation)
 	paths := claudelaunch.Paths{Legion: l.claude.legion, Claude: claude, PluginDir: claudePluginDir}
 	return claudelaunch.Argv(paths, generationDir(l.spec.Generation)+"/"+claudeMCPFile, l.claude.session, l.claude.resume,
-		systemPromptPath(l.spec.Generation))
+		systemPromptPath(l.spec.Generation), l.spec.Model)
 }
 
 // labels are the pod's resource labels, as its kind gives them (podKind.labels).

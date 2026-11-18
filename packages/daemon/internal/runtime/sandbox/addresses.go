@@ -218,10 +218,13 @@ func earlierLayout(names []string) bool {
 // legionContainers are the names among names Legion gives a container: a launcher role's (the
 // earlier layout's) or the one container of either pod this runtime builds. The rest were added to
 // the running pod by another controller (a mesh's injected sidecar, say), which never writes the
-// Sandbox's template, so only a pod's own containers are read through it.
+// Sandbox's template, so only a pod's own containers are read through it. The launcher roles here
+// are the earlier layout's fixed set, Legion's six and the controller (earlierLayout), never a
+// role of the deployment: no role of the deployment ever had a container of that layout.
 func legionContainers(names []string) []string {
 	return slices.DeleteFunc(slices.Clone(names), func(name string) bool {
-		return name != runtime.IssuePodContainer && !slices.Contains(launcherRoles, claim.Role(name))
+		role := claim.Role(name)
+		return name != runtime.IssuePodContainer && role != claim.RoleController && !slices.Contains(claim.Roles, role)
 	})
 }
 
@@ -451,7 +454,7 @@ func (r *Runtime) movedGhDirs(pod *corev1.Pod, role claim.Role) (movedAddress, b
 	slices.Sort(held)
 	held = ghOwnerDirs(held)
 	repo, _ := fetchRepository(pod)
-	apps, err := podAppRoles(podKindFor(role), nil)
+	apps, err := podAppRoles(r, podKindFor(role))
 	if err != nil {
 		// A pod holding a role that acts as no App cannot be told what it lacks: it is read as
 		// moved, naming why, rather than kept on a set of directories nobody can compute.
@@ -468,15 +471,15 @@ func (r *Runtime) movedGhDirs(pod *corev1.Pod, role claim.Role) (movedAddress, b
 	return movedAddress{where: name, held: ghDirsName(held), handed: ghDirsName(served)}, true
 }
 
-// podAppRoles are the GitHub Apps a pod of kind holds a bundle of, each named once
-// (appauth.AppRoleFor over deployed, the deployment's roles): both of them for an issue pod,
-// whose roles run as one or the other, and the review App alone for the project controller's. It
-// is what the record of the directories a mint found GitHub refuses is read for (movedGhDirs,
-// appauth.LeftOut). A role of the pod that acts as no App is AppRoleFor's error.
-func podAppRoles(kind podKind, deployed appauth.DeploymentApps) ([]appauth.AppRole, error) {
+// podAppRoles are the GitHub Apps a pod of kind holds a bundle of under r, each named once
+// (appauth.AppRoleFor over the runtime's deploymentApps, its kind's roles under r): both of them
+// for an issue pod, whose roles run as one or the other, and the review App alone for the project
+// controller's. It is what the record of the directories a mint found GitHub refuses is read for
+// (movedGhDirs, appauth.LeftOut). A role of the pod that acts as no App is AppRoleFor's error.
+func podAppRoles(r *Runtime, kind podKind) ([]appauth.AppRole, error) {
 	apps := make([]appauth.AppRole, 0, len(appauth.Roles))
-	for _, role := range kind.roles() {
-		app, err := appauth.AppRoleFor(role, deployed)
+	for _, role := range kind.roles(r) {
+		app, err := appauth.AppRoleFor(role, r.deploymentApps)
 		if err != nil {
 			return nil, err
 		}
@@ -536,7 +539,7 @@ func (r *Runtime) movedRoleOverlays(pod corev1.PodSpec, role claim.Role) (movedA
 	if !ok {
 		return movedAddress{}, false
 	}
-	for _, named := range roleConfigRoles {
+	for _, named := range r.roleConfigRoles() {
 		if podContainer(named) != podContainer(role) {
 			continue
 		}

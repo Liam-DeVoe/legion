@@ -515,6 +515,10 @@ type Issue struct {
 	// phase names, so the phase alone does not say who works the issue. Absent at every other
 	// phase, whose role the phase names (phase.RoleFor).
 	StepRole string `json:"stepRole,omitempty"`
+	// StartWaitsForPod are the roles whose start waits because the issue's pod was built before
+	// the deployment defined them (record.Store.StartsWaitingForPod): such a role has no claim to
+	// show, and only the pod's update round or its release lets it start. Absent where none waits.
+	StartWaitsForPod []string `json:"startWaitsForPod,omitempty"`
 	// Status is the status the daemon means the issue to have and writes to Dispatch
 	// (record.Issue.Status). It is not the status Dispatch shows: that is
 	// record.Issue.DispatchStatus, which this state does not carry. The two differ while a status

@@ -70,11 +70,12 @@ func withRefusedOwner(owner string, refuse *atomic.Bool) rigOption {
 // withProjectTokens gives the rig the daemon's own three gh answers (appauth.GitHubCredential,
 // appauth.ControllerCredential and appauth.GitHubDirs) over refusedProjectRepos and tokens, the
 // three sharing one record of what their mints found GitHub refuses, as internal/daemon's
-// sandboxRuntime builds them for a project.
+// sandboxRuntime builds them for a project, the credential over the deployment's roles
+// (Options.DeploymentApps, nil in a rig that sets none; an option that sets it goes first).
 func withProjectTokens(tokens appauth.Tokens) rigOption {
 	return withOptions(func(o *Options) {
 		left := appauth.NewLeftOut()
-		o.GitHubCredential = appauth.GitHubCredential(tokens, refusedProjectRepos, ghrepo.Renames{}, left, nil, o.Log)
+		o.GitHubCredential = appauth.GitHubCredential(tokens, refusedProjectRepos, ghrepo.Renames{}, left, o.DeploymentApps, o.Log)
 		o.ControllerCredential = appauth.ControllerCredential(tokens, refusedProjectRepos, ghrepo.Renames{}, left, o.Log)
 		o.GitHubDirs = func(repo ghrepo.Repository, roles []appauth.AppRole) []string {
 			return appauth.GitHubDirs(refusedProjectRepos, ghrepo.Renames{}, left, roles, repo)

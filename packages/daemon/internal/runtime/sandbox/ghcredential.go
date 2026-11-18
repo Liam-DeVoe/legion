@@ -111,9 +111,11 @@ func (r *Runtime) refreshGitHubCredentials(ctx context.Context) {
 		}
 		// The pod's own repository is read once here, for every role of it and for its
 		// provisioning token: it is the pod's, not the role's, and a bundle is rendered for it
-		// (refreshGitHubCredential).
+		// (refreshGitHubCredential). The roles are the ones the pod was built with (builtRoles),
+		// not the runtime's now: a pod built before a role of the deployment has no Secret of it,
+		// and asking for one would fail at every tick for a role no process of the pod runs.
 		repo, named := fetchRepository(pod)
-		for _, role := range kind.roles() {
+		for _, role := range builtRoles(pod.Spec) {
 			r.refreshGitHubCredential(ctx, pod, owner.UID, role, repo)
 		}
 		if _, issue := kind.(issuePod); !issue || !named {

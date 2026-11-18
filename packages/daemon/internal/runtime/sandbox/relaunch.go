@@ -158,8 +158,7 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 		return fail("ensure its sandbox", err)
 	}
 	pod := r.storedPod(s.Name)
-	_, initExit := failedInit(pod)
-	live := s.mode() != modeSuspended && ownedBy(pod, s.UID) && !terminal(pod) && initExit == nil
+	live := livePod(s, pod)
 	_, accountDrifted := accountDrift(pod, r.pod.ServiceAccount)
 	installing := l.spec.Plugins != nil
 	migrate := supersededDisk(s, l)
@@ -180,6 +179,15 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 		slices.ContainsFunc(l.roles, func(role claim.Role) bool { return len(r.movedInPod(pod, role)) > 0 }) ||
 		(!installing && !covered && len(r.shapeDrift(s, l.kind)) > 0)
 	if !replace {
+		// A pod it would keep that was built before the deployment defined this role has no
+		// launcher, Secret or volume of the role: replacing it here would end every role in it
+		// and delete the issue's disk with whatever they did not push, so the launch writes
+		// nothing and waits for the pod's update round or its release (runtime.ErrAwaitsPodUpdate,
+		// PodLacksRole, rolesDrift). A launch of a role the template holds goes on as before.
+		if held := templateRoles(s); len(held) > 0 && !slices.Contains(held, spec.Role) {
+			return runtime.Locator{}, fmt.Errorf("launch %s: the pod %s of %s was built without the role %s: %w",
+				spec.Claim, pod.UID, spec.Issue, spec.Role, runtime.ErrAwaitsPodUpdate)
+		}
 		bound, err := r.launcherBound(bounded, s, pod, &l)
 		if err != nil {
 			return fail("read its pod's launcher bindings", err)
@@ -298,6 +306,14 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	return loc, nil
 }
 
+// livePod is whether pod is the live pod of the Sandbox read as s: the Sandbox running, the pod
+// its own, not ended, its init containers passed. A launch replaces only such a pod by ending the
+// roles in it (suspendDisplacing), and PodLacksRole answers only for one.
+func livePod(s *sandbox, pod *corev1.Pod) bool {
+	_, initExit := failedInit(pod)
+	return s.mode() != modeSuspended && ownedBy(pod, s.UID) && !terminal(pod) && initExit == nil
+}
+
 // keptBy is what the live pod of the Sandbox read as s was built with, for the role l starts in
 // it: the enrollment decision for that role in that pod (enrollsIn, which reads the broker's
 // volumes the pod carries), which of the role's own overlays and of every declared variant's
@@ -393,10 +409,11 @@ func boundRanOut(parent, bounded context.Context, bound time.Duration, err error
 // Get and the Create (4) against the 3 of the 6 above that ensureSandbox's wait for a Sandbox
 // being deleted spends, which that try never takes — a Sandbox it waited out is gone, and the one
 // it creates in its place already owns no claim template (replaceSupersededSandbox).
-// Per launcher role of the pod (relaunchRoleCalls, claim.Roles for an issue pod, the most any pod
-// has): launcherBound's Secret Get (1); writeLauncherSecrets' credential mint and its upsert's Get,
-// Delete and Create (4); bindLauncherSecrets' Get and Update, and both again on a conflict (4).
-var relaunchCalls = relaunchPodCalls + relaunchRoleCalls*len(claim.Roles)
+// Per launcher role of the pod (relaunchRoleCalls, times roles, the most roles any pod of the
+// runtime has: its issue roles, Legion's six and each role the deployment defines): launcherBound's
+// Secret Get (1); writeLauncherSecrets' credential mint and its upsert's Get, Delete and Create
+// (4); bindLauncherSecrets' Get and Update, and both again on a conflict (4).
+func relaunchCalls(roles int) int { return relaunchPodCalls + relaunchRoleCalls*roles }
 
 const (
 	relaunchPodCalls  = 17 + cacheEnsureCalls
@@ -414,10 +431,10 @@ const (
 // replacing try's waits — ensureSandbox's wait for a Sandbox being deleted, awaitPodGone and
 // awaitNewPod, the boot timeout each; provision's waits on its repository's cache (cacheWaits);
 // awaitRoleLauncher's backstop; the termination grace the start frame has past the launcher
-// deadline — and of its relaunchCalls calls at apiTimeout each.
-func launchBound(bootTimeout, provisionBound, terminationGrace time.Duration) time.Duration {
+// deadline — and of its relaunchCalls calls, for a pod of roles roles, at apiTimeout each.
+func launchBound(bootTimeout, provisionBound, terminationGrace time.Duration, roles int) time.Duration {
 	waits := 3*bootTimeout + cacheWaits(bootTimeout) + launcherBackstop(bootTimeout, provisionBound) + terminationGrace
-	return waits + time.Duration(relaunchCalls)*apiTimeout
+	return waits + time.Duration(relaunchCalls(roles))*apiTimeout
 }
 
 // cacheWaits is the most a launch try's provision waits on its repository's cache: the cache's

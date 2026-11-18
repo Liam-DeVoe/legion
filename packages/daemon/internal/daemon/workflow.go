@@ -1059,7 +1059,8 @@ func deploymentApps(roles []config.Role) appauth.DeploymentApps {
 // identity is the bot a role's commits are authored by: its App's (appauth.AppRoleFor, over the
 // deployment's roles), from the lease the token source mints for the owner whose installation
 // holds the repository the role works (the identity is fetched once per App and cached). A role
-// that neither Legion nor the deployment defines has no App, and its identity is that error.
+// that neither Legion nor the deployment defines is given no App by AppRoleFor, and its identity
+// is that error.
 //
 // recorded is the repository the issue's record names, and the mint is made for the owner GitHub
 // serves it under now (repositories.serving): the record keeps the name it was written under for
@@ -1224,6 +1225,9 @@ func (w *workflowRuntime) attachIdleRelease(supervision *supervision) {
 	}
 	w.idlePeriod, w.idleStore, w.idleRuntime = k.IdleRelease.Idle(), supervision.supervisor.store, podRuntime
 	w.outbox.backstop = k.IdleRelease.Backstop()
+	// Main's rule for a pod with no live claim runs, so it ends a start's wait for a pod built
+	// before the start's role (outbox.roleWaitsForItsPod tells the controller otherwise).
+	w.outbox.idleReleases = true
 }
 
 // replayTerminal applies the ready or failure fact of every stored claim in either state that no

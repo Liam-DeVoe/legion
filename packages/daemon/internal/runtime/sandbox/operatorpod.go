@@ -10,6 +10,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/claudelaunch"
 	"github.com/sjawhar/legion/daemon/internal/launcher"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
@@ -134,11 +135,13 @@ func podVariables(pod Pod, launchSecrets []string) map[string]setter {
 // providers Secret's key that holds the session database's URL (Store.DSNSecretKey, which the
 // postgres store alone has: under cloudsql-iam each pod signs in as itself, or as the service
 // account it impersonates, and mounts no session key at all), which the shim would export into Oh
-// My Pi's environment under the provider key's name. launchSecrets are the secrets every launch's
+// My Pi's environment under the provider key's name. roles are every role whose launcher a pod of
+// the deployment can run (the runtime's issue roles, then the controller), whose own volumes the
+// operator's may not name. launchSecrets are the secrets every launch's
 // spec carries, by name, and providersSecrets those of them the providers Secret carries, none of
 // which may be the session database's URL key. configure runs it, and the daemon before its boot
 // and for `legion start --check-config`.
-func CheckPod(pod Pod, providerKeys map[string]string, tools Tools, launchSecrets, providersSecrets []string, store ompsessions.Store) error {
+func CheckPod(pod Pod, roles []claim.Role, providerKeys map[string]string, tools Tools, launchSecrets, providersSecrets []string, store ompsessions.Store) error {
 	sessionDSNKey := store.DSNSecretKey()
 	if slices.Contains(providersSecrets, sessionDSNKey) {
 		return fmt.Errorf("runtime.kubernetes.session_dsn_secret %s is the providers Secret's key the pod mounts as the launch secret %s: name a key of its own for the session database's URL",
@@ -158,7 +161,7 @@ func CheckPod(pod Pod, providerKeys map[string]string, tools Tools, launchSecret
 	if value, set := pod.Env["DISPATCH_PUBLIC_URL"]; set && !dashboardURL(value) {
 		return fmt.Errorf("runtime.kubernetes.pod.env sets DISPATCH_PUBLIC_URL to %+q, which is not an http or https URL with no userinfo, a host that is a DNS name of ASCII letters, digits and hyphens, a dotted-quad IPv4 address or a bracketed IPv6 address, and any port from 1 to 65535: boot accepts only a dashboard address every agent's dispatch command reads", value)
 	}
-	volumes := legionVolumeNames()
+	volumes := legionVolumeNames(roles)
 	for i, volume := range pod.Volumes {
 		if slices.Contains(volumes, volume.Name) {
 			return fmt.Errorf("runtime.kubernetes.pod.volumes[%d].name %s is a volume Legion puts in every pod", i, volume.Name)

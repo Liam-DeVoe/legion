@@ -96,6 +96,12 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 	if err != nil {
 		return api.State{}, err
 	}
+	// The roles whose start waits because their issue's pod was built before the deployment
+	// defined them, by issue: a start waiting on its backoff, and a role with no claim to show.
+	waitingForPod, err := s.StartsWaitingForPod(ctx, tx, project)
+	if err != nil {
+		return api.State{}, err
+	}
 	// The open production checks, by issue: the check is read once for the whole state, since a
 	// closed check shows nothing and the open ones are few.
 	openChecks, err := s.OpenProductionChecks(ctx, tx)
@@ -164,6 +170,9 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 			// hold on it is the ancestry hold, and nothing else on this wire names the chain.
 			Ancestry: issue.Ancestry,
 			Workers:  map[claim.Role]api.PhaseView{},
+		}
+		for _, role := range waitingForPod[issue.Key] {
+			view.StartWaitsForPod = append(view.StartWaitsForPod, string(role))
 		}
 		// Every experiment answer the issue runs under, a done issue's included: it is what its
 		// roles ran with, and nothing redraws it. The three memory fields are the answer of the

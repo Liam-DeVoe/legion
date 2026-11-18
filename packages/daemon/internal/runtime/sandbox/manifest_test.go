@@ -744,7 +744,7 @@ func TestEveryRolesGitStartsNoPlantedFsmonitorOrHook(t *testing.T) {
 	if got := ran(); !strings.Contains(got, "fsmonitor") || !strings.Contains(got, "pre-commit") || !strings.Contains(got, "post-commit") {
 		t.Fatalf("without the role's pairs the planted programs ran %q, want the fsmonitor and both hooks: the plant is not live", got)
 	}
-	for _, role := range launcherRoles {
+	for _, role := range r.launcherRoles() {
 		env := slices.Clone(base)
 		for name, value := range envOf(workerOf(t, r, roleSpec(t, role))) {
 			if strings.HasPrefix(name, "GIT_CONFIG_") {
@@ -793,7 +793,7 @@ func TestEachRolesAgentIsToldAStateHomeOfItsOwn(t *testing.T) {
 		t.Fatal(err)
 	}
 	told := map[string]claim.Role{}
-	for _, role := range launcherRoles {
+	for _, role := range r.launcherRoles() {
 		worker := workerOf(t, r, roleSpec(t, role))
 		env := envOf(worker)
 		got := env["XDG_STATE_HOME"]
@@ -871,7 +871,7 @@ func TestTheIssuesRolesShareOneScratchAndOneGoCachePair(t *testing.T) {
 		{"GOCACHE", TreeRoot + "/go/build"},
 		{"GOMODCACHE", TreeRoot + "/go/mod"},
 	}
-	for _, role := range launcherRoles {
+	for _, role := range r.launcherRoles() {
 		main := workerOf(t, r, roleSpec(t, role))
 		env := envOf(main)
 		told := map[string]string{}
@@ -2090,7 +2090,7 @@ func TestLegionsOwnNamesAreWhatItsPodsCarry(t *testing.T) {
 		got     []string
 		carried map[string]bool
 	}{
-		{"legionVolumeNames", legionVolumeNames(), volumes},
+		{"legionVolumeNames", legionVolumeNames(append(slices.Clone(claim.Roles), claim.RoleController)), volumes},
 		{"legionMountPaths", legionMountPaths(), mounts},
 		{"runtimeOwned with composed", slices.Collect(maps.Keys(runtimeOwnedOrComposed)), env},
 	} {
@@ -2507,6 +2507,9 @@ func TestAgentArgvCarriesTheConfiguredModel(t *testing.T) {
 	resuming := workerSpec(t)
 	resuming.Generation, resuming.BootToken, resuming.ResumeSessionFile = 2, "boot-g2", resumeSession
 	resumed := launchOf(t, r, resuming)
+	modelled := workerSpec(t)
+	modelled.Model = "checker-model"
+	named := launchOf(t, r, modelled)
 	for _, tc := range []struct {
 		name string
 		l    launch
@@ -2518,10 +2521,19 @@ func TestAgentArgvCarriesTheConfiguredModel(t *testing.T) {
 		{"a launch that resumes one", resumed, append(slices.Clone(r.agent),
 			"--extension", envoyPlugin, "--extension", legionPlugin, "--model", "@default",
 			"--resume="+resumeSession, "--mode", "rpc", "--append-system-prompt", systemPromptPath(resumed.spec.Generation))},
+		{"a launch whose spec names its role's model", named, append(slices.Clone(r.agent),
+			"--extension", envoyPlugin, "--extension", legionPlugin, "--model", "checker-model",
+			"--mode", "rpc", "--append-system-prompt", systemPromptPath(named.spec.Generation))},
 	} {
 		if got := tc.l.agentArgv(r.agent); !slices.Equal(got, tc.want) {
 			t.Errorf("%s runs %q, want %q", tc.name, got, tc.want)
 		}
+	}
+	modelledClaude := claudeWorkerSpec(t)
+	modelledClaude.Model = "checker-model"
+	if claude := launchOf(t, r, modelledClaude).agentArgv(r.agent); !slices.Contains(claude, "--model") ||
+		claude[slices.Index(claude, "--model")+1] != "checker-model" {
+		t.Errorf("the Claude pod's command for a spec naming its role's model = %q, want it to hold --model checker-model", claude)
 	}
 	if claude := launchOf(t, r, claudeWorkerSpec(t)).agentArgv(r.agent); slices.Contains(claude, "--model") {
 		t.Errorf("the Claude pod's command %q names a model, want claudelaunch's own command", claude)

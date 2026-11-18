@@ -687,6 +687,15 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // two arms read raises two and neither hides the other. Nobody inside the tree is told: the
 // architect is the role that would be, and each arm is a reading that it did not take, cannot be
 // reached, or has not moved (dispatch://INFRA-2614).
+//
+// A pod-wait-held notice names an issue whose pod was built before the deployment defined a role
+// whose start waits for it (the outbox's roleWaitsForItsPod), where nothing ends that wait until
+// an operator acts: main's rule keeps the pod because an operator's suspension holds a claim of
+// it (the daemon's releaseUnownedPod, told once per streak of that hold), or the deployment's idle
+// release is off and no claim records a process in the pod, so no update round opens over it
+// (told once per wait that finds no process there). Its Role is the waiting role, and its Reason
+// what the controller is told, in words built from structured fields alone. It tells nobody to
+// delete the pod: the pod's disk can hold work a role did not push.
 const (
 	TriageNotice           NoticeKind = "triage"
 	SlotFreeNotice         NoticeKind = "slot-free"
@@ -699,6 +708,7 @@ const (
 	ProviderErrorsNotice   NoticeKind = "provider-errors"
 	TreeStalledNotice      NoticeKind = "tree-stalled"
 	ArchitectStalledNotice NoticeKind = "architect-stalled"
+	PodWaitHeldNotice      NoticeKind = "pod-wait-held"
 )
 
 // ArchitectStallArm names which reading raised an architect-stalled notice. It is part of the
@@ -1997,7 +2007,7 @@ func validateNoticeStopper(kind NoticeKind, stoppedBy claim.Token) error {
 func controllerOnlyNoticeKind(kind NoticeKind) bool {
 	switch kind {
 	case TriageNotice, SlotFreeNotice, TodoNotice, TickNotice, UnslottedNotice, AwaitingPersonNotice, ParkedDecisionNotice,
-		UpdateStalledNotice, ProviderErrorsNotice, TreeStalledNotice, ArchitectStalledNotice:
+		UpdateStalledNotice, ProviderErrorsNotice, TreeStalledNotice, ArchitectStalledNotice, PodWaitHeldNotice:
 		return true
 	default:
 		return false

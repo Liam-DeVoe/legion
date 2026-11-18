@@ -2,10 +2,12 @@ package projection
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -28,6 +30,9 @@ type projectionStore struct {
 	pullRequests map[string]*record.PullRequest
 	checks       []record.ProductionCheck
 	held         []record.HeldRow
+	// waitingForPod is each issue's roles whose start waits for its pod
+	// (record.Store.StartsWaitingForPod).
+	waitingForPod map[string][]claim.Role
 	// mirror is what Dispatch says each issue of the project waits on, as the store lists it: by
 	// key, which is the order the state's `blocked` is judged from. DispatchIssuesOf serves the rows
 	// of the keys asked for and of what they wait on, as the real store does.
@@ -89,6 +94,9 @@ func (projectionStore) PendingStatusWrites(context.Context, pgx.Tx, string) ([]r
 }
 func (s projectionStore) HeldRows(context.Context, pgx.Tx, string, string, time.Time) ([]record.HeldRow, error) {
 	return s.held, nil
+}
+func (s projectionStore) StartsWaitingForPod(context.Context, pgx.Tx, string) (map[string][]claim.Role, error) {
+	return s.waitingForPod, nil
 }
 func (s projectionStore) Phases(_ context.Context, _ pgx.Tx, issue string) ([]record.PhaseRow, error) {
 	return s.phases[issue], nil
@@ -1219,5 +1227,43 @@ func TestTheServedStateNamesTheRunningDeploymentRole(t *testing.T) {
 		view.EntryConfirmedAt == nil || !view.EntryConfirmedAt.Equal(confirmedAt) {
 		t.Errorf("the child LEGION-73 at step carries the handshake queued %v confirmed %v, want its checker's, queued %s confirmed %s",
 			view.EntryQueuedAt, view.EntryConfirmedAt, queuedAt, confirmedAt)
+	}
+}
+
+// The served issue names each role whose start waits because the issue's pod was built before the
+// deployment defined it: such a role has no claim to show, and its start row waits on its backoff,
+// which no other part of the state lists. An issue with no such start names none, and its JSON
+// holds no such key.
+func TestTheServedIssueNamesTheRoleWhoseStartWaitsForItsPod(t *testing.T) {
+	store := projectionStore{
+		issues: []record.Issue{
+			{Key: "LEGION-208", Project: "LEGION", Tree: "LEGION-208", Status: "in_progress", Phase: phase.Implementing},
+			{Key: "LEGION-209", Project: "LEGION", Tree: "LEGION-209", Status: "in_progress", Phase: phase.Implementing},
+		},
+		waitingForPod: map[string][]claim.Role{"LEGION-208": {"checker"}},
+	}
+	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, nil, nil, nil, projectedAt)
+	if err != nil {
+		t.Fatalf("Project: %v", err)
+	}
+	if waiting := got.Issues["LEGION-208"].StartWaitsForPod; !slices.Equal(waiting, []string{"checker"}) {
+		t.Errorf("LEGION-208's startWaitsForPod = %v, want [checker]", waiting)
+	}
+	if waiting := got.Issues["LEGION-209"].StartWaitsForPod; waiting != nil {
+		t.Errorf("LEGION-209's startWaitsForPod = %v, want none", waiting)
+	}
+	waiting, err := json.Marshal(got.Issues["LEGION-208"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(waiting), `"startWaitsForPod":["checker"]`) {
+		t.Errorf("LEGION-208's JSON = %s, want it to hold \"startWaitsForPod\":[\"checker\"]", waiting)
+	}
+	other, err := json.Marshal(got.Issues["LEGION-209"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(other), "startWaitsForPod") {
+		t.Errorf("LEGION-209's JSON = %s, want no startWaitsForPod key", other)
 	}
 }
