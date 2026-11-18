@@ -29,5 +29,9 @@ set -euo pipefail
 for manifest in packages/claude-envoy/package.json \
   packages/claude-envoy/.claude-plugin/plugin.json \
   packages/claude-envoy/.omp-plugin/plugin.json; do
-  jq --arg v "$VERSION" '.version = $v' "$manifest" > tmp.json && mv tmp.json "$manifest"
+  # Two commands, not one `&&` list: `set -e` ignores the failure of any command of such a list
+  # but the last, so a manifest jq cannot parse would leave the step green and that manifest
+  # unwritten (packages/claude-envoy/tests/release-version.test.ts).
+  jq --arg v "$VERSION" '.version = $v' "$manifest" > tmp.json
+  mv tmp.json "$manifest"
 done

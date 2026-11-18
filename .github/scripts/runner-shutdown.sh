@@ -90,7 +90,7 @@
 # runner_shutdown_kills <job>...: prints those of the named jobs this run's data shows a runner
 # shutdown killed, one per line, and returns 0. It reads the commit's check runs on its first
 # question and keeps them in a variable for the rest of that shell, but both callers take its
-# output through `$(…)`, which is a subshell: ci-ok.sh:134 in one call naming every failed job,
+# output through `$(…)`, which is a subshell: ci-ok.sh in one call naming its `failed` jobs,
 # ci-ok-report.sh:122 one job per call. The variable dies with the subshell, so a call made
 # that way reads the route again and the keeping saves nothing across such calls — asking job
 # by job costs one read of the check runs per job. It returns 1, having warned, when GitHub

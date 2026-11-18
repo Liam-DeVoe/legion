@@ -14,7 +14,9 @@ In the text moved here, "this file", "above" and "below" refer to the workflow,
 The steps of ci.yaml's `tool-fallback` job, in a file of its own.
 ci.yaml's job of the same id calls this file, and that caller keeps `needs: [changes, ci-images]`
 and the whole `if:` that decides whether these steps run, so this file carries no `if:` of its
-own. The comment above that job says what the proof is and why it is permanent.
+own. The notes on that job,
+.github/ci-notes/ci.md#the-tool-fallback-proof-what-it-drives-what-it-only-reasons-about-and-how-to-read-it-when-it-is-red,
+say what the proof is and why it is permanent.
 
 The split is for the filters. The tool_fallback filter names this file beside ci.yaml, so a
 change to these steps selects this job alone, where a change to ci.yaml selects every job.
@@ -101,8 +103,9 @@ twelve seconds late, so a bound is a ceiling and not a stopwatch.
 ## Why the merge base is checked out
 
 The merge base, for the negative control below: a second tree of this same repository,
-whose seven installs that control drives with nowhere left to go. The comment on those
-steps says what keeps this checkout here.
+whose seven installs that control drives with nowhere left to go.
+.github/ci-notes/ci-job-tool-fallback.md#the-negative-control-and-why-it-does-not-expire
+says what keeps this checkout here.
 
 ## Why the package's blob is read for every mirrored row
 
@@ -294,8 +297,9 @@ sends to a dead port.
 The docker provider plugin has no action at the merge base at all, so its control is the
 head's own action with its second source on a dead port: its primary meets this fault
 and get.pulumi.com is nowhere to go.
-This control does not expire the day this change lands on main, which is the fault the
-comment above names in the controls that lean on the merge base: it reads nothing of the
+This control does not expire the day this change lands on main, which is the fault
+.github/ci-notes/ci-job-tool-fallback.md#the-negative-control-and-why-it-does-not-expire
+names in the controls that lean on the merge base: it reads nothing of the
 base tree, and the property it states — an install whose primary is faulted and whose
 second source cannot be reached fails — is a property of the head itself.
 
@@ -336,8 +340,9 @@ the proof of jj's second source itself, rather than a warm directory answering f
 ## Why the faulted elan install must read the copy
 
 elan's release asset is behind the fault, so this install must read the copy its row
-names. The removal before it is the one every elan step carries, for the reason the
-control above says.
+names. The removal before it is the one every elan step carries, for the reason
+.github/ci-notes/ci-job-tool-fallback.md#why-elan-is-taken-away-before-the-control-installs
+gives.
 
 ## Why the faulted uv install reads the wheel PyPI serves
 

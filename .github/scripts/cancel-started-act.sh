@@ -12,8 +12,10 @@
 # run's queue branch and id, which merge-group-cancels.sh reads beside the RUNS this script
 # exports. That job checks out with `sparse-checkout: .github`, so this script and the one it runs
 # are both in the checkout when the step runs.
+# The runner sets $GITHUB_REPOSITORY, which both `gh` calls name, for every step.
 #
-# Run from the repository root: .github/scripts/cancel-started-act.sh
+# Run from the repository root, with those three and $GITHUB_REPOSITORY set:
+#   .github/scripts/cancel-started-act.sh
 # CI runs it in ci.yaml's cancel-started job, at its second step, after the checkout.
 set -euo pipefail
 

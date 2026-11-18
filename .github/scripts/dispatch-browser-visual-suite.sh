@@ -19,8 +19,11 @@
 # ci_filter_coverage.py's ENV_ALLOWED drops that job out of check-ci-filters.sh's reduction of
 # what a go command compiles. The step keeps its own `timeout-minutes` and its working
 # directory, packages/dispatch, which is where e2e/visual-run.sh is run from below.
+# It reads one variable the runner sets for every step, $RUNNER_TEMP, under which the stack's
+# run directory is made.
 #
-# Run from packages/dispatch: ../../.github/scripts/dispatch-browser-visual-suite.sh 100
+# Run from packages/dispatch, with $RUNNER_TEMP set:
+#   ../../.github/scripts/dispatch-browser-visual-suite.sh 100
 # CI runs it in dispatch-browser.yaml's visual job, at the step "Browser-test dispatch dashboard
 # against its baselines".
 set -euo pipefail

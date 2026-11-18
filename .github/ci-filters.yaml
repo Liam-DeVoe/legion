@@ -319,7 +319,7 @@ daemon_go_tests:
   - 'packages/contracts/fixtures/dispatch-public-url.json'
   - 'packages/contracts/fixtures/github-envelopes/*'
   - 'packages/contracts/fixtures/project-tokens.json'
-  # why: .github/ci-notes/ci.md#daemon_go_tests-pi-legions-agents-internalpromptsroles_testgo261-stats-agentsnamemd
+  # why: .github/ci-notes/ci.md#daemon_go_tests-pi-legions-agents-internalpromptsroles_testgo-stats-agentsnamemd
   - 'packages/pi-legion/agents/*.md'
   - 'skills/legion-worker/references/tools.md'
   - 'skills/legion-worker/references/merge-gate.md'
@@ -503,7 +503,7 @@ claude_envoy_build: &claude_envoy_build
   - 'packages/claude-envoy/**'
   - '.github/scripts/check-private-names.sh'
   - '.github/scripts/release-push.sh'
-  # why: .github/ci-notes/ci.md#claude_envoy_build-packagesclaude-envoytestsbuild-inputstestts146-153
+  # why: .github/ci-notes/ci.md#claude_envoy_build-releaseyamls-version-arguments-are-held-to-the-build-inputs
   - '.github/workflows/release.yaml'
   - 'packages/contracts/src/**'
   - 'packages/envoy-client/src/**'
@@ -530,6 +530,7 @@ claude_envoy:
   # why: .github/ci-notes/ci.md#claude_envoy-testsenvoy-channel-servertestts-holds-the-marketplace
   - '.claude-plugin/marketplace.json'
   - '.github/scripts/release-claude-envoy-check-packed.sh'
+  - '.github/scripts/release-claude-envoy-version.sh'
   - '.github/scripts/repo-paths.sh'
 contracts:
   - *ci_router
@@ -539,7 +540,7 @@ contracts:
   - 'packages/contracts/**'
   - 'skills/dispatch/SKILL.md'
   - 'skills/dispatch-writing-specs/SKILL.md'
-  # why: .github/ci-notes/ci.md#contracts-the-go-copies-its-tests-hold-the-typescript-to-srcdispatch-hreftestts49-53
+  # why: .github/ci-notes/ci.md#contracts-the-go-copies-its-tests-hold-the-typescript-to
   - 'packages/envoy/internal/dispatch/text/testdata/dispatch-href-references.json'
   - 'packages/envoy/internal/dispatch/text/testdata/dispatch-text-references.json'
   - 'packages/envoy/internal/dispatch/text/testdata/dispatch-block-id-encodings.json'
@@ -1230,7 +1231,7 @@ pi_legion:
   - *bun_install
   - 'packages/pi-legion/**'
   - 'packages/pi-envoy/**'
-  # why: .github/ci-notes/ci.md#pi_legion-srcskills-guardtestts24275-spawns-packagesclaude-envoyscriptsbuildts
+  # why: .github/ci-notes/ci.md#pi_legion-srcskills-guardtestts-spawns-packagesclaude-envoyscriptsbuildts
   - 'packages/claude-envoy/**'
   - 'packages/envoy-client/bin/dispatch.ts'
   - 'packages/pi-shared/src/**'
@@ -1243,7 +1244,7 @@ pi_legion:
   - 'packages/contracts/fixtures/daemon-api/**'
   - 'packages/contracts/fixtures/capability-redaction.json'
   - 'packages/contracts/fixtures/capability-redaction-plugin-report.json'
-  # why: .github/ci-notes/ci.md#pi_legion-the-dispatch-e2e-client-scriptsskill-scenariosseedts96
+  # why: .github/ci-notes/ci.md#pi_legion-the-dispatch-e2e-client-that-scriptsskill-scenariosseedts-imports
   - 'packages/dispatch/e2e/**'
   - 'packages/dispatch/web/src/api/types.ts'
   - 'packages/dispatch/web/src/api/paths.ts'
@@ -1335,7 +1336,7 @@ dispatch_ui:
   - 'packages/contracts/fixtures/live/**'
   - 'packages/contracts/fixtures/decision-blocks/**'
   - 'packages/envoy/internal/dispatch/pmdoc/schema/**'
-  # why: .github/ci-notes/ci.md#dispatch_ui-the-one-markdown-fixture-table-read-at-websrc__tests__pmdoc-fixturests48
+  # why: .github/ci-notes/ci.md#dispatch_ui-the-one-markdown-fixture-table-read-through-websrc__tests__pmdoc-fixturests
   - 'packages/envoy/internal/dispatch/pmdoc/testdata/fixtures.json'
   - 'packages/envoy/internal/dispatch/pmdoc/heavybodies/testdata/shared-bodies.json'
   - 'packages/envoy/scripts/fixtures/shell-quote.json'
@@ -1584,7 +1585,7 @@ text_checks:
   - 'packages/daemon/internal/prompts/roles/architect-root.md'
   - 'packages/daemon/internal/workflow/design_approved_wake_extract.txt'
   - 'packages/daemon/internal/runtime/sandbox/reclaim_doc_extract.txt'
-  # why: .github/ci-notes/ci.md#text_checks-the-seven-copies-of-shipped-texts-that-readextract-waiting_line_texts_testgo380
+  # why: .github/ci-notes/ci.md#text_checks-the-seven-copies-of-shipped-texts-that-readextract-reads
   - 'packages/daemon/cmd/legion/awaiting_summary_extract.txt'
   - 'packages/daemon/cmd/legion/troubleshooting_refusals_extract.txt'
   - 'packages/daemon/cmd/legion/waiting_line_block_extract.txt'

@@ -24,7 +24,12 @@
 # The step keeps its own `timeout-minutes` and its working directory, packages/dispatch, which
 # is the root the Playwright config path and the reporter path below are read from.
 #
-# Run from packages/dispatch: ../../.github/scripts/dispatch-browser-shard-suite.sh 1 full 100
+# It reads two variables the runner sets for every step: $RUNNER_TEMP, under which this leg's
+# reports, record and run directory are written, and $GITHUB_WORKSPACE, the checkout the sampler
+# and the stacks' binaries are read from.
+#
+# Run from packages/dispatch, with $RUNNER_TEMP and $GITHUB_WORKSPACE set:
+#   ../../.github/scripts/dispatch-browser-shard-suite.sh 1 full 100
 # CI runs it in dispatch-browser.yaml's shard job, at the step "Browser-test dispatch dashboard
 # (shard ${{ matrix.shard }} of 4)".
 set -euo pipefail

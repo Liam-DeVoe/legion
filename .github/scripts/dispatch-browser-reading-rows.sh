@@ -30,7 +30,11 @@
 # The step runs it from the repository root and carries no working directory of its own: the
 # call to .github/scripts/dispatch-browser-run-reads.sh below is relative to that root.
 #
-# Run from the repository root:
+# The runner sets five variables it needs for every step: $RUNNER_TEMP and $GITHUB_STEP_SUMMARY,
+# and $GITHUB_REPOSITORY, $GITHUB_RUN_ID and $GITHUB_RUN_ATTEMPT, which that call of
+# dispatch-browser-run-reads.sh reads for this run's jobs.
+#
+# Run from the repository root, with those five set:
 #   GH_TOKEN=<token> .github/scripts/dispatch-browser-reading-rows.sh success
 # CI runs it in dispatch-browser.yaml's merge job, at the step "Reading one, the rows".
 set -euo pipefail

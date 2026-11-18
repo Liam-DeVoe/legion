@@ -110,7 +110,8 @@ case "$mode" in
     # command section at the next `::`, splits the properties on `,` and each pair on its first
     # `=`, then unescapes each value (actions/runner, src/Runner.Common/ActionCommand.cs: the
     # property table is `\r` %0D, `\n` %0A, `:` %3A, `,` %2C, `%` %25). So a `,` is what would cut
-    # a title short - an alone leg's title is its project name (dispatch-browser-alone-suite.sh:114), and
+    # a title short - an alone leg's title is its project name (the `$project` that
+    # dispatch-browser-alone-suite.sh passes to `report`), and
     # `a,b-alone` would be read as a title of `a` and a second property - while a single `:` ends
     # nothing, and is encoded because the table holds it. `%` is replaced first, matching the
     # runner's unescape, which takes `%25` last; the other way round would double-encode. `\r` and

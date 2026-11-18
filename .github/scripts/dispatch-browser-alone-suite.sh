@@ -22,7 +22,12 @@
 # The step keeps its own `timeout-minutes` and its working directory, packages/dispatch, which
 # is the root the Playwright config path and the reporter path below are read from.
 #
-# Run from packages/dispatch: ../../.github/scripts/dispatch-browser-alone-suite.sh webkit-alone 100
+# It reads two variables the runner sets for every step: $RUNNER_TEMP, under which this leg's
+# reports, record and run directory are written, and $GITHUB_WORKSPACE, the checkout the sampler
+# and the stack's binaries are read from.
+#
+# Run from packages/dispatch, with $RUNNER_TEMP and $GITHUB_WORKSPACE set:
+#   ../../.github/scripts/dispatch-browser-alone-suite.sh webkit-alone 100
 # CI runs it in dispatch-browser.yaml's alone job, at the step "Browser-test dispatch dashboard
 # (${{ matrix.project }})".
 set -euo pipefail

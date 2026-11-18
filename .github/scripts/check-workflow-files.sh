@@ -23,8 +23,10 @@
 #      it — yaml.safe_load keeps the last of a repeated key and reports nothing — so this walks the
 #      composed nodes instead;
 #   5. a file calling more than 45 unique reusable workflows. GitHub allows 50 from a single
-#      workflow file, counting every tree of nested calls, and ci.yaml calls 43 today, so 45 leaves
-#      room for two more calls and none for a surprise.
+#      workflow file, counting every tree of nested calls. This check follows only the calls to
+#      this repository's own workflows (`./.github/workflows/…`) and counts a call to another
+#      repository's workflow as one call. ci.yaml calls 43 today, so 45 leaves room for two more
+#      calls and none for a surprise.
 #
 # A file that is not valid YAML is still measured for its bytes, and cannot be read for the other
 # two faults.
@@ -60,7 +62,8 @@ SUFFIXES = {".yaml", ".yml"}
 # only crossed the first needs to know what the second does to a run.
 LIMIT = 64_000
 GITHUB_CAP = 500_000
-# Calls counted as GitHub counts them, over the whole tree of nested calls.
+# Calls counted as fault 5 of the header says: a call to this repository's own workflow is
+# followed, and a call to another repository's workflow counts as one.
 CALL_LIMIT = 45
 GITHUB_CALL_CAP = 50
 
@@ -81,9 +84,22 @@ problems: list[str] = []
 nodes: dict[Path, tuple[object, object]] = {}
 
 
+def escape_message(value: str) -> str:
+    """A workflow command's message, escaped as ci_filter_coverage.py's escape_message does. A
+    message can hold YAML text (a repeated key, a `uses:` value), and the runner reads each line
+    of a step's output as a command of its own, so a key holding a newline would start one."""
+    return value.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+
+
+def escape_property(value: str) -> str:
+    """A property's value, escaped as ci_filter_coverage.py's escape_property does: the runner
+    ends the properties at `::` and splits them on `,`."""
+    return escape_message(value).replace(":", "%3A").replace(",", "%2C")
+
+
 def problem(path: Path, message: str, line: int | None = None) -> None:
-    where = f"{path}" if line is None else f"{path},line={line}"
-    problems.append(f"::error file={where}::{message}")
+    where = escape_property(str(path)) + ("" if line is None else f",line={line}")
+    problems.append(f"::error file={where}::{escape_message(message)}")
 
 
 def limits(path: Path) -> str:

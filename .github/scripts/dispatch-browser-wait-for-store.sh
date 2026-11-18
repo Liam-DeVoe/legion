@@ -9,8 +9,9 @@
 # says why a bucket alone is not enough to wait for. It takes no argument. $RUNNER_TEMP is where
 # the step before it
 # redirected the server's log, which is what a job in a container has in place of `docker logs`.
+# The runner sets $RUNNER_TEMP for every step.
 #
-# Run from anywhere: .github/scripts/dispatch-browser-wait-for-store.sh
+# Run from anywhere, with $RUNNER_TEMP set: .github/scripts/dispatch-browser-wait-for-store.sh
 # CI runs it in dispatch-browser.yaml's shard job, at the step "Wait for the S3-compatible
 # server".
 set -euo pipefail

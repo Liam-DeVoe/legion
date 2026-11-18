@@ -8,12 +8,13 @@
 # it runs on every leg and not on a failed one alone. It takes
 # no argument: $RUNNER_TEMP is where the browser step before it wrote the run directory and the
 # sampler's two files.
+# The runner sets $RUNNER_TEMP for every step.
 #
 # The shard job's step of this name is .github/scripts/dispatch-browser-shard-record.sh, a
 # script of its own: that job runs a file store beside its stacks, and collects its log too,
 # while no store runs on this job's machine.
 #
-# Run from anywhere: .github/scripts/dispatch-browser-alone-record.sh
+# Run from anywhere, with $RUNNER_TEMP set: .github/scripts/dispatch-browser-alone-record.sh
 # CI runs it in dispatch-browser.yaml's alone job, at the step "What the run left behind".
 set -euo pipefail
 

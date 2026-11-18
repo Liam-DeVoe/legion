@@ -190,6 +190,29 @@ check "names the anchored mapping's second key" \
   "$(contains "$out" "^::error file=.github/workflows/ci.yaml,line=5::.github/workflows/ci.yaml:5: the mapping key 'HTTP_PROXY' is the key 'http_proxy' of line 4 again")"
 check "reports it once, not once per alias" "$(is "$(errors "$out")" 1)"
 
+echo "case: a key holding a newline and a workflow command, and its upper-case twin"
+# The message repeats both keys, and the runner reads each line of a step's output as a command
+# of its own: unescaped, the newline in each key would start a ::warning the file never asked for.
+root=$(fixture forged-command)
+cat > "$root/.github/workflows/ci.yaml" <<'YAML'
+name: Build
+on: push
+env:
+  "a\n::warning title=forged::injected": one
+  "A\n::WARNING TITLE=FORGED::INJECTED": two
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo build
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names both keys and the line of the second, each newline escaped" \
+  "$(contains "$out" "^::error file=.github/workflows/ci.yaml,line=5::.github/workflows/ci.yaml:5: the mapping key 'A%0A::WARNING TITLE=FORGED::INJECTED' is the key 'a%0A::warning title=forged::injected' of line 4 again")"
+check "starts no line with ::warning, in either case" "$(is "$(grep -ci '^::warning' <<<"$out" || true)" 0)"
+check "reports it once" "$(is "$(errors "$out")" 1)"
+
 echo "case: a mapping holding an alias of itself ends, and passes"
 # The alias makes the composed nodes a cycle, which the key walk would follow for ever if it did
 # not visit each node once. The file is valid YAML with no folded key and no call, so it passes.

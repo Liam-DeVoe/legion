@@ -278,8 +278,7 @@ jobs:
     if: inputs.lane == 'full'
     runs-on: ubuntu-24.04
     # why: .github/ci-notes/dispatch-browser.md#the-two-process-jobs-measured-steps-and-its-budgets
-    # without one, rounded up: 4 + 4 + 2 min plus 135 s = 13 min. With budgets on the steps, the
-    # `if: failure()` upload below still runs, which a cancelled job skips.
+    # 4 + 4 + 2 min plus 135 s = 13 min.
     timeout-minutes: 13
     services:
       postgres:
@@ -530,7 +529,7 @@ jobs:
       # why: .github/ci-notes/dispatch-browser.md#why-each-reading-goes-to-the-step-summary-and-to-the-log
       - name: Reading one, the rows
         if: always()
-        # 4 x 1.15 = 4.6 s, so 120 + 4.6 = 124.6 s, at the next whole minute above, is the 3 min
+        # 120 + 4 x 1.15 = 124.6 s -> 3 min.
         timeout-minutes: 3
         env:
           GH_TOKEN: ${{ github.token }}

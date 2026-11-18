@@ -288,7 +288,8 @@ pull's time was one layer: the other nine arrived in 6 s and the 122 MB Firefox 
 346 s, and shard (4) of that run, pulling in the same minute, took 200 s on two layers. A
 merge group drops its entry for a cancelled leg as for a failed one, and every group behind
 it is built again. So the download now carries a budget of its own and a second attempt
-(the step's comment), and the pull is counted at that 355 s: no step holds it, so no step
+(.github/ci-notes/dispatch-browser.md#what-the-shard-job-downloads-in-place-of-a-go-build),
+and the pull is counted at that 355 s: no step holds it, so no step
 budget can cut it and no step can read it again, and Docker's own retry ("Retrying in 5
 seconds" in that log) answers a failed read, not a slow one. The job's budget is the
 browser step's 540 s, the two download attempts' 120 s each, and the steps without a
@@ -451,7 +452,8 @@ The memory and CPU sampler both this job and the alone job run is
 every 5 s for the length of this step, started below and read back at the end of it.
 Its head says what each reading holds and what it does not; on this job `everything
 else` holds the file store too, which runs beside the stacks. Both sample files are
-written into the record directory the step below collects and uploads, under
+written into the record directory that the step "What the run left behind" collects and
+the upload after it uploads, under
 $RUNNER_TEMP beside the stacks' own run directory: a file this step wrote into the
 checkout would leave it dirty afterwards. The blob report goes beside the list
 reporter's output, so a green run reports what it ran too.
@@ -604,8 +606,9 @@ image, and the 6-minute budget cancelled it 3 s into its checkout. The download 
 same budget and second attempt as there, and the pull is counted at that 355 s. The job's
 budget is the browser step's 180 s, the two download attempts' 120 s each, and the steps
 without a budget at 137 - 5 - 45 + 355 = 442 s: 862 s, 14 min 22 s, rounded up to the 15
-minutes below, whose 38 s left over hold the new step that places the binaries (the shard
-job's comment above that step). The browser step's own budget is unchanged, and it still
+minutes below, whose 38 s left over hold the new step that places the binaries
+(.github/ci-notes/dispatch-browser.md#what-the-shard-job-places-and-what-its-budget-leaves-for-it).
+The browser step's own budget is unchanged, and it still
 fires first.
 
 ## What the alone job downloads in place of a Go build
@@ -651,7 +654,8 @@ Playwright's own Node runner needs, for the reason that step gives.
 The browser step's body, its command, flags and sampler included, is .github/scripts/dispatch-browser-alone-suite.sh.
 
 One stack here, not four: it is one per Playwright worker, and this leg runs one
-worker, which the command below says in `--workers=1` rather than leaning on the
+worker, which the command of .github/scripts/dispatch-browser-alone-suite.sh says in
+`--workers=1` rather than leaning on the
 configuration's own default of the same number (`workers: 1`,
 e2e/playwright.config.ts). These projects' rows are read from the wall clock, and
 three other stacks on the machine would be in the reading. That stack is a harness and
@@ -676,8 +680,9 @@ The memory and CPU sampler both this job and the shard job run is
 every 5 s for the length of this step, started below and read back at the end of it.
 Its head says what each reading holds and what it does not; on this job `everything
 else` is also the reading that says the machine was quiet, which is the claim these
-rows rest on. Both sample files are written into the record directory the step below
-collects and uploads, under $RUNNER_TEMP beside the stack's own run directory: a file
+rows rest on. Both sample files are written into the record directory that the step
+"What the run left behind" collects and the upload after it uploads, under $RUNNER_TEMP
+beside the stack's own run directory: a file
 this step wrote into the checkout would leave it dirty afterwards. The blob report
 goes beside the list reporter's output, so a green run reports what it ran too.
 
@@ -739,7 +744,8 @@ and a window measured today would hold none; the durations are of the same steps
 The rule, and why the budgets sit on the steps rather than on the job alone, are in this
 file's head; this job states only what it measured and what that rule gives here. 202 s x
 1.15 = 232 s -> 4 min for the dashboard step, 13 s x 1.15 = 15 s -> the two-minute floor
-for the sign-in step, and 4 min for the install step, for the reason its own comment gives.
+for the sign-in step, and 4 min for the install step, for the reason
+.github/ci-notes/dispatch-browser.md#why-the-chromium-install-takes-no-apt-and-no-cache-and-what-its-budget-is gives.
 The job budget is the sum of its step budgets plus the measured maximum of every step
 without one, rounded up: 4 + 4 + 2 min plus 135 s = 13 min. With budgets on the steps, the
 `if: failure()` upload below still runs, which a cancelled job skips.
@@ -940,7 +946,8 @@ before any step budget could fire. That inverts this file's rule, which says the
 is the backstop that never fires first, so it is re-derived above from the maximum those
 runs measured. A download this job does not control may not decide a required check.
 
-The step "Pull the stack's Postgres image" was added later, for the reason its comment gives,
+The step "Pull the stack's Postgres image" was added later, for the reason
+.github/ci-notes/dispatch-browser.md#the-stacks-postgres-image-pulled-here-for-the-same-reason gives,
 and its pull is counted at the 120 s the browser step spent before the stack's first output
 on the run that found it: 240 + 314 + 120 = 674 s, 11 min 14 s, rounded up to the 12 minutes
 below.
@@ -1033,7 +1040,8 @@ thing and stay: a step's condition is about the steps before it, not about the r
 Every job of this workflow, the binaries job among them: a build that failed leaves the
 shard and alone jobs skipped and no blob report anywhere, and without it in this list the
 run would be reported as legs that uploaded nothing rather than as the build that never
-handed them anything. The verdict step below names it as it names the rest.
+handed them anything. The verdict step, "Fail when a leg failed or the merged report holds a
+failed row", names it as it names the rest.
 
 ## Why the merge job runs on arm64
 
@@ -1088,7 +1096,8 @@ blob-report/ and a rows/ directory, so the zips land together and the counts lan
 them rather than among them: `merge-reports` reads the zips of the directory it is given.
 
 No `merge-multiple`, so each artifact is extracted into a directory named for it
-(dispatch-browser-blob-shard-1-2/blob-report/report-shard-1.zip) and the step below can
+(dispatch-browser-blob-shard-1-2/blob-report/report-shard-1.zip) and the step "Take the
+newest attempt of each leg's blob report" can
 tell the attempts apart. A run's artifact list holds every attempt's artifacts and this
 pattern matches them all; two attempts of one leg hold the same inner paths, so merging
 them into one directory let one attempt overwrite the other in an order nothing fixes.

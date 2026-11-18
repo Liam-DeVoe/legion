@@ -15,8 +15,10 @@
 #
 # It needs no working directory of its own: the one command that does, the per-leg
 # `merge-reports`, runs in a subshell that enters $GITHUB_WORKSPACE/packages/dispatch itself.
+# The runner sets $RUNNER_TEMP, $GITHUB_STEP_SUMMARY and $GITHUB_WORKSPACE for every step.
 #
-# Run from anywhere: .github/scripts/dispatch-browser-reading-leg-exits.sh
+# Run from anywhere, with $RUNNER_TEMP, $GITHUB_STEP_SUMMARY and $GITHUB_WORKSPACE set:
+#   .github/scripts/dispatch-browser-reading-leg-exits.sh
 # CI runs it in dispatch-browser.yaml's merge job, at the step "Reading three, the leg exits with
 # no failed row".
 set -euo pipefail

@@ -10,8 +10,10 @@
 # $RUNNER_TEMP/report.json, the report the merge step wrote, writes $RUNNER_TEMP/durations.txt,
 # one line per passing result, and adds its table to $GITHUB_STEP_SUMMARY. A run with no merged
 # report is a warning and exit 0 here, reading one having already said why there is none.
+# The runner sets $RUNNER_TEMP and $GITHUB_STEP_SUMMARY for every step.
 #
-# Run from anywhere: .github/scripts/dispatch-browser-reading-row-durations.sh
+# Run from anywhere, with $RUNNER_TEMP and $GITHUB_STEP_SUMMARY set:
+#   .github/scripts/dispatch-browser-reading-row-durations.sh
 # CI runs it in dispatch-browser.yaml's merge job, at the step "Reading four, the row durations".
 set -euo pipefail
 

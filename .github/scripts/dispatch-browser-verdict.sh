@@ -21,8 +21,10 @@
 # It reads $RUNNER_TEMP/report.json, the report the merge step wrote, for the failed rows of the
 # run. The third of the job's failures, a leg that owed a blob report and uploaded none, is
 # reading one's, where it is found.
+# The runner sets $RUNNER_TEMP for every step.
 #
-# Run from anywhere: .github/scripts/dispatch-browser-verdict.sh success success skipped skipped success
+# Run from anywhere, with $RUNNER_TEMP set:
+#   .github/scripts/dispatch-browser-verdict.sh success success skipped skipped success
 # CI runs it in dispatch-browser.yaml's merge job, at the step "Fail when a leg failed or the
 # merged report holds a failed row".
 set -euo pipefail

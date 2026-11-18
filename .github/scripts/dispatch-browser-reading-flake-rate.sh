@@ -8,8 +8,10 @@
 # from the merged report alone. It takes no argument: it reads $RUNNER_TEMP/report.json, the
 # report the merge step wrote, and writes to $GITHUB_STEP_SUMMARY. A run with no merged report is
 # a warning and exit 0 here, reading one having already said why there is none.
+# The runner sets $RUNNER_TEMP and $GITHUB_STEP_SUMMARY for every step.
 #
-# Run from anywhere: .github/scripts/dispatch-browser-reading-flake-rate.sh
+# Run from anywhere, with $RUNNER_TEMP and $GITHUB_STEP_SUMMARY set:
+#   .github/scripts/dispatch-browser-reading-flake-rate.sh
 # CI runs it in dispatch-browser.yaml's merge job, at the step "Reading two, the flake rate".
 set -euo pipefail
 

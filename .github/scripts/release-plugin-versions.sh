@@ -12,8 +12,10 @@
 # $PI_LEGION_VERSION_ARGS, each the argument list of that plugin's own version step, and writes to
 # $GITHUB_OUTPUT. It runs release-push.sh by its path in this checkout, so the working directory is
 # the repository root.
+# The runner sets $GITHUB_OUTPUT for every step.
 #
-# Run from the repository root: .github/scripts/release-plugin-versions.sh
+# Run from the repository root, with the two lists and $GITHUB_OUTPUT set:
+#   .github/scripts/release-plugin-versions.sh
 # CI runs it in release.yaml's legion_build job, at the step "Resolve plugin versions for the smoke
 # test and worker image".
 set -euo pipefail

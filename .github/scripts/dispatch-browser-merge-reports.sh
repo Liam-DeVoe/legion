@@ -10,11 +10,13 @@
 # step before it wrote, $RUNNER_TEMP/selected-blobs/blob-report, which holds one attempt per leg,
 # and writes $RUNNER_TEMP/report-html and $RUNNER_TEMP/report.json: the upload step reads both, and
 # readings one, two and four and the verdict step read the JSON report.
+# The runner sets $RUNNER_TEMP for every step.
 #
 # The step keeps its working directory, packages/dispatch, which is the package whose Playwright
 # `bunx` runs below.
 #
-# Run from packages/dispatch: ../../.github/scripts/dispatch-browser-merge-reports.sh
+# Run from packages/dispatch, with $RUNNER_TEMP set:
+#   ../../.github/scripts/dispatch-browser-merge-reports.sh
 # CI runs it in dispatch-browser.yaml's merge job, at the step "Merge the legs' blob reports into
 # one report".
 set -euo pipefail

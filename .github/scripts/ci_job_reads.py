@@ -447,10 +447,16 @@ CLAUDE_ENVOY_JOB = CLAUDE_ENVOY_BUILD + reads(
         ("packages/envoy-client/test/**", "packages/claude-envoy/tests/envoy-channel-stall.test.ts:5-12 imports three of its modules, and tsc puts four files of that directory in the claude-envoy program"),
         (f"{FIX}/daemon-api/**", "packages/claude-envoy/tests/daemon-api-version.test.ts:15, legion-claim.test.ts:43-44, legion-pane-mcp.test.ts:19-20, legion-tool.test.ts:13"),
         (".claude-plugin/marketplace.json", "packages/claude-envoy/tests/envoy-channel-server.test.ts:9"),
-        (".github/scripts/release-claude-envoy-check-packed.sh", "packages/claude-envoy/tests/packed-skills.test.ts:223-228 copies it "
-                                                                 "into a root of its own and runs it over a long listing"),
-        (".github/scripts/repo-paths.sh", "packages/claude-envoy/tests/packed-skills.test.ts:207 runs it for the repository url, "
-                                          "and :223 copies it beside the release's check, which runs it"),
+        (".github/scripts/release-claude-envoy-check-packed.sh", "packages/claude-envoy/tests/packed-skills.test.ts's test \"the release's "
+                                                                 "check of the packed tarball passes a listing longer than a pipe holds\" "
+                                                                 "copies it into a root of its own and runs it over a long listing"),
+        (".github/scripts/release-claude-envoy-version.sh", "packages/claude-envoy/tests/release-version.test.ts's tests \"the release's "
+                                                            "version is written into all three manifests\" and \"a manifest jq cannot "
+                                                            "parse fails the step before the next manifest is written\" copy it into a "
+                                                            "root of their own and run it"),
+        (".github/scripts/repo-paths.sh", "packages/claude-envoy/tests/packed-skills.test.ts's test \"the release's check of the "
+                                          "packed tarball passes a listing longer than a pipe holds\" runs it for the repository "
+                                          "url, and copies it beside the release's check, which runs it"),
 )
 
 
@@ -571,8 +577,9 @@ RULES = {
     # but docs/plans and docs/superpowers, which the text_checks filter leaves out with two `!`
     # patterns (credential_check_reads says how the read is written).
     f"{DAEMON}/internal/textcheck/credential_argument_test.go": reads(
-        *[(glob, "internal/textcheck/credential_argument_test.go:143 lists the repository's files with git ls-files "
-                 "under ../../../.. and :174 reads each of them but docs/plans and docs/superpowers")
+        *[(glob, "internal/textcheck/credential_argument_test.go's credentialTextFiles lists the repository's files with "
+                 "git ls-files under ../../../.. but docs/plans and docs/superpowers, and "
+                 "TestNoTextGivesACredentialAsACommandArgument reads each of them")
           for glob in credential_check_reads()]),
     # The branch of dispatch://INFRA-2614 wrote this check in internal/workflow's role_for_test.go;
     # it moved here because it walks every .go file of the module, test files included, and a row
@@ -2105,7 +2112,7 @@ SCRIPT_TEST_GATES = [
     ]),
     harness("check_workflow_files_test", "Test the workflow file check", f"{SCRIPTS}/check-workflow-files.test.sh", [
         (f"{SCRIPTS}/check-workflow-files.sh", "the script under test"),
-        (f"{SCRIPTS}/workflow_paths.py", "check-workflow-files.sh:55 imports repeated_keys from it, beside the "
+        (f"{SCRIPTS}/workflow_paths.py", "check-workflow-files.sh imports repeated_keys from it, beside the "
                                          "script's own file that every fixture links in"),
     ]),
     harness("check_private_names_test", "Test the private-name check", f"{SCRIPTS}/check-private-names.test.sh", [
@@ -2207,18 +2214,19 @@ SCRIPT_TEST_GATES = [
         ("scripts/priorities-seed-check.sh", "the script under test (scripts/priorities-seed-check.test.sh:14 names it)"),
     ], lib=False),
     harness("check_ci_filters_test", "Test the CI filter check", f"{SCRIPTS}/check-ci-filters.test.sh", [
-        (f"{SCRIPTS}/check-ci-filters.sh", "the script under test, symlinked into every fixture (check-ci-filters.test.sh:78-80)"),
+        (f"{SCRIPTS}/check-ci-filters.sh", "the script under test, symlinked into every fixture (check-ci-filters.test.sh's fixture function)"),
         (f"{SCRIPTS}/ci_filter_coverage.py", "the engine the fixtures link in beside it"),
         (f"{SCRIPTS}/ci_workflow_rules.py", "the rules the fixtures link in beside it"),
         (f"{SCRIPTS}/workflow_paths.py", "the path model the fixtures link in beside it"),
         (f"{SCRIPTS}/go_build_tags.py", "the build-tag reader rule 20 imports, linked in beside it"),
-        (f"{SCRIPTS}/ci_job_reads.py", "check-ci-filters.test.sh:2496 imports this table to derive the plain step's -run lists"),
-        ("AGENTS.md", "check-ci-filters.test.sh:2932-2967 holds the guide's slow-suite list to the jobs the full-ci label gates"),
+        (f"{SCRIPTS}/ci_job_reads.py", "check-ci-filters.test.sh's derived function imports this table to derive the plain step's -run lists"),
+        ("AGENTS.md", "check-ci-filters.test.sh's case \"the slow-suite list a reader is given names the jobs the label gates\" "
+                      "holds the guide's slow-suite list to the jobs the full-ci label gates"),
         (".github/workflows/ci-job-typecheck.yaml", "check-ci-filters.test.sh runs its darwin vet step's own run text "
                                                     "over a module with a negated tag"),
     ]),
     harness("check_ts_filters_test", "Test the TypeScript filter check", f"{SCRIPTS}/check-ts-filters.test.sh", [
-        (f"{SCRIPTS}/check-ts-filters.sh", "the script under test, symlinked into every fixture (check-ts-filters.test.sh:52-54)"),
+        (f"{SCRIPTS}/check-ts-filters.sh", "the script under test, symlinked into every fixture (check-ts-filters.test.sh's fixture function)"),
         (f"{SCRIPTS}/ci_filter_coverage.py", "the engine it borrows the changes job's filters from, linked in beside it"),
         (f"{SCRIPTS}/workflow_paths.py", "the path model both import, linked in beside it"),
         (f"{SCRIPTS}/go_build_tags.py", "the Go build-tag module the engine imports, linked in beside it"),
