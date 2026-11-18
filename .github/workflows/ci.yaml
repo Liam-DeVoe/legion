@@ -1208,7 +1208,7 @@ jobs:
               - '.github/workflows/ci-job-contracts.yaml'
               - *bun_install
               - 'packages/contracts/**'
-              # src/dispatch-tools.test.ts:60-61,1044 reads these skills.
+              # src/dispatch-tools.test.ts:64,1565 reads these skills.
               - 'skills/dispatch/SKILL.md'
               - 'skills/dispatch-writing-specs/SKILL.md'
               # The Go copies its tests hold the TypeScript to: src/dispatch-href.test.ts:49-53 and
@@ -2247,9 +2247,9 @@ jobs:
               # extensions/legion.test.ts:121 and legion-role-claim.test.ts:61 load the Envoy
               # plugin's entry beside this one, and the typecheck reaches its sources.
               - 'packages/pi-envoy/**'
-              # src/skills-guard.test.ts:24,275 spawns packages/claude-envoy/scripts/build.ts and
+              # src/skills-guard.test.ts:29,318 spawns packages/claude-envoy/scripts/build.ts and
               # asserts an exact file list over the tree it writes, so this job reads that whole
-              # package and the one entry of its BUNDLE_ENTRYPOINTS (scripts/build.ts:41-46) that
+              # package and the one entry of its BUNDLE_ENTRYPOINTS (scripts/build.ts:39-44) that
               # lives outside it. A spawn carries no import, so no derivation of this repository
               # sees the reach: both patterns are hand-kept, with their declared reads in
               # ci_job_reads.py.
@@ -2286,7 +2286,7 @@ jobs:
               - 'skills/**'
               - 'scripts/pi-plugin-prepack.sh'
               - 'scripts/third-party-notices.ts'
-              # src/skills-guard.test.ts:24,144 reads the daemon's prompts and sweeps
+              # src/skills-guard.test.ts:144-150 reads the daemon's prompts and :204-208 sweeps
               # packages/daemon/internal, and scripts/skill-scenarios/daemon-pane.ts:27 runs
               # daemon-pane.go inside the daemon module in workspace mode.
               - 'packages/daemon/internal/**'
@@ -2309,7 +2309,7 @@ jobs:
               - 'packages/envoy/subjectforms/*'
               - 'packages/envoy/natsversion/*'
               - *go_workspace
-              # The guides and docs the skills guard sweeps (src/skills-guard.test.ts:143-148).
+              # The guides and docs the skills guard sweeps (src/skills-guard.test.ts:194-202).
               - 'AGENTS.md'
               - 'README.md'
               - 'docs/kubernetes.md'
