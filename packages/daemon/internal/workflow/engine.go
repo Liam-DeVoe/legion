@@ -1981,13 +1981,18 @@ func (e *Engine) gateOpened(ctx context.Context, tx pgx.Tx, issue record.Issue) 
 }
 
 // everyClaim enqueues op for every claim an issue can hold but except's: its architect, which
-// admission or the tree's architect started, and each phase worker, whether or not it ever
-// reported a handoff. The phase rows record only handoffs, so they cannot list the claims; the
-// executor treats a request for a claim that does not exist as done. except is the one role left
-// out, "" for none: a merged child's close leaves out the role that works its production check
+// admission or the tree's architect started, each of Legion's phase workers, whether or not it
+// ever ran, and each role the deployment defines that ran on it (record.IssueRoles: a start raises
+// an entry on its role's phases row, so the rows list every such role that ran). The executor
+// treats a request for a claim that does not exist as done. except is the one role left out, ""
+// for none: a merged child's close leaves out the role that works its production check
 // (Engine.checkRole), whose claim the check's own close retires (closeCheck).
 func (e *Engine) everyClaim(ctx context.Context, tx pgx.Tx, issue record.Issue, op record.SuperviseOp, reason string, except claim.Role) error {
-	for _, role := range claim.Roles {
+	roles, err := record.IssueRoles(ctx, tx, e.store, issue.Key)
+	if err != nil {
+		return err
+	}
+	for _, role := range roles {
 		if role == except {
 			continue
 		}

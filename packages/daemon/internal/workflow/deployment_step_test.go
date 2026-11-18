@@ -6,11 +6,13 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -439,4 +441,103 @@ func TestABackwardMoveToStepNamesWhichStep(t *testing.T) {
 			}
 		})
 	}
+}
+
+// closingTree seeds the root LEGION-208 implementing at generation 7 and its child LEGION-209
+// awaiting its merge on sjawhar/legion#43, the child's checker having run (its phases row), and
+// answers an engine whose production check is checkRole ("" for none).
+func closingTree(t *testing.T, pool *pgxpool.Pool, checkRole claim.Role) *Engine {
+	t.Helper()
+	seedMergingChild(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208",
+		Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 7, Status: "in_progress", Rank: "U", LastDispatchSeq: 1})
+	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-209", Role: "checker", Claim: "child-checker", Verdict: "pass"})
+	now := time.Date(2026, 9, 23, 4, 0, 0, 0, time.UTC)
+	return New(record.NewStore(), Config{Project: "LEGION", Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, ProductionCheckRole: checkRole,
+		Repositories: testRepositories, Clock: func() time.Time { return now }}, nil)
+}
+
+// wantEachRole fails unless rows, the supervise requests of one op by issue/role, hold one for key's
+// checker and one for each of Legion's six but skip.
+func wantEachRole(t *testing.T, rows map[string]int, key string, skip claim.Role) {
+	t.Helper()
+	for _, role := range append(claim.Roles, "checker") {
+		want := 1
+		if role == skip {
+			want = 0
+		}
+		if rows[key+"/"+string(role)] != want {
+			t.Fatalf("requests %v, want one for each claim of %s, the checker's among them, and none for %q", rows, key, skip)
+		}
+	}
+}
+
+// A close reaches every claim its issue may hold, the claim of a role the deployment defines
+// among them, read from the roles the issue's phases rows name: a merged child's close retires the
+// checker's claim with the six (and leaves out the tester that works a production check); a child
+// moved to backlog suspends it; and a root's close suspends it as its tree lingers.
+func TestAClosedIssueReachesItsDeploymentRolesClaim(t *testing.T) {
+	merged := intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 43, MergeSHA: "merge-43"}
+	t.Run("a merged child", func(t *testing.T) {
+		pool := migratedPool(t)
+		applyRefusingNothing(t, pool, closingTree(t, pool, ""), merged)
+		wantEachRole(t, superviseRequests(t, pool, "issue_close"), "LEGION-209", "")
+	})
+	t.Run("a merged child with a production check", func(t *testing.T) {
+		pool := migratedPool(t)
+		applyRefusingNothing(t, pool, closingTree(t, pool, claim.RoleTester), merged)
+		wantEachRole(t, superviseRequests(t, pool, "issue_close"), "LEGION-209", claim.RoleTester)
+	})
+	t.Run("a child moved to backlog", func(t *testing.T) {
+		pool := migratedPool(t)
+		applyRefusingNothing(t, pool, closingTree(t, pool, ""), intake.DispatchIssue{Key: "LEGION-209", ResolvedRepo: "sjawhar/legion", Seq: 2,
+			Type: "issue.updated", Status: "backlog", Title: "child", Parent: "LEGION-208", Rank: "V"})
+		wantEachRole(t, superviseRequests(t, pool, "suspend"), "LEGION-209", "")
+		if closed := superviseRequests(t, pool, "issue_close"); len(closed) != 0 {
+			t.Fatalf("issue_close rows %v, want none for a move to backlog", closed)
+		}
+	})
+	t.Run("a root", func(t *testing.T) {
+		pool := migratedPool(t)
+		root := stepRoot(t, pool, phase.Merging)
+		seedPhase(t, pool, record.PhaseRow{Issue: root.Key, Role: claim.RoleMerger, Claim: "merger", HandoffCommit: "head"})
+		seedPhase(t, pool, record.PhaseRow{Issue: root.Key, Role: "checker", Claim: "root-checker", Verdict: "pass"})
+		applyRefusingNothing(t, pool, returnEngine(), intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 42, MergeSHA: "merge-42"})
+		wantEachRole(t, superviseRequests(t, pool, "suspend"), root.Key, "")
+		if closed := superviseRequests(t, pool, "issue_close"); len(closed) != 0 {
+			t.Fatalf("issue_close rows %v, want none for a root, whose tree lingers", closed)
+		}
+	})
+}
+
+// The claim of a role of a task a later version of the plan removed is reached too: its phases row
+// stays when the plan in force names the role no more.
+func TestAClosedIssueReachesTheClaimOfARoleOfARemovedTask(t *testing.T) {
+	pool := migratedPool(t)
+	engine := closingTree(t, pool, "")
+	seedStepsPlan(t, pool, "LEGION-209", 7, "implementer")
+	seedRecord(t, pool, func(tx pgx.Tx) error {
+		return record.NewStore().MoveTask(t.Context(), tx, "LEGION-209", 7, "a", record.TaskPlace{Kind: record.PlaceMerge}, record.TaskRunning)
+	})
+
+	applyRefusingNothing(t, pool, engine, intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 43, MergeSHA: "merge-43"})
+
+	if closed := superviseRequests(t, pool, "issue_close"); closed["LEGION-209/checker"] != 1 {
+		t.Fatalf("issue_close rows %v, want one for the checker, whose task the plan in force no longer holds", closed)
+	}
+}
+
+// A linger's end closes the claim of a role the deployment defines of each member, beside the six.
+func TestALingersEndClosesADeploymentRolesClaim(t *testing.T) {
+	pool := migratedPool(t)
+	root := stepRoot(t, pool, phase.Merging)
+	seedPhase(t, pool, record.PhaseRow{Issue: root.Key, Role: claim.RoleMerger, Claim: "merger", HandoffCommit: "head"})
+	seedPhase(t, pool, record.PhaseRow{Issue: root.Key, Role: "checker", Claim: "root-checker", Verdict: "pass"})
+	// No production check, which would hold the tree's close open past the linger.
+	engine := New(record.NewStore(), Config{Project: "LEGION", Steps: config.DesignGateOff.Steps(), Linger: time.Hour, Repositories: testRepositories,
+		Clock: func() time.Time { return stepClock }}, nil)
+	applyRefusingNothing(t, pool, engine, intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 42, MergeSHA: "merge-42"})
+
+	applyRefusingNothing(t, pool, engine, intake.LingerExpired{Issue: root.Key, Generation: root.Generation})
+
+	wantEachRole(t, superviseRequests(t, pool, "tree_close"), root.Key, "")
 }
