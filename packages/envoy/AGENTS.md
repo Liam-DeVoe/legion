@@ -76,31 +76,18 @@ Each item below names a task and where its code is, then notes on it.
 
   connect, subscribe and publish; reconnect, recovery and the reconnect hooks
 
-- **NATS credential**: `internal/bus/credential.go`, `natscred/`, `internal/bus/socks5.go`
+- **NATS credential**: `internal/bus/nkey.go`, `internal/bus/socks5.go`
 
-  every bus connection's credential, one of: an nkey user, `NATS_NKEY_SEED_FILE` (wins) or `NATS_NKEY_SEED`; or, for a hub whose connections the auth service admits (`internal/broker/natscallout`), a service's platform token, `NATS_SERVICE_TOKEN_FILE` (a projected Kubernetes ServiceAccount token, read afresh at each connect) or `NATS_SERVICE_GOOGLE_AUDIENCE` (this VM's Google identity token for that audience).
-  A service variable beside any other credential variable refuses the start naming both; an unusable one refuses; none set connects without a credential.
-  A service's connection presents user `service` and the token (`natscred.Service`), and its keeper reconnects it with a later token `natscred.ServiceRenewBefore` (10 minutes) before the one it presented lapses, since the auth service's user expires with the token, and only once a throwaway connection presenting the later token is admitted.
-  So an auth service that is down when the later token is due cuts no connection before its user expires: the keeper keeps the connection and probes again.
-  A reconnect that follows an admitted probe can still land on a replica that has hung since, and that cuts the connection until nats.go's retry is admitted.
-  A keeper, a service's or a session's, ends when its connection closes, whoever closes it: it watches the connection's own CLOSED status event, not its `ClosedCB`, which the bus clears on a replacement connection it discards (`natscred.Keeper`, `untilClosed`).
-  A session's Go credential is `natscred.Session`: its broker access token, and a proof of its key over the server's nonce signed once per CONNECT (`brokerclient.ConnectionProof`); `cmd/natsprobe` tries one subject with either.
+  every bus connection's nkey user: `NATS_NKEY_SEED_FILE` (wins) or `NATS_NKEY_SEED`; unusable refuses, neither set connects without one.
   `Connect` and `ConnectOwningStream` read these, `ENVOY_ALLOW_REMOTE_NATS` and `ENVOY_NATS_SOCKS5_PROXY` (a SOCKS5 proxy's `host:port` every connection goes through, reconnects and recovery included, each server's host name handed to it unresolved;
   a value that is not `host:port`, or that holds an nkey seed, refuses without printing it, and a set proxy is remote reach, refused without `ENVOY_ALLOW_REMOTE_NATS=1`) from the process environment, or from the lookup `bus.WithEnvironment` hands them;
   `Dial` from the lookup its caller passes.
   envoy-dispatch hands both its settings table
 
-- **NATS grants**: `natsgrant/natsgrant.go`
-
-  the one table of what each kind of NATS client may publish and subscribe: a listener's, a host's, Dispatch's, a Legion daemon's, the measurement job's, and a session's, both as the `*` pattern a hub's shared session user holds (`SessionPattern`) and as one session's own subjects (`Session`, which refuses an id that is not one subject token).
-  envoy-infra renders a hub's static users from it (`infra/core/permissions.go` wraps each set as the rules a user takes), and the Legion daemon's real-NATS proof reads `Daemon` from it, so the hub and that proof cannot diverge.
-  `NamesSystemSubject` finds an entry that can reach a `$SYS` subject.
-  `natsgrant_test.go` holds every set to the list `infra/core` rendered before the table moved here (`testdata/merge-base-grants.json`) and `Measure` to agent-infra's deployed list (`testdata/agent-infra-measure-grant.json`).
-
 - **Stream definition**: `internal/bus/stream.go`
 
   `ENVOY_NOTIFICATIONS` subjects, age and duplicate window, replicas, byte limit, consumer cap (`streamMaxConsumers`, 24000) and discard policy, the generation stamped on them (`streamConfigGeneration`), and their ensure on every connect of an owning client (`ensureStreamWithConfig`);
-  the names of the stores' KV buckets, listener and Dispatch durables, the Dispatch webhook-redelivery bucket, the listener role-lane queue, and the notification and exception topic prefixes, which Envoy's NATS grants are built from (`natsgrant`)
+  the names of the stores' KV buckets, listener and Dispatch durables, the Dispatch webhook-redelivery bucket, the listener role-lane queue, and the notification and exception topic prefixes, which envoy-infra's NATS grants are built from (`packages/envoy/infra/core/permissions.go`)
 
 - **Stream and bucket copies, stream byte limit**:
   `internal/bus/settings.go` (`ParseNATSReplicas`, `ParseStreamMaxBytes`, `MaxReplicas`), `internal/bus/nats.go` (`ErrStreamFull`), `internal/config/config.go`, `cmd/dispatch/settings.go`, `internal/bus/kv_ensure.go` (`EnsureKeyValue`), `internal/bus/start_wait.go` (the start's waits and hang guard), `internal/bus/keeper.go`
@@ -4214,7 +4201,6 @@ A read-only broker token carries no project either, but none of the three checks
 
 - Health endpoints reflect dependency health, not just process liveness, except `GET /livez`, which both `envoy-dispatch` and `envoy-listener` serve as liveness alone by design:
   it answers `204` reading nothing, so a liveness or startup probe never restarts a process for a slow or unreachable dependency, and readiness stays on `/healthz`.
-  The broker's `GET /livez`, on its metrics port, differs on purpose: it reads the NATS auth service's own heartbeat and answers `503` once that loop has not turned for ten seconds (`natscallout.Livez`), since a stalled replica stays in the hub's queue group and is sent requests it never answers.
   `/healthz` returns `degraded` for a JetStream/KV probe that answered with a transient failure and `unhealthy` for NATS loss, a JetStream check that did not answer within its budget, a stopped interest, role claim, session or CI KV watcher, a missing durable consumer, or a durable consumer `not bound to this listener's subscription`, which a durable deleted and created again under the listener leaves.
 
 - A role claim view whose copy no read of the bucket has made servable yet is neither of those:
@@ -6756,7 +6742,7 @@ GCP's deletion moment is `expire_time` itself, the exact purge moment, so `show`
 The forms' unit tests run in-process against `secrets.Local` and a fake STS and broker (`secret_test.go`) for AWS, and against a fake Secret Manager gRPC server, replaced credential seams (`gcpCredentialsFile`, `gcpMetadataToken`, `gcpMetadataPrincipal`) and a stub `gcloud` alone on `PATH` (`secret_gcp_test.go`) for GCP;
 `secret_gcp_order_test.go` runs R1's order through the real sources instead: a stub `gcloud` with a configuration directory of its own, key files whose token endpoint is local, and a fake metadata server at `GCE_METADATA_HOST`, each row reading the bearer the fake store saw.
 A test whose subtests are `onEachStore`'s `aws` and `gcp` counts on both backends only once `scripts/backend-count.sh` names it, which ci.yaml's envoy-go step "Count the store-form rows on each backend" runs over `./cmd/agent-secrets/` and `./internal/broker/api/` (`backend-count.sh PACKAGE... -- TEST...`): it runs only the named tests in only those packages (`-run`, 5-minute `-timeout`), and fails on a named test with no passing run on either backend, which a test in neither package is.
-The database broker suites' skips are counted by `scripts/database-skips.sh`, envoy-go's step "Count the database broker suites' skips": it runs `./internal/broker/...` less the race lane's packages under it (the auth service's `natscallout`, which opens no database and which envoy-go-race runs; `DATABASE_SKIPS_PATTERN` in `.github/scripts/ci_job_reads.py`) with `-json` under a `-timeout` that bounds each package, not the run, so the step has a `timeout-minutes` of its own, which the job's budget counts; it fails on any skipped test there but the few `EXPECTED_SKIPS` names, and prints `database_skips=UNKNOWN` and fails where its report is missing or holds no broker test.
+The database broker suites' skips are counted by `scripts/database-skips.sh`, envoy-go's step "Count the database broker suites' skips": it runs `./internal/broker/...` with `-json` under a `-timeout` that bounds each package, not the run, so the step has a `timeout-minutes` of its own, which the job's budget counts; it fails on any skipped test there but the few `EXPECTED_SKIPS` names, and prints `database_skips=UNKNOWN` and fails where its report is missing or holds no broker test.
 `secret_moto_test.go` (`-tags moto`) runs the built binary against moto's AWS, with no AWS account, through `scripts/aws-moto-check.sh [BINARY]`: the SDK's own credential order (access keys over `AWS_PROFILE`, `AWS_PROFILE`, `AWS_DEFAULT_PROFILE`, a container credentials endpoint for the rest of the chain), a missing profile that stops the command before that endpoint signs in, and the `using` line on every form; moto ignores a policy's conditions, so it proves no IAM policy.
 AWS's `secret_e2e_test.go` runs create, delete, restore and retag against `brokertest.NewRig`'s real broker.
 
@@ -7081,7 +7067,7 @@ It reads no configuration, opens no database and binds nothing, so a pull reques
 `cmd/agent-secrets-devrelay` keeps `machine-approve` alone and has no secret-request subcommand, the broker refusing every route a service calls to decide one.
 
 `config.Load` (`internal/broker/config/config.go`) reads the broker's `BROKER_*` environment:
-`BROKER_LISTEN_ADDR` (default `127.0.0.1:13380`), `BROKER_METRICS_LISTEN_ADDR` (default `127.0.0.1:13382`, the metrics port: a third port of the process, bound in the boot after the API's and the airlock's and drained with them, that serves `GET /metrics` and the NATS auth service's `GET /livez` (`natscallout.Livez`) and nothing else, and a pod that cannot bind it refuses to start), `BROKER_DATABASE_URL` (required, and the only database variable:
+`BROKER_LISTEN_ADDR` (default `127.0.0.1:13380`), `BROKER_METRICS_LISTEN_ADDR` (default `127.0.0.1:13382`, the metrics port: a third port of the process, bound in the boot after the API's and the airlock's and drained with them, that serves `GET /metrics` alone, and a pod that cannot bind it refuses to start), `BROKER_DATABASE_URL` (required, and the only database variable:
 nothing is substituted into it; a URL naming a user and no password whose host ends in `.rds.amazonaws.com`, for which `pgconn.ParseConfig` finds no password (none in the URL, `PGPASSWORD` or a passfile), sets `Config.DatabaseIAM` and must read as that one host with `sslmode=verify-full` and an `sslrootcert` file's pool (not `sslrootcert=system`), or `Load` refuses naming the host and never the URL;
 `cmd/broker` then loads the AWS config once, before `store.Open`, and passes `store.WithTokenMinter(rdsAuthTokens(awsCfg))` (`cmd/broker/rdsauth.go`, so `internal/broker/store` imports no AWS SDK), whose pool `BeforeConnect` mints an RDS IAM token per new connection), `BROKER_PUBLIC_URL` (required;
 absolute http(s) URL, no path — the broker's own address, the request object's `aud` and the launcher proof's `htu`), `BROKER_MACHINE_LOGIN_URL` (optional, and unchanged by the approval page;
@@ -7185,10 +7171,7 @@ Needs `BROKER_EXCHANGE_GITHUB_ISSUER` and `BROKER_EXCHANGE_GITHUB_AUDIENCE`;
 unset, no workflow exchanges), `BROKER_ACCESS_TOKEN_SECONDS` (default 900, min 1, max 3600
 — how long an access token the OAuth provider issues lasts, a machine login's and an exchanged one's alike:
 it trades how often every caller renews against how long a revoked credential's last token stays spendable), `BROKER_ENVOY_URL` (optional;
-turns on best-effort wake notifications to the requesting session through Envoy's `/v1/messages/send`, sent with the broker's own projected ServiceAccount token, which `BROKER_ENVOY_ACCOUNT_TOKEN_FILE` names and which is required with the URL and read afresh for each notice, so the listener admits the broker's account and no bearer is shared), the `BROKER_NATS_*` settings of the NATS auth service the broker runs (`internal/broker/natscallout`: `BROKER_NATS_URLS` and the three seed files `BROKER_NATS_SEED_FILE`, `BROKER_NATS_ISSUER_SEED_FILE` and `BROKER_NATS_XKEY_SEED_FILE`, each refused at start unless it holds a user, an account and a curve seed;
-`BROKER_NATS_SERVICES`, the services admitted by platform identity, read by `natscallout.ParseServices`;
-`BROKER_NATS_K8S_AUDIENCE` and `BROKER_NATS_GOOGLE_AUDIENCE`, the audiences their tokens carry;
-all unset runs no auth service), `BROKER_LEASE_SECONDS` (default 900, max 3600), `BROKER_SESSION_CARRY_SECONDS` (default 43200, min 0, max 86400
+turns on best-effort wake notifications to the requesting session through Envoy's `/v1/messages/send`, sent with `BROKER_ENVOY_TOKEN` — read only when the URL is set, and not itself required at startup), `BROKER_LEASE_SECONDS` (default 900, max 3600), `BROKER_SESSION_CARRY_SECONDS` (default 43200, min 0, max 86400
 — how long what a session holds, its grants and its pending requests, waits on the enrollment of a box the session has left, for the next enrollment of that session name under the same principal to take it:
 an enrollment that ends while it holds a live grant or a pending request, and that names a session, is marked revoked and dormant instead of having them revoked and cancelled (`enroll.endEnrollment`), and the sweep ends it for good once this long has passed since it went dormant, with an `enrollment.carry_expired` audit row (`enroll.Service.EndCarried`).
 A person's own ends stay terminal and take the grants with them: a machine-login revoke, a sign-in revoke, and an operator's or approver's revoke of the grant itself.
@@ -7207,10 +7190,9 @@ names a request header, e.g. `X-Forwarded-For`, the launcher-credential and rere
 Unset, the default, keys on `r.RemoteAddr` directly, correct only when the broker is reached without a proxy in front of it;
 behind one — this broker's documented production shape, the shared internal ALB
 — `r.RemoteAddr` is the proxy's own address for every caller, collapsing each per-address bucket into one shared by everyone unless this variable is set).
-A secret variable follows the broker's `_FILE` secret-loading convention:
+`BROKER_ENVOY_TOKEN` follows the broker's `_FILE` secret-loading convention:
 `<NAME>_FILE`, when set, names a file whose trimmed contents win over a bare `<NAME>` — with both set, the file wins silently, nothing is refused
 — and a named-but-unreadable or empty file is a startup error naming the file, never a silent fallback to an unset value.
-The shared Envoy bearer, `BROKER_ENVOY_TOKEN[_FILE]`, is removed and refused by name, naming `BROKER_ENVOY_ACCOUNT_TOKEN_FILE`, which replaces it.
 `config.Load` refuses to start naming a stale removal still set in the environment
 — the removed `BROKER_UI_TOKEN[_FILE]` (the routes Dispatch calls take the calling service's own ServiceAccount token, so its account goes in `BROKER_API_ACCOUNTS` instead of a bearer shared with Dispatch's server), `BROKER_DISPATCH_URL`, `BROKER_DISPATCH_TOKEN[_FILE]`, `BROKER_DISPATCH_PROJECT` and `BROKER_ASK_POLL_SECONDS` (they named a Dispatch the broker asked and issued in, which it still does not; what it reads there is the model judge's two GETs of one issue and that issue's spec document, under `BROKER_JUDGE_DISPATCH_URL` with the token `BROKER_JUDGE_DISPATCH_TOKEN_FILE` names, and the token exchange's project-access questions, under `BROKER_PROJECT_ACCESS_URL` with the token `BROKER_PROJECT_ACCESS_TOKEN_FILE` names), `BROKER_UI_ORIGIN` (a person approves on the broker's own page, signed in to the broker through `BROKER_SIGNIN_*`, so the broker checks no WebAuthn origin), `BROKER_SIGNIN_CLIENT_SECRET` (the sign-in client's secret is read only from the file `BROKER_SIGNIN_CLIENT_SECRET_FILE` names, so it is never in the environment), `BROKER_DATABASE_PASSWORD` (on RDS the broker signs in by IAM token, and any other database's password goes in the URL itself;
 a `BROKER_DATABASE_URL` still naming its `${BROKER_DATABASE_PASSWORD}` placeholder is refused for the same reason, rather than tried as a literal password), and `BROKER_RULES_FILE`, `BROKER_RULES_S3_URI` and `BROKER_RULES_RELOAD_SECONDS` (each secret's own tags are the policy, so there is no rules file)
@@ -7890,8 +7872,7 @@ The Postgres-backed tests skip, rather than fail, when `BROKER_TEST_DATABASE_URL
 `cmd/broker/multiprocess_test.go` builds under the `multiprocess` tag alone and starts real `cmd/broker` binaries against one such database, driving them over real HTTP (`brokertest`'s client) and their own logs:
 one refresh token and one device code each raced against both processes, both migrating one empty database at once, a retag one process is told to reread being enforced by the other through the fan-out, that fan-out spending no rate-limit token on the pod it reaches, and a signalled process failing readiness while it serves a request out past the old ten-second shutdown budget.
 CI's `broker-multiprocess` job runs them
-— `go test -tags multiprocess -count=1 -timeout 20m ./cmd/broker` in `packages/envoy` — in a job of its own, since each row waits out tens of seconds, and `envoy-go`'s unit step gives each package 20 minutes (`-timeout 20m`), of which `cmd/broker`'s untagged tests already take about 525 s on CI's runner.
-On a dev box those take 517-670 s, past `go test`'s default ten-minute package deadline, so run `./cmd/broker` with `-timeout 20m` there too.
+— `go test -tags multiprocess -count=1 -timeout 20m ./cmd/broker` in `packages/envoy` — in a job of its own, since each row waits out tens of seconds and `envoy-go`'s unit step runs under go test's default ten-minute package deadline.
 The job runs only when a file its `broker_multiprocess` filter in `.github/workflows/ci.yaml` names changes;
 see Critical conventions for what keeps that filter current.
 Every client-facing lane's own test mounts the real broker handlers (`api.Register` with real, Postgres-backed services) rather than a hand-rolled fake standing in for broker behavior
