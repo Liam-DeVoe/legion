@@ -1078,6 +1078,7 @@ func tmuxRuntime(cfg config.Config, project string, launchers map[runtime.Backen
 			opts.GitHubCredential, opts.GH = appauth.GitHubCredential(tokens, repos, cfg.RepositoryRenames, left, log), gh
 			opts.ControllerCredential = appauth.ControllerCredential(tokens, repos, cfg.RepositoryRenames, left, log)
 			opts.ClaimRepository = claimRepository(st.ClaimIssue, repository)
+			opts.ClaimRole = st.ClaimRole
 		}
 		rt, err := tmux.New(opts)
 		if err != nil {

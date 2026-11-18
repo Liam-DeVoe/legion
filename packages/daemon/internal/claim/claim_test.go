@@ -274,22 +274,24 @@ func TestTheControllerRoleIsTheControllersOwnAndNoWorkflowRole(t *testing.T) {
 	}
 }
 
-// A token names its role: a workflow role's token the role it ends in, and the controller's token
-// the controller, which Cut does not split. Anything else names no role, a token that only looks
-// like the controller's included.
-func TestATokenNamesItsRoleTheControllersIncluded(t *testing.T) {
-	for token, want := range map[Token]Role{
-		"legion-legion-legion-208-tester":    RoleTester,
-		"legion-legion-legion-208-architect": RoleArchitect,
-		ControllerToken("legion"):            RoleController,
+// A token names the controller or an agent: the controller's token is the controller's, which Cut
+// does not split, and a workflow token's agent is the name it ends in. A token that only looks like
+// the controller's is neither.
+func TestATokenNamesTheControllerOrItsAgent(t *testing.T) {
+	for token, want := range map[Token]Agent{
+		"legion-legion-legion-208-tester":    "tester",
+		"legion-legion-legion-208-architect": "architect",
 	} {
-		if role, ok := token.Role(); !ok || role != want {
-			t.Errorf("%s.Role() = %q, %t; want %q", token, role, ok, want)
+		if _, agent, ok := token.Cut(); !ok || agent != want || token.IsController() {
+			t.Errorf("%s names the agent %q (%t), controller %t; want the agent %q", token, agent, ok, token.IsController(), want)
 		}
 	}
-	for _, token := range []Token{"legion-legion-legion-208", "legion--controller", "legion-a-b-controller", "other-legion-controller", "legion-Legion-controller"} {
-		if role, ok := token.Role(); ok {
-			t.Errorf("%s.Role() = %q, want none", token, role)
+	if !ControllerToken("legion").IsController() {
+		t.Errorf("%s is not the controller's", ControllerToken("legion"))
+	}
+	for _, token := range []Token{"legion--controller", "legion-a-b-controller", "other-legion-controller", "legion-Legion-controller"} {
+		if token.IsController() {
+			t.Errorf("%s is the controller's, want none", token)
 		}
 	}
 }

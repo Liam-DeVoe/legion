@@ -725,7 +725,7 @@ func (r *Runtime) openPane(ctx context.Context, spec runtime.SpawnSpec, ghDefaul
 		Incarnation: incarnation{pid: report.pid, ticks: ticks}.String(),
 		Tmux:        &runtime.TmuxLocator{Window: report.window, Pane: report.pane},
 	}
-	r.track(loc, key, spec.Repository, ghDefault)
+	r.track(loc, key, spec.Repository, ghDefault, spec.Role)
 	return loc, nil
 }
 

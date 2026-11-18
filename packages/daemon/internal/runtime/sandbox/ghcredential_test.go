@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // secretUpdates are the Secret updates among writes, by name.
@@ -830,5 +831,50 @@ func TestTheRefresherKeepsARenamedIssuesWriteLeaseInItsOwnDirectory(t *testing.T
 	}
 	if asked := leases.asked(); !slices.Equal(asked, []string{"cybermonklabs's write lease"}) {
 		t.Errorf("GitHub was asked for %v over the launch and both ticks, want cybermonklabs' write lease alone: the two directories hold it, and the installation the repository left is asked for nothing", asked)
+	}
+}
+
+// The slot `implementer` of an issue pod holds key a's claim `…-implementer`, which took the role
+// tester for its tester step. The refresh writes that slot's Secret for the review App, the tester's,
+// so its check run is not refused as the implement App's would be; a slot whose claim holds its own
+// name's role keeps its App. The change of App moves no owner directory, so the pod reads no drift
+// and no update round replaces it.
+func TestASlotsGhFilesFollowItsClaimsRole(t *testing.T) {
+	keyed := claim.Token("legion-legion-legion-208-implementer")
+	g := newRig(t, nil, withOptions(func(o *Options) {
+		o.GitHubCredential = func(_ context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
+			owner := strings.ToLower(repo.Owner())
+			if owner == "" {
+				owner = "sjawhar"
+			}
+			app := string(appauth.AppRoleFor(role))
+			return ghconfig.Bundle{Default: owner, Dirs: map[string]ghconfig.Rendered{
+				"acme": ghconfig.Render("ghs_"+app+"_read", app, staticCredentialExpiry),
+				owner:  ghconfig.Render("ghs_"+app, app, staticCredentialExpiry),
+			}}, nil
+		}
+	}))
+	g.spawn(rootSpec(t))
+	issue := SandboxName(rootToken)
+	g.store.mu.Lock()
+	g.store.claims = append(g.store.claims,
+		supervise.Claim{Token: keyed, Project: testProject, Tree: testTree, Issue: testTree, Role: claim.RoleTester},
+		supervise.Claim{Token: otherToken, Project: testProject, Tree: testTree, Issue: testTree, Role: claim.RoleReviewer})
+	g.store.mu.Unlock()
+
+	g.r.refreshGitHubCredentials(g.ctx)
+
+	for slot, want := range map[claim.Role]string{claim.RoleImplementer: "ghs_review", claim.RoleReviewer: "ghs_review", claim.RoleArchitect: "ghs_review"} {
+		secret := g.secret(roleSecretName(issue, slot))
+		if token, err := ghconfig.TokenFromHosts(secret.Data[GitHubHostsKey("sjawhar")]); err != nil || token != want {
+			t.Errorf("the %s slot's hosts.yml holds %q (%v), want %q", slot, token, err, want)
+		}
+	}
+	pod := g.r.storedPod(issue)
+	if pod == nil {
+		t.Fatalf("the issue pod %s is not in the store", issue)
+	}
+	if moved := g.r.driftedInPod(pod, claim.RoleImplementer); len(moved) != 0 {
+		t.Fatalf("the implementer slot reads the drift %+v after its App changed, want none", moved)
 	}
 }

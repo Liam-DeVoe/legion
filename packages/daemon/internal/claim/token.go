@@ -106,17 +106,3 @@ func (t Token) IsController() bool {
 	project, suffixed := strings.CutSuffix(project, "-"+string(RoleController))
 	return prefixed && suffixed && projectToken.MatchString(project)
 }
-
-// Role is the role t names where its agent is named for one of Roles, or RoleController for the
-// project controller's token (ControllerToken); ok is false for any other token. A token names an
-// agent, and the role a claim is on now is the one its record holds, so this answers only the
-// callers that have not moved to Cut and IsController yet.
-func (t Token) Role() (role Role, ok bool) {
-	if _, agent, ok := t.Cut(); ok && IsRole(Role(agent)) {
-		return Role(agent), true
-	}
-	if t.IsController() {
-		return RoleController, true
-	}
-	return "", false
-}

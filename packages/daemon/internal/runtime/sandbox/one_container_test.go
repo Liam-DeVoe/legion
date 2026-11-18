@@ -533,7 +533,7 @@ func TestTheRolesContainerEndingEndsEveryRole(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Probe %s: %v", token, err)
 		}
-		role, _ := token.Role()
+		_, role, _ := token.Cut()
 		if obs.Kind != runtime.Gone || !strings.Contains(obs.Detail, "container roles terminated (OOMKilled, exit code 137)") ||
 			!strings.Contains(obs.Detail, "last lines of "+string(role)) || strings.Contains(obs.Detail, "fake logs") {
 			t.Fatalf("%s: %s %q, want Gone naming the container's end and quoting only %s's lines", token, obs.Kind, obs.Detail, role)

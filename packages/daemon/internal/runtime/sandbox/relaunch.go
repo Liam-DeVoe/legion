@@ -936,15 +936,31 @@ func (r *Runtime) gitHubBundles(ctx context.Context, l *launch) (map[claim.Role]
 	l.gitHubDirs, l.gitHubDefault = nil, ""
 	bundles := make(map[claim.Role]ghconfig.Bundle, len(l.roles))
 	held := make(map[claim.Role][]string, len(l.roles))
-	for i, role := range l.roles {
+	// Each slot holds the App of the step its claim does now (slotAppRole): the launching claim's
+	// spec names its own, and each other slot's comes from the stored claims. A build that cannot
+	// read them mints each other slot for its own name: no other claim runs in a pod being built,
+	// and each one's next launch writes its slot's credential for its role, as the refresher does
+	// within a minute.
+	holders, err := r.slotHolders(ctx)
+	if err != nil {
+		r.log.Warn("sandbox runtime: a pod's build cannot read the stored claims; its other slots hold their own names' Apps until their launches",
+			"sandbox", l.name, "err", err)
+		holders = map[slotKey]slotHolder{}
+	}
+	holders[slotKey{sandbox: l.name, slot: slotOf(l.spec.Claim)}] = slotHolder{token: l.spec.Claim, role: l.spec.Role}
+	for i, slot := range l.roles {
 		minting, cancel := call(ctx)
 		var bundle ghconfig.Bundle
 		var err error
-		if role == claim.RoleController {
+		if slot == claim.RoleController {
 			bundle, err = r.controllerCredential(minting, "")
 		} else {
-			bundle, err = r.gitHubCredential(minting, role, l.spec.Repository)
+			var role claim.Role
+			if role, err = r.slotAppRole(minting, holders, l.name, slot); err == nil {
+				bundle, err = r.gitHubCredential(minting, role, l.spec.Repository)
+			}
 		}
+		role := slot
 		cancel()
 		switch {
 		case role == claim.RoleController && errors.Is(err, runtime.ErrNoGitHubOwner):

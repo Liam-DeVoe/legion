@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
 // gitHubRefreshInterval is how often refreshGitHubCredentials walks the pod store. The daemon's
@@ -96,6 +97,13 @@ func (r *Runtime) refreshGitHubCredentials(ctx context.Context) {
 		mints[key] = mint{token: token, ok: err == nil}
 		return token, err == nil
 	}
+	// Each slot holds the App of the step its claim does now (slotAppRole), read from the stored
+	// claims once a tick. A tick that cannot read them refreshes no slot of an issue pod, each of
+	// which keeps its last tokens until the next tick, rather than mint a slot for its name.
+	held, heldErr := r.slotHolders(ctx)
+	if heldErr != nil {
+		r.log.Warn("sandbox runtime: github credential refresh cannot read the stored claims; issue pods keep their tokens until the next tick", "err", heldErr)
+	}
 	for _, obj := range r.pods.GetStore().List() {
 		pod := obj.(*corev1.Pod)
 		kind, err := podKindOf(pod.Labels)
@@ -113,8 +121,16 @@ func (r *Runtime) refreshGitHubCredentials(ctx context.Context) {
 		// provisioning token: it is the pod's, not the role's, and a bundle is rendered for it
 		// (refreshGitHubCredential).
 		repo, named := fetchRepository(pod)
-		for _, role := range kind.roles() {
-			r.refreshGitHubCredential(ctx, pod, owner.UID, role, repo)
+		for _, slot := range kind.roles() {
+			if heldErr != nil && slot != claim.RoleController {
+				continue
+			}
+			role, err := r.slotAppRole(ctx, held, pod.Name, slot)
+			if err != nil {
+				r.log.Warn("sandbox runtime: github credential refresh failed", "sandbox", pod.Name, "slot", slot, "err", err)
+				continue
+			}
+			r.refreshGitHubCredential(ctx, pod, owner.UID, slot, role, repo)
 		}
 		if _, issue := kind.(issuePod); !issue || !named {
 			continue
@@ -168,9 +184,10 @@ func (r *Runtime) refreshProvisioningToken(ctx context.Context, pod *corev1.Pod,
 	}
 }
 
-// refreshGitHubCredential is one role's refresh (refreshGitHubCredentials): the role's Secret in
-// the pod, owned by the Sandbox with uid, rendered for repo, the pod's own repository its caller
-// read off its workspace fetch once for every role of the pod.
+// refreshGitHubCredential is one slot's refresh (refreshGitHubCredentials): the slot's Secret in
+// the pod, owned by the Sandbox with uid, minted for role, the role whose App the slot holds
+// (slotAppRole), and rendered for repo, the pod's own repository its caller read off its workspace
+// fetch once for every slot of the pod.
 //
 // A workflow role's credential is rendered for that repository, and not for the Secret's
 // recorded default, which names an owner and so could never name a repository: a bundle
@@ -195,12 +212,12 @@ func (r *Runtime) refreshProvisioningToken(ctx context.Context, pod *corev1.Pod,
 // The Secret's recorded default is what the bundle is held to either way: a render whose default
 // is another owner is refused rather than written, since the pod's GH_CONFIG_DIR was fixed at
 // that directory.
-func (r *Runtime) refreshGitHubCredential(ctx context.Context, pod *corev1.Pod, uid types.UID, role claim.Role, repo ghrepo.Repository) {
+func (r *Runtime) refreshGitHubCredential(ctx context.Context, pod *corev1.Pod, uid types.UID, slot, role claim.Role, repo ghrepo.Repository) {
 	sandbox := pod.Name
-	name := roleSecretName(sandbox, role)
+	name := roleSecretName(sandbox, slot)
 	secrets := r.kube.CoreV1().Secrets(r.namespace)
 	failed := func(err error) {
-		r.log.Warn("sandbox runtime: github credential refresh failed", "sandbox", sandbox, "role", role, "err", err)
+		r.log.Warn("sandbox runtime: github credential refresh failed", "sandbox", sandbox, "slot", slot, "role", role, "err", err)
 	}
 	read := func() (*corev1.Secret, error) {
 		return secrets.Get(ctx, name, metav1.GetOptions{})
@@ -224,7 +241,7 @@ func (r *Runtime) refreshGitHubCredential(ctx context.Context, pod *corev1.Pod, 
 	}
 	minting, cancel := call(ctx)
 	var bundle ghconfig.Bundle
-	if role == claim.RoleController {
+	if slot == claim.RoleController {
 		bundle, err = r.controllerCredential(minting, owner)
 	} else {
 		bundle, err = r.gitHubCredential(minting, role, repo)
@@ -275,6 +292,49 @@ func (r *Runtime) refreshGitHubCredential(ctx context.Context, pod *corev1.Pod, 
 		}
 	}
 	written := bundle.Dirs[owner]
-	r.log.Info("sandbox runtime: github credential refreshed", "sandbox", sandbox, "role", role, "app", written.App,
+	r.log.Info("sandbox runtime: github credential refreshed", "sandbox", sandbox, "slot", slot, "role", role, "app", written.App,
 		"expiresAt", written.ExpiresAt, "dirs", changed)
+}
+
+// slotKey names one slot of one pod: the Sandbox the pod is named for, and the slot.
+type slotKey struct {
+	sandbox string
+	slot    claim.Role
+}
+
+// slotHolder is the stored claim that runs in a slot: its token and its stored role, the role of
+// the step its agent does now.
+type slotHolder struct {
+	token claim.Token
+	role  claim.Role
+}
+
+// slotHolders is every stored claim by the Sandbox its issue names (SandboxName) and the slot it
+// runs in (slotOf), read in one call of the store.
+func (r *Runtime) slotHolders(ctx context.Context) (map[slotKey]slotHolder, error) {
+	claims, err := r.store.Claims(ctx)
+	if err != nil {
+		return nil, err
+	}
+	held := make(map[slotKey]slotHolder, len(claims))
+	for _, c := range claims {
+		// A claim the store holds no role for (a row written before claims recorded one) names no
+		// slot's App, so its slot keeps its own.
+		if slot := slotOf(c.Token); slot != "" && c.Role != "" {
+			held[slotKey{sandbox: SandboxName(c.Token), slot: slot}] = slotHolder{token: c.Token, role: c.Role}
+		}
+	}
+	return held, nil
+}
+
+// slotAppRole is the role whose App slot of the pod of sandbox holds: runtime.SlotRole of the
+// stored claim that runs in it, which is that claim's stored role unless the runtime's ActsAs gives
+// another, and the slot's own name where no stored claim runs in it. It is never the slot's name
+// for a claim that holds another role: a keyed agent's slot is named by its agent.
+func (r *Runtime) slotAppRole(ctx context.Context, held map[slotKey]slotHolder, sandbox string, slot claim.Role) (claim.Role, error) {
+	h, ok := held[slotKey{sandbox: sandbox, slot: slot}]
+	if !ok {
+		return slot, nil
+	}
+	return runtime.SlotRole(ctx, r.actsAs, h.token, h.role)
 }
