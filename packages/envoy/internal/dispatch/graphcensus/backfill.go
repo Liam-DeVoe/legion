@@ -1023,7 +1023,8 @@ func writeCommentBatch(ctx context.Context, database *store.Store, batch []comme
 }
 
 // heldCommentRows rechecks a cached batch's marker under the owner rows the erase takes first.
-// Comments keep their owners, so those locks order the recheck and write against every erase.
+// Comments keep their owners, so those locks order the recheck and write against every erase. It
+// answers the rows that still stand unmarked in a slice of its own and leaves batch as it is.
 func heldCommentRows(ctx context.Context, tx pgx.Tx, batch []commentRow) ([]commentRow, error) {
 	ids := make([]string, len(batch))
 	for index, row := range batch {
@@ -1059,7 +1060,7 @@ func heldCommentRows(ctx context.Context, tx pgx.Tx, batch []commentRow) ([]comm
 	}); err != nil {
 		return nil, fmt.Errorf("read the unmarked rows of a comment batch: %w", err)
 	}
-	held := batch[:0]
+	held := make([]commentRow, 0, len(batch))
 	for _, row := range batch {
 		if standing[row.id] {
 			held = append(held, row)

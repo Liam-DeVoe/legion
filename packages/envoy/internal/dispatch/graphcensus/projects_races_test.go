@@ -79,10 +79,95 @@ func TestAStaleCommentBatchDoesNotRestoreAnErasedComment(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("erase the first run's comment: %v", err)
 	}
-	if _, _, _, err := writeCommentBatch(ctx, database, batch); err != nil {
+	written, _, _, err := writeCommentBatch(ctx, database, batch)
+	if err != nil {
 		t.Fatalf("write the second run's cached batch: %v", err)
+	}
+	if written != 0 {
+		t.Errorf("the stale batch counts %d row(s) written, want 0: the comment it read was erased before it wrote", written)
 	}
 	if node, held, err := graphstore.ReadNode(ctx, database.Pool, graphstore.KindComment, id); err != nil || held {
 		t.Errorf("the stale batch restored node %+v (held %t, %v) without its erased comment row; want no node", node, held, err)
+	}
+}
+
+// heldCommentRows answers the rows of a batch that still stand unmarked in a slice of its own, and
+// leaves the caller's batch as it read it: a caller that reads its batch after the recheck reads
+// the rows it passed. Two comments are read, the first is removed, and the recheck answers the
+// second alone while the batch still lists both, first to last.
+//
+// Its control is the recheck filtering into the caller's own array (batch[:0]): the batch then
+// lists the second comment first.
+func TestTheCommentRecheckLeavesTheCallersBatch(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	at := time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC)
+	seedIdentityIssue(t, database, at, model.Actor{Kind: "user", ID: "alice"})
+	const removed, standing = "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"
+	for _, id := range []string{removed, standing} {
+		if _, err := database.Pool.Exec(ctx, `
+			insert into comments (id, issue_key, author, body, created_at)
+			values ($1, 'IDEN-1', '{}', 'A remark.', $2)
+		`, id, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	batch, err := readCommentRows(ctx, database, zeroUUID)
+	if err != nil || len(batch) != 2 || batch[0].id != removed || batch[1].id != standing {
+		t.Fatalf("read the two unmarked comments: %+v, %v; want %s then %s", batch, err, removed, standing)
+	}
+	if _, err := database.Pool.Exec(ctx, `delete from comments where id = $1`, removed); err != nil {
+		t.Fatal(err)
+	}
+	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+		held, err := heldCommentRows(ctx, tx, batch)
+		if err != nil {
+			return err
+		}
+		if len(held) != 1 || held[0].id != standing {
+			t.Errorf("the recheck answers %+v, want %s alone", held, standing)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("recheck the batch: %v", err)
+	}
+	if batch[0].id != removed || batch[1].id != standing {
+		t.Errorf("after the recheck the caller's batch lists %s then %s, want %s then %s, as it read them",
+			batch[0].id, batch[1].id, removed, standing)
+	}
+}
+
+// ObjectRowStands answers whether an issue's, a document's, an ask's or a message's row stands at
+// an id, which the erase reads under the node's lock. An ask's and a message's row is keyed by a
+// uuid, so an id that is no uuid names no row and answers false with no error, rather than abort
+// the erase's transaction on the cast; a uuid names its row when one stands there, and none when
+// none does.
+//
+// Its control is the uuid test taken out: the id that is no uuid then fails the read.
+func TestObjectRowStandsReadsTheRowsOfAnAskAndAMessage(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	at := time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC)
+	seedIdentityIssue(t, database, at, model.Actor{Kind: "user", ID: "alice"})
+	const ask, absent = "33333333-3333-4333-8333-333333333333", "44444444-4444-4444-8444-444444444444"
+	if _, err := database.Pool.Exec(ctx, `
+		insert into asks (id, issue_key, author, question, created_at)
+		values ($1, 'IDEN-1', '{"kind":"user","id":"alice"}', 'Does it ship?', $2)
+	`, ask, at); err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range []struct {
+		kind, id string
+		want     bool
+	}{
+		{graphstore.KindAsk, "x", false},
+		{graphstore.KindMessage, "x", false},
+		{graphstore.KindAsk, absent, false},
+		{graphstore.KindAsk, ask, true},
+	} {
+		stands, err := ObjectRowStands(ctx, database.Pool, row.kind, row.id)
+		if err != nil || stands != row.want {
+			t.Errorf("ObjectRowStands(%s, %q) = %t, %v; want %t and no error", row.kind, row.id, stands, err, row.want)
+		}
 	}
 }

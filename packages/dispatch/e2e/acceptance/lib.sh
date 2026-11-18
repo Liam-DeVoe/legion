@@ -140,11 +140,13 @@ expect() {
 q() { jq -rn --arg v "$1" '$v|@uri'; }
 
 # query SECTION WHAT SQL: one value of one row, read through DATABASE_URL into $answer. psql runs
-# without PGHOSTADDR, which libpq would otherwise connect to in place of the DSN's host.
+# without PGHOSTADDR, which libpq would otherwise connect to in place of the DSN's host, and without
+# PGSERVICE and PGSERVICEFILE, whose service entry can carry a hostaddr of its own: the DSN alone
+# names the server, as the loopback guard read it.
 # shellcheck disable=SC2034 # $answer is this function's answer, read by its caller
 query() {
   local section="$1" what="$2" sql="$3"
-  answer="$(env -u PGHOSTADDR psql "$database_url" -Atqc "$sql" 2>"$work/psql")" ||
+  answer="$(env -u PGHOSTADDR -u PGSERVICE -u PGSERVICEFILE psql "$database_url" -Atqc "$sql" 2>"$work/psql")" ||
     fail "$section" "$what" "psql: $(<"$work/psql")"
 }
 

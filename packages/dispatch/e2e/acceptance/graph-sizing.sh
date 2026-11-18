@@ -296,7 +296,7 @@ send() {
 # driver that half-cleans is worse than one that says what it left behind.
 remove_corpus() {
   local counted removed
-  counted="$(env -u PGHOSTADDR psql "$database_url" -Atq -v ON_ERROR_STOP=1 2>"$work/psql" <<SQL
+  counted="$(env -u PGHOSTADDR -u PGSERVICE -u PGSERVICEFILE psql "$database_url" -Atq -v ON_ERROR_STOP=1 2>"$work/psql" <<SQL
 select (select count(*) from artifacts where issue_key = '$key'),
        (select count(*) from document_blocks b join artifacts a on a.id = b.artifact_id
           where a.issue_key = '$key')
@@ -307,7 +307,7 @@ SQL
     return 0
   }
   [[ "$counted" != '0|0' ]] || return 0
-  removed="$(env -u PGHOSTADDR psql "$database_url" -Atq -v ON_ERROR_STOP=1 2>"$work/psql" <<SQL
+  removed="$(env -u PGHOSTADDR -u PGSERVICE -u PGSERVICEFILE psql "$database_url" -Atq -v ON_ERROR_STOP=1 2>"$work/psql" <<SQL
 begin;
 create temporary table corpus_documents as select id from artifacts where issue_key = '$key';
 create temporary table corpus_nodes as
@@ -412,7 +412,7 @@ owed() {
 hold_block_index() {
   local polls=0
   : >"$work/lease"
-  env -u PGHOSTADDR psql "$database_url" -Atq -o /dev/null >/dev/null 2>"$work/lease" <<SQL &
+  env -u PGHOSTADDR -u PGSERVICE -u PGSERVICEFILE psql "$database_url" -Atq -o /dev/null >/dev/null 2>"$work/lease" <<SQL &
 select pg_advisory_lock($lease_namespace, hashtext('$lease_name'));
 \\warn the $lease_name lease is held
 select pg_sleep($lease_seconds);

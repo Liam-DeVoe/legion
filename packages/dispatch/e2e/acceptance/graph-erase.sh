@@ -219,7 +219,7 @@ declared() {
 hold_block_index() {
   local polls=0
   : >"$work/lease"
-  env -u PGHOSTADDR psql "$database_url" -Atq -o /dev/null >/dev/null 2>"$work/lease" <<SQL &
+  env -u PGHOSTADDR -u PGSERVICE -u PGSERVICEFILE psql "$database_url" -Atq -o /dev/null >/dev/null 2>"$work/lease" <<SQL &
 select pg_advisory_lock($lease_namespace, hashtext('$lease_name'));
 \\warn the $lease_name lease is held
 select pg_sleep($lease_seconds);
@@ -287,7 +287,7 @@ erase() {
 # so dropped with the session, and searches it with the rest: a search that reached no row would
 # answer none for every column, and the caller reads the control's line to tell that apart.
 held_anywhere() {
-  answer="$(env -u PGHOSTADDR psql "$database_url" -Atq -v ON_ERROR_STOP=1 -v needle="$2" \
+  answer="$(env -u PGHOSTADDR -u PGSERVICE -u PGSERVICEFILE psql "$database_url" -Atq -v ON_ERROR_STOP=1 -v needle="$2" \
     -v comment="$3" -v document="$4" -v ref="$5" -v kept="$6" -f - 2>"$work/psql" <<'SQL'
 select set_config('erase_driver.needle', :'needle', false) \g /dev/null
 select set_config('erase_driver.comment', :'comment', false) \g /dev/null
