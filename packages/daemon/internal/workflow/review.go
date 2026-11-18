@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"maps"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
@@ -165,8 +164,7 @@ func (e *Engine) mergeability(ctx context.Context, tx pgx.Tx, fact intake.PullRe
 		return intake.Result{}, err
 	}
 	if classify.HeadConflicts(*pr) {
-		reason := fmt.Sprintf("the head conflicts with %s: GitHub runs no checks on it; merge %s forward", base, base)
-		return intake.Result{}, e.transition(ctx, tx, *issue, TriggerConflict, "", record.PhaseRow{}, pr, reason)
+		return intake.Result{}, e.transition(ctx, tx, *issue, TriggerConflict, "", record.PhaseRow{}, pr, "")
 	}
 	return intake.Result{}, e.reaskRound(ctx, tx, *issue, pr, prior, texts.StuckByMergeState)
 }
@@ -242,34 +240,6 @@ func headRuns(pr record.PullRequest) map[string]record.RunConclusion {
 		conclusions[run.Name] = run.Conclusion
 	}
 	return conclusions
-}
-
-// headChecks is every check run GitHub reported on the pull request's current head with what that
-// run concluded, in name order, as one line; "" when the record holds none. It is the line the
-// reason a restarted reviewer's task carries names (stuckMergeStateReason). The notice of a head
-// GitHub will not merge from names the same runs as fields (ReviewStuckNotice), where the
-// settlement's own checks would not be true: a settlement standing for the head can be of the code
-// head below it, and a name whose newest run is there ran on other heads of the tree and not on
-// this one. What GitHub weighs for the merge is the current head, so that is the head whose
-// checks are named, and a required check whose run is missing here is the thing its reader looks
-// for.
-//
-// Each run of the fence carries the head it ran on and its conclusion (record.AttemptRun), so
-// this is a reading of the fence and not of a settlement, through classify.HeadRuns, the one test
-// of a run's head the daemon's readers share: a check run on this head that a newer run of the
-// same name on another head has replaced in the fence is not named, and nor is a run stored before
-// the fence carried its head. Each name is quoted as a Go string (strconv.Quote), since the line
-// is read into an agent's prompt.
-func headChecks(pr record.PullRequest) string {
-	conclusions := headRuns(pr)
-	if len(conclusions) == 0 {
-		return ""
-	}
-	names := slices.Sorted(maps.Keys(conclusions))
-	for i, name := range names {
-		names[i] = strconv.Quote(name) + " " + string(conclusions[name])
-	}
-	return "GitHub reported on head " + pr.HeadSHA + ": " + strings.Join(names, ", ")
 }
 
 // tellChecks tells the roles that work the issue what the settlement now standing for the pull
@@ -622,7 +592,8 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 	if !record.StandsIn(*issue, phase.Reviewing) {
 		return intake.Result{}, nil
 	}
-	reviewer.Decision = &record.ReviewDecision{State: state, Body: fact.Body, Head: e.reviewHead(fact)}
+	reviewer.Decision = &record.ReviewDecision{State: state, Body: fact.Body, Head: e.reviewHead(fact), Author: fact.Author,
+		Person: !e.byReviewApp(fact.Author), SubmittedAt: fact.SubmittedAt, BodyCut: fact.BodyTruncated}
 	if err := e.store.PutPhase(ctx, tx, reviewer); err != nil {
 		return intake.Result{}, err
 	}
@@ -701,8 +672,9 @@ func (c stuckCause) word() string {
 }
 
 // round is reviewRound's account of a review round. A stuck round names its cause, the head it is
-// stuck at, the merge state GitHub gave for that head, and the reason a restarted reviewer's task
-// carries of it (retryPhase). waitsOnMergeState is the one thing the round is owed from
+// stuck at, the merge state GitHub gave for that head, and, where its approval is of other code,
+// the head the reviewer approved, which a restarted reviewer's task names (retryPhase).
+// waitsOnMergeState is the one thing the round is owed from
 // outside the record: an approval that stands on the head with GitHub's answer for it not one the
 // issue may advance on, which the daemon reads GitHub for (settleRound, daemon's readMergeState).
 // It is set for the round that waits for a first answer and for the stuck one alike, since the
@@ -715,8 +687,15 @@ type round struct {
 	cause             stuckCause
 	head              string
 	state             record.MergeState
-	reason            string
+	approved          string
+	setAside          string
 	waitsOnMergeState bool
+}
+
+// stuck is r as the task of its restarted reviewer names a stuck round (StuckRound): an APPROVE of
+// the head or a REQUEST_CHANGES ends every stuck round but the one GitHub will not merge from.
+func (r round) stuck() *StuckRound {
+	return &StuckRound{Cause: r.cause.word(), Head: r.head, Approved: r.approved, EndsRound: r.cause != stuckMergeState, SetAside: r.setAside}
 }
 
 // stuckAs says whether r is stuck in the same way as other: the same cause at the same head. A
@@ -730,33 +709,6 @@ type round struct {
 func (r round) stuckAs(other round) bool {
 	return r.outcome == roundStuck && other.outcome == roundStuck &&
 		r.cause == other.cause && r.head == other.head
-}
-
-// stuckMergeStateReason is what the architect and the reviewer are told of an approval standing
-// on a head GitHub answers for with a merge state it would not merge from: the head, the pull
-// request, the state in GitHub's own spelling, and every check run GitHub reported on that head
-// with the conclusion it came to (headChecks), which is the whole of what the daemon knows of
-// the head's own CI. There is always one to name: the only caller builds this reason for a round
-// it has already reported a head for, which it does only once GitHub has reported a check run on
-// that head itself and every one of them has concluded (reviewRound,
-// classify.ChecksConcludedOnHead), and that gate and headChecks read the same runs of the fence
-// (classify.HeadRuns), so headChecks names at least the run the gate found.
-//
-// It names the head's own check runs rather than everything the settlement standing for the head
-// reports, which can be the code head's below it: GitHub weighs the current head for the merge,
-// so a name whose newest run ran on another head of the tree says nothing about why this head is
-// held, and naming it here would read as a run GitHub made on this one.
-//
-// The daemon reads no repository ruleset, so it does not know which checks the base requires
-// (dispatch://INFRA-714/spec R1): a required check that has never run is in no list GitHub gives
-// for the head, so it is simply absent from the checks named here. The reason says so, because a
-// reader who does not know that would take a short list for the daemon leaving something out
-// rather than for the finding it is - the check that is missing is the one to look for. It says
-// nothing of what clears the state: a push that earns what the base requires is one way, and a
-// check the base requires finishing on the head as it stands is another.
-func stuckMergeStateReason(pr record.PullRequest) string {
-	return fmt.Sprintf("the reviewer approved head %s on pull request #%d, and GitHub reports that head %s rather than one it would merge. %s. The daemon reads no ruleset and so names no required check: one the base requires that has never run is in nothing GitHub reports for the head, so it is absent here rather than named as missing, which makes the missing check the thing to look for. The issue waits in reviewing until GitHub reports the head clean, unstable or has_hooks",
-		pr.HeadSHA, pr.Number, pr.MergeState, headChecks(pr))
 }
 
 // reviewRound is what issue's review round comes to, row being its reviewer's and pr its pull
@@ -841,32 +793,19 @@ func (e *Engine) reviewRound(issue record.Issue, row record.PhaseRow, pr *record
 			return round{waitsOnMergeState: true}
 		}
 		return round{outcome: roundStuck, cause: stuckMergeState, head: pr.HeadSHA, state: pr.MergeState,
-			waitsOnMergeState: true, reason: stuckMergeStateReason(*pr)}
+			waitsOnMergeState: true}
 	case !completed:
 		return round{}
 	case decided == "":
-		return round{outcome: roundStuck, cause: stuckUndecided, head: pr.HeadSHA, reason: undecidedReason(row, *pr)}
+		stuck := round{outcome: roundStuck, cause: stuckUndecided, head: pr.HeadSHA}
+		if row.Decision != nil {
+			stuck.setAside = row.Decision.Refused
+		}
+		return stuck
 	case classify.ApprovalSetAside(*pr, row.Decision.Head):
-		return round{outcome: roundStuck, cause: stuckApprovedOtherCode, head: pr.HeadSHA,
-			reason: fmt.Sprintf("the reviewer approved %s on pull request #%d, which does not approve head %s: a push since may have changed code, so only an APPROVE of %s or a REQUEST_CHANGES ends the round",
-				row.Decision.Head, pr.Number, pr.HeadSHA, pr.HeadSHA)}
+		return round{outcome: roundStuck, cause: stuckApprovedOtherCode, head: pr.HeadSHA, approved: row.Decision.Head}
 	}
 	return round{}
-}
-
-// undecidedReason is what the architect is told of a round its reviewer completed with no review
-// that decided it (stuckUndecided): what would end the round, and, when the daemon set a review
-// aside that would otherwise have decided it, why it did (record.ReviewDecision.Refused). The
-// refusal is the only thing that says why the round has no decision - the review is on GitHub,
-// approving what looks like the head - so a reader who was not told it would look for a review
-// that never came.
-func undecidedReason(row record.PhaseRow, pr record.PullRequest) string {
-	reason := fmt.Sprintf("the reviewer completed its round on pull request #%d with no review that decides it: only an APPROVE of head %s or a REQUEST_CHANGES ends the round, from an account with write access to the repository or from the reviewer's own session as the review App (its Legion footer naming the session recorded on the reviewer's claim, and naming %s as the head it read: a review-App review whose footer names no head, or another head, is set aside and decides nothing, since GitHub's commit_id for a review moves with the pull request), and a COMMENT decides nothing",
-		pr.Number, pr.HeadSHA, pr.HeadSHA)
-	if row.Decision != nil && row.Decision.Refused != "" {
-		reason += "; a review that would otherwise have decided this round was set aside - " + row.Decision.Refused
-	}
-	return reason
 }
 
 // implementationReady moves issue from implementing to testing on the implementer's completion of
@@ -901,7 +840,7 @@ func (e *Engine) settleRound(ctx context.Context, tx pgx.Tx, issue record.Issue,
 		if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
 			return false, err
 		}
-		return true, e.transition(ctx, tx, issue, TriggerReviewRejected, "", row, pr, row.Decision.Body)
+		return true, e.transition(ctx, tx, issue, TriggerReviewRejected, "", row, pr, "")
 	case roundApproved:
 		return true, e.transition(ctx, tx, issue, TriggerReviewApproved, "", row, pr, "")
 	case roundStuck:

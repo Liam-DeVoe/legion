@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // firedHook is the row a hook of the deployment writes when it fires on a move back: the words of
@@ -44,10 +45,11 @@ func TestAHookPromptReachesItsRolesOwnTopicAndEndsTheRow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the hook prompt's text: %v", err)
 	}
-	if published[0].message != want || published[0].payload != any(want) {
-		t.Fatalf("the implementer was told\n\t%q\nwant\n\t%q", published[0].message, want)
+	if published[0].message != "hook-prompt on LEGION-208" || published[0].payload != any(want) || published[0].urgency != texts.Med {
+		t.Fatalf("the implementer was told %q at %q with\n\t%#v\nwant hook-prompt on LEGION-208 at med with\n\t%q",
+			published[0].message, published[0].urgency, published[0].payload, want)
 	}
-	t.Logf("the implementer was told: %s", published[0].message)
+	t.Logf("the implementer was told %s: %s", published[0].message, published[0].payload)
 	if _, ok := record.ParseOutboxKey(published[0].key); !ok {
 		t.Fatalf("the prompt went under key %q, want its row's own (legion-outbox:<id>): a retried row is one delivery", published[0].key)
 	}

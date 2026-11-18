@@ -1,6 +1,7 @@
 package supervise
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -551,11 +552,11 @@ func TestForgettingTheSessionStartsTheRunOfProviderErrorsAgain(t *testing.T) {
 func TestTheSixthProviderErrorTurnInARowTellsTheControllerOnce(t *testing.T) {
 	type told struct {
 		claim  Claim
-		reason string
+		notice texts.ProviderErrorsRecord
 	}
 	var notices []told
 	h := workingClaim(t, func(d *Deps) {
-		d.ProviderErrorRunReached = func(c Claim, reason string) { notices = append(notices, told{c, reason}) }
+		d.ProviderErrorRunReached = func(c Claim, notice texts.ProviderErrorsRecord) { notices = append(notices, told{c, notice}) }
 	})
 
 	sent := 1
@@ -575,15 +576,15 @@ func TestTheSixthProviderErrorTurnInARowTellsTheControllerOnce(t *testing.T) {
 	if notice.claim.Issue != "LEGION-209" || notice.claim.Role != claim.RoleImplementer {
 		t.Errorf("the notice names %s of %s, want the implementer of LEGION-209", notice.claim.Role, notice.claim.Issue)
 	}
-	// The cause is what the error's own fields give, and a content filter's refusal carries no
+	// The facts are what the error's own fields give, and a content filter's refusal carries no
 	// status at all, so the notice names neither a status nor the filter's own words.
-	for _, want := range []string{"6 turns in a row", "claude-opus-4-8", "ended in a provider error"} {
-		if !strings.Contains(notice.reason, want) {
-			t.Errorf("the reason is %q, want it to name %q", notice.reason, want)
-		}
+	want := texts.ProviderErrorsRecord{NoticeHead: texts.NoticeHead{Kind: texts.ProviderErrors, Issue: "LEGION-209"},
+		Role: claim.RoleImplementer, Turns: providerErrorRunTold, Model: "claude-opus-4-8", RetryEvery: promptRetryMax.String()}
+	if notice.notice != want {
+		t.Errorf("the notice is %+v, want %+v", notice.notice, want)
 	}
-	if strings.Contains(notice.reason, "reasoning_extraction") {
-		t.Errorf("the reason is %q, want none of the provider's own words", notice.reason)
+	if encoded, err := json.Marshal(notice.notice); err != nil || strings.Contains(string(encoded), "reasoning_extraction") {
+		t.Errorf("the notice is %s (%v), want none of the provider's own words", encoded, err)
 	}
 	if got := h.claim().ProviderErrorRun; got != 7 {
 		t.Errorf("the run of provider errors is %d, want 7: the notice bounds nothing", got)

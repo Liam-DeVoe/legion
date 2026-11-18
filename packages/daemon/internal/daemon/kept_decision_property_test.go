@@ -29,6 +29,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
@@ -218,7 +219,7 @@ type keptPublisher struct {
 	genErr    error
 }
 
-func (p *keptPublisher) Publish(_ context.Context, topic, message string, payload any, key string) error {
+func (p *keptPublisher) Publish(_ context.Context, topic, message string, payload any, urgency texts.Urgency, key string) error {
 	notice, isNotice := payload.(record.Notice)
 	catchUp := isNotice && notice.CatchUp != nil
 	var raced *keptRace
@@ -250,7 +251,7 @@ func (p *keptPublisher) Publish(_ context.Context, topic, message string, payloa
 	if err != nil {
 		return err
 	}
-	p.delivered = append(p.delivered, outboxPublish{topic: topic, message: message, key: key, payload: payload})
+	p.delivered = append(p.delivered, outboxPublish{topic: topic, message: message, key: key, payload: payload, urgency: urgency})
 	return nil
 }
 

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"reflect"
 	"strconv"
-	"strings"
 	"testing"
 	"time"
 
@@ -338,15 +337,15 @@ func TestAConflictingHeadSendsTheIssueBackToImplementingFromEveryLaterPhase(t *t
 				}
 				return
 			}
-			want := "the head conflicts with main: GitHub runs no checks on it; merge main forward"
+			want := []string{"conflicts_with: main", "head: head", "pull_request: sjawhar/legion#42"}
 			red := checksRedNotice(t, pool)
 			var status, posted string
 			if err := pool.QueryRow(context.Background(),
 				"select payload->>'status', coalesce(payload->>'reason', '') from outbox where kind = 'dispatch_status'").Scan(&status, &posted); err != nil {
 				t.Fatalf("read the status write: %v", err)
 			}
-			if task := implementerTask(t, pool); !strings.Contains(task, want) || status != "in_progress" {
-				t.Fatalf("task %q, status %q; want the task to say %q and the issue in_progress", task, status, want)
+			if task := implementerTask(t, pool); !hasLines(task, want...) || status != "in_progress" {
+				t.Fatalf("task %q, status %q; want the task to name %q and the issue in_progress", task, status, want)
 			}
 			if red.Phase != tc.from || red.ConflictsWith != "main" || red.Head != "head" || red.PullRequest != "sjawhar/legion#42" ||
 				red.Issue != "LEGION-208" || red.Role != "" || red.Reason != "" {

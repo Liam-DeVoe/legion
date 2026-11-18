@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // holderPublisher is the listener as a role publish meets it: a role topic in absent has no live
@@ -33,14 +34,14 @@ type holderPublisher struct {
 	delivered []outboxPublish
 }
 
-func (p *holderPublisher) Publish(_ context.Context, topic, message string, payload any, key string) error {
+func (p *holderPublisher) Publish(_ context.Context, topic, message string, payload any, urgency texts.Urgency, key string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.attempts++
 	if p.absent[topic] {
 		return fmt.Errorf("publish notice to %s: listener returned 404 Not Found: {\"reason\":\"unclaimed\"}: %w", topic, notify.ErrNoHolder)
 	}
-	p.delivered = append(p.delivered, outboxPublish{topic: topic, message: message, key: key, payload: payload})
+	p.delivered = append(p.delivered, outboxPublish{topic: topic, message: message, key: key, payload: payload, urgency: urgency})
 	return nil
 }
 

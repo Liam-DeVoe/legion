@@ -1241,7 +1241,7 @@ func ApplyDesignGateEvent(gate record.DesignGate, kind DesignGateEventKind, vers
 }
 
 func clearChangesTold(gate record.DesignGate) record.DesignGate {
-	gate.ToldChangesVersion, gate.ToldChangesReason, gate.ToldChangesMark = nil, "", record.EventMark{}
+	gate.ToldChangesVersion, gate.ToldChangesReason, gate.ToldChangesBy, gate.ToldChangesMark = nil, "", "", record.EventMark{}
 	return gate
 }
 
@@ -1292,17 +1292,21 @@ func DesignGateChangesTold(gate record.DesignGate, version int, reason string, m
 }
 
 // RecordChangesTold records on the gate the changes request the architect is being told of, or has
-// been, so a later read of the same review (a registration's or the gate seed's) tells it nothing
-// again. A review the gate already records keeps its record, completed with what this read adds of
-// its mark (record.EventMark.Merged), so the review's live event and a read that showed only its
-// time are one review, recorded with both.
-func RecordChangesTold(gate record.DesignGate, version int, reason string, mark record.EventMark) record.DesignGate {
+// been, with who made it (by, Dispatch's name of the review's actor), so a later read of the same
+// review (a registration's or the gate seed's) tells it nothing again. A review the gate already
+// records keeps its record, completed with what this read adds of its mark
+// (record.EventMark.Merged) and of its author, so the review's live event and a read that showed
+// only its time are one review, recorded with both.
+func RecordChangesTold(gate record.DesignGate, version int, reason, by string, mark record.EventMark) record.DesignGate {
 	if DesignGateChangesTold(gate, version, reason, mark) {
 		gate.ToldChangesMark = gate.ToldChangesMark.Merged(mark)
+		if by != "" {
+			gate.ToldChangesBy = by
+		}
 		return gate
 	}
 	told := version
-	gate.ToldChangesVersion, gate.ToldChangesReason, gate.ToldChangesMark = &told, reason, mark
+	gate.ToldChangesVersion, gate.ToldChangesReason, gate.ToldChangesBy, gate.ToldChangesMark = &told, reason, by, mark
 	return gate
 }
 

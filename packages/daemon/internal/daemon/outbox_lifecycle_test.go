@@ -486,7 +486,7 @@ func TestAConflictStartsTheImplementerWhileTheTesterIsStillInItsTurn(t *testing.
 		t.Helper()
 		count := 0
 		for _, prompt := range implementerConn.Prompts() {
-			if strings.Contains(prompt.Message, "Phase: implementing.") && strings.Contains(prompt.Message, "the head conflicts with main") {
+			if strings.Contains(prompt.Message, "\nphase: "+string(phase.Implementing)) && strings.Contains(prompt.Message, "\nconflicts_with: main") {
 				count++
 			}
 		}

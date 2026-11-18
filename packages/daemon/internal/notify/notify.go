@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/roleholder"
+
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 const requestTimeout = 10 * time.Second
@@ -175,9 +177,10 @@ func ControllerTopic(project string) string {
 	return "notifications.legion." + project + ".controller"
 }
 
-// Publisher delivers a notice to one listener topic.
+// Publisher delivers a notice to one listener topic. urgency is the envelope's urgency, the
+// one the list gives the text's kind for its reader (texts.UrgencyOf), and "" for none.
 type Publisher interface {
-	Publish(ctx context.Context, topic, message string, payload any, dedupeKey string) error
+	Publish(ctx context.Context, topic, message string, payload any, urgency texts.Urgency, dedupeKey string) error
 }
 
 // HTTPPublisher calls the Envoy listener's publish route.
@@ -194,6 +197,11 @@ func New(baseURL, token string) *HTTPPublisher {
 }
 
 // Publish posts the listener envelope that preserves the outbox row's idempotent delivery key.
+//
+// It sends urgency as the envelope's urgency, and sends none where it is "": the listener refuses
+// an empty urgency (validateMessageBody, packages/envoy/cmd/listener/api.go), and an envelope
+// with none is read as med. A low publish, which carries no sender session, raises no wake
+// report for a role no live session holds (the listener's wakesItsRole).
 //
 // It sends keep: false, so the listener refuses a role nobody holds with its 404 (ErrNoHolder
 // below) instead of keeping the message for the role's next holder. The daemon keeps its own
@@ -212,7 +220,7 @@ func New(baseURL, token string) *HTTPPublisher {
 // first leaves no window in which two keepers hold one message. Measured on a live listener by
 // INFRA-839's tester on 2026-10-31: the old publisher got `listener returned 202 Accepted` with
 // errors.Is(err, ErrNoHolder) false, and the kept lane then held that message.
-func (p *HTTPPublisher) Publish(ctx context.Context, topic, message string, payload any, dedupeKey string) error {
+func (p *HTTPPublisher) Publish(ctx context.Context, topic, message string, payload any, urgency texts.Urgency, dedupeKey string) error {
 	// The listener carries a payload as a JSON document in a string (its messageBody,
 	// packages/envoy/cmd/listener/api.go:68-80); an object there is refused as invalid JSON.
 	encoded, err := json.Marshal(payload)
@@ -220,12 +228,13 @@ func (p *HTTPPublisher) Publish(ctx context.Context, topic, message string, payl
 		return fmt.Errorf("encode notice payload for %s: %w", topic, err)
 	}
 	body, err := json.Marshal(struct {
-		Topic     string `json:"topic"`
-		Message   string `json:"message"`
-		Payload   string `json:"payload"`
-		DedupeKey string `json:"dedupe_key"`
-		Keep      bool   `json:"keep"`
-	}{Topic: topic, Message: message, Payload: string(encoded), DedupeKey: dedupeKey, Keep: false})
+		Topic     string        `json:"topic"`
+		Message   string        `json:"message"`
+		Payload   string        `json:"payload"`
+		Urgency   texts.Urgency `json:"urgency,omitempty"`
+		DedupeKey string        `json:"dedupe_key"`
+		Keep      bool          `json:"keep"`
+	}{Topic: topic, Message: message, Payload: string(encoded), Urgency: urgency, DedupeKey: dedupeKey, Keep: false})
 	if err != nil {
 		return fmt.Errorf("encode notice for %s: %w", topic, err)
 	}

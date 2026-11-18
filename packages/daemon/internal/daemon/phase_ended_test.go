@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -20,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -31,12 +33,10 @@ import (
 // the same drain as the start: the tester in testing, the reviewer in reviewing whether or not it
 // completed its round, the merger in merging, and the implementer in retro, which is told besides
 // that its implementing task follows. The row states the conflict as facts: the base the head
-// conflicts with, the head and the pull request (record.PhaseEnded.Record), and no reason. The
-// message the runner publishes today is the daemon's own sentence, whose first line is pinned
-// here for each of the five (T7 publishes the row's record instead). It is no architect notice:
-// the architect's own notice goes out beside it, to the architect's topic.
+// conflicts with, the head and the pull request (record.PhaseEnded.Record), and no reason, and
+// the runner publishes that record under the summary `phase-ended on <KEY>`. It is no architect
+// notice: the architect's own notice goes out beside it, to the architect's topic.
 func TestAConflictTellsTheRoleWhosePhaseEndedOnItsOwnTopic(t *testing.T) {
-	const why = "the head conflicts with main: GitHub runs no checks on it; merge main forward"
 	for _, tc := range []struct {
 		name   string
 		from   phase.Phase
@@ -44,19 +44,13 @@ func TestAConflictTellsTheRoleWhosePhaseEndedOnItsOwnTopic(t *testing.T) {
 		role   claim.Role
 		// uncompleted seeds the reviewer's row without its completion: its round still at work.
 		uncompleted bool
-		message     string
+		follows     bool
 	}{
-		{name: "the tester in testing", from: phase.Testing, status: "testing", role: claim.RoleTester,
-			message: "LEGION-208: the daemon ended your testing phase, and the issue is in implementing now."},
-		{name: "the reviewer in a round it completed", from: phase.Reviewing, status: "needs_review", role: claim.RoleReviewer,
-			message: "LEGION-208: the daemon ended your reviewing phase, and the issue is in implementing now."},
-		{name: "the reviewer in a round it did not complete", from: phase.Reviewing, status: "needs_review", role: claim.RoleReviewer, uncompleted: true,
-			message: "LEGION-208: the daemon ended your reviewing phase, and the issue is in implementing now."},
-		{name: "the merger in merging", from: phase.Merging, status: "retro", role: claim.RoleMerger,
-			message: "LEGION-208: the daemon ended your merging phase, and the issue is in implementing now."},
-		{name: "the implementer in retro", from: phase.Retro, status: "retro", role: claim.RoleImplementer,
-			message: "LEGION-208: the daemon ended your retro phase, and the issue is in implementing now." +
-				" Your implementing task follows."},
+		{name: "the tester in testing", from: phase.Testing, status: "testing", role: claim.RoleTester},
+		{name: "the reviewer in a round it completed", from: phase.Reviewing, status: "needs_review", role: claim.RoleReviewer},
+		{name: "the reviewer in a round it did not complete", from: phase.Reviewing, status: "needs_review", role: claim.RoleReviewer, uncompleted: true},
+		{name: "the merger in merging", from: phase.Merging, status: "retro", role: claim.RoleMerger},
+		{name: "the implementer in retro", from: phase.Retro, status: "retro", role: claim.RoleImplementer, follows: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -86,7 +80,7 @@ func TestAConflictTellsTheRoleWhosePhaseEndedOnItsOwnTopic(t *testing.T) {
 			// granted, and the implementer holds the conflict task.
 			implementer.Wait()
 			held := implementer.Claim()
-			if held.Pending == nil || !strings.Contains(held.Pending.Task, "Phase: implementing.") || !strings.Contains(held.Pending.Task, why) {
+			if held.Pending == nil || !slices.Contains(strings.Split(held.Pending.Task, "\n"), "phase: "+string(phase.Implementing)) || !slices.Contains(strings.Split(held.Pending.Task, "\n"), "conflicts_with: main") {
 				t.Fatalf("the implementer is %s holding %+v, want the implementing task naming the conflict: its start waits for nothing once its slot is held", held.State, held.Pending)
 			}
 			topic := notify.RoleTopicPrefix + string(mustClaimToken(t, "LEGION-208", tc.role))
@@ -99,10 +93,13 @@ func TestAConflictTellsTheRoleWhosePhaseEndedOnItsOwnTopic(t *testing.T) {
 			if len(told) != 1 {
 				t.Fatalf("publishes to %s = %#v, want the one phase-ended message", topic, told)
 			}
-			if !strings.HasPrefix(told[0].message, tc.message) || told[0].payload != any(told[0].message) {
-				t.Fatalf("the %s was told\n\t%q\nwant it to begin\n\t%q", tc.role, told[0].message, tc.message)
+			told0, isRecord := told[0].payload.(texts.PhaseEndedRecord)
+			if told[0].message != "phase-ended on LEGION-208" || !isRecord || told0 != ended[0].Record("LEGION-208") ||
+				told0.From != tc.from || told0.To != phase.Implementing || told0.TaskFollows != tc.follows {
+				t.Fatalf("the %s was told %q with %#v, want phase-ended on LEGION-208 with the row's record %+v, its task following %t",
+					tc.role, told[0].message, told[0].payload, ended[0].Record("LEGION-208"), tc.follows)
 			}
-			t.Logf("the %s was told: %s", tc.role, told[0].message)
+			t.Logf("the %s was told %s: %+v", tc.role, told[0].message, told0)
 			if _, ok := record.ParseOutboxKey(told[0].key); !ok {
 				t.Fatalf("the message went under key %q, want its row's own (legion-outbox:<id>): a retried row is one delivery", told[0].key)
 			}
@@ -141,7 +138,7 @@ func TestAPhaseEndedMessageNobodyHoldsEndsAndTheStartGoesOn(t *testing.T) {
 	}
 
 	implementer.Wait()
-	if pending := implementer.Claim().Pending; pending == nil || !strings.Contains(pending.Task, "Phase: implementing.") {
+	if pending := implementer.Claim().Pending; pending == nil || !slices.Contains(strings.Split(pending.Task, "\n"), "phase: "+string(phase.Implementing)) {
 		t.Fatalf("the implementer holds %+v, want its implementing task: the message nobody took holds back no start", pending)
 	}
 	attempts, delivered := publisher.snapshot()

@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -360,7 +359,7 @@ func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause 
 		}
 		follow, told = rule.refused(scoped, r, row, value, cause)
 	case record.MessagePost:
-		notice, err := record.NewOutboxRow(row.Issue, messagePostRefused(row.Issue, value, cause), r.now().UTC())
+		notice, err := refusedNoticeRow(row.Issue, messagePostRefused(row.Issue, value, cause), r.now().UTC())
 		if err != nil {
 			return err
 		}
@@ -426,20 +425,20 @@ func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause 
 }
 
 // messageRefusedPreview is how much of a refused message's first line its notice quotes: enough to
-// know which message it was, short enough that the notice is one readable paragraph whatever the
-// message was.
+// know which message it was, short enough that the notice stays short whatever the message was.
 const messageRefusedPreview = 200
 
 // messagePostRefused is the architect's notice of a Dispatch message the daemon could not post:
 // Dispatch refused the body the way it would refuse every attempt (dispatch.PermanentRefusal), a
 // block over its own bound among them, so the row is finished and the message is on no issue.
 // Nothing else would tell anyone, since the message is the daemon's only word on the issue for
-// what it carries. The reason names the issue, how long the message is, its first line (a READY
-// packet opens with its own `READY #<n> at <sha>` line) and Dispatch's own refusal.
-func messagePostRefused(issue string, payload record.MessagePost, cause error) record.Notice {
-	return record.Notice{Kind: "message-refused", Role: claim.RoleArchitect,
-		Reason: fmt.Sprintf("Dispatch refused the message Legion was posting on %s, so it is on no issue and the daemon will not post it again. The message is %d characters and begins %q. Dispatch answered: %s",
-			issue, utf8.RuneCountInString(payload.Body), refusedPreview(payload.Body), cause)}
+// what it carries. The record names what was refused, Dispatch's own refusal, how long the
+// message is in characters and its first line (a READY packet opens with its own
+// `READY #<n> at <sha>` line).
+func messagePostRefused(issue string, payload record.MessagePost, cause error) texts.MessageRefusedRecord {
+	return texts.MessageRefusedRecord{NoticeHead: texts.NoticeHead{Kind: texts.MessageRefused, Issue: issue},
+		Refused: texts.RefusedMessage, DispatchAnswer: cause.Error(),
+		Length: utf8.RuneCountInString(payload.Body), Begins: refusedPreview(payload.Body)}
 }
 
 // refusedPreview is the first line of a body a notice quotes, cut to messageRefusedPreview.
@@ -449,6 +448,16 @@ func refusedPreview(body string) string {
 		return string(runes[:messageRefusedPreview]) + "…"
 	}
 	return first
+}
+
+// refusedNoticeRow is the outbox row of a message-refused notice (messagePostRefused,
+// statusWriteRefused) on issue, due at at.
+func refusedNoticeRow(issue string, refused texts.MessageRefusedRecord, at time.Time) (record.OutboxRow, error) {
+	notice, err := record.NoticeOf(refused)
+	if err != nil {
+		return record.OutboxRow{}, err
+	}
+	return record.NewOutboxRow(issue, notice, at)
 }
 
 // statusWrites is which of a status row's two writes — the reason posted beside the status, and
@@ -484,30 +493,24 @@ func (e *statusWriteFailure) Error() string { return e.err.Error() }
 func (e *statusWriteFailure) Unwrap() error { return e.err }
 
 // statusWriteRefused is the architect's notice of a status row Dispatch refused: what it refused,
-// and which of the row's two writes stand (wrote, which finishRefused reads off the failure).
-// Each outcome leaves the architect something else to do. A reason refused beside a status that
-// is set leaves the daemon's only word on why the issue ended on no issue, so the notice says how
-// long that reason was and how it began, and the architect posts what a person still needs
-// itself. A status Dispatch refused leaves the issue at the status it had while the daemon's own
+// Dispatch's answer, the status, and which of the row's two writes stand (wrote, which
+// finishRefused reads off the failure). Each outcome leaves the architect something else to do
+// (its prompt says what). A reason refused beside a status that is set leaves the daemon's only
+// word on why the issue ended on no issue, so the notice gives how long that reason was and how
+// it began. A status Dispatch refused leaves the issue at the status it had while the daemon's own
 // record reads the one the row wrote, which only a person's move on the issue settles, and the
-// reason beside it may be posted already, which nobody should post a second time.
-func statusWriteRefused(issue string, payload record.StatusWrite, cause error, wrote statusWrites) record.Notice {
-	told := fmt.Sprintf("Dispatch refused a write Legion was making on %s and the daemon will not make it again. Dispatch answered: %s.", issue, cause)
-	if wrote.status {
-		told += fmt.Sprintf(" The status %s was set on the issue all the same.", payload.Status)
-	} else {
-		told += fmt.Sprintf(" The status %s is not set, so the issue keeps the status it has while the daemon's own record reads %s: the two disagree, and settling that is yours — ask a person with `dispatch ask` to set the status on the issue.",
-			payload.Status, payload.Status)
-	}
+// reason beside it may be posted already, which nobody should post a second time. A row that
+// carries no reason names none (reason_posted absent).
+func statusWriteRefused(issue string, payload record.StatusWrite, cause error, wrote statusWrites) texts.MessageRefusedRecord {
+	refused := texts.MessageRefusedRecord{NoticeHead: texts.NoticeHead{Kind: texts.MessageRefused, Issue: issue},
+		Refused: texts.RefusedStatus, DispatchAnswer: cause.Error(), Status: payload.Status, StatusSet: &wrote.status}
 	if payload.Reason != "" {
-		if wrote.reason {
-			told += " The reason the write posts beside the status is on the issue already, so no one need post it again."
-		} else {
-			told += fmt.Sprintf(" The reason the write posts beside the status is on no issue. It is %d characters and begins %q; post what a person still needs yourself.",
-				utf8.RuneCountInString(payload.Reason), refusedPreview(payload.Reason))
+		refused.ReasonPosted = &wrote.reason
+		if !wrote.reason {
+			refused.Length, refused.Begins = utf8.RuneCountInString(payload.Reason), refusedPreview(payload.Reason)
 		}
 	}
-	return record.Notice{Kind: "message-refused", Role: claim.RoleArchitect, Reason: told}
+	return refused
 }
 
 // statusRefusalTold is the architect's notice of a status row Dispatch refused for good, which
@@ -523,7 +526,7 @@ func statusRefusalTold(ctx context.Context, r *outbox, row record.OutboxRow, pay
 	if errors.As(cause, &failure) {
 		wrote = failure.wrote
 	}
-	notice, err := record.NewOutboxRow(row.Issue, statusWriteRefused(row.Issue, payload, cause, wrote), r.now().UTC())
+	notice, err := refusedNoticeRow(row.Issue, statusWriteRefused(row.Issue, payload, cause, wrote), r.now().UTC())
 	if err != nil {
 		return func(pgx.Tx) error { return err }, nil
 	}
@@ -1444,8 +1447,23 @@ func (r *outbox) wakeRan(row record.OutboxRow, notice record.Notice) {
 	r.log.Info(supervise.WakeRanMessage, fields...)
 }
 
+// lowNoticeRecheck is how long a low notice to a released architect waits before its row checks
+// the claim again (deliverNotice). The architect's next ready makes it due before then
+// (releaseWaiting), so the hour bounds only how long a claim that failed, retired or whose tree
+// lingers keeps the row before the row ends.
+const lowNoticeRecheck = time.Hour
+
 // deliverNotice is the notice executor's own work: routing the notice, publishing it, and settling
 // what a catch-up that will never publish named. Its endings are notice's to read.
+//
+// The notice goes at the urgency the list gives its kind for the architect (noticeUrgency). A low
+// notice whose architect is released for delivery (releasedForDelivery) is not published and
+// wakes no pod: its row waits an hour (lowNoticeRecheck) for the architect's next ready, which
+// makes it due at once (releaseWaiting). The hour is a check again, not a backoff: each check
+// publishes nothing while the claim stays released, and a claim that has failed, retired or
+// whose tree lingers is released for delivery no longer, so the row then goes the way a med
+// notice goes and ends (noticeAnswered's architectEnded). Where the architect has no live
+// session and is not released, a low notice is held and published as a med one is.
 func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payload record.Notice) error {
 	if r.notices == nil {
 		return errors.New("notice executor has no Envoy publisher")
@@ -1510,15 +1528,24 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 			"row", row.ID, "kind", payload.Kind, "issue", row.Issue, "architect", architect, "state", held.State, "stopping", held.Stopping)
 		return nil
 	}
-	// A notice whose owning architect's pod was released is that architect's still (holdsRole),
-	// and this is the wake that brings it back for it: the row waits on its backoff, as it waits
-	// for an architect that is relaunching, and publishes once the woken session holds its role.
-	if woken, err := r.wakeForDelivery(ctx, architect, "a notice of "+row.Issue); err != nil {
+	// A notice whose owning architect's pod was released is that architect's still (holdsRole). A
+	// med notice's row wakes the pod for it, waits on its backoff, as it waits for an architect that
+	// is relaunching, and publishes once the woken session holds its role. A low notice's row
+	// wakes nothing and waits for the architect's next ready.
+	urgency := noticeUrgency(payload, claim.RoleArchitect)
+	if urgency == texts.Low {
+		if _, released, err := r.releasedForDelivery(ctx, architect); err != nil {
+			return err
+		} else if released {
+			return routineWaiting{err: wait.Until(r.now().UTC().Add(lowNoticeRecheck), fmt.Sprintf(
+				"%s's low %s notice row %d waits for its released architect's next ready, and wakes nothing", architect, payload.Kind, row.ID))}
+		}
+	} else if woken, err := r.wakeForDelivery(ctx, architect, "a notice of "+row.Issue); err != nil {
 		return err
 	} else if woken {
 		return fmt.Errorf("%w: %s's pod was released and is coming back for notice row %d", errNoticeWaits, architect, row.ID)
 	}
-	if earlier, due := earlierNoticeFor(tree, architect, r.holdsItsRole); earlier != 0 {
+	if earlier, due := earlierNoticeFor(tree, architect, r.holdsItsRole, supervise.SaidReady(r.claimState(architect)), r.now); earlier != 0 {
 		// The row the fence holds this one behind is due at a known moment when the wake pacing
 		// holds it (record.Notice.PacedAt): this row runs once, then, rather than climbing its
 		// backoff to it — over a hold of tens of minutes that is a Warn every attempt from the
@@ -1530,15 +1557,18 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 		}
 		return fmt.Errorf("%w: %s's notice row %d waits behind its row %d", errNoticeWaits, architect, row.ID, earlier)
 	}
-	published := r.notices.Publish(ctx, notify.RoleTopicPrefix+string(architect), noticeSummary(payload.Kind, row.Issue), notice, key)
+	published := r.notices.Publish(ctx, notify.RoleTopicPrefix+string(architect), noticeSummary(payload.Kind, row.Issue), notice, urgency, key)
 	return r.noticeAnswered(ctx, row, payload, tree, architect, published)
 }
 
 // roleMessage publishes one message to a role's topic, keyed by the row so a retried row is one
 // delivery (record.RoleMessage). A row of a kind is published as its kind's record, an object
 // (record.RoleMessage.Record, in the record's own field order), under the summary
-// `<kind> on <KEY>` a notice goes under (noticeSummary); a row of no kind, which a daemon before
-// the list queued, is published as its body, as it was. A role with no live holder is told
+// `<kind> on <KEY>` a notice goes under (noticeSummary), at the urgency its builder stored on it
+// for its reader (record.RoleMessage.Urgency); a row of no kind, which a daemon before the list
+// queued, is published as its body, as it was, at med. A low message wakes nothing here, nor
+// does a med one: the publish is the whole delivery, and a role no live session holds is the
+// listener's to wake or not by the urgency (its wakesItsRole). A role with no live holder is told
 // nothing and the row is done: the message reports a moment - a head's checks as they settled -
 // that has passed by the time anyone claims the role, and every recipient reads the pull request
 // on GitHub for itself, so waiting would retry forever for a message that is stale when it lands.
@@ -1549,20 +1579,20 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 // failed publish is. So is a holder the listener calls only unresponsive
 // (notify.ErrHolderUnresponsive): its session is past the listener's live window but still holds
 // the role, so the message is kept for it rather than dropped as a message to a role nobody holds
-// (dispatch://INFRA-392).
+// (dispatch://INFRA-392). A low message meets each of these answers as a med one does.
 func (r *outbox) roleMessage(ctx context.Context, row record.OutboxRow, payload record.RoleMessage) error {
 	if r.notices == nil {
 		return errors.New("role message executor has no Envoy publisher")
 	}
-	summary, message := payload.Body, any(payload.Body)
+	summary, message, urgency := payload.Body, any(payload.Body), texts.Med
 	if payload.Kind != "" {
 		rec, err := payload.Record()
 		if err != nil {
 			return fmt.Errorf("read %s's %s role message: %w", row.Issue, payload.Kind, err)
 		}
-		summary, message = noticeSummary(payload.Kind, row.Issue), rec
+		summary, message, urgency = noticeSummary(payload.Kind, row.Issue), rec, payload.Urgency
 	}
-	err := r.notices.Publish(ctx, notify.RoleTopicPrefix+payload.Role, summary, message, record.OutboxKey(row.ID))
+	err := r.notices.Publish(ctx, notify.RoleTopicPrefix+payload.Role, summary, message, urgency, record.OutboxKey(row.ID))
 	if errors.Is(err, notify.ErrHolderUnresponsive) {
 		// A wait, not a failure: settle logs a wait.ErrWaiting at INFO then DEBUG rather than
 		// ERROR on every attempt, as the notice executor's own unresponsive branch does
@@ -1594,12 +1624,18 @@ func (r *outbox) roleMessage(ctx context.Context, row record.OutboxRow, payload 
 
 // phaseEnded publishes the message of a phase-ended row (record.PhaseEnded) to the Envoy topic of
 // the role whose phase a CI-red transition ended, the claim of that role on the row's issue, and to
-// nothing else. It is no architect notice: it carries one sentence of the daemon's own rather than
-// a Notice, waits behind no other row of its issue (its own lane, record.LaneRoleMessage), and its
+// nothing else. It is no architect notice: it carries its kind's record rather than a Notice,
+// waits behind no other row of its issue (its own lane, record.LaneRoleMessage), and its
 // recipient is the role the workflow named rather than whichever architect owns the issue. The
 // message stops nothing it reaches: pi-envoy hands it to an Oh My Pi session at its next model turn
 // and ends a running wait, the Claude Code bridge puts it in that session's inbox, and the role's
 // turn, jobs and process run on.
+//
+// A row that carries the conflict's facts is published as its kind's record
+// (record.PhaseEnded.Record), an object, under the summary `phase-ended on <KEY>`. A row an older
+// daemon queued carries the conflict as its reason and none of the facts, and goes as the text
+// that daemon wrote (record.PhaseEnded.Message) under the same summary. Either goes at the
+// urgency the list gives the kind for the role (texts.UrgencyOf).
 //
 // A topic with no live holder (notify.ErrNoHolder) ends the row with one log line rather than
 // holding it as an architect's notice is held: the role's next task from the daemon names its phase
@@ -1627,7 +1663,12 @@ func (r *outbox) phaseEnded(ctx context.Context, row record.OutboxRow, payload r
 	} else if woken {
 		return wait.Errorf("the end of %s's %s phase waits for its %s's released pod to come back", row.Issue, payload.From, payload.Role)
 	}
-	if _, err := r.publishToRole(ctx, row, notify.RoleTopicPrefix+string(token), payload.Message(row.Issue),
+	var message any = payload.Record(row.Issue)
+	if payload.Reason != "" {
+		message = payload.Message(row.Issue)
+	}
+	if _, err := r.publishToRole(ctx, row, notify.RoleTopicPrefix+string(token), noticeSummary(texts.PhaseEnded, row.Issue), message,
+		texts.UrgencyOf(texts.PhaseEnded, payload.Role, texts.Variant{}),
 		"outbox phase-ended message finished undelivered: no live session holds the role",
 		"row", row.ID, "issue", row.Issue, "role", payload.Role, "from", payload.From, "to", payload.To); err != nil {
 		return fmt.Errorf("publish the end of %s's %s phase to its %s: %w", row.Issue, payload.From, payload.Role, err)
@@ -1639,11 +1680,13 @@ func (r *outbox) phaseEnded(ctx context.Context, row record.OutboxRow, payload r
 // the role the deployment's hook named, the claim of that role on the row's issue, and to nothing
 // else. The row is the daemon's own facts of the firing — the hook, the move back and the counts —
 // and then the deployment's own words for the round that move back opened, unchanged
-// (record.HookPrompt.Message). It rides the role-message lane beside a phase-ended message
-// (record.LaneRoleMessage), so it waits behind no other row of its issue and reaches the role
-// while that round is the round the role works. It stops nothing it reaches, as a phase-ended
-// message stops nothing: the session takes it at its next model turn, and the role's turn, jobs
-// and process run on.
+// (record.HookPrompt.Message). It is the one role message published as text, as the deployment
+// wrote its words (R8 of dispatch://INFRA-3686 keeps them so), under the summary
+// `hook-prompt on <KEY>` and at the urgency the list gives the kind for the role. It rides the
+// role-message lane beside a phase-ended message (record.LaneRoleMessage), so it waits behind no
+// other row of its issue and reaches the role while that round is the round the role works. It
+// stops nothing it reaches, as a phase-ended message stops nothing: the session takes it at its
+// next model turn, and the role's turn, jobs and process run on.
 //
 // A topic with no live holder (notify.ErrNoHolder) ends the row with one log line rather than
 // holding it. The hook wrote its words for this round, and nothing repeats them: the move back
@@ -1679,7 +1722,8 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 	if err != nil {
 		return fmt.Errorf("write the %s hook's prompt for %s: %w", payload.Hook, row.Issue, err)
 	}
-	if _, err := r.publishToRole(ctx, row, notify.RoleTopicPrefix+string(token), message,
+	if _, err := r.publishToRole(ctx, row, notify.RoleTopicPrefix+string(token), noticeSummary(texts.HookPrompt, row.Issue), message,
+		texts.UrgencyOf(texts.HookPrompt, payload.Role, texts.Variant{}),
 		"outbox hook prompt finished undelivered: no live session holds the role",
 		"row", row.ID, "issue", row.Issue, "hook", payload.Hook, "role", payload.Role, "count", payload.Count); err != nil {
 		return fmt.Errorf("publish the %s hook's prompt for %s to its %s: %w", payload.Hook, row.Issue, payload.Role, err)
@@ -1697,7 +1741,8 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 // A row that carries the round's facts is published as its kind's record (record.UpdateAsk.Record)
 // under the summary `update-ask on <KEY>`, the record's object as the payload. A row an older
 // daemon queued carries the text that daemon's sweep built in place of the facts, and goes as that
-// text, as it went then (record.UpdateAsk.Message).
+// text (record.UpdateAsk.Message) under the same summary. Either goes at the urgency the list
+// gives the kind for the role (texts.UrgencyOf).
 //
 // It wakes nothing, where phaseEnded, hookPrompt and mergeQueueRemoval call wakeForDelivery
 // first. A role whose pod an idle release took is not brought back to be asked: its topic has no
@@ -1731,15 +1776,12 @@ func (r *outbox) updateAsk(ctx context.Context, row record.OutboxRow, payload re
 	}
 	topic := notify.RoleTopicPrefix + string(token)
 	fields := []any{"row", row.ID, "issue", row.Issue, "round", payload.Round, "pod", payload.Pod, "claim", string(token), "role", payload.Role, "topic", topic}
-	message, body := payload.Message(row.Issue), any(payload.Message(row.Issue))
-	if payload.Text == "" {
-		encoded, err := json.Marshal(payload.Record(row.Issue))
-		if err != nil {
-			return fmt.Errorf("encode the ask of round %s for %s: %w", payload.Round, row.Issue, err)
-		}
-		message, body = noticeSummary(texts.UpdateAsk, row.Issue), json.RawMessage(encoded)
+	var body any = payload.Record(row.Issue)
+	if payload.Text != "" {
+		body = payload.Message(row.Issue)
 	}
-	err = r.notices.Publish(ctx, topic, message, body, record.OutboxKey(row.ID))
+	err = r.notices.Publish(ctx, topic, noticeSummary(texts.UpdateAsk, row.Issue), body,
+		texts.UrgencyOf(texts.UpdateAsk, payload.Role, texts.Variant{}), record.OutboxKey(row.ID))
 	if errors.Is(err, notify.ErrNoHolder) {
 		r.log.Info("outbox update ask finished undelivered: no live session holds the role", fields...)
 		return nil
@@ -1761,11 +1803,11 @@ func roleToken(project string, row record.OutboxRow, role claim.Role) (claim.Tok
 	return token, nil
 }
 
-// publishToRole publishes message to topic, the Envoy topic of one role's claim
-// (notify.RoleTopicPrefix and the claim's token), under the row's own key, so a retried row is
-// one delivery. It is the publish that phaseEnded and hookPrompt share; updateAsk publishes its
-// record object under the same rule for a topic with no holder. Each of them decides what comes
-// before the publish, and each wraps the error it returns.
+// publishToRole publishes payload to topic, the Envoy topic of one role's claim
+// (notify.RoleTopicPrefix and the claim's token), under summary, at urgency and under the row's
+// own key, so a retried row is one delivery. It is the publish that phaseEnded and hookPrompt
+// share; updateAsk publishes its record object under the same rule for a topic with no holder.
+// Each of them decides what comes before the publish, and each wraps the error it returns.
 //
 // Three other executors publish to a role's topic, each through its own call of the publisher and
 // with its own rules for what the publisher answers: deliverNotice, an architect's notice, holds
@@ -1783,8 +1825,8 @@ func roleToken(project string, row record.OutboxRow, role claim.Role) (claim.Tok
 // fields, and the answer is false with no error. Every other failure is returned as the
 // publisher gave it, and the row keeps its retry. The answer is true when the publisher took the
 // message.
-func (r *outbox) publishToRole(ctx context.Context, row record.OutboxRow, topic, message, noHolder string, fields ...any) (bool, error) {
-	err := r.notices.Publish(ctx, topic, message, message, record.OutboxKey(row.ID))
+func (r *outbox) publishToRole(ctx context.Context, row record.OutboxRow, topic, summary string, payload any, urgency texts.Urgency, noHolder string, fields ...any) (bool, error) {
+	err := r.notices.Publish(ctx, topic, summary, payload, urgency, record.OutboxKey(row.ID))
 	if errors.Is(err, notify.ErrNoHolder) {
 		r.log.Info(noHolder, fields...)
 		return false, nil
@@ -1794,12 +1836,16 @@ func (r *outbox) publishToRole(ctx context.Context, row record.OutboxRow, topic,
 
 // controllerNotice publishes a controller notice row to the controller topic of the daemon's own
 // project, the one its controller subscribes to, and to nothing else: the Notice it is, under the
-// row's own key.
+// row's own key, at the urgency the list gives its kind for the controller (noticeUrgency). The
+// controller topic is a lane of the notification stream, so a low notice there is stored while
+// no controller session runs, as a med one is, and read at that session's next turn.
 func (r *outbox) controllerNotice(ctx context.Context, row record.OutboxRow, payload record.ControllerNotice) error {
 	if r.notices == nil {
 		return errors.New("controller notice executor has no Envoy publisher")
 	}
-	if err := r.notices.Publish(ctx, notify.ControllerTopic(r.project), noticeSummary(payload.Kind, row.Issue), record.Notice(payload), record.OutboxKey(row.ID)); err != nil {
+	notice := record.Notice(payload)
+	if err := r.notices.Publish(ctx, notify.ControllerTopic(r.project), noticeSummary(payload.Kind, row.Issue), notice,
+		noticeUrgency(notice, claim.RoleController), record.OutboxKey(row.ID)); err != nil {
 		return fmt.Errorf("publish controller notice for %s: %w", row.Issue, err)
 	}
 	return nil

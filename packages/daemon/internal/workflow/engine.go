@@ -2,7 +2,6 @@
 package workflow
 
 import (
-	"cmp"
 	"context"
 	"fmt"
 	"log/slog"
@@ -474,17 +473,14 @@ func (e *Engine) releaseHeldRoot(ctx context.Context, tx pgx.Tx, issue record.Is
 	if err != nil {
 		return err
 	}
-	ended, err := e.retryPhase(ctx, tx, released, issue.Hold.From, releaseReason, false)
+	// The release names the status write that made it (RetriedByTodo), since no caller of the
+	// status route names a reason of its own (R7).
+	ended, err := e.retryPhase(ctx, tx, released, issue.Hold.From, PhaseMove{Retried: RetriedByTodo}, false)
 	if err != nil {
 		return err
 	}
 	return e.enqueue(ctx, tx, issue.Key, record.OrdinaryStatusWrite(PhaseStatus(ended), fact.Status, ""))
 }
-
-// releaseReason is the daemon's own reason for that release, which the restarted role's task and
-// the log line of the release both carry: it names the status write that made it, since no caller
-// of the status route names a reason of its own (R7).
-const releaseReason = "the issue was set to todo while its phase was held"
 
 // sessionStatusWrite takes a lifecycle status change written by a session whose write the workflow
 // does not act on. A session holding a claim in the issue's tree is an agent, never a human move,
@@ -1220,8 +1216,8 @@ func (e *Engine) retryOrEscalate(ctx context.Context, tx pgx.Tx, fact intake.Ret
 		return intake.Result{}, err
 	}
 	// The architect's own words where it named any, which the restarted role's task and the log
-	// line for the release both carry; a decision that names none keeps the daemon's.
-	_, err = e.retryPhase(ctx, tx, *issue, issue.Hold.From, cmp.Or(fact.Reason, "retry held phase"), false)
+	// line for the release both carry.
+	_, err = e.retryPhase(ctx, tx, *issue, issue.Hold.From, PhaseMove{Retried: RetriedByArchitect, Reason: fact.Reason}, false)
 	return intake.Result{}, err
 }
 
@@ -1251,12 +1247,13 @@ func (e *Engine) restartPhase(ctx context.Context, tx pgx.Tx, fact intake.Restar
 	if lingers {
 		return refusedLingering(*issue, fmt.Sprintf("the operator's restart of the %s", fact.Role)), nil
 	}
-	_, err = e.retryPhase(ctx, tx, *issue, working, "the operator retried this phase's worker", fact.FreshSession)
+	_, err = e.retryPhase(ctx, tx, *issue, working, PhaseMove{Retried: RetriedByOperator}, fact.FreshSession)
 	return intake.Result{}, err
 }
 
 // retryPhase gives issue the phase from back — a held issue leaves its hold — and starts that
-// phase's worker, told why it runs again. It re-decides no CI
+// phase's worker, told who retried it (retry.Retried) and the architect's own words where it gave
+// any (retry.Reason). It re-decides no CI
 // result: a settlement that reached the issue while it was held moved nothing, as it would
 // have moved nothing had it arrived with the issue in its phase (dispatch://INFRA-714/spec
 // R1), so there is no standing red left for the retry to act on, and the restored worker reads
@@ -1265,8 +1262,8 @@ func (e *Engine) restartPhase(ctx context.Context, tx pgx.Tx, fact intake.Restar
 // completed before the hold, and its review was recorded while held - and ends here
 // (reviewRound); the reviewer is started only if the round is still open, since a second
 // completion of the same commit would be refused as not new. A round its reviewer completed that
-// nothing would end is stuck: the reviewer's task says why, so the restarted reviewer decides
-// it. The architect, who ordered the retry, is told nothing: a notice now would read as the
+// nothing would end is stuck: the reviewer's task names it (StuckRound), so the restarted reviewer
+// decides it. The architect, who ordered the retry, is told nothing: a notice now would read as the
 // reviewer's answer to its request.
 //
 // freshSession is the operator's `--fresh-session`: the start it queues retries the claim in a
@@ -1274,8 +1271,8 @@ func (e *Engine) restartPhase(ctx context.Context, tx pgx.Tx, fact intake.Restar
 // none — a claim the provider refused out of its budget takes a new session all the same, which
 // the claim's own retry decides (supervise's freshSession).
 //
-// The release is logged as it commits: the issue, the phase it comes back to and the reason,
-// which is the architect's own words where its retry named any.
+// The release is logged as it commits: the issue, the phase it comes back to, who retried it and
+// the architect's own words where its retry named any.
 //
 // Its callers have established that the tree does not linger, which is what holds every member
 // where it stood.
@@ -1284,7 +1281,7 @@ func (e *Engine) restartPhase(ctx context.Context, tx pgx.Tx, fact intake.Restar
 // reads (releaseHeldRoot): from, where nothing moved, and otherwise the phase the move took the
 // issue to, read back from the record because the move's own row chose that target
 // (transition).
-func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, from phase.Phase, reason string, freshSession bool) (phase.Phase, error) {
+func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, from phase.Phase, retry PhaseMove, freshSession bool) (phase.Phase, error) {
 	issue.Phase, issue.Hold = from, nil
 	if err := e.store.PutIssue(ctx, tx, issue); err != nil {
 		return "", err
@@ -1295,9 +1292,9 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		return "", err
 	}
 	// The daemon's own line for the release (R11), written whether or not a worker is started
-	// below: the hold is gone either way, and the reason is the one the restarted role's task
-	// carries.
-	e.logOnCommit(ctx, "workflow: a held phase is released", "issue", issue.Key, "phase", from, "reason", reason)
+	// below: the hold is gone either way, and who retried it is what the restarted role's task
+	// names.
+	e.logOnCommit(ctx, "workflow: a held phase is released", "issue", issue.Key, "phase", from, "retried", retry.Retried, "reason", retry.Reason)
 	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
 	if err != nil {
 		return "", err
@@ -1317,10 +1314,11 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 			return e.phaseNow(ctx, tx, issue)
 		}
 		if r.outcome == roundStuck {
-			reason += ": " + r.reason
+			retry.Stuck = r.stuck()
 		}
 	}
-	return from, e.restart(ctx, tx, issue, phase.RoleFor(from), task(issue, record.PhaseRow{}, pr, reason), freshSession)
+	retry.At = e.now()
+	return from, e.restart(ctx, tx, issue, phase.RoleFor(from), task(issue, record.PhaseRow{}, pr, retry), freshSession)
 }
 
 // backwardRefusal is why the guard refuses fact, and "" where it does not: the one sentence that
@@ -1536,7 +1534,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// merge could not say it, since the issue was elsewhere then.
 	mergedAlready := row.To == phase.Merging && pr != nil && pr.State == record.PullRequestMerged
 	if !mergedAlready {
-		if err := e.start(ctx, tx, issue, starting, task(issue, handoff, pr, reason), movedBack); err != nil {
+		if err := e.start(ctx, tx, issue, starting, task(issue, handoff, pr, phaseMove(trigger, from, handoff, reason, e.now())), movedBack); err != nil {
 			return err
 		}
 	}
@@ -1553,6 +1551,22 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		return e.leave(ctx, tx, issue, "done")
 	}
 	return nil
+}
+
+// phaseMove is how a transition on trigger out of from reached the phase whose task it starts
+// (PhaseMove): a worker's backward move, with the words of the role that asked (reason) at now; a
+// review's request for changes, whose decision is on the reviewer's row (handoff); or a head that
+// conflicts with its base, which the pull request names. Every other move says nothing more.
+func phaseMove(trigger TriggerKind, from phase.Phase, handoff record.PhaseRow, reason string, now time.Time) PhaseMove {
+	switch trigger {
+	case TriggerBackward:
+		return PhaseMove{BackFrom: from, Reason: reason, At: now}
+	case TriggerReviewRejected:
+		return PhaseMove{Review: handoff.Decision}
+	case TriggerConflict:
+		return PhaseMove{Conflict: true}
+	}
+	return PhaseMove{}
 }
 
 // noticeFor is what a transition of issue on trigger out of from into to tells the architect: that

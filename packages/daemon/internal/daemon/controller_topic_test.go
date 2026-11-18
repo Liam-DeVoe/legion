@@ -158,10 +158,13 @@ type noticeListener struct {
 	refused  []listenerPublish
 }
 
+// listenerPublish is one publish body the listener stand-in read: the topic, the summary
+// (message), the payload, the urgency (empty where the body sent none) and the dedupe key.
 type listenerPublish struct {
 	Topic     string `json:"topic"`
 	Message   string `json:"message"`
 	Payload   string `json:"payload"`
+	Urgency   string `json:"urgency"`
 	DedupeKey string `json:"dedupe_key"`
 }
 

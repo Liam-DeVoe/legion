@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -69,7 +70,8 @@ func (r *outbox) parkDecision(ctx context.Context, issue, root string, notice re
 		}
 		recorded = true
 		outcome, err = record.RelayParkedDecision(scoped, tx, r.records, issue, *stored, true,
-			record.ParkedDecision{Ref: notice.Ref, Decision: decision, Actor: notice.Actor, At: now}, notice.Version, notice.Reason, r.gatedSteps)
+			record.ParkedDecision{Ref: notice.Ref, Decision: decision, Actor: notice.Actor, At: now, Words: noticeWords(notice)},
+			notice.Version, notice.Reason, r.gatedSteps)
 		return err
 	}); err != nil {
 		return fmt.Errorf("send the controller the decision %s carried on %s: %w", key, issue, err)
@@ -92,6 +94,20 @@ func (r *outbox) parkDecision(ctx context.Context, issue, root string, notice re
 		r.log.Info("outbox parked decision not relayed: its tree hears it", args...)
 	}
 	return nil
+}
+
+// noticeWords are the person's words a design-changes-requested notice carries, as the decision
+// it parks keeps them (record.ParkedDecision.Words): the reason, by the reviewer, at the review's
+// own time. The notice carries the reason already cut to texts.OneAct (workflow's
+// ChangesRequestedNotice), so the kept words say that more follows where the notice's words object
+// counts a rest or marks one; nil for a decision that carries no reason, an approval and a carried
+// gate's opening.
+func noticeWords(notice record.Notice) *record.ActWords {
+	if notice.Reason == "" || notice.Kind != texts.DesignChangesRequested {
+		return nil
+	}
+	meta := notice.Words["reason"]
+	return &record.ActWords{Text: notice.Reason, By: notice.Actor, At: notice.At, More: meta.Rest > 0 || meta.More}
 }
 
 // settleKept settles what an architect start row's task named of what its tree is owed, once the

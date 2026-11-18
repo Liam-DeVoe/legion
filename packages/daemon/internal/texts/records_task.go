@@ -43,10 +43,12 @@ const (
 // A move back names the phase it came from (MovedBackFrom), and the words of the role that moved
 // it go in the reason block, by that role. A review's rejection names the head it reviewed, and
 // the review's body goes in the body block, by its author. A head that conflicts with its base
-// names the base (ConflictsWith) and the head. A retry names who retried (architect or
-// operator), and the architect's own words go in the reason block. A retry of a review round
-// that nothing on its way ends names the round's cause (StuckRound, a ReviewStuckRecord cause) and
-// the review that ends it (EndsRound).
+// names the base (ConflictsWith) and the head. A retry names who retried (architect, operator,
+// or a todo written on the held issue), and the architect's own words go in the reason block. A
+// retry of a review round that nothing on its way ends names the round's cause (StuckRound, a
+// ReviewStuckRecord cause), its head, the head the reviewer approved where that is other code
+// (ReviewedHead), the review that ends it (EndsRound), and why the daemon set aside a review that
+// would otherwise have decided it (SetAside).
 type PhaseAssignmentRecord struct {
 	TaskHead
 	Title          string      `json:"title"`
@@ -63,6 +65,7 @@ type PhaseAssignmentRecord struct {
 	Retried        string      `json:"retried,omitempty"`
 	StuckRound     string      `json:"stuck_round,omitempty"`
 	EndsRound      string      `json:"ends_round,omitempty"`
+	SetAside       string      `json:"set_aside,omitempty"`
 	Reason         *Words      `json:"reason"`
 	Body           *Words      `json:"body"`
 }

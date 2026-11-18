@@ -33,6 +33,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -1922,17 +1923,23 @@ func (w *workflowRuntime) applySessionFact(c supervise.Claim, id string, fact in
 }
 
 // providerErrorRunReached tells the project's controller that a role's turns keep ending in a
-// provider error (supervise's Deps.ProviderErrorRunReached): the machine counts the run and
-// decides when to tell, and this names the notice kind, since supervise records nothing of
+// provider error (supervise's Deps.ProviderErrorRunReached): the machine counts the run, decides
+// when to tell, and builds the provider-errors record (texts.ProviderErrorsRecord), and this
+// converts it to the controller notice internal/record holds, since supervise records nothing of
 // internal/record. Admission's own check stops a second notice while one still waits in the
 // outbox (TellController). The machine calls it inside its own decision, so the notice is
 // queued on a goroutine of its own, bounded by readyReleaseTimeout; a failure is logged and is
 // not the daemon's end, since the run goes on and the task is sent again either way.
-func (w *workflowRuntime) providerErrorRunReached(c supervise.Claim, reason string) {
+func (w *workflowRuntime) providerErrorRunReached(c supervise.Claim, told texts.ProviderErrorsRecord) {
 	if c.Issue == "" || w.admission == nil {
 		return
 	}
-	notice := record.ControllerNotice{Kind: record.ProviderErrorsNotice, Role: c.Role, Reason: reason}
+	converted, err := record.NoticeOf(told)
+	if err != nil {
+		w.log.Warn("tell the controller of a run of provider errors", "claim", c.Token, "error", err)
+		return
+	}
+	notice := record.ControllerNotice(converted)
 	go func() {
 		// This goroutine runs beside the machine that started it and every other, so it takes a
 		// hold mark of its own (store.ForConcurrentWorker). The notice is its own transaction, so

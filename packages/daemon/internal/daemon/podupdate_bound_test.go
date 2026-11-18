@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 const (
@@ -286,7 +287,7 @@ func TestPodUpdateSuspensionHoldsThePodPastTheBoundUntilTheOperatorResumes(t *te
 			t.Fatalf("at %s the implementer = round %q in pod %q, want the round open over the pod it runs in", rig.clock.Now(), c.UpdateRound, podOf(c.Locator))
 		}
 	}
-	if notices := rig.notices(); len(notices) != 1 || !strings.Contains(notices[0].Reason, "An operator suspended") {
+	if notices := rig.notices(); len(notices) != 1 || notices[0].Holds != texts.HoldsOperator {
 		t.Fatalf("the controller was told %+v, want one notice naming the operator's suspension", notices)
 	}
 
@@ -366,7 +367,7 @@ func TestPodUpdateSuspensionOfTheOnlyClaimHoldsThePodPastTheBound(t *testing.T) 
 		t.Fatalf("the suspended claim's round = %q, want it still open: only the operator's resume ends this wait", c.UpdateRound)
 	}
 	notices := rig.notices()
-	if len(notices) != 1 || !strings.Contains(notices[0].Reason, "An operator suspended") {
+	if len(notices) != 1 || notices[0].Holds != texts.HoldsOperator {
 		t.Fatalf("the controller was told %+v, want one notice naming the operator's suspension", notices)
 	}
 	wantWaiting(t, notices[0], map[claim.Role]bool{claim.RoleImplementer: false})
@@ -495,10 +496,8 @@ func TestPodUpdateTellsAPodlessRoundAnOperatorHoldsOncePastItsBound(t *testing.T
 	if len(notices) != 1 {
 		t.Fatalf("at the bound %s the controller was told %d times of a podless round an operator holds, want once: %+v", podUpdateBound, len(notices), notices)
 	}
-	for _, want := range []string{"No claim of this issue records a process in a pod", "An operator suspended", string(claim.RoleImplementer)} {
-		if !strings.Contains(notices[0].Reason, want) {
-			t.Errorf("the notice says %q, want it to say %q", notices[0].Reason, want)
-		}
+	if notices[0].Holds != texts.HoldsOperator || notices[0].Update == nil || notices[0].Update.Pod != "" {
+		t.Errorf("the notice is %+v with round %+v, want an operator's suspension holding a round no claim records a pod of", notices[0], notices[0].Update)
 	}
 	wantWaiting(t, notices[0], map[claim.Role]bool{claim.RoleImplementer: false})
 
@@ -625,8 +624,8 @@ func TestPodUpdateBoundToldOnceOfARoundWithNoProcessInItsPod(t *testing.T) {
 	if len(notices) != 1 {
 		t.Fatalf("at the bound %s the controller was told %d times, want once", rig.clock.Now(), len(notices))
 	}
-	if !strings.Contains(notices[0].Reason, "No claim of the issue records a process in the pod of the round") {
-		t.Errorf("the notice says %q, want it to name the claim recording no process in the round's pod", notices[0].Reason)
+	if notices[0].Holds != texts.HoldsNoProcess || notices[0].Refusal != "" {
+		t.Errorf("the notice is %+v, want it to name no process recorded in the round's pod", notices[0])
 	}
 	if notices[0].Update == nil || notices[0].Update.Pod != podUpdatePod {
 		t.Errorf("the notice carries %+v, want the round's pod %s", notices[0].Update, podUpdatePod)

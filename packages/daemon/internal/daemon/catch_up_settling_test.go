@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -30,7 +31,7 @@ type hookPublisher struct {
 	delivered []outboxPublish
 }
 
-func (p *hookPublisher) Publish(_ context.Context, topic, message string, payload any, key string) error {
+func (p *hookPublisher) Publish(_ context.Context, topic, message string, payload any, urgency texts.Urgency, key string) error {
 	p.mu.Lock()
 	hook := p.hook
 	p.hook = nil
@@ -47,7 +48,7 @@ func (p *hookPublisher) Publish(_ context.Context, topic, message string, payloa
 	if p.answer != nil {
 		return p.answer
 	}
-	p.delivered = append(p.delivered, outboxPublish{topic: topic, message: message, key: key, payload: payload})
+	p.delivered = append(p.delivered, outboxPublish{topic: topic, message: message, key: key, payload: payload, urgency: urgency})
 	return nil
 }
 

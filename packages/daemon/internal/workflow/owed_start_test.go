@@ -284,7 +284,7 @@ func TestEveryReturnAppliesAtOnceAndOwesItsWorkerOneStart(t *testing.T) {
 			},
 			fact:   intake.PullRequestMergeability{Repo: "sjawhar/legion", Number: 42, HeadSHA: "head", Base: "main", Mergeable: record.MergeabilityConflicting},
 			engine: func() *Engine { return testEngine(config.DesignGateRootIssues, nil) },
-			role:   claim.RoleImplementer, want: phase.Implementing, status: "in_progress", task: "the head conflicts with main",
+			role:   claim.RoleImplementer, want: phase.Implementing, status: "in_progress", task: "conflicts_with: main",
 		},
 		{
 			// Two transitions before the slot, each into a phase that keeps a row, which is
@@ -325,7 +325,7 @@ func TestEveryReturnAppliesAtOnceAndOwesItsWorkerOneStart(t *testing.T) {
 			},
 			fact:   intake.RetryOrEscalate{Issue: returnIssue, Decision: intake.RetryDecision},
 			engine: func() *Engine { return testEngine(config.DesignGateRootIssues, nil) },
-			role:   claim.RoleTester, want: phase.Testing, keeps: true, task: "Reason: retry held phase.",
+			role:   claim.RoleTester, want: phase.Testing, keeps: true, task: "retried: " + RetriedByArchitect,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

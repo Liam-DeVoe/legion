@@ -2,7 +2,6 @@ package workflow
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"time"
 
@@ -11,6 +10,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // relayParkedDecision hands a person's answer, resolution or reply on ask of key to the one rule
@@ -64,8 +64,9 @@ func (e *Engine) treeRoot(ctx context.Context, tx pgx.Tx, key string) (*record.I
 
 // ParkedDecisionTask is what root's architect is told at its start when the daemon kept a person's
 // decision on an issue of its tree while nobody in the tree could hear it (relayParkedDecision,
-// the outbox's parkDecision): each decision's ref, kind and author, newest first, so the architect
-// reads what brought it back, as ResumeAwaitedRoot names an answered root's answer. Admission's
+// the outbox's parkDecision): each decision's ref, kind, author and words, newest first, so the
+// architect reads what brought it back, as ResumeAwaitedRoot names an answered root's answer
+// (KeptDecisionsTask). Admission's
 // start carries it as its task; every later launch's ready (claimReady: a relaunch, `legion claims
 // retry`) adds what was kept since to its catch-up. When the re-admission found the root's spec
 // approved at a version below its latest (the admission's readmit, Store.KeepReadmittedApproval: a
@@ -105,30 +106,52 @@ func ParkedDecisionTask(ctx context.Context, tx pgx.Tx, store record.Store, step
 	return task, &kept, nil
 }
 
-// KeptDecisionsTask is the text that names kept to the architect of tree, the one wording a start
-// task and a catch-up both use (ParkedDecisionTask) and the one a held task is written back to
-// when an issue it names leaves that tree while the task waits to be sent (supervise's
-// Deps.RootTask, the daemon's rootTask): a task whose decisions have all left is written back to
-// "", which is a task that names nothing and is retired rather than sent. The approval is the
-// root's own, so it is named whenever kept carries one — the gate was read where it was first
-// kept — and it is named on the document of its own step (record.DesignStep.Document), which is
-// the document the person reviewed and the one whose approval the architect requests again.
+// KeptDecisionsTask is the task that names kept to the architect of root's tree (KeptDecisionsOf):
+// the task a start names its tree's kept decisions with (ParkedDecisionTask), and the one a held
+// task is written back to when an issue it names leaves that tree while the task waits to be sent
+// (supervise's Deps.RootTask, the daemon's rootTask). A task whose decisions have all left, with
+// no approval kept, is written back to "", which is a task that names nothing and is retired
+// rather than sent.
 func KeptDecisionsTask(root string, kept record.KeptDecisions) string {
-	var parts []string
-	if len(kept.Decisions) > 0 {
-		named := make([]string, 0, len(kept.Decisions))
-		for _, d := range kept.Decisions {
-			named = append(named, fmt.Sprintf("%s (%s by %s)", d.Ref, d.Decision, d.Actor))
+	if len(kept.Decisions) == 0 && kept.Approved == 0 {
+		return ""
+	}
+	return taskText(KeptDecisionsOf(root, kept))
+}
+
+// KeptDecisionsOf is the kept-decisions task of root's tree, as the record of its kind: each
+// decision a person made on the tree while nobody in it could hear it, with its reference, the
+// issue it was made on, what the person did, who and when (the act's own time where the decision
+// carries its words, else the time the daemon kept it), the options an answer chose, and the
+// person's words in a block of their own, as the act's event carried them (record.DecisionMark):
+// cut to texts.OneAct where the task names one decision and to texts.EachOfSeveral each where it
+// names several (texts.Carry), with the count of the rest or the mark that more follows where the
+// event did not carry them all. The approval is the root's own, so it is named whenever kept
+// carries one — the gate was read where it was first kept — by its step, the version a person
+// approved and the version the document has reached since, which the architect requests
+// approval of.
+func KeptDecisionsOf(root string, kept record.KeptDecisions) texts.KeptDecisionsRecord {
+	task := texts.KeptDecisionsRecord{TaskHead: texts.TaskHead{Kind: texts.KeptDecisions, Issue: root}}
+	bound := texts.OneAct
+	if len(kept.Decisions) > 1 {
+		bound = texts.EachOfSeveral
+	}
+	for _, mark := range kept.Decisions {
+		decided := texts.KeptDecision{Ref: mark.Ref, Issue: mark.Issue, Decision: string(mark.Decision), By: mark.Actor,
+			At: mark.At.UTC(), Options: strings.Join(mark.Options, ", ")}
+		if !mark.AnswerAt.IsZero() {
+			decided.At = mark.AnswerAt.UTC()
 		}
-		parts = append(parts, fmt.Sprintf("While nobody in %s's tree could hear it, a person decided on the tree: %s. Read each before you continue.",
-			root, strings.Join(named, "; ")))
+		if mark.Answer != "" || mark.More {
+			words := texts.Carry(mark.Answer, bound, mark.More)
+			decided.Answer = &words
+		}
+		task.Kept = append(task.Kept, decided)
 	}
 	if kept.Approved > 0 {
-		parts = append(parts, fmt.Sprintf("The %s is approved at version %d and is now at version %d: request approval of version %d, "+
-			"as skill://legion-architect/references/design-gate.md (\"The armed gate\") says.",
-			kept.Step.Document(), kept.Approved, kept.Latest, kept.Latest))
+		task.ApprovalStep, task.Approved, task.Latest = string(kept.Step.OrSpec()), kept.Approved, kept.Latest
 	}
-	return strings.Join(parts, " ")
+	return task
 }
 
 // ParkedDecisionTask is ParkedDecisionTask over the engine's store and gated steps.

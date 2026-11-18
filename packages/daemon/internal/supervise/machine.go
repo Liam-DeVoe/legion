@@ -33,6 +33,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/wait"
 )
 
@@ -975,12 +976,13 @@ type Deps struct {
 	// machine's decision, so it returns at once and writes its row elsewhere.
 	StallBackstopped func(c Claim, stop StallBackstopStop)
 	// ProviderErrorRunReached is told of a claim whose turns have ended in a provider error
-	// providerErrorRunTold times in a row, once per run, with the reason the project's controller
-	// is given: the model, and the HTTP status the provider answered where it answered one, in
-	// words built from structured fields alone. The claim carries the issue and the role. nil
-	// tells nobody, as it does for TaskConfirmed above. It is called inside the machine's
-	// decision, so it returns at once.
-	ProviderErrorRunReached func(c Claim, reason string)
+	// providerErrorRunTold times in a row, once per run, with the provider-errors notice the
+	// project's controller is given (texts.ProviderErrorsRecord): the claim's issue and role, the
+	// run of turns, the model, the HTTP status the provider answered where it answered one, and
+	// how often at most the task is sent again, from structured fields alone. nil tells nobody, as
+	// it does for TaskConfirmed above. It is called inside the machine's decision, so it returns
+	// at once.
+	ProviderErrorRunReached func(c Claim, told texts.ProviderErrorsRecord)
 	// Worker is the context a goroutine the machine starts applies its decision on: a timer that
 	// fires (arm) and a prompt's send (startSend) each call Handle from a goroutine of their own,
 	// beside whatever goroutine feeds the machine its events, and the decision writes the claim

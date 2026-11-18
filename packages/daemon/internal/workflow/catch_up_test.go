@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // An admitted root's architect is launched with the start admission queues, which carries its
@@ -385,5 +386,161 @@ func TestAPacedReadysCatchUpIsDueAtTheMomentTheWakePacingGivesIt(t *testing.T) {
 					due.UTC(), reservedAt, reserved, tc.due, tc.marked, tc.reserve)
 			}
 		})
+	}
+}
+
+// keptAnswers keeps two answers a person gives on LEGION-208 while its tree waits for its slot, so
+// nobody in it hears them (record.RelayParkedDecision keeps them for its architect's start): one
+// of 300 characters on ask-one and one of 1,500 on ask-two. It returns the two answers' words.
+func keptAnswers(t *testing.T, pool *pgxpool.Pool, apply func(string, intake.Fact)) (short, long string) {
+	t.Helper()
+	queued := askRoot()
+	queued.HandedOver, queued.Status = true, "todo"
+	seedIssue(t, pool, queued)
+	seedQuestion(t, pool, "ask-one", 4)
+	seedQuestion(t, pool, "ask-two", 5)
+	short, long = strings.Repeat("s", 300), strings.Repeat("l", 1500)
+	for i, answer := range []struct{ ask, words string }{{"ask-one", short}, {"ask-two", long}} {
+		apply(answer.ask, intake.DispatchAskClosed{Key: "LEGION-208", Ask: answer.ask, Kind: record.AskQuestion, State: "answered", Actor: askPerson,
+			Mark: askSeq(int64(8 + i)), Words: &record.ActWords{Text: answer.words, By: askPerson.Name(), At: resumeWordsAt.Add(time.Duration(i) * time.Minute)}})
+	}
+	return short, long
+}
+
+// promoted is LEGION-208 as admission leaves it once it takes its slot: in the workflow, so its
+// architect's ready writes a catch-up.
+func promoted(t *testing.T, pool *pgxpool.Pool) record.Issue {
+	t.Helper()
+	root := askRoot()
+	seedIssue(t, pool, root)
+	return root
+}
+
+// startArchitect queues root's architect start as admission's promotion does (Engine.StartArchitect)
+// and returns the task it carries.
+func startArchitect(t *testing.T, pool *pgxpool.Pool, engine *Engine, root record.Issue) string {
+	t.Helper()
+	seedRecord(t, pool, func(tx pgx.Tx) error {
+		ctx, _ := intake.WithCommitHooks(context.Background())
+		return engine.StartArchitect(ctx, tx, root)
+	})
+	starts := superviseRowsOf(t, pool, root.Key, "start")
+	if len(starts) == 0 || starts[len(starts)-1].Role != claim.RoleArchitect {
+		t.Fatalf("the start rows %+v, want the architect's start", starts)
+	}
+	return starts[len(starts)-1].Task
+}
+
+// R1: a person's answers on a tree nobody heard reach its architect with their words. The start
+// task that names them carries each answer's words beside its reference, each in a block of its
+// own, cut to 1,000 UTF-16 units each since it carries two, with the count of the rest; a later
+// launch's catch-up names them the same way where no start did. Each decision is told once:
+// whichever names it first claims it, and the other names it no more.
+func TestAKeptDecisionCarriesThePersonsWords(t *testing.T) {
+	t.Run("in the tree's next architect start", func(t *testing.T) {
+		pool, apply := askRig(t)
+		short, long := keptAnswers(t, pool, apply)
+		engine := testEngine(config.DesignGateRootIssues, nil)
+		task := startArchitect(t, pool, engine, promoted(t, pool))
+		decided, _, ok := strings.Cut(task, "\n\nkind: "+string(texts.ArchitectStart))
+		if !ok {
+			t.Fatalf("the start task %q holds no architect-start after the kept decisions", task)
+		}
+		read := readTaskOf(t, decided)
+		if read.fields["kind"] != string(texts.KeptDecisions) || len(read.blocks) != 2 {
+			t.Fatalf("the kept-decisions task names %v with the blocks %+v, want the two answers", read.fields, read.blocks)
+		}
+		var rows []string
+		for _, line := range read.lines {
+			if strings.HasPrefix(line, "  ") {
+				rows = append(rows, line)
+			}
+		}
+		for _, block := range read.blocks {
+			var row int
+			if _, err := fmt.Sscanf(block.attrs["field"], "kept[%d].answer", &row); err != nil || row >= len(rows) {
+				t.Fatalf("the block %+v names no row of %q", block.attrs, rows)
+			}
+			switch {
+			case strings.Contains(rows[row], "dispatch://LEGION-208/ask/ask-one"):
+				if block.text != short || block.attrs["rest"] != "" {
+					t.Fatalf("ask-one's block holds %d bytes with %v, want the 300 whole", len(block.text), block.attrs)
+				}
+			case strings.Contains(rows[row], "dispatch://LEGION-208/ask/ask-two"):
+				if block.text != long[:1000] || block.attrs["rest"] != "500" {
+					t.Fatalf("ask-two's block holds %d bytes with %v, want the first 1000 and rest 500", len(block.text), block.attrs)
+				}
+			default:
+				t.Fatalf("the block %s's row %q names neither ask", block.attrs["field"], rows[row])
+			}
+		}
+		claimReady(t, pool, engine, "LEGION-208", claim.RoleArchitect, 1)
+		if kept := lastCatchUp(t, pool).Kept; kept != nil {
+			t.Fatalf("the catch-up after the start names %+v again, want each decision told once", kept)
+		}
+	})
+	t.Run("in a later launch's catch-up", func(t *testing.T) {
+		pool, apply := askRig(t)
+		short, long := keptAnswers(t, pool, apply)
+		engine := testEngine(config.DesignGateRootIssues, nil)
+		root := promoted(t, pool)
+		claimReady(t, pool, engine, "LEGION-208", claim.RoleArchitect, 1)
+		var catchUp *record.Notice
+		for _, payload := range noticeRows(t, pool) {
+			if notice := asNotice(payload); notice.Kind == texts.CatchUp {
+				catchUp = &notice
+			}
+		}
+		if catchUp == nil || catchUp.CatchUp.Kept == nil || len(catchUp.CatchUp.Kept.Decisions) != 2 {
+			t.Fatalf("the catch-up %+v, want it to name the two answers", catchUp)
+		}
+		t.Logf("catch-up kept: %+v, words %+v", catchUp.CatchUp.Kept.Decisions, catchUp.Words)
+		for i, mark := range catchUp.CatchUp.Kept.Decisions {
+			words := catchUp.Words[fmt.Sprintf("catch_up.kept.decisions[%d].answer", i)]
+			switch mark.Ref {
+			case "dispatch://LEGION-208/ask/ask-one":
+				if mark.Answer != short || words.Rest != 0 || words.By != askPerson.Name() {
+					t.Fatalf("ask-one in the catch-up holds %d bytes with %+v, want the 300 whole by the person", len(mark.Answer), words)
+				}
+			case "dispatch://LEGION-208/ask/ask-two":
+				if mark.Answer != long[:1000] || words.Rest != 500 || words.By != askPerson.Name() {
+					t.Fatalf("ask-two in the catch-up holds %d bytes with %+v, want the first 1000 and rest 500 by the person", len(mark.Answer), words)
+				}
+			default:
+				t.Fatalf("the catch-up names %s, want ask-one and ask-two", mark.Ref)
+			}
+		}
+		if task := startArchitect(t, pool, engine, root); !strings.HasPrefix(task, "kind: "+string(texts.ArchitectStart)) {
+			t.Fatalf("the start after the catch-up = %q, want the architect-start alone: each decision told once", task)
+		}
+	})
+}
+
+// R1: the controller's parked-decision notice of a person's answer on a parked tree carries the
+// first 4,000 UTF-16 units of an answer of 5,000, the count of the rest and the ask's reference.
+func TestAParkedDecisionCarriesThePersonsWords(t *testing.T) {
+	pool, apply := askRig(t)
+	parked := askRoot()
+	until := time.Date(2026, 9, 24, 0, 0, 0, 0, time.UTC)
+	parked.Phase, parked.Status, parked.LingerUntil = phase.Done, "backlog", &until
+	seedIssue(t, pool, parked)
+	seedQuestion(t, pool, "ask-q", 4)
+	answer := strings.Repeat("a", 5000)
+	apply("answered", intake.DispatchAskClosed{Key: "LEGION-208", Ask: "ask-q", Kind: record.AskQuestion, State: "answered", Actor: askPerson,
+		Mark: askSeq(8), Words: &record.ActWords{Text: answer, By: askPerson.Name(), At: resumeWordsAt}})
+	var relayed []record.Notice
+	for _, payload := range noticeRows(t, pool) {
+		if notice := asNotice(payload); notice.Kind == texts.ParkedDecision {
+			relayed = append(relayed, notice)
+		}
+	}
+	if len(relayed) != 1 {
+		t.Fatalf("parked-decision notices %+v, want one", relayed)
+	}
+	notice := relayed[0]
+	t.Logf("notice: ref %s, answer of %d bytes, words %+v", notice.Ref, len(notice.Answer), notice.Words)
+	if notice.Answer != answer[:4000] || notice.Words["answer"].Rest != 1000 || notice.Ref != "dispatch://LEGION-208/ask/ask-q" {
+		t.Fatalf("the notice carries %d bytes of the answer with %+v at %s, want the first 4000, rest 1000 and the ask's reference",
+			len(notice.Answer), notice.Words["answer"], notice.Ref)
 	}
 }

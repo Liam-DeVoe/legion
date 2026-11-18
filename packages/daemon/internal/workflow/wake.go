@@ -2,18 +2,18 @@ package workflow
 
 import (
 	"context"
-	"fmt"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // A wake brings a released pod back. The release suspended every claim of the pod with the source
@@ -78,33 +78,40 @@ func wakeRow(issue record.Issue, role claim.Role, task string) record.SuperviseR
 	return record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role, Generation: issue.Generation, Task: task}
 }
 
-// WakeTask is the one task a woken role is given: which wake brought its pod back and what that
-// wake was about. A message Envoy kept for the role can reach the woken session as a card before
-// this task does, so the role message sentence says so. R6 asks for exactly one such task or
+// roleMessageKeep is how long Envoy keeps a message published to a role topic while no session
+// holds the role (dispatch://INFRA-2846's R7), which a role-message wake names.
+const roleMessageKeep = time.Hour
+
+// PodWake is the one task a woken role is given, as the record of its kind: which wake brought
+// its pod back to issue (kind, the pods.Wake words) and what that wake was about, other than a CI
+// settlement (SettlementWake). detail is the role token a message was published to
+// (pods.WakeRoleMessage), named as its topic with the facts dispatch://INFRA-2846's R7 requires: how
+// long Envoy keeps a role message, that a kept message reaches the session as a card that shows
+// kept_at, possibly before this task, that Envoy tells its sender when it drops one, and that a
+// message sent with keep: false is not kept and its sender sends it again. It is the session a
+// message was sent to (pods.WakeAgentMessage), the role a backstop was armed for
+// (pods.WakeBackstop), and what any other wake was about. R6 asks for exactly one such task or
 // message per wake, and the outbox row that carries it is written in the wake's own transaction,
 // so a wake that commits has its task and one that does not has neither.
-func WakeTask(kind, detail string) string {
-	const preamble = "Your issue's pod had been released while it was idle, and this wake brought it back. " +
-		"Your session, your workspace and any work you had not pushed are as you left them. "
+func PodWake(issue, kind, detail string) texts.PodWakeRecord {
+	wake := texts.PodWakeRecord{TaskHead: texts.TaskHead{Kind: texts.PodWake, Issue: issue}, Wake: kind}
 	switch kind {
-	case pods.WakeChecks:
-		return preamble + "The wake is a CI settlement on your pull request's head: " + detail +
-			". Read the checks before you decide anything."
 	case pods.WakeRoleMessage:
-		return preamble + "The wake is a message somebody published to your role topic (" + detail +
-			") while your pod was gone. Envoy keeps a role message for one hour: a message kept for your role " +
-			"reaches this session as an Envoy card that shows kept_at, possibly before this task, unless its " +
-			"hour ended before you came back, and Envoy tells its sender when it drops one. " +
-			"A message sent with keep: false is not kept, and its sender sends it again."
+		wake.Topic, wake.KeptFor, wake.KeptCardField = notify.RoleTopicPrefix+detail, roleMessageKeep.String(), "kept_at"
+		wake.KeptCardMayComeFirst, wake.SenderToldOfDrop, wake.NotKeptWith, wake.SenderSendsAgain = true, true, "keep: false", true
 	case pods.WakeAgentMessage:
-		return preamble + "The wake is a message somebody sent to your session (" + detail +
-			") while your pod was gone, which nothing kept: the sender's next attempt reaches you now."
+		wake.Session = detail
 	case pods.WakeBackstop:
-		return preamble + "The wake is the release's backstop running out: " + detail +
-			". Nothing else asked for you, so take up your phase where you left it."
+		wake.ArmedFor = detail
 	default:
-		return preamble + "The wake is " + kind + ": " + detail + "."
+		wake.Detail = detail
 	}
+	return wake
+}
+
+// WakeTask is PodWake's record as the woken role reads it.
+func WakeTask(issue, kind, detail string) string {
+	return taskText(PodWake(issue, kind, detail))
 }
 
 // listenerWake applies one wake report of the Envoy listener (intake.ListenerWake). A
@@ -132,7 +139,7 @@ func (e *Engine) listenerWake(ctx context.Context, tx pgx.Tx, fact intake.Listen
 	if err != nil || !found {
 		return intake.Result{}, err
 	}
-	_, err = e.wakeReleased(ctx, tx, released, kind, detail, fact.At)
+	_, err = e.wakeReleased(ctx, tx, released, PodWake(released.Issue, kind, detail), detail, fact.At)
 	return intake.Result{}, err
 }
 
@@ -166,29 +173,35 @@ func (e *Engine) wakeOnSettlement(ctx context.Context, tx pgx.Tx, fact intake.Pu
 	// The role is the settlement's to tell only when this call is what woke it: a wake another
 	// pass took is already bringing the pod back with a task of its own, and a claim this
 	// settlement did not wake is told as any live role is (tellChecks).
-	woken, err := e.wakeReleased(ctx, tx, released, pods.WakeChecks, settlementDetail(fact), e.now())
+	woken, err := e.wakeReleased(ctx, tx, released, SettlementWake(issue.Key, issue.Phase, pr.Repo, fact), fact.HeadSHA, e.now())
 	if err != nil || !woken {
 		return "", err
 	}
 	return role, nil
 }
 
-// settlementDetail names the head and what its settlement came to, which is what the woken role's
-// task carries: the checks the settlement names failed, then the ones it names cancelled, and
-// "every check passed" when it names neither.
-func settlementDetail(fact intake.PullRequestChecks) string {
-	head := fact.HeadSHA
-	if len(head) > 12 {
-		head = head[:12]
+// SettlementWake is the task of the role of issue's phase p whose released pod a CI settlement on
+// its pull request's head woke (pods.WakeChecks), as the record of its kind: the pull request (of
+// repo), the head the settlement is for, the phase, each check the settlement names failed or
+// cancelled with that conclusion, the count of the checks it reports that passed, and the command
+// that lists every check. A check the settlement reports as a run and names neither way passed, as
+// settledChecks reads it; the settlement this one wake names is the fact's own, since the wake runs
+// before the fact is applied (wakeOnSettlement).
+func SettlementWake(issue string, p phase.Phase, repo string, fact intake.PullRequestChecks) texts.PodWakeRecord {
+	conclusions := make(map[string]record.RunConclusion, len(fact.CheckRuns)+len(fact.Failing)+len(fact.Cancelled))
+	for _, run := range fact.CheckRuns {
+		conclusions[run.Name] = record.RunSucceeded
 	}
-	switch {
-	case len(fact.Failing) > 0:
-		return head + " failed " + strings.Join(fact.Failing, ", ")
-	case len(fact.Cancelled) > 0:
-		return head + " had " + strings.Join(fact.Cancelled, ", ") + " cancelled"
-	default:
-		return head + " passed every check"
+	for _, name := range fact.Cancelled {
+		conclusions[name] = record.RunCancelled
 	}
+	for _, name := range fact.Failing {
+		conclusions[name] = record.RunFailed
+	}
+	red, passed := notPassed(conclusions)
+	return texts.PodWakeRecord{TaskHead: texts.TaskHead{Kind: texts.PodWake, Issue: issue}, Wake: pods.WakeChecks,
+		PullRequest: texts.PullRequestRef(repo, fact.Number), Head: fact.HeadSHA, Phase: p, NotPassed: red, Passed: &passed,
+		ListPassed: texts.ListPassed(repo, fact.Number)}
 }
 
 // podBackstopDue wakes a released pod on its backstop, which is R5: backstop_minutes after the
@@ -207,8 +220,7 @@ func (e *Engine) podBackstopDue(ctx context.Context, tx pgx.Tx, fact intake.PodB
 	if err != nil || !found {
 		return intake.Result{}, err
 	}
-	detail := fmt.Sprintf("the backstop armed for %s's %s came due", fact.Issue, fact.Role)
-	_, err = e.wakeReleased(ctx, tx, released, pods.WakeBackstop, detail, e.now())
+	_, err = e.wakeReleased(ctx, tx, released, PodWake(fact.Issue, pods.WakeBackstop, string(fact.Role)), string(fact.Role), e.now())
 	return intake.Result{}, err
 }
 
@@ -233,7 +245,8 @@ func (e *Engine) podBackstopDue(ctx context.Context, tx pgx.Tx, fact intake.PodB
 // wake first closes a resume of this role written before the issue's newest release
 // (Pods.ClosePodGoneResume), which matches nothing while a pod is on its way back, since such a
 // resume was itself written after every release there is.
-func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, released supervise.Claim, kind, detail string, at time.Time) (bool, error) {
+func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, released supervise.Claim, wake texts.PodWakeRecord, detail string, at time.Time) (bool, error) {
+	kind := wake.Wake
 	issue, err := e.store.Issue(ctx, tx, released.Issue)
 	if err != nil || issue == nil {
 		return false, err
@@ -258,7 +271,7 @@ func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, released supervise
 		return false, err
 	}
 	e.log.Info("wake: a released pod is coming back", "issue", issue.Key, "role", released.Role, "kind", kind, "detail", detail)
-	return true, e.enqueue(ctx, tx, issue.Key, wakeRow(*issue, released.Role, WakeTask(kind, detail)))
+	return true, e.enqueue(ctx, tx, issue.Key, wakeRow(*issue, released.Role, taskText(wake)))
 }
 
 // OpenPhaseRole is the phase worker of an open phase, and "" where there is none: a phase no role

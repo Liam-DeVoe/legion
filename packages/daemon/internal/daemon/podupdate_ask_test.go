@@ -94,9 +94,11 @@ func TestPodUpdateAskReachesEachRoleOnItsOwnTopic(t *testing.T) {
 			if got.topic != topic || got.message != "update-ask on LEGION-208" || got.key != record.OutboxKey(row.ID) {
 				t.Fatalf("the ask went as %#v, want the summary %q on %s under %s", got, "update-ask on LEGION-208", topic, record.OutboxKey(row.ID))
 			}
-			payload, isObject := got.payload.(json.RawMessage)
-			if !isObject {
-				t.Fatalf("the ask's payload is %T %v, want the record as an object", got.payload, got.payload)
+			// The publisher encodes the payload as the listener's body carries it (json.Marshal);
+			// a text would encode as a JSON string, the record as an object.
+			payload, err := json.Marshal(got.payload)
+			if err != nil || !strings.HasPrefix(string(payload), "{") {
+				t.Fatalf("the ask's payload is %T %s (%v), want the record as an object", got.payload, payload, err)
 			}
 			var ask texts.UpdateAskRecord
 			decoder := json.NewDecoder(strings.NewReader(string(payload)))
@@ -129,7 +131,8 @@ func TestPodUpdateAskReachesEachRoleOnItsOwnTopic(t *testing.T) {
 }
 
 // A row an older daemon queued carries the whole ask that daemon's sweep built, and no facts. It
-// goes as that text, unchanged, as it went then: the message and the payload are the text.
+// goes as that text, unchanged, under the summary every update ask goes under
+// (`update-ask on <KEY>`), at the kind's urgency.
 func TestPodUpdateAskAnOlderDaemonQueuedGoesAsItsText(t *testing.T) {
 	publisher := &outboxPublisher{}
 	runner, _ := askRunner(t, publisher, map[claim.Role]string{claim.RoleTester: askedRound})
@@ -139,8 +142,9 @@ func TestPodUpdateAskAnOlderDaemonQueuedGoesAsItsText(t *testing.T) {
 		t.Fatalf("run the older daemon's ask: %v", err)
 	}
 	published := publisher.publishes()
-	if len(published) != 1 || published[0].message != olderAskText || published[0].payload != any(olderAskText) {
-		t.Fatalf("publishes = %#v, want the older daemon's text as the message and the payload", published)
+	if len(published) != 1 || published[0].message != "update-ask on LEGION-208" || published[0].payload != any(olderAskText) ||
+		published[0].urgency != texts.Med {
+		t.Fatalf("publishes = %#v, want the older daemon's text as the payload under update-ask on LEGION-208 at med", published)
 	}
 }
 

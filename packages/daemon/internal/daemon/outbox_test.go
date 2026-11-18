@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -37,6 +38,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
@@ -906,11 +908,23 @@ func TestAMessagePostDispatchRefusesIsFinishedAndItsArchitectTold(t *testing.T) 
 		t.Fatal("a 503 post is finished refused, want it retried")
 	}
 	notice := messagePostRefused("LEGION-208", record.MessagePost{Body: "READY #42 at head\n\nthe rest of the packet"}, refusal)
-	if notice.Kind != "message-refused" || notice.Role != claim.RoleArchitect ||
-		!strings.Contains(notice.Reason, "LEGION-208") || !strings.Contains(notice.Reason, "READY #42 at head") ||
-		strings.Contains(notice.Reason, "the rest of the packet") || !strings.Contains(notice.Reason, refusal.Error()) {
-		t.Fatalf("the notice = %+v, want message-refused to the architect naming the issue, the first line alone and Dispatch's refusal", notice)
+	if want := (texts.MessageRefusedRecord{NoticeHead: texts.NoticeHead{Kind: texts.MessageRefused, Issue: "LEGION-208"},
+		Refused: texts.RefusedMessage, DispatchAnswer: refusal.Error(), Length: 41, Begins: "READY #42 at head"}); notice != want {
+		t.Fatalf("the notice = %+v, want %+v: the issue, the message's length and its first line alone, and Dispatch's refusal", notice, want)
 	}
+}
+
+// refusedWrites is what a message-refused notice says of a status row's two writes: whether the
+// status is set and whether the reason beside it is posted, each "absent" where the notice does
+// not say.
+func refusedWrites(notice record.Notice) (status, reason string) {
+	said := func(p *bool) string {
+		if p == nil {
+			return "absent"
+		}
+		return strconv.FormatBool(*p)
+	}
+	return said(notice.StatusSet), said(notice.ReasonPosted)
 }
 
 // A done write posts its reason as a message before it writes the status, and Dispatch refuses a
@@ -953,12 +967,12 @@ func TestAStatusWriteWhoseReasonDispatchRefusesStillSetsTheStatusAndTellsTheArch
 	if err := json.Unmarshal(payload, &notice); err != nil {
 		t.Fatalf("decode the notice: %v", err)
 	}
-	if notice.Kind != "message-refused" || notice.Role != claim.RoleArchitect ||
-		!strings.Contains(notice.Reason, "The status done was set on the issue all the same") ||
-		!strings.Contains(notice.Reason, "Closed by its architect before its first phase: the human decided no change.") ||
-		strings.Contains(notice.Reason, "The rest of the reason.") ||
-		!strings.Contains(notice.Reason, refusal.Error()) {
-		t.Fatalf("the notice = %+v, want it naming the status it set, the reason's first line alone and Dispatch's refusal", notice)
+	status, posted := refusedWrites(notice)
+	if notice.Kind != texts.MessageRefused || notice.Issue != "LEGION-208" || notice.Refused != texts.RefusedStatus ||
+		notice.Status != "done" || status != "true" || posted != "false" ||
+		notice.Begins != "Closed by its architect before its first phase: the human decided no change." || notice.Length != len([]rune(reason)) ||
+		!strings.Contains(notice.DispatchAnswer, refusal.Error()) {
+		t.Fatalf("the notice = %+v, want it naming the status it set, the reason not posted with its length and first line alone, and Dispatch's refusal", notice)
 	}
 }
 
@@ -967,14 +981,17 @@ func TestAStatusWriteWhoseReasonDispatchRefusesStillSetsTheStatusAndTellsTheArch
 // disagree from here on.
 func TestAStatusWriteDispatchRefusesTellsTheArchitectTheStatusDidNotLand(t *testing.T) {
 	refusal := &dispatch.Error{Status: http.StatusBadRequest, Code: "INVALID_STATUS", Message: "no such status"}
-	notice := statusWriteRefused("LEGION-208", record.OrdinaryStatusWrite("done", "", ""),
+	refused := statusWriteRefused("LEGION-208", record.OrdinaryStatusWrite("done", "", ""),
 		fmt.Errorf("set Dispatch issue LEGION-208 to done: %w", refusal), statusWrites{})
-	if notice.Kind != "message-refused" || notice.Role != claim.RoleArchitect ||
-		!strings.Contains(notice.Reason, "The status done is not set, so the issue keeps the status it has") ||
-		!strings.Contains(notice.Reason, "the daemon's own record reads done") {
-		t.Fatalf("the notice = %+v, want it saying the status did not land and that the record disagrees", notice)
+	notice, err := record.NoticeOf(refused)
+	if err != nil {
+		t.Fatalf("convert the notice: %v", err)
 	}
-	if strings.Contains(notice.Reason, "begins") {
+	if status, posted := refusedWrites(notice); notice.Kind != texts.MessageRefused || notice.Refused != texts.RefusedStatus ||
+		notice.Status != "done" || status != "false" || posted != "absent" || !strings.Contains(notice.DispatchAnswer, refusal.Error()) {
+		t.Fatalf("the notice = %+v, want it saying the status done did not land, and nothing of a reason the write did not carry", notice)
+	}
+	if notice.Length != 0 || notice.Begins != "" {
 		t.Fatalf("the notice = %+v, want no reason quoted for a write that carried none", notice)
 	}
 }
@@ -987,15 +1004,17 @@ func TestAStatusWriteDispatchRefusesTellsTheArchitectTheStatusDidNotLand(t *test
 func TestAStatusRefusedAfterItsReasonPostedTellsTheArchitectTheReasonStands(t *testing.T) {
 	const reason = "Closed by its architect before its first phase: the human decided no change."
 	refusal := &dispatch.Error{Status: http.StatusNotFound, Code: "ISSUE_NOT_FOUND", Message: "no such issue"}
-	notice := statusWriteRefused("LEGION-208", record.OrdinaryStatusWrite("done", "", reason),
+	refused := statusWriteRefused("LEGION-208", record.OrdinaryStatusWrite("done", "", reason),
 		fmt.Errorf("set Dispatch issue LEGION-208 to done: %w", refusal), statusWrites{reason: true})
-	if notice.Kind != "message-refused" || notice.Role != claim.RoleArchitect ||
-		!strings.Contains(notice.Reason, "The status done is not set") ||
-		!strings.Contains(notice.Reason, "the daemon's own record reads done") {
-		t.Fatalf("the notice = %+v, want it saying the status did not land and that the record and Dispatch disagree", notice)
+	notice, err := record.NoticeOf(refused)
+	if err != nil {
+		t.Fatalf("convert the notice: %v", err)
 	}
-	if !strings.Contains(notice.Reason, "is on the issue already") || strings.Contains(notice.Reason, "is on no issue") {
-		t.Fatalf("the notice = %+v, want it saying the reason posted beside the status is on the issue", notice)
+	if status, posted := refusedWrites(notice); notice.Status != "done" || status != "false" || posted != "true" {
+		t.Fatalf("the notice = %+v, want it saying the status done did not land and the reason beside it is on the issue", notice)
+	}
+	if notice.Length != 0 || notice.Begins != "" {
+		t.Fatalf("the notice = %+v, want no reason quoted: it is on the issue already", notice)
 	}
 }
 
@@ -1058,9 +1077,9 @@ func TestAStatusWriteRetriesUntilTheStatusLandsAfterItsReasonIsRefused(t *testin
 	if err := json.Unmarshal(payload, &notice); err != nil {
 		t.Fatalf("decode the notice: %v", err)
 	}
-	if !strings.Contains(notice.Reason, "The status done was set on the issue all the same") ||
-		!strings.Contains(notice.Reason, refusal.Error()) {
-		t.Fatalf("the notice = %+v, want it naming the status it set and Dispatch's refusal of the reason", notice)
+	if status, posted := refusedWrites(notice); notice.Status != "done" || status != "true" || posted != "false" ||
+		!strings.Contains(notice.DispatchAnswer, refusal.Error()) {
+		t.Fatalf("the notice = %+v, want it naming the status it set, the reason not posted and Dispatch's refusal of the reason", notice)
 	}
 }
 
@@ -1120,9 +1139,8 @@ func TestAStatusWriteWhoseAnswerWasLostStillTellsTheArchitectItsRefusedReason(t 
 	if err := json.Unmarshal(payload, &notice); err != nil {
 		t.Fatalf("decode the notice: %v", err)
 	}
-	if notice.Kind != "message-refused" || notice.Role != claim.RoleArchitect ||
-		!strings.Contains(notice.Reason, "The status done was set on the issue all the same") ||
-		!strings.Contains(notice.Reason, reason) || !strings.Contains(notice.Reason, refusal.Error()) {
+	if status, posted := refusedWrites(notice); notice.Kind != texts.MessageRefused || notice.Status != "done" || status != "true" ||
+		posted != "false" || notice.Begins != reason || !strings.Contains(notice.DispatchAnswer, refusal.Error()) {
 		t.Fatalf("the notice = %+v, want it naming the status that stands, the refused reason and Dispatch's refusal", notice)
 	}
 }
@@ -2105,7 +2123,7 @@ func TestOutboxRetryStartForAPhaseTheIssueLeftRelaunchesNothing(t *testing.T) {
 // for a phase the issue has left, so it is dropped rather than sent (PhaseHolds), and the claim's
 // next start, for the issue's next phase or round, hands the live worker the new start's own task
 // rather than the finished phase's — for the next round, or for retro once the architect accepts
-// the approved head, never "Phase: implementing" again — without relaunching it.
+// the approved head, never the implementing phase again — without relaunching it.
 func TestAResidentWorkerIsHandedItsNewPhaseNotATaskLeftPendingFromTheLast(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -2113,7 +2131,7 @@ func TestAResidentWorkerIsHandedItsNewPhaseNotATaskLeftPendingFromTheLast(t *tes
 		accept bool
 		want   string
 	}{
-		{name: "approved, accepted into retro", review: intake.PullRequestReview{State: "APPROVED"}, accept: true, want: "Phase: retro."},
+		{name: "approved, accepted into retro", review: intake.PullRequestReview{State: "APPROVED"}, accept: true, want: "\nphase: " + string(phase.Retro)},
 		{name: "changes requested into the next round", review: intake.PullRequestReview{State: "CHANGES_REQUESTED", Body: "scripted changes requested, round 3"}, want: "round 3"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2593,15 +2611,18 @@ type outboxPublisher struct {
 	err     error
 }
 
+// outboxPublish is one publish a fake publisher took: its topic, its summary (message), the row's
+// key, its payload and the urgency it went at.
 type outboxPublish struct {
 	topic, message, key string
 	payload             any
+	urgency             texts.Urgency
 }
 
-func (p *outboxPublisher) Publish(_ context.Context, topic, message string, payload any, key string) error {
+func (p *outboxPublisher) Publish(_ context.Context, topic, message string, payload any, urgency texts.Urgency, key string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.publish = append(p.publish, outboxPublish{topic: topic, message: message, key: key, payload: payload})
+	p.publish = append(p.publish, outboxPublish{topic: topic, message: message, key: key, payload: payload, urgency: urgency})
 	return p.err
 }
 
@@ -3206,9 +3227,9 @@ func TestADispatchRowForAnIssueClosedAfterItWasQueuedEndsAfterOneAttempt(t *test
 	written := refusalNotices()
 	for _, row := range written {
 		switch {
-		case strings.Contains(row.notice.Reason, "READY #42 at head"):
+		case row.notice.Refused == texts.RefusedMessage && row.notice.Begins == "READY #42 at head":
 			messageNotice = row
-		case strings.Contains(row.notice.Reason, "The status done is not set"):
+		case row.notice.Refused == texts.RefusedStatus && row.notice.Status == "done" && row.notice.StatusSet != nil && !*row.notice.StatusSet:
 			statusNotice = row
 		}
 	}
@@ -3222,9 +3243,9 @@ func TestADispatchRowForAnIssueClosedAfterItWasQueuedEndsAfterOneAttempt(t *test
 		{"the refused message", messageNotice},
 		{"the refused status write", statusNotice},
 	} {
-		if tc.row.notice.Kind != "message-refused" || tc.row.notice.Role != claim.RoleArchitect ||
-			!strings.Contains(tc.row.notice.Reason, refusal.Error()) {
-			t.Fatalf("the notice of %s = %+v, want a message-refused notice to the architect carrying %q",
+		if tc.row.notice.Kind != texts.MessageRefused || tc.row.notice.Issue == "" ||
+			!strings.Contains(tc.row.notice.DispatchAnswer, refusal.Error()) {
+			t.Fatalf("the notice of %s = %+v, want a message-refused notice on its issue carrying %q",
 				tc.name, tc.row.notice, refusal.Error())
 		}
 	}

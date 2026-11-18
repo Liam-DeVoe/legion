@@ -196,48 +196,26 @@ func (w *workflowRuntime) stampPodResume(ctx context.Context, issue string, role
 }
 
 // wakeForDelivery brings a released pod back for a delivery the daemon already has for one of its
-// roles and cannot hand over any other way: a notice whose owning architect is released, a
+// roles and cannot hand over any other way: a med notice whose owning architect is released, a
 // phase-ended message whose role is, a hook prompt whose role is, and the message that tells a
 // released merger its pull request left the merge queue (mergeQueueRemoval). Every other delivery
 // is an outbox `start` or a task, which the supervise machine already resumes a suspended claim
 // for (deliverResuming); these four publish to a live session instead, so the row's own retry is
-// what waits for the pod, and this is what makes the pod come back for it to find.
+// what waits for the pod, and this is what makes the pod come back for it to find. A low notice
+// wakes no pod: its row asks only whether the claim is released for delivery
+// (releasedForDelivery) and then waits for the architect's next ready (deliverNotice).
 //
 // It answers whether the claim was released and a resume of it is under way. The role's one open
 // resume is what makes the wake one wake however often the row retries, so a notice that backs
-// off for ten minutes resumes the claim once. A claim of an issue that has left the workflow, or
-// whose tree lingers, is not woken: that pod is a close's to stop. An outbox with no supervisor —
-// a test's, which supervises nothing — wakes nothing: there is no machine to read a claim's state
-// from.
-//
-// The claim is read from the machine's View, which never waits on the decision in flight: a
-// machine holds its lock through the runtime call its decision makes, so a read that waited
-// would hold the notice and the phase-ended message behind a Sandbox relaunch waiting on the
-// cluster, which is the defect LEGION-650 fixed in the routing beside this read.
+// off for ten minutes resumes the claim once. A claim that is not released for delivery is not
+// woken (releasedForDelivery).
 func (r *outbox) wakeForDelivery(ctx context.Context, token claim.Token, detail string) (bool, error) {
-	if r.supervisor == nil {
-		return false, nil
-	}
-	machine, found := r.supervisor.Machine(token)
-	if !found {
-		return false, nil
-	}
-	held := machine.View()
-	if !held.Released() {
-		return false, nil
-	}
-	issue, err := r.issue(ctx, held.Issue)
-	if err != nil {
+	released, ok, err := r.releasedForDelivery(ctx, token)
+	if err != nil || !ok {
 		return false, err
 	}
-	root, err := r.root(ctx, issue)
-	if err != nil {
-		return false, err
-	}
-	if root == nil || !pods.InWorkflowNotLingering(issue.Standing(), root.Standing(), record.OutOfWorkflow) {
-		return false, nil
-	}
-	taken, err := r.trees.TakePodWake(ctx, r.project, issue.Key, held.Role, pods.WakeDelivery, r.now().UTC())
+	issue, role := released.issue.Key, released.held.Role
+	taken, err := r.trees.TakePodWake(ctx, r.project, issue, role, pods.WakeDelivery, r.now().UTC())
 	if err != nil {
 		return false, err
 	}
@@ -254,20 +232,66 @@ func (r *outbox) wakeForDelivery(ctx context.Context, token claim.Token, detail 
 	// meets a stuck resume heals it rather than reading it as a pod coming back.
 	reason := "a wake for " + detail
 	if !taken {
-		if !machine.View().Released() {
+		if !released.machine.View().Released() {
 			return true, nil
 		}
 		reason = "a wake for " + detail + ", whose resume the record already held open"
 		r.log.Warn("wake: a released pod's resume stands open with no process behind it; this wake resumes it",
-			"issue", issue.Key, "role", held.Role, "detail", detail)
+			"issue", issue, "role", role, "detail", detail)
 	} else {
 		r.log.Info("wake: a released pod is coming back for a delivery the daemon holds for one of its roles",
-			"issue", issue.Key, "role", held.Role, "detail", detail)
+			"issue", issue, "role", role, "detail", detail)
 	}
-	if err := machine.Handle(ctx, supervise.RequestRuleResume{Claim: token, Reason: reason}); err != nil {
+	if err := released.machine.Handle(ctx, supervise.RequestRuleResume{Claim: token, Reason: reason}); err != nil {
 		return false, fmt.Errorf("wake claim %s for %s: %w", token, detail, err)
 	}
 	return true, nil
+}
+
+// deliveryRelease is a claim released for delivery (releasedForDelivery): its machine, the view
+// of the claim that test read, and the claim's issue as recorded.
+type deliveryRelease struct {
+	machine *supervise.Machine
+	held    supervise.ClaimView
+	issue   record.Issue
+}
+
+// releasedForDelivery is the test a wake for a delivery makes before it wakes anything
+// (wakeForDelivery): this daemon supervises token's claim, the idle release released it
+// (supervise.ClaimView.Released), and its issue is in the workflow with a tree that does not
+// linger. A claim of an issue that has left the workflow, or whose tree lingers, is not released
+// for delivery: that pod is a close's to stop. An outbox with no supervisor — a test's, which
+// supervises nothing — has no claim released for delivery: there is no machine to read a claim's
+// state from.
+//
+// The claim is read from the machine's View, which never waits on the decision in flight: a
+// machine holds its lock through the runtime call its decision makes, so a read that waited
+// would hold the notice and the phase-ended message behind a Sandbox relaunch waiting on the
+// cluster, which is the defect LEGION-650 fixed in the routing beside this read.
+func (r *outbox) releasedForDelivery(ctx context.Context, token claim.Token) (deliveryRelease, bool, error) {
+	if r.supervisor == nil {
+		return deliveryRelease{}, false, nil
+	}
+	machine, found := r.supervisor.Machine(token)
+	if !found {
+		return deliveryRelease{}, false, nil
+	}
+	held := machine.View()
+	if !held.Released() {
+		return deliveryRelease{}, false, nil
+	}
+	issue, err := r.issue(ctx, held.Issue)
+	if err != nil {
+		return deliveryRelease{}, false, err
+	}
+	root, err := r.root(ctx, issue)
+	if err != nil {
+		return deliveryRelease{}, false, err
+	}
+	if root == nil || !pods.InWorkflowNotLingering(issue.Standing(), root.Standing(), record.OutOfWorkflow) {
+		return deliveryRelease{}, false, nil
+	}
+	return deliveryRelease{machine: machine, held: held, issue: issue}, true, nil
 }
 
 // armBackstops arms the backstop of a release that completed: backstop_minutes from now, for the

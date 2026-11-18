@@ -2,7 +2,6 @@ package supervise
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -61,15 +60,15 @@ func promptRetryDelay(attempt int) time.Duration {
 // the ladder. Oh My Pi's Retryable flag is logged and read by nothing: the status alone decides.
 //
 // The cause is named once here and handed to whoever writes it down, since one failed turn has
-// one cause and the words are the same in the claim's failure and in the controller's notice; the
-// prompt the task goes behind states the status it is built from (ProviderErrorNote).
+// one cause; the controller's notice and the prompt the task goes behind state the status it is
+// built from (tellControllerOfProviderErrors, ProviderErrorNote).
 func (m *Machine) providerErrored(ctx context.Context, r StreamPromptResult) error {
 	cause := providerErrorCause(r.HTTPStatus)
 	m.claim.ProviderErrorRun++
 	m.log.Warn("supervise: the turn this task's prompt ran ended in a provider error; the task is kept and sent again",
 		"delivery", r.DeliveryID, "retryable", r.Retryable, "httpStatus", r.HTTPStatus,
 		"provider", r.Provider, "model", r.Model, "providerErrorRun", m.claim.ProviderErrorRun)
-	m.tellControllerOfProviderErrors(r.Model, cause)
+	m.tellControllerOfProviderErrors(r.Model, r.HTTPStatus)
 	// The prompt's turn ran and is over, and its result has ended the wait for results
 	// (promptResulted), so nothing of the task is left outstanding.
 	if err := m.takeBackPending(ctx, taskRead); err != nil {
@@ -163,21 +162,27 @@ func ProviderErrorNote(issue string, status int) texts.ProviderErrorNoteRecord {
 // tellControllerOfProviderErrors tells the project's controller, once, when the claim's run of
 // provider-error turns reaches providerErrorRunTold; a turn with no error puts the run back to
 // zero, and only then can another notice go. It is the one exit from a run of such turns, and it
-// is a notice rather than a hold: R2 forbids an attempt limit. model is the model the failed
-// request went to, and is empty when the error named none.
-func (m *Machine) tellControllerOfProviderErrors(model, cause string) {
+// is a notice rather than a hold: R2 forbids an attempt limit. The notice is the provider-errors
+// record (texts.ProviderErrorsRecord): the claim's role, the run of turns, model, the model the
+// failed request went to (empty when the error named none), status, the HTTP status the provider
+// answered (0 for none, as a content filter's refusal answers), and promptRetryMax, the longest
+// the ladder waits between sends. The provider's own text is in no part of it
+// (providerErrorCause).
+func (m *Machine) tellControllerOfProviderErrors(model string, status int) {
 	if m.claim.ProviderErrorRun != providerErrorRunTold || m.deps.ProviderErrorRunReached == nil {
 		return
 	}
-	on := ""
-	if model != "" {
-		on = " on " + model
+	told := texts.ProviderErrorsRecord{
+		NoticeHead: texts.NoticeHead{Kind: texts.ProviderErrors, Issue: m.claim.Issue},
+		Role:       m.claim.Role,
+		Turns:      m.claim.ProviderErrorRun,
+		Model:      model,
+		HTTPStatus: status,
+		RetryEvery: promptRetryMax.String(),
 	}
-	reason := fmt.Sprintf("%d turns in a row%s ended in %s; the daemon keeps the task and sends it again every %s at most",
-		m.claim.ProviderErrorRun, on, cause, promptRetryMax)
 	m.log.Warn("supervise: a run of turns that ended in a provider error; the controller is told",
-		"providerErrorRun", m.claim.ProviderErrorRun, "model", model, "reason", reason)
-	m.deps.ProviderErrorRunReached(m.current(), reason)
+		"providerErrorRun", m.claim.ProviderErrorRun, "model", model, "httpStatus", status)
+	m.deps.ProviderErrorRunReached(m.current(), told)
 }
 
 // waitsForProviderError is whether the ladder's wait is armed for the delivery of this id.

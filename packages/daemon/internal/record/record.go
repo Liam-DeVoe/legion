@@ -691,6 +691,13 @@ type PhaseEntry struct {
 // into a phase makes of the role's row (workflow's clearHandoff) takes it with the decision, so
 // no round inherits the refusal of the round before it. The decision column is jsonb, so a row
 // an older daemon wrote simply has none.
+//
+// Author, Person, SubmittedAt and BodyCut are the review's own facts that the next implementer's
+// task names beside its body (workflow's PhaseAssignment): the GitHub login that wrote it, whether
+// that login is a person's rather than the review App's (a person's body is cut to texts.OneAct
+// there, the reviewer's goes whole), when GitHub says it was submitted, and whether Envoy's
+// normalizer cut its body before the daemon saw it. A decision an older daemon wrote has none of
+// them, and its body goes whole with no author, as it did.
 type ReviewDecision struct {
 	State          string     `json:"state"`
 	Body           string     `json:"body,omitempty"`
@@ -698,6 +705,10 @@ type ReviewDecision struct {
 	Refused        string     `json:"refused,omitempty"`
 	ToldStuckHead  string     `json:"toldStuckHead,omitempty"`
 	ToldStuckState MergeState `json:"toldStuckState,omitempty"`
+	Author         string     `json:"author,omitempty"`
+	Person         bool       `json:"person,omitempty"`
+	SubmittedAt    time.Time  `json:"submittedAt,omitzero"`
+	BodyCut        bool       `json:"bodyCut,omitempty"`
 }
 
 // ReviewOrder is where a review falls among the pull request's reviews: when it was submitted, then
@@ -1227,7 +1238,11 @@ type DesignGate struct {
 	ApprovedMark       EventMark
 	ToldChangesVersion *int
 	ToldChangesReason  string
-	ToldChangesMark    EventMark
+	// ToldChangesBy is who made that changes request, as Dispatch names its actor (<kind>:<id>),
+	// "" where the read that recorded it named nobody and on a row an older daemon wrote. The
+	// resume of a root that waited on the person names that person beside the reason.
+	ToldChangesBy   string
+	ToldChangesMark EventMark
 	// EverOpened records that a human approved the gate's document version at some point in this
 	// generation of the issue, whether or not the gate stands open now. Nothing else remembers it:
 	// classify.DesignGateOpen is point-in-time, reading the approval against LatestVersion as both

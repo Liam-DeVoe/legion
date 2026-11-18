@@ -15,9 +15,9 @@ import (
 // copies to read here. (Round 2, adversarial P2-1 and outside-whole P2-1.)
 //
 // The phrase is read from internal/workflow's design_approved_wake_extract.txt, which that
-// package's TestTheDesignApprovedWakeExtractIsTheConstant holds to DesignApprovedWake, rather than
-// imported: an import of internal/workflow compiles the daemon's closure, the store included, into
-// this package, and this job is built with no database and reads no product code.
+// package's TestTheDesignApprovedWakeExtractIsTheConstant holds to texts.DesignApprovedWake,
+// rather than imported: an import of internal/workflow compiles the daemon's closure, the store
+// included, into this package, and this job is built with no database and reads no product code.
 func TestTheArchitectsInstructionsTakeTheResumeAsTheDesignApprovedWake(t *testing.T) {
 	root := filepath.Join("..", "..", "..", "..")
 	const extract = "../workflow/design_approved_wake_extract.txt"

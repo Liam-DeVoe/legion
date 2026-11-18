@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/wait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -101,7 +102,9 @@ func (r *outbox) mergeQueueRead(ctx context.Context, row record.OutboxRow, paylo
 // to the Envoy topic of the issue's merger, and to nothing else: the pull request left the merge
 // queue at the row's head, GitHub did not report it merged, and the event names no reason, so the
 // merger reads the reason on GitHub and acts on it (step 5 of its role prompt). It stops nothing
-// it reaches, as a phase-ended message stops nothing.
+// it reaches, as a phase-ended message stops nothing. The message is its kind's record
+// (record.MergeQueueRemoval.Record), an object, published under the summary
+// `merge-queue-removal on <KEY>` at the urgency the list gives the kind for the merger.
 //
 // The row is held as an architect's notice is held (notice_exceptions.go, noticeAnswered), not
 // dropped as a phase-ended message nobody holds is (phaseEnded). A phase-ended message is worth
@@ -167,8 +170,8 @@ func (r *outbox) mergeQueueRemoval(ctx context.Context, row record.OutboxRow, pa
 	} else if woken {
 		return wait.Errorf("the merge-queue removal of %s waits for its merger's released pod to come back", row.Issue)
 	}
-	message := payload.Message(row.Issue, pr.Repo)
-	published := r.notices.Publish(ctx, notify.RoleTopicPrefix+string(token), message, message, record.OutboxKey(row.ID))
+	published := r.notices.Publish(ctx, notify.RoleTopicPrefix+string(token), noticeSummary(texts.MergeQueueRemoval, row.Issue),
+		payload.Record(row.Issue, pr.Repo), texts.UrgencyOf(texts.MergeQueueRemoval, claim.RoleMerger, texts.Variant{}), record.OutboxKey(row.ID))
 	switch {
 	case published == nil:
 		r.log.Info("outbox merge-queue removal delivered to the merger", attributes...)

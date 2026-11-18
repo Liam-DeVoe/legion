@@ -407,11 +407,6 @@ func (e *Engine) suspend(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 	return e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "suspend", Tree: issue.Tree, Role: role, Generation: issue.Generation, Reason: reason})
 }
 
-// testerVerdictLabel labels the tester's verdict a started worker's task carries. The reviewer's
-// prompt names it as the tester's result rather than its own (prompts/go/reviewer.md), which a test
-// ties to it.
-const testerVerdictLabel = "Tester's verdict"
-
 // start starts the phase worker of the issue's current phase, a start stamped with that phase and
 // with the entry it raises for that role (enter), whose task is word for word the task the
 // worker is sent. Its start carries no mark (startMarks), a fresh session among them: the
@@ -937,41 +932,160 @@ func (e *Engine) EnterArchitect(ctx context.Context, tx pgx.Tx, root record.Issu
 	return e.enter(ctx, tx, root, claim.RoleArchitect, task, false, verbatim)
 }
 
-// task is what a started worker is told. It names the phase the worker starts, which the issue
-// record already holds: one role runs several phases (the implementer runs implementing and
-// retro), and a resumed session cannot otherwise tell a new phase from its last.
-// The handoff a phase ended with is a Dispatch handoff record on the issue, which the line names by
-// its phase word and version with the command that reads that version, the record the daemon
-// accepted, whatever was written to the phase since; a commit is named, as `Handoff commit:`,
-// whenever the completion reported one: the head the planner's, the implementer's, the tester's or
-// the reviewer's record names, and the commit retro and the merger stand on.
-// A handoff's verdict is always the tester's, since the daemon accepts one from no other role on
-// a phase completion (api/handoff.go, VERDICT_ROLE_FORBIDDEN; the implementer's check report is no
-// phase completion and starts nobody), so the line names the tester: the reviewer it starts on a
-// pass reads it as the tester's report, never as a field of its own completion.
-func task(issue record.Issue, handoff record.PhaseRow, pr *record.PullRequest, reason string) string {
-	text := continueLine(issue)
-	if handoff.HandoffRecord != "" {
-		word := handoffWord(handoff.Role)
-		text += fmt.Sprintf(" Handoff: %s version %d (dispatch handoff-read --issue %s --phase %s --version %d).", word, handoff.HandoffVersion, issue.Key, word, handoff.HandoffVersion)
-	}
-	if handoff.HandoffCommit != "" {
-		text += " Handoff commit: " + handoff.HandoffCommit + "."
-	}
-	if handoff.Verdict != "" {
-		text += " " + testerVerdictLabel + ": " + handoff.Verdict + "."
-	}
-	if pr != nil && pr.Number != 0 {
-		text += fmt.Sprintf(" Pull request: #%d.", pr.Number)
-	}
-	if reason != "" {
-		text += " Reason: " + reason + "."
-	}
-	return text
+// The words a phase-assignment task names who retried its phase by (texts.PhaseAssignmentRecord
+// Retried): the architect's retry_or_escalate with retry, the operator's `legion claims retry`,
+// and a todo written on a held root (releaseHeldRoot), which a person in the Dispatch dashboard,
+// the controller's set_status and an operator's `legion status` all write.
+const (
+	RetriedByArchitect = "architect"
+	RetriedByOperator  = "operator"
+	RetriedByTodo      = "todo"
+)
+
+// PhaseMove is what a phase-assignment task says of how its phase was reached, beyond the handoff
+// the phase before it ended with and the pull request (PhaseAssignment). The zero value says
+// nothing more: the phase a worker's completion, an approval or the gate's opening started.
+type PhaseMove struct {
+	// BackFrom is the phase a worker's backward move left (TriggerBackward). The role that works
+	// that phase asked for the move, and its words are Reason, given at At.
+	BackFrom phase.Phase
+	// Review is the decision of the review round a request for changes ended
+	// (TriggerReviewRejected): the head it reviewed, and its body by its author.
+	Review *record.ReviewDecision
+	// Conflict says the pull request's head conflicts with its base (TriggerConflict), which the
+	// pull request names.
+	Conflict bool
+	// Retried names who retried the phase (RetriedByArchitect and the others). The architect's own
+	// words, where it gave any, are Reason, given at At.
+	Retried string
+	// Stuck is the review round a retry of reviewing found stuck, nil for none.
+	Stuck  *StuckRound
+	Reason string
+	At     time.Time
 }
 
-func continueLine(issue record.Issue) string {
-	return fmt.Sprintf("Continue %s. Issue: %s. Phase: %s.", issue.Title, issue.Key, issue.Phase)
+// StuckRound is a review round that nothing on its way ends, as the task of its restarted reviewer
+// names it: its cause (a texts.Cause word), the head it is stuck at, the head the reviewer approved
+// where its approval is of other code, whether an APPROVE of the head or a REQUEST_CHANGES ends
+// it, which they do for every cause but a merge state GitHub will not merge from, and, for a round
+// no review decided, why the daemon set aside a review that would otherwise have decided it
+// (record.ReviewDecision.Refused), the only thing that says why the round has no decision.
+type StuckRound struct {
+	Cause     string
+	Head      string
+	Approved  string
+	EndsRound bool
+	SetAside  string
+}
+
+// PhaseAssignment is what a started worker is told, as the record of its kind: the issue, its
+// title and the phase the worker starts, which the issue record already holds — one role runs
+// several phases (the implementer runs implementing and retro), and a resumed session cannot
+// otherwise tell a new phase from its last.
+//
+// The handoff a phase ended with is a Dispatch handoff record on the issue, which the task names
+// by its phase word and version (decision 9 of dispatch://INFRA-3686's plan): the record the daemon
+// accepted, whatever was written to the phase since, which the reader's prompt reads with
+// `dispatch handoff-read`. A commit is named whenever the completion reported one: the head the
+// planner's, the implementer's, the tester's or the reviewer's record names, and the commit retro
+// and the merger stand on. A handoff's verdict is always the tester's, since the daemon accepts
+// one from no other role on a phase completion (api/handoff.go, VERDICT_ROLE_FORBIDDEN; the
+// implementer's check report is no phase completion and starts nobody), so the field names the
+// tester: the reviewer it starts on a pass reads it as the tester's report, never as a field of
+// its own completion. The pull request is named owner/name#n.
+//
+// move says how the phase was reached (PhaseMove). A worker's backward move names the phase it
+// left, and its role's words go in the reason block by that role, whole: Dispatch's own bound
+// already holds them, since the move posts them on the issue (backwardReasonRefusal). A review's
+// request for changes names the head it reviewed, and its whole body goes in the body block by
+// its author, cut to texts.OneAct where that author is a person and whole where it is the
+// reviewer, as the reviewer's own review always went. A head that conflicts with its base names
+// the base and the head. A retry names who retried, with the architect's words in the reason
+// block, and a retry of a stuck review round names the round's cause, its head and the review
+// that ends it.
+func PhaseAssignment(issue record.Issue, handoff record.PhaseRow, pr *record.PullRequest, move PhaseMove) texts.PhaseAssignmentRecord {
+	task := texts.PhaseAssignmentRecord{TaskHead: texts.TaskHead{Kind: texts.PhaseAssignment, Issue: issue.Key}, Title: issue.Title,
+		Phase: issue.Phase, HandoffCommit: handoff.HandoffCommit, TesterVerdict: handoff.Verdict}
+	if handoff.HandoffRecord != "" {
+		task.HandoffPhase, task.HandoffVersion = handoffWord(handoff.Role), handoff.HandoffVersion
+	}
+	if pr != nil && pr.Number != 0 {
+		task.PullRequest = pullRequestRef(*pr)
+	}
+	switch {
+	case move.BackFrom != "":
+		task.MovedBackFrom = move.BackFrom
+		task.Reason = wordsOf(move.Reason, string(phase.RoleFor(move.BackFrom)), move.At)
+	case move.Review != nil:
+		task.ReviewedHead = move.Review.Head
+		task.Body = rejectionBody(*move.Review)
+	case move.Conflict && pr != nil:
+		task.ConflictsWith, task.Head = pr.Base, pr.HeadSHA
+	case move.Retried != "":
+		task.Retried = move.Retried
+		task.Reason = wordsOf(move.Reason, "", move.At)
+		if stuck := move.Stuck; stuck != nil {
+			task.StuckRound, task.Head, task.ReviewedHead, task.SetAside = stuck.Cause, stuck.Head, stuck.Approved, stuck.SetAside
+			if stuck.EndsRound {
+				task.EndsRound = texts.EndsRound(stuck.Head)
+			}
+		}
+	}
+	return task
+}
+
+// wordsOf is text as a block carries another author's words whole, by by at at, where the task's
+// fields name neither; nil where there are no words.
+func wordsOf(text, by string, at time.Time) *texts.Words {
+	if text == "" {
+		return nil
+	}
+	if !at.IsZero() {
+		at = at.UTC()
+	}
+	return &texts.Words{Text: text, By: by, At: at}
+}
+
+// rejectionBody is the body of the review that requested changes as the next implementer's task
+// carries it: by its author — the reviewer for the review App's, whose review is the reviewer's
+// own (DecidesRound), and the login of anyone else, a person with write access — at the time GitHub
+// says it was submitted. A person's body is cut to texts.OneAct (texts.Carry), with the count of the
+// rest, or the mark that more follows where Envoy's normalizer cut it before the daemon saw it; the
+// reviewer's goes whole, as it always did. A decision an older daemon wrote names no author, and
+// its body goes whole with none.
+func rejectionBody(review record.ReviewDecision) *texts.Words {
+	if review.Body == "" && !review.BodyCut {
+		return nil
+	}
+	words := texts.Words{Text: review.Body}
+	switch {
+	case review.Person:
+		words = texts.Carry(review.Body, texts.OneAct, review.BodyCut)
+		words.By = review.Author
+	case review.Author != "":
+		words.By = string(claim.RoleReviewer)
+	}
+	if !review.SubmittedAt.IsZero() {
+		words.At = review.SubmittedAt.UTC()
+	}
+	return &words
+}
+
+// task is PhaseAssignment's record as the started worker reads it.
+func task(issue record.Issue, handoff record.PhaseRow, pr *record.PullRequest, move PhaseMove) string {
+	return taskText(PhaseAssignment(issue, handoff, pr, move))
+}
+
+// taskText is a task record as its kind renders it (texts.Render). Every record this package
+// builds holds what the store and the decoded events gave it, which is valid UTF-8, in the field
+// types the renderer takes, so a refusal is a defect of a record type, which this package's tests
+// render: it panics naming the type.
+func taskText(record any) string {
+	text, err := texts.Render(record)
+	if err != nil {
+		panic(fmt.Sprintf("workflow: the task %T does not render: %v", record, err))
+	}
+	return text
 }
 
 // handoffWord is the word of the Dispatch handoff record role writes (phase.Handoff's writer), ""
@@ -985,11 +1099,17 @@ func handoffWord(role claim.Role) string {
 	return ""
 }
 
-// ResumePhaseTask is what a worker started for a phase already under way is told. No handoff
-// begins that phase — the run that did is over — so the task names the phase and says to carry
-// the work on, which is what a resumed session needs to tell this phase from its last.
+// PhaseResume is what a worker started for a phase already under way is told, as the record of
+// its kind: the issue, its title and the phase. No handoff begins that phase — the run that did is
+// over — so the task names the phase, which is what a resumed session needs to tell this phase
+// from its last, and its kind says to carry the work on.
+func PhaseResume(issue record.Issue) texts.PhaseResumeRecord {
+	return texts.PhaseResumeRecord{TaskHead: texts.TaskHead{Kind: texts.PhaseResume, Issue: issue.Key}, Title: issue.Title, Phase: issue.Phase}
+}
+
+// ResumePhaseTask is PhaseResume's record as the started worker reads it.
 func ResumePhaseTask(issue record.Issue) string {
-	return continueLine(issue) + " Resume the existing phase work."
+	return taskText(PhaseResume(issue))
 }
 
 // HeldNotice is the notice of issue's hold as its architect answers one, with a retry or an

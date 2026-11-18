@@ -63,6 +63,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // conflictBase is the pull request's base branch, the repository's default, and ciRedCheck the one
@@ -72,11 +73,6 @@ const (
 	ciRedCheck   = "ci"
 	conflictBase = "main"
 )
-
-// conflictReason is the reason the workflow gives a conflicting head, which the implementer's
-// task, the architect's notice and the tester's phase-ended message all carry (workflow's
-// mergeability).
-const conflictReason = "the head conflicts with " + conflictBase + ": GitHub runs no checks on it; merge " + conflictBase + " forward"
 
 // The three heads the proof drives: the implementer's seeded head, the fix it pushes for the
 // tester's second assignment, and the fix it pushes while the reviewer reviews. Each red is
@@ -192,7 +188,7 @@ func (r *conflictNoTakeoverLive) testerWorksItsAssignment() {
 	r.note("read back: %s is in %s, status %s", r.key, got.Phase, got.Status)
 
 	r.test = r.claimant(claim.RoleTester, "ses_tester")
-	prompt := r.test.takeTask("Phase: testing")
+	prompt := r.test.takeTask("\nphase: " + string(phase.Testing))
 	r.note("read back: the tester was launched, registered and prompted its testing task (%s)", firstLine(prompt.Message))
 	working := r.d.claim(r.test.token)
 	if working.State != string(supervise.StateWorking) || working.Pending == nil || working.Pending.ConfirmedAt == nil {
@@ -250,9 +246,11 @@ func (r *conflictNoTakeoverLive) redStartsAtOnce() {
 }
 
 // Step 3. The tester is told, once, on its own Envoy role topic, that its phase ended: the
-// phase-ended row (record.PhaseEnded) the red enqueued on the outbox's role-message lane, the red
-// itself behind the `Reason:` label that marks it off from the daemon's own sentences. It is
-// not the architect's checks-red notice, which the same red sends to another topic altogether.
+// phase-ended row (record.PhaseEnded) the red enqueued on the outbox's role-message lane,
+// published as its kind's record under the summary `phase-ended on <KEY>`, naming the phase that
+// ended, the phase the issue is in now and the red itself: the base the head conflicts with, the
+// head and the pull request. It is not the architect's checks-red notice, which the same red
+// sends to another topic altogether.
 func (r *conflictNoTakeoverLive) testerIsToldItsPhaseEnded() {
 	t := r.t
 	topic := notify.RoleTopicPrefix + string(r.test.token)
@@ -261,12 +259,16 @@ func (r *conflictNoTakeoverLive) testerIsToldItsPhaseEnded() {
 		told = r.notices.acceptedOn(topic)
 		return len(told) == 1
 	})
-	want := record.PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.Implementing,
-		Reason: conflictReason}.Message(r.key)
-	if told[0].Message != want {
-		t.Fatalf("the tester was told %q on %s, want %q", told[0].Message, topic, want)
+	var ended texts.PhaseEndedRecord
+	if err := json.Unmarshal([]byte(told[0].Payload), &ended); err != nil {
+		t.Fatalf("the tester was told %q on %s, which is no phase-ended record: %v", told[0].Payload, topic, err)
 	}
-	r.note("read back: one message on %s — %s", topic, told[0].Message)
+	want := record.PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.Implementing, ConflictsWith: conflictBase,
+		Head: conflictFirstHead, PullRequest: texts.PullRequestRef(liveRepo, r.number)}.Record(r.key)
+	if told[0].Message != "phase-ended on "+r.key || ended != want {
+		t.Fatalf("the tester was told %q with %+v on %s, want phase-ended on %s with %+v", told[0].Message, ended, topic, r.key, want)
+	}
+	r.note("read back: one message on %s — %s: %s", topic, told[0].Message, told[0].Payload)
 	architect := r.architectNotices(r.key, "checks-red")
 	if len(architect) != 1 {
 		t.Fatalf("the architect was told %d checks-red notices, want the red's one", len(architect))
@@ -318,7 +320,7 @@ func (r *conflictNoTakeoverLive) staleEntryRefused() {
 	// its own — the head the fix pushed — so the tester completes it at the handoff it wrote for
 	// that work, never at the commit the refused completion named, and it is taken.
 	r.test.endTurn()
-	prompt := r.test.takeTask("Phase: testing")
+	prompt := r.test.takeTask("\nphase: " + string(phase.Testing))
 	r.note("read back: the tester's first turn ended and the second assignment's task reached it (%s)", firstLine(prompt.Message))
 	if status, failure := r.test.complete("tested the fix", conflictSecondTesterHandoff, "pass", ""); status != http.StatusOK {
 		t.Fatalf("the completion from the tester's new turn = %d %s %s, want 200", status, failure.Code, failure.Error)

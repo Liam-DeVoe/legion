@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/wait"
 )
 
@@ -128,16 +130,27 @@ func (r *outbox) readNoticeRoute(ctx context.Context, tx pgx.Tx, key string, rou
 }
 
 // earlierNoticeFor is the oldest of tree's earlier notices that goes to architect as the claims
-// run now — its id and the moment it is due — or 0 and the zero moment when there is none. Each
-// earlier notice's architect is resolved again rather than recorded when it was held, since a
-// sub-architect can start or end while it waits, and by the rule its own publish follows
-// (noticeArchitect). An earlier row whose architect cannot be resolved is no architect's, so it
-// holds back no later notice; it finishes on its own attempt (notice).
+// run now and holds a later notice back — its id and, where the wake pacing holds it, the moment
+// it is due — or 0 and the zero moment when there is none. Each earlier notice's architect is
+// resolved again rather than recorded when it was held, since a sub-architect can start or end
+// while it waits, and by the rule its own publish follows (noticeArchitect). An earlier row whose
+// architect cannot be resolved is no architect's, so it holds back no later notice; it finishes
+// on its own attempt (notice).
 //
-// The moment is what the row behind it waits for: an earlier row the wake pacing holds is due
-// minutes out, and the row behind it runs once, then (deliverNotice's wait.Until), rather than
-// climbing its backoff to it.
-func earlierNoticeFor(tree treeSnapshot, architect claim.Token, runs func(claim.Token) bool) (int64, time.Time) {
+// A notice that is low for the architect (noticeUrgency) holds no later notice back while the
+// architect has not said it is ready (supervise.SaidReady, which ready gives): a low notice to a
+// released architect waits for that ready and wakes nothing (deliverNotice), so a med notice
+// behind it goes past it and wakes the pod. Once the architect is ready, its ready makes both
+// due (releaseWaiting), and the fence holds the later notice behind the low one again, so they
+// arrive in the order they were written.
+//
+// The moment is what the row behind it waits for where the wake pacing holds the earlier row
+// (record.Notice.PacedAt, still ahead of now, which is read only then): such a row is due minutes
+// out, and the row behind it runs once, then (deliverNotice's wait.Until), rather than climbing
+// its backoff to it. Behind any other earlier row the moment is zero, and the row behind waits on
+// the outbox's own short backoff (errNoticeWaits): that earlier row's next attempt can be an hour
+// out (a low notice's wait), or sooner than its next_at says (a ready releases it).
+func earlierNoticeFor(tree treeSnapshot, architect claim.Token, runs func(claim.Token) bool, ready bool, now func() time.Time) (int64, time.Time) {
 	for _, other := range tree.earlier {
 		payload, err := record.DecodeOutboxPayload(other)
 		if err != nil {
@@ -151,11 +164,35 @@ func earlierNoticeFor(tree treeSnapshot, architect claim.Token, runs func(claim.
 		if !ok {
 			continue
 		}
-		if owner, err := noticeArchitect(tree.project, tree.issues, issue, notice, runs); err == nil && owner == architect {
+		if owner, err := noticeArchitect(tree.project, tree.issues, issue, notice, runs); err != nil || owner != architect {
+			continue
+		}
+		if !ready && noticeUrgency(notice, claim.RoleArchitect) == texts.Low {
+			continue
+		}
+		if !notice.PacedAt.IsZero() && notice.PacedAt.After(now()) {
 			return other.ID, other.NextAt
 		}
+		return other.ID, time.Time{}
 	}
 	return 0, time.Time{}
+}
+
+// noticeUrgency is the urgency notice goes to reader with: the rule the list gives its kind
+// (texts.UrgencyOf), read with the variant the notice's own payload carries (texts.Variant, whose
+// json names are the payload's keys). A copy of a notice (reholdNotice) carries the payload of
+// the row it copies, so it goes with that row's urgency. A payload that does not encode, which no
+// record.Notice is, goes at med, the urgency of a text nothing makes low.
+func noticeUrgency(notice record.Notice, reader claim.Role) texts.Urgency {
+	var v texts.Variant
+	encoded, err := json.Marshal(notice)
+	if err == nil {
+		err = json.Unmarshal(encoded, &v)
+	}
+	if err != nil {
+		return texts.Med
+	}
+	return texts.UrgencyOf(notice.Kind, reader, v)
 }
 
 // noticeArchitect is the architect claim notice, of issue in tree, goes to. A catch-up goes to the

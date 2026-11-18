@@ -149,7 +149,7 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 	// whatever version it was told at: it rebuilds the gate from Dispatch, and the gate seed or a
 	// late live event that follows may carry the same review again.
 	if !classify.DesignGateOpen(gate) && sameDocument && stored.ToldChangesVersion != nil {
-		gate = classify.RecordChangesTold(gate, *stored.ToldChangesVersion, stored.ToldChangesReason, stored.ToldChangesMark)
+		gate = classify.RecordChangesTold(gate, *stored.ToldChangesVersion, stored.ToldChangesReason, stored.ToldChangesBy, stored.ToldChangesMark)
 	}
 	// The changes request the read shows is the review its live event carries, so it meets a root
 	// waiting on a person by the same rules (applyArtifact): unplaceable, it is neither told nor
@@ -164,7 +164,7 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 	tell := false
 	if changesRequested && !unplaceable(*issue, fact.ChangesRequestedMark) {
 		tell = !classify.DesignGateChangesTold(gate, gate.LatestVersion, fact.ChangesReason, fact.ChangesRequestedMark)
-		gate = classify.RecordChangesTold(gate, gate.LatestVersion, fact.ChangesReason, fact.ChangesRequestedMark)
+		gate = classify.RecordChangesTold(gate, gate.LatestVersion, fact.ChangesReason, fact.ReviewedBy.Name(), fact.ChangesRequestedMark)
 	}
 	if err := e.putGateTold(ctx, tx, gate, gate.LatestVersion); err != nil {
 		return intake.Result{}, err
@@ -507,7 +507,7 @@ func (e *Engine) untellUnresumedChanges(ctx context.Context, tx pgx.Tx, root rec
 		}
 		e.logOnCommit(ctx, "workflow: a changes request whose resume never ran is no longer recorded as told", "issue", root.Key,
 			"step", gate.Step, "version", *gate.ToldChangesVersion)
-		gate.ToldChangesVersion, gate.ToldChangesReason, gate.ToldChangesMark = nil, "", record.EventMark{}
+		gate.ToldChangesVersion, gate.ToldChangesReason, gate.ToldChangesBy, gate.ToldChangesMark = nil, "", "", record.EventMark{}
 		if err := e.store.PutGate(ctx, tx, gate); err != nil {
 			return err
 		}
@@ -904,7 +904,7 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 	tell := fact.Kind == intake.DispatchArtifactChangesRequested && placeable &&
 		!classify.DesignGateChangesTold(gate, fact.Version, fact.Reason, fact.Mark)
 	if fact.Kind == intake.DispatchArtifactChangesRequested && placeable {
-		updated = classify.RecordChangesTold(updated, fact.Version, fact.Reason, fact.Mark)
+		updated = classify.RecordChangesTold(updated, fact.Version, fact.Reason, fact.Actor.Name(), fact.Mark)
 	}
 	// The pairs as the event found them: it moves a version, a review mark or the opened mark and
 	// leaves every step on the document it named, so the comparison queues nothing, which is what

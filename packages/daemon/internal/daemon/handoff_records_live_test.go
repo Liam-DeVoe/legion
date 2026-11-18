@@ -47,6 +47,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -422,9 +423,11 @@ func (r *handoffRecordsLive) a7DaemonSessionRecord() {
 
 	reviewer := r.claimant(claim.RoleReviewer, r.a7, "ses_a7_reviewer")
 	task := reviewer.awaitPrompt()
-	want := fmt.Sprintf("Handoff: test version %d (dispatch handoff-read --issue %s --phase test --version %d).", rewritten.version, r.a7, rewritten.version)
-	if !strings.Contains(task.Message, want) {
-		t.Fatalf("the reviewer was prompted %q, want it to name %q", task.Message, want)
+	lines := strings.Split(task.Message, "\n")
+	for _, want := range []string{"kind: phase-assignment", "handoff_phase: test", fmt.Sprintf("handoff_version: %d", rewritten.version)} {
+		if !slices.Contains(lines, want) {
+			t.Fatalf("the reviewer was prompted %q, want its phase-assignment record to carry the line %q", task.Message, want)
+		}
 	}
 	r.note("the reviewer's shim was prompted: %q", task.Message)
 	meta, _ = r.read(reviewer.session, r.a7, "test", "--version", strconv.Itoa(rewritten.version))

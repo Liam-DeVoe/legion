@@ -1,7 +1,6 @@
 package daemon
 
 import (
-	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -54,13 +53,13 @@ func TestTheResumeOfAnAnsweredRootIsSentBeforeAnUnconfirmedTaskOfALowerEntry(t *
 	sent := len(r.prompts())
 	r.bringUp()
 
-	resume := fmt.Sprintf("A person answered your ask %s on %s", mainPathAsk, r.key)
+	resume := []string{"kind: root-resume", "act: ask", `ask: "dispatch://` + r.key + "/ask/" + mainPathAsk + `"`}
 	prompts := r.prompts()[sent:]
 	if len(prompts) == 0 {
 		t.Fatalf("the relaunched architect was sent nothing; it holds %#v", r.machine().Claim().Pending)
 	}
-	if first := prompts[0]; !strings.Contains(first.Message, resume) || first.DeliveryID == held.ID {
-		t.Fatalf("the relaunched architect's first prompt is %s: %q, want the resume's task naming %q", first.DeliveryID, first.Message, resume)
+	if first := prompts[0]; !hasTaskLines(first.Message, resume...) || first.DeliveryID == held.ID {
+		t.Fatalf("the relaunched architect's first prompt is %s: %q, want the resume's task with the lines %q", first.DeliveryID, first.Message, resume)
 	}
 	if pending := r.machine().Claim().Pending; pending == nil || pending.Entry != 2 {
 		t.Fatalf("the architect holds %#v, want the resume's task of entry 2", pending)

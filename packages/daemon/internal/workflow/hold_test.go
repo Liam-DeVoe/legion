@@ -520,8 +520,8 @@ func TestARetrysTaskNamesThePullRequest(t *testing.T) {
 		t.Fatalf("retry: %v", err)
 	}
 	task := startTask(t, pool, phase.RoleFor(phase.Implementing))
-	if !strings.Contains(task, "Pull request: #42.") {
-		t.Fatalf("task = %q, want it to name pull request #42", task)
+	if !hasLines(task, "pull_request: sjawhar/legion#42", "retried: "+RetriedByArchitect) {
+		t.Fatalf("task = %q, want it to name pull request #42 and the architect's retry", task)
 	}
 }
 
@@ -549,7 +549,7 @@ func TestARetrysTaskNamesThePullRequest(t *testing.T) {
 // or is never queued at all, and the release's is the write the board stands on.
 func TestATodoOnAHeldRootReleasesTheHold(t *testing.T) {
 	const root = "LEGION-208"
-	const reason = "Reason: the issue was set to todo while its phase was held."
+	const reason = "retried: " + RetriedByTodo
 	for _, tc := range []struct {
 		name string
 		own  bool
@@ -599,8 +599,8 @@ func TestATodoOnAHeldRootReleasesTheHold(t *testing.T) {
 				t.Fatalf("%s holds %d slots, want the one it held while it was held", root, got)
 			}
 			if line := logged.String(); !strings.Contains(line, "workflow: a held phase is released") ||
-				!strings.Contains(line, "the issue was set to todo while its phase was held") {
-				t.Fatalf("the log of the release = %q, want the released line naming the daemon's own reason", line)
+				!strings.Contains(line, "retried="+RetriedByTodo) {
+				t.Fatalf("the log of the release = %q, want the released line naming who retried it", line)
 			}
 
 			// The same issue held again and written to todo again: the second release runs as the

@@ -36,6 +36,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -848,8 +849,8 @@ func TestPodUpdateToldOnceAtTheBoundOfARoundAnOperatorsSuspensionHolds(t *testin
 		t.Errorf("the notice names images %q, settings %q and reasons %q; want the image %s and the setting disk by its key, and no text",
 			got.Images, got.Settings, got.Reasons, podUpdateDigest)
 	}
-	if !strings.Contains(notice.Reason, "An operator suspended") || !strings.Contains(notice.Reason, string(claim.RoleImplementer)) {
-		t.Errorf("the notice says %q, want it to name the operator's suspension of the implementer", notice.Reason)
+	if notice.Holds != texts.HoldsOperator || notice.Refusal != "" {
+		t.Errorf("the notice is %+v, want it to name the operator's suspension", notice)
 	}
 	wantWaiting(t, notice, map[claim.Role]bool{claim.RoleImplementer: false, claim.RoleTester: true})
 	wantNoRefusedNotice(t, rig)
@@ -1778,8 +1779,8 @@ func TestPodUpdateTellsTheControllerWhenTheReplacementKeepsFailing(t *testing.T)
 	if len(notices) != 1 {
 		t.Fatalf("at the bound %s the controller was told %d times about a replacement that keeps failing, want once", rig.clock.Now(), len(notices))
 	}
-	if !strings.Contains(notices[0].Reason, "The runtime refused the pod replacement") || !strings.Contains(notices[0].Reason, "the api server refused the suspension") {
-		t.Errorf("the notice says %q, want the refusal and the error the runtime gave", notices[0].Reason)
+	if notices[0].Holds != texts.HoldsRuntimeRefused || !strings.Contains(notices[0].Refusal, "the api server refused the suspension") {
+		t.Errorf("the notice is %+v, want the runtime's refusal and the error the runtime gave", notices[0])
 	}
 	wantAnswered(t, notices[0], claim.RoleImplementer)
 	wantNoRefusedNotice(t, rig)
@@ -1929,8 +1930,8 @@ func TestPodUpdateTellsTheControllerWhenNoClaimRecordsThePod(t *testing.T) {
 		waiting[0].Role != claim.RoleImplementer || waiting[0].State != string(supervise.StateSuspended) {
 		t.Fatalf("the notice waits on %+v, want the suspended implementer alone", notices[0].Update.Waiting)
 	}
-	if !strings.Contains(notices[0].Reason, "An operator suspended") || !strings.Contains(notices[0].Reason, string(claim.RoleImplementer)) {
-		t.Errorf("the notice says %q, want it to name the operator's suspension of the implementer", notices[0].Reason)
+	if notices[0].Holds != texts.HoldsOperator {
+		t.Errorf("the notice is %+v, want it to name the operator's suspension", notices[0])
 	}
 	wantNoRefusedNotice(t, rig)
 	if messages := rig.messages(); len(messages) != 0 {
@@ -2287,10 +2288,8 @@ func TestPodUpdatePodlessNoticeMarksWhichWorkersAnswered(t *testing.T) {
 		t.Fatalf("at the bound %s the controller was told %d times about a podless round an operator holds, want once", rig.clock.Now(), len(notices))
 	}
 	wantWaiting(t, notices[0], map[claim.Role]bool{claim.RoleImplementer: true, claim.RoleTester: false})
-	for _, want := range []string{"No claim of this issue records a process in a pod", "An operator suspended", string(claim.RoleTester)} {
-		if !strings.Contains(notices[0].Reason, want) {
-			t.Errorf("the notice says %q, want it to say %q", notices[0].Reason, want)
-		}
+	if notices[0].Holds != texts.HoldsOperator || notices[0].Update == nil || notices[0].Update.Pod != "" {
+		t.Errorf("the notice is %+v with round %+v, want an operator's suspension holding a round no claim records a pod of", notices[0], notices[0].Update)
 	}
 	wantNoRefusedNotice(t, rig)
 }
@@ -2571,8 +2570,8 @@ func TestPodUpdateDecidesAGonePodsRoundRatherThanWaitForATurnInThePodThatReplace
 		t.Errorf("the sweep ended the round over a gone pod %d times, want once: %+v", len(lines), lines)
 	}
 	if notices := rig.notices(); len(notices) != 0 {
-		t.Errorf("the controller was told %q, over %+v: the round it names is of a pod that is gone, and nothing of that round waits on a turn",
-			notices[0].Reason, notices[0].Update)
+		t.Errorf("the controller was told %+v, over %+v: the round it names is of a pod that is gone, and nothing of that round waits on a turn",
+			notices[0], notices[0].Update)
 	}
 	if messages := rig.messages(); len(messages) != 0 {
 		t.Errorf("the issue was written %q; every worker of the round had answered before its pod went", messages)

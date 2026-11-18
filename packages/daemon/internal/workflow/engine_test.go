@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"os"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -27,6 +28,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 type admissionStub struct{}
@@ -361,10 +363,11 @@ func TestReviewRoundCapPostsOneMessageAndNoticeForTheThirdRound(t *testing.T) {
 	}
 }
 
-// A reviewer started on the tester's pass is told the tester's verdict as the tester's, never as a
-// bare "Handoff verdict" it could take for a field of its own completion, which the daemon refuses
-// from a reviewer (VERDICT_ROLE_FORBIDDEN), and the tester's handoff as the Dispatch record it reads
-// with `dispatch handoff-read`, with no commit, since this completion of the tester's names none.
+// A reviewer started on the tester's pass is told the tester's verdict as the tester's
+// (tester_verdict), never as a bare verdict it could take for a field of its own completion, which
+// the daemon refuses from a reviewer (VERDICT_ROLE_FORBIDDEN), and the tester's handoff as the
+// Dispatch record it reads with `dispatch handoff-read`, by its phase word and version, with no
+// commit, since this completion of the tester's names none.
 func TestAReviewerIsToldTheTestersVerdictAsTheTesters(t *testing.T) {
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U"})
@@ -375,18 +378,23 @@ func TestAReviewerIsToldTheTestersVerdictAsTheTesters(t *testing.T) {
 	}, testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
 		t.Fatalf("ApplyFact tester completion: %v", err)
 	}
-	task := startTask(t, pool, claim.RoleReviewer)
-	if want := "Phase: reviewing. Handoff: test version 3 (dispatch handoff-read --issue LEGION-208 --phase test --version 3). Tester's verdict: pass. Pull request: #42."; !strings.HasSuffix(task, want) {
-		t.Fatalf("reviewer task %q, want it to end with %q", task, want)
-	}
-	if strings.Contains(task, "Handoff verdict") {
-		t.Fatalf("reviewer task %q still names the verdict as the handoff's", task)
+	task := readTaskOf(t, startTask(t, pool, claim.RoleReviewer))
+	want := map[string]string{"kind": string(texts.PhaseAssignment), "issue": "LEGION-208", "title": "root", "phase": string(phase.Reviewing),
+		"handoff_phase": "test", "handoff_version": "3", "tester_verdict": "pass", "pull_request": "sjawhar/legion#42"}
+	if !reflect.DeepEqual(task.fields, want) || len(task.blocks) != 0 {
+		t.Fatalf("reviewer task fields %v and blocks %+v, want %v and no block", task.fields, task.blocks, want)
 	}
 }
 
-// The reviewer's prompt names the label its task's verdict carries as the tester's result and says
-// its own completion carries none, so a rename on either side alone fails here.
+// The reviewer's prompt names the field its task's verdict is in (texts.PhaseAssignmentRecord's
+// TesterVerdict, read from its json tag) as the tester's result and says its own completion
+// carries none, so a rename on either side alone fails here.
 func TestTheReviewerPromptNamesTheTestersVerdictLabel(t *testing.T) {
+	field, ok := reflect.TypeFor[texts.PhaseAssignmentRecord]().FieldByName("TesterVerdict")
+	if !ok {
+		t.Fatal("the phase-assignment record has no TesterVerdict field")
+	}
+	name, _, _ := strings.Cut(field.Tag.Get("json"), ",")
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
@@ -403,7 +411,7 @@ func TestTheReviewerPromptNamesTheTestersVerdictLabel(t *testing.T) {
 		}
 		prompt.Write(part)
 	}
-	for _, want := range []string{"`" + testerVerdictLabel + ":`", "`VERDICT_ROLE_FORBIDDEN`"} {
+	for _, want := range []string{"`" + name + "`", "`VERDICT_ROLE_FORBIDDEN`"} {
 		if !strings.Contains(prompt.String(), want) {
 			t.Fatalf("the reviewer's prompt does not say %q", want)
 		}
@@ -434,6 +442,40 @@ func TestAPhaseFinishedNoticeCarriesTheWorkersSummaryAndItsVerdict(t *testing.T)
 	}
 	if notice["role"] != "tester" || notice["phase"] != "testing" || notice["summary"] != "twelve scenarios pass against the head" || notice["verdict"] != "pass" {
 		t.Fatalf("phase-finished notice = %s, want the tester's summary and its verdict pass", payload)
+	}
+}
+
+// R1: a worker's summary reaches the architect cut to its first 1,000 UTF-16 units, the count of
+// the rest in the notice's words object, by the worker at its completion's time, beside the
+// handoff's reference (its phase word and version), which holds the whole of what the worker
+// wrote.
+func TestAPhaseFinishedSummaryIsCutAtOneThousandCharacters(t *testing.T) {
+	pool := migratedPool(t)
+	ctx := context.Background()
+	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U"})
+	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim"})
+	summary := strings.Repeat("s", 3000)
+	if _, err := intake.ApplyFact(ctx, pool, "api", "tester-passed", intake.HandoffComplete{
+		Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim", Generation: 1, Summary: summary, Verdict: "pass", HandoffRecord: "test-handoff", HandoffVersion: 4,
+	}, testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
+		t.Fatalf("ApplyFact tester completion: %v", err)
+	}
+	var finished []record.Notice
+	for _, payload := range noticeRows(t, pool) {
+		if notice := asNotice(payload); notice.Kind == texts.PhaseFinished {
+			finished = append(finished, notice)
+		}
+	}
+	if len(finished) != 1 {
+		t.Fatalf("phase-finished notices %+v, want one", finished)
+	}
+	notice := finished[0]
+	t.Logf("notice: summary of %d bytes, words %+v, handoff %s version %d", len(notice.Summary), notice.Words, notice.HandoffPhase, notice.HandoffVersion)
+	words := notice.Words["summary"]
+	if notice.Summary != summary[:1000] || words.Rest != 2000 || words.By != string(claim.RoleTester) ||
+		notice.HandoffPhase != "test" || notice.HandoffVersion != 4 {
+		t.Fatalf("the notice carries %d bytes of summary with %+v and handoff %s version %d, want the first 1000, rest 2000 by the tester and the test handoff at version 4",
+			len(notice.Summary), words, notice.HandoffPhase, notice.HandoffVersion)
 	}
 }
 
@@ -683,7 +725,7 @@ func assertStartTasksNamePhase(t *testing.T, pool *pgxpool.Pool, want phase.Phas
 		if err := rows.Scan(&task); err != nil {
 			t.Fatalf("scan start task: %v", err)
 		}
-		if !strings.Contains(task, "Phase: "+string(want)+".") {
+		if !hasLines(task, "phase: "+string(want)) {
 			t.Fatalf("start task %q does not name phase %s", task, want)
 		}
 	}
@@ -986,11 +1028,12 @@ func TestABackwardMovesTaskNamesThePullRequestAndTheReason(t *testing.T) {
 	if _, err := intake.ApplyFact(context.Background(), pool, "api", "merging-reviewing", intake.BackwardMove{Issue: "LEGION-208", Requester: phase.RoleFor(phase.Merging), To: phase.Reviewing, Reason: reason}, testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
 		t.Fatalf("ApplyFact backward: %v", err)
 	}
-	task := startTask(t, pool, phase.RoleFor(phase.Reviewing))
-	for _, want := range []string{"Phase: reviewing.", "Pull request: #42.", "Reason: " + reason + "."} {
-		if !strings.Contains(task, want) {
-			t.Fatalf("task = %q, want it to carry %q", task, want)
-		}
+	read := readTaskOf(t, startTask(t, pool, phase.RoleFor(phase.Reviewing)))
+	if read.fields["phase"] != string(phase.Reviewing) || read.fields["pull_request"] != "sjawhar/legion#42" || read.fields["moved_back_from"] != string(phase.Merging) {
+		t.Fatalf("task names %v, want reviewing moved back from merging on the pull request", read.fields)
+	}
+	if block := read.block(t, "reason"); block.text != reason || block.attrs["by"] != string(claim.RoleMerger) {
+		t.Fatalf("task carries the reason block %+v, want the merger's words", block)
 	}
 }
 

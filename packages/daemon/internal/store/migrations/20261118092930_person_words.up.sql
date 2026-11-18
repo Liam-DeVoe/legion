@@ -23,6 +23,12 @@
 -- answer_at and more keys), so the words are on the row and not only on the fact. A newer
 -- decision that replaces a row replaces its words.
 --
+-- design_gates.told_changes_by is who made the changes request a gate records as told
+-- (record.DesignGate.ToldChangesBy, Dispatch's <kind>:<id> of the review's actor): the gate
+-- already keeps that request's version, its reason and its place in the issue's event log, and
+-- the resume of a root that waited on the person names the person beside the reason. It is
+-- written with the told version and cleared with it, as the reason is.
+--
 -- The words are kept whole. A text that carries them cuts them when it is written, never here, so
 -- an act read twice is kept equal.
 --
@@ -30,10 +36,11 @@
 -- record of those acts says: no words were read for them. A text built from such a row names the
 -- act and its reference with no words, as the release before this one did.
 --
--- What an older daemon binary reads on this schema. Its root_asks and parked_decisions reads name
--- the columns it knows, and its writes leave the new ones out, so it reads every row and ignores
--- the words. Its writes also leave the words a row holds as they are: a root_asks row whose
--- sequence it moves to a newer act, and a parked_decisions row it replaces with a newer decision,
+-- What an older daemon binary reads on this schema. Its root_asks, parked_decisions and
+-- design_gates reads name the columns it knows, and its writes leave the new ones out, so it reads
+-- every row and ignores the words. Its writes also leave the words a row holds as they are: a
+-- root_asks row whose sequence it moves to a newer act, and a parked_decisions row it replaces
+-- with a newer decision,
 -- keep the words of the older act, which this release reads after a roll forward. That older
 -- binary cannot read what this release writes into the outbox either: the DecisionMark words of a
 -- start task or a catch-up, and the new fields of every notice and role message. So a rollback
@@ -44,3 +51,4 @@
 alter table root_asks add column person_answer_words jsonb;
 alter table root_asks add column person_words jsonb;
 alter table parked_decisions add column words jsonb;
+alter table design_gates add column told_changes_by text;

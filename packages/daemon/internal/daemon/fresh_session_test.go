@@ -287,9 +287,14 @@ func TestAnArchitectsRetryOfARefusedClaimStartsANewSessionWithThePhaseTask(t *te
 	// provider refused: a worker reading an empty transcript would otherwise take the task for a
 	// fresh start and do again what the abandoned session already pushed.
 	prompts := rig.conn.Prompts()
-	task := "Continue Workflow. Issue: LEGION-208. Phase: implementing. Reason: retry held phase."
-	if len(prompts) != 2 || !strings.HasSuffix(prompts[1].Message, task) {
-		t.Fatalf("the new session was prompted %+v, want it to end with the retried phase's task %q", prompts, task)
+	if len(prompts) != 2 {
+		t.Fatalf("the new session was prompted %+v, want the sentence and the retried phase's task", prompts)
+	}
+	lines := strings.Split(prompts[1].Message, "\n")
+	for _, want := range []string{"kind: " + string(texts.PhaseAssignment), "issue: LEGION-208", "phase: implementing", "retried: " + workflow.RetriedByArchitect} {
+		if !slices.Contains(lines, want) {
+			t.Fatalf("the new session was prompted %q, want the retried phase's task to carry the line %q", prompts[1].Message, want)
+		}
 	}
 	wantsAbandonment(t, prompts[1].Message, refusal)
 }

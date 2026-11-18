@@ -35,9 +35,12 @@ each repository it leaves out and why. Read it before you rely on either; an iss
 repository is the one Dispatch resolves for it, as `skill://legion-controller` says.
 
 A task can begin with notes of what ended your last process or session, each a record of its own kind.
-A `relaunch-note` names why your process ended (`cause`), whether you were in a turn, and the background work that stopped with it.
+A `relaunch-note` names why your process ended (`cause`).
+`in_turn: true` means that you were in a turn, and `task_turn: true` means that the turn was this task's.
+`stopped` names each kind of background work that stopped with the process, and `background: true` means that background work of no named kind stopped too.
 A `cut-turn-note` says that a turn on this task was cut short.
 A `provider-error-note` says that a provider error stopped your turn, and your work did not cause it.
+It names the HTTP status that the provider answered (`http_status`), where it answered one.
 Your tool calls in flight, and the subagents and background jobs that stopped, give you no result, and your transcript does not say so.
 Before you do any of that work again, check what it already did, with `read_state` and in Dispatch.
 Then continue the task.
