@@ -97,11 +97,18 @@ function writesField(request: Request, key: string, field: string): boolean {
 }
 
 /** The review actions of an approval inside `scope`: Approve (`Approve v2` on a stale approval)
- *  and Request changes, by the words the header itself finds them by (`ACTION_WORDS`). The chip
- *  itself (`Approved v1`) is none of them. */
+ *  and Request changes. Each is found as the header finds it, by the words it draws
+ *  (`ACTION_WORDS`), not by its name: where two documents' requests wait on the reader, each
+ *  action's name also says its document ("Approve the spec"). The chip itself (`Approved v1`) is
+ *  none of them, and neither is a button inside a dialog, as the Request changes dialog's own
+ *  Request changes, which stands inside the header: the header's own list of the two actions
+ *  (`CHIP_ACTIONS`) leaves those out too. */
 function reviewActions(scope: Locator): Locator {
   const sources = Object.values(ACTION_WORDS).map((pattern) => pattern.source);
-  return scope.getByRole("button", { name: new RegExp(sources.join("|")) });
+  return scope
+    .getByRole("button")
+    .filter({ hasText: new RegExp(sources.join("|")) })
+    .and(scope.locator(':not([role="dialog"] *)'));
 }
 
 /** The words the labels' count reads with `left` labels it does not draw: `+3 labels`. */
@@ -2261,6 +2268,47 @@ test("Details closed after a write removed the parent link leaves the focus in t
   });
 });
 
+// The same, opened by Shift+M from the header's Approve while the document's request waits on
+// the reader, and bob answers that request while Details is open: the header then draws neither
+// action, and the box that keeps the two together goes with them. The keeper reads the elements
+// around Approve as the focus leaves it, so it still finds that document's chip and gives it the
+// focus, as after an approval made from the header, rather than going on to "Issue actions".
+test("Details closed after an answer elsewhere removed Approve leaves the focus on the document's chip", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedHeader, async (page, seeded) => {
+    await requestApproval(seeded.specArtifactId, { summary: "Read it." });
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectHeaderDrawn(page);
+    const header = issueHeader(page);
+    const approve = header.getByRole("button", { exact: true, name: "Approve" });
+    await expect(approve, "the chip carries no Approve while its request waits").toBeVisible();
+    await approve.focus();
+    await expect(approve, "the header's Approve took no focus").toBeFocused();
+    await page.keyboard.press("Shift+M");
+    await expect(details(page), "Shift+M on Approve opened no Details").toBeVisible();
+    await expect
+      .poll(() => details(page).evaluate((drawer) => drawer.contains(document.activeElement)), {
+        message: "Details took no focus as it opened",
+      })
+      .toBe(true);
+    await reviewArtifact(seeded.specArtifactId, { state: "approved" }, { login: "bob" });
+    await expect(
+      reviewActions(header),
+      "the header still draws an action once bob answered the request"
+    ).toHaveCount(0);
+    await page.keyboard.press("Escape");
+    await expect(details(page), "Escape left Details open").toBeHidden();
+    await framesDrawn(page, 2);
+    const focus = await focusNow(page);
+    await expect(
+      approvalChip(page, seeded.specArtifactId),
+      `Details, closed after Approve went, left the focus on ${focus.what}, not on the spec's chip`
+    ).toBeFocused();
+  });
+});
+
 /** The documents the page sends a review of, in the order it sends them: each `POST` of
  *  `/api/v1/artifacts/{id}/reviews`, the write Approve and Request changes make. */
 function reviewsSent(page: Page): string[] {
@@ -2777,11 +2825,9 @@ test("a change request sent after the header's actions went leaves the focus on 
 
     await reviewArtifact(seeded.specArtifactId, { state: "approved" }, { login: "bob" });
     // The dialog stands inside the header, so its own Request changes is one of the header's
-    // buttons: the chip's actions are the header's actions outside every dialog.
+    // buttons, but no action of the chip: `reviewActions` leaves out every button of a dialog.
     await expect(
-      reviewActions(header).and(
-        header.locator('xpath=.//button[not(ancestor::*[@role="dialog"])]')
-      ),
+      reviewActions(header),
       "the header still draws an action once bob answered the request"
     ).toHaveCount(0);
     await expect(dialog, "bob's answer shut the Request changes dialog").toBeVisible();
