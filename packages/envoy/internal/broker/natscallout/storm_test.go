@@ -5,6 +5,7 @@ import (
 	"crypto/ecdsa"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 	"sync"
@@ -18,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 	"github.com/sjawhar/envoy/internal/brokerclient"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -25,8 +27,9 @@ import (
 
 // sessionOption is a session's credential as natscred.Session presents it, on a token source of
 // the test's own: each CONNECT takes the token current answers once, signs the nonce the server
-// sent that connection for it, and sends that same token.
-func sessionOption(key *ecdsa.PrivateKey, current func() string) nats.Option {
+// sent that connection for it, and sends that same token. signed, when it is not nil, is told
+// each nonce as it is signed (lastNonces).
+func sessionOption(key *ecdsa.PrivateKey, current func() string, signed func(nonce string)) nats.Option {
 	var mu sync.Mutex
 	presented := ""
 	sign := func(nonce []byte) ([]byte, error) {
@@ -35,6 +38,9 @@ func sessionOption(key *ecdsa.PrivateKey, current func() string) nats.Option {
 		mu.Lock()
 		presented = token
 		mu.Unlock()
+		if signed != nil {
+			signed(string(nonce))
+		}
 		return []byte(proof), err
 	}
 	return func(o *nats.Options) error {
@@ -54,11 +60,11 @@ func sessionOption(key *ecdsa.PrivateKey, current func() string) nats.Option {
 // causes. natscred sets the option on exactly the connections the auth service decides (Session,
 // Service), as a session here is; giveUpOnRefusal leaves it off, which is the control. It answers
 // the connect's error rather than failing the test itself, so a caller may run it on a goroutine
-// of its own.
-func reconnectingSession(t *testing.T, url string, s *session, giveUpOnRefusal bool, options ...nats.Option) (*nats.Conn, error) {
+// of its own. signed is sessionOption's.
+func reconnectingSession(t *testing.T, url string, s *session, giveUpOnRefusal bool, signed func(nonce string), options ...nats.Option) (*nats.Conn, error) {
 	t.Helper()
 	settings := []nats.Option{
-		sessionOption(s.key, func() string { return s.token }),
+		sessionOption(s.key, func() string { return s.token }, signed),
 		nats.Timeout(10 * time.Second), nats.MaxReconnects(-1),
 		nats.ReconnectWait(100 * time.Millisecond), nats.ReconnectJitter(200*time.Millisecond, 0),
 	}
@@ -76,7 +82,8 @@ func reconnectingSession(t *testing.T, url string, s *session, giveUpOnRefusal b
 // After the server restarts with the service held off the bus for three seconds, every one of
 // five hundred open session connections is admitted again, each presenting a proof over its new
 // connection's nonce, every decision the service makes is inside its budget, and the server gives
-// up on none of the requests it sends the service.
+// up on none of the requests it sends the service: the service answers every one, and each
+// connection it admits is the one its client holds (decidedNonces.unheld).
 //
 // Three seconds is not arbitrary: the service is a client of the same server, so a restart drops
 // its own connection too, and every client that comes back before it is refused. A client that is
@@ -91,6 +98,15 @@ func reconnectingSession(t *testing.T, url string, s *session, giveUpOnRefusal b
 // failed before anything under test had started. envoy-go's plain step runs the five hundred. The
 // first connects are made twenty at a time for the same reason: they set the storm up and are not
 // the storm.
+//
+// The server's own log cannot say which of its give-ups were requests the service was sent. It
+// waits out its authorization timeout for a request it sent while no service was subscribed as
+// for one the service never answered, and logs both the same way (hubGaveUp), on the client's own
+// goroutine whenever that wakes. So the restarted service subscribing in the middle of a wave of
+// reconnects, which load makes likely, puts the give-ups of the requests sent just before it among
+// the lines written after any moment the test picks. The nonces are exact instead: the server
+// takes one answer per request, so an admission it had stopped waiting for leaves no client
+// connected on that nonce.
 func TestACalloutStormAfterAServerRestartAdmitsEveryConnection(t *testing.T) {
 	connections := 500
 	if raceEnabled {
@@ -131,6 +147,7 @@ func TestACalloutStormAfterAServerRestartAdmitsEveryConnection(t *testing.T) {
 	service := startService(t, url, keys, deps, timed)
 
 	var reconnected atomic.Int64
+	clients := newLastNonces()
 	conns := make([]*nats.Conn, connections)
 	errs := make([]error, connections)
 	connecting := make(chan struct{}, 20)
@@ -141,7 +158,8 @@ func TestACalloutStormAfterAServerRestartAdmitsEveryConnection(t *testing.T) {
 			defer wait.Done()
 			connecting <- struct{}{}
 			defer func() { <-connecting }()
-			conns[index], errs[index] = reconnectingSession(t, url, s, false, nats.ReconnectHandler(func(*nats.Conn) { reconnected.Add(1) }))
+			conns[index], errs[index] = reconnectingSession(t, url, s, false, clients.signer(s.id),
+				nats.ReconnectHandler(func(*nats.Conn) { reconnected.Add(1) }))
 		}()
 	}
 	wait.Wait()
@@ -149,28 +167,18 @@ func TestACalloutStormAfterAServerRestartAdmitsEveryConnection(t *testing.T) {
 	require.EqualValues(t, connections, decided.Load(), "every first connection was decided")
 
 	// The service is off the bus for heldOff, so every client is refused for that long and must
-	// still be there when it returns. The restart turns on the server's debug log, where the
-	// server says it gave up on a request (hubGaveUp).
+	// still be there when it returns. back keeps the nonce of every request it decides, and its
+	// reporter, which logs every request it drops, refuses or cannot answer, writes to backLog.
 	service.Close()
-	server.Restart(t, debugCalloutConfig(keys))
+	restarted := len(server.Log())
+	server.Restart(t, testnats.CalloutConfig(keys))
 	time.Sleep(heldOff)
-	back := startService(t, url, keys, deps, timed)
-	t.Cleanup(back.Close)
-	// A request the server sent before back subscribed went to no one, and the server logs giving
-	// up on it one authorization timeout after it sent it; so what the server logs from a timeout
-	// after back is up is about requests back was sent, and the log before that is the control:
-	// the server giving up on the requests no one was there for.
-	hubTimeout := testnats.CalloutAuthTimeout * time.Second
-	backUp := make(chan int, 1)
-	time.AfterFunc(hubTimeout, func() { backUp <- len(server.Log()) })
-	testwait.WithinPolling(t, 60*time.Second, 50*time.Millisecond, "every connection admitted again", func() bool {
-		for _, nc := range conns {
-			if !nc.IsConnected() {
-				return false
-			}
-		}
-		return true
-	})
+	backDecided := newDecidedNonces()
+	backLog := &logtest.Buffer{}
+	backDeps := deps
+	backDeps.Log = slog.New(slog.NewTextHandler(backLog, nil))
+	back := startService(t, url, keys, backDeps, backDecided.wrap(timed))
+	testwait.WithinPolling(t, 60*time.Second, 50*time.Millisecond, "every connection admitted again", allConnected(conns))
 	closed := 0
 	for _, nc := range conns {
 		if nc.IsClosed() {
@@ -181,16 +189,56 @@ func TestACalloutStormAfterAServerRestartAdmitsEveryConnection(t *testing.T) {
 	require.GreaterOrEqual(t, decided.Load(), int64(2*connections), "each reconnect was decided afresh")
 	require.Less(t, time.Duration(slowest.Load()), decideBudget,
 		"the slowest of %d decisions took %s, at or past the %s budget", decided.Load(), time.Duration(slowest.Load()), decideBudget)
+	refusedWhileAway := strings.Count(server.Log()[restarted:], "authentication error")
 	t.Logf("reconnects=%d decided=%d slowest-decision=%s; clients refused while the service was away: %d",
-		reconnected.Load(), decided.Load(), time.Duration(slowest.Load()), strings.Count(server.Log(), "authentication error"))
-	// Every request back was sent went out before the last connection was admitted, so a timeout
-	// on from there, the server has logged giving up on any of them it gave up on.
-	mark := <-backUp
-	time.Sleep(hubTimeout)
-	require.Positive(t, strings.Count(server.Log()[:mark], hubGaveUp),
-		"the server logged giving up on none of the requests it sent while the service was away: the check below cannot see one")
-	gaveUp := strings.Count(server.Log()[mark:], hubGaveUp)
-	require.Zero(t, gaveUp, "the server gave up on %d requests the service was sent", gaveUp)
+		reconnected.Load(), decided.Load(), time.Duration(slowest.Load()), refusedWhileAway)
+	require.Positive(t, refusedWhileAway, "the server refused no client while the service was away, which is what the storm is for")
+
+	// Every client is connected, so every request the server sent back has been answered or given
+	// up on, and back's Close writes its reporter's last line.
+	back.Close()
+	require.Empty(t, backLog.String(), "back dropped, refused or could not answer requests the server sent it")
+	unheld, held := backDecided.unheld(clients)
+	require.Equal(t, connections, held, "only %d of %d clients are connected on a request back decided: the nonces do not show the connections", held, connections)
+	require.Empty(t, unheld, "the server gave up on %d requests back admitted: no client is connected on their nonces", len(unheld))
+
+	t.Run("control: admissions the server stopped waiting for", func(t *testing.T) {
+		// Each client's first request is decided half a second past the server's authorization
+		// timeout, inside a budget raised past it, so it is admitted after the server has refused
+		// that client; each request after it is decided at once.
+		hubTimeout := testnats.CalloutAuthTimeout * time.Second
+		was := decideBudget
+		decideBudget = 2 * hubTimeout
+		t.Cleanup(func() { decideBudget = was })
+		keys := testnats.NewCalloutKeys(t)
+		_, url := testnats.StartWithCalloutServer(t, keys)
+		const control = 5
+		controls := sessionsNamed(t, "ses_late", control)
+		var seen sync.Map
+		lateFirst := func(ctx context.Context, deps Deps, services []ServiceEntry, req Request) (Decision, error) {
+			if _, again := seen.LoadOrStore(req.Token, true); !again {
+				time.Sleep(hubTimeout + 500*time.Millisecond)
+			}
+			return Decide(ctx, deps, services, req)
+		}
+		decidedHere, clientsHere := newDecidedNonces(), newLastNonces()
+		late := startService(t, url, keys, Deps{Introspect: introspector(controls...)}, decidedHere.wrap(lateFirst))
+		conns := make([]*nats.Conn, control)
+		errs := make([]error, control)
+		var wait sync.WaitGroup
+		for index, s := range controls {
+			wait.Go(func() {
+				conns[index], errs[index] = reconnectingSession(t, url, s, false, clientsHere.signer(s.id), nats.RetryOnFailedConnect(true))
+			})
+		}
+		wait.Wait()
+		require.NoError(t, errors.Join(errs...))
+		testwait.WithinPolling(t, 30*time.Second, 50*time.Millisecond, "every control client admitted on its second request", allConnected(conns))
+		late.Close()
+		unheld, held := decidedHere.unheld(clientsHere)
+		require.Equal(t, control, held, "the control clients are not connected on requests the service decided")
+		require.Len(t, unheld, control, "the check above cannot see an admission the server stopped waiting for")
+	})
 
 	t.Run("control: clients that give up on a refused credential", func(t *testing.T) {
 		keys := testnats.NewCalloutKeys(t)
@@ -204,7 +252,7 @@ func TestACalloutStormAfterAServerRestartAdmitsEveryConnection(t *testing.T) {
 		first := startService(t, url, keys, deps, Decide)
 		conns := make([]*nats.Conn, control)
 		for index, s := range controls {
-			nc, err := reconnectingSession(t, url, s, true)
+			nc, err := reconnectingSession(t, url, s, true, nil)
 			require.NoError(t, err)
 			conns[index] = nc
 		}
@@ -242,7 +290,7 @@ func TestConnectionsSurviveTheAuthServiceStoppingUntilTheirUserExpires(t *testin
 
 	var current atomic.Value
 	current.Store(a.token)
-	option := sessionOption(a.key, func() string { return current.Load().(string) })
+	option := sessionOption(a.key, func() string { return current.Load().(string) }, nil)
 	var disconnected, reconnected atomic.Int64
 	nc, err := nats.Connect(url, option, nats.IgnoreAuthErrorAbort(), nats.Timeout(10*time.Second), nats.MaxReconnects(-1),
 		nats.ReconnectWait(200*time.Millisecond),
@@ -285,6 +333,85 @@ func TestConnectionsSurviveTheAuthServiceStoppingUntilTheirUserExpires(t *testin
 		return reconnected.Load() > 0 && nc.IsConnected()
 	})
 	receives("after the service is back")
+}
+
+// allConnected answers whether every one of conns is connected, for testwait to poll.
+func allConnected(conns []*nats.Conn) func() bool {
+	return func() bool {
+		for _, nc := range conns {
+			if !nc.IsConnected() {
+				return false
+			}
+		}
+		return true
+	}
+}
+
+// lastNonces keeps the nonce each client signed last. A client signs the nonce of every connection
+// the server opens for it (sessionOption), and one the server refuses is followed by another, so
+// once a client is connected its last nonce is the one its connection was admitted on.
+type lastNonces struct {
+	mu   sync.Mutex
+	last map[string]string
+}
+
+func newLastNonces() *lastNonces { return &lastNonces{last: map[string]string{}} }
+
+// signer is what client id tells each nonce it signs.
+func (l *lastNonces) signer(id string) func(nonce string) {
+	return func(nonce string) {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		l.last[id] = nonce
+	}
+}
+
+// decidedNonces keeps the nonce of every request a service decided with no error.
+type decidedNonces struct {
+	mu     sync.Mutex
+	nonces map[string]bool
+}
+
+func newDecidedNonces() *decidedNonces { return &decidedNonces{nonces: map[string]bool{}} }
+
+// wrap is decide, keeping the nonce of each request it decides with no error.
+func (d *decidedNonces) wrap(decide decideFunc) decideFunc {
+	return func(ctx context.Context, deps Deps, services []ServiceEntry, req Request) (Decision, error) {
+		decision, err := decide(ctx, deps, services, req)
+		if err == nil {
+			d.mu.Lock()
+			d.nonces[req.Nonce] = true
+			d.mu.Unlock()
+		}
+		return decision, err
+	}
+}
+
+// unheld is what became of the service's decisions, read once every one of clients is connected
+// and the service has closed: held is how many clients are connected on a nonce the service
+// decided, and unheld every nonce it decided that no client is connected on. The server takes one
+// answer per request, so a decided nonce no connection holds is an answer the server did not take:
+// it had given up on the request and refused that client itself, or the service refused the
+// connection after deciding it, and either way the client tried again on a new nonce. A request
+// the server sent while no service was subscribed is in neither, since no service decided it.
+func (d *decidedNonces) unheld(clients *lastNonces) (unheld []string, held int) {
+	clients.mu.Lock()
+	defer clients.mu.Unlock()
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	holding := make(map[string]bool, len(clients.last))
+	for _, nonce := range clients.last {
+		holding[nonce] = true
+		if d.nonces[nonce] {
+			held++
+		}
+	}
+	for nonce := range d.nonces {
+		if !holding[nonce] {
+			unheld = append(unheld, nonce)
+		}
+	}
+	return unheld, held
 }
 
 // hubGaveUp is what nats-server logs, at debug level only, for an authorization request no service
