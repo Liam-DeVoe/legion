@@ -283,9 +283,10 @@ export function pathToTarget(
 
 /** Whether the node is proposed: put forward and not yet settled by a person. The page draws it
  *  with its mark and no gap, and it opens no path of the fold as an open statement or check
- *  would. It and `isOvertaken` are every place's one reading of a node's life, kept here, by the
- *  line an address opens (`overtakenLineOf`), since this module imports no value of
- *  `issue-tree.ts`, which reads a node's life too, and `tree-fold.ts` imports one. */
+ *  would. It and `isOvertaken` are every place's one reading of a node's life. They stand here
+ *  because this module imports no value of `issue-tree.ts`, which reads a node's life too (and
+ *  `tree-fold.ts` imports one), and because `issue-tree.ts` already imports
+ *  `tree-read/tree-nodes.ts` on one line, which a second import of them would have to join. */
 export function isProposed(node: TreeNode): boolean {
   return node.life === "proposed";
 }

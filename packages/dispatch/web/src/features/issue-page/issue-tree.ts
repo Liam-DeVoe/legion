@@ -171,7 +171,7 @@ export interface ParentLine {
  * A node's life, where it has one: its `state` in the tree read where that is `proposed` (put
  * forward and not yet settled by a person) or `overtaken` (a later node took its place); a live
  * or settled node has none and draws nothing. The page reads it through `isProposed` and
- * `isOvertaken` (`tree-fold.ts`) and draws it in its own words.
+ * `isOvertaken` (`issue-address.ts`) and draws it in its own words.
  */
 export type NodeLife = "proposed" | "overtaken";
 
