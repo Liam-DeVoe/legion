@@ -96,17 +96,17 @@ export function StagedDocument({
  * where they stand in it as the names above them draw. Once the drawing has settled, the row
  * still puts the node's block at the box's top (`holdEditorAtBlock`).
  *
- * The box never scrolls sideways: its words are held to its width, and a wide block scrolls
- * sideways inside itself alone, by the document's own rules (a table's in `styles.css`, a code
- * block's and a diagram's in `@legion/proof-editor`'s `lib.css`), so nothing here holds one. A run
- * with no space in it breaks anywhere: the editor's own `break-word` gives it no place to break
- * where its box is sized to its words, as a typed block's header sizes its title, which held a
- * path at its whole width. A reference the editor draws as its issue's title, one line cut at
- * 24em (`lib.css`), is cut at its line's end too where that comes first, as in a bullet on a
- * phone. Both rules carry `!`, since the editor's stylesheets stand outside Tailwind's layers and
- * would win over a utility. A collaborator's caret label, which hangs from the caret towards the
- * line's end (`collab-cursors.ts`), still widens the box while that caret is near a line's end: no
- * rule here can turn it inward, and a clip would hide every other overflow along with it.
+ * The box never scrolls sideways: its words are held to its width, a code block wraps in the
+ * editor (`white-space: pre-wrap`, `@legion/proof-editor`'s `lib.css`), and a wide table or
+ * diagram scrolls sideways inside itself alone, by the document's own rules (a table's in
+ * `styles.css`, a diagram's in `lib.css`), so nothing here holds one. A run with no space in it
+ * breaks anywhere: the editor's own `break-word` gives it no place to break where its box is
+ * sized to its words, as a typed block's header sizes its title, which held a path at its whole
+ * width. A reference the editor draws as its issue's title, one line cut at 24em (`lib.css`), is
+ * cut at its line's end too where that comes first, as in a bullet on a phone. Both rules carry
+ * `!`, since the editor's stylesheets stand outside Tailwind's layers and would win over a
+ * utility. A collaborator's caret label near a line's end hangs back toward the line's start
+ * rather than past the box's end (`@legion/proof-editor`'s `collab-cursor-plugin.ts`).
  */
 export function EditorBox({ children }: { children: ReactNode }): ReactNode {
   return (
