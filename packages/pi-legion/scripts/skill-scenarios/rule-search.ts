@@ -66,7 +66,9 @@ interface Entry {
   /** Keeps each hit in a fenced block of the file: a format, a template or a command. It may match
    * any number of hits, none included. */
   readonly fenced?: true;
-  /** Present only on a sentence that T5.12 or T5.13 adds (head) or removes (base). */
+  /** Present only on a sentence that is a hit in one of the two trees alone: one that T5.12 or T5.13
+   * adds (head) or removes (base), or one whose words main changed after them, so that the head's
+   * merge of main holds it as a hit (head) or no longer does (base). */
   readonly at?: Tree;
   /** What the label does to this sentence. */
   readonly cut?: string;
@@ -331,6 +333,9 @@ const ENTRIES_HEAD: readonly Entry[] = [
     file: "skills/legion-worker/references/merge-gate.md",
     has: "Submit **one review per round**",
     keep: "The review's footer names the head. It names no check of Dispatch.",
+    // Main's footer gained `"entry":"<entry>"`, which puts the head's `head` more than 60
+    // characters from `{path, line`: the head's words are no hit.
+    at: "base",
   },
   {
     file: "skills/legion-worker/references/merge-gate.md",
@@ -1613,6 +1618,12 @@ const ENTRIES_LATER_FAIL: readonly Entry[] = [
     keep: "Issues that fail for one cause. It names no check of Dispatch.",
   },
   {
+    file: "skills/legion-controller/references/wakes.md",
+    has: "A failed claim holds no role",
+    keep: "A claim that failed. It names no check of Dispatch.",
+    at: "head",
+  },
+  {
     file: "skills/legion-worker/references/withheld-capability.md",
     has: "Moving exactly these writes off that filesystem",
     keep: "A condition that an install fails. It names no check of Dispatch.",
@@ -1737,6 +1748,12 @@ const ENTRIES_ARCHITECT_LATER_FAIL: readonly Entry[] = [
     file: "skills/legion-controller/references/consolidation.md",
     has: "Finding issues that are the same work, or that fail for one cause",
     keep: "Issues that fail for one cause. It names no check of Dispatch.",
+  },
+  {
+    file: "skills/legion-controller/references/wakes.md",
+    has: "A failed claim holds no role",
+    keep: "A claim that failed. It names no check of Dispatch.",
+    at: "head",
   },
   {
     file: "skills/legion-retro/SKILL.md",

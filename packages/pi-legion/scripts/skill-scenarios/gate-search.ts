@@ -132,8 +132,8 @@ const ENTRIES: readonly Entry[] = [
   },
   {
     file: "packages/daemon/internal/prompts/roles/architect-root.md",
-    has: "Your acceptance comes before it",
-    keep: "The acceptance's place in the order and what it reads. Its condition is the gate this text states below it.",
+    has: "You then read the tester's handoff",
+    keep: "What the acceptance reads, once the reviewer's notice reaches the architect. Its condition is the gate this text states below it.",
   },
   {
     file: "packages/daemon/internal/prompts/roles/architect-root.md",
