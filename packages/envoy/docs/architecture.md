@@ -267,8 +267,9 @@ A refusal before any store or wake report, such as a `400`, `403`, `413` or a `5
 listener sent anything, one while it waits for NATS to reconnect among them, costs nothing. A
 repeat the listener recognises costs nothing too: the stream's `duplicate` answer to a send or a
 topic publish, and a role send's repeat of a kept copy (`keptRoleCopy.repeat`) or of a forward in
-the route's own 10-minute record. So does an echo, a role message from the session that holds the
-role. A `duplicate` that answers the bus's own resend after the connection closed under its first
+the receiving pod's own 10-minute record. So does an echo, a role message from the session that
+holds the role. A `duplicate` that answers the bus's own resend after the connection closed under
+its first
 send (`bus.StoredAck.Resent`) is no such repeat, since that first send may have stored the copy it
 names, so it costs one. A role send's echo, repeat or `403` costs nothing only while the send has
 made no forward. After an earlier forward of the same send it costs one, as any answer then does,

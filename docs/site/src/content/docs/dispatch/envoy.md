@@ -719,9 +719,9 @@ message to the stream, such as a write whose acknowledgement did not arrive in t
 too, since the stream may hold it. A message the listener refuses before any store or wake report
 costs nothing, such as a `400`, a `403`, a `413` or a `503` before the listener sent anything,
 one while it waits for NATS to reconnect among them. A repeat that the listener recognises costs
-nothing too: one the stream answers as a `duplicate`, a repeat of a role message kept for the
-role's next holder, and a repeat of a role forward the route made in the last 10 minutes. So does
-an echo, a role message from the session that holds the role. A `duplicate` that answers the
+nothing too: one the stream answers as a `duplicate`, a repeat of a role message kept for the role's
+next holder, and a repeat of a role forward the same pod's route made in the last 10 minutes. So
+does an echo, a role message from the session that holds the role. A `duplicate` that answers the
 listener's own second send, made after its connection to NATS closed under the first, costs one,
 since the first may have stored the message. A role send's echo, repeat or `403` costs nothing
 only while the send has made no forward. After an earlier forward of the same send it costs one,
