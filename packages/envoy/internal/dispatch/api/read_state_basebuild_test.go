@@ -69,14 +69,17 @@ type readStateMarks struct {
 // captured column unchanged and the row marked, a user_threads row at marked_version equal to its
 // captured version. It reads the read mark and the Clear, stored under two spellings, from one
 // person node, and the person's state of that conversation holding the Clear. Then a reply by
-// somebody else into the dismissed thread retracts the dismissal rather than overwriting it and
-// raises the row's version by one, by the equation of R6; a dismissal held to the older version is
-// refused, answered 200 with nothing dismissed; replied_at and last_reply_id are the newest
-// reply-caused delivery's; and a delivery that is no reply - the person made the one an open ask
-// waits on, on whose thread she holds a marked row - leaves that row's version where it stood.
-// This build writes the other half of the marks, the six kinds again, each read back as a tuple
-// from the person at its row's moment. Last, no node of a read-state kind exists, and each of the
-// six tables - the base build's rows and this build's - holds exactly the marks its tuples project.
+// somebody else into the dismissed thread - a row the base build wrote at version N - retracts the
+// dismissal rather than overwriting it and raises the row to N+1, by the equation of R6; a
+// dismissal held to the older version is refused, answered 200 with nothing dismissed; and
+// replied_at and last_reply_id are the newest reply-caused delivery's. A delivery that is no reply
+// - the person made the one an open ask waits on, on whose thread she holds a marked row a reply
+// already reached - leaves that row's version, replied_at and last_reply_id where they stood, so a
+// dismissal held to the version before that reply is refused and one held to the version before
+// the hand-on is not; the census reads no difference in either row. This build writes the other
+// half of the marks, the six kinds again, each read back as a tuple from the person at its row's
+// moment. Last, no node of a read-state kind exists, and each of the six tables - the base build's
+// rows and this build's - holds exactly the marks its tuples project.
 func TestReadStateIsTuplesFromThePersonAndSixProjections(t *testing.T) {
 	ctx := context.Background()
 	databaseURL := baselineDatabaseURL(t, readStateDatabaseEnv, readStateDatabase)
@@ -447,7 +450,9 @@ func requireOneNodeForTwoSpellings(t *testing.T, handler http.Handler, database 
 }
 
 // requireAReplyRetractsTheDismissal writes, through this build, bob's reply into the thread alice
-// dismissed on the base build, and then hands an open ask to alice.
+// dismissed on the base build - an old row the base build wrote, which the reply raises by one -
+// and then hands an open ask to alice in a thread where a reply already reached her. The census
+// reads no difference in either row afterwards.
 func requireAReplyRetractsTheDismissal(t *testing.T, handler http.Handler, database *store.Store, marks readStateMarks) {
 	t.Helper()
 	ctx := context.Background()
@@ -474,61 +479,133 @@ func requireAReplyRetractsTheDismissal(t *testing.T, handler http.Handler, datab
 	}
 	requireVersionCountsReplies(t, database, "alice", graphstore.KindComment, thread)
 
-	// replied_at and last_reply_id are the newest reply-caused delivery into alice from the thread.
-	var repliedAt time.Time
-	var lastReply string
-	if err := database.Pool.QueryRow(ctx, `
-		select replied_at, last_reply_id::text from user_threads where login = 'alice' and thread_id = $1::uuid
-	`, thread).Scan(&repliedAt, &lastReply); err != nil {
-		t.Fatalf("read alice's row of thread %s: %v", thread, err)
-	}
-	var newestAt time.Time
-	var newestFrom string
-	if err := database.Pool.QueryRow(ctx, `
-		select d.at, d.from_id from graph_tuples d join events e on e.id = d.source_event
-		where d.kind = $1 and d.to_kind = $2 and d.to_id = 'alice' and d.asserted
-		  and e.type in ('comment.created', 'comment.answered', 'message.created', 'message.answered', 'ask.answered')
-		  and (d.from_id = $3 or exists (select 1 from graph_tuples r where r.from_kind = d.from_kind and r.from_id = d.from_id
-		                                 and r.kind = $4 and r.to_id = $3 and r.asserted))
-		order by d.at desc, d.seq desc limit 1
-	`, graphstore.TupleDeliveredTo, graphstore.KindPerson, thread, graphstore.TupleRepliesTo).Scan(&newestAt, &newestFrom); err != nil {
-		t.Fatalf("read the newest reply delivered to alice from thread %s: %v", thread, err)
-	}
-	if !repliedAt.Equal(newestAt) || lastReply != newestFrom || lastReply != reply.ID {
-		t.Errorf("alice's row of thread %s replied at %s by %s, want the newest reply-caused delivery's %s by %s (bob's reply %s)",
-			thread, repliedAt, lastReply, newestAt, newestFrom, reply.ID)
-	}
+	requireRepliedIsTheNewestReply(t, database, "alice", thread, reply.ID)
 
 	// A dismissal held to the version the row stood at before the reply is refused: the route
 	// answers 200 and dismisses nothing, and the row stays undismissed.
-	stale := postInboxDismiss(t, handler, "alice", map[string]any{
-		"threads":      []string{inboxDismissReplyPrefix + thread},
-		"seen_replies": map[string]any{inboxDismissReplyPrefix + thread: map[string]any{"version": before}},
-	})
-	var dismissedAt *time.Time
-	if err := database.Pool.QueryRow(ctx, `select dismissed_at from user_threads where login = 'alice' and thread_id = $1::uuid`, thread).Scan(&dismissedAt); err != nil {
-		t.Fatalf("read alice's dismissal of thread %s: %v", thread, err)
-	}
-	if stale.Code != http.StatusOK || dismissedBy(t, stale) != 0 || dismissedAt != nil {
-		t.Errorf("a dismissal held to version %d answered %d %s and left the row dismissed at %v, want 200 dismissing nothing",
-			before, stale.Code, stale.Body.String(), dismissedAt)
-	}
+	requireDismissalHeldTo(t, handler, database, thread, before, 0)
 
-	// Handing an open ask to alice delivers it to her and raises no version. Her comment on the
-	// ask gives her a marked row of the ask's own thread, the row a delivery from the ask reaches,
-	// which the hand-on's delivery - no reply - must leave at the version it stood at (P13).
+	// Handing an open ask to alice delivers it to her and raises no version (P13). The ask is
+	// bob's on alice's issue, so it waits on her from its create; it is handed first to bob, its
+	// asker, whom his own ask reaches with nothing, so the hand-on to alice after it appends a
+	// delivery of its own. Her comment on the ask gives her a marked row of the ask's own thread,
+	// and bob's answer in it a reply delivered to her, so that row counts a reply and names it
+	// before the hand-on's delivery - newer, and no reply - reaches it.
 	asked := createPersonAsk(t, handler, marks.issue, "bob", "Who signs off?")
+	handAskOn(t, handler, asked.ID, "bob", "bob")
 	createThreadComment(t, handler, marks.issue, map[string]any{"body": "I can look.", "ask_id": asked.ID}, "alice")
-	requireVersionCountsReplies(t, database, "alice", graphstore.KindAsk, asked.ID)
+	unanswered := threadRowVersion(t, database, "alice", asked.ID)
+	answer := createThreadComment(t, handler, marks.issue, map[string]any{"body": "Please do.", "ask_id": asked.ID}, "bob")
 	held := threadRowVersion(t, database, "alice", asked.ID)
+	if held != unanswered+1 {
+		t.Errorf("alice's row of ask %s is at version %d after bob's answer in it, want %d", asked.ID, held, unanswered+1)
+	}
+	if _, standing, _ := currentDelivery(t, database, asked.ID, "alice"); standing {
+		t.Fatalf("ask %s stands delivered to alice before it is handed to her, so the hand-on would deliver nothing", asked.ID)
+	}
 	handAskOn(t, handler, asked.ID, "alice", "bob")
-	if _, asserted, found := currentDelivery(t, database, asked.ID, "alice"); !found || !asserted {
+	handedAt, asserted, found := currentDelivery(t, database, asked.ID, "alice")
+	if !found || !asserted {
 		t.Errorf("handing ask %s to alice delivered it to her %t (asserting %t), want a delivered_to", asked.ID, found, asserted)
 	}
 	if moved := threadRowVersion(t, database, "alice", asked.ID); moved != held {
 		t.Errorf("alice's row of ask %s moved to version %d when the ask was handed to her, want %d", asked.ID, moved, held)
 	}
 	requireVersionCountsReplies(t, database, "alice", graphstore.KindAsk, asked.ID)
+	// The row still names bob's answer, the newest delivery a reply caused, and not the
+	// hand-on's, which is newer.
+	if answeredAt := requireRepliedIsTheNewestReply(t, database, "alice", asked.ID, answer.ID); !handedAt.After(answeredAt) {
+		t.Errorf("the hand-on's delivery of ask %s to alice is at %s, not after bob's answer at %s, so the row naming the answer proves nothing",
+			asked.ID, handedAt, answeredAt)
+	}
+	// A dismissal of that row held to the version before bob's answer is refused, and one held to
+	// the version it stood at before the hand-on dismisses it: the hand-on moved nothing a reader
+	// holds a mark to.
+	requireDismissalHeldTo(t, handler, database, asked.ID, unanswered, 0)
+	requireDismissalHeldTo(t, handler, database, asked.ID, held, 1)
+
+	requireThreadsCensusAgrees(t, database, "after the reply and the hand-on")
+}
+
+// requireRepliedIsTheNewestReply holds login's row of thread to R6: its replied_at and
+// last_reply_id are the moment and the source of the newest delivered_to into login from the
+// thread - its root, or a node whose replies_to names it - that a reply caused, and that delivery
+// is reply's. It answers that moment.
+func requireRepliedIsTheNewestReply(t *testing.T, database *store.Store, login, thread, reply string) time.Time {
+	t.Helper()
+	ctx := context.Background()
+	var repliedAt *time.Time
+	var lastReply *string
+	if err := database.Pool.QueryRow(ctx, `
+		select replied_at, last_reply_id::text from user_threads where login = $1 and thread_id = $2::uuid
+	`, login, thread).Scan(&repliedAt, &lastReply); err != nil {
+		t.Fatalf("read %s's row of thread %s: %v", login, thread, err)
+	}
+	var newestAt time.Time
+	var newestFrom string
+	if err := database.Pool.QueryRow(ctx, `
+		select d.at, d.from_id from graph_tuples d join events e on e.id = d.source_event
+		where d.kind = $1 and d.to_kind = $2 and d.to_id = $5 and d.asserted
+		  and e.type in ('comment.created', 'comment.answered', 'message.created', 'message.answered', 'ask.answered')
+		  and (d.from_id = $3 or exists (select 1 from graph_tuples r where r.from_kind = d.from_kind and r.from_id = d.from_id
+		                                 and r.kind = $4 and r.to_id = $3 and r.asserted))
+		order by d.at desc, d.seq desc limit 1
+	`, graphstore.TupleDeliveredTo, graphstore.KindPerson, thread, graphstore.TupleRepliesTo, login).Scan(&newestAt, &newestFrom); err != nil {
+		t.Fatalf("read the newest reply delivered to %s from thread %s: %v", login, thread, err)
+	}
+	if repliedAt == nil || lastReply == nil || !repliedAt.Equal(newestAt) || *lastReply != newestFrom || newestFrom != reply {
+		t.Errorf("%s's row of thread %s replied at %v by %v, want the newest reply-caused delivery's %s by %s (the reply %s)",
+			login, thread, repliedAt, lastReply, newestAt, newestFrom, reply)
+	}
+	return newestAt
+}
+
+// requireDismissalHeldTo dismisses alice's Reply row of thread held to version, as a page that
+// drew the row at that version does (inboxDismissMarkThreads), and holds the route to 200 with
+// want threads dismissed, and the row dismissed exactly where it dismissed one.
+func requireDismissalHeldTo(t *testing.T, handler http.Handler, database *store.Store, thread string, version int64, want int) {
+	t.Helper()
+	response := postInboxDismiss(t, handler, "alice", map[string]any{
+		"threads":      []string{inboxDismissReplyPrefix + thread},
+		"seen_replies": map[string]any{inboxDismissReplyPrefix + thread: map[string]any{"version": version}},
+	})
+	var dismissedAt *time.Time
+	if err := database.Pool.QueryRow(context.Background(), `
+		select dismissed_at from user_threads where login = 'alice' and thread_id = $1::uuid
+	`, thread).Scan(&dismissedAt); err != nil {
+		t.Fatalf("read alice's dismissal of thread %s: %v", thread, err)
+	}
+	if response.Code != http.StatusOK || dismissedBy(t, response) != want || (dismissedAt != nil) != (want > 0) {
+		t.Errorf("a dismissal of thread %s held to version %d answered %d %s and left the row dismissed at %v, want 200 dismissing %d",
+			thread, version, response.Code, response.Body.String(), dismissedAt, want)
+	}
+}
+
+// requireThreadsCensusAgrees runs the store census and holds its two kinds over user_threads -
+// the rows' participation and marks, and their version, replied_at and last_reply_id - to rows
+// read and no difference.
+func requireThreadsCensusAgrees(t *testing.T, database *store.Store, when string) {
+	t.Helper()
+	report, err := graphcensus.StoreCensus(context.Background(), database.Pool.Config().ConnString(), false)
+	if err != nil {
+		t.Fatalf("the store census %s: %v", when, err)
+	}
+	for _, name := range []string{"user_threads", "user_threads_version"} {
+		var kind *graphcensus.KindReport
+		for index := range report.Kinds {
+			if report.Kinds[index].Kind == name {
+				kind = &report.Kinds[index]
+			}
+		}
+		if kind == nil {
+			t.Errorf("the store census %s reported no kind %s", when, name)
+			continue
+		}
+		if kind.Rows == 0 || kind.RowDifferences != 0 || kind.NodeDifferences != 0 {
+			t.Errorf("the store census %s reads %d %s rows, %d rows no tuple states and %d tuples no row projects (%v %v), want rows and no difference",
+				when, kind.Rows, name, kind.RowDifferences, kind.NodeDifferences, kind.ReportedRows, kind.ReportedNodes)
+		}
+	}
 }
 
 // requireThisBuildsHalfIsTuples writes the six kinds of mark again, through this build, after the

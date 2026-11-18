@@ -19,29 +19,45 @@ import (
 
 // A comment, a message and an ask are each the root of their own thread, and the rows of the six
 // read-state tables that name one of them mirror tuples from a person to it (dispatch://INFRA-1152
-// R6): the user_threads row of each participant, and for the message an Agent dismissal of it and
-// a reply-read row of it, for the ask a snooze. The rows are written as an older build writes
-// them, beside another person's rows of another thread, and the backfill marks them and states
-// their tuples. The erase of each item lists each of its rows - the snoozes through their required
-// reference into asks - deletes them with the item, and leaves the other thread's rows standing;
-// the census reads zero after the three erases, the people those rows named held to their nodes
-// by the records of the erases (Erasure.Writers, reachedPerson).
+// R6): the user_threads row of each participant of the comment, the issue message and the ask, and
+// the ask's snoozes. An Agent dismissal and a reply read by its id name a direct conversation, the
+// only kind of thread either release's routes write those two rows for: erin's issue-less message
+// to session s1, which she dismisses, and s1's reply to it, which she reads. The rows are written
+// as an older build writes them, beside another person's rows of another comment and another
+// conversation, and the backfill marks them and states their tuples. The erase of each item lists
+// each of its rows - the snoozes through their required reference into asks - deletes them with
+// the item, and leaves the other threads' rows standing; the census reads zero before the erases
+// and after them, the people those rows named held to their nodes by the records of the erases
+// (Erasure.Writers, reachedPerson).
 func TestTheEraseOfAnItemTakesTheReadStateRowsThatNameIt(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
 	ask := seedMarkedAsk(t, database)
-	var comment, message string
-	if err := database.Pool.QueryRow(ctx, `
-		insert into comments (issue_key, author, body) values ('CORE-1', '{"kind":"user","id":"carol"}', 'A comment nobody keeps.')
-		returning id::text`).Scan(&comment); err != nil {
-		t.Fatalf("write the comment: %v", err)
+	write := func(what, sql string, args ...any) string {
+		t.Helper()
+		var id string
+		if err := database.Pool.QueryRow(ctx, sql+` returning id::text`, args...).Scan(&id); err != nil {
+			t.Fatalf("write %s: %v", what, err)
+		}
+		return id
 	}
-	if err := database.Pool.QueryRow(ctx, `
-		insert into messages (issue_key, author, body, target) values ('CORE-1', '{"kind":"user","id":"carol"}', 'A message nobody keeps.', 'session:s1')
-		returning id::text`).Scan(&message); err != nil {
-		t.Fatalf("write the message: %v", err)
+	comment := write("the comment", `
+		insert into comments (issue_key, author, body) values ('CORE-1', '{"kind":"user","id":"carol"}', 'A comment nobody keeps.')`)
+	other := write("the other comment", `
+		insert into comments (issue_key, author, body) values ('CORE-1', '{"kind":"user","id":"carol"}', 'A comment somebody keeps.')`)
+	message := write("the message", `
+		insert into messages (issue_key, author, body, target) values ('CORE-1', '{"kind":"user","id":"carol"}', 'A message nobody keeps.', 'session:s1')`)
+	// A direct conversation: erin's one-off message to s1, and s1's reply to it.
+	conversation := func(body string) (root, answer string) {
+		t.Helper()
+		root = write("erin's message to s1", `
+			insert into messages (author, body, target) values ('{"kind":"user","id":"erin"}', $1, 'session:s1')`, body)
+		answer = write("s1's reply to erin", `
+			insert into messages (author, body, in_reply_to, target) values ('{"kind":"session","id":"s1"}', 'Looking.', $1::uuid, 'session:s1')`, root)
+		return root, answer
 	}
-	const other = "00000000-0000-4000-8000-000000004152"
+	direct, answer := conversation("A conversation nobody keeps.")
+	otherDirect, otherAnswer := conversation("A conversation somebody keeps.")
 	if _, err := database.Pool.Exec(ctx, `
 		with threads as (
 			insert into user_threads (login, thread_id, kind, project_key, issue_key, read_through) values
@@ -50,13 +66,13 @@ func TestTheEraseOfAnItemTakesTheReadStateRowsThatNameIt(t *testing.T) {
 				('bob', $3::uuid, 'ask', 'CORE', 'CORE-1', now()),
 				('bob', $4::uuid, 'comment', 'CORE', 'CORE-1', now())
 		), dismissed as (
-			insert into user_agent_thread_dismissed (login, message_id, dismissed_at) values ('erin', $2::uuid, now()), ('erin', $4::uuid, now())
+			insert into user_agent_thread_dismissed (login, message_id, dismissed_at) values ('erin', $5::uuid, now()), ('erin', $7::uuid, now())
 		), replies as (
-			insert into user_agent_reply_read (login, session_id, reply_id) values ('erin', 's1', $2::uuid), ('erin', 's1', $4::uuid)
+			insert into user_agent_reply_read (login, session_id, reply_id) values ('erin', 's1', $6::uuid), ('erin', 's1', $8::uuid)
 		)
 		insert into user_ask_snooze (login, ask_id, snoozed_until) values ('alice', $3::uuid, now() + interval '1 hour'), ('bob', $3::uuid, now() + interval '1 hour')
-	`, comment, message, ask, other); err != nil {
-		t.Fatalf("write the read state of the three threads: %v", err)
+	`, comment, message, ask, other, direct, answer, otherDirect, otherAnswer); err != nil {
+		t.Fatalf("write the read state of the threads: %v", err)
 	}
 	if _, err := graphcensus.Backfill(ctx, database, io.Discard); err != nil {
 		t.Fatalf("backfill the store: %v", err)
@@ -81,12 +97,23 @@ func TestTheEraseOfAnItemTakesTheReadStateRowsThatNameIt(t *testing.T) {
 			listed: [][]string{
 				{"delete user_threads (login, thread_id)=(bob," + message + ")"},
 				{"delete user_threads (login, thread_id)=(carol," + message + ")"},
-				{"delete user_agent_thread_dismissed (message_id, login)=(" + message + ",erin)"},
-				{"delete user_agent_reply_read (login, reply_id)=(erin," + message + ")"},
 			},
-			naming: `select (select count(*) from user_threads where thread_id = $1::uuid)
-			     + (select count(*) from user_agent_thread_dismissed where message_id = $1::uuid)
-			     + (select count(*) from user_agent_reply_read where reply_id = $1::uuid)`,
+			naming: `select count(*) from user_threads where thread_id = $1::uuid`,
+		},
+		// The reply goes before its root, which its in_reply_to names.
+		{
+			kind: graphstore.KindMessage, id: answer,
+			listed: [][]string{
+				{"delete user_agent_reply_read (login, reply_id)=(erin," + answer + ")"},
+			},
+			naming: `select count(*) from user_agent_reply_read where reply_id = $1::uuid`,
+		},
+		{
+			kind: graphstore.KindMessage, id: direct,
+			listed: [][]string{
+				{"delete user_agent_thread_dismissed (message_id, login)=(" + direct + ",erin)"},
+			},
+			naming: `select count(*) from user_agent_thread_dismissed where message_id = $1::uuid`,
 		},
 		{
 			kind: graphstore.KindAsk, id: ask,
@@ -117,60 +144,75 @@ func TestTheEraseOfAnItemTakesTheReadStateRowsThatNameIt(t *testing.T) {
 	var left int64
 	if err := database.Pool.QueryRow(ctx, `
 		select (select count(*) from user_threads where login = 'bob' and thread_id = $1::uuid)
-		     + (select count(*) from user_agent_thread_dismissed where login = 'erin' and message_id = $1::uuid)
-		     + (select count(*) from user_agent_reply_read where login = 'erin' and reply_id = $1::uuid)
-	`, other).Scan(&left); err != nil {
-		t.Fatalf("count the other thread's rows: %v", err)
+		     + (select count(*) from user_agent_thread_dismissed where login = 'erin' and message_id = $2::uuid)
+		     + (select count(*) from user_agent_reply_read where login = 'erin' and reply_id = $3::uuid)
+	`, other, otherDirect, otherAnswer).Scan(&left); err != nil {
+		t.Fatalf("count the other threads' rows: %v", err)
 	}
 	if left != 3 {
-		t.Errorf("after the erases %d of the other thread's 3 read-state rows stand, want all of them", left)
+		t.Errorf("after the erases %d of the other threads' 3 read-state rows stand, want all of them", left)
 	}
 	requireCensusZero(t, database, "after the erases")
 }
 
 // A person's read state is their rows of the six read-state tables, each keyed on a spelling of
 // their login: the canonical login every table but user_agent_state keys on, and the raw actor id
-// that table keys a Clear on (api/state.go). The erase of the person lists every one of those rows
-// and deletes them in its own transaction, with their node, and leaves another person's rows of
-// the same threads, sessions, replies and ask standing; the census reads zero before the erase,
-// the marked rows holding the person to her node, and after it, nothing left naming her.
+// that table keys a Clear on (api/state.go). The rows are written as an older build writes them -
+// over erin's comment thread, erin's direct conversation with s1 and s1's reply in it, session
+// s1 and erin's ask - and the backfill marks them and states their tuples. The erase of the person
+// lists every one of those rows and deletes them in its own transaction, with their node, and
+// leaves another person's rows of the same threads, sessions, replies and ask standing; the census
+// reads zero before the erase, the marked rows holding the person to her node, and after it,
+// nothing left naming her.
+//
+// Her Agent dismissal names erin's conversation, which no route of either release writes - each
+// writes one only for the person's own one-off message (myAgentRootFilter) - because a message of
+// her own would name her, and the erase refuses a person a message names until it goes, which
+// takes its dismissals with it. The table's census holds a dismissal to an issue-less root that
+// exists, which this one is.
 func TestTheEraseOfAPersonTakesTheirReadStateRows(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
 	seedPreStoreDocument(t, database)
 	const person, spelling = "dana", "Dana"
-	thread, root, reply := "00000000-0000-4000-8000-000000005152", "00000000-0000-4000-8000-000000006152", "00000000-0000-4000-8000-000000007152"
-	var ask string
-	if err := database.Pool.QueryRow(ctx, `
-		insert into asks (issue_key, author, question) values ('CORE-1', '{"kind":"user","id":"erin"}', 'Which one?')
-		returning id::text`).Scan(&ask); err != nil {
-		t.Fatalf("write the ask: %v", err)
+	write := func(what, sql string, args ...any) string {
+		t.Helper()
+		var id string
+		if err := database.Pool.QueryRow(ctx, sql+` returning id::text`, args...).Scan(&id); err != nil {
+			t.Fatalf("write %s: %v", what, err)
+		}
+		return id
 	}
+	ask := write("the ask", `insert into asks (issue_key, author, question) values ('CORE-1', '{"kind":"user","id":"erin"}', 'Which one?')`)
+	thread := write("erin's comment", `insert into comments (issue_key, author, body) values ('CORE-1', '{"kind":"user","id":"erin"}', 'Which copy?')`)
+	root := write("erin's message to s1", `insert into messages (author, body, target) values ('{"kind":"user","id":"erin"}', 'Can you look?', 'session:s1')`)
+	reply := write("s1's reply to erin", `
+		insert into messages (author, body, in_reply_to, target) values ('{"kind":"session","id":"s1"}', 'Looking.', $1::uuid, 'session:s1')`, root)
 	writeAsThisBuild(t, database, "the person's node", func(tx pgx.Tx) (graphstore.Uncaused, error) {
 		return graphstore.WriteUncaused(ctx, tx, []graphstore.Node{
 			graphstore.PersonNode(person, model.Actor{Kind: "user", ID: person}, time.Now().UTC(), graphstore.NoEvent),
 		}, nil)
 	})
+	// erin's row of her comment thread is the one its insert gave her (migration 0095's trigger).
 	if _, err := database.Pool.Exec(ctx, `
 		with threads as (
-			insert into user_threads (login, thread_id, kind, project_key, issue_key, read_through, marked_version, marked_seq) values
-				($1::text, $3::uuid, 'comment', 'CORE', 'CORE-1', now(), 0, 0),
-				('erin', $3::uuid, 'comment', 'CORE', 'CORE-1', now(), null, null)
+			insert into user_threads (login, thread_id, kind, project_key, issue_key, read_through) values
+				($1::text, $3::uuid, 'comment', 'CORE', 'CORE-1', now())
 		), dismissed as (
-			insert into user_agent_thread_dismissed (login, message_id, dismissed_at, tuples_stored_at) values
-				($1::text, $4::uuid, now(), now()), ('erin', $4::uuid, now(), null)
+			insert into user_agent_thread_dismissed (login, message_id, dismissed_at) values
+				($1::text, $4::uuid, now()), ('erin', $4::uuid, now())
 		), cleared as (
-			insert into user_agent_state (login, session_id, cleared_before, tuples_stored_at) values
-				($2::text, 's1', now(), now()), ('erin', 's1', now(), null)
+			insert into user_agent_state (login, session_id, cleared_before) values
+				($2::text, 's1', now()), ('erin', 's1', now())
 		), reads as (
-			insert into user_agent_read (login, session_id, read_through, tuples_stored_at) values
-				($1::text, 's1', now(), now()), ('erin', 's1', now(), null)
+			insert into user_agent_read (login, session_id, read_through) values
+				($1::text, 's1', now()), ('erin', 's1', now())
 		), replies as (
-			insert into user_agent_reply_read (login, session_id, reply_id, tuples_stored_at) values
-				($1::text, 's1', $5::uuid, now()), ('erin', 's1', $5::uuid, null)
+			insert into user_agent_reply_read (login, session_id, reply_id) values
+				($1::text, 's1', $5::uuid), ('erin', 's1', $5::uuid)
 		)
-		insert into user_ask_snooze (login, ask_id, snoozed_until, tuples_stored_at) values
-			($1::text, $6::uuid, now() + interval '1 hour', now()), ('erin', $6::uuid, now() + interval '1 hour', null)
+		insert into user_ask_snooze (login, ask_id, snoozed_until) values
+			($1::text, $6::uuid, now() + interval '1 hour'), ('erin', $6::uuid, now() + interval '1 hour')
 	`, person, spelling, thread, root, reply, ask); err != nil {
 		t.Fatalf("write the read state of %s and erin: %v", person, err)
 	}
@@ -192,8 +234,9 @@ func TestTheEraseOfAPersonTakesTheirReadStateRows(t *testing.T) {
 			t.Errorf("the erase of person:%s lists\n\t%s\nwith no line %q", person, joinedListing(listing), line)
 		}
 	}
-	// erin's rows are the six written above and the user_threads row her ask's insert gave her
-	// (migration 0096's trigger), which the erase of another person leaves as they are.
+	// erin's rows are the six above - her comment thread's the one its insert gave her - and the
+	// user_threads row her ask's insert gave her (migration 0096's trigger), which the erase of
+	// another person leaves as they are.
 	count := func() (theirs, erins int64) {
 		t.Helper()
 		if err := database.Pool.QueryRow(ctx, `

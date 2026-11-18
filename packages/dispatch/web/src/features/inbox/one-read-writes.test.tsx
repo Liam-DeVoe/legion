@@ -30,7 +30,7 @@ import { markAllReadBody, useMarkAllRead } from "./mark-all";
 import { useInboxAsks } from "./one-read";
 import { useOutstandingAnswerWrite } from "./outstanding-answers";
 import { useAskHandOn } from "./useAskHandOn";
-import { useAskSnooze } from "./useAskSnooze";
+import { useAskSnooze, useAskSnoozeMany } from "./useAskSnooze";
 import { dismissThreadRow, useInboxDismiss } from "./useInboxDismiss";
 
 const AS_OF = "2026-10-12T02:00:00Z";
@@ -227,6 +227,36 @@ test("a snooze lands on the one read's ask, and a refusal brings it back", async
 
   await act(async () => answer.refuse());
   await waitFor(() => expect(cachedAsk(client, "ask-a")?.snoozed_until).toBeNull());
+  expect(invalidated(client)).toBe(true);
+});
+
+test("a bulk snooze lands on the one read's asks, and a refusal brings back only the refused ask", async () => {
+  const taken = issueAsk({ id: "ask-a" });
+  const refused = issueAsk({ id: "ask-b", snoozed_until: "2026-10-15T09:00:00Z" });
+  const client = seeded([taken, refused], oneRead([taken, refused]));
+  const refusal = deferred<never>();
+  answerRoute<(id: string) => Promise<unknown>>(
+    "PUT",
+    "/api/v1/me/asks/*/snooze"
+  ).mockImplementation((id) => (id === "ask-b" ? refusal.promise : Promise.resolve(undefined)));
+  const hook = renderHook(() => useAskSnoozeMany(), { wrapper: wrapper(client) });
+
+  let settled: Promise<unknown> | undefined;
+  act(() => {
+    settled = hook.result.current.submit(["ask-a", "ask-b"], "2026-10-20T09:00:00Z");
+  });
+  await waitFor(() =>
+    expect(cachedAsk(client, "ask-b")?.snoozed_until).toBe("2026-10-20T09:00:00Z")
+  );
+  expect(cachedAsk(client, "ask-a")?.snoozed_until).toBe("2026-10-20T09:00:00Z");
+
+  await act(async () => {
+    refusal.refuse();
+    await settled;
+  });
+  // The refused ask goes back to the moment it held before, not to no snooze at all.
+  expect(cachedAsk(client, "ask-b")?.snoozed_until).toBe("2026-10-15T09:00:00Z");
+  expect(cachedAsk(client, "ask-a")?.snoozed_until).toBe("2026-10-20T09:00:00Z");
   expect(invalidated(client)).toBe(true);
 });
 

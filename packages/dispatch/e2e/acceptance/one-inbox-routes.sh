@@ -235,8 +235,9 @@ compare() {
 }
 # summary NAME FIELD: the value of FIELD in the summary line of comparison NAME.
 summary() { sed -n "s/^inbox-compare: run=.* $2=\\([^ ]*\\).*/\\1/p" "$work/$1.out" | tail -n 1; }
-# run_id NAME: the id of the run comparison NAME stored.
-run_id() { sed -n 's/^inbox-compare: run=\([0-9]*\) .*/\1/p' "$work/$1.out" | tail -n 1; }
+# run_id NAME: the id of the run comparison NAME stored, and nothing where it stored none or never
+# ran: an assignment from it under errexit would otherwise end its section without a FAIL line.
+run_id() { [[ ! -f "$work/$1.out" ]] || sed -n 's/^inbox-compare: run=\([0-9]*\) .*/\1/p' "$work/$1.out" | tail -n 1; }
 
 # isolated COMMAND...: runs COMMAND in a subshell of its own, with errexit, and sets
 # $isolated_status to its exit status, so a `fail` inside ends COMMAND alone.
