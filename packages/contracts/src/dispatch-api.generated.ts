@@ -4858,6 +4858,7 @@ export interface components {
       block?: string;
       find?: string;
       index?: unknown;
+      into?: string;
       markdown?: string;
       occurrence?: number;
       op: string;

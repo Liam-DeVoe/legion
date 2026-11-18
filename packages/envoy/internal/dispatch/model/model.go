@@ -3529,6 +3529,10 @@ type EditOp struct {
 	Index      json.RawMessage `json:"index,omitempty"`
 	Type       string          `json:"type,omitempty"`
 	Attributes map[string]any  `json:"attributes,omitempty"`
+	// Into is an insert's third anchor, `block:<id>`: the markdown goes inside that block, after
+	// its last child, read as that block's content (docs.insertInto), where After and Before put
+	// it beside one. An insert names exactly one of the three.
+	Into string `json:"into,omitempty"`
 }
 
 // Route is a validated issue delivery route.

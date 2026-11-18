@@ -1,10 +1,16 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"sort"
@@ -770,6 +776,99 @@ func TestAReadingIsAChildNodeOfTheDecisionItReads(t *testing.T) {
 			t.Errorf("the replaced decision names the decision %s through %s", d1, tuple.Kind)
 		}
 	}
+
+	// Through `dispatch doc-edit`, run as this tree's CLI with the agent's bearer against this
+	// test's own server, the agent inserts a reading into a person's answered ask of a spec a person
+	// approved, with the insert whose into names the ask's block. The write is taken, the Decisions
+	// read answers the reading under the ask with the agent as its author, and the spec's approval
+	// still reads approved at the version the write stored.
+	approvedIssue := createSpecIssue(t, handler, "CORE", "An approved spec.\n\n"+
+		":::ask{#s1 urgency=\"med\" multiple=\"false\"}\nWhich store holds the queue?\n\n- Postgres: The one we run\n- Redis: The faster one\n:::\n")
+	settleIssue(t, documents, approvedIssue.Key)
+	storeAsk := blockAskID(t, handler, approvedIssue.Key, "s1")
+	answerDecisionBlock(t, handler, storeAsk, "bob", []string{"Postgres"}, "", nil)
+	spec := readDecisionDocument(t, database, approvedIssue.Key, "spec")
+	approval := reviewDocument(t, handler, spec.id, "alice", "approved", "")
+	insert, err := json.Marshal([]map[string]string{{
+		"op": "insert", "into": "block:s1",
+		"markdown": ":::reading{#g5}\nThe agent reads the answer as Postgres for every queue.\n:::\n",
+	}})
+	if err != nil {
+		t.Fatalf("encode the insert: %v", err)
+	}
+	served := httptest.NewServer(handler)
+	t.Cleanup(served.Close)
+	edited := runDispatchCLI(t, served.URL, "doc-edit", "--issue", approvedIssue.Key, "--ops-json", string(insert))
+	storeAskRef := "dispatch://" + approvedIssue.Key + "/ask/" + storeAsk
+	if written := fmt.Sprintf("Applied 1 ops (version %d)", approval.Version+1); edited.code != 0 || !strings.Contains(edited.stdout, written) {
+		t.Fatalf("dispatch doc-edit of a reading into the answered ask %s, block s1: %s\nwant it taken, printing %q", storeAskRef, edited, written)
+	}
+	t.Logf("dispatch doc-edit, run as this tree's CLI with the agent's bearer, printed:\n%s", edited.stdout)
+	settleIssue(t, documents, approvedIssue.Key)
+	g5 := spec.address("g5")
+	requireTypedNode(t, database, "the reading the CLI inserted into the answered ask", g5, refs.ReadingSupertag, graphstore.KindAsk, storeAsk)
+	underAsk := requireEntry(t, readEntries(t, handler, approvedIssue.Key), "the answered ask of the approved spec", graphstore.KindAsk+":"+storeAsk)
+	if held, want := readingsOf(underAsk), []string{g5 + "<-" + graphstore.KindSession + ":" + decidingSession}; !slices.Equal(held, want) {
+		t.Errorf("the answered ask %s answers the readings %v after the CLI's insert, want %v, by the agent", storeAskRef, held, want)
+	}
+	if got := readApproval(t, handler, spec.id).Approval; got == nil || got.State != "approved" || got.Version == nil ||
+		*got.Version != got.LatestVersion || got.LatestVersion != approval.Version+1 {
+		t.Errorf("GET /api/v1/artifacts/%s answers the approval %s after the CLI's insert, want it approved at version %d, the latest, carried from alice's approval of version %d",
+			spec.id, entryJSON(t, got), approval.Version+1, approval.Version)
+	}
+}
+
+// cliRun is one run of this tree's dispatch command.
+type cliRun struct {
+	code           int
+	stdout, stderr string
+}
+
+func (r cliRun) String() string {
+	return fmt.Sprintf("exit %d\nstdout:\n%s\nstderr:\n%s", r.code, r.stdout, r.stderr)
+}
+
+// runDispatchCLI runs this tree's dispatch command, packages/envoy-client/bin/dispatch.ts under
+// bun, as cmd/dispatch/twobuild_cli_test.go runs it: against url, with the agent's bearer, as the
+// session sessionActor names. Its environment is written here, never inherited, so a Legion pane's
+// own Dispatch URL and token never reach it, and its state lives in a directory of its own. A host
+// with no bun fails the test: the case it runs is a check's, and a skip would pass it.
+func runDispatchCLI(t *testing.T, url string, args ...string) cliRun {
+	t.Helper()
+	bun, err := exec.LookPath("bun")
+	if err != nil {
+		t.Fatalf("this case runs the dispatch command under bun, which is not on PATH: %v", err)
+	}
+	entry, err := filepath.Abs(filepath.Join("..", "..", "..", "..", "envoy-client", "bin", "dispatch.ts"))
+	if err != nil {
+		t.Fatalf("resolve the dispatch command: %v", err)
+	}
+	home := t.TempDir()
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bun, append([]string{entry}, args...)...)
+	cmd.Dir = home
+	cmd.Env = []string{
+		"PATH=" + os.Getenv("PATH"),
+		"HOME=" + home,
+		"DISPATCH_STATE_DIR=" + home,
+		"DISPATCH_HOST=omp",
+		"DISPATCH_SESSION_ID=" + decidingSession,
+		"DISPATCH_URL=" + url,
+		"DISPATCH_TOKEN=agent-token",
+	}
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	err = cmd.Run()
+	run := cliRun{stdout: stdout.String(), stderr: stderr.String()}
+	var exit *exec.ExitError
+	switch {
+	case errors.As(err, &exit):
+		run.code = exit.ExitCode()
+	case err != nil:
+		t.Fatalf("run dispatch %v: %v", args, err)
+	}
+	return run
 }
 
 // withAskReading is markdown with its ask block blockID holding, after its own content, the one

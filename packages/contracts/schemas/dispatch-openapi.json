@@ -20257,6 +20257,9 @@
             "type": "string"
           },
           "index": {},
+          "into": {
+            "type": "string"
+          },
           "markdown": {
             "type": "string"
           },

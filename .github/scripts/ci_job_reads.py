@@ -3004,9 +3004,16 @@ GATES = [
     gate("envoy_go_race", "envoy-go-race", runs=[race_step(RACE_JOBS["envoy-go-race"]), ceiling_run("envoy-go-race")],
          reads=ceiling_reads("envoy-go-race") + setup_go("envoy-go-race", f"{ENVOY}/go.mod")),
 
+    # TestAReadingIsAChildNodeOfTheDecisionItReads runs this tree's dispatch command under bun, so
+    # the job installs Bun and the workspace, and reads every package that command loads.
     gate("envoy_go_race_api", "envoy-go-race-api",
          runs=[race_step(RACE_JOBS["envoy-go-race-api"]), ceiling_run("envoy-go-race-api")],
-         reads=ceiling_reads("envoy-go-race-api") + setup_go("envoy-go-race-api", f"{ENVOY}/go.mod")),
+         reads=reads(
+             ("packages/envoy-client/**", f"{ENVOY}/internal/dispatch/api/decision_entries_test.go:849-862 (runDispatchCLI) runs "
+                                          "`bun ../../../../envoy-client/bin/dispatch.ts`, which loads envoy-client's sources"),
+             ("packages/contracts/**", f"{ENVOY}/internal/dispatch/api/decision_entries_test.go:849-862: that command imports @legion/contracts"),
+         ) + envoy_client_dep(f"{ENVOY}/internal/dispatch/api/decision_entries_test.go:849-862 runs packages/envoy-client/bin/dispatch.ts")
+         + ceiling_reads("envoy-go-race-api") + setup_go("envoy-go-race-api", f"{ENVOY}/go.mod") + bun_job("envoy-go-race-api")),
 
     gate("envoy_go_race_docs", "envoy-go-race-docs", runs=[ceiling_run("envoy-go-race-docs")], exact=[
         pinned_step("envoy-go-race-docs", RACE_DOCS_STEP, ENVOY, RACE_DOCS_SCRIPT, [

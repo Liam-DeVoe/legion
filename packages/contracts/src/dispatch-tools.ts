@@ -1337,6 +1337,7 @@ export const dispatchToolSpecs = [
       "The blocks a with writes are refused, with the document unchanged, where the block holding the match cannot hold them: a heading and any cell of a table, which hold one line of text, and a typed block whose content rule they break - write that block's new text alone, and insert the blocks beside it. A hard break in with is INVALID_OP when the matched text is in a heading or a table cell, which are written on one line. In a table cell, with is the cell's text: write a | in it bare, in code too, since code whose text has an odd run of backslashes right before a | cannot be stored in a cell and is INVALID_OP, naming the cell. " +
       "A delete whose find is a block's entire text removes the block (a list emptied of its items goes too); delete with block removes any block by id, and move with block relocates one. A delete or retype that would take an ask block out of the document while its ask is open is refused, with nothing sent. delete_row and delete_column take a table block and a zero-based index, preserving the table block id and refusing to remove cells with open asks or unresolved comments. " +
       'Insert and move anchors also accept "start", "end", "heading:<exact heading text>", and "block:<id>"; dispatch doc-read --blocks lists every block\'s id, type, opening words and token, and each table\'s rows and cells with the indexes delete_row and delete_column take (GET /api/v1/artifacts/{artifact UUID}/blocks serves the same list). ' +
+      'An insert writes inside a block instead with into, "block:<id>", after that block\'s last child: that is how a reading goes into a decision or an answered ask. ' +
       "Optionally require the state just read: precondition selects exactly one of a document token from dispatch doc-read, or block {id, token} values from dispatch doc-read --blocks. A block guard must include every block the batch changes; Dispatch resolves quote targets and rejects an uncovered batch rather than applying it. Use a document token for insert or move, which depend on document order. Prefer block tokens when the covered content blocks are independent sections. Tokens include inline marks, so a fresh human comment also makes a stale edit fail. PRECONDITION_FAILED means re-read; EDIT_QUEUE_FULL means back off before retrying. " +
       `${CI_CHECK_RULE} ` +
       "The result carries the document token this edit produced, so a chain of guarded edits passes each result's token as the next edit's precondition with no dispatch doc-read between them. " +
@@ -1396,6 +1397,12 @@ export const dispatchToolSpecs = [
                 .string()
                 .describe(
                   'Insert or move before this anchor: a quote of the neighbouring block\'s text, or one of "start", "end", "heading:<exact heading text>", "block:<id>".'
+                )
+                .optional(),
+              into: z
+                .string()
+                .describe(
+                  'Insert inside this block, after its last child: "block:<id>" is the one form it takes. The markdown is read as that block\'s content, so it may hold what only that block holds, such as a reading closing a decision or an answered ask: {"op":"insert","into":"block:a1","markdown":":::reading{#r1}\\nThe agent reads the answer as REST for every service.\\n:::"}. An insert names exactly one of after, before and into. A Dispatch server older than into ignores it and refuses that insert with INVALID_OP naming after or before, writing nothing.'
                 )
                 .optional(),
               block: z
