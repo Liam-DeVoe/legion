@@ -511,3 +511,62 @@ func TestAnAnswerThatCannotBeEncodedIsAnInternalRefusal(t *testing.T) {
 		t.Errorf("an encodable body answers %d %q (%s), want 201 %q as application/json", response.Code, response.Body.String(), response.Header().Get("Content-Type"), want)
 	}
 }
+
+// TestALastReadOverTwoRepositoriesTakesTheLaterWriteOfATie: two readings of a `last` series
+// measured at the same moment on one day, under two repositories, are a tie the readings write
+// breaks by write order (105bfbb9): the project's day row holds the later write's value. A read of
+// the same day that names both repositories folds their two rows, and must answer the same value
+// whatever order the repositories come back in; at 0ea9989f it answered the value of the
+// repository whose key sorts last, because the window fold keeps the later row in the read's own
+// order for an equal last_at and the read sets none (dispatch://INFRA-2916, the testing round of
+// 2026-11-18, review v2's R2-8; WritesChecks/repotie.r10.py drove it on a server).
+func TestALastReadOverTwoRepositoriesTakesTheLaterWriteOfATie(t *testing.T) {
+	handler, _ := newTestHandlerWithStore(t)
+	createTestProject(t, handler, "EVL")
+	registered := evalRequest(t, handler, http.MethodPost, "/api/v1/projects/EVL/evals",
+		map[string]any{"slug": "tie", "series": []any{map[string]any{"series": "v", "agg": "last"}}}, "tie-register")
+	if registered.Code != http.StatusCreated {
+		t.Fatalf("register tie: status %d, body %s", registered.Code, registered.Body.String())
+	}
+	day := measures.Midnight(time.Now().UTC()).AddDate(0, 0, -3)
+	at := day.Add(12 * time.Hour).Format(time.RFC3339)
+	// b's reading first, then a's: the later write is a's, whose key sorts first.
+	for _, reading := range []struct {
+		repo  string
+		value float64
+	}{{"acme/b", 2}, {"acme/a", 1}} {
+		written := evalRequest(t, handler, http.MethodPost, "/api/v1/projects/EVL/evals/tie/readings", map[string]any{"readings": []any{
+			map[string]any{"series": "v", "row_kind": "run", "row_key": strings.ReplaceAll(reading.repo, "/", "-"), "value": reading.value, "measured_at": at,
+				"attributes": map[string]any{"repo": reading.repo}},
+		}}, "tie-"+strings.ReplaceAll(reading.repo, "/", "-"))
+		if written.Code != http.StatusCreated {
+			t.Fatalf("log %g under %s: status %d, body %s", reading.value, reading.repo, written.Code, written.Body.String())
+		}
+	}
+	last := func(query url.Values) string {
+		t.Helper()
+		query.Set("from", day.Format(time.RFC3339))
+		query.Set("to", day.AddDate(0, 0, 1).Format(time.RFC3339))
+		detail := decodeBody[evalDetailResponse](t, evalRequest(t, handler, http.MethodGet, "/api/v1/projects/EVL/evals/tie?"+query.Encode(), nil, ""))
+		for _, item := range detail.Items {
+			for _, series := range item.Series {
+				if series.Series.Series == "v" {
+					if series.Window["value"] == nil {
+						return "null"
+					}
+					return fmt.Sprint(*series.Window["value"])
+				}
+			}
+		}
+		t.Fatalf("the read of EVL/tie answers no series v")
+		return ""
+	}
+	if project := last(url.Values{}); project != "1" {
+		t.Fatalf("the project's read answers %s, want 1, the later write's value", project)
+	}
+	for _, repos := range [][]string{{"acme/a", "acme/b"}, {"acme/b", "acme/a"}} {
+		if got := last(url.Values{"repo": repos}); got != "1" {
+			t.Errorf("the read of repositories %v answers %s; the project's answers 1, the later write's value", repos, got)
+		}
+	}
+}
