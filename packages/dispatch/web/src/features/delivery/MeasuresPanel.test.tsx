@@ -326,6 +326,50 @@ test("a lead-time card names the statistics its target judges and tones those fi
   expect(merge.getByText("2.7d").className).not.toContain(dangerText);
 });
 
+// R5, and review v2's R2-3: a figure takes a verdict's tone only where the card's caption names the
+// statistic that verdict is of. The answer also carries a verdict of the merge median and one of
+// the failure rate's upper bound, each judged against the target whatever the person's judges
+// (api/delivery_measures.go measuresStatus); where the judges leave that figure out, the caption
+// does not name it, and the figure reads plain (dispatch://INFRA-2916, the testing round of
+// 2026-11-18 at 0ea9989f, which drove the same answer from the server: judges-median-W.r10.out).
+test("a figure the caption does not name is toned by no verdict: the merge median judged by its longest change, the upper bound judged by the per-PR rate", () => {
+  renderPanel({
+    ...fixtureMeasures,
+    targets: {
+      ...catalogueTargets,
+      merge_to_production_minutes: { value: 1000, inclusive: false, direction: "lower_better", judges: ["minutes.max"] },
+    },
+    status: { ...fixtureMeasures.status, merge_to_production: false, merge_to_production_median: true },
+  });
+  const merge = within(card("Merge \u2192 production"));
+  expect(merge.getByText(/^target /).textContent ?? "").not.toContain("median");
+  expect(merge.getByText("2.7d").className).toContain(dangerText);
+  expect(merge.getByText("8.5h").className).toContain(textPrimaryOnSurface);
+  expect(merge.getByText("8.5h").className).not.toContain(successText);
+  cleanup();
+
+  renderPanel({
+    ...fixtureMeasures,
+    flags_source: "flags",
+    measures: {
+      ...fixtureMeasures.measures,
+      change_failure_rate: {
+        per_pr: { confirmed: 0, pending: 0, rejected: 0, reverts: 0, total: 5, rate: 0 },
+        per_deploy: { confirmed: 0, pending: 2, rejected: 0, reverts: 0, total: 5, rate: 0, confirmed_or_pending: 2, upper_bound_rate: 0.4 },
+      },
+    },
+    targets: {
+      ...catalogueTargets,
+      change_failure_rate: { value: 0.05, inclusive: false, direction: "lower_better", judges: ["per_pr.rate"] },
+    },
+    status: { ...fixtureMeasures.status, change_failure_rate: true, change_failure_rate_upper_bound: false },
+  });
+  const failures = within(card("Change failure rate"));
+  expect(failures.getByText(/^target /).textContent ?? "").not.toContain("upper");
+  expect(failures.getByText("40.00%").className).not.toContain(dangerText);
+  expect(failures.getByText("40.00%").className).not.toContain(successText);
+});
+
 test("a target is phrased and its days are judged in the direction it carries: the same value reads and colours the other way under lower_better", () => {
   const halfADay = { ...catalogueTargets.deploys_per_day, value: 0.5 };
   renderPanel({
