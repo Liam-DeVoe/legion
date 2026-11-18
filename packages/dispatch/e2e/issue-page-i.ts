@@ -688,7 +688,8 @@ const BRANCHES_OPENED_AT_MOST = 200;
 /** Opens every branch the tree folded to one line because it sits below the drawn levels
  *  (`tree-fold.ts`'s `DRAWN_LEVELS`), so a row reads the nodes such a branch holds as rows of
  *  their own, as `issue-page-g.ts`'s `unfoldEveryBranch` does with a fold control. It opens the
- *  tree as it stands, so a caller first waits for the tree it means to open to be drawn. */
+ *  tree as it stands, so a caller first waits for the tree it means to open to be drawn. No row
+ *  of this part calls it: it is the later parts' (their rows import it from this file). */
 export async function openEveryDeeperBranch(page: Page): Promise<void> {
   const controls = branchMoreRows(page).getByRole("button");
   for (let pressed = 0; pressed < BRANCHES_OPENED_AT_MOST; pressed += 1) {

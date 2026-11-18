@@ -852,8 +852,8 @@ function branchMoreIndent(width: number): { readonly inset: number; readonly ste
  * words, so it covers none of them, and it stays inside the page.
  */
 async function expectPhoneBulletGaps(page: Page, spec: string, where: string): Promise<void> {
-  // Its one caller waited for the rows it reads to draw, and this reads their layout as it stands
-  // now: the two counts at the foot fail a reading that holds no row of either kind.
+  // Its one caller waited for every read of the load to settle and for the rows to draw, so the
+  // rows' layout is read as it stands now; the two counts at the foot fail a reading of no row.
   const layouts = await rowLayouts(page, spec);
   const bullets = await bulletBoxes(page);
   expect(
@@ -915,7 +915,11 @@ test("a folded branch's line is its first line, cut at a word @phone @phone-only
     const question = (await getAsk(seeded.openQuestion.askId)).ask.question;
     for (const width of ONE_LINE_WIDTHS) {
       await page.setViewportSize({ height: PHONE.height, width });
+      // Every read of the load settles before the rows are measured: the comments and messages
+      // come by reads of their own, and the phone's bullet reading below reads every row drawn.
+      const settling = watchApiRequests(page);
       await gotoIssue(page, `/issues/${seeded.key}`);
+      await expectLoadSettled(settling);
       await expectIssuePageDrawn(page);
       await expect(
         nodeRow(page, questionId).first(),
@@ -3307,7 +3311,7 @@ test("the keys of a row's editor move its caret and edit inside the node's own b
 // (`standInControlBelow`).
 // SLOW(>=2s): the whole issue seeded and loaded, then the row's editor opened twice, each waited
 // on until it takes the caret and the ask's card is drawn in it, and until it closes again.
-test("Tab and Shift+Tab from a row's editor pass over the controls of an ask another block draws, and end the editing", async ({
+test("Tab from a row's editor passes over the controls of an ask another block draws, Shift+Tab goes to the row, and each ends the editing", async ({
   browser,
 }) => {
   test.setTimeout(120_000);
