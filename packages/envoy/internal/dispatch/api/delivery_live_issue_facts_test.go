@@ -326,7 +326,8 @@ const storedPrecision = 1e-4
 // grows its work time, its slot hours, its implementing hours and the end of its open bar, and
 // facts the board does not carry (its parked hours, its implementer's bar, its reviewer's idle
 // hours); INFRA-8, the unstarted child, grows hours in the queue column it holds none in yet; and
-// INFRA-3, the design root, stands still.
+// INFRA-3, the design root, grows only its parked hours while it waits for a child, a fact the
+// board does not carry, so every value of its entry stands still.
 func writeGrowingLegionFacts(t *testing.T, database *store.Store, now time.Time) {
 	t.Helper()
 	childAsOf, queuedAsOf, rootAsOf := now.Add(-3*time.Hour), now.Add(-2*time.Hour), now.Add(-5*time.Hour)
@@ -363,7 +364,8 @@ func writeGrowingLegionFacts(t *testing.T, database *store.Store, now time.Time)
 				OpenedAt: now.Add(-12 * time.Hour), PhaseHours: map[string]float64{"design": 2},
 				WorkHours: 2, Root: true, Tree: "INFRA-3", SlotHours: 6,
 			},
-			AsOf: rootAsOf,
+			AsOf:   rootAsOf,
+			Growth: metrics.Growth{"parked_hours": 1},
 		},
 	}}
 	if _, err := legionfacts.WriteProject(t.Context(), database.Pool,
@@ -373,9 +375,13 @@ func writeGrowingLegionFacts(t *testing.T, database *store.Store, now time.Time)
 }
 
 // closeLegionEntry is entry given at the clock at, as a page that holds it gives it: each value
-// that grows plus its rate times the hours from the entry's as_of to at (legionBoardGrowth).
+// that grows plus its rate times the hours from the entry's as_of to at (legionBoardGrowth), and
+// an entry with no growth as it stands, since its values are its values at any clock.
 func closeLegionEntry(entry legionBoardFacts, at time.Time) legionBoardFacts {
-	elapsed := at.Sub(entry.AsOf)
+	if entry.Growth == nil {
+		return entry
+	}
+	elapsed := at.Sub(*entry.AsOf)
 	closed := entry
 	closed.HoursByPhase = maps.Clone(entry.HoursByPhase)
 	for column, rate := range entry.Growth.HoursByPhase {
@@ -392,10 +398,12 @@ func closeLegionEntry(entry legionBoardFacts, at time.Time) legionBoardFacts {
 
 // TestALegionBoardSendsAnIssuesEntryOnlyWhenItsStoredRowMoves: each read closes every open row at
 // its own clock, so an open issue's grown values differ on every recompute, and the board still
-// sends an issues entry only when the stored row behind it moved. An entry carries the moment its
-// values are of and how fast each grows after it, so a page closes it at its own clock by the
-// rule the read closes the row by (legionfacts.Row.At), and the entry's revision leaves out the
-// values that grow and that moment (live_frames.go's legionBoardView).
+// sends an issues entry only when the stored row behind it moved. An entry whose values grow
+// carries the moment they are of and how fast each grows after it, so a page closes it at its own
+// clock by the rule the read closes the row by (legionfacts.Row.At); an entry none of whose values
+// grows carries null for both, even where its stored row grows facts the entry does not carry; and
+// the entry's revision leaves out the values that grow and that moment (live_frames.go's
+// legionBoardView).
 //
 // The snapshot is the GET route's body at the snapshot's own moment, growth and moments
 // included (k25). A recompute a minute later that no stored row moved, the sampler's next read,
@@ -434,14 +442,14 @@ func TestALegionBoardSendsAnIssuesEntryOnlyWhenItsStoredRowMoves(t *testing.T) {
 			snapped.ComputedAt, snapshot.Body, answered)
 	}
 	wantGrowth := legionBoardGrowth{HoursByPhase: map[string]float64{"implementing": 1}, WorkHours: 1, SlotHours: 1, WorkLastAt: 1}
-	if child := snapped.Issues["INFRA-4"]; !child.AsOf.Equal(snapped.ComputedAt) || !reflect.DeepEqual(child.Growth, wantGrowth) {
-		t.Fatalf("INFRA-4's entry is of %s with the growth %+v, want the snapshot's moment %s and the growth %+v: its stored rates of the facts the entry carries alone",
+	if child := snapped.Issues["INFRA-4"]; child.AsOf == nil || !child.AsOf.Equal(snapped.ComputedAt) ||
+		child.Growth == nil || !reflect.DeepEqual(*child.Growth, wantGrowth) {
+		t.Fatalf("INFRA-4's entry is of %v with the growth %+v, want the snapshot's moment %s and the growth %+v: its stored rates of the facts the entry carries alone",
 			child.AsOf, child.Growth, snapped.ComputedAt, wantGrowth)
 	}
-	standing := legionBoardGrowth{HoursByPhase: map[string]float64{}}
-	if root := snapped.Issues["INFRA-3"]; root.AsOf.Sub(seeded.Add(-5*time.Hour)).Abs() > time.Microsecond || !reflect.DeepEqual(root.Growth, standing) {
-		t.Fatalf("INFRA-3's entry is of %s with the growth %+v, want the moment its row is closed at, %s, and the growth %+v",
-			root.AsOf, root.Growth, seeded.Add(-5*time.Hour), standing)
+	if root := snapped.Issues["INFRA-3"]; root.AsOf != nil || root.Growth != nil {
+		t.Fatalf("INFRA-3's entry is of %v with the growth %+v, want null for both: its row grows only its parked hours, which the entry does not carry",
+			root.AsOf, root.Growth)
 	}
 	rig.settle(t)
 	held := snapshot.Body
@@ -492,6 +500,11 @@ func TestALegionBoardSendsAnIssuesEntryOnlyWhenItsStoredRowMoves(t *testing.T) {
 	if got, want := slices.Sorted(maps.Keys(whole)), slices.Sorted(slices.Values(fields)); !slices.Equal(got, want) {
 		t.Fatalf("INFRA-3's sent entry holds %v, want the whole entry %v", got, want)
 	}
+	// Its moved row has no growth, so the entry carries null for both, sent as null and not left
+	// out, as the entry's other optional fields are.
+	if asOf, growth := string(whole["as_of"]), string(whole["growth"]); asOf != "null" || growth != "null" {
+		t.Fatalf("INFRA-3's sent entry carries the as_of %s and the growth %s, want null for both: nothing it carries grows", asOf, growth)
+	}
 	held = applyLiveDelta(t, legionBoardView, held, write)
 
 	// An hour on, by the wall clock: every entry the page holds, closed at the GET's moment,
@@ -505,13 +518,14 @@ func TestALegionBoardSendsAnIssuesEntryOnlyWhenItsStoredRowMoves(t *testing.T) {
 		t.Fatalf("the page holds the entries %v and the GET answers %v", keys, want)
 	}
 	near := func(a, b float64) bool { return math.Abs(a-b) <= storedPrecision+1e-9 }
-	grows := func(entry legionBoardFacts) bool {
-		rates := entry.Growth
-		return rates.WorkHours != 0 || rates.SlotHours != 0 || rates.WorkLastAt != 0 || len(rates.HoursByPhase) != 0
-	}
 	grown := 0
 	for _, key := range slices.Sorted(maps.Keys(got.Issues)) {
 		want, holding := got.Issues[key], page.Issues[key]
+		if (holding.AsOf == nil) != (holding.Growth == nil) || (want.AsOf == nil) != (want.Growth == nil) {
+			t.Errorf("%s: the page holds the as_of %v with the growth %+v and the GET answers %v with %+v, want both or neither",
+				key, holding.AsOf, holding.Growth, want.AsOf, want.Growth)
+			continue
+		}
 		closed := closeLegionEntry(holding, got.ComputedAt)
 		if !want.OpenedAt.Equal(closed.OpenedAt) || !reflect.DeepEqual(want.ClosedAt, closed.ClosedAt) ||
 			want.ReviewRounds != closed.ReviewRounds || want.RootKey != closed.RootKey || want.TreeDepth != closed.TreeDepth ||
@@ -536,17 +550,19 @@ func TestALegionBoardSendsAnIssuesEntryOnlyWhenItsStoredRowMoves(t *testing.T) {
 			(want.WorkLastAt != nil && want.WorkLastAt.Sub(*closed.WorkLastAt).Abs() > time.Microsecond) {
 			t.Errorf("%s: closed at %s the page's work ends %v, the GET's %v", key, got.ComputedAt, closed.WorkLastAt, want.WorkLastAt)
 		}
-		// A growing entry's values are of the GET's moment, and a standing one's of its row's.
-		wantAsOf := holding.AsOf
-		if grows(holding) {
-			grown++
-			wantAsOf = got.ComputedAt
-			if want.WorkHours == holding.WorkHours && want.SlotHours == holding.SlotHours && maps.Equal(want.HoursByPhase, holding.HoursByPhase) {
-				t.Errorf("%s grows and the GET an hour later answers it as the page holds it, %+v, so closing it proved nothing", key, want)
+		// A growing entry's values are of the GET's moment, and a standing one carries no moment.
+		if holding.Growth == nil {
+			if want.AsOf != nil {
+				t.Errorf("%s stands still and the GET gives its values the moment %s, want null", key, want.AsOf)
 			}
+			continue
 		}
-		if !want.AsOf.Equal(wantAsOf) {
-			t.Errorf("%s: the GET's values are of %s, want %s", key, want.AsOf, wantAsOf)
+		grown++
+		if !want.AsOf.Equal(got.ComputedAt) {
+			t.Errorf("%s: the GET's values are of %s, want %s", key, want.AsOf, got.ComputedAt)
+		}
+		if want.WorkHours == holding.WorkHours && want.SlotHours == holding.SlotHours && maps.Equal(want.HoursByPhase, holding.HoursByPhase) {
+			t.Errorf("%s grows and the GET an hour later answers it as the page holds it, %+v, so closing it proved nothing", key, want)
 		}
 	}
 	if grown != 2 {

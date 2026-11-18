@@ -5815,10 +5815,10 @@ export interface components {
     };
     LegionBoardFacts: {
       /** Format: date-time */
-      as_of: string;
+      as_of: null | string;
       /** Format: date-time */
       closed_at: null | string;
-      growth: components["schemas"]["LegionBoardGrowth"];
+      growth: components["schemas"]["LegionBoardGrowth"] | null;
       hours_by_phase: {
         [key: string]: number;
       } | null;

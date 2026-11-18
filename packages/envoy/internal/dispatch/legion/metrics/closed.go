@@ -114,7 +114,7 @@ func growthBetween(first, later IssueFacts) Growth {
 			growth[name] = round(-value / growthSpan.Hours())
 		}
 	}
-	for _, name := range []string{growthWorkFirstAt, GrowthWorkLastAt} {
+	for _, name := range []string{growthWorkFirstAt, growthWorkLastAt} {
 		from, to := *first.workMoment(name), *later.workMoment(name)
 		if from == nil || to == nil {
 			continue

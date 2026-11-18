@@ -25033,7 +25033,10 @@
         "properties": {
           "as_of": {
             "format": "date-time",
-            "type": "string"
+            "type": [
+              "null",
+              "string"
+            ]
           },
           "closed_at": {
             "format": "date-time",
@@ -25043,7 +25046,14 @@
             ]
           },
           "growth": {
-            "$ref": "#/components/schemas/LegionBoardGrowth"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LegionBoardGrowth"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "hours_by_phase": {
             "additionalProperties": {
