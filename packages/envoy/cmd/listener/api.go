@@ -57,9 +57,12 @@ type messageBody struct {
 // this message, so the stream stored nothing new; the publish still reached the agent's subject.
 // What recognises that repeat, and for how long, is stated on DELIVERY_DUPLICATE_WINDOW_MS in
 // @legion/contracts (contracts.DeliveryDuplicateWindow here). It can only be true for a send whose
-// dedupe key names the upstream event (contracts.DedupeKeyNamesTheUpstreamEvent), and Dispatch is
-// the one sender that uses it. Absent means false, which is what an older listener's answer reads
-// as.
+// dedupe key names the upstream event (contracts.DedupeKeyNamesTheUpstreamEvent): one of
+// Dispatch's, and an agent's send under a key minted once for its message, which
+// @legion/envoy-client mints for every send that names none, so a repeat of either gets it. The
+// sender limit reads the same verdict and charges such a repeat nothing (senderCharge.published),
+// unless the verdict answers the bus's resend after a closed connection (bus.StoredAck.Resent).
+// Absent means false, which is what an older listener's answer reads as.
 type sendResponse struct {
 	contracts.Envelope
 	// ExpectsReply is this answer's expects_reply, written in the dialect the request spoke
@@ -829,6 +832,14 @@ const senderStampReadTimeout = 1 * time.Second
 // (deliveryModeVerdict for a session with an entry, stoppedDeliveryModeVerdict for one with only a
 // record) is the 403 naming it. Every one of those answers is written through record, so this
 // route's one line per request is written with it.
+//
+// Before any of them, a message of an agent session whose count under the operator's sender limit
+// is empty is the 429 refuseSenderRateLimited writes, with nothing read, reported or stored
+// (senderLimit.admit). A counted message costs its sender one where the wake is reported, and the
+// stream's answer to its publish marks the rest by the rule the topic publish shares
+// (senderCharge.published): a copy the stream stored or may have stored costs one, a copy it
+// already held costs nothing, also after the wake, and a publish that sent nothing costs only the
+// wake, if one was reported.
 func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		record := &requestRecord{logger: logger, line: "listener send", laneKey: "target_session"}
@@ -889,6 +900,11 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest, err.Error())
 			return
 		}
+		charge, admitted := d.senderLimit.admit(w, r, record, item)
+		if !admitted {
+			return
+		}
+		defer charge.settle()
 		// The cache alone cannot say a session is gone: it trails the bucket it follows, and is
 		// still being refilled after a reconnect, so a miss is read through to the bucket itself.
 		// Only the bucket's own word for it (nats.ErrKeyNotFound, which Refresh also returns for a
@@ -906,6 +922,8 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			// the pod comes back, whether its record lets the message be stored for it below or
 			// the 404 here leaves the sender's next attempt to reach it.
 			reportAgentWake(d.wakes, logger, targetSession)
+			// The wake is what this message costs its sender, whatever is answered below.
+			charge.woke()
 			var recorded bool
 			if known, recorded = d.known.Get(targetSession); !recorded {
 				record.refuseWith(w, http.StatusNotFound, outcomeNoLiveSession, noLiveSession(ctx, d.sessions, targetSession, target, recipientState))
@@ -951,11 +969,13 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			record.refuse(w, http.StatusConflict, outcomeSessionStopped, "the session is stopped")
 			return
 		}
-		duplicate, err := d.client.PublishReportingDuplicateWithin(ctx, item)
+		ack, err := d.client.PublishAckWithin(ctx, item)
+		charge.published(ack, err)
 		if err != nil {
 			record.refuseBusUnavailable(w, err)
 			return
 		}
+		duplicate := ack.Duplicate
 		// Counted here, and only here: the send is accepted and the stream has stored it. A
 		// publish the bus refused stored nothing, and a duplicate the stream recognised stored
 		// nothing new, so neither is a message now waiting for a session that stopped answering,
@@ -1183,6 +1203,14 @@ const publishDedupePrefix = "publish."
 // which writes this route's one line per request with the answer; a confirmed send answers through
 // it too.
 //
+// After the refusal of a topic no stream subject captures, a message of an agent session whose
+// count under the operator's sender limit is empty is the 429 refuseSenderRateLimited writes, with
+// no holder resolved, nothing kept, no wake reported and nothing stored (senderLimit.admit). The
+// stream's answer to the publish of a counted message to a topic the stream captures marks what it
+// costs its sender, by the rule the send route shares (senderCharge.published): a copy the stream
+// stored or may have stored costs one, and a copy it already held, or a publish that sent nothing,
+// costs nothing. A role send marks its own (roleSend).
+//
 // keep is this route's own request field, meaningful only for a role topic, and unset means true:
 // a role message the listener cannot deliver because no live session holds the role - no claim,
 // or a claim whose holder is not live - is kept on the role's kept lane for an hour and handed to
@@ -1292,6 +1320,37 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		// The answer's own expects_reply, read from the request before any path answers: the three
 		// of them below each write it, and none of them changes the envelope that goes on the bus.
 		expectsReply := expectsReplyAnswer(request.ExpectsReply)
+		// Every topic that would deliver to no session is refused by name: a session reads
+		// only what its own consumer holds, so such a publish would reach nobody, now or later;
+		// nothing retries into success, so it is the 400 the refusals above answer rather than a
+		// 504. Team topics are the namespace an agent names itself and the stream stores them
+		// (bus.StreamSubjects). The role lanes bus.Client.ReachesNoSession excepts are forwarded
+		// below. A topic the subjects this listener last read of the deployed stream leave
+		// uncaptured is refused once a read of them that started after this request asked agrees
+		// (bus.SubjectsAsk.Uncaptured), since during a roll the newer build's start adds its
+		// subjects to the stream, and a publish through an older pod on a topic only they capture
+		// is stored. A read that cannot be made - no connection, ctx ending first, a read that
+		// fails - gives no refusal by name, since a refusal of a topic the stream does capture
+		// loses the message, and a publish of one it does not reaches nobody either way. A NATS
+		// user that may not read the stream refuses on the subjects it holds, which are all it
+		// will ever have. The transport the publish takes is judged on the subjects that read kept
+		// (bus.Client.PublishAckWithin). The refusal comes before the sender limit's take, so such
+		// a publish keeps its 400 at any count.
+		// That judgement, the sender stamp's read and the publish take this one deadline, derived
+		// from the caller's own context, so this route too answers a bus it cannot reach rather
+		// than spending the caller's attempt. A role send takes its own (publishDeliveryWindow).
+		ctx, cancel := context.WithDeadline(r.Context(), arrived.Add(sendRequestBudget))
+		defer cancel()
+		if d.client.ReachesNoSession(request.Topic) && d.client.AskDeployedSubjects().Uncaptured(ctx, request.Topic) {
+			record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest,
+				"no stream subject captures "+request.Topic+", so no session would receive it; publish to a notifications.team.<name> topic instead", "topic")
+			return
+		}
+		charge, admitted := d.senderLimit.admit(w, r, record, item)
+		if !admitted {
+			return
+		}
+		defer charge.settle()
 		if lane, ok := strings.CutPrefix(request.Topic, contracts.RoleTopicPrefix); ok {
 			// The lane names its role in either form while every reader takes both: its project
 			// and then the role, or the role alone. A claim is keyed by the bare role name
@@ -1307,38 +1366,15 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			sendToRole(ctx, w, record, d, item, expectsReply, role, request.Keep == nil || *request.Keep, arrived)
 			return
 		}
-		// Every other topic that would deliver to no session is refused by name: a session reads
-		// only what its own consumer holds, so such a publish would reach nobody, now or later;
-		// nothing retries into success, so it is the 400 the refusals above answer rather than a
-		// 504. Team topics are the namespace an agent names itself and the stream stores them
-		// (bus.StreamSubjects). The role lanes bus.Client.ReachesNoSession excepts are forwarded
-		// above. A topic the subjects this listener last read of the deployed stream leave
-		// uncaptured is refused once a read of them that started after this request asked agrees
-		// (bus.SubjectsAsk.Uncaptured), since during a roll the newer build's start adds its
-		// subjects to the stream, and a publish through an older pod on a topic only they capture
-		// is stored. A read that cannot be made - no connection, ctx ending first, a read that
-		// fails - gives no refusal by name, since a refusal of a topic the stream does capture
-		// loses the message, and a publish of one it does not reaches nobody either way. A NATS
-		// user that may not read the stream refuses on the subjects it holds, which are all it
-		// will ever have. The transport the publish takes is judged on the subjects that read kept
-		// (bus.Client.PublishWithin).
-		// That judgement, the sender stamp's read and the publish take this one deadline, derived
-		// from the caller's own context, so this route too answers a bus it cannot reach rather
-		// than spending the caller's attempt.
-		ctx, cancel := context.WithDeadline(r.Context(), arrived.Add(sendRequestBudget))
-		defer cancel()
-		if d.client.ReachesNoSession(request.Topic) && d.client.AskDeployedSubjects().Uncaptured(ctx, request.Topic) {
-			record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest,
-				"no stream subject captures "+request.Topic+", so no session would receive it; publish to a notifications.team.<name> topic instead", "topic")
-			return
-		}
 		// The counts are of the moment the message is published, and are read from memory alone
 		// (recipientCounts), so taking them here costs the publish below no JetStream request.
 		// Only this branch counts: a role send names its holder, and a refused topic reaches
 		// nobody.
 		recipients, connected := recipientCounts(d, item.Topic, item.SourceSession)
 		item.Sender = senderStamp(ctx, d.registry, d.sessions, item.SourceSession)
-		if err := d.client.PublishWithin(ctx, item); err != nil {
+		ack, err := d.client.PublishAckWithin(ctx, item)
+		charge.published(ack, err)
+		if err != nil {
 			record.refuseBusUnavailable(w, err)
 			return
 		}
