@@ -4369,6 +4369,9 @@ func TestSettleCapturesOnlyItsOwnIdentityUpdate(t *testing.T) {
 		Events:      events.NewBroker(),
 		Settle:      time.Hour,
 	})
+	// The room the Apply below observes must still be the one settleRoom settles, so it stays
+	// resident for the whole run rather than production's idle minute (testRoomIdleTimeout).
+	service.srv.RoomIdleTimeout = testRoomIdleTimeout
 	cleanupAndRelease(t, func() { shutdownTestService(t, service) })
 
 	var injected atomic.Bool
@@ -4404,11 +4407,20 @@ func TestSettleCapturesOnlyItsOwnIdentityUpdate(t *testing.T) {
 	armed := state.roomGeneration
 	state.mu.Unlock()
 	service.settleRoom(artifactID, armed)
-	<-foreignApplied
+	select {
+	case <-foreignApplied:
+	case <-time.After(roomWait(t)):
+		t.Fatal("the identity settlement never updated the room, so the foreign update never ran")
+	}
 	if foreignErr != nil {
 		t.Fatalf("apply foreign update during identity settlement: %v", foreignErr)
 	}
-	identityUpdate := <-captured
+	var identityUpdate []byte
+	select {
+	case identityUpdate = <-captured:
+	case <-time.After(roomWait(t)):
+		t.Fatal("the identity settlement never appended its update")
+	}
 	doc := crdt.New()
 	if err := crdt.ApplyUpdateV1(doc, loaded.Update, nil); err != nil {
 		t.Fatalf("decode legacy document: %v", err)
@@ -5722,7 +5734,7 @@ func TestShutdownThatCutsASettlementShortLeavesItToTheNextLoad(t *testing.T) {
 	if err := restarted.warmLiveDocument(context.Background(), artifactID); err != nil {
 		t.Fatalf("load the document on the restarted server: %v", err)
 	}
-	deadline := time.Now().Add(recoveryBound)
+	deadline := time.Now().Add(roomWait(t))
 	for indexedAsks(t, restarted, artifactID) == 0 {
 		if time.Now().After(deadline) {
 			t.Fatal("the restarted server never ran the settlement the shutdown left: its ask block is unindexed")
@@ -5754,7 +5766,7 @@ func TestResumptionSettlesAnOwedDocumentNobodyOpens(t *testing.T) {
 	if err := service.resumeOwedSettlements(context.Background(), 0); err != nil {
 		t.Fatalf("resume every owed settlement: %v", err)
 	}
-	deadline := time.Now().Add(recoveryBound)
+	deadline := time.Now().Add(roomWait(t))
 	for indexedAsks(t, service, artifactID) == 0 {
 		if time.Now().After(deadline) {
 			t.Fatal("the resumption never settled the owed document: its ask block is unindexed")

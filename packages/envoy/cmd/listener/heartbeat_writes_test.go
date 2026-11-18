@@ -8,9 +8,11 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
@@ -22,9 +24,10 @@ import (
 // the interest, session and role buckets' streams moved over the M-1 heartbeats after each
 // session's first registration. It logs all three rates and asserts two of them: the session row
 // is written once per heartbeat, which a heartbeat always does, and the interest row not at all,
-// since every heartbeat here lands well inside store.InterestRefreshAge of the registration that
-// wrote the row. A regression of the skip on the route path (subscribeHandler through
-// store.Registry.UpsertWithin) fails this test, where it was only logged.
+// since every heartbeat here lands inside store.InterestRefreshAge of the registration that wrote
+// the row: the interest registry's clock stands still, so each heartbeat reads the row as written
+// that very moment however long the rounds took. A regression of the skip on the route path
+// (subscribeHandler through store.Registry.UpsertWithin) fails this test, where it was only logged.
 //
 // The role bucket's rate is measured and logged, not asserted: it is the price of a claim saying
 // when its holder last answered for it (store.Registry.RenewRoleClaims, which subscribeHandler
@@ -43,7 +46,20 @@ func TestHeartbeatKVWritesPerHeartbeat(t *testing.T) {
 	)
 	sessionOf := func(index int) string { return fmt.Sprintf("ses_heartbeat_%02d", index) }
 	roleOf := func(index int) string { return fmt.Sprintf("heartbeat-role-%02d", index) }
-	registry, sessions := setupSessionsTest(t, nil, nil)
+	client, err := bus.ConnectOwningStream([]string{testnats.URL(t)}, bus.WithReplicas(1))
+	if err != nil {
+		t.Fatalf("connect bus: %v", err)
+	}
+	t.Cleanup(client.Close)
+	stamped := time.Now()
+	registry, err := store.Open(client.Conn, store.WithReplicas(1), store.WithClock(func() time.Time { return stamped }))
+	if err != nil {
+		t.Fatalf("open the interest registry: %v", err)
+	}
+	sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1))
+	if err != nil {
+		t.Fatalf("open the session registry: %v", err)
+	}
 	// Each wait below is bounded on its own at listenerWait, so a slow one leaves the next no less.
 	ready := func(what string, cache interface{ WaitForCacheReady(context.Context) error }) {
 		t.Helper()

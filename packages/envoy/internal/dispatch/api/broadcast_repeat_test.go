@@ -203,7 +203,9 @@ func TestBroadcastRepeatResumesEveryOwedRecipientAndDeliversEachOnce(t *testing.
 	const body = "Status before the deploy?"
 	requested := []string{"planner", "tester", "reviewer", "archivist"}
 	listener, sends := newBroadcastListener(t, broadcastSessionsJSON(t, requested))
-	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.URL})
+	// Each call to the listener gets concurrentWait, the wait below for the recipients to settle,
+	// in place of the client's 5 s: a send cut short settles its attempt failed rather than sent.
+	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.URL, envoyTimeout: concurrentWait})
 	direct := directServer(deps)
 	actor := model.Actor{Kind: "user", ID: "alice"}
 	ctx := store.WithTransactionTracking(context.Background())

@@ -284,7 +284,12 @@ func TestMentionedCommentRejectsInvalidMentionInput(t *testing.T) {
 }
 
 func TestMentionedCommentPinsRoleHolderBeforeSending(t *testing.T) {
-	t.Parallel()
+	// Serial: a product timer is under its steps. What this case reads is the session the
+	// creation's own lookup pinned, and the creation keeps a lookup only when the listener
+	// answers it inside mentionLookupTimeout (250 ms, comment_delivery.go), a constant no test
+	// can raise. This listener is one more goroutine of this process, so a parallel neighbour's
+	// load is measured with each lookup, and a load that outlasts aResolvedMentionCreation's
+	// tries fails the case; it runs with the machine to itself.
 	var mu sync.Mutex
 	roleHolder := "s1"
 	// relookups counts the lookups that found the role already moved to s2: every lookup after
@@ -652,7 +657,12 @@ func TestCommentMentionReadProjectionIncludesReplyChain(t *testing.T) {
 }
 
 func TestMentionedCommentDoesNotReresolveMissingRoleHolder(t *testing.T) {
-	t.Parallel()
+	// Serial: a product timer is under its steps. What this case reads is the listener's refusal
+	// the creation's own lookup committed on attempt 1, and the creation keeps a lookup only when
+	// the listener answers it inside mentionLookupTimeout (250 ms, comment_delivery.go), a
+	// constant no test can raise. This listener is one more goroutine of this process, so a
+	// parallel neighbour's load is measured with each lookup, and a load that outlasts
+	// aResolvedMentionCreation's tries fails the case; it runs with the machine to itself.
 	var mu sync.Mutex
 	roleLookups := 0
 	sends := 0

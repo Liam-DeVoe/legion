@@ -441,8 +441,14 @@ func TestAnAuthorANoVersionSettlementDidNotListSurvivesARestart(t *testing.T) {
 
 // A room whose settlement wrote no version is released once it idles out, like any other: the
 // state holds nothing the durable record does not (LEGION-513).
+//
+// Serial: newRoomReleaseService's rooms idle out a second after their last Server.Apply returns
+// (RoomIdleTimeout), and each of arrangeNoVersionSettlement's edits (editAsConnectedPeer) warms
+// the room through an Apply and then applies the browser's update to that room outside any. A
+// sweep inside that span, a wall-clock second a parallel neighbour's load can spend, fails the
+// edit on a room no longer resident, or drops the typed "x" so that the delete after it removes a
+// paragraph and the settlement writes a version.
 func TestARoomWhoseSettlementWroteNoVersionIsReleasedWhenIdle(t *testing.T) {
-	t.Parallel()
 	service, database := newRoomReleaseService(t)
 	artifactID := createDocument(t, database, "# First")
 	arrangeNoVersionSettlement(t, service, artifactID, model.Actor{Kind: "user", ID: "alice"})
@@ -1161,6 +1167,10 @@ func TestTwoVersionsBeforeAnAppendAsksForTheLockListItsAuthorOnce(t *testing.T) 
 		ServerURL:   "https://dispatch.example",
 		Settle:      time.Hour,
 	})
+	// bob's edit (editAsConnectedPeer) warms the room and then applies his update to it outside
+	// any Server.Apply, so the room stays resident for the whole run rather than production's
+	// idle minute (testRoomIdleTimeout).
+	service.srv.RoomIdleTimeout = testRoomIdleTimeout
 	cleanupAndRelease(t, func() {
 		if persistence.released.CompareAndSwap(false, true) {
 			close(release)

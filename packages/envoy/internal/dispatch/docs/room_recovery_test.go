@@ -351,7 +351,7 @@ func TestAFailedRoomsReplacementSettlesWithoutAnotherEdit(t *testing.T) {
 		t.Fatalf("load the replacement room: %v", err)
 	}
 
-	deadline := time.Now().Add(recoveryBound)
+	deadline := time.Now().Add(roomWait(t))
 	for indexedAsks(t, service, artifactID) == 0 {
 		if time.Now().After(deadline) {
 			t.Fatal("the failed room's replacement never settled: its ask block is unindexed")
@@ -674,7 +674,7 @@ func TestAWriterWaitingForTheSlotFinishesWhenTheRoomFails(t *testing.T) {
 // with the waiting operation's result if it returns first.
 func awaitOwnerRowTaken(t *testing.T, ctx context.Context, database *store.Store, returned <-chan error) {
 	t.Helper()
-	if !testwait.Holds(recoveryBound, time.Millisecond, func() bool {
+	if !testwait.Holds(roomWait(t), time.Millisecond, func() bool {
 		select {
 		case err := <-returned:
 			t.Fatalf("the operation returned (%v) before it took the owner row", err)

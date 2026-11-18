@@ -215,6 +215,34 @@ func TestCensusReadsItsStringLiteralsWithStandardConformingStrings(t *testing.T)
 	}
 }
 
+// A census with no options runs each statement under pgmigrate.CensusStatementTimeout, a minute,
+// the bound production's runner gives it, since every test that meets a slow statement sets its
+// own. The census reads the setting it runs under and answers 1 unless it is that minute, so a
+// census given another bound is refused, which the second row shows.
+func TestACensusWithNoOptionsRunsItsStatementsUnderTheCensusStatementTimeout(t *testing.T) {
+	t.Parallel()
+	check := withCheck(`select case when current_setting('statement_timeout')::interval = interval '1 minute' then 0 else 1 end`)
+	for name, tc := range map[string]struct {
+		options  pgmigrate.CensusOptions
+		refusals int
+	}{
+		"no options":         {pgmigrate.CensusOptions{}, 0},
+		"a bound of its own": {pgmigrate.CensusOptions{StatementTimeout: time.Second}, 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			_, url := migratedToOne(t)
+			report, err := census(context.Background(), url, check, tc.options)
+			if err != nil {
+				t.Fatalf("census: %v", err)
+			}
+			if got := refusals(report); len(got) != tc.refusals {
+				t.Errorf("refusals = %v, want %d: the census ran under another statement timeout than %s", got, tc.refusals, pgmigrate.CensusStatementTimeout)
+			}
+		})
+	}
+}
+
 // The census also runs with backslash_quote safe_encoding and client_encoding UTF8 whatever the
 // connection sets, the other two settings under which Postgres reads a text as pgmigrate.Load
 // reads it. With backslash_quote off, Postgres refuses the \' inside the census's E'…' literal

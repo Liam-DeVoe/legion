@@ -3314,7 +3314,7 @@ jobs:
               - 'packages/envoy/migrationid/*'
               # cmd/listener/api_test.go:178,428,473, which the soak's run compiles too.
               - 'packages/contracts/fixtures/dispatch-targeted-delivery.json'
-              # cmd/listener/api_test.go:4712, which the soak's run compiles too.
+              # cmd/listener/api_test.go:4715, which the soak's run compiles too.
               - 'packages/contracts/fixtures/envoy-session-no-interests.json'
               # The soak step takes the serverchange tag's test list from this script at run time.
               - '.github/scripts/go-tagged-tests.sh'
@@ -3590,7 +3590,7 @@ jobs:
               - '.github/workflows/ci-job-listener-server-change.yaml'
               # The fixture cmd/listener/api_test.go:178,428,473 reads.
               - 'packages/contracts/fixtures/dispatch-targeted-delivery.json'
-              # The fixture cmd/listener/api_test.go:4712 reads.
+              # The fixture cmd/listener/api_test.go:4715 reads.
               - 'packages/contracts/fixtures/envoy-session-no-interests.json'
               # The two documents outside this module that
               # internal/dispatch/store/counts_in_documents_test.go reads, this being the job

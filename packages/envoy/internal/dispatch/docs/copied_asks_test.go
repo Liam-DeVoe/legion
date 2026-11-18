@@ -1313,9 +1313,12 @@ func TestACopyAndItsSourcesAnswerTakingTheCopyLockInEitherOrderBothFinish(t *tes
 		t.Run(order, func(t *testing.T) {
 			service, _ := newTestService(t)
 			service.settle = time.Hour
-			// Each wait has roomWait of its own: the answer's context spans two - the other side
-			// queueing on the copy lock and the answer finishing - so it gets twice that, and every
-			// other wait (the reconcile, each finish) is bounded by itself; ctx ends with the test.
+			// Each wait has roomWait of its own, and ctx ends with the test. With the answer first,
+			// the answer runs on this goroutine across two waits - the settlement queueing on the
+			// copy lock and the answer finishing - so its context gets twice roomWait. With the
+			// settlement first, the answer runs on a goroutine of its own under ctx, and its three
+			// waits - its queueing on the copy lock, the settlement's finish and its own finish -
+			// are each bounded by themselves.
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			shared := ":::ask{#shared urgency=\"med\" multiple=\"false\"}\nWhich region?\n:::\n"
@@ -1366,10 +1369,8 @@ func TestACopyAndItsSourcesAnswerTakingTheCopyLockInEitherOrderBothFinish(t *tes
 					t.Fatal("the copy's settlement never reconciled")
 				}
 				answered := make(chan error, 1)
-				answering, cancelAnswer := context.WithTimeout(ctx, 2*roomWait(t))
-				defer cancelAnswer()
-				go func() { answered <- answerSource(answering, service, original, source, nil) }()
-				waitForLockWait(t, answering, service.store, copyLockWait, answered)
+				go func() { answered <- answerSource(ctx, service, original, source, nil) }()
+				waitForLockWait(t, ctx, service.store, copyLockWait, answered)
 				close(proceed)
 				awaitDone(t, "the copy's settlement", settled)
 				service.afterSettleReconcile = nil

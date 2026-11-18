@@ -663,7 +663,10 @@ func TestPgPeopleStoreConfirmKeepsTheRowOfAnotherGoogleAccount(t *testing.T) {
 	if err := people.SignInSubject(ctx, email, "subject-2", "refresh-2"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := database.Pool.Exec(ctx, `update people set confirmed_at = now() - interval '90 minutes' where email = $1`, email); err != nil {
+	// The stamp is read back as written, so the stale confirmation below is checked against the
+	// very value it must leave in place, not against an age that grows with the database's clock.
+	var stamped time.Time
+	if err := database.Pool.QueryRow(ctx, `update people set confirmed_at = now() - interval '90 minutes' where email = $1 returning confirmed_at`, email).Scan(&stamped); err != nil {
 		t.Fatal(err)
 	}
 	membership := func() auth.PersonMembership {
@@ -677,8 +680,12 @@ func TestPgPeopleStoreConfirmKeepsTheRowOfAnotherGoogleAccount(t *testing.T) {
 	if err := people.ConfirmSubject(ctx, email, "subject-1", "refresh-stale"); err != nil {
 		t.Fatalf("a stale confirmation: %v", err)
 	}
-	if got := membership(); got.RefreshToken != "refresh-2" || got.Subject != "subject-2" || got.ConfirmedAge < 90*time.Minute {
-		t.Fatalf("after subject-1's stale confirmation: %#v, want subject-2's refresh-2 confirmed ninety minutes ago", got)
+	var staleConfirmedAt time.Time
+	if err := database.Pool.QueryRow(ctx, `select confirmed_at from people where email = $1`, email).Scan(&staleConfirmedAt); err != nil {
+		t.Fatal(err)
+	}
+	if got := membership(); got.RefreshToken != "refresh-2" || got.Subject != "subject-2" || !staleConfirmedAt.Equal(stamped) {
+		t.Fatalf("after subject-1's stale confirmation: %#v confirmed at %s, want subject-2's refresh-2 confirmed at %s, the stamp written before it", got, staleConfirmedAt, stamped)
 	}
 	// The database dates the confirmation by its now() as it writes it, so the write is read as
 	// the stamp it left: no earlier than the database's clock read before it.

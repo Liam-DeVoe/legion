@@ -1452,10 +1452,14 @@ func TestRoleGetHandlerReturnsLiveHolder(t *testing.T) {
 
 // A restored role claim routes while its holder is live, survives the holder's absence for one
 // session TTL after the registry opened, and is released after that. Deleting the holder's session
-// ends its liveness and the registry's clock ends the grace window, so no step waits on a real TTL
+// ends its liveness and the registries' clock, which only the test moves, keeps the holder live up
+// to that delete and ends the grace window, so no step waits on a real TTL or a real live window
 // and none can lose a race with one.
 func TestRoleClaimRestoresWhileHolderIsLiveAndDropsAfterTTL(t *testing.T) {
-	t.Parallel()
+	// Serial: a product timer is under its steps. Each get() is GET /v1/roles/<role>, which
+	// resolves the holder inside the route's own sendRequestBudget (3.5 s, api.go), a constant no
+	// test can raise: a read that outlasts it is answered 503, which fails any of the three
+	// lookups, and a parallel neighbour's load can stretch the reads past it.
 	client := setupPublishTestClient(t)
 	const (
 		sessionID = "ses_role_restart"
@@ -1466,7 +1470,13 @@ func TestRoleClaimRestoresWhileHolderIsLiveAndDropsAfterTTL(t *testing.T) {
 		// window on its own clock (below), not this age.
 		sessionTTL = 24 * time.Hour
 	)
-	firstRegistry, err := store.Open(client.Conn, store.WithReplicas(1))
+	// Every registry here stamps and judges on this clock, which only the test moves: the
+	// holder's record reads live at the first lookup however long the steps before it take, and
+	// the claim is as old as the clock says when the grace ends.
+	var elapsed atomic.Int64
+	opened := time.Now()
+	clock := func() time.Time { return opened.Add(time.Duration(elapsed.Load())) }
+	firstRegistry, err := store.Open(client.Conn, store.WithReplicas(1), store.WithClock(clock))
 	if err != nil {
 		t.Fatalf("open first role registry: %v", err)
 	}
@@ -1474,6 +1484,7 @@ func TestRoleClaimRestoresWhileHolderIsLiveAndDropsAfterTTL(t *testing.T) {
 		client.Conn,
 		session.WithSessionReplicas(1),
 		session.WithSessionTTL(sessionTTL),
+		session.WithSessionClock(clock),
 	)
 	if err != nil {
 		t.Fatalf("open first session registry: %v", err)
@@ -1503,14 +1514,11 @@ func TestRoleClaimRestoresWhileHolderIsLiveAndDropsAfterTTL(t *testing.T) {
 		t.Fatalf("persisted claim = %+v", persisted)
 	}
 
-	var elapsed atomic.Int64
-	opened := time.Now()
-	clock := func() time.Time { return opened.Add(time.Duration(elapsed.Load())) }
 	restoredRegistry, err := store.Open(client.Conn, store.WithReplicas(1), store.WithClock(clock))
 	if err != nil {
 		t.Fatalf("restore role registry: %v", err)
 	}
-	restoredSessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1))
+	restoredSessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1), session.WithSessionClock(clock))
 	if err != nil {
 		t.Fatalf("restore session registry: %v", err)
 	}
