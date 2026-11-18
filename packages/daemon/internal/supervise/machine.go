@@ -720,7 +720,9 @@ func (c Claim) RuleHolds() bool {
 // would lift the hold (a resume), take it over or change nothing (a suspend), or end or restart
 // the claim under it (a stop, a retry, a fresh session), so it is refused with nothing of the
 // claim changed. It is nil for every other asker: the operator, whom nothing outranks, and the
-// daemon and a release, whose request suspendRequest hands a held suspension's own source.
+// daemon and a release, whose request suspendRequest hands a held suspension's own source. A
+// holder that outranks the asker and is neither of those two is no refusal this names: the error
+// names that holder rather than calling it the controller's or the operator's.
 func (c Claim) HeldAgainst(by SuspendSource) error {
 	if by != SuspendedByController && by != SuspendedByArchitect {
 		return nil
@@ -730,8 +732,10 @@ func (c Claim) HeldAgainst(by SuspendSource) error {
 		return nil
 	case holder == SuspendedByOperator:
 		return ErrOperatorHolds
-	default:
+	case holder == SuspendedByController:
 		return ErrControllerHolds
+	default:
+		return fmt.Errorf("the claim is held by %q, which outranks %s and is no holder whose refusal this daemon names", holder, by)
 	}
 }
 
@@ -794,15 +798,19 @@ func (c Claim) Holder() SuspendSource {
 // RuleHoldError says why a start or outbox delivery waits: the suspension that holds, which only
 // a resume ends — the operator's for the operator's suspension, the controller's or the
 // operator's for the controller's, and an architect's, the controller's or the operator's for an
-// architect's.
+// architect's. A holder none of those three is no wait this names: the error names that holder
+// rather than the resume of some other one.
 func (c Claim) RuleHoldError() error {
-	switch c.Holder() {
+	switch holder := c.Holder(); holder {
 	case SuspendedByArchitect:
 		return fmt.Errorf("the claim is suspended by %s; it waits for an architect's, the controller's or the operator's resume: %w", SuspendedByArchitect, ErrHeldByArchitect)
 	case SuspendedByController:
 		return fmt.Errorf("the claim is suspended by %s; it waits for the controller's or the operator's resume: %w", SuspendedByController, ErrHeldByController)
+	case SuspendedByOperator:
+		return fmt.Errorf("the claim is suspended by %s; it waits for the operator's resume: %w", SuspendedByOperator, ErrHeldByOperator)
+	default:
+		return fmt.Errorf("the claim is held by %q, which is no source whose suspension holds, so no resume it waits for can be named", holder)
 	}
-	return fmt.Errorf("the claim is suspended by %s; it waits for the operator's resume: %w", c.Holder(), ErrHeldByOperator)
 }
 
 // ClaimView is a claim as its machine last published it (Machine.View), with what only the decision
@@ -1206,7 +1214,7 @@ var ErrForeignUpdateRound = errors.New("the answer names an update round this cl
 var ErrLeftPodRound = errors.New("the answer comes from a process in another pod than the update round's own")
 
 // ErrRetryNotTheController is the operator's retry of the daemon's own controller claim, which the
-// controller keeper retries instead (operatorRetry). The refusal adds who retries the claim.
+// controller keeper retries instead (askedRetry). The refusal adds who retries the claim.
 var ErrRetryNotTheController = errors.New("the operator's retry does not relaunch the daemon's controller")
 
 // ErrHeldByOperator is the daemon's start or task meeting an operator's suspension, which no rule

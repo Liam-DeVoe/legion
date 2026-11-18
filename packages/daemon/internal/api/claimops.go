@@ -348,7 +348,7 @@ func (s *server) refuseClaimOperation(w http.ResponseWriter, target claimTarget,
 	case op.refusesATurn && errors.As(err, &refused) && refused.State == supervise.StateWorking:
 		refuseClaimInATurn(w, target.token, op)
 	default:
-		s.operationFailure(w, op.request, target.token, err)
+		s.operationFailure(w, target.by, op.request, target.token, err)
 	}
 }
 

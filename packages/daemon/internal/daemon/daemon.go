@@ -1348,10 +1348,11 @@ type supervision struct {
 	// enqueue writes outbox rows of an issue, all of them in one transaction, the workflow's own
 	// enqueue (workflowRuntime.enqueueOutbox); nil in a deployment with no workflow, which has no
 	// outbox to write to and no Dispatch issue to write on. It is the whole of the record the
-	// update-round sweep needs (reconcilePodUpdates): the controller notice it publishes and the
-	// message it writes on the issue are both outbox rows, and threading the workflow engine into
-	// supervision to post two rows would tie every claim decision to the workflow. Those two go in
-	// one call, since a stall told the controller but not the issue would be told again at every
+	// update-round sweep needs (reconcilePodUpdates): the late-round notices it publishes, to the
+	// controller or to the architect that owns a claim an architect's suspension holds, and the
+	// message it writes on the issue are all outbox rows, and threading the workflow engine into
+	// supervision to post those rows would tie every claim decision to the workflow. A round's rows
+	// go in one call, since a stall told one reader but not another would be told again at every
 	// tick (tellUpdateStalled). The workflow sets it where it attaches, before supervision
 	// restores or launches any claim, as it sets the supervisor's terminal callback there.
 	enqueue func(ctx context.Context, issue string, payloads ...record.OutboxPayload) error

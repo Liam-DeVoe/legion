@@ -76,7 +76,7 @@ import (
 // The kind list with the role-holders publication (20261116165926) stands above all of these but
 // one, and names every kind the merge-queue list names and its own. This change's kind list with
 // the merge holds change (20261117113130) stands above it: it is the last word of
-// outbox_kind_check, and it names the same kinds and merge_holds_changed. dispatch://INFRA-4109's
+// outbox_kind_check, and it names the same kinds and merge_holds_changed. The
 // cutover of the update ask's mark (20261117200337) is applied after both and touches no
 // outbox_kind_check: it clears a claim's ask mark where that claim's ask is still queued.
 var thisBranchsMigrations = []int{
@@ -98,7 +98,7 @@ var thisBranchsMigrations = []int{
 // and 20261113110610, dispatch://INFRA-3276's 20261113082415, dispatch://INFRA-3146's
 // 20261113090512, dispatch://INFRA-3274's 20261114031356, dispatch://INFRA-2614's
 // 20261113181500, 20261113182000, 20261114020537 and 20261114061900, the role-holders
-// publication's 20261116165926, dispatch://INFRA-4109's 20261117200337, and this change's
+// publication's 20261116165926, the update ask's mark cutover 20261117200337, and this change's
 // 20261115060739, 20261115083448, 20261115121838 and 20261117113130, which is why the loop below
 // holds the list rather than counting it, so that a version added above any of them is named here
 // rather than read as main's.

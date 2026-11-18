@@ -103,11 +103,15 @@ const (
 	// (pods.IdleClaim.HasProcess), so something the daemon started is still running there and a
 	// deletion would take it with the pod.
 	IdleHoldUnownedClaimProcess
-	// IdleHoldUnownedOperatorSuspended: a suspension that the operator, the controller or an
+	// IdleHoldUnownedSuspensionHolds: a suspension that the operator, the controller or an
 	// architect holds over a claim of the pod (pods.IdleClaim.SuspensionHolds, read from
 	// supervise's SuspendSource.Holds), which no daemon rule undoes, and whose holder's resume
-	// brings that role back into this pod.
-	IdleHoldUnownedOperatorSuspended
+	// brings that role back into this pod. Its recorded name stays `unowned_operator_suspended`,
+	// from when the operator's was the one suspension that held: a release record holds the
+	// hold's name and nothing else (idleHoldNames), the records already written carry this one,
+	// and a deployment reads the hold by it (docs/kubernetes.md), so a new name would read one
+	// hold as two across the records written before and after it.
+	IdleHoldUnownedSuspensionHolds
 	// IdleHoldUnownedDelivery: a task, notice, message or start waits for delivery to a role of
 	// the pod, and the delivery is what brings a role back into it.
 	IdleHoldUnownedDelivery
@@ -145,15 +149,15 @@ var idleHoldNames = map[IdleHold]string{
 	IdleHoldUnauthorized:     "unauthorized",
 	IdleHoldNoLiveClaim:      "no_live_claim",
 
-	IdleHoldUnownedClaimLive:         "unowned_claim_live",
-	IdleHoldUnownedNoClaim:           "unowned_no_claim",
-	IdleHoldUnownedSandboxGone:       "unowned_sandbox_gone",
-	IdleHoldUnownedClaimProcess:      "unowned_claim_process",
-	IdleHoldUnownedOperatorSuspended: "unowned_operator_suspended",
-	IdleHoldUnownedDelivery:          "unowned_delivery_waiting",
-	IdleHoldUnownedTreeNotLive:       "unowned_tree_not_live",
-	IdleHoldUnownedReleasing:         "unowned_releasing",
-	IdleHoldUnownedNotIdle:           "unowned_not_idle",
+	IdleHoldUnownedClaimLive:       "unowned_claim_live",
+	IdleHoldUnownedNoClaim:         "unowned_no_claim",
+	IdleHoldUnownedSandboxGone:     "unowned_sandbox_gone",
+	IdleHoldUnownedClaimProcess:    "unowned_claim_process",
+	IdleHoldUnownedSuspensionHolds: "unowned_operator_suspended",
+	IdleHoldUnownedDelivery:        "unowned_delivery_waiting",
+	IdleHoldUnownedTreeNotLive:     "unowned_tree_not_live",
+	IdleHoldUnownedReleasing:       "unowned_releasing",
+	IdleHoldUnownedNotIdle:         "unowned_not_idle",
 }
 
 // String is the hold's recorded name, which a reader of the daemon's release records reads.
@@ -358,7 +362,7 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 //     who suspended the role may want the workspace as its roles left it. Such a pod stands for
 //     as long as its holder leaves it standing: the holder ends it by resuming the claim, which
 //     starts the role in the pod that is still there, or by stopping it, which retires the claim
-//     and leaves the issue to this rule (IdleHoldUnownedOperatorSuspended);
+//     and leaves the issue to this rule (IdleHoldUnownedSuspensionHolds);
 //
 //   - nothing waits for delivery to a role of the issue. A start queued for a stopped claim is
 //     the one delivery such an issue carries, and it is what brings a role back into this pod; a
@@ -401,7 +405,7 @@ func UnownedPodRelease(view pods.IdleView, now time.Time, idle time.Duration, sa
 	}
 	for _, c := range view.Claims {
 		if c.SuspensionHolds() {
-			return IdleDecision{Hold: IdleHoldUnownedOperatorSuspended}
+			return IdleDecision{Hold: IdleHoldUnownedSuspensionHolds}
 		}
 	}
 	if view.Waiting {

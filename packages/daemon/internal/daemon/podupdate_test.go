@@ -220,8 +220,11 @@ func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
 		// lane is read from, beside the role's backend (noPluginInstall).
 		cfg: config.Config{Project: "LEGION", Runtime: config.Runtime{Name: "kubernetes"},
 			PodUpdateGrace: podUpdateGrace, WorkerSilence: podUpdateSilence},
-		log:     log,
-		plan:    plan{clock: clock, project: podUpdateProject, pluginRelaunchable: true, orphanSweep: orphanSweepInterval},
+		log: log,
+		// The owner walk is the workflow's own, over the rig's store, as boot wires it
+		// (plan.owner): it is what says whether an architect's hold over a late round is told to
+		// an architect (tellUpdateStalled).
+		plan:    plan{clock: clock, project: podUpdateProject, pluginRelaunchable: true, orphanSweep: orphanSweepInterval, owner: w.owningArchitect},
 		runtime: rt, supervisor: sup,
 		enqueue:         w.enqueueOutbox,
 		applySweepFacts: w.applySweepFacts,
@@ -950,10 +953,11 @@ func TestPodUpdateToldOnceAtTheBoundOfARoundAnOperatorsSuspensionHolds(t *testin
 
 // A round the controller's suspension of one claim and an architect's suspension of another hold
 // past the bound is told once, at the bound, and the notice names each holder and who resumes
-// each claim: the controller reads it, and the hold of its own and the architect's are resumes
-// it makes itself, where a notice that called both the operator's would send it to the operator
-// with a finding ask. Nothing in it says "operator", since no operator holds either claim. The
-// walk's line names each holder the same way.
+// each claim. The issue has no architect claim, so no architect can be told of the architect's
+// hold, and the controller reads both (tellUpdateStalled): the hold of its own and the
+// architect's are resumes it makes itself, where a notice that called both the operator's would
+// send it to the operator with a finding ask. Nothing in it says "operator", since no operator
+// holds either claim. The walk's line names each holder the same way.
 //
 // The negative control is the notice's old text, "An operator suspended … until the operator
 // resumes each of them" for every hold, which this test refuses.

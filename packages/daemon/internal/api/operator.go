@@ -51,7 +51,7 @@ type DeliverRequest struct {
 // --fresh-session`, which starts the claim in a new session instead. It is the one effect the
 // controller's fresh_session runs as well (freshSession), and it reaches every claim of the
 // project that is not in a turn and whose launch is not in flight, where the plain retry reaches
-// only a failed or retired claim (supervise's onOperatorRetry row).
+// only a failed or retired claim (supervise's onAskedRetry row).
 type RetryRequest struct {
 	FreshSession bool `json:"freshSession,omitempty"`
 }
@@ -418,7 +418,7 @@ func (s *server) spawn(w http.ResponseWriter, r *http.Request) {
 	}
 	token, err := claim.NewToken(s.project, req.Issue, req.Role)
 	if err != nil {
-		s.operationFailure(w, "spawn", token, err)
+		s.operationFailure(w, supervise.SuspendedByOperator, "spawn", token, err)
 		return
 	}
 	ctx, decided := s.decision(r, token)
@@ -431,7 +431,7 @@ func (s *server) spawn(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusConflict, errorBody(fmt.Sprintf("operator tree %s is waiting for durable cleanup: %v", req.Tree, err)))
 			return
 		} else if err != nil {
-			s.operationFailure(w, "spawn", token, err)
+			s.operationFailure(w, supervise.SuspendedByOperator, "spawn", token, err)
 			return
 		}
 	}
@@ -439,19 +439,19 @@ func (s *server) spawn(w http.ResponseWriter, r *http.Request) {
 		Token: token, Project: s.project, Tree: req.Tree, Issue: req.Issue, Role: req.Role, State: supervise.StateQueued,
 	}, req.Prompt)
 	if err != nil {
-		s.operationFailure(w, "spawn", token, err)
+		s.operationFailure(w, supervise.SuspendedByOperator, "spawn", token, err)
 		return
 	}
 	// The operator is waiting on this answer, so the wake pacing never holds this launch
 	// (supervise's reserveWake): one person's spawn is not the wave the pacing exists for, and a
 	// route that answered with a claim parked launching would read as a daemon that did nothing.
 	if err := m.Handle(ctx, supervise.RequestSpawn{Claim: token, Exempt: true}); err != nil {
-		s.operationFailure(w, "spawn", token, err)
+		s.operationFailure(w, supervise.SuspendedByOperator, "spawn", token, err)
 		return
 	}
 	if req.Task != "" {
 		if err := m.Handle(ctx, supervise.RequestDeliver{Claim: token, Task: req.Task}); err != nil {
-			s.operationFailure(w, "deliver", token, err)
+			s.operationFailure(w, supervise.SuspendedByOperator, "deliver", token, err)
 			return
 		}
 	}
@@ -498,7 +498,7 @@ func (s *server) claimRequest(request string, event func(http.ResponseWriter, *h
 		if !ok {
 			return
 		}
-		held, ok := s.claimEvent(w, r, m, token, request, ev)
+		held, ok := s.claimEvent(w, r, m, token, supervise.SuspendedByOperator, request, ev)
 		if !ok {
 			return
 		}
@@ -511,12 +511,12 @@ func (s *server) claimRequest(request string, event func(http.ResponseWriter, *h
 	}
 }
 
-// claimEvent posts one request to a claim's machine (postClaimEvent), as every operator request
-// on a claim does (claimRequest): it answers the caller itself when the daemon is stopping or
-// the machine refuses, and reports whether the machine held the request for the agent's turn
-// (supervise.ErrSuspendHeld), which is no refusal.
+// claimEvent posts one request of by's to a claim's machine (postClaimEvent), as every operator
+// request on a claim does (claimRequest) and every retry (machineRetry): it answers the caller
+// itself when the daemon is stopping or the machine refuses, and reports whether the machine held
+// the request for the agent's turn (supervise.ErrSuspendHeld), which is no refusal.
 func (s *server) claimEvent(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token,
-	request string, ev supervise.Event) (held, ok bool) {
+	by supervise.SuspendSource, request string, ev supervise.Event) (held, ok bool) {
 	posted, err := s.postClaimEvent(w, r, m, token, request, ev)
 	switch {
 	case !posted:
@@ -524,7 +524,7 @@ func (s *server) claimEvent(w http.ResponseWriter, r *http.Request, m *supervise
 	case errors.Is(err, supervise.ErrSuspendHeld):
 		return true, true
 	case err != nil:
-		s.operationFailure(w, request, token, err)
+		s.operationFailure(w, by, request, token, err)
 		return false, false
 	}
 	return false, true
@@ -618,7 +618,7 @@ func (s *server) forgetSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := m.Handle(ctx, supervise.RequestForgetSession{Claim: token, Session: req.Session, By: supervise.SuspendedByOperator}); err != nil {
-		s.operationFailure(w, "forget-session", token, err)
+		s.operationFailure(w, supervise.SuspendedByOperator, "forget-session", token, err)
 		return
 	}
 	s.log.Info("api: operator forgot session", "claim", token, "session", c.Session, "sessionFile", c.SessionFile)
@@ -769,14 +769,14 @@ func (s *server) restartWorkedPhase(r *http.Request, token claim.Token, c superv
 // machine: fresh budgets, and the session the claim records relaunched, or a new one once
 // supervise's Machine.forgetSession has dropped it. The machine refuses it for a claim in any
 // other state, naming that state, and for the daemon's controller, naming who retries it
-// (supervise's operatorRetry). A caller that asked for a new session has forgotten the recorded one
+// (supervise's askedRetry). A caller that asked for a new session has forgotten the recorded one
 // before it gets here (freshSession), so the relaunch spawns rather than resumes. A relaunch the
 // machine holds for the agent's turn answers 202, as every operator request on a claim answers one
 // (claimRequest). The retry names by, its caller, and the wake pacing lets the operator's alone
 // through unpaced (supervise.RequestAskedRetry.By).
 func (s *server) machineRetry(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token, fresh bool,
 	by supervise.SuspendSource) (int, bool) {
-	held, ok := s.claimEvent(w, r, m, token, "retry", supervise.RequestAskedRetry{Claim: token, FreshSession: fresh, By: by})
+	held, ok := s.claimEvent(w, r, m, token, by, "retry", supervise.RequestAskedRetry{Claim: token, FreshSession: fresh, By: by})
 	if !ok {
 		return 0, false
 	}
@@ -862,7 +862,7 @@ func (s *server) closeTree(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := root.Handle(ctx, supervise.RequestOperatorClose{Claim: token}); err != nil {
-		s.operationFailure(w, "close", token, err)
+		s.operationFailure(w, supervise.SuspendedByOperator, "close", token, err)
 		return
 	}
 	lifecycle, cleanup, err := s.trees.ReserveOperatorTreeCleanup(ctx, s.project, c.Tree)
@@ -916,7 +916,9 @@ func (s *server) closeTree(w http.ResponseWriter, r *http.Request) {
 // operatorDone logs the one Info line every operator request on a claim that succeeded writes: its
 // route, the claim and the caller's address. The operator's bearer names nobody, so the address is
 // what the line can say of the caller; with it, a day's operator requests are counted from the log
-// alone. A request that fails logs its failure instead (operationFailure).
+// alone. A request that fails logs its failure instead (operationFailure), and that line names who
+// asked in its `by` field, so the operator's failed requests are counted there, apart from the
+// controller's and the architects', whose requests the claim door fails through the same line.
 func (s *server) operatorDone(r *http.Request, token claim.Token) {
 	s.log.Info("api: operator request", "route", r.Pattern, "claim", token, "caller", r.RemoteAddr)
 }
@@ -977,15 +979,16 @@ func (s *server) list(w http.ResponseWriter, r *http.Request) {
 }
 
 // operationFailure answers a claim operation its machine did not take, the operator's, the
-// controller's or an architect's: 409 with the machine's reason when the claim's state does not
-// allow it, and otherwise a 500 that says what failed — the caller is the one who has to act on a
-// launch the runtime refused.
-func (s *server) operationFailure(w http.ResponseWriter, request string, token claim.Token, err error) {
+// controller's or an architect's (by): 409 with the machine's reason when the claim's state does
+// not allow it, and otherwise a 500 that says what failed — the caller is the one who has to act
+// on a launch the runtime refused. The line it logs names the caller in its `by` field, so the
+// operator's failures are told from the controller's and an architect's (operatorDone).
+func (s *server) operationFailure(w http.ResponseWriter, by supervise.SuspendSource, request string, token claim.Token, err error) {
 	var refused *supervise.RefusedError
 	if errors.As(err, &refused) {
 		writeJSON(w, http.StatusConflict, errorBody(refused.Error()))
 		return
 	}
-	s.logFailure("api: an operator request failed", "request", request, "claim", token, "error", err)
+	s.logFailure("api: a claim request failed", "by", string(by), "request", request, "claim", token, "error", err)
 	writeJSON(w, http.StatusInternalServerError, errorBody(fmt.Sprintf("%s %s: %v", request, token, err)))
 }

@@ -103,7 +103,7 @@ func (c IdleClaim) Live() bool {
 // project's controller's or an architect's, the suspensions no daemon rule undoes, which only a
 // resume ends (supervise.SuspendSource.Holds). The hold it decides keeps the name it had before
 // the controller's and the architect's suspensions, which hold the pod for the same reason
-// (workflow.IdleHoldUnownedOperatorSuspended), since release records carry that hold's key.
+// (workflow.IdleHoldUnownedSuspensionHolds), since release records carry that hold's key.
 //
 // The expression is written here rather than called on supervise.Claim because there is no such
 // method on supervise.Claim to call: Claim.RuleHolds and Claim.RuleMayResume are where it lives

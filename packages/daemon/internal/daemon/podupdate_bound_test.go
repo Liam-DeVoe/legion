@@ -27,7 +27,7 @@ const (
 	// words the production check reads (R8).
 	podUpdateBoundLine = "supervise pod update replaced at the bound"
 	// podUpdateRefusedNotice is what the sweep logs when the store will not take a notice's row.
-	podUpdateRefusedNotice = "supervise: tell the operator's side that an update round is held past its bound; telling again at the next sweep"
+	podUpdateRefusedNotice = "supervise: tell the controller or an architect that an update round is held past its bound; telling again at the next sweep"
 )
 
 // podUpdateBound is the bound of a round the rig opens at its start: the moment the round ends

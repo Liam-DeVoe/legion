@@ -2266,9 +2266,8 @@ package api
 // check named at 2026-11-17T07:04:26Z as the lowest number above 146 that no open pull request
 // declared: 147 (#4017), 148 (#3519), 149 (#2230), 150 (#4049 and this change's own #4065), 151
 // (#4106), 152 (#3730), 153 (#4115), 154 (#3659) and 155 (#4273). It keeps 156 at the forward
-// merge of 2026-11-17 that brought main in at d9299f7a, which carries #4106's INFRA-3729 at 151,
-// and at the forward merge of 2026-11-18 that brought main in at 0b2769e5, which carries #3730's
-// INFRA-2543 at 152, the entry right above this one and the number the base now carries: 156 is
-// still above it. Read
-// the base's own number and every open head again at the next merge rather than from this entry.)
+// merge of 2026-11-17 that brought main in at d9299f7a, which carries #4106 at 151, and at the
+// forward merge of 2026-11-18 that brought main in at 0b2769e5, which carries #3730 at 152, the
+// entry right above this one and the number the base now carries: 156 is still above it. Read the
+// base's own number and every open head again at the next merge rather than from this entry.)
 const DaemonAPIVersion = 156

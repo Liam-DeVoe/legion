@@ -48,6 +48,12 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 			Round: "pod:9d3f0c7a", Pod: "9d3f0c7a", Reasons: "image ghcr.io/cybermonklabs/legion-worker:v1, now ghcr.io/cybermonklabs/legion-worker:v2",
 			Waiting: []UpdateWaiting{{Claim: "legion-LEGION-208-implementer", Role: claim.RoleImplementer, State: "failed"}},
 		}},
+		// An architect's hold over a round held past its bound is told to the architect that
+		// owns the held claim, in a notice row of the same kind as the controller's.
+		Notice{Kind: UpdateStalledNotice, Reason: "An architect suspended implementer (suspended). An architect that owns the issue, or the controller, can resume it.", Update: &UpdateStalled{
+			Round: "pod:9d3f0c7a", Pod: "9d3f0c7a", Reasons: "image ghcr.io/cybermonklabs/legion-worker:v1, now ghcr.io/cybermonklabs/legion-worker:v2",
+			Waiting: []UpdateWaiting{{Claim: "legion-LEGION-208-implementer", Role: claim.RoleImplementer, State: "suspended"}},
+		}},
 		ControllerNotice{Kind: ProviderErrorsNotice, Role: claim.RoleImplementer,
 			Reason: "6 turns in a row on claude-opus-4-8 ended in the provider's reasoning_extraction content filter"},
 		ControllerNotice{Kind: TreeStalledNotice, Reason: "LEGION-208 has stopped. The tree has been quiet for 7.0 hours."},
@@ -292,8 +298,9 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a decision on a slot-free wake", payload: ControllerNotice{Kind: SlotFreeNotice, Decision: DecisionAskAnswered}, reason: "only a parked-decision does"},
 		{name: "an actor on a tick", payload: ControllerNotice{Kind: TickNotice, Actor: "user:a"}, reason: "only a parked-decision does"},
 		{name: "a root on a held notice to the controller", payload: ControllerNotice{Kind: "held", Root: "LEGION-1"}, reason: "only a parked-decision does"},
-		{name: "an update-stalled notice for an architect", payload: Notice{Kind: UpdateStalledNotice}, reason: "unknown notice kind"},
-		{name: "an architect's notice carrying an update round", payload: Notice{Kind: "held", Update: &UpdateStalled{Round: "pod:9d3f0c7a"}}, reason: "only the controller's update-stalled notice does"},
+		{name: "an update-stalled notice for an architect carrying no update round", payload: Notice{Kind: UpdateStalledNotice}, reason: "carries an update round only when it is one"},
+		{name: "an update-stalled notice for an architect with no claims", payload: Notice{Kind: UpdateStalledNotice, Update: &UpdateStalled{Round: "pod:9d3f0c7a"}}, reason: "requires its round and the claims it waits on"},
+		{name: "an architect's notice carrying an update round", payload: Notice{Kind: "held", Update: &UpdateStalled{Round: "pod:9d3f0c7a"}}, reason: "carries an update round only when it is one"},
 		{name: "a failure record on a phase-finished notice", payload: Notice{Kind: "phase-finished", Failure: &NoticeFailure{Cause: "died"}}, reason: "only a held or a worker-died notice does"},
 		{name: "a failure record on a tick", payload: ControllerNotice{Kind: TickNotice, Failure: &NoticeFailure{Cause: "died"}}, reason: "only a held or a worker-died notice does"},
 		{name: "a failure record on a held notice to the controller naming no cause", payload: ControllerNotice{Kind: "held", Failure: &NoticeFailure{Detail: "the pod did not start"}}, reason: "names the cause it failed under"},
@@ -905,6 +912,10 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 		{Kind: "merge-holds-changed", Role: claim.RoleArchitect, Reason: MergeHoldsChangedReason("LEGION")},
 		{Kind: ProviderErrorsNotice, Role: claim.RoleImplementer,
 			Reason: "6 turns in a row on claude-opus-4-8 ended in the provider's reasoning_extraction content filter"},
+		{Kind: UpdateStalledNotice, Role: claim.RoleArchitect,
+			Reason: "An architect suspended architect (suspended). An architect that owns the issue, or the controller, can resume it.",
+			Update: &UpdateStalled{Round: "pod:9d3f0c7a", Pod: "9d3f0c7a", Reasons: "image legion-worker:v1, now legion-worker:v2",
+				Waiting: []UpdateWaiting{{Claim: "legion-LEGION-208-architect", Role: claim.RoleArchitect, State: "suspended"}}}},
 	}
 
 	byKind := make(map[NoticeKind]Notice, len(every))

@@ -74,12 +74,14 @@ const nonEmptyString = z.string().min(1);
  * provider errors. Two claims take it: one stored working whose process the read at the request
  * finds running, and one whose session is being compacted, which is not read at all. A claim
  * stored working that a suspension is held over takes that code too, in the words of the hold,
- * except that the controller's `fresh_session` of a claim the operator's suspension is held over
- * is refused `SUSPENDED_BY_OPERATOR` at the door first. No claim with no process behind it takes
+ * except where the door refuses that suspension first, held or landed, because it outranks the
+ * caller: the operator's for the controller's `fresh_session` (`SUSPENDED_BY_OPERATOR`), and the
+ * operator's or the controller's for an architect's `fresh_session` and `compact`
+ * (`SUSPENDED_BY_OPERATOR`, `SUSPENDED_BY_CONTROLLER`). No claim with no process behind it takes
  * it at either door, and nor does a claim whose process nobody read. Both give `CLAIM_UNSETTLED`
  * for a claim with no settled state to act on: one queued, one with a launch in flight, one a
- * suspension is held over in any state but working (the controller's `fresh_session` under the
- * operator's held suspension again excepted), and three claims stored working that take this
+ * suspension is held over in any state but working (a suspension the door refuses first again
+ * excepted), and three claims stored working that take this
  * code rather than the turn's — one left working under a relaunch the daemon is pacing, one
  * whose process the runtime would not answer for, and one that records no process to read. The
  * last two are left exactly as the request found them and told which read did not happen;

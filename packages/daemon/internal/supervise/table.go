@@ -502,7 +502,7 @@ type RequestRetry struct {
 
 // RequestAskedRetry is a caller relaunching a claim through the API: the retry RequestRetry
 // makes, fresh budgets and the session that retry relaunches, for an architect and for a phase
-// worker (operatorRetry). It is its own event, as the closes are, so the table answers each
+// worker (askedRetry). It is its own event, as the closes are, so the table answers each
 // caller's retry its own way. FreshSession is `legion claims retry --fresh-session`, as
 // RequestRetry takes it.
 //
@@ -713,7 +713,7 @@ const (
 	onIssueClose    eventKind = "request_issue_close"
 	onOperatorClose eventKind = "request_operator_close"
 	onRetry         eventKind = "request_retry"
-	onOperatorRetry eventKind = "request_operator_retry"
+	onAskedRetry    eventKind = "request_asked_retry"
 	onForgetSession eventKind = "request_forget_session"
 	onDeliver       eventKind = "request_deliver"
 	onExit          eventKind = "request_exit"
@@ -791,7 +791,7 @@ func kindOf(ev Event) eventKind {
 	case RequestRetry:
 		return onRetry
 	case RequestAskedRetry:
-		return onOperatorRetry
+		return onAskedRetry
 	case RequestForgetSession:
 		return onForgetSession
 	case RequestDeliver:
@@ -1155,12 +1155,12 @@ func fillTable(t *builder) {
 	// A retired claim is retried here as the workflow's own retry retries one: `legion claims stop`
 	// retires a claim, and while this row refused that state the only way to start a stopped worker
 	// again was an edit of the claims store with the daemon stopped (dispatch://INFRA-956 R3).
-	t.row(onOperatorRetry, "the operator's retry of an architect or a phase worker, failed or stopped: fresh budgets, and the same session relaunched unless the retry asked for a new one, the provider refused it out of the launch budget, or no store holds it", operatorRetry,
+	t.row(onAskedRetry, "the retry an operator, the controller or an architect asks of an architect or a phase worker, failed or stopped: fresh budgets, and the same session relaunched unless the retry asked for a new one, the provider refused it out of the launch budget, or no store holds it", askedRetry,
 		[]ClaimState{StateLaunching, StateFailed}, StateFailed, StateRetired)
-	t.ignore(onOperatorRetry, "a queued claim is spawned, not retried", StateQueued)
-	t.ignore(onOperatorRetry, "the previous launch's pane is still uncertain", StateLaunchUncertain)
-	t.ignore(onOperatorRetry, "the claim has not failed", live...)
-	t.ignore(onOperatorRetry, "a suspended claim is resumed, not retried", StateSuspended)
+	t.ignore(onAskedRetry, "a queued claim is spawned, not retried", StateQueued)
+	t.ignore(onAskedRetry, "the previous launch's pane is still uncertain", StateLaunchUncertain)
+	t.ignore(onAskedRetry, "the claim has not failed", live...)
+	t.ignore(onAskedRetry, "a suspended claim is resumed, not retried", StateSuspended)
 
 	t.row(onForgetSession, "drop the session so the next launch is fresh", forgetSession, nil,
 		StateQueued, StateSuspended, StateFailed, StateRetired)
@@ -2479,7 +2479,8 @@ func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 // retry is a failed or retired claim given another run: its budgets start over, and its session,
 // when it has one, is relaunched after the process the claim last ran is gone. A pending delivery
 // the claim kept goes once the agent is ready. Its event is the workflow's retry or the
-// operator's own (operatorRetry), and the pacing reads each its own way (exemptWake).
+// asked one, the operator's, the controller's or an architect's (askedRetry), and the pacing
+// reads each its own way (exemptWake).
 //
 // A retry that asks for a new session, and one of a claim whose provider refused the recorded
 // session out of its budget, forgets that session instead, so the launch spawns a fresh agent
@@ -2519,13 +2520,14 @@ func retry(m *Machine, ctx context.Context, ev Event) error {
 	})
 }
 
-// operatorRetry is the operator's retry of a claim that runs nothing: retry, for an architect —
-// its tree's root, which no phase start relaunches (admission starts it with its tree, and a
-// person's answer resumes it: workflow's StartArchitect and ResumeAwaitedRoot), or a child's own
-// architect, which a start of the workflow's can also bring back (workflow's StartFirstPhase and
-// reviveArchitect, for example) — and for a phase worker whose issue works no phase of its role,
-// which the route has already established before it reaches the machine (api's retryStart starts
-// the phase itself for every other one).
+// askedRetry is the retry an operator, the controller or an architect asks of a claim that runs
+// nothing (RequestAskedRetry): retry, for an architect — its tree's root, which no phase start
+// relaunches (admission starts it with its tree, and a person's answer resumes it: workflow's
+// StartArchitect and ResumeAwaitedRoot), or a child's own architect, which a start of the
+// workflow's can also bring back (workflow's StartFirstPhase and reviveArchitect, for example) —
+// and for a phase worker whose issue works no phase of its role, which the route has already
+// established before it reaches the machine (api's retryStart starts the phase itself for every
+// other one).
 // The daemon's controller has a retry of its own, its keeper, so it alone is refused. A claim's
 // role never changes, so the refusal cannot race the decision it guards. The retry names who asks
 // (RequestAskedRetry.By, askedBy), which is what the wake pacing reads (exemptWake).
@@ -2535,7 +2537,7 @@ func retry(m *Machine, ctx context.Context, ev Event) error {
 // launch budget: retry forgets the session in either case, so the launch spawns a fresh agent,
 // because resuming a session whose turns the provider refused would be refused again. A launch
 // whose session no session store holds any more starts a fresh agent too (startFresh).
-func operatorRetry(m *Machine, ctx context.Context, ev Event) error {
+func askedRetry(m *Machine, ctx context.Context, ev Event) error {
 	if err := askedBy(m, "retry", ev.(RequestAskedRetry).By); err != nil {
 		return err
 	}
@@ -2633,9 +2635,13 @@ func forgetSession(m *Machine, ctx context.Context, ev Event) error {
 			"%s records session %s; pass --session %s to start fresh", m.claim.Token, m.claim.Session, m.claim.Session,
 		)}
 	}
+	reason, err := forgottenBy(request.By)
+	if err != nil {
+		return &RefusedError{State: m.claim.State, Request: "forget-session", Err: err}
+	}
 	m.log.Info("supervise: forgetting the recorded session at the asker's request", "by", string(request.By),
 		"session", m.claim.Session, "sessionFile", m.claim.SessionFile, "state", string(m.claim.State))
-	m.forgetSession(forgottenBy(request.By))
+	m.forgetSession(reason)
 	return m.persist(ctx)
 }
 
@@ -2646,15 +2652,18 @@ func forgetSession(m *Machine, ctx context.Context, ev Event) error {
 // and an architect's come from their fresh session alone. The sentence reaches the first prompt
 // of the agent that replaces the session (abandonedTask), where a worker whose controller asked
 // for its fresh session must not read that an operator cleared it. askedBy has refused every
-// other source before this is read.
-func forgottenBy(by SuspendSource) string {
+// other source before this is read; a source it let through that has no sentence here is an
+// error naming that source, rather than a sentence naming some other asker.
+func forgottenBy(by SuspendSource) (string, error) {
 	switch by {
+	case SuspendedByOperator:
+		return "an operator cleared it with `legion claims forget-session` or `legion claims retry --fresh-session`, so this claim starts fresh", nil
 	case SuspendedByController:
-		return "the project's controller asked for a fresh session of this claim, so this claim starts fresh"
+		return "the project's controller asked for a fresh session of this claim, so this claim starts fresh", nil
 	case SuspendedByArchitect:
-		return "an architect asked for a fresh session of this claim, so this claim starts fresh"
+		return "an architect asked for a fresh session of this claim, so this claim starts fresh", nil
 	}
-	return "an operator cleared it with `legion claims forget-session` or `legion claims retry --fresh-session`, so this claim starts fresh"
+	return "", fmt.Errorf("the forget names source %q, and no sentence says why a forget of that source left the session", by)
 }
 
 // askedBy refuses a resume, a stop, a forget of the session or a caller's retry

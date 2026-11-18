@@ -100,12 +100,12 @@ operations (#4065: the controller's `legion` tool gains `stop`, `retry`, `suspen
 and `resume` (issue, role), which post `POST /legion/v1/claims/stop`, `/retry`, `/suspend` and
 `/resume` with the claim recoveries' body and read `ClaimOperationResponse`, the claim's state and
 who holds a suspension over it; the controller's suspension is recorded as `controller`, its own
-resume lifts it, and the daemon refuses the controller's resume, suspend, stop and `fresh_session`
-of a claim the operator's own suspension holds with `SUSPENDED_BY_OPERATOR`; an architect's tool
-gains the same six claim operations for the claims of the issues it owns, its suspension recorded
-as `architect` under the controller's, refused `ISSUE_NOT_OWNED` for a claim of an issue of its tree
-it does not own, `OWN_CLAIM` for its own claim, `SUSPENDED_BY_OPERATOR` and
-`SUSPENDED_BY_CONTROLLER` under those suspensions, `SUSPENDED_BY_DAEMON` for a resume or
+resume lifts it, and the daemon refuses the controller's resume, suspend, stop, retry and
+`fresh_session` of a claim the operator's own suspension holds with `SUSPENDED_BY_OPERATOR`; an
+architect's tool gains the same six claim operations for the claims of the issues it owns, its
+suspension recorded as `architect` under the controller's, refused `ISSUE_NOT_OWNED` for a claim
+of an issue of its tree it does not own, `OWN_CLAIM` for its own claim, `SUSPENDED_BY_OPERATOR`
+and `SUSPENDED_BY_CONTROLLER` under those suspensions, `SUSPENDED_BY_DAEMON` for a resume or
 `fresh_session` of a claim the daemon suspended or released and a suspend or stop of one the
 daemon's suspension holds, and `ISSUE_OUT_OF_WORKFLOW` for a retry or `fresh_session` of a claim
 that failed or that a stop retired while its issue is out of the workflow or its tree lingers; no
