@@ -204,8 +204,9 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
     ])
     // The registration's task value is the bridge's to take: one task line, naming the value and
     // the finished number as the registration answered them. The read after the ready fails here
-    // (this daemon serves no `claims/task`), and the ready line is written all the same, before
-    // the role is claimed.
+    // (this daemon serves no `claims/task`), and the ready line is written all the same; that it
+    // comes before the role claim is the claim boot's order, which
+    // `packages/pi-shared/src/legion-claim-core.test.ts` holds.
     await waitFor(
       async () => taskLines.length > 0 && readyLines.length > 0,
       "the registration's task value and the ready line to reach the inbox",

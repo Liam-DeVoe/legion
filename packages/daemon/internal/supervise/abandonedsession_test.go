@@ -288,8 +288,8 @@ func TestAbandonedSessionToldByACutOffTurnIsNotToldAgainWhenALaterTakeIsGivenBac
 // turn, gives the telling back, so the next take tells the session rather than lose it.
 //
 // The negative control is the restored machine reading the take's telling from the records that
-// name the pending delivery (ToldBy is its id), as NewMachine did before this change: take 2's
-// give-back then untells what take 1 told, and take 3 carries the sentence a second time.
+// name the pending delivery (ToldBy is its id): take 2's give-back then untells what take 1 told,
+// and take 3 carries the sentence a second time.
 func TestTakeBackAfterADaemonRestartGivesBackOnlyWhatThatTakeTold(t *testing.T) {
 	const task = "Continue Workflow. Issue: LEGION-209. Phase: implementing."
 	refusal := "the provider ended the turn with an error at 226k tokens of context"

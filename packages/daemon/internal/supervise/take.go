@@ -39,7 +39,7 @@ const TaskTakeContract = 157
 // TaskTakeContract, so its worker waits for a prompt this daemon never sends and never asks to
 // take the task its claim is owed. A claim that recorded no contract at all (0) is one of them.
 //
-// Two rules read it, and each would leave such a worker taking nothing at the rollout that moves
+// Three rules read it. Two would each leave such a worker taking nothing at the rollout that moves
 // the daemon and the worker image together, which opens an update round over every issue pod
 // (dispatch://INFRA-2811, decision 18 and departure 3). The stale-plugin refusal and its lane
 // hold no such claim out for a pod round: a round serves a claim on its old contract until the
@@ -47,7 +47,9 @@ const TaskTakeContract = 157
 // plugin inside the round (StaleRefusesCalls, internal/daemon's staleForTheLane). And the idle
 // release takes the pod of such a claim whose plugin no relaunch moves, a Claude Code role in a
 // pod, past the holds that would keep it (workflow's IdleRelease), since its pod's image is the
-// one thing that can bring it a plugin that takes.
+// one thing that can bring it a plugin that takes. The third is the end-frame finish
+// (endFrameFinishes): such a worker's report names no task's number, so the end of its take's
+// turn is what finishes the task.
 func TakesNoTask(contract int) bool { return contract < TaskTakeContract }
 
 // The origins of a task: the source that queued it (Delivery.Origin). A request names its own
@@ -851,7 +853,8 @@ func (m *Machine) claimHold() string {
 
 // takeBack returns a taken task to waiting under the number it has, for a reason that keeps the
 // process: a provider error's turn, a compaction, and the second wait. The take goes (ConfirmedAt,
-// TakenText, TurnStarted), so the next take of the number is decided afresh and its text composed
+// TakenText, TurnStarted, TakeTold, the four clearTake and interrupted reset together), so the
+// next take of the number is decided afresh and its text composed
 // again with whatever note the cause left (Delivery.message); the end of the task's turn is no
 // longer awaited. The take state the claim recorded stays, which is how the end of the cause's
 // hold knows the worker asked at this revision and writes the value again (offerPending), and the
@@ -911,7 +914,7 @@ func (m *Machine) startTakesTurn(ctx context.Context) error {
 // arrived, before a bound or after one fired (armEndFrameBound). A refusal of the report's own
 // finish leaves that finish owed (Machine.finishOwed), so the bound that makes it again finishes
 // by the report, whatever the claim's plugin, and each refusal of the bound's own write arms it
-// again, until one lands (decision 8 of dispatch://INFRA-2811, plan v30). A plugin that names its
+// again, until one lands (decision 8 of dispatch://INFRA-2811). A plugin that names its
 // task's number is given no other bound than this one (endFrameFinishes).
 func (m *Machine) finishTask(ctx context.Context, by string) error {
 	p := m.claim.Pending

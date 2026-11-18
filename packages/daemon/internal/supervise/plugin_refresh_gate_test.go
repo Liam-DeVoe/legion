@@ -701,7 +701,7 @@ func (h *harness) taskTheAgentTook() {
 // wantTakeBackRefused is the tail of a refused take-back: one claim standing exactly as the
 // refusal found it, and the credit of the relaunch that met it back at the gate (endRefreshLane,
 // dispatch://INFRA-2712 R1). The claim is idle over the process it still runs (kept), nothing was
-// started and nothing resumed, no wake waits — the relaunch raised none — and the task is still
+// started and nothing resumed, no wake waits — the wake whose turn met the refusal is spent — and the task is still
 // taken, because the take-back's write did not land: the task stands exactly as the store holds
 // it, which is what keeps a restart from retiring a task no turn ever finished (interrupted).
 //

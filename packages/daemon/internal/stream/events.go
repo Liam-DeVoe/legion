@@ -7,8 +7,9 @@ import (
 )
 
 // Event is one agent fact the stream observed. The set is sealed: a connection arriving
-// (Hello), OMP starting and ending a turn (TurnStart, TurnEnd), one tool call of a turn
-// starting or ending (ToolStep), and the connection going away (Closed).
+// (Hello), OMP starting and ending a turn (TurnStart, TurnEnd), OMP's answer to whether a turn is
+// running (TurnAnswered), one tool call of a turn starting or ending (ToolStep), and the
+// connection going away (Closed).
 type Event interface{ isEvent() }
 
 // AgentSecretsIdentity is the pod's session identity a hello2 carried (shimwire.AgentSecretsHello):

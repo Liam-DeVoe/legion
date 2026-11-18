@@ -483,8 +483,9 @@ role's lane, no notice and no Slack mention takes its start turn. The daemon's r
 nothing of the Envoy role, so it takes that ready before the role claim
 (`packages/daemon/internal/api/claims.go`). The session takes the start task as any claim takes
 its task (`@legion/pi-shared/task-take`);
-the session sends no start message of its own ("The controller's start turn" below). Any step of
-that claim that fails exits Oh My Pi, so the daemon relaunches it;
+the session sends no start message of its own ("The controller's start turn" below). A failed read
+of the start task's value is logged and the claim goes on; any other step of that claim that fails
+exits Oh My Pi, so the daemon relaunches it;
 the operator's controller logs and stays up instead. Only a session classified as the controller
 (`LEGION_CONTROLLER=1`) registers its boot token that way: `/legion-claim-controller` in a root
 architect's or phase worker's pane, whose boot token is its own claim's, is a takeover by hand that
@@ -634,7 +635,7 @@ already fired, clearing the unsent mark, and Oh My Pi drains the follow-up insid
 daemon-launched controller keeps its whole claim at `session_start`: it sends no start message,
 sets the mark with `sentAt` now right before `claims/ready`, after which the daemon writes its
 start task's value, reads that value, claims its role and subscribes its topics only after that
-read, and exits on any failure.
+read, logs a failure of that read and goes on, and exits on any other failure.
 
 ## Session titles
 

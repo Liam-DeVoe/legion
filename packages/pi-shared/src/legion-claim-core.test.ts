@@ -135,7 +135,7 @@ test("registers, hands the registration to afterRegister, records the capability
   expect(lines).toEqual([`read claims/task after role ${claimToken} was reregistered`]);
 });
 
-// Finding 11 of review round 1: the ready decision itself can write the claim's value (the
+// The ready decision itself can write the claim's value (the
 // relaunch record's task), after the registration answered with none, and the listener relays a
 // value only once the role claim has changed the role's holder, after it handed the kept lane
 // over. So the boot reads the value once the ready has answered and hands it to the host before
@@ -169,7 +169,7 @@ test("hands the host the value the ready decision wrote, read once the ready ans
   expect(lines).toEqual([]);
 });
 
-// Finding 11 of review round 1 and the plan's decision 15, at the card: the session's agent
+// The plan's decision 15, at the card: the session's agent
 // subject is open from its start, so a card addressed to the session itself — its own direct
 // message — can reach it while the ready, or the read of the claim's value after it, is still on
 // its way, and here the registration answered no value. Oh My Pi's host holds its take's

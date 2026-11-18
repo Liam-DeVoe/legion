@@ -238,14 +238,14 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 		}
 	})
 
-	// The newest narrowing is a row of the table like every other, so the caller below it is
+	// The assignments narrowing is a row of the table like every other, so the caller below it is
 	// told what it lost: a caller one contract below assignmentsContract stands below that row
 	// and every row above it, so the log holds those rows' lines and nothing else. The state is
 	// narrowingState, which carries something of every row above it. This subtest does not catch
 	// a strip applied beside the loop, because it reads both its expectation and its answer from
 	// stateNarrowings; the subtest below, which names the line as a literal, is what catches
 	// that.
-	t.Run("the highest narrowing writes its own line", func(t *testing.T) {
+	t.Run("the assignments narrowing writes its own line", func(t *testing.T) {
 		body, narrowings := stateNarrowed(t, narrowingState(t), statePodAddr+":41000", podClaims(assignmentsContract-1))
 
 		if bytes.Contains(body, []byte(`"assignments"`)) {
@@ -289,7 +289,8 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 	// Every narrowing says what it dropped, not only the mark's own: a caller below every contract
 	// in stateNarrowings is served one line per row that finds something of its own, and a caller
 	// at quietTimeContract, the row just before waitingOnIssueContract's, the line of every row
-	// above it, the one row the first caller's body no longer reaches among them. One line for all
+	// above it, the two rows the first caller's body no longer reaches among them
+	// (waitingOnIssueContract's and the never_reconnected row). One line for all
 	// of them, or a line that named the contract and nothing else, would leave a reader of the log
 	// to find out elsewhere what left the body. Three checks share the work. The table check
 	// guards the table: no two rows of stateNarrowings name the same keys, whichever callers would

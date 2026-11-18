@@ -711,10 +711,7 @@ export default function legionExtension(pi: PiApi): void {
           send: (report, signal) =>
             roleDaemon().ready(
               {
-                claimToken: capabilityClaim.claimToken,
-                sessionId: capabilityClaim.sessionID,
-                secret: capabilityClaim.secret,
-                generation: capabilityClaim.generation,
+                ...claimCaller(capabilityClaim, capabilityClaim.sessionID),
                 capabilities: report,
               },
               { signal }

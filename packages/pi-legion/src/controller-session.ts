@@ -247,8 +247,10 @@ export function createControllerSession(deps: {
    * whatever value it holds (`TaskTake.awaitRead`), since its agent subject is open from its start
    * and a card sent to the session itself must not take that turn either. The session takes that
    * task as any claim takes its task, the take's text is its first turn, and that turn's end is
-   * reported naming the task's number, as any claim's is (`reportedClaim`, `runEnded`). Any step
-   * of its claim that fails exits Oh My Pi, so the daemon relaunches it, as a pane's failed boot
+   * reported naming the task's number, as any claim's is (`reportedClaim`, `runEnded`). A failed
+   * read of the start task's value is logged and the claim goes on, since the daemon's next write
+   * of the value reaches the session as well; any other step of its claim that fails exits Oh My
+   * Pi, so the daemon relaunches it, as a pane's failed boot
    * does. A root architect's or phase worker's pane carries a boot token too, its own claim's:
    * `/legion-claim-controller` run there is a takeover by hand like any other, which needs the
    * capability and stops before any daemon call without it.

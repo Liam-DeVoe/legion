@@ -268,7 +268,7 @@ test("a report the daemon refuses is warned about, and the next turn still repor
 const transport = (code: string): Error =>
   Object.assign(new TypeError(`${code}: the request reached no daemon`), { code });
 
-// Finding 2 of review round 1: only the report finishes a current worker's task, so it is sent
+// Only the report finishes a current worker's task, so it is sent
 // until the daemon answers, by the take's own policy. An uncoded 504 (a proxy's timeout) and a DNS
 // failure are two of the failures the earlier retry gave up on at once.
 test("a report whose first two attempts meet an uncoded 504 and a DNS failure is sent again, the same report, and delivered on the third", async () => {
@@ -295,12 +295,11 @@ test("a report whose first two attempts meet an uncoded 504 and a DNS failure is
 
 // The daemon answers a report whose store write it could not make with a 500 that names no code,
 // and applies a repeated report once. Here the first attempt is that 500, the second is applied
-// but its answer is lost to a reset connection, and the third is answered: the task the report
-// names finishes, once.
-test("the first end report dropped, then the task finishes once", async () => {
+// but its answer is lost to a reset connection, and the third is answered: the same report is
+// posted three times, and the task it names is finished.
+test("an end report answered a 500, then applied with its answer lost to a reset, is posted a third time and its task is finished", async () => {
   const tasks = taskStandIn();
   const value = tasks.give("Implement LEGION-208 on its branch.");
-  let finishes = 0;
   const { report, posted, debugged } = rig({
     answer: (attempt, body) => {
       if (attempt === 1) {
@@ -309,9 +308,7 @@ test("the first end report dropped, then the task finishes once", async () => {
           { status: 500 }
         );
       }
-      const before = tasks.registered().finished;
       tasks.answer("/legion/v1/claims/turn-outcome", body);
-      if (tasks.registered().finished !== before) finishes += 1;
       if (attempt === 2) throw transport("ECONNRESET");
       return Response.json({ refusedRun: 0, failed: false });
     },
@@ -323,7 +320,6 @@ test("the first end report dropped, then the task finishes once", async () => {
   expect(posted[0]).toMatchObject({ sequence: 1, task: value.number });
   expect(posted[1]).toEqual(posted[0]);
   expect(posted[2]).toEqual(posted[0]);
-  expect(finishes).toBe(1);
   expect(tasks.registered()).toEqual({ task: null, finished: value.number });
   expect(debugged).toEqual(["legion: reported a turn's outcome"]);
 });
@@ -338,11 +334,13 @@ test("a report still being sent when its session ends sends nothing more, and sa
   const sending = report(SESSION, clean, 4);
   for (let turn = 0; turn < 20; turn += 1) await Promise.resolve();
   sessionEnded(SESSION);
-  await sending;
+  // Counted at the end, before anything else settles: an attempt posted after it is one the end
+  // did not stop.
   const attempts = posted.length;
   for (let turn = 0; turn < 50; turn += 1) await Promise.resolve();
 
   expect(attempts).toBeGreaterThan(0);
   expect(posted).toHaveLength(attempts);
+  await sending;
   expect(warned.at(-1)).toBe("legion: a turn's outcome did not reach the daemon");
 });

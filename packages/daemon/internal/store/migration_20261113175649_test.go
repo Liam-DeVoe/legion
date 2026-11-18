@@ -226,7 +226,7 @@ func TestMigrationTaskNumbersFillsEachClaimsFirstTask(t *testing.T) {
 	}{
 		{"legion-LEGION-301-implementer", "", "no take of a task nobody took", 0, false, nil},
 		{"legion-LEGION-306-implementer", "Implement the change.",
-			"a take accepted at the acknowledgement, answered with the prompt's text, its turn not started, which told nothing", acknowledgedAt, false, nil},
+			"a take accepted at the acknowledgement, answered with the row's own text, its turn not started, which told nothing", acknowledgedAt, false, nil},
 		{"legion-LEGION-302-implementer", "", "a take whose turn started, its text kept by no record, which told the let-go's record its claim names it by",
 			confirmedAt, true, []string{"ended"}},
 	} {

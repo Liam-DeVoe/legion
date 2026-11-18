@@ -155,7 +155,7 @@
 -- 20261114031356_merge_queue_removal rewrites outbox_kind_check,
 -- 20261114061900_phase_entry_verbatim adds phases.entry_verbatim, and
 -- 20261116165926_role_holders_publish rewrites outbox_kind_check again and adds the unique index
--- outbox_role_holders_publish_issue_unique. The release before this one, contract 151, carries
+-- outbox_role_holders_publish_issue_unique. The release before this one, contract 152, carries
 -- all six, so the rollback to it runs this block alone and leaves the six standing. A rollback
 -- past it — to contract 87, across 20261111225552_phase_entry — crosses every release between the
 -- two and runs their ways back newest first, with the daemon stopped, as docs/kubernetes.md lists
@@ -170,8 +170,8 @@
 -- cybermonklabs/legion#3983 landed at that contract too, and contract 132's
 -- 20261111214351_issue_released_for_wait have no way back of their own, and each adds one column
 -- or table no earlier release names; contract 123's 20261113090512_phase_entry_moved_back needs
--- no statement on the way back, and contracts 151, 144, 137 and 104 add no migration. The release
--- before the phase entry reads the three marks as the release before this one does, and neither
+-- no statement on the way back, and contracts 152, 151, 144, 137 and 104 add no migration. The
+-- release before the phase entry reads the three marks as the release before this one does, and neither
 -- contract 146's block nor the phase entry's touches this migration's columns. The roll-forward
 -- after them applies again, in version order, every migration those ways back re-armed: the phase
 -- entry's first, then 20261113110610_drop_claim_update_answer_marks, which the update round's way

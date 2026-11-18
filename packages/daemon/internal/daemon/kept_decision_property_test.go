@@ -2713,22 +2713,15 @@ func (r *keptRun) awaitingItsTurn(tree *keptTree) bool {
 	return pending != nil && !pending.ConfirmedAt.IsZero() && pending.TakenText != "" && !pending.TurnStarted
 }
 
-// retellings is how many times the machine took back a take of the delivery id whose turn had
-// started and the architect's worker took it again (keptTake.retold): the take-backs that told
-// the task a second time. A take-back keeps the delivery's id (supervise's interrupted), so they
-// are counted by it.
-func retellings(tree *keptTree, id string) int {
-	retold := 0
-	for _, take := range tree.takes {
-		if take.DeliveryID == id && take.retold {
-			retold++
-		}
-	}
-	return retold
+// retold is whether the machine took back a take of the delivery id whose turn had started and
+// the architect's worker took it again (keptTake.retold): a take-back that told the task a second
+// time. A take-back keeps the delivery's id (supervise's interrupted), so it is found by it.
+func retold(tree *keptTree, id string) bool {
+	return slices.ContainsFunc(tree.takes, func(take keptTake) bool { return take.DeliveryID == id && take.retold })
 }
 
 // takenBackOnce is whether the task this tree's architect holds is one the machine has already
-// taken back from a turn and its worker took again (retellings). The invariant accepts one telling
+// taken back from a turn and its worker took again (retold). The invariant accepts one telling
 // more to one architect and no more, and one take-back from a turn is what earns it, so the model
 // drives one per task: a second would be another accepted fault of the same kind, and says
 // nothing of the machinery the first does not.
@@ -2741,12 +2734,12 @@ func (r *keptRun) takenBackOnce(tree *keptTree) bool {
 	if pending == nil {
 		return false
 	}
-	return retellings(tree, pending.ID) > 0
+	return retold(tree, pending.ID)
 }
 
 // deathEnabled is whether this tree's architect can be given the death of the process running its
-// task's turn: it holds an accepted take awaiting its turn, nothing has taken that task back
-// before (takenBackOnce), and it records the process that would run it. A death that would spend
+// task's turn: it holds an accepted take awaiting its turn, nothing has taken that task back from
+// its turn before (takenBackOnce), and it records the process that would run it. A death that would spend
 // the claim's last one (supervise's chargeDeath) and one while every launch is refused are left
 // out: both end in a failed claim, which is the launch budget's own path and is driven by
 // toggleLaunch.

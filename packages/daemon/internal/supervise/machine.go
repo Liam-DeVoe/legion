@@ -1580,7 +1580,7 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 		// daemon, and the time no daemon served it is no time it had to do so
 		// (dispatch://INFRA-2811). A plugin that names its task's number has its task finished
 		// by that report alone.
-		if p := c.Pending; p != nil && p.turnStarted() && TakesNoTask(c.PluginContract) {
+		if p := c.Pending; p != nil && p.turnStarted() && m.endFrameFinishes() {
 			m.finishAtAct = true
 		}
 		// A claim holding a take that the stale-plugin lane will relaunch waits for its agent's
@@ -1613,7 +1613,7 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 		} else {
 			m.finishOwed = true
 			if c.State == StateReady || c.State == StateIdle {
-				m.arm(TimerFinish, deps.Timeouts.RPC, c.Pending.ID)
+				m.armEndFrameBound(c.Pending.ID)
 			}
 		}
 	}

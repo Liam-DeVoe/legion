@@ -424,7 +424,7 @@ test("a refused report clears the run-end mark alone: a number a reading said fi
   expect(ran).toEqual([TEXT]);
 });
 
-// Finding 1 of review round 1, the race: the take is asked on an idle host and the daemon accepts
+// The race: the take is asked on an idle host and the daemon accepts
 // it, but a run no take started (a background job's result, a reminder) begins before the answer
 // comes back. The daemon gives that run to the take, as the first to start after its accept; the
 // worker holds the text, since nothing is sent into a busy worker and a follow-up sent now would

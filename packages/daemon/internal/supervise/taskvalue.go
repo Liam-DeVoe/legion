@@ -20,9 +20,10 @@ import (
 // legion_tasks bucket on NATS (internal/daemon's task bucket); a fake stands in for it in tests.
 //
 // A write answers the bucket's epoch and the revision the write made, which the claim records as
-// the daemon's own last write (Claim.TaskWrittenRevision). Each call is a store write of the
-// machine's own, made under the machine's lock and the claim-write deadline, as its claim writes
-// are (write).
+// the daemon's own last write (Claim.TaskWrittenRevision). A write and a delete are store writes of
+// the machine's own, made under the machine's lock and the claim-write deadline, as its claim
+// writes are (write); a read takes neither, since it is made for a worker that registers or asks
+// and copies no claim (CurrentTask).
 type TaskValues interface {
 	// Write puts the claim's value under number, and answers the epoch of the bucket it wrote
 	// to and the revision the write made.

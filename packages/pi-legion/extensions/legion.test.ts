@@ -101,6 +101,15 @@ import type {
   setLegionStallProcessesForTests as SetLegionStallProcessesForTests,
 } from "./legion";
 
+/** Lets the event loop turn, up to 50 times, until `until` holds. */
+async function turns(until: () => boolean): Promise<void> {
+  for (let turn = 0; turn < 50 && !until(); turn += 1) {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setImmediate(resolve);
+    await promise;
+  }
+}
+
 // The consumer answer every registration here is given is the harness's (`deliveryFor`), shared
 // with the tests that run the real binary.
 
@@ -2184,11 +2193,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       expect(marksAtRoleClaim).toEqual([{ session: "ses_stall" }]);
       // The take goes on a timer that fires once `session_start` has returned.
       expect(tasks.takes()).toEqual([]);
-      for (let turn = 0; turn < 50 && worker.sentUserMessages.length === 0; turn += 1) {
-        const { promise, resolve } = Promise.withResolvers<void>();
-        setImmediate(resolve);
-        await promise;
-      }
+      await turns(() => worker.sentUserMessages.length > 0);
       expect(tasks.takes()).toEqual([
         {
           claimToken: worker.claimToken,
@@ -2233,7 +2238,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       ]);
     });
 
-    // Finding 11 of review round 1 and the plan's decision 15, at the pane: the registration
+    // The plan's decision 15, at the pane: the registration
     // answers no value and the ready decision writes one, as it writes the relaunch record's task.
     // The session's agent subject is open from its start, so a card sent to the session itself
     // can reach it while the ready, or the read of the claim's value after it, is on its way. The
@@ -2277,11 +2282,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
         { at: "the read after the ready", triggerTurn: false },
         { at: "role claim", triggerTurn: false },
       ]);
-      for (let turn = 0; turn < 50 && worker.sentUserMessages.length === 0; turn += 1) {
-        const { promise, resolve } = Promise.withResolvers<void>();
-        setImmediate(resolve);
-        await promise;
-      }
+      await turns(() => worker.sentUserMessages.length > 0);
       expect(worker.sentUserMessages).toEqual([text]);
       expect(envoyPluginInterface().taskTurnPending).toEqual({ session: "ses_stall" });
       await hook(worker.handlers, "agent_start")({}, worker.context);
@@ -2309,7 +2310,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       expect(envoyPluginInterface().taskTurnPending).toBeUndefined();
     });
 
-    // Finding 1 of review round 1, at the pane: a run no take started (here a reminder's) begins
+    // At the pane: a run no take started (here a reminder's) begins
     // after the take was asked and before its answer comes back. Nothing is sent into that run —
     // no follow-up, which Oh My Pi would fold into it — and its end is reported naming no task,
     // which gives the take its turn back on the daemon. At that end the host is idle, and the
@@ -2332,13 +2333,6 @@ describe.skipIf(skip)("Legion OMP extension", () => {
           return tasks.answer(url.pathname, body as Record<string, unknown>);
         },
       });
-      const turns = async (until: () => boolean): Promise<void> => {
-        for (let turn = 0; turn < 50 && !until(); turn += 1) {
-          const { promise, resolve } = Promise.withResolvers<void>();
-          setImmediate(resolve);
-          await promise;
-        }
-      };
       await turns(() => taken > 0);
       expect(taken).toBe(1);
 
@@ -2413,13 +2407,6 @@ describe.skipIf(skip)("Legion OMP extension", () => {
             return tasks.answer(url.pathname, body as Record<string, unknown>);
           },
         });
-        const turns = async (until: () => boolean): Promise<void> => {
-          for (let turn = 0; turn < 50 && !until(); turn += 1) {
-            const { promise, resolve } = Promise.withResolvers<void>();
-            setImmediate(resolve);
-            await promise;
-          }
-        };
         await turns(() => worker.sentUserMessages.length > 0);
         expect(worker.sentUserMessages).toEqual([text]);
 
@@ -2472,13 +2459,6 @@ describe.skipIf(skip)("Legion OMP extension", () => {
           return tasks.answer(url.pathname, body as Record<string, unknown>);
         },
       });
-      const turns = async (until: () => boolean): Promise<void> => {
-        for (let turn = 0; turn < 50 && !until(); turn += 1) {
-          const { promise, resolve } = Promise.withResolvers<void>();
-          setImmediate(resolve);
-          await promise;
-        }
-      };
       const relay = (revision: number): void =>
         envoyPluginInterface().taskValues.taker?.({
           kind: "value",
@@ -5835,7 +5815,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     expect(controller.exits).toEqual([]);
   });
 
-  // Decision 15 at the daemon's controller (the implementer's finding, 2026-11-18T11:33:31Z): it
+  // Decision 15 at the daemon's controller: it
   // held its role, the controller topic and its Slack channels before its ready wrote the start
   // task, so a card on the role's lane, a notice or a Slack mention could take the first turn. It
   // reports ready and reads the start task's value first, and claims the role and subscribes only
@@ -5906,11 +5886,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
       { path: "/legion/v1/claims/ready", mark: { session: "ses_controller_order" } },
       { path: "/legion/v1/claims/task", mark: { session: "ses_controller_order" } },
     ]);
-    for (let turn = 0; turn < 50 && controller.sentUserMessages.length === 0; turn += 1) {
-      const { promise, resolve } = Promise.withResolvers<void>();
-      setImmediate(resolve);
-      await promise;
-    }
+    await turns(() => controller.sentUserMessages.length > 0);
     expect(controller.sentUserMessages).toEqual(["Legion controller start: run it."]);
     expect(envoyPluginInterface().taskTurnPending).toEqual({ session: "ses_controller_order" });
     await controller.handlers.get("agent_start")?.({}, controller.context("ses_controller_order"));
@@ -5957,11 +5933,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     expect(envoyPluginInterface().taskTurnPending).toEqual({ session: "ses_controller_take" });
     // Event-loop turns, no clock: the take goes on the timer `session_start` armed, and its
     // answer is read over the stub's fetch.
-    for (let turn = 0; turn < 50 && controller.sentUserMessages.length === 0; turn += 1) {
-      const { promise, resolve } = Promise.withResolvers<void>();
-      setImmediate(resolve);
-      await promise;
-    }
+    await turns(() => controller.sentUserMessages.length > 0);
 
     const takes = daemonRequests(controller.requests).filter(
       (request) => request.path === "/legion/v1/claims/take"
@@ -5985,7 +5957,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     expect(controller.exits).toEqual([]);
   });
 
-  // Finding 3 of review round 1: the daemon finishes the controller's start task on the report of
+  // The daemon finishes the controller's start task on the report of
   // its turn, as any claim's task, so that report names the task's number, under the controller
   // claim's own credentials; a provider error on that turn reaches the daemon's wait instead of
   // finishing it. A later turn of the session names no task.
@@ -6020,11 +5992,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     } finally {
       delete process.env.LEGION_BOOT_TOKEN_FILE;
     }
-    for (let turn = 0; turn < 50 && controller.sentUserMessages.length === 0; turn += 1) {
-      const { promise, resolve } = Promise.withResolvers<void>();
-      setImmediate(resolve);
-      await promise;
-    }
+    await turns(() => controller.sentUserMessages.length > 0);
     expect(controller.sentUserMessages).toEqual(["Legion controller start: run it."]);
 
     // The start task's turn, and a turn after it.
@@ -6080,13 +6048,6 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     process.env.LEGION_BOOT_TOKEN_FILE = bootFile;
     process.env.LEGION_SLACK_CHANNELS = "";
     const context = controller.context("ses_controller_retake");
-    const turns = async (until: () => boolean): Promise<void> => {
-      for (let turn = 0; turn < 50 && !until(); turn += 1) {
-        const { promise, resolve } = Promise.withResolvers<void>();
-        setImmediate(resolve);
-        await promise;
-      }
-    };
     const claimCommand = controller.commands.find(
       (command) => command.name === "legion-claim-controller"
     );

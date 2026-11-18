@@ -230,9 +230,9 @@ type TaskValue struct {
 	Revision uint64 `json:"revision"`
 }
 
-// TaskRequest is the body of POST /legion/v1/claims/task: a worker reading its claim's value, at a
-// new epoch of its relay or when it gains its role again, under either caller (Caller) and the
-// launch generation it runs at.
+// TaskRequest is the body of POST /legion/v1/claims/task: a worker reading its claim's value,
+// right after the claim's ready has answered, at a new epoch of its relay, or when it gains its
+// role again, under either caller (Caller) and the launch generation it runs at.
 type TaskRequest struct {
 	AgentCaller
 	BootCaller
@@ -267,9 +267,10 @@ func (r TaskSeenRequest) Caller() (Caller, bool) { return callerOf(r.AgentCaller
 
 // TakeRequest is the body of POST /legion/v1/claims/take: the worker asking, because its host is
 // idle, to take the task Number, the one its value at this epoch and revision names. A worker
-// sends the same take again when it had no answer (a refused, reset or closed connection, a DNS
-// failure, no answer in 5 minutes, or a 502, 503 or 504 that names no code), and a take of a
-// number already accepted whose turn has not started is answered the same text again.
+// sends the same take again when it had no answer (a refused, reset or closed connection, an
+// unreachable host or network, a connect or read timeout, a DNS failure, no answer in 5 minutes,
+// or a 502, 503 or 504 that names no code), and a take of a number already accepted and not
+// finished is answered the same text again, before its turn starts or after.
 type TakeRequest struct {
 	AgentCaller
 	BootCaller

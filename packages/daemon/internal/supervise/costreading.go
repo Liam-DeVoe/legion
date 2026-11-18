@@ -330,14 +330,6 @@ type owedNumber struct {
 	ended        string
 }
 
-// valueRevision is one write of a claim's value, as its line names it: the task's number, the
-// bucket's epoch, and the revision.
-type valueRevision struct {
-	number   uint64
-	epoch    string
-	revision uint64
-}
-
 // costTurn is the claim's latest turn whose start or end line named a task, which a put-back may
 // make a turn of no cause (costReading.putBack): the number its lines name, whether its end line
 // came, and whether its start line and its end line were counted, each as a turn of that number
@@ -357,7 +349,7 @@ type costTurn struct {
 // and which counts as no cause.
 type claimClock struct {
 	inTurn, awaitsAct, awaitsRegistration bool
-	written                               valueRevision
+	written                               TaskValue
 	seen                                  bool
 	owed                                  *owedNumber
 	entered                               bool
@@ -379,7 +371,7 @@ func (k *claimClock) runs() bool {
 // again, and its revisions count from 1 once more.
 func (k *claimClock) sawLatest(l costLine) bool {
 	w := k.written
-	return w.number != 0 && *l.Task == w.number && l.Revision == w.revision && (l.Epoch == nil || *l.Epoch == w.epoch)
+	return w.Number != 0 && *l.Task == w.Number && l.Revision == w.Revision && (l.Epoch == nil || *l.Epoch == w.Epoch)
 }
 
 // costReading is a reading under way.
@@ -600,7 +592,7 @@ func (c *costReading) costed(l costLine, claim string) {
 		if l.Task == nil {
 			return
 		}
-		if k.written.number == 0 {
+		if k.written.Number == 0 {
 			// A report of a write that fell before the log's first line: it owes the number it
 			// saw from here (the reading's doc comment).
 			c.owe(k, key, revisionOf(l), l.Time)
@@ -688,10 +680,10 @@ func (c *costReading) costed(l costLine, claim string) {
 
 // revisionOf is the value write a write line or a seen line names: its number, its epoch where
 // it names one, and its revision.
-func revisionOf(l costLine) valueRevision {
-	r := valueRevision{number: *l.Task, revision: l.Revision}
+func revisionOf(l costLine) TaskValue {
+	r := TaskValue{Number: *l.Task, Revision: l.Revision}
 	if l.Epoch != nil {
-		r.epoch = *l.Epoch
+		r.Epoch = *l.Epoch
 	}
 	return r
 }
@@ -709,7 +701,7 @@ func (c *costReading) closeTake(claim string, number uint64) {
 // revision is reported seen, and a refusal's or a take-back's stop ends. Otherwise the number the
 // claim owed, if any, is replaced, which ends its time owed, and key's number is owed from here,
 // unless an accepted take of it stands.
-func (c *costReading) owe(k *claimClock, key costKey, written valueRevision, at time.Time) {
+func (c *costReading) owe(k *claimClock, key costKey, written TaskValue, at time.Time) {
 	k.written, k.seen = written, false
 	if o := k.owed; o != nil && o.key == key {
 		o.stopped, o.from = false, time.Time{}
@@ -759,7 +751,7 @@ func (c *costReading) stop(k *claimClock, number uint64) {
 // time owed of its own, where the lines hold the write that number was last written at: that is
 // the revision the claim's next process reads and asks at, with no new write.
 func (c *costReading) takenBack(k *claimClock, key costKey) {
-	if k.owed == nil && k.written.number == key.number {
+	if k.owed == nil && k.written.Number == key.number {
 		k.owed = &owedNumber{key: key}
 	}
 	c.stop(k, key.number)

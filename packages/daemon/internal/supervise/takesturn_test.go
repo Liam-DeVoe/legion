@@ -247,7 +247,7 @@ func TestTurnOutcomeSentAgainToARestartedDaemonReachesItsTask(t *testing.T) {
 }
 
 // A claim whose plugin names its task's number has its task finished by the report that names
-// it and by nothing else (decision 8 of dispatch://INFRA-2811, plan v21): the end of the take's
+// it and by nothing else (decision 8 of dispatch://INFRA-2811): the end of the take's
 // turn arms no bound, so a report that comes long after the end, in the same daemon or across a
 // restart, still finds the task and finishes it.
 //
@@ -285,7 +285,7 @@ func TestTurnOutcomeAloneFinishesTheTaskOfAPluginThatNamesItsNumber(t *testing.T
 
 // An end report sent again after its first attempt finished its task — the worker heard no
 // answer — is answered as the first was, with no failure for the worker, and applies nothing
-// again (decision 8 of dispatch://INFRA-2811, plan v21): the task it named stays finished once,
+// again (decision 8 of dispatch://INFRA-2811): the task it named stays finished once,
 // and the claim's next task, whose take's turn has started since, is not touched, though the
 // report names a number no take of the claim holds now.
 //
@@ -330,7 +330,7 @@ func TestTurnOutcomeRepeatedAfterItsTaskFinishedAnswersTheSameAndAppliesNothing(
 
 // A report's finish the store refused is made again by the end-frame bound, armed wherever the
 // report arrived, and armed again after every write the store refuses, until one lands
-// (decision 8 of dispatch://INFRA-2811, plan v30): across a store outage of several bounds the
+// (decision 8 of dispatch://INFRA-2811): across a store outage of several bounds the
 // task is finished once the store answers, once, by the report. The report can come after its
 // turn's end frame, ahead of it — while the claim is still working, where the bound is armed at
 // the turn's end — or, for a plugin that names no number, after the bound already fired and its

@@ -260,7 +260,7 @@ func checkRoleConfigFiles(cfg config.Config) error {
 // seed's user and the daemon seed's user, each "" when the daemon has no such seed, never a seed,
 // and the line for a daemon that would connect to NATS as the pane seed's user (paneSeedLine), ""
 // for one that would not.
-func CheckStart(cfg config.Config, lookup func(string) (string, bool)) (paneNatsUser, daemonNatsUser, paneSeed string, err error) {
+func CheckStart(cfg config.Config, lookup func(string) (string, bool)) (paneNatsUser, daemonNatsUser, paneSeedNote string, err error) {
 	r, err := readBoot(cfg, lookup, os.Getenv, true, slog.New(slog.DiscardHandler))
 	if err != nil {
 		return "", "", "", err

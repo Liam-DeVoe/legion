@@ -133,8 +133,9 @@ type Delivery struct {
 	// takes whose adoption of the working copy failed (refusedAdoption): how many of them failed,
 	// when the last one failed by the machine's clock, and the error it failed with. They are a
 	// record of what happened, not a budget. The budget is the claim's
-	// (Claim.Budgets.PromptFailures and PromptRetires), which only a refused adoption — the shim's
-	// answer about this workspace — spends; this counts every adoption that failed, charged or
+	// (Claim.Budgets.PromptFailures and PromptRetires), which, of the adoptions that fail, only a
+	// refused one — the shim's answer about this workspace — spends (the two take waits charge it
+	// too, chargePrompt); this counts every adoption that failed, charged or
 	// not, and that difference is the point of recording it. An adoption lost to the transport is
 	// charged nothing and waits for the next take, so a claim can sit with its budget untouched and
 	// nothing on it saying why, and that is the case an operator most needs named (INFRA-1480: two

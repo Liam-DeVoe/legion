@@ -32,9 +32,10 @@ import (
 // one unconfirmed write alone: the one that takes that confirmation back. The confirmation is the
 // accepted take of the delivery, and its write told the rows the delivery held and deleted them.
 // A take taken back — given back before its turn started (supervise's giveBackTake: a
-// compaction, the second wait, a let-go or a retirement of a take that awaited its turn), or cut
-// off in its turn by a let-go (interrupted) — may leave the architect not having run that text
-// whole, so the next accepted take of the task names them again; a second telling is the worst
+// compaction, the second wait, a let-go or a retirement of a take that awaited its turn), taken
+// back after its turn started by a provider error's ladder (supervise's takeToLadder), or cut off
+// in its turn by a let-go (interrupted) — may leave the architect not having run that text whole,
+// so the next accepted take of the task names them again; a second telling is the worst
 // case, never a loss. It inserts, held by this delivery, each decision the delivery names that has
 // no (issue, ref) row and whose issue stands in the claim's tree.
 //

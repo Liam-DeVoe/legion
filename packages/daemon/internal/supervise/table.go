@@ -1801,15 +1801,13 @@ type neverReady struct {
 // interval.
 func (m *Machine) retireNeverReady(ctx context.Context, r neverReady) error {
 	return m.probe(ctx, func(ctx context.Context) error {
-		if err := m.checkLaunch(ctx); err != nil {
+		err := m.checkLaunch(ctx)
+		if err == nil && r.before != nil {
+			err = r.before(ctx)
+		}
+		if err != nil {
 			m.arm(TimerRegistration, m.deps.Timeouts.Probe, "")
 			return fmt.Errorf("retire %s, whose %s: %w", m.claim.Token, r.whose, err)
-		}
-		if r.before != nil {
-			if err := r.before(ctx); err != nil {
-				m.arm(TimerRegistration, m.deps.Timeouts.Probe, "")
-				return fmt.Errorf("retire %s, whose %s: %w", m.claim.Token, r.whose, err)
-			}
 		}
 		incarnation := m.claim.Locator.Incarnation
 		if err := m.suspendProcess(ctx, endNeverReady(r.never)); err != nil {

@@ -8,6 +8,7 @@ package supervise
 // only a report naming the number does (interrupted, settle).
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -93,8 +94,10 @@ func TestRelaunchOfAMigratedTakeRunsItOnce(t *testing.T) {
 			t.Fatalf("the task after the wake's turn is %+v, want it taken back from the turn the wake cut off", p)
 		}
 		h.relaunchedTakes()
-		if again := h.wantPrompts(1)[0]; again.Message == "the task" {
-			t.Fatalf("the new process took %+v, want the task behind the word of its cut turn", again)
+		again := h.wantPrompts(1)[0]
+		wantSays(t, again.Message, saysTaskTurn)
+		if !strings.HasSuffix(again.Message, "the task") {
+			t.Fatalf("the new process took %q, want the task behind the word of its cut turn", again.Message)
 		}
 	})
 	t.Run("a cut turn", func(t *testing.T) {
@@ -183,8 +186,13 @@ func TestRelaunchTakesBackACurrentPluginsTakeWhoseTurnIsOverWithItsNote(t *testi
 		t.Fatalf("the task after the relaunch is %+v, want task %d taken back with the note of a cut turn", p, number)
 	}
 	h.relaunched()
-	if again := h.wantPrompts(2)[1]; again.Number != number || again.Message == "review the pull request" {
-		t.Fatalf("the new process took %+v, want task %d behind the word of its cut turn", again, number)
+	again := h.wantPrompts(2)[1]
+	if again.Number != number {
+		t.Fatalf("the new process took %+v, want task %d", again, number)
+	}
+	wantSays(t, again.Message, saysTaskTurn)
+	if !strings.HasSuffix(again.Message, "review the pull request") {
+		t.Fatalf("the new process took %q, want task %d behind the word of its cut turn", again.Message, number)
 	}
 }
 
@@ -294,6 +302,9 @@ func TestBootRelaunchOfAStaleClaimWaitsForTheTurnOverAnswer(t *testing.T) {
 	t.Run("an unanswered ask", func(t *testing.T) {
 		h := restoreStaleMigrated(t)
 		h.conn.FailGetState(errBoom)
+		// The hello comes half a deadline after the daemon's start, so a deadline counted from
+		// the start would come due half a deadline early.
+		h.advance(deadline / 2)
 		h.connect()
 		h.advance(deadline / 2)
 		h.observe(runtime.Alive)

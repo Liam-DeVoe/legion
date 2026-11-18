@@ -519,8 +519,10 @@ logs `supervise: this provider error can clear; the task goes to the same sessio
 wait`, with the attempt and the wait, and its end `supervise: the wait after a provider error is
 over; the task is given again`. Such a turn is no launch failure: the worker reports it refused
 with the error beside it, its `supervise: a turn ended` line reads `refused=false` and
-`providerError=true`, and only a refused turn that carries no provider error counts toward the
-run of refused turns that fails a claim at `launch_failure_limit`. The text of the next accepted
+`providerError=true`. Every other refused turn counts toward the run of refused turns that fails a
+claim at `launch_failure_limit`: one that carries no provider error, and one that carries one but
+whose report names no task, or a number no take of the claim holds — a reminder's, a card's or a
+background result's turn — which reaches no wait. The text of the next accepted
 take tells the agent the turn stopped, names the HTTP status the provider answered when it
 answered one, and carries none of the provider's own words. A content filter is given again
 because the session has already stepped down to the next model of its fallback chain, so the next

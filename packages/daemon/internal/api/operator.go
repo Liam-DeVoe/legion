@@ -207,8 +207,9 @@ type DeliveryView struct {
 	// adopt the working copy, when the last of them failed by the daemon's clock and the error it
 	// failed with (`supervise.Delivery.SendFailures` and its two companions). They are a
 	// diagnosis record rather than a budget: the budget is the claim's `promptFailures` and
-	// `promptRetires`, which only a refused adoption — the shim's answer about this workspace —
-	// spends, while these count every adoption that failed, charged or not; an adoption lost to
+	// `promptRetires`, which, of the adoptions that fail, only a refused one — the shim's answer
+	// about this workspace — spends (the two take waits charge it too), while these count every
+	// adoption that failed, charged or not; an adoption lost to
 	// the transport is charged nothing and waits for the next take, and that is the stall this
 	// exists to name. An accepted take clears all three, so a pending task no adoption has failed
 	// for carries none of them on the wire.

@@ -12605,8 +12605,8 @@ console.log(JSON.stringify(args));
   });
 
   test("a regain hook that never settles does not block the next heartbeat tick's registration", async () => {
-    // The hook is legion.ts's daemon round-trip (`claims/ready`, retried on a 5xx or a transport
-    // failure), which this side cannot bound. The heartbeat's healing latch must release once
+    // The hook is legion.ts's daemon round-trip (the claim's `claims/task` read), which this
+    // side cannot bound. The heartbeat's healing latch must release once
     // registration and the claim are settled, or a stuck hook would stop re-registration and
     // let the session's registry entry lapse.
     const role = "legion-controller";
@@ -13222,7 +13222,7 @@ console.log(JSON.stringify(args));
   test("a failed role read does not make the next healthy heartbeat report a regain", async () => {
     // Only a lapsed registration can leave the listener answering "no holder" for a claim that
     // survived; a role read that fails after a successful registration is a plain heartbeat
-    // error and must not trigger a redundant daemon ready call on the following tick.
+    // error and must not trigger a redundant `claims/task` read on the following tick.
     const role = "legion-controller";
     let roleReadBroken = false;
     const roleClaims: unknown[] = [];

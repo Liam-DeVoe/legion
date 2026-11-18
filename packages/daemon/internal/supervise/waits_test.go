@@ -717,8 +717,8 @@ func TestSilentRegistrationOfANewProcessClearsTheSeenAndTakeState(t *testing.T) 
 	h.relaunched()
 
 	for where, c := range map[string]Claim{"the machine": h.claim(), "the store": h.store.load(testToken)} {
-		if c.TaskSeenRevision.Epoch != "" || c.TaskSeenRevision.Revision != 0 || c.TaskTakeState != "" {
-			t.Fatalf("%s holds seen %q/%d and take %q after the new process registered, want none", where, c.TaskSeenRevision.Epoch, c.TaskSeenRevision.Revision, c.TaskTakeState)
+		if c.TaskSeenRevision != (TaskRevision{}) || c.TaskTakeState != "" {
+			t.Fatalf("%s holds seen %+v and take %q after the new process registered, want none", where, c.TaskSeenRevision, c.TaskTakeState)
 		}
 	}
 	h.advance(takeBound)
@@ -759,9 +759,9 @@ func TestSilentReconnectHelloAfterADaemonRestartClearsNothing(t *testing.T) {
 	h.connect()
 
 	for where, c := range map[string]Claim{"the machine": h.claim(), "the store": h.store.load(testToken)} {
-		if c.TaskSeenRevision.Epoch != before.TaskSeenRevision.Epoch || c.TaskSeenRevision.Revision != before.TaskSeenRevision.Revision || c.TaskTakeState != before.TaskTakeState {
-			t.Fatalf("%s holds seen %q/%d and take %q after the reconnect hello, want %q/%d and %q as before the restart",
-				where, c.TaskSeenRevision.Epoch, c.TaskSeenRevision.Revision, c.TaskTakeState, before.TaskSeenRevision.Epoch, before.TaskSeenRevision.Revision, before.TaskTakeState)
+		if c.TaskSeenRevision != before.TaskSeenRevision || c.TaskTakeState != before.TaskTakeState {
+			t.Fatalf("%s holds seen %+v and take %q after the reconnect hello, want %+v and %q as before the restart",
+				where, c.TaskSeenRevision, c.TaskTakeState, before.TaskSeenRevision, before.TaskTakeState)
 		}
 	}
 	if p := h.pending(); !p.awaitsTurn() {

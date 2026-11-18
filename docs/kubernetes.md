@@ -2175,8 +2175,7 @@ The patch that suspends the pod also names it on the Sandbox, as the `legion.dev
 one merge patch, so a suspension the API server refuses names nothing and every other annotation of the Sandbox stays.
 Once the named pod is being deleted or is gone, the runtime reports each role recorded in it as displaced.
 When its cached copy of the Sandbox does not name the pod yet, it reads the Sandbox from the API server before it reports the end, and reports it uncertain, to be read again, if that read fails.
-The supervisor then logs `supervise: the process ended with a pod
-the daemon replaced; relaunching it uncharged` and resumes the role's session in the new pod at once.
+The supervisor then logs `supervise: the process was displaced through no fault of its own, its pod replaced by the daemon or it another runtime's process this daemon takes over; relaunching it uncharged` and resumes the role's session in the new pod at once.
 It charges neither a launch failure nor a death.
 A turn the role was in is lost: its task is taken back under its number and taken again once the session resumes, as a moved address's relaunch does.
 The annotation lives on the Sandbox, so a daemon restarted mid-replacement reads it as well.
@@ -2681,7 +2680,7 @@ A pending task's `take_told` names each of the claim's records whose `toldBy` is
 It drops the push path's three marks on a pending task, which a task the worker takes has no use for:
 `pending_task_deliveries.delivered_at`, `marked_by` and `prompted`.
 
-To roll this release back to contract 151, the release just before it, stop the daemon and run the nineteen statements below, which leave the store at the earlier release's schema and at that release's own version, 20261116165926:
+To roll this release back to contract 152, the release just before it, stop the daemon and run the nineteen statements below, which leave the store at the earlier release's schema and at that release's own version, 20261116165926:
 every database this release migrated records 20261116165926_role_holders_publish above this migration's own 20261113175649, so the version the store reports is that release's before the block and after it, and the block deletes no row but this migration's.
 
 ```sh
@@ -2713,7 +2712,7 @@ SQL
 It prints `BEGIN`, three `ALTER TABLE`s, `UPDATE <n>` for the supervise rows whose payload carried the key, fourteen more `ALTER TABLE`s, `DELETE 1` and `COMMIT`;
 a rerun prints a `NOTICE` for each of the seventeen columns it finds as it means to leave them, the same `ALTER TABLE`s, `UPDATE 0`, `DELETE 0` and `COMMIT`, and changes nothing.
 The three `add column`s come first because the earlier release cannot read the claims table without them:
-its claim read names `d.delivered_at`, `d.marked_by` and `d.prompted` (`claimSelect` in `internal/store/claims.go` at contract 151), so every claim read fails and its supervisor loads nothing, and its delivery write names all three.
+its claim read names `d.delivered_at`, `d.marked_by` and `d.prompted` (`claimSelect` in `internal/store/claims.go` at contract 152), so every claim read fails and its supervisor loads nothing, and its delivery write names all three.
 They come back at the defaults their own migrations gave them, which that release reads as a task it has queued and not yet sent:
 it sends an unconfirmed pending task at its claim's next ready, as it sends any task it queued itself, and reads a confirmed one as a turn under way.
 The `update` takes `origin` back out of every supervise row of the outbox, as the phase entry's block takes out `entry` and `resendEntry`:
@@ -2729,7 +2728,7 @@ an accepted take's confirmation is applied once under an event id that names the
 Nothing else reads a number across the rollback, since the earlier release's worker takes no value and the epochs and revisions start empty again.
 The block needs no migration recorded after this one to build on the fourteen columns it drops, and at this release none of the six recorded after it touches them:
 20261113181500_architect_stalled_notices adds the table `architect_stalled_notices`, 20261113182000_architect_entry_upgrade writes the root architects' `phases` rows, their claims' `given_entry` and `served_entry` and that table's marks, 20261114020537_claim_entry_handshake adds the four `claims.handshake_*` columns, 20261114031356_merge_queue_removal rewrites `outbox_kind_check`, 20261114061900_phase_entry_verbatim adds `phases.entry_verbatim`, and 20261116165926_role_holders_publish rewrites `outbox_kind_check` again and adds the unique index `outbox_role_holders_publish_issue_unique`.
-Contract 151 carries all six, so the rollback to it runs this block alone and leaves the six standing.
+Contract 152 carries all six, so the rollback to it runs this block alone and leaves the six standing.
 The earlier release also refuses this release's two keys, `worker_take_timeout_seconds` and `worker_turn_start_timeout_seconds`, as keys it does not know (`unknown key worker_take_timeout_seconds`), so take them out of `legion.yaml` before you pin it, where the file sets them.
 A rollback past this release to contract 87, across 20261111225552_phase_entry, crosses every release between the two, and runs their ways back newest first, with the daemon stopped and before the earlier image is pinned:
 this block;
@@ -2740,10 +2739,10 @@ then the five statements of [Rolling back the release whose update round ends at
 then the steps of [Rolling back the release that frees the slot past review](#rolling-back-the-release-that-frees-the-slot-past-review) (contract 111) and of [Rolling back the release that names what nothing starts](#rolling-back-the-release-that-names-what-nothing-starts) (contract 98);
 and last the phase entry's block above (contract 94).
 Contracts 144, 141 and 137 run no SQL on the way back, but each adds a key to `legion.yaml` that the releases before it refuse, and the contract 146 section above gives the step of each, taken before the earlier image is pinned;
-contract 151 runs none either, and the `runtime.kubernetes.sandbox` key it adds is taken out by the step of "Rolling back" under [Issue pods in microVMs](#issue-pods-in-microvms) below.
+contracts 152 and 151 run none either, and the `runtime.kubernetes.sandbox` key 151 adds is taken out by the step of "Rolling back" under [Issue pods in microVMs](#issue-pods-in-microvms) below.
 Contracts 141, 133 and 132 have no way back of their own in the store: 20261111045636_experiment_assignments adds the table `experiment_assignments`, 20261112070503_pull_request_state_read_at adds `pull_requests.state_read_at`, with a default, cybermonklabs/legion#3983's 20261113082415_claim_ended_work, which landed at contract 133 too, adds `claims.ended_work`, nullable, and 20261111214351_issue_released_for_wait adds `issues.released_for_wait_at`, nullable, and no earlier release names any of them.
-Contract 123's migration, 20261113090512_phase_entry_moved_back, needs no statement on the way back (its header names the one statement its roll-forward runs), and contracts 151, 144, 137 and 104 add no migration.
-The release before the phase entry reads the three marks as contract 151 does, and neither contract 146's block nor the phase entry's touches this migration's columns.
+Contract 123's migration, 20261113090512_phase_entry_moved_back, needs no statement on the way back (its header names the one statement its roll-forward runs), and contracts 152, 151, 144, 137 and 104 add no migration.
+The release before the phase entry reads the three marks as contract 152 does, and neither contract 146's block nor the phase entry's touches this migration's columns.
 The roll-forward after them applies again, in version order, every migration those ways back re-armed: the phase entry's first, then 20261113110610_drop_claim_update_answer_marks, which the update round's way back re-arms, then this one and contract 146's four after it, so this migration's second fill reads the `served_entry` the phase entry's second fill wrote, before 20261113182000 settles each root architect at entry 1 again.
 The `20261113175649` is the identifier of `20261113175649_task_numbers.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.

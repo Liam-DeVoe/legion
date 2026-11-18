@@ -1379,9 +1379,10 @@ export type LegionTaskSeenRequestBody = z.output<typeof LegionTaskSeenRequest>;
 
 /** `claim.TakeRequest`, the body of `POST /legion/v1/claims/take`: the worker asking, because its
  * host is idle, to take the task its value names. A take with no answer — a refused, reset or
- * closed connection, a DNS failure, no answer in 5 minutes, or a 502, 503 or 504 that names no
- * `code` — is sent again unchanged, and a take of a number already accepted whose turn has not
- * started is answered the same text again (contract 157). */
+ * closed connection, an unreachable host or network, a connect or read timeout, a DNS failure, no
+ * answer in 5 minutes, or a 502, 503 or 504 that names no `code` — is sent again unchanged, and a
+ * take of a number already accepted and not finished is answered the same text again, before its
+ * turn starts or after (contract 157). */
 export const LegionTakeRequest = eitherCaller(taskValueFields);
 
 export type LegionTakeRequestBody = z.output<typeof LegionTakeRequest>;
@@ -1602,8 +1603,9 @@ const legionDeliveryView = z.object({
   interrupted: z.literal(true).optional(),
   /** How many takes of this task failed to adopt the working copy, when the last of them failed
    * and the error it failed with. The three are a diagnosis record, not a budget: the budget is
-   * `budgets.promptFailures` and `budgets.promptRetires`, which only a refused adoption — the
-   * shim's answer about this workspace — spends, while these count every adoption that failed,
+   * `budgets.promptFailures` and `budgets.promptRetires`, which, of the adoptions that fail, only
+   * a refused one — the shim's answer about this workspace — spends (the two take waits charge it
+   * too), while these count every adoption that failed,
    * charged or not — an adoption lost to the transport costs nothing and waits for the next take,
    * which is the stall they exist to name. An accepted take clears all three, so a task no
    * adoption has failed for carries none. */

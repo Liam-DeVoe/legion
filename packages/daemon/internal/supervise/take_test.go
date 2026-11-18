@@ -793,14 +793,11 @@ func TestTakeFromAClaimRestoredWorkingIsTheWorkersWordThatItIsIdle(t *testing.T)
 	}
 }
 
-// A take whose decision fails on a read of the store before it is answered — the connection
-// dropped under the read of the issue's phase — is answered with no outcome, which the take route
-// answers 500 CLAIM_WRITE_FAILED. The plugin sends no take again after an answer that carries a
-// code, and asks again only at a newer revision of the value (pi-shared's task-take.ts,
-// unanswered), so the record, which still owes the task with no hold standing, writes the value
-// again under its number (R2: whenever the record owes a claim a task the claim is free to take);
-// otherwise the task never reaches the worker and no bound charges anyone for it.
-func TestTakeWhoseDecisionFailedIsWrittenAgainForTheWorkerToAsk(t *testing.T) {
+// decisionFailsHarness is a ready claim queued a phase task whose take's decision fails: the
+// record's phase read fails (errBoom) until the case clears the answer it returns, and then
+// answers that the phase holds.
+func decisionFailsHarness(t *testing.T) (*harness, *bool) {
+	t.Helper()
 	failing := true
 	h := waitsHarness(t, func(d *Deps) {
 		d.PhaseHolds = func(context.Context, string, phase.Phase, uint64) (bool, error) {
@@ -813,11 +810,23 @@ func TestTakeWhoseDecisionFailedIsWrittenAgainForTheWorkerToAsk(t *testing.T) {
 	h.manualTakes()
 	h.reach(StateReady)
 	h.must(RequestDeliver{Claim: h.token, Task: "implement the plan", Phase: phase.Implementing, Generation: 7})
+	return h, &failing
+}
+
+// A take whose decision fails on a read of the store before it is answered — the connection
+// dropped under the read of the issue's phase — is answered with no outcome, which the take route
+// answers 500 CLAIM_WRITE_FAILED. The plugin sends no take again after an answer that carries a
+// code, and asks again only at a newer revision of the value (pi-shared's task-take.ts,
+// unanswered), so the record, which still owes the task with no hold standing, writes the value
+// again under its number (R2: whenever the record owes a claim a task the claim is free to take);
+// otherwise the task never reaches the worker and no bound charges anyone for it.
+func TestTakeWhoseDecisionFailedIsWrittenAgainForTheWorkerToAsk(t *testing.T) {
+	h, failing := decisionFailsHarness(t)
 	asked := h.seen()
 	if answer, err := h.takeValue(asked); answer.Outcome != "" || err == nil {
 		t.Fatalf("take while the phase read fails = %+v, %v; want no answer and the read's failure", answer, err)
 	}
-	failing = false
+	*failing = false
 
 	h.advance(takeBound)
 	h.observe(runtime.Alive)
@@ -881,7 +890,9 @@ func TestTakeOfARelaunchedProcessIsDecidedAfreshWhileItsPredecessorsTakeAdopts(t
 		wg.Wait()
 		h.m.Wait()
 
-		t.Logf("the old process's take was answered %+v, %v", oldAnswer, oldErr)
+		if oldErr == nil && oldAnswer.Outcome == TakeOutcomeAccepted {
+			t.Fatalf("the old process's take was answered %+v, want it not accepted: its process is gone, and the take the claim holds is the relaunched process's", oldAnswer)
+		}
 		if newErr != nil || newAnswer.Outcome != TakeOutcomeAccepted || newAnswer.Text != "implement the plan" {
 			t.Fatalf("the relaunched process's take = %+v, %v, want it decided afresh and accepted with the task's text", newAnswer, newErr)
 		}

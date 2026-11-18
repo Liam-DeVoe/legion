@@ -42,14 +42,14 @@ func promptRetryDelay(attempt int) time.Duration {
 }
 
 // providerErrored is a task's turn reported over with a provider error (reportedTask). The task
-// is kept whatever the decision: it is taken back under its number, its take gone (takeBack) and
+// is kept whatever the decision: it is taken back under its number, its take gone (takeToLadder) and
 // the claim's TaskTaken kept, because the turn ran and the agent read it. No prompt budget is
 // charged — chargePrompt retires and then fails a claim past Limits.PromptFailures, which would
 // fail every claim at once in a provider outage, and R2 forbids an attempt limit — so the claim
 // counts its own run of such turns instead, and a turn that ends with no error puts that run back
 // to zero (reportedTask).
 //
-// What the take told goes back to untold with it (takeBack, giveBackTake), so the task's next
+// What the take told goes back to untold with it (takeToLadder, giveBackTake), so the task's next
 // accepted take carries the abandoned session's sentence, the record of the last let-go, or both,
 // again. A provider error is a model call that failed — often the turn's first, whose model never
 // read the take's text — so the sentence may have reached nobody, and where an earlier call of

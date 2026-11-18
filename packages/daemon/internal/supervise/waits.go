@@ -169,7 +169,7 @@ func (m *Machine) firstWaitNow() (firstWait, bool) {
 // that was not its own), the end of the last hold that stood over it (for the in-turn hold, the
 // end of that turn), and the worker's first act after a daemon start (awaitsAct); no time inside
 // a hold, or inside a run the daemon gave the take, is charged (dispatch://INFRA-2811, R5 and
-// finding 1's put-back). The moment is recorded where the bound is armed, as the first wait's
+// decision 8's put-back). The moment is recorded where the bound is armed, as the first wait's
 // restart is (Machine.timers, TimerTurnStart).
 func (m *Machine) secondWaitNow() (time.Time, bool) {
 	p := m.claim.Pending

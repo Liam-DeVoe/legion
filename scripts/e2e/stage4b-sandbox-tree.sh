@@ -752,8 +752,8 @@ pod_file() { pod_exec "$1" "$2" test -s "$3"; }
 # reads against: a start that waited for the outgoing worker's turn, as the deleted takeover did,
 # would not reach it while the tester's own turn runs.
 conflict_task_taken() {
-  claims_cli list --json | jq -e --arg issue "$1" \
-    'any(.claims[]; .issue == $issue and .role == "implementer" and .state == "working" and .pending != null and .pending.phase == "implementing" and (.pending.confirmedAt // "") != "")' >/dev/null
+  claim_by_token "$(claim_token "$1" implementer)" |
+    jq -e '.state == "working" and .pending != null and .pending.phase == "implementing" and (.pending.confirmedAt // "") != ""' >/dev/null
 }
 # aborted_turns_jq selects every aborted turn of a session read as one raw string: an assistant
 # message Oh My Pi ended on an abort, which is what an interrupt of a running turn leaves behind

@@ -103,7 +103,7 @@ func TestTakeAfterADeathCarriesTheNoteOfTheEndThatCutItsLastTurn(t *testing.T) {
 // while the task waits for the relaunch (Claim.TaskTaken): for a claim that has served no run, it
 // is what attributes a completion reported before the relaunched worker takes the task again to
 // the task's run (ServingRun), where a task that lost it would have that completion refused.
-func TestAnInterruptedTaskKeepsItsReadMarkUntilItIsTakenAgain(t *testing.T) {
+func TestAnInterruptedTaskKeepsTheTakeItsWorkerMadeWhileItWaitsForTheRelaunch(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateReady)
 	h.must(RequestDeliver{Claim: testToken, Task: "implement the plan", Generation: 5})
@@ -137,10 +137,10 @@ func TestATaskNotYetBegunWhenTheProcessDiedIsTakenAgainAsItWas(t *testing.T) {
 }
 
 // Taking an interrupted task back is one delivery write, and a write that fails leaves the task as
-// it was, confirmed. Were it left taken back in memory only, the next death would find nothing to
-// take back and relaunch with the store still holding the confirmed delivery, and a restart before
-// the relaunched worker took it again would retire it as served: the stranded phase this exists
-// to stop.
+// it was, its take accepted. Were it left taken back in memory only, the next death would find
+// nothing to take back and relaunch with the store still holding the accepted take, and a restart
+// before the relaunched worker took it again would retire it as served: the stranded phase this
+// exists to stop.
 //
 // The death is the next report's to charge, since the report that could not write the take-back
 // charged nothing (died): one dead process is one death, and this one costs the claim a death
@@ -157,7 +157,7 @@ func TestAnInterruptedTaskWhoseWriteFailedIsTakenBackAtTheNextDeath(t *testing.T
 		t.Fatal("the death reported success with the delivery write failing")
 	}
 	if p := h.pending(); p.ConfirmedAt.IsZero() || p.Interrupted {
-		t.Fatalf("pending after the failed write = %+v, want it as it was: confirmed, not taken back", p)
+		t.Fatalf("pending after the failed write = %+v, want it as it was: its take accepted, not taken back", p)
 	}
 	h.store.fail("PutDelivery", nil)
 	h.observe(runtime.Gone)

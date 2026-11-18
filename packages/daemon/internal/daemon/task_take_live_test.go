@@ -1062,7 +1062,10 @@ func (r *taskTakeLive) start(launch runtime.SpawnSpec) *taskWorker {
 	w.mu.Lock()
 	w.driver = newTakeDriver(func(path string, body, answer any) error { return r.d.post(path, body, answer) }, w.write,
 		claim.AgentCaller{ClaimToken: r.token, SessionID: r.session, Secret: w.secret}, w.registered.Generation)
-	w.driver.values, w.driver.started = w.heldValue, r.d.turnRead(r.token)
+	// Its posts and its turn read go to the daemon running at the time, which a restart replaces
+	// (reattach).
+	w.driver.values = w.heldValue
+	w.driver.started = func() (bool, error) { return r.d.turnRead(r.token)() }
 	w.mu.Unlock()
 	if status, body := r.d.request(http.MethodPost, "/legion/v1/claims/ready", claim.ReadyRequest{
 		ClaimToken: r.token, SessionID: r.session, Secret: w.secret, Generation: w.registered.Generation,

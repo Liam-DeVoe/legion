@@ -6,7 +6,6 @@ package supervise
 // message an operator and the cost reading search for is pinned.
 
 import (
-	"context"
 	"log/slog"
 	"testing"
 	"time"
@@ -226,18 +225,7 @@ func TestTaskValueLogOfTheSilenceRepairNamesOriginSilence(t *testing.T) {
 // gives its worker a newer revision to ask at names the cause it is, take-failed, and not a hold's
 // end, since no hold refused it.
 func TestTaskValueLogOfATakeTheDaemonFailedToDecideNamesTakeFailed(t *testing.T) {
-	failing := true
-	h := waitsHarness(t, func(d *Deps) {
-		d.PhaseHolds = func(context.Context, string, phase.Phase, uint64) (bool, error) {
-			if failing {
-				return false, errBoom
-			}
-			return true, nil
-		}
-	})
-	h.manualTakes()
-	h.reach(StateReady)
-	h.must(RequestDeliver{Claim: h.token, Task: "implement the plan", Phase: phase.Implementing, Generation: 7})
+	h, failing := decisionFailsHarness(t)
 	asked := h.seen()
 	if answer, err := h.takeValue(asked); answer.Outcome != "" || err == nil {
 		t.Fatalf("take while the phase read fails = %+v, %v; want no answer and the read's failure", answer, err)
@@ -253,7 +241,7 @@ func TestTaskValueLogOfATakeTheDaemonFailedToDecideNamesTakeFailed(t *testing.T)
 	wantAttr(t, failed[0], "revision", slog.Uint64Value(asked.Revision).String())
 	wantAttr(t, failed[0], "error", "read the phase of "+string(h.token)+": "+errBoom.Error())
 
-	failing = false
+	*failing = false
 	h.observe(runtime.Alive)
 	writes := h.records.of(writtenLine)
 	if len(writes) != 2 {
@@ -268,23 +256,12 @@ func TestTaskValueLogOfATakeTheDaemonFailedToDecideNamesTakeFailed(t *testing.T)
 // then, and taken back at the second bound, is written again as the retake it is, not as the
 // failed take before it.
 func TestTaskValueLogOfARetakeAfterAFailedTakeNamesRetake(t *testing.T) {
-	failing := true
-	h := waitsHarness(t, func(d *Deps) {
-		d.PhaseHolds = func(context.Context, string, phase.Phase, uint64) (bool, error) {
-			if failing {
-				return false, errBoom
-			}
-			return true, nil
-		}
-	})
-	h.manualTakes()
-	h.reach(StateReady)
-	h.must(RequestDeliver{Claim: h.token, Task: "implement the plan", Phase: phase.Implementing, Generation: 7})
+	h, failing := decisionFailsHarness(t)
 	asked := h.seen()
 	if answer, err := h.takeValue(asked); answer.Outcome != "" || err == nil {
 		t.Fatalf("take while the phase read fails = %+v, %v; want no answer and the read's failure", answer, err)
 	}
-	failing = false
+	*failing = false
 	if answer, err := h.takeValue(asked); answer.Outcome != TakeOutcomeAccepted || err != nil {
 		t.Fatalf("the same take sent again = %+v, %v; want it accepted", answer, err)
 	}

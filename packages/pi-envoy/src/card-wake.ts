@@ -180,12 +180,13 @@ import type {
  * the host idle goes as the startup phase's cards go, a follow-up with no `triggerTurn`, and is
  * owed its wake as a startup card seen while the start-turn mark holds is: a check that finds the
  * host idle sends no wake and reads the mark again every `TASK_TURN_POLL_MS`, since no event tells
- * this module that a refused take cleared it. The task's turn clears the mark at its
+ * this module that the mark was cleared with no turn. The task's turn clears the mark at its
  * `agent_start`, and its `agent_end` checks again, which wakes for every held card the task's
- * turn did not read; a take refused or dropped clears it with no turn, and the next poll wakes
- * for them then. The mark has no cap: a take the Legion entry sends again while the daemon is
- * unreachable holds the cards back for as long as it is, since a card's turn started meanwhile
- * would be the turn the task's take, once answered, is refused for.
+ * turn did not read; a take refused or dropped clears it with no turn, and so does the read after
+ * `claims/ready` when it answers with no task owed, and the next poll wakes for them then. The
+ * mark has no cap: a take the Legion entry sends again while the daemon is unreachable holds the
+ * cards back for as long as it is, since a card's turn started meanwhile would be the turn the
+ * task's take, once answered, is refused for.
  */
 
 /** How long a card sent in the startup phase may go without its `message_end` before the wake's
@@ -202,7 +203,8 @@ export const STARTUP_TURN_CAP_MS = 30_000;
 export const STARTUP_TURN_POLL_MS = 1_000;
 
 /** How often a check reads the task-turn mark again while it holds: no event tells this module
- *  that a take was refused or dropped, which clears the mark with no turn. */
+ *  that a take was refused or dropped, or that the read after `claims/ready` answered with no task
+ *  owed, each of which clears the mark with no turn. */
 export const TASK_TURN_POLL_MS = 1_000;
 
 /** The `errorMessage` of the assistant message an interrupt ends a run with: the host's

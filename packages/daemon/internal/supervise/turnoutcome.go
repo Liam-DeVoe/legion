@@ -361,7 +361,7 @@ const notTheTakesTurnLine = "supervise: a turn's report names no task of the tak
 func (m *Machine) notTheTakesTurn(ctx context.Context, r RequestTurnOutcome) error {
 	p := m.claim.Pending
 	if p == nil || !p.turnStarted() || p.TakenText == "" || r.Generation != m.claim.Generation ||
-		TakesNoTask(m.claim.PluginContract) {
+		m.endFrameFinishes() {
 		return nil
 	}
 	m.log.Info(notTheTakesTurnLine, "task", p.Number)

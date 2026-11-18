@@ -50,23 +50,18 @@ func newTaskRig(t *testing.T) *taskRig {
 // readInterval after each read that completed.
 func newTaskRigReading(t *testing.T, readInterval time.Duration) *taskRig {
 	t.Helper()
-	rig := newTaskRigOnReading(t, testnats.URL(t), "test-machine", readInterval)
+	rig := newTaskRigOn(t, testnats.URL(t), "test-machine", readInterval)
 	rig.relays.setOwned(true)
 	return rig
 }
 
 // newTaskRigOn is a task rig on url whose session relays and task relay run as machine machineID,
-// not holding its machine's durable binding until the test calls rig.relays.setOwned(true). Its
-// /v1 routes write every registration as test-machine's (newSessionConsumerRigOn), so a session
-// registered through a rig of another machine id is not that rig's to relay.
-func newTaskRigOn(t *testing.T, url, machineID string) *taskRig {
-	t.Helper()
-	return newTaskRigOnReading(t, url, machineID, taskRelayReadInterval)
-}
-
-// newTaskRigOnReading is newTaskRigOn with its task relay's watcher reading the bucket whole
-// again readInterval after each read that completed.
-func newTaskRigOnReading(t *testing.T, url, machineID string, readInterval time.Duration) *taskRig {
+// its task relay's watcher reading the bucket whole again readInterval after each read that
+// completed, not holding its machine's durable binding until the test calls
+// rig.relays.setOwned(true). Its /v1 routes write every registration as test-machine's
+// (newSessionConsumerRigOn), so a session registered through a rig of another machine id is not
+// that rig's to relay.
+func newTaskRigOn(t *testing.T, url, machineID string, readInterval time.Duration) *taskRig {
 	t.Helper()
 	client, err := bus.ConnectOwningStream([]string{url}, bus.WithReplicas(1))
 	if err != nil {
@@ -638,12 +633,12 @@ func TestTaskRelayForgetsAPurgedDeleteAtItsScheduledRead(t *testing.T) {
 // task that let go of it does not.
 func TestTaskRelayOnlyTheOwningListenerPublishes(t *testing.T) {
 	url := testnats.URL(t)
-	owner := newTaskRigOn(t, url, "test-machine")
+	owner := newTaskRigOn(t, url, "test-machine", taskRelayReadInterval)
 	owner.relays.setOwned(true)
-	elsewhere := newTaskRigOn(t, url, "other-machine")
+	elsewhere := newTaskRigOn(t, url, "other-machine", taskRelayReadInterval)
 	elsewhere.relays.setOwned(true)
 	// A rolling deploy's second task of the owner's machine, which does not hold the binding yet.
-	successor := newTaskRigOn(t, url, "test-machine")
+	successor := newTaskRigOn(t, url, "test-machine", taskRelayReadInterval)
 	_, kv := createTaskBucket(t, url)
 	const sessionID = "ses_task_owned"
 	claim := "legion-infra-infra-2811-1-merger"

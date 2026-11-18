@@ -3,7 +3,7 @@ package api
 import (
 	"bytes"
 	"encoding/json"
-	"maps"
+	"slices"
 	"testing"
 	"time"
 
@@ -67,11 +67,7 @@ func neverReconnectedCauses(t *testing.T, body []byte) (failure, pending string)
 // The negative control is the table without the row (stateNarrowings' never_reconnected row): the
 // caller below the contract is then served never_reconnected.
 func TestNeverReconnectedIsServedAsNeverRegisteredBelowItsContract(t *testing.T) {
-	state := populatedState(t)
-	issues := make(map[string]Issue, len(state.Issues)+1)
-	maps.Copy(issues, state.Issues)
-	issues["LEGION-214"] = neverReconnectedIssue()
-	state.Issues = issues
+	state := narrowingState(t)
 
 	below, narrowings := stateNarrowed(t, state, statePodAddr+":41000", podClaims(supervise.TaskTakeContract-1))
 	if failure, pending := neverReconnectedCauses(t, below); failure != string(supervise.CauseNeverRegistered) ||
@@ -82,11 +78,7 @@ func TestNeverReconnectedIsServedAsNeverRegisteredBelowItsContract(t *testing.T)
 	if bytes.Contains(below, []byte(supervise.CauseNeverReconnected)) {
 		t.Errorf("the body served to a caller at %d names %q: %s", supervise.TaskTakeContract-1, supervise.CauseNeverReconnected, below)
 	}
-	logged := false
-	for _, line := range narrowings {
-		logged = logged || line.Dropped == neverReconnectedDropped
-	}
-	if !logged {
+	if !slices.ContainsFunc(narrowings, func(l narrowingLine) bool { return l.Dropped == neverReconnectedDropped }) {
 		t.Errorf("the daemon wrote %+v for a caller at %d, want a line saying it dropped %q", narrowings, supervise.TaskTakeContract-1, neverReconnectedDropped)
 	}
 

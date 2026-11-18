@@ -87,7 +87,9 @@ export interface EnvoyPluginInterface {
    * The session whose task's turn is pending, undefined while none is. The Legion entry's take
    * (`src/task-take.ts`) sets it from the moment it holds a task value it will ask the daemon to
    * take — the registration's value included, before the role is claimed — until the task's turn
-   * starts or the take is refused or dropped. The Envoy entry reads it
+   * starts or the take is refused or dropped, and holds it, whatever value it holds, while its host
+   * awaits the read of the claim's value after `claims/ready` (`TaskTake.awaitRead`), which clears
+   * it with no turn when it answers with no task owed. The Envoy entry reads it
    * (`packages/pi-envoy/src/card-wake.ts`): while it names the Envoy entry's own live session, a
    * card that finds the session idle starts no turn, and the wake for it waits, so neither a card
    * nor the lane kept for the role is the turn the task's take goes into.

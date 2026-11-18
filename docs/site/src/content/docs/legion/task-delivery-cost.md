@@ -37,7 +37,8 @@ kubectl -n legion logs deploy/legion-<project>-daemon -c legion | legion task-co
   A reading of the window alone does not see that task.
 
 - `--claim <token>` is optional.
-  With it, the command reads the lines of one claim only.
+  With it, the command counts the lines of one claim only.
+  It still reads the time of every line and each start of the daemon, since those bound every claim's clock.
   A claim token is `legion-<project>-<issue key in lower case>-<role>`, for example `legion-infra-infra-2811-implementer`.
 
 - `--take-timeout <seconds>` is optional.

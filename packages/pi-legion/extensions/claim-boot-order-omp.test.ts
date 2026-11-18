@@ -412,7 +412,7 @@ test.skipIf(skip)(
   CASE_TIMEOUT_MS
 );
 
-// The third state (finding 11 of review round 1): the registration answers no task, and the
+// The third state: the registration answers no task, and the
 // daemon's ready decision writes one, as it writes the relaunch record's task. The listener would
 // relay that value only once the role claim changed the role's holder, after it handed the kept
 // message over, so the boot reads the value once the ready has answered and before it claims the
