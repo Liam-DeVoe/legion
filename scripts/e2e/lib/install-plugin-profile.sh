@@ -136,8 +136,11 @@ fi
 # carries the pinned binary at LEGION_OMP_PATH and no mise, so a profile built there names the
 # binary rather than a tool spec (dispatch://INFRA-1303). --omp is a mise tool spec whatever it
 # looks like, so a path given to it goes to mise as a spec, never run as a binary.
+# omp_named is how the verification's failure names the Oh My Pi that ran: the binary's own path,
+# or `omp <spec>` for mise's build.
 if [ -n "$omp_binary" ]; then
   omp=$(realpath -e -- "$omp_binary")
+  omp_named=$omp
   run_omp() { (cd "$dest" && HOME=$home OMP_PROFILE=$profile "$omp" "$@"); }
 else
   pin=${omp_spec:-$(<"$root/.omp-pin")}
@@ -146,6 +149,7 @@ else
     echo "$me: mise has no executable bin/omp for $pin" >&2
     exit 1
   }
+  omp_named="omp $pin"
   mise_data=${MISE_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/mise}
   run_omp() { (cd "$dest" && HOME=$home MISE_DATA_DIR=$mise_data OMP_PROFILE=$profile mise x "$pin" -- "$omp" "$@"); }
 fi
@@ -170,7 +174,7 @@ listing=$(run_omp plugin list --json)
 plugin=$(jq -c --arg name "$name" '[.npm[]? | select(.name == $name)]' <<<"$listing")
 if ! jq -e --arg v "$version" 'length == 1 and .[0].version == $v and .[0].enabled == true' \
   <<<"$plugin" >/dev/null; then
-  echo "$me: omp $pin plugin list under HOME=$home OMP_PROFILE=$profile does not show $name@$version enabled: $plugin" >&2
+  echo "$me: $omp_named plugin list under HOME=$home OMP_PROFILE=$profile does not show $name@$version enabled: $plugin" >&2
   exit 1
 fi
 installed=$(jq -r '.[0].path' <<<"$plugin")

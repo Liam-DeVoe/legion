@@ -177,6 +177,30 @@ describe("install-plugin-profile.sh's Oh My Pi", () => {
     expect(r.wrapperRan).toBe(false);
   });
 
+  // Catches: a verification failure under --omp-binary that names mise's pin, which that branch
+  // never sets, so `set -u` ends the run on `pin: unbound variable` and the listing is lost.
+  test("an --omp-binary whose plugin list omits the plugin fails naming the binary and the listing", () => {
+    const f = fixture();
+    const binary = join(f.run, "pod", "omp-without-plugin");
+    writeFileSync(
+      binary,
+      `#!/usr/bin/env bash
+if [ "$1 $2" = "plugin list" ]; then
+  printf '{"npm":[]}\\n'
+fi
+`,
+      { mode: 0o755 }
+    );
+    const r = install(["--omp-binary", binary], f);
+    expect(r.stderr).not.toContain("unbound variable");
+    expect(r.code).toBe(1);
+    expect(r.stderr).toBe(
+      `install-plugin-profile: ${realpathSync(binary)} plugin list under HOME=${realpathSync(f.home)} ` +
+        "OMP_PROFILE=legion-e2e-test does not show @sjawhar/pi-envoy@0.0.0-test enabled: []\n"
+    );
+    expect(r.calls).toEqual([]);
+  });
+
   // Catches: an --omp read as a binary whenever it names an executable file, which is what let a
   // mistyped binary path fall through to `mise install <path>`: --omp means one thing.
   test("--omp is a mise tool spec even when it names an executable file", () => {

@@ -1374,11 +1374,16 @@ sleep() { command sleep 0.05; }`;
   });
 
   // Catches: a box with no tmux that sets no SKILL_SCENARIOS_OMP, where launch would start no
-  // agent at all.
-  test("with no tmux on PATH, the agent is a process group of the run's own shell, whichever omp runs", () => {
-    const turn = laterTurn({ tmux: false, given: false });
+  // agent at all, and a pod with no tmux that sets it, where the agent would be the pin's omp
+  // through a mise the pod does not carry.
+  test.each([
+    ["mise's install of the pin", false],
+    ["the binary SKILL_SCENARIOS_OMP names", true],
+  ] as const)("with no tmux on PATH, the agent is a process group of the run's own shell, whichever omp runs: %s", (_omp, given) => {
+    const turn = laterTurn({ tmux: false, given });
     expect({ code: turn.code, stderr: turn.stderr }).toEqual({ code: 0, stderr: "" });
-    expect(turn.seen).toBe(`${turn.bin}/pin/bin/omp ${prompt} ${turn.run}/sessions\nexit=0\n`);
+    const omp = given ? turn.omp : `${turn.bin}/pin/bin/omp`;
+    expect(turn.seen).toBe(`${omp} ${prompt} ${turn.run}/sessions\nexit=0\n`);
     expect(turn.calls).toEqual(["start_process agent"]);
   });
 });
@@ -1706,7 +1711,7 @@ function greenRun(name: string): string {
 function redFixture(world: string): string {
   const run = greenRun(`red-${world}`);
   const result = bash(
-    `${fn("fail")}\n${fn("red_world_table")}\n${fn("red_world")}\n${fn("red_fixture")}\nR=$1 worker_key=$2 worker_repo=$3\nred_fixture "$4"`,
+    `${fn("fail")}\n${fn("red_world_table")}\n${fn("red_world")}\n${fn("red_fixture")}\n${fn("required_set_fixture")}\nR=$1 worker_key=$2 worker_repo=$3\nred_fixture "$4"`,
     [run, RED_KEY, RED_REPO, world]
   );
   if (result.code !== 0) throw new Error(`red_fixture ${world} failed: ${result.stderr}`);
@@ -2340,125 +2345,111 @@ describe("red_fixture", () => {
     );
   });
 
-  // Catches: a read of the base's required set that another route takes, or that falls to the
-  // 404, in any world: the two the reviewer's prompt gives (packages/daemon/internal/prompts/go/
-  // reviewer.md, "CI is yours to read"), and the protection endpoint, the rulesets list and the
-  // one ruleset. In the batch of 2026-11-17 the prompt's two reads, with their `--jq`, took
-  // worker_fixture's generic check-runs route, whose match their `required_status_checks` text
-  // holds, and exited 1, and the rules read without its `--jq` (trial-i-head-3), the protection
-  // read (trial-i-head-1) and the rulesets list (trial-i-head-5) answered the 404, so every
-  // reviewer read the base as requiring nothing while `gh pr checks --required` named `ci`. Also
-  // a route that takes another's path (the branch route the `/protection` below it, the rulesets
-  // list the one ruleset, the branch route the rules path or the reverse), and an answer in a
-  // shape GitHub does not give, which the prompt's `--jq` reads as nothing.
-  test("the base's rules, rulesets, branch and protection each answer the required ci, in every world", async () => {
+  /** The route of one read of the base's required set, as required_set_fixture matches it. */
+  const requiredSetRoute = (endpoint: string) =>
+    `^gh api .*repos/${RED_REPO}/${endpoint}([?\\s]|$)`;
+
+  // The five reads of the base's required set read nothing of the world (required_set_fixture),
+  // so this row runs that function once, over worker_fixture's green fixture, whose generic
+  // check-runs route is the one that took two of them, and the row after it checks that every
+  // world's fixture carries them. Catches: a read of the base's required set that another route
+  // takes, or that falls to the 404: the two the reviewer's prompt gives (packages/daemon/
+  // internal/prompts/go/reviewer.md, "CI is yours to read"), and the protection endpoint, the
+  // rulesets list and the one ruleset. In the batch of 2026-11-17 the prompt's two reads, with
+  // their `--jq`, took worker_fixture's generic check-runs route, whose match their
+  // `required_status_checks` text holds, and exited 1, and the rules read without its `--jq`
+  // (trial-i-head-3), the protection read (trial-i-head-1) and the rulesets list (trial-i-head-5)
+  // answered the 404, so every reviewer read the base as requiring nothing while `gh pr checks
+  // --required` named `ci`. Also a route that takes another's path (the branch route the
+  // `/protection` below it, the rulesets list the one ruleset, the branch route the rules path or
+  // the reverse), and a required check at another path than the one GitHub answers it at for its
+  // endpoint, which the prompt's `--jq` reads as nothing.
+  test("the base's rules, rulesets, branch and protection each answer the required ci", async () => {
+    const run = greenRun("required-set");
+    expect(
+      bash(`${fn("required_set_fixture")}\nR=$1 worker_repo=$2\nrequired_set_fixture ci`, [
+        run,
+        RED_REPO,
+      ])
+    ).toEqual({ code: 0, stdout: "", stderr: "" });
     const rules = `repos/${RED_REPO}/rules/branches/main`;
     const branch = `repos/${RED_REPO}/branches/main`;
-    const routeOf = (endpoint: string) => `^gh api .*repos/${RED_REPO}/${endpoint}([?\\s]|$)`;
-    const seen: unknown[] = [];
-    for (const world of RED_WORLDS) {
-      const run = redFixture(world);
-      // The prompt's two reads, word for word but for `<o>/<r>` and `<base>`, then each raw, then
-      // the protection endpoint, the rulesets list and the one ruleset.
-      const reads = [
-        await gh(run, [
-          "api",
-          "--paginate",
-          rules,
-          "--jq",
-          '.[] | select(.type=="required_status_checks") | .parameters.required_status_checks[].context',
-        ]),
-        await gh(run, [
-          "api",
-          branch,
-          "--jq",
-          ".protection.required_status_checks.checks[].context",
-        ]),
-        await gh(run, ["api", rules]),
-        await gh(run, ["api", branch]),
-        await gh(run, ["api", `${branch}/protection`]),
-        await gh(run, ["api", `repos/${RED_REPO}/rulesets`]),
-        await gh(run, ["api", `repos/${RED_REPO}/rulesets/1`]),
-      ];
-      seen.push({
-        world,
-        reads: reads.map(({ stdout, stderr, exit }, index) => ({
-          stdout: index < 2 || stdout === "" ? stdout : JSON.parse(stdout),
-          stderr,
-          exit,
-        })),
-        routes: ghCalls(run).map((call) => call.route),
-      });
-    }
-    const answer = (stdout: unknown) => ({ stdout, stderr: "", exit: 0 });
-    const protection = `https://api.github.com/repos/${RED_REPO}/branches/main/protection`;
-    const rule = {
-      type: "required_status_checks",
-      parameters: {
-        strict_required_status_checks_policy: false,
-        required_status_checks: [{ context: "ci" }],
+    // The prompt's two reads, word for word but for `<o>/<r>` and `<base>`.
+    const prompt = [
+      await gh(run, [
+        "api",
+        "--paginate",
+        rules,
+        "--jq",
+        '.[] | select(.type=="required_status_checks") | .parameters.required_status_checks[].context',
+      ]),
+      await gh(run, ["api", branch, "--jq", ".protection.required_status_checks.checks[].context"]),
+    ];
+    /** One read of `endpoint` with no `--jq`, which answers JSON on stdout alone and exits 0. */
+    const raw = async (endpoint: string) => {
+      const { stdout, stderr, exit } = await gh(run, ["api", endpoint]);
+      expect({ endpoint, stderr, exit }).toEqual({ endpoint, stderr: "", exit: 0 });
+      return JSON.parse(stdout);
+    };
+    type Rule = { parameters: { required_status_checks: { context: string }[] } };
+    /** `.[].parameters.required_status_checks[].context`, the required contexts of a rule list. */
+    const contextsOf = (list: Rule[]) =>
+      list.flatMap((rule) => rule.parameters.required_status_checks.map((check) => check.context));
+    // Then each raw, then the protection endpoint, the rulesets list and the one ruleset the list
+    // names by its id, each read for the required contexts at the path GitHub answers them at.
+    const rulesOfBranch: Rule[] = await raw(rules);
+    const branchAnswer: { protection: { required_status_checks: { contexts: string[] } } } =
+      await raw(branch);
+    const protectionAnswer: { required_status_checks: { checks: { context: string }[] } } =
+      await raw(`${branch}/protection`);
+    const rulesets: { id: number }[] = await raw(`repos/${RED_REPO}/rulesets`);
+    const ids = rulesets.map((listed) => listed.id);
+    expect(ids).toHaveLength(1);
+    const ruleset: { rules: Rule[] } = await raw(`repos/${RED_REPO}/rulesets/${ids[0]}`);
+    const ci = { stdout: "ci\n", stderr: "", exit: 0 };
+    expect({
+      prompt,
+      contexts: {
+        rules: contextsOf(rulesOfBranch),
+        ruleset: contextsOf(ruleset.rules),
+        branch: branchAnswer.protection.required_status_checks.contexts,
+        protection: protectionAnswer.required_status_checks.checks.map((check) => check.context),
       },
-    };
-    const ruleset = {
-      id: 1,
-      name: "Require ci",
-      target: "branch",
-      source_type: "Repository",
-      source: RED_REPO,
-      enforcement: "active",
-    };
-    expect(seen).toEqual(
-      RED_WORLDS.map((world) => ({
-        world,
-        reads: [
-          answer("ci\n"),
-          answer("ci\n"),
-          answer([
-            { ...rule, ruleset_source_type: "Repository", ruleset_source: RED_REPO, ruleset_id: 1 },
-          ]),
-          answer({
-            name: "main",
-            protected: true,
-            protection: {
-              enabled: true,
-              required_status_checks: {
-                enforcement_level: "non_admins",
-                contexts: ["ci"],
-                checks: [{ context: "ci", app_id: null }],
-              },
-            },
-            protection_url: protection,
-          }),
-          answer({
-            url: protection,
-            required_status_checks: {
-              url: `${protection}/required_status_checks`,
-              strict: false,
-              contexts: ["ci"],
-              contexts_url: `${protection}/required_status_checks/contexts`,
-              checks: [{ context: "ci", app_id: null }],
-            },
-            enforce_admins: { url: `${protection}/enforce_admins`, enabled: false },
-          }),
-          answer([ruleset]),
-          answer({
-            ...ruleset,
-            bypass_actors: [],
-            conditions: { ref_name: { include: ["~DEFAULT_BRANCH"], exclude: [] } },
-            rules: [rule],
-          }),
-        ],
-        routes: [
-          routeOf("rules/branches/main"),
-          routeOf("branches/main"),
-          routeOf("rules/branches/main"),
-          routeOf("branches/main"),
-          routeOf("branches/main/protection"),
-          routeOf("rulesets"),
-          routeOf("rulesets/1"),
-        ],
-      }))
-    );
+      routes: ghCalls(run).map((call) => call.route),
+    }).toEqual({
+      prompt: [ci, ci],
+      contexts: { rules: ["ci"], ruleset: ["ci"], branch: ["ci"], protection: ["ci"] },
+      routes: [
+        requiredSetRoute("rules/branches/main"),
+        requiredSetRoute("branches/main"),
+        requiredSetRoute("rules/branches/main"),
+        requiredSetRoute("branches/main"),
+        requiredSetRoute("branches/main/protection"),
+        requiredSetRoute("rulesets"),
+        requiredSetRoute("rulesets/1"),
+      ],
+    });
+  });
+
+  // Catches: a world whose fixture lacks one of the five reads of the base's required set, which
+  // would answer the 404 there, and a fixture that carries them behind another route, where the
+  // generic check-runs route takes the prompt's two reads again: red_fixture writes them in every
+  // world (required_set_fixture), ahead of every other route.
+  test("every world's fixture carries the five reads of the base's required set, ahead of every other route", () => {
+    const required = [
+      "rules/branches/main",
+      "rulesets",
+      "rulesets/1",
+      "branches/main",
+      "branches/main/protection",
+    ].map(requiredSetRoute);
+    const seen = RED_WORLDS.map((world) => {
+      const fixtures: { routes: { match: string }[] } = JSON.parse(
+        readFileSync(path.join(redFixture(world), "fixtures.json"), "utf8")
+      );
+      return { world, routes: fixtures.routes.slice(0, 5).map((route) => route.match) };
+    });
+    expect(seen).toEqual(RED_WORLDS.map((world) => ({ world, routes: required })));
   });
 
   // Catches: a world i or j whose counted set loses the aggregate the base requires, in any read
@@ -2631,6 +2622,7 @@ describe("red_fixture", () => {
       disposal: true,
       report: false,
       decline_fails: false,
+      aggregate: false,
     });
   });
 
@@ -2643,7 +2635,7 @@ describe("red_fixture", () => {
     const reviewer = { role: "reviewer", phase: "reviewing", handoff: "review" };
     const reruns = { rerun: true, turns: 2 };
     const none = { rerun: false, turns: 1, disposal: false };
-    const plain = { report: false, decline_fails: false };
+    const plain = { report: false, decline_fails: false, aggregate: false };
     const facts: Record<RedWorld, object> = {
       a: { after: "green", ...tester, ...reruns, round: "goes-on", disposal: true, ...plain },
       b: {
@@ -2660,7 +2652,15 @@ describe("red_fixture", () => {
       f: { after: "red", ...tester, ...none, round: "fails", ...plain },
       g: { after: "green", ...tester, ...reruns, round: "goes-on", disposal: true, ...plain },
       h: { after: "green", ...tester, ...reruns, round: "goes-on", disposal: false, ...plain },
-      i: { after: "green", ...reviewer, ...reruns, round: "goes-on", disposal: true, ...plain },
+      i: {
+        after: "green",
+        ...reviewer,
+        ...reruns,
+        round: "goes-on",
+        disposal: true,
+        ...plain,
+        aggregate: true,
+      },
       j: {
         after: "red",
         ...reviewer,
@@ -2668,6 +2668,7 @@ describe("red_fixture", () => {
         round: "fails-naming-check",
         disposal: false,
         ...plain,
+        aggregate: true,
       },
       k: {
         after: "green",
@@ -2677,6 +2678,7 @@ describe("red_fixture", () => {
         disposal: true,
         report: false,
         decline_fails: true,
+        aggregate: false,
       },
       l: {
         after: "green",
@@ -2686,6 +2688,7 @@ describe("red_fixture", () => {
         disposal: true,
         report: true,
         decline_fails: false,
+        aggregate: false,
       },
     };
     expect(
@@ -3102,9 +3105,12 @@ on_exit() { :; }
 lock_services() { printf 'lock_services\\n' >>"$work/calls"; }
 services_up() { printf 'services_up\\n' >>"$work/calls"; }
 warm_daemon_panes() { printf 'warm_daemon_panes\\n' >>"$work/calls"; }`;
+  /** cmd_batch of two runs of label s1 in `scenario` over the stand-ins above, with
+   * SKILL_SCENARIOS_RED_WORLD set to `world`, and the calls it made. */
   function batch(
     world: string | undefined,
-    worlds = `${fn("red_world_table")}\n${fn("red_world")}\n${fn("red_worlds")}`
+    worlds = `${fn("red_world_table")}\n${fn("red_world")}\n${fn("red_worlds")}`,
+    scenario = "red-at-the-head"
   ) {
     const work = freshDir("red-batch-work");
     const here = freshDir("red-batch-here");
@@ -3123,7 +3129,7 @@ warm_daemon_panes() { printf 'warm_daemon_panes\\n' >>"$work/calls"; }`;
         "shift 2",
         'cmd_batch "$@"',
       ].join("\n"),
-      [work, here, "red-at-the-head", "2", "s1"],
+      [work, here, scenario, "2", "s1"],
       world === undefined ? {} : { SKILL_SCENARIOS_RED_WORLD: world }
     );
     const calls = existsSync(path.join(work, "calls"))
@@ -3160,6 +3166,40 @@ warm_daemon_panes() { printf 'warm_daemon_panes\\n' >>"$work/calls"; }`;
       "run run red-at-the-head s1 1",
       "run run red-at-the-head s1 2",
     ]);
+  });
+
+  // Catches: a batch that compiles daemon-pane.go in every daemon module for a scenario whose
+  // runs boot no worker (boot_worker), and a tester-proof batch that skips the build its runs'
+  // daemon stand-ins need. Askgate and the two spec scenarios need settings of their own before a
+  // batch of them starts, so the row takes the scenarios a batch runs with nothing more.
+  test("cmd_batch warms the daemon panes for tester-proof and red-at-the-head alone", () => {
+    const scenarios = [
+      "ask-on-message",
+      "measure-before-ask",
+      "tester-proof",
+      "brainstorm",
+      "red-at-the-head",
+    ];
+    const boots = ["tester-proof", "red-at-the-head"];
+    expect(
+      scenarios.map((scenario) => {
+        const { code, calls } = batch("a", undefined, scenario);
+        return { scenario, code, calls };
+      })
+    ).toEqual(
+      scenarios.map((scenario) => ({
+        scenario,
+        code: 0,
+        calls: [
+          "load_label s1",
+          "lock_services",
+          "services_up",
+          ...(boots.includes(scenario) ? ["warm_daemon_panes"] : []),
+          `run run ${scenario} s1 1`,
+          `run run ${scenario} s1 2`,
+        ],
+      }))
+    );
   });
 
   // Catches: a list of worlds in cmd_run or cmd_batch beside red_world's table, which a world added

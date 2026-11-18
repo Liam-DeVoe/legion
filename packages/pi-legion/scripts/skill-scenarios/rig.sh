@@ -579,10 +579,11 @@ cmd_profile() {
 # of the install mise made for the label's pin: a pod carries the pinned binary and no mise.
 given_omp() { [ -n "${SKILL_SCENARIOS_OMP:-}" ]; }
 
-# warm_daemon_panes MODULE... compiles daemon-pane.go in each daemon module once, before a batch's
-# first run: each run's daemon stand-in compiles it at its start under a 90 s bound (boot_worker),
-# and each run's worker pane compiles it again in its label's checkout, so a cold Go build cache
-# would cost the first runs their start (daemon-pane.ts, warmDaemonPane).
+# warm_daemon_panes MODULE... compiles daemon-pane.go in each daemon module once, before the first
+# run of a batch whose runs boot a worker (cmd_batch): each such run's daemon stand-in compiles it
+# at its start under a 90 s bound (boot_worker), and its worker pane compiles it again in its
+# label's checkout, so a cold Go build cache would cost the first runs their start (daemon-pane.ts,
+# warmDaemonPane).
 warm_daemon_panes() {
   bun "$here/daemon-pane.ts" warm "$@" || fail "daemon-pane.go did not compile in $*"
 }
@@ -1827,21 +1828,24 @@ run_tester_proof() {
 #                 and reports it only when the rig does, between the two turns (red_report): `l`
 #   decline_fails whether a round the role ended before its re-run fails the world: `k`, whose
 #                 commit endpoint answers a by-hand failure that reads as the re-run already spent
+#   aggregate     whether the head carries, beside the failing lane and in the same run, the
+#                 aggregate check `ci` the base requires, red over the lane and settled with it:
+#                 `i` and `j`
 red_world_table() {
   printf '%s\n' '
     {
-      a: {after:"green", role:"tester",   rerun:true,  round:"goes-on",            disposal:true,  report:false, decline_fails:false},
-      b: {after:"red",   role:"tester",   rerun:true,  round:"fails-naming-check", disposal:false, report:false, decline_fails:false},
-      c: {after:"green", role:"tester",   rerun:true,  round:"goes-on",            disposal:false, report:false, decline_fails:false},
-      d: {after:"red",   role:"tester",   rerun:false, round:"fails",              disposal:false, report:false, decline_fails:false},
-      e: {after:"red",   role:"tester",   rerun:false, round:"fails-spent",        disposal:false, report:false, decline_fails:false},
-      f: {after:"red",   role:"tester",   rerun:false, round:"fails",              disposal:false, report:false, decline_fails:false},
-      g: {after:"green", role:"tester",   rerun:true,  round:"goes-on",            disposal:true,  report:false, decline_fails:false},
-      h: {after:"green", role:"tester",   rerun:true,  round:"goes-on",            disposal:false, report:false, decline_fails:false},
-      i: {after:"green", role:"reviewer", rerun:true,  round:"goes-on",            disposal:true,  report:false, decline_fails:false},
-      j: {after:"red",   role:"reviewer", rerun:true,  round:"fails-naming-check", disposal:false, report:false, decline_fails:false},
-      k: {after:"green", role:"tester",   rerun:true,  round:"goes-on",            disposal:true,  report:false, decline_fails:true},
-      l: {after:"green", role:"tester",   rerun:true,  round:"goes-on",            disposal:true,  report:true,  decline_fails:false}
+      a: {after:"green", role:"tester",   rerun:true,  round:"goes-on",            disposal:true,  report:false, decline_fails:false, aggregate:false},
+      b: {after:"red",   role:"tester",   rerun:true,  round:"fails-naming-check", disposal:false, report:false, decline_fails:false, aggregate:false},
+      c: {after:"green", role:"tester",   rerun:true,  round:"goes-on",            disposal:false, report:false, decline_fails:false, aggregate:false},
+      d: {after:"red",   role:"tester",   rerun:false, round:"fails",              disposal:false, report:false, decline_fails:false, aggregate:false},
+      e: {after:"red",   role:"tester",   rerun:false, round:"fails-spent",        disposal:false, report:false, decline_fails:false, aggregate:false},
+      f: {after:"red",   role:"tester",   rerun:false, round:"fails",              disposal:false, report:false, decline_fails:false, aggregate:false},
+      g: {after:"green", role:"tester",   rerun:true,  round:"goes-on",            disposal:true,  report:false, decline_fails:false, aggregate:false},
+      h: {after:"green", role:"tester",   rerun:true,  round:"goes-on",            disposal:false, report:false, decline_fails:false, aggregate:false},
+      i: {after:"green", role:"reviewer", rerun:true,  round:"goes-on",            disposal:true,  report:false, decline_fails:false, aggregate:true},
+      j: {after:"red",   role:"reviewer", rerun:true,  round:"fails-naming-check", disposal:false, report:false, decline_fails:false, aggregate:true},
+      k: {after:"green", role:"tester",   rerun:true,  round:"goes-on",            disposal:true,  report:false, decline_fails:true,  aggregate:false},
+      l: {after:"green", role:"tester",   rerun:true,  round:"goes-on",            disposal:true,  report:true,  decline_fails:false, aggregate:false}
     }'
 }
 red_world() {
@@ -1882,8 +1886,9 @@ red_worlds() {
 # so: `gh pr checks --required` answers the checks the base requires alone, as GitHub does, and
 # the rules of the base's rulesets and its branch protection, the two reads the reviewer's prompt
 # gives for that set, each name `ci` in the shape GitHub answers them in, as do the protection
-# endpoint of the branch and the repository's one ruleset. The heads of worlds `g`, `i` and `j`
-# report `ci`, and at every other head the `--required` read answers gh's `no required checks
+# endpoint of the branch and the repository's one ruleset (required_set_fixture, which red_fixture
+# runs last, so those five reads go ahead of every other route). The heads of worlds `g`, `i` and
+# `j` report `ci`, and at every other head the `--required` read answers gh's `no required checks
 # reported on the '<branch>' branch` and exits 1. In a world that stays red both answers are red,
 # and nothing of it moves; in a world that presses no re-run (`d`, `e`, `f`) the head reads red
 # for the whole run. World `l`'s counted reads answer three states, the first of them reporting
@@ -1923,14 +1928,13 @@ red_worlds() {
 #      checks event, and the rig reports the check between the two turns (red_report)
 red_fixture() {
   local world=$1 facts pr head branch check job step summary log log_err test_name world_log
-  local run_id job_id red_id lanes aggregate
+  local run_id job_id red_id lanes required
   facts=$(red_world "$world") || fail "red_fixture: '$world' is no world of red-at-the-head"
   read -r pr head branch < <(jq -r '"\(.pr) \(.head) \(.branch)"' "$R/world.json")
   run_id=$((7000000 + pr))
   job_id=$((8000000 + pr))
   red_id=$((9000000 + pr))
   log_err=''
-  aggregate=''
   # The words of an aggregate check with one failed lane under it: world `g`'s red check, and the
   # aggregate beside the red lane of `i` and `j`.
   lanes='1 of 6 lanes failed: test (notify).'
@@ -1980,11 +1984,10 @@ red_fixture() {
     [ "$world" != h ] || log_err='failed to get run log: HTTP 410: Gone (https://api.github.com/repos/example/widgets/actions/runs)'
     ;;
   esac
-  # Worlds `i` and `j` carry a's red and, beside it, the aggregate the base requires, red over it
-  # (the jq below).
-  case $world in
-  i | j) aggregate=$lanes ;;
-  esac
+  # The check the base requires: the one aggregate check `ci`, which every read of the required set
+  # of the base answers, `gh pr checks --required` (the jq below) and the rules of its rulesets and
+  # its branch protection (required_set_fixture), so the base reads the same through each of them.
+  required=ci
   # The failing line this world's log read answers, as the world knows it: a world whose read
   # answers an error (h) leaves none, since the role reads no line there.
   world_log=$log
@@ -1992,7 +1995,7 @@ red_fixture() {
   jq --arg head "$head" --argjson pr "$pr" --arg repo "$worker_repo" --arg branch "$branch" \
     --arg world "$world" --arg check "$check" --arg job "$job" --arg step "$step" \
     --arg summary "$summary" --arg log "$log" --arg log_err "$log_err" --argjson facts "$facts" \
-    --arg aggregate "$aggregate" \
+    --arg lanes "$lanes" --arg required "$required" \
     --argjson run_id "$run_id" --argjson job_id "$job_id" --argjson red_id "$red_id" '
     def entry($id; $name; $conclusion; $output; $at):
       {id:$id, name:$name, status:"completed", conclusion:$conclusion, started_at:$at,
@@ -2046,13 +2049,6 @@ red_fixture() {
          payload:($settled|tojson)};
     ("https://api.github.com/repos/" + $repo) as $api
     | run_url as $run_url
-    # The checks the base requires: the one aggregate check `ci`, which every read of the required
-    # set of the base answers, `gh pr checks --required`, the rulesets of the base and its branch
-    # protection, so the base reads the same through each of them.
-    | "ci" as $required
-    # The base of the pull request, as the `gh pr view` of the world answers `baseRefName`.
-    | (first(.routes[] | select(.match == "^gh pr view") | .stdout.baseRefName)
-       // error("red_fixture: no `gh pr view` route answers the base")) as $base
     | "2026-03-04T10:00:00Z" as $t0
     | "2026-03-04T10:15:00Z" as $t_hand
     | "2026-03-04T10:31:08Z" as $t1
@@ -2066,14 +2062,15 @@ red_fixture() {
           entry($red_id - 3; "e2e"; "success";
                 {title:"e2e", summary:"The re-run of the e2e lane passed."}; $t0)]
        else [] end) as $earlier
-    # The aggregate check of worlds `i` and `j`, the check the base requires, red over the failing
-    # lane, in the same run as that lane and in the words of world `g` ($aggregate). It is the
-    # shape of the base of cybermonklabs/legion itself, which requires the aggregate `ci-ok` over
-    # its test lanes, so the red the reviewer meets there is a red the base requires. Its ids come
-    # after the id of the by-hand run of world `k`, so no two checks of one head share an id.
-    | (if $aggregate == "" then []
-       else [entry($red_id + 3; $required; "failure"; {title:$required, summary:$aggregate}; $t0)]
-       end) as $aggregates
+    # The aggregate check of a world whose facts carry `aggregate` (`i` and `j`), the check the
+    # base requires, red over the failing lane, in the same run as that lane and in the words of
+    # world `g` ($lanes). It is the shape of the base of cybermonklabs/legion itself, which
+    # requires the aggregate `ci-ok` over its test lanes, so the red the reviewer meets there is a
+    # red the base requires. Its ids come after the id of the by-hand run of world `k`, so no two
+    # checks of one head share an id.
+    | (if $facts.aggregate
+       then [entry($red_id + 3; $required; "failure"; {title:$required, summary:$lanes}; $t0)]
+       else [] end) as $aggregates
     | ([entry($red_id - 2; "lint"; "success"; {title:"lint", summary:"No lint error."}; $t0),
         entry($red_id - 1; "typecheck"; "success"; {title:"typecheck", summary:"No type error."}; $t0)]
        + $earlier
@@ -2147,53 +2144,7 @@ red_fixture() {
     # the first of its replies however many times a role reads it before the re-run, and the one
     # after it from the moment the re-run is pressed.
     | "^gh run rerun" as $rerun
-    # The required set of the base, through five reads that agree with `gh pr checks --required`
-    # that the base requires `ci` ($required) alone: the rules GitHub applies to the base, through
-    # its rulesets (`rules/branches/<base>`), which the prompt of the reviewer reads (packages/
-    # daemon/internal/prompts/go/reviewer.md, "CI is yours to read"); the rulesets of the
-    # repository, their list and the one ruleset, which applies to the default branch and holds
-    # that same rule; the base branch, read for its protection, which the prompt reads too; and
-    # the protection of the base on its own endpoint, the same required checks in the shape that
-    # endpoint answers them in. Each answers unfiltered, since the stand-in applies the `--jq` of a
-    # call itself, and the branch answers its name and its protection alone. They come ahead of
-    # every other route: in the batch of 2026-11-17 the `--jq` text of the two reads of the prompt
-    # held `required_status_checks`, so the generic `(check-runs|status)` route took both and each
-    # filter, run over a check-runs answer, exited 1, and the rules read without its `--jq`
-    # (trial-i-head-3), the protection read (trial-i-head-1) and the rulesets list
-    # (trial-i-head-5) each fell to the 404, so every reviewer read the base as requiring nothing.
-    # Each match names the repository and ends where its own path ends, so none takes the path of
-    # another: the branch route never takes the `/protection` below it, nor the rulesets list the
-    # one ruleset, and the rules path has its `rules/` between the repository and `branches/`.
-    | ($api + "/branches/" + $base + "/protection") as $protection_url
-    | {contexts:[$required], checks:[{context:$required, app_id:null}]} as $status_checks
-    | {id:1, name:"Require ci", target:"branch", source_type:"Repository", source:$repo,
-       enforcement:"active"} as $ruleset
-    | {type:"required_status_checks",
-       parameters:{strict_required_status_checks_policy:false,
-                   required_status_checks:[{context:$required}]}} as $rule
-    | [{match:("^gh api .*repos/" + $repo + "/rules/branches/" + $base + "([?\\s]|$)"),
-        stdout:[$rule + {ruleset_source_type:$ruleset.source_type, ruleset_source:$ruleset.source,
-                         ruleset_id:$ruleset.id}]},
-       {match:("^gh api .*repos/" + $repo + "/rulesets([?\\s]|$)"), stdout:[$ruleset]},
-       {match:("^gh api .*repos/" + $repo + "/rulesets/" + ($ruleset.id|tostring) + "([?\\s]|$)"),
-        stdout:($ruleset + {bypass_actors:[],
-                            conditions:{ref_name:{include:["~DEFAULT_BRANCH"], exclude:[]}},
-                            rules:[$rule]})},
-       {match:("^gh api .*repos/" + $repo + "/branches/" + $base + "([?\\s]|$)"),
-        stdout:{name:$base, protected:true,
-                protection:{enabled:true,
-                            required_status_checks:({enforcement_level:"non_admins"}
-                                                    + $status_checks)},
-                protection_url:$protection_url}},
-       {match:("^gh api .*repos/" + $repo + "/branches/" + $base + "/protection([?\\s]|$)"),
-        stdout:{url:$protection_url,
-                required_status_checks:({url:($protection_url + "/required_status_checks"),
-                                         strict:false,
-                                         contexts_url:($protection_url
-                                                       + "/required_status_checks/contexts")}
-                                        + $status_checks),
-                enforce_admins:{url:($protection_url + "/enforce_admins"), enabled:false}}},
-       {match:("^gh api .*commits/" + $head + "/check-runs"), follows:$rerun,
+    | [{match:("^gh api .*commits/" + $head + "/check-runs"), follows:$rerun,
         replies:[{stdout:{total_count:(($red_checks + $uncounted)|length),
                           check_runs:($red_checks + $uncounted)}},
                  {stdout:{total_count:(($settled_checks + $uncounted)|length),
@@ -2262,6 +2213,9 @@ red_fixture() {
   else
     mv "$R/fixtures.red.json" "$R/fixtures.json"
   fi
+  # The five reads of the base's required set, which read nothing of the world but the repository
+  # and the base, go ahead of every route the jq above wrote, on the same `ci` ($required).
+  required_set_fixture "$required"
   # The world the scorer reads, beside worker_fixture's: the red check, the run and job that carry
   # it, the failing line the world's log read answers (`log`, empty where that read answers an
   # error), where the red is a test, that test's full name (`test`, empty where it is none), and
@@ -2275,6 +2229,68 @@ red_fixture() {
           test:$test} + $facts' \
     "$R/world.json" >"$R/world.red.json"
   mv "$R/world.red.json" "$R/world.json"
+}
+
+# required_set_fixture CHECK puts five reads of the base's required set ahead of every route of
+# $R/fixtures.json, each answering that the base requires CHECK alone, as red_fixture's
+# `gh pr checks --required` route answers it (red_fixture binds the one CHECK both take): the rules
+# GitHub applies to the base, through its rulesets (`rules/branches/<base>`), which the prompt of
+# the reviewer reads (packages/daemon/internal/prompts/go/reviewer.md, "CI is yours to read"); the
+# rulesets of the repository, their list and the one ruleset, which applies to the default branch
+# and holds that same rule; the base branch, read for its protection, which the prompt reads too;
+# and the protection of the base on its own endpoint, the same required checks in the shape that
+# endpoint answers them in. They read nothing of the world but the repository (worker_repo) and the
+# base, which the `gh pr view` route answers as `baseRefName`: in its one answer as worker_fixture
+# writes it, and in each of its replies once red_fixture has made the route a sequence. Each
+# answers unfiltered, since the stand-in applies the `--jq` of a call itself, and the branch
+# answers its name and its protection alone. They come ahead of every other route: in the batch of
+# 2026-11-17 the `--jq` text of the two reads of the prompt held `required_status_checks`, so the
+# generic `(check-runs|status)` route took both and each filter, run over a check-runs answer,
+# exited 1, and the rules read without its `--jq` (trial-i-head-3), the protection read
+# (trial-i-head-1) and the rulesets list (trial-i-head-5) each fell to the 404, so every reviewer
+# read the base as requiring nothing. Each match names the repository and ends where its own path
+# ends, so none takes the path of another: the branch route never takes the `/protection` below
+# it, nor the rulesets list the one ruleset, and the rules path has its `rules/` between the
+# repository and `branches/`.
+required_set_fixture() {
+  jq --arg repo "$worker_repo" --arg required "$1" '
+    ("https://api.github.com/repos/" + $repo) as $api
+    | (first(.routes[] | select(.match == "^gh pr view")
+             | (.stdout // .replies[0].stdout).baseRefName)
+       // error("required_set_fixture: no `gh pr view` route answers the base")) as $base
+    | ($api + "/branches/" + $base + "/protection") as $protection_url
+    | {contexts:[$required], checks:[{context:$required, app_id:null}]} as $status_checks
+    | {id:1, name:("Require " + $required), target:"branch", source_type:"Repository",
+       source:$repo, enforcement:"active"} as $ruleset
+    | {type:"required_status_checks",
+       parameters:{strict_required_status_checks_policy:false,
+                   required_status_checks:[{context:$required}]}} as $rule
+    | [{match:("^gh api .*repos/" + $repo + "/rules/branches/" + $base + "([?\\s]|$)"),
+        stdout:[$rule + {ruleset_source_type:$ruleset.source_type, ruleset_source:$ruleset.source,
+                         ruleset_id:$ruleset.id}]},
+       {match:("^gh api .*repos/" + $repo + "/rulesets([?\\s]|$)"), stdout:[$ruleset]},
+       {match:("^gh api .*repos/" + $repo + "/rulesets/" + ($ruleset.id|tostring) + "([?\\s]|$)"),
+        stdout:($ruleset + {bypass_actors:[],
+                            conditions:{ref_name:{include:["~DEFAULT_BRANCH"], exclude:[]}},
+                            rules:[$rule]})},
+       {match:("^gh api .*repos/" + $repo + "/branches/" + $base + "([?\\s]|$)"),
+        stdout:{name:$base, protected:true,
+                protection:{enabled:true,
+                            required_status_checks:({enforcement_level:"non_admins"}
+                                                    + $status_checks)},
+                protection_url:$protection_url}},
+       {match:("^gh api .*repos/" + $repo + "/branches/" + $base + "/protection([?\\s]|$)"),
+        stdout:{url:$protection_url,
+                required_status_checks:({url:($protection_url + "/required_status_checks"),
+                                         strict:false,
+                                         contexts_url:($protection_url
+                                                       + "/required_status_checks/contexts")}
+                                        + $status_checks),
+                enforce_admins:{url:($protection_url + "/enforce_admins"), enabled:false}}}]
+      as $required_set
+    | .routes = $required_set + .routes' \
+    "$R/fixtures.json" >"$R/fixtures.required.json"
+  mv "$R/fixtures.required.json" "$R/fixtures.json"
 }
 
 # red_report: the rig reports the check world `l`'s counted set had not reported, between that
@@ -2488,7 +2504,12 @@ cmd_batch() {
   lock_services
   on_exit stop_batch
   services_up
-  warm_daemon_panes "${daemon_modules[@]}"
+  # Only a tester-proof or red-at-the-head run boots a worker (boot_worker), whose daemon stand-in
+  # and pane compile daemon-pane.go, so no other scenario's batch warms it.
+  case $batch_scenario in tester-proof | red-at-the-head)
+    warm_daemon_panes "${daemon_modules[@]}"
+    ;;
+  esac
   start=$(date +%s)
   for label in "$@"; do
     for n in $(seq "$first" $((first + runs - 1))); do

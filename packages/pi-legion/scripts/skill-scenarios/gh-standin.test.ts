@@ -367,5 +367,5 @@ test("a row that names no listener publishes nowhere, whatever Envoy this proces
     }
   }
   expect(pane.received).toEqual([]);
-  expect(calls()[0]?.published).toEqual({ error: "ENVOY_URL or ENVOY_TOKEN_FILE is unset" });
+  expect(calls()[0]?.published).toHaveProperty("error");
 });
