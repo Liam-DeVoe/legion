@@ -246,35 +246,6 @@ func (s *Store) ClaimStep(ctx context.Context, token claim.Token) (supervise.Ste
 	return step, nil
 }
 
-// ClaimReach is one claim's reach record as the store holds it (PutClaimReach's column), with the
-// claim's last relaunch from its own row, as Claims reads them: what the operator routes that
-// answer one claim show (internal/api's operatorAnswer). A machine's own copy is the record as it
-// stood when the machine was built, since the reach keeper writes the record through this narrow
-// column and never into a machine's claim. A token no claim holds answers the zero record, which
-// is a claim not marked.
-func (s *Store) ClaimReach(ctx context.Context, token claim.Token) (supervise.Reach, error) {
-	var (
-		reach        supervise.Reach
-		encoded      []byte
-		relaunchedAt *time.Time
-		relaunchGen  *int64
-	)
-	err := s.pool.QueryRow(ctx, `select reach, relaunched_at, relaunch_generation from claims where token = $1`,
-		string(token)).Scan(&encoded, &relaunchedAt, &relaunchGen)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return supervise.Reach{}, nil
-	}
-	if err != nil {
-		return supervise.Reach{}, fmt.Errorf("read the reach record of claim %s: %w", token, err)
-	}
-	if err := json.Unmarshal(encoded, &reach); err != nil {
-		return supervise.Reach{}, fmt.Errorf("read the reach record of claim %s: decode it: %w", token, err)
-	}
-	reach.LastRelaunch = orZero(relaunchedAt)
-	reach.LastRelaunchGeneration = uint64(orZeroInt(relaunchGen))
-	return reach, nil
-}
-
 // ClaimActivity is the activity report the store holds for launch generation of token's claim
 // (PutClaimActivity's columns, the phase reminder aside), and whether it holds one: what a
 // machine reads of the process it is letting go, which its own claim carries only as the machine
@@ -711,67 +682,6 @@ func (s *Store) ClaimByBootTokenHash(ctx context.Context, hash []byte) (supervis
 	return c, true, nil
 }
 
-// ClaimByPriorBootTokenHash finds the claim one of whose previous launches minted the boot token
-// with this hash, and that launch's generation: a shim of a generation the claim has left, which
-// the worker stream tells to stop rather than reading as a token no launch minted (R3). The
-// database keeps the hash in the statement whose write replaced it (putClaim's doc), whatever wrote
-// it and however many launches ago, so it is known to a daemon that restarted after that write as
-// well. A hash of the claim's current launch is ClaimByBootTokenHash's, and is not answered here.
-func (s *Store) ClaimByPriorBootTokenHash(ctx context.Context, hash []byte) (supervise.Claim, uint64, bool, error) {
-	var (
-		token      string
-		generation int64
-	)
-	err := s.pool.QueryRow(ctx, `select claim_token, generation from claim_boot_tokens where boot_token_hash = $1`, hash).
-		Scan(&token, &generation)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return supervise.Claim{}, 0, false, nil
-	}
-	if err != nil {
-		return supervise.Claim{}, 0, false, fmt.Errorf("read the launch of a previous boot token: %w", err)
-	}
-	c, err := scanClaim(s.pool.QueryRow(ctx, claimSelect+" where c.token = $1", token))
-	if errors.Is(err, pgx.ErrNoRows) {
-		return supervise.Claim{}, 0, false, nil
-	}
-	if err != nil {
-		return supervise.Claim{}, 0, false, err
-	}
-	return c, uint64(generation), true, nil
-}
-
-// PutClaimReach writes the reach column of token's claim row and nothing else: the daemon's record
-// of whether Envoy can reach that claim's session (supervise.Reach, R5). It is no part of a claim's
-// machine state — the daemon's minute sweep and the `relaunch` route write it between a machine's
-// writes — so a machine's write never carries it (putClaim names no such column), as it carries no
-// step and no activity report. Unlike those it is not of one launch: a relaunch keeps the claim's
-// session, and the record is of that session, so a launch's write leaves it as it stands. The
-// claim's last relaunch is the one fact of it the claim's own write carries instead
-// (Reach.LastRelaunch), which this write never touches. It answers whether the store holds the
-// claim.
-func (s *Store) PutClaimReach(ctx context.Context, token claim.Token, reach supervise.Reach) (bool, error) {
-	return putClaimReach(ctx, s.pool, token, reach)
-}
-
-// PutClaimReachTx is PutClaimReach through the caller's transaction: the transaction of a notice
-// the record marks told, so the notice and the mark commit together or not at all, and a daemon
-// that ends after the commit never tells it again (internal/daemon's reach keeper).
-func PutClaimReachTx(ctx context.Context, tx pgx.Tx, token claim.Token, reach supervise.Reach) (bool, error) {
-	return putClaimReach(ctx, tx, token, reach)
-}
-
-func putClaimReach(ctx context.Context, db execer, token claim.Token, reach supervise.Reach) (bool, error) {
-	encoded, err := json.Marshal(reach)
-	if err != nil {
-		return false, fmt.Errorf("put the reach record of claim %s: encode it: %w", token, err)
-	}
-	tag, err := db.Exec(ctx, `update claims set reach = $2, updated_at = now() where token = $1`, string(token), encoded)
-	if err != nil {
-		return false, fmt.Errorf("put the reach record of claim %s: %w", token, err)
-	}
-	return tag.RowsAffected() == 1, nil
-}
-
 // PutDelivery writes the claim's pending delivery, replacing the one it had: a claim has at most
 // one. A token no claim carries is refused. It is one transaction, because the write carries what
 // the task names of the decisions a person made while nobody in its root's tree could hear them:
@@ -1077,17 +987,6 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		}
 	}
 	return c, nil
-}
-
-// relaunchGeneration is a relaunch's launch generation as its nullable column: 0 is a launch not
-// recorded yet, which SQL says as null. A generation fits a bigint, as putClaim checks of the
-// claim's own.
-func relaunchGeneration(generation uint64) *int64 {
-	if generation == 0 || generation > math.MaxInt64 {
-		return nil
-	}
-	g := int64(generation)
-	return &g
 }
 
 // instant is a time as a nullable column: the zero time is "not yet", which SQL says as null.
