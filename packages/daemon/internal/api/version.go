@@ -2215,7 +2215,7 @@ package api
 // Read main's own number and every open pull request's again at the next forward merge rather
 // than from this line.)
 //
-// 162: dispatch://INFRA-3320 -- a root's design-gate step can stand open on an ancestor's
+// 164: dispatch://INFRA-3320 -- a root's design-gate step can stand open on an ancestor's
 // approval, or wait, closed, on an ancestor's open approval request: a basis. Three surfaces
 // move.
 // `POST /legion/v1/gates/register` (`api.GateRegisterRequest`) takes three optional fields that
@@ -2254,19 +2254,19 @@ package api
 // while a Dispatch child of the issue is open (`record.ChildOpen`). Each names the issues that
 // hold it; the refusal's shape is the one every refusal has.
 // `GET /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a
-// contract below 162 is served every issue without `treeRuns`, and without `gatedSteps` on an
+// contract below 164 is served every issue without `treeRuns`, and without `gatedSteps` on an
 // issue any step of which reads either new word (api's stateFor, withoutGateBasis), as a caller
 // below 146 is served the issues without both entry times and `architectStalls`, the entry of 146
 // above (withoutEntryTimes), a caller below 141 every issue without `assignments`, the entry of
 // 141 (withoutAssignments), and a caller below 133 the state with no `mergeWait` on any issue,
 // the entry of 133 (withoutMergeWait), and so on down the bands that entry lists; the twenty-one
 // compose. 146's row runs before this one and the two touch no key of each other's, so a caller
-// at 146 through 161 is served the entry times and none of this entry's keys and words.
+// at 146 through 163 is served the entry times and none of this entry's keys and words.
 // The strip of `gatedSteps` is not for the key's sake: every plugin from 55 on
 // reads `status` with a strict enum of the four words and refuses the whole body for a fifth, and
 // no word of the four is true of such a step — `waiting` would send its architect to ask a person
 // for an approval of its own, and `approved` names a person's approval no person gave — so such a
-// caller is served no entry of that issue at all rather than a wrong one. Every reader from 162
+// caller is served no entry of that issue at all rather than a wrong one. Every reader from 164
 // on takes `treeRuns` and `basis` as optional and reads the six words
 // (`packages/contracts/src/legion-api.ts`).
 // The change ships store migrations `20261114064234_design_gate_basis` and
@@ -2278,7 +2278,7 @@ package api
 // `awaiting_children` (dispatch://INFRA-3320 R11 to R13). `GET /legion/v1/state` serves an issue in
 // it with `phase: awaiting_children`, which `LEGION_WORKFLOW_PHASES` names, and an
 // `admission.held` entry for such a parent with `reason: awaiting_children`, which
-// `LEGION_HELD_REASONS` names. A caller from a pod whose claims record a contract below 162 knows
+// `LEGION_HELD_REASONS` names. A caller from a pod whose claims record a contract below 164 knows
 // neither word — its phase enum and its held words are the ones before this change — so the daemon
 // serves it that issue's `phase` as `admitted`, the status that names no worker's phase, and that
 // held entry's `reason` as `children_first`, the word a started parent's wait took over (api's
@@ -2327,7 +2327,11 @@ package api
 // and #3993), 158 (#4173, #4180 and #4193, beside this change), 159 (#4175), 160 (#3519) and 161
 // (#4049), read with a REST raw read of each of the 233 open heads' file between
 // 2026-11-18T07:00:38Z and 07:05:43Z, so this change moved 158 → 162, the lowest number above
-// main's and above every number another open head declares. Read the base's own number and every
+// main's and above every number another open head declares. At the forward merge of 2026-11-18
+// that brought main in at 0e6b1f456bfa, main still carried 152, and the open heads held 153 to 161
+// and 162 (#2230 and #3712, beside this change) and 163 (#4049), read with a REST raw read of each
+// of the 232 open heads' file between 2026-11-18T09:42:26Z and 09:46:59Z, so this change moved
+// 162 → 164, the lowest number above main's and above every number another open head declares. Read the base's own number and every
 // open head again, by a REST raw read of each head's file, at the next forward merge rather than
 // from this line.)
-const DaemonAPIVersion = 162
+const DaemonAPIVersion = 164

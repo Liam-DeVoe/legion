@@ -1972,7 +1972,7 @@ test("a reader at the previous contract parses the state body this daemon serves
   expect(droppedFromState(served)).toBe("strandedClaims[0].suspendedBy");
 });
 
-// Contract 162: a root's gated step may stand open on an ancestor's approval (`open_on_basis`) or
+// Contract 164: a root's gated step may stand open on an ancestor's approval (`open_on_basis`) or
 // wait, closed, on an ancestor's open approval request (`pending_on_basis`), each with the `basis`
 // that names the approval or the request, and every root the daemon records says whether its
 // tree runs (`treeRuns`). The state golden carries LEGION-207's step open on LEGION-200's
@@ -2069,15 +2069,15 @@ test("the state golden carries a step on an ancestor's basis and whether each ro
   expect(LegionStateResponse.safeParse(notBoolean).success).toBeFalse();
 });
 
-// `legionGatedStepView`'s status as contracts 55 to 161 hold it: four words, in an enum. Every
+// `legionGatedStepView`'s status as contracts 55 to 163 hold it: four words, in an enum. Every
 // plugin parses the state with the schema of the contract it was built at, so this reader is live
-// in every pod still on an image before 162. It reads every step of the golden that stands on no
-// basis, and refuses the two words of 162 — and with them the whole state body, since
-// `gatedSteps` is an array it parses whole — which is why the state route serves a pod below 162
+// in every pod still on an image before 164. It reads every step of the golden that stands on no
+// basis, and refuses the two words of 164 — and with them the whole state body, since
+// `gatedSteps` is an array it parses whole — which is why the state route serves a pod below 164
 // no `gatedSteps` on an issue with a step on a basis (`api`'s `withoutGateBasis`, pinned on the
 // Go side): neither `waiting` nor `approved` is true of such a step, so it serves no entry of that
 // issue rather than a wrong one.
-const gatedStepStatusBefore162 = z.object({
+const gatedStepStatusBefore164 = z.object({
   status: z.enum(["unregistered", "waiting", "approved", "changes_requested"]),
 });
 
@@ -2092,16 +2092,16 @@ test("a reader before the basis words reads every gated step but those on a basi
   expect(older.length).toBeGreaterThan(1);
   expect(onBasis.length).toBe(2);
   for (const step of older) {
-    expect(gatedStepStatusBefore162.safeParse(step).error?.issues ?? []).toEqual([]);
+    expect(gatedStepStatusBefore164.safeParse(step).error?.issues ?? []).toEqual([]);
   }
   for (const step of onBasis) {
-    const refused = gatedStepStatusBefore162.safeParse(step);
+    const refused = gatedStepStatusBefore164.safeParse(step);
     expect(refused.success).toBeFalse();
     expect(refused.error?.issues[0]?.path).toEqual(["status"]);
   }
 });
 
-// The architect's registration on an ancestor's basis (contract 162): the three fields come
+// The architect's registration on an ancestor's basis (contract 164): the three fields come
 // together, the document is a UUID, the version positive and the reason a sentence; a request
 // that names none of them is the request it was.
 test("a gate registration names a basis by its document, its version and a reason", () => {
