@@ -166,6 +166,16 @@ jobs:
           # this workflow saves none (ci.yaml's header, "Caches").
           cache: false
 
+      # A daemon proof's driver is internal/daemon's test binary, whose tests build Dispatch and
+      # the listener from packages/envoy while they run (testbuild.EnvoyBinary), from the module
+      # cache alone: GOPROXY=off, since a fetch inside a test fails it whenever the module proxy
+      # or the checksum database does. The driver's own build loads none of those commands'
+      # modules, so this step fetches them first, tried again on failure. Every proof takes it:
+      # the job runs whichever script the matrix names, and .github/scripts/check-go-offline.sh
+      # holds each job that can run such a test to a fetch before it.
+      - name: Fetch the modules of the envoy commands the proof's tests build
+        run: .github/scripts/go-fetch.sh deps packages/envoy ./cmd/dispatch ./cmd/listener
+
       - name: Run the proof
         env:
           SCRIPT: ${{ matrix.script }}

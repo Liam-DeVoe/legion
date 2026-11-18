@@ -418,9 +418,11 @@ carry the `envoy-infra.sjawhar.dev/auth-callout` annotation.
 `gcp/clusteredhub_live_test.go` carries the `natslive` tag too, but starts no container and needs
 no Docker, and it downloads nothing while it runs. The tools it runs are pinned in
 `gcp/testdata/live-tools.txt`, one `go install` argument per line, and installed before the tests
-(`.github/scripts/go-fetch.sh tools`); each test takes its tool from `go env GOBIN` after checking
-the binary's build information against its pin, and fails, never skips, naming the `go install`
-command when the tool is absent or another build. The tools are helm v3.20.2
+(`.github/scripts/go-fetch.sh tools`) into `legion-live-tools` under the first entry of
+`go env GOPATH`, a directory of their own: not your `GOBIN`, so installing them replaces no helm or
+nats-server you keep on `PATH`. Each test takes its tool from that directory after checking the
+binary's build information against its pin, and fails, never skips, naming the install command
+when the tool is absent or another build. The tools are helm v3.20.2
 (`helm.sh/helm/v3/cmd/helm`), the helm pulumi-kubernetes v4.34.2's provider renders charts with,
 and the versions chart 2.15.1 runs: nats-server v2.15.1, the config reloader v0.24.0
 (`github.com/nats-io/nack/cmd/nats-server-config-reloader`) and prometheus-nats-exporter v0.20.2.
@@ -455,7 +457,7 @@ then, so the row fails when the route closed early for another reason or the bur
 it. Its control, the same `nats.conf` without the pin, counts from the moment A has queued all of
 the burst: the route is closed as stale within 60.5 s of that moment, by the top-level 20 s ping.
 CI runs the `natslive` packages with `-timeout 30m`. To run them alone, from `packages/envoy/infra`,
-install the tools once, then run the tests:
+install the tools once (into `$(go env GOPATH)/legion-live-tools`, as above), then run the tests:
 
 ```sh
 ../../../.github/scripts/go-fetch.sh tools gcp/testdata/live-tools.txt

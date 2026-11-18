@@ -1995,7 +1995,7 @@ PRIVATE_NAMES_PORT_JOB = "private-names-port"
 PRIVATE_NAMES_PORT_STEP = "Test the private-name rules' port against the frozen script"
 PRIVATE_NAMES_PORT_BUILD = script_run(
     f"{SCRIPTS}/check-private-names-port.test.sh",
-    '(cd "$repo_root/packages/daemon" && go build -o "$engine" ./cmd/legion) || {',
+    '(cd "$repo_root/packages/daemon" && GOPROXY=off go build -o "$engine" ./cmd/legion) || {',
     at(PRIVATE_NAMES_PORT_JOB, PRIVATE_NAMES_PORT_STEP), DAEMON, [LEGION_BUILD], mode="build")
 
 
@@ -2260,7 +2260,7 @@ GATES = [
     # too (table_test.go:99) and which of this repository is packages/daemon's own packages, so no
     # read leaves this job with them.
     gate("daemon_go_tests", "daemon-go", runs=[
-        script_run("scripts/e2e/stage1-skeleton.sh", 'go build -o "$work/legion" ./cmd/legion',
+        script_run("scripts/e2e/stage1-skeleton.sh", 'GOPROXY=off go build -o "$work/legion" ./cmd/legion',
                    at("daemon-go", "Stage 1 live proof"), DAEMON, ["./cmd/legion"], mode="build"),
     ], exact=[
         # check-ci-filters.sh reduces only a one-line go test, so the step's whole script is
@@ -2299,7 +2299,7 @@ GATES = [
         ]),
     ], reads=reads(
         ("scripts/e2e/stage1-skeleton.sh", at("daemon-go", "Stage 1 live proof")),
-        (".github/scripts/go-fetch.sh", f"{at('daemon-go', 'Fetch the modules of the envoy commands the tests build')} runs it"),
+        (".github/scripts/go-fetch.sh", f"{at('daemon-go', 'Fetch the modules of the commands the tests build')} runs it"),
         ("scripts/e2e/lib/rig.sh", "scripts/e2e/stage1-skeleton.sh:139 sources it"),
         ("scripts/e2e/lib/loopback-dsn.sh", "scripts/e2e/lib/rig.sh:93 sources it"),
         ("scripts/e2e/lib/port-file.sh", "scripts/e2e/lib/rig.sh:102 sources it"),
@@ -2336,6 +2336,7 @@ GATES = [
                 "packs packages/pi-envoy and packages/pi-legion with `bun pm pack`, which runs their prepack")
         for g in PACK_READS
     ] + reads(
+        (".github/scripts/go-fetch.sh", f"{at(PLUGIN_PACK_JOB, 'Fetch the modules of the commands the tests build')} runs it"),
         ("packages/envoy-client/scripts/build-dispatch-cli.sh", "scripts/pi-plugin-prepack.sh:96, run by the pack "
                                                                 "in promptreferences_omp_test.go:228"),
         # The prompts this checkout ships, laid out for the agent-model probe as the release lays
@@ -2358,6 +2359,8 @@ GATES = [
     # The comment on PRIVATE_NAMES_PORT_BUILD above says why the step is a job.
     gate("private_names_port", PRIVATE_NAMES_PORT_JOB, runs=[PRIVATE_NAMES_PORT_BUILD], reads=reads(
         (f"{SCRIPTS}/check-private-names-port.test.sh", at(PRIVATE_NAMES_PORT_JOB, PRIVATE_NAMES_PORT_STEP)),
+        (".github/scripts/go-fetch.sh",
+         f"{at(PRIVATE_NAMES_PORT_JOB, 'Fetch the modules of the legion binary the harness builds')} runs it"),
         (TEST_LIB, "check-private-names-port.test.sh:63 sources it for check/is/summary"),
         (f"{SCRIPTS}/check-private-names.sh",
          "the frozen script every case of check-private-names-port.test.sh runs beside the "
@@ -3001,7 +3004,9 @@ GATES = [
             (DAEMON, [f"./{SUPERVISE_TABLE_PACKAGE}/"],
              f"go test -run of the table's two pure pins in {SUPERVISE_TABLE_PACKAGE}", {}),
         ]),
-    ], reads=setup_go(TEXT_CHECK_JOB, f"{ENVOY}/go.mod")),
+    ], reads=setup_go(TEXT_CHECK_JOB, f"{ENVOY}/go.mod") + reads(
+        (".github/scripts/go-fetch.sh", f"{at(TEXT_CHECK_JOB, 'Fetch the modules the infra text checks list')} runs it"),
+    )),
 
     # The lane's three jobs: each step's text and packages come from ENVOY_RACE_LANE, which the
     # envoy-go unit step and its plain companion are built from too. envoy-go-race-docs is the one

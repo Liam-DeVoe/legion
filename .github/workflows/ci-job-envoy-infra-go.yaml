@@ -101,8 +101,9 @@ jobs:
       # that touched nothing it tests (run 44317642380 failed so, on a `go install` of helm inside
       # gcp's TestClusteredNatsHubChart that could not read sum.golang.org). So this step fetches
       # what the tests need before they run, from the module cache this job restored and tried
-      # again on failure: the tools gcp's natslive tests run, which they take from GOBIN and never
-      # install (gcp/testdata/live-tools.txt), and the modules of the envoy commands that
+      # again on failure: the tools gcp's natslive tests run, which they take from
+      # $(go env GOPATH)/legion-live-tools and never install (gcp/testdata/live-tools.txt), and the
+      # modules of the envoy commands that
       # heldportwrapper's unit test and core's and gcp's natslive tests build under the
       # repository's root go.work, which those builds read with GOPROXY=off
       # (cmdtest.BuildCommand). The root go.work also binds packages/daemon, whose module files

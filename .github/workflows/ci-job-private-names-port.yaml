@@ -78,6 +78,13 @@ jobs:
           go-version-file: packages/daemon/go.mod
           cache: false
 
+      # The harness builds ./cmd/legion from the module cache alone (GOPROXY=off), since a fetch
+      # while it runs fails it whenever the module proxy or the checksum database does, on a
+      # change that touched nothing it tests. This step fetches that build's modules first, tried
+      # again on failure; with no cache restored it downloads what the build would have.
+      - name: Fetch the modules of the legion binary the harness builds
+        run: .github/scripts/go-fetch.sh deps packages/daemon ./cmd/legion
+
       - name: Test the private-name rules' port against the frozen script
         run: .github/scripts/check-private-names-port.test.sh
 

@@ -287,13 +287,15 @@ func proofCheckoutRoot(t *testing.T) string {
 }
 
 // buildProofLegion builds the `legion` every pane's shim and every operator command in either
-// proof is, from this checkout.
+// proof is, from this checkout. The build reads the module cache alone (GOPROXY=off), since a
+// fetch while a test runs fails it whenever the module proxy does; the jobs that run these tests
+// fetch ./cmd/legion's modules in a step before them.
 func buildProofLegion(t *testing.T, root, work string) string {
 	t.Helper()
 	binary := filepath.Join(work, "legion")
 	build := exec.Command("go", "build", "-o", binary, "./cmd/legion")
 	build.Dir = filepath.Join(root, "packages", "daemon")
-	build.Env = append(os.Environ(), "GOFLAGS=")
+	build.Env = append(os.Environ(), "GOFLAGS=", "GOPROXY=off")
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build legion from %s: %v\n%s", build.Dir, err, out)
 	}

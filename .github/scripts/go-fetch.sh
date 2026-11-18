@@ -8,8 +8,11 @@
 #
 #   go-fetch.sh tools FILE
 #     `go install` each pin FILE lists, one package path and version per line
-#     (`helm.sh/helm/v3/cmd/helm@v3.20.2`; `#` starts a comment), into `go env GOBIN`, where the
-#     tests that run the tool look it up and check its build against the pin.
+#     (`helm.sh/helm/v3/cmd/helm@v3.20.2`; `#` starts a comment), into the directory
+#     legion-live-tools under the first entry of `go env GOPATH`: a directory of these tools' own,
+#     where the tests that run a tool look it up and check its build against the pin. It is not
+#     GOBIN, which a developer keeps on PATH, so the install replaces no helm or nats-server of
+#     theirs.
 #   go-fetch.sh deps DIR PACKAGE...
 #     Download into the module cache every module a `go build` of PACKAGE... in DIR needs
 #     (`go list -deps`, which compiles nothing), for tests that build those packages while they
@@ -23,8 +26,10 @@
 #
 # Each go command is tried up to GO_FETCH_ATTEMPTS times (4), the waits between them starting
 # at GO_FETCH_WAIT seconds (15) and doubling, so a fault of up to about two minutes is ridden
-# out. It exits 1 when a command fails every attempt, naming it, and 2 on a usage error or a
-# FILE line that is no pin, before it runs anything.
+# out. It exits 1 when a command fails every attempt, naming it, and when a step of its own fails
+# (a consumer copy that could not be made, say), naming that, with no attempt more: that is no
+# fault of a service. It exits 2 on a usage error or a FILE line that is no pin, before it runs
+# anything.
 set -euo pipefail
 
 attempts=${GO_FETCH_ATTEMPTS:-4}
@@ -80,8 +85,14 @@ case "$mode" in
       pins+=("$pin")
     done < "$file"
     [ "${#pins[@]}" -gt 0 ] || { echo "go-fetch: $file pins no tool" >&2; exit 2; }
+    # go-offline: this is the fetch step itself, run before the tests and tried again on failure.
+    gopath=$(go env GOPATH)
+    [ -n "${gopath%%:*}" ] || { echo "go-fetch: go env GOPATH names no directory to install the tools under" >&2; exit 1; }
+    tools="${gopath%%:*}/legion-live-tools"
+    echo "go-fetch: installing ${#pins[@]} tools into $tools" >&2
     for pin in "${pins[@]}"; do
-      retry go install "$pin"
+      # go-offline: this is the fetch step itself, run before the tests and tried again on failure.
+      GOBIN=$tools retry go install "$pin"
     done
     ;;
   deps)
@@ -90,6 +101,7 @@ case "$mode" in
     shift
     [ -d "$dir" ] || { echo "go-fetch: no directory $dir" >&2; exit 2; }
     cd "$dir"
+    # go-offline: this is the fetch step itself, run before the tests and tried again on failure.
     retry go list -deps "$@" > /dev/null
     ;;
   pulumi-consumer)
@@ -104,11 +116,19 @@ case "$mode" in
     # The CLI runs as pulumitest.NewCLI runs it in the test: a PULUMI_HOME and a file backend of
     # its own, so it reads and writes nothing of the runner's and asks no service who is logged
     # in (with no backend the CLI looks up an account on Pulumi Cloud and, logged out, makes one).
+    # The attempt's own preparation - the directory, the copy, the backend and home - is no
+    # service's fault, so a failure of it ends the step at once, naming what failed, rather than
+    # leaving package add and the build to run on a copy that is not the consumer: a function
+    # that `retry` calls in an `if` runs with errexit off, so each command says so itself.
     consume() {
       local dir
-      dir=$(mktemp -d "$work/consumer.XXXXXX")
-      cp -R "$src/." "$dir"
-      mkdir -p "$work/backend" "$work/home"
+      dir=$(mktemp -d "$work/consumer.XXXXXX") ||
+        { echo "::error::go-fetch: could not make a directory under $work for a copy of $src" >&2; exit 1; }
+      cp -R "$src/." "$dir" ||
+        { echo "::error::go-fetch: could not copy the consumer $src into $dir" >&2; exit 1; }
+      mkdir -p "$work/backend" "$work/home" ||
+        { echo "::error::go-fetch: could not make the Pulumi backend and home under $work" >&2; exit 1; }
+      # go-offline: this is the fetch step itself, run before the tests and tried again on failure.
       (cd "$dir" && GOWORK=off PULUMI_HOME="$work/home" PULUMI_BACKEND_URL="file://$work/backend" \
         PULUMI_CONFIG_PASSPHRASE=test PULUMI_SKIP_UPDATE_CHECK=true pulumi package add "$plugin" &&
         GOWORK=off go build ./...)

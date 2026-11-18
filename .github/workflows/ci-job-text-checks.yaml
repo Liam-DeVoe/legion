@@ -89,6 +89,13 @@ jobs:
       - name: Check the text packages/envoy pins
         run: go test -count=1 ./internal/textcheck/
         working-directory: packages/envoy
+      # The infra text checks' two import checks (internal/textcheck's moduleDeps) list the whole
+      # import graph of ./core and ./gcp, which the test binary's own build does not load, with
+      # GOPROXY=off: a fetch while a test runs fails it whenever the module proxy or the checksum
+      # database does, on a change that touched nothing it checks. So this step fetches that
+      # graph's modules first, tried again on failure.
+      - name: Fetch the modules the infra text checks list
+        run: .github/scripts/go-fetch.sh deps packages/envoy/infra ./core ./gcp
       - name: Check the text packages/envoy/infra pins
         run: go test -count=1 ./internal/textcheck/
         working-directory: packages/envoy/infra

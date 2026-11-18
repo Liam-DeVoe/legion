@@ -179,11 +179,15 @@ jobs:
       # The tests of internal/daemon and internal/intake run a real listener and a real Dispatch,
       # which they build from packages/envoy while they run (testbuild.EnvoyBinary), and the
       # daemon's own build never loads those commands, so go-daemon can lack modules they need.
-      # The builds read the module cache with GOPROXY=off, since a fetch inside a test fails it
+      # Tests of other packages build ./cmd/legion while they run, and the Stage 1 proof below
+      # builds it too, while the race step's go test loads none of its modules. Every one of those
+      # builds reads the module cache with GOPROXY=off, since a fetch inside a test fails it
       # whenever the module proxy does, on a change that touched nothing it tests; this step
       # fetches those modules first, from the restored cache and tried again on failure.
-      - name: Fetch the modules of the envoy commands the tests build
-        run: .github/scripts/go-fetch.sh deps packages/envoy ./cmd/dispatch ./cmd/listener
+      - name: Fetch the modules of the commands the tests build
+        run: |
+          .github/scripts/go-fetch.sh deps packages/envoy ./cmd/dispatch ./cmd/listener
+          .github/scripts/go-fetch.sh deps packages/daemon ./cmd/legion
 
       # The step runs every package of the module except the three the race step below tests and
       # internal/textcheck, whose tests are the text-check job's: so each of the three runs once

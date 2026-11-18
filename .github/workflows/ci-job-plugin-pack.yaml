@@ -107,6 +107,17 @@ jobs:
       # it, installed through the mise above (.github/actions/install-omp).
       - uses: ./.github/actions/install-omp
 
+      # internal/daemon's tests build envoy's Dispatch and listener (testbuild.EnvoyBinary) and the
+      # daemon's ./cmd/legion while they run, from the module cache alone (GOPROXY=off), since a
+      # fetch inside a test fails it whenever the module proxy does; go-daemon can lack the envoy
+      # commands' modules, and a stale entry any of them. So this step fetches them first, tried
+      # again on failure: .github/scripts/check-go-offline.sh holds every job that runs these
+      # tests to it.
+      - name: Fetch the modules of the commands the tests build
+        run: |
+          .github/scripts/go-fetch.sh deps packages/envoy ./cmd/dispatch ./cmd/listener
+          .github/scripts/go-fetch.sh deps packages/daemon ./cmd/legion
+
       # The three tests, by name. .github/scripts/ci_job_reads.py builds this text and the
       # daemon-go race step's `-skip` from PLUGIN_PACK_TESTS and holds both steps to what it
       # builds.

@@ -643,7 +643,11 @@ func (rig *initRig) plantHooks(dir string, hooks ...string) {
 // from the next pod is the fresh disk's.
 func TestWhatAnIssuePlantsNeitherReadsTheProvisioningTokenNorOutlivesItsPod(t *testing.T) {
 	legion := filepath.Join(t.TempDir(), "legion")
-	if output, err := exec.Command("go", "build", "-o", legion, "github.com/sjawhar/legion/daemon/cmd/legion").CombinedOutput(); err != nil {
+	// The module cache alone (GOPROXY=off): a fetch while a test runs fails it whenever the
+	// module proxy does, and daemon-go fetches ./cmd/legion's modules before its tests.
+	build := exec.Command("go", "build", "-o", legion, "github.com/sjawhar/legion/daemon/cmd/legion")
+	build.Env = append(os.Environ(), "GOPROXY=off")
+	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build the Go legion: %v\n%s", err, output)
 	}
 	testbin.RequireJJFilters(t)

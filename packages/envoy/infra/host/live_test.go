@@ -320,6 +320,8 @@ func TestLiveGoConsumersCanUseTheSDK(t *testing.T) {
 	t.Setenv("GOWORK", "off")
 	t.Setenv("GOPROXY", moduleCacheProxy(t))
 	pulumitest.NewCLI(t, dir).Run("package", "add", plugin)
+	// go-offline: GOPROXY is moduleCacheProxy's file:// proxy over the module cache, set above, so
+	// the build reads what envoy-smoke's fetch step put there and nothing else.
 	build := exec.Command("go", "build", "./...")
 	build.Dir = dir
 	out, err := build.CombinedOutput()
@@ -330,6 +332,7 @@ func TestLiveGoConsumersCanUseTheSDK(t *testing.T) {
 // nothing else: a go command under it resolves and downloads only what the cache already holds.
 func moduleCacheProxy(t *testing.T) string {
 	t.Helper()
+	// go-offline: go env of one setting, in a directory outside any module, loads no module.
 	env := exec.Command("go", "env", "GOMODCACHE")
 	env.Dir = t.TempDir()
 	out, err := env.Output()

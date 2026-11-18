@@ -75,7 +75,8 @@ func fakeHelperWithPids(t *testing.T, canned helper.Response) (string, <-chan pe
 func TestRegisterExecStillPinsTheReplacedProcess(t *testing.T) {
 	sock, requests := fakeHelperWithPids(t, helper.Response{OK: true, State: "enrolling", RuntimeID: "session-exec"})
 	cmd := exec.Command("go", "run", ".", "register", "--session-id", "exec", "--exec", "--", "sh", "-c", "echo $$")
-	cmd.Env = append(os.Environ(), "AGENT_SECRETS_HELPER_SOCK="+sock)
+	// The module cache alone: this package's own modules, which the go test running it loaded.
+	cmd.Env = append(os.Environ(), "AGENT_SECRETS_HELPER_SOCK="+sock, "GOPROXY=off")
 	out, err := cmd.Output()
 	if err != nil {
 		t.Fatalf("register --exec: %v", err)

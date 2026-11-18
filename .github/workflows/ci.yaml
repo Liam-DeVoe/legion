@@ -1084,6 +1084,8 @@ jobs:
               - *ci_router
               - '.github/workflows/ci-job-plugin-pack.yaml'
               - *go_workspace
+              # Its fetch step runs this script before the tests.
+              - '.github/scripts/go-fetch.sh'
               - *bun_install
               - *omp_install
               - 'packages/daemon/**'
@@ -4166,6 +4168,8 @@ jobs:
               - *go_workspace
               - *legion_command
               - '.github/scripts/check-private-names-port.test.sh'
+              # Its fetch step runs this script before the harness.
+              - '.github/scripts/go-fetch.sh'
               # test-lib.sh, which the harness sources for check/is/summary (:63), and the
               # frozen script it runs every case through beside the binary, symlinked into each
               # fixture (:203,411,457,546). That script is the subject of

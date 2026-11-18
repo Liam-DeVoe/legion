@@ -1,7 +1,8 @@
 # The tools gcp's natslive tests run, one `go install` argument per line. The tests install none
 # of them: .github/scripts/go-fetch.sh installs them before the tests run, in envoy-infra-go and
-# in ci-caches.yaml's envoy-infra fill, and each test takes its tool from `go env GOBIN` after
-# checking the binary's build information against its line (clusteredhub_live_tools_test.go).
+# in ci-caches.yaml's envoy-infra fill, into legion-live-tools under the first entry of
+# `go env GOPATH`, and each test takes its tool from there after checking the binary's build
+# information against its line (clusteredhub_live_tools_test.go).
 #
 # helm, at the version pulumi-kubernetes v4.34.2's provider renders charts with (its
 # provider/go.mod).

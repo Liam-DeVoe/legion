@@ -19,18 +19,31 @@ trap 'rm -rf "$work"' EXIT
 source "$script_dir/test-lib.sh"
 
 # The stand-ins for go and pulumi: each call appends "<pwd> <name> <args>" to $work/calls; a call
-# whose arguments contain FAIL_MATCH fails while the count of such calls is at most FAIL_TIMES. A
-# stand-in pulumi writes the sdks/ directory package add writes, so a second attempt in the same
-# directory would find it there.
+# whose arguments contain FAIL_MATCH fails while the count of such calls is at most FAIL_TIMES.
+# `go env GOPATH` answers GO_FETCH_TEST_GOPATH, and each `go install` records the GOBIN it ran
+# under. A stand-in pulumi writes the sdks/ directory package add writes, so a second attempt in
+# the same directory would find it there. pulumi and `go build` each record the sha256 of the
+# go.mod and main.go they find in their directory, so a case can hold what they ran on to the
+# consumer's own files, not only to the step's exit.
 mkdir -p "$work/bin"
 for name in go pulumi; do
   cat > "$work/bin/$name" <<'STANDIN'
 #!/usr/bin/env bash
 echo "$PWD $(basename "$0") $*" >> "$GO_FETCH_TEST_CALLS"
+if [ "$(basename "$0")" = go ] && [ "$*" = "env GOPATH" ]; then
+  echo "$GO_FETCH_TEST_GOPATH"
+  exit 0
+fi
+if [ "$(basename "$0")" = go ] && [ "$1" = install ]; then
+  echo "GOBIN=${GOBIN:-}" >> "$GO_FETCH_TEST_CALLS.gobin"
+fi
 if [ "$(basename "$0")" = pulumi ]; then
   echo "PULUMI_BACKEND_URL=${PULUMI_BACKEND_URL:-} PULUMI_HOME=${PULUMI_HOME:-}" >> "$GO_FETCH_TEST_CALLS.pulumi-env"
   [ ! -e sdks ] || { echo "sdks already exists" >&2; exit 3; }
   mkdir sdks
+fi
+if [ "$(basename "$0")" = pulumi ] || [ "$*" = "build ./..." ]; then
+  echo "$(basename "$0") $(cat go.mod main.go 2>/dev/null | sha256sum | cut -d' ' -f1)" >> "$GO_FETCH_TEST_CALLS.seen"
 fi
 if [ -n "${FAIL_MATCH:-}" ] && [[ "$*" == *"$FAIL_MATCH"* ]]; then
   count=$(( $(cat "$GO_FETCH_TEST_COUNT" 2>/dev/null || echo 0) + 1 ))
@@ -45,19 +58,31 @@ STANDIN
   chmod +x "$work/bin/$name"
 done
 
+# A `cp` that fails, for the case whose copy of the consumer cannot be made: first on PATH only
+# where a case puts $work/cp-fails there, and recording each call.
+mkdir -p "$work/cp-fails"
+printf '#!/bin/sh\necho "cp $*" >> "$GO_FETCH_TEST_CALLS.cp"\necho "cp: cannot create directory: No space left on device" >&2\nexit 42\n' \
+  > "$work/cp-fails/cp"
+chmod +x "$work/cp-fails/cp"
+
 # fetch <args...>: runs the script under test with the stand-ins and no waits. Leaves its stderr
-# in `err`, its exit code in `rc`, the stand-ins' calls in `calls` and the environment each
-# pulumi call saw in `pulumi_env`.
+# in `err`, its exit code in `rc`, the stand-ins' calls in `calls`, the environment each pulumi
+# call saw in `pulumi_env`, each install's GOBIN in `gobin`, what package add and the build found
+# in their directory in `seen`, and the failing cp's calls in `cp_calls`. PATH_FIRST, when set,
+# goes on PATH before the stand-ins.
 fetch() {
-  rm -f "$work/calls" "$work/calls.pulumi-env" "$work/count"
+  rm -f "$work/calls" "$work/calls.pulumi-env" "$work/calls.gobin" "$work/calls.seen" "$work/calls.cp" "$work/count"
   set +e
-  PATH="$work/bin:$PATH" GO_FETCH_TEST_CALLS="$work/calls" GO_FETCH_TEST_COUNT="$work/count" \
-    GO_FETCH_WAIT=0 "$go_fetch" "$@" > "$work/stdout" 2> "$work/stderr"
+  PATH="${PATH_FIRST:+$PATH_FIRST:}$work/bin:$PATH" GO_FETCH_TEST_CALLS="$work/calls" GO_FETCH_TEST_COUNT="$work/count" \
+    GO_FETCH_TEST_GOPATH="$work/gopath:$work/other-gopath" GO_FETCH_WAIT=0 "$go_fetch" "$@" > "$work/stdout" 2> "$work/stderr"
   rc=$?
   set -e
   err=$(cat "$work/stderr")
   calls=$(cat "$work/calls" 2>/dev/null || true)
   pulumi_env=$(cat "$work/calls.pulumi-env" 2>/dev/null || true)
+  gobin=$(cat "$work/calls.gobin" 2>/dev/null || true)
+  seen=$(cat "$work/calls.seen" 2>/dev/null || true)
+  cp_calls=$(cat "$work/calls.cp" 2>/dev/null || true)
 }
 
 cat > "$work/tools.txt" <<'TOOLS'
@@ -67,13 +92,17 @@ example.com/a/cmd/alpha@v1.2.3
 example.com/b/v2@v2.0.1   # a comment after a pin
 TOOLS
 
-echo "case: tools installs each pin of the file, in its order, and nothing else"
+echo "case: tools installs each pin of the file, in its order, into a directory of the tools' own"
 fetch tools "$work/tools.txt"
 check "exits 0" "$(is "$rc" 0)"
 check "installs the first pin" "$(contains "$calls" '^.* install example.com/a/cmd/alpha@v1.2.3$')"
 check "installs the second pin, its comment left off" "$(contains "$calls" '^.* install example.com/b/v2@v2.0.1$')"
-check "runs two installs and nothing else" "$(is "$(grep -c . <<< "$calls")" 2)"
-check "in the file's order" "$(is "$(sed -n 1p <<< "$calls" | grep -c alpha)" 1)"
+check "asks go env for GOPATH, then runs the two installs and nothing else" "$(is "$(grep -c . <<< "$calls")" 3)"
+check "in the file's order" "$(is "$(grep ' install ' <<< "$calls" | sed -n 1p | grep -c alpha)" 1)"
+check "into legion-live-tools under GOPATH's first entry, never the caller's GOBIN" \
+  "$(is "$(sort -u <<< "$gobin")" "GOBIN=$work/gopath/legion-live-tools")"
+check "both installs there" "$(is "$(grep -c . <<< "$gobin")" 2)"
+check "says where" "$(contains "$err" "installing 2 tools into $work/gopath/legion-live-tools")"
 
 echo "case: a pin whose install fails twice is tried again and installed"
 FAIL_MATCH=alpha FAIL_TIMES=2 fetch tools "$work/tools.txt"
@@ -115,9 +144,20 @@ check "on a file backend of its own, so it asks Pulumi Cloud for no account" \
 check "then the build, in the same copy" \
   "$(is "$(awk '{print $1}' <<< "$calls" | sort -u | grep -c .)" 1)"
 check "builds the copy" "$(contains "$calls" ' go build ./...$')"
+check "package add and the build each ran on the consumer's own go.mod and main.go" \
+  "$(is "$seen" "$(printf 'pulumi %s\ngo %s' "$(cat "$work/consumer-src/go.mod" "$work/consumer-src/main.go" | sha256sum | cut -d' ' -f1)" \
+    "$(cat "$work/consumer-src/go.mod" "$work/consumer-src/main.go" | sha256sum | cut -d' ' -f1)")")"
 check "leaves the source untouched" \
   "$(is "$(find "$work/consumer-src" -mindepth 1 -printf '%f\n' | sort | tr '\n' ' ')" 'go.mod main.go ')"
 check "runs in no copy under the source" "$(is "$(grep -c "^$work/consumer-src" <<< "$calls")" 0)"
+
+echo "case: a copy of the consumer that cannot be made ends the step, naming it, and runs nothing after it"
+PATH_FIRST="$work/cp-fails" fetch pulumi-consumer "$work/consumer-src" "$work/plugin"
+check "exits 1" "$(is "$rc" 1)"
+check "names the copy that failed" "$(contains "$err" "could not copy the consumer $work/consumer-src into ")"
+check "as a GitHub error" "$(contains "$err" '::error::go-fetch: could not copy')"
+check "tries the copy once: a failed copy is no fault of a service" "$(is "$(grep -c . <<< "$cp_calls")" 1)"
+check "runs neither package add nor the build" "$(is "$calls" '')"
 
 echo "case: a failed package add is tried again on a fresh copy"
 FAIL_MATCH="package add" FAIL_TIMES=1 fetch pulumi-consumer "$work/consumer-src" "$work/plugin"
