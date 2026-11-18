@@ -88,13 +88,14 @@ type Guard struct {
 	// noAnswer is the askpass program the children are pointed at, resolved once from the base
 	// environment's PATH.
 	noAnswer string
-	// blobBound is the largest text file the read of a pushed commit's files takes, a merge's or a
-	// commit of one parent's (Guard.addedLines): 32 MiB, which New sets and a test lowers. The read
-	// holds at most two such files at once, the commit's and one parent's, and, for a file
-	// compared with another, a set of the commit's distinct lines, which is under 100 MiB at the
-	// bound for lines of ordinary length and some hundreds of MiB for a file of nothing but short
-	// distinct lines: a small part of the 19 GiB an issue pod's roles share at the default issue
-	// reservation (docs/kubernetes.md). It is over eight times the largest text file this
+	// blobBound is the largest text file the read of a push's files takes, a merge's, a commit of
+	// one parent's or a tree's (Guard.addedLines), or a blob a ref or a tag is at
+	// (Guard.blobRecords): 32 MiB, which New sets and a test lowers. The read holds at most two
+	// such files at once, the commit's and one parent's, and, for a file compared with another, a
+	// set of the commit's distinct lines, which is under 100 MiB at the bound for lines of ordinary
+	// length and some hundreds of MiB for a file of nothing but short distinct lines: a small part
+	// of the 19 GiB an issue pod's roles share at the default issue reservation
+	// (docs/kubernetes.md). It is over eight times the largest text file this
 	// repository tracks, a test fixture of 3.7 MiB
 	// (packages/envoy/internal/dispatch/pmdoc/testdata/fixtures.json, measured 2026-11-17), so
 	// that a lock file or a fixture a commit changes is far below it, and under the 50 MiB above

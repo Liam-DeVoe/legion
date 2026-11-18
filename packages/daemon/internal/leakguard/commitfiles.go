@@ -43,15 +43,66 @@ func (g *Guard) commitRecords(ctx context.Context, dir, commit string) ([]Record
 	}
 	var paths []string
 	var changes []fileChange
+	kind := "commit"
 	if len(parents) > 1 {
+		kind = "merge"
 		paths, changes, err = g.mergeChanges(ctx, dir, commit, parents)
 	} else {
-		paths, changes, err = g.commitChanges(ctx, dir, commit, len(parents))
+		paths, changes, err = g.commitChanges(ctx, dir, kind, commit, len(parents))
 	}
 	if err != nil {
 		return nil, err
 	}
-	added, err := g.addedLines(ctx, dir, commit, len(parents), changes)
+	return g.fileRecords(ctx, dir, kind, commit, records, paths, changes)
+}
+
+// treeRecords are the records of a tree a push publishes, which a ref can be at and a tag chain
+// can end at: the tree is read as a root commit's files are, each path it holds a file or a
+// submodule at, and each line of each text file, blank ones aside (commitChanges,
+// Guard.addedLines), with no identity and no message, which a tree has none of.
+func (g *Guard) treeRecords(ctx context.Context, dir, tree string) ([]Record, error) {
+	paths, changes, err := g.commitChanges(ctx, dir, "tree", tree, 0)
+	if err != nil {
+		return nil, err
+	}
+	return g.fileRecords(ctx, dir, "tree", tree, nil, paths, changes)
+}
+
+// blobRecords are the records of a blob a push publishes, which a ref can be at and a tag chain can
+// end at with no tree to give it a path: each line of it, blank ones aside, as of a file a commit
+// adds, read through the batch a commit's files are read through and within the same bound
+// (Guard.addedLines). A binary blob adds no line, and a text blob above blobBound refuses the push
+// as a setup failure naming it and its size. Each record is labelled "blob <short>", as a commit's
+// identities and message are labelled by the commit. The lines are not copied, as a commit's are:
+// they are the whole blob but its blank lines and line endings, so its records hold it anyway.
+func (g *Guard) blobRecords(ctx context.Context, dir, blob string) ([]Record, error) {
+	batch, err := g.readBlobs(ctx, dir)
+	if err != nil {
+		return nil, err
+	}
+	file, over, err := batch.text(blob, g.blobBound)
+	if err == nil && over > 0 {
+		err = fmt.Errorf("blob %s is %d bytes, more than the %d bytes a blob is read up to", short(blob), over, g.blobBound)
+	}
+	if err = batch.close(err); err != nil {
+		return nil, err
+	}
+	label := "blob " + short(blob)
+	var records []Record
+	for line := range lines(file) {
+		if strings.TrimSpace(line) != "" {
+			records = append(records, Record{Label: label, Text: line})
+		}
+	}
+	return records, nil
+}
+
+// fileRecords are records with the records of the files of a commit, a merge or a tree (kind), id,
+// appended: one for each of paths, its added and renamed paths, in path order, then one for each
+// line added at changes (Guard.addedLines), in path order and, within a file, in the file's own
+// order.
+func (g *Guard) fileRecords(ctx context.Context, dir, kind, id string, records []Record, paths []string, changes []fileChange) ([]Record, error) {
+	added, err := g.addedLines(ctx, dir, kind, id, changes)
 	if err != nil {
 		return nil, err
 	}
@@ -74,13 +125,17 @@ type fileChange struct {
 	held       []string
 }
 
-// commitChanges are the paths a commit of at most one parent adds or renames a file to, which are
-// the paths the destination would hold that it does not hold already, and the files it changes
-// that lines can be added at (fileChange), as one diff-tree lists them against its parent:
+// commitChanges are the paths a commit of at most one parent, or a tree (kind), id, adds or
+// renames a file to, which are the paths the destination would hold that it does not hold
+// already, and the files it changes that lines can be added at (fileChange), as one diff-tree
+// lists them against its parent:
 //
 //	git diff-tree -r -M --no-commit-id -z [--root] <commit>
+//	git diff-tree -r -M --no-commit-id -z <empty tree> <tree>
 //
-// --root for a root commit, whose list is otherwise empty. Renames are found (-M), so that a file
+// --root for a root commit, whose list is otherwise empty. --root takes a commit alone, so a tree,
+// which has no parent either, is listed against the tree that holds nothing (emptyTree), as --root
+// lists a root commit: each file it holds is one it adds. Renames are found (-M), so that a file
 // the commit renames is compared with the file it is renamed from. Of each file the commit has as
 // a blob, a regular file or a symbolic link:
 //
@@ -94,16 +149,19 @@ type fileChange struct {
 // A file the commit removes, and a submodule, which holds no line of this repository's, add none.
 // What is read grows with the commit's changes alone, in the list diff-tree writes and the blobs
 // cat-file answers, and no git's command line grows with it.
-func (g *Guard) commitChanges(ctx context.Context, dir, commit string, parents int) (paths []string, changes []fileChange, err error) {
+func (g *Guard) commitChanges(ctx context.Context, dir, kind, id string, parents int) (paths []string, changes []fileChange, err error) {
 	args := []string{"diff-tree", "-r", "-M", "--no-commit-id", "-z"}
-	if parents == 0 {
+	switch {
+	case kind == "tree":
+		args = append(args, emptyTree(id))
+	case parents == 0:
 		args = append(args, "--root")
 	}
-	out, err := g.git(ctx, dir, append(args, commit)...)
+	out, err := g.git(ctx, dir, append(args, id)...)
 	if err != nil {
 		return nil, nil, err
 	}
-	what := "commit " + short(commit)
+	what := kind + " " + short(id)
 	for entry, err := range rawEntries(out, what) {
 		switch {
 		case err != nil:
@@ -132,12 +190,23 @@ func (g *Guard) commitChanges(ctx context.Context, dir, commit string, parents i
 	return paths, changes, nil
 }
 
-// addedLines are the lines a commit of parents parents adds at changes, each as a record of the
-// file it is added to: the lines of each change's file, blank ones aside, that none of the files
-// it is compared with holds, in the order the commit's file has them. The text compared is a line
-// with its line ending off (lines). A line one of those files holds is text the destination holds
-// already, or that is read where the commit holding it is pushed, wherever the commit puts it,
-// since the rules read a line's text alone.
+// emptyTree is the tree that holds nothing, in a repository whose object ids are as long as id: a
+// SHA-256 one where id is 64 hex digits, and a SHA-1 one else. git knows that tree in every
+// repository, whether the repository holds it or not.
+func emptyTree(id string) string {
+	if len(id) == 64 {
+		return "6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74decc5321"
+	}
+	return "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+}
+
+// addedLines are the lines a commit, a merge or a tree (kind), id, adds at changes, each as a
+// record of the file it is added to: the lines of each change's file, blank ones aside, that none
+// of the files it is compared with holds, in the order the commit's file has them. The text
+// compared is a line with its line ending off (lines). A line one of those files holds is text the
+// destination holds already, or that is read where the commit holding it is pushed, wherever the
+// commit puts it, since the rules read a line's text alone. A tree's every change is compared with
+// no file (commitChanges), so every line of its text files is read.
 //
 // The files are read as blobs, with cat-file --batch, which applies no attribute, so a file
 // .gitattributes marks -diff or binary is read as any other is, the pushed commit's own
@@ -156,15 +225,17 @@ func (g *Guard) commitChanges(ctx context.Context, dir, commit string, parents i
 // commit's file is left to take, which is every one of them where the commit's file is binary; so
 // such a file the repository lacks, or that a partial clone's fetch of fails, refuses nothing. A
 // commit with no change to read starts no git.
-func (g *Guard) addedLines(ctx context.Context, dir, commit string, parents int, changes []fileChange) ([]Record, error) {
+func (g *Guard) addedLines(ctx context.Context, dir, kind, id string, changes []fileChange) ([]Record, error) {
 	if len(changes) == 0 {
 		return nil, nil
 	}
-	kind, theirs := "commit", "the parent of commit "+short(commit)+"'s"
-	if parents > 1 {
-		kind, theirs = "merge", "a parent of merge "+short(commit)+"'s"
+	// ours names the file of a change, and theirs a file it is compared with, a parent's, which no
+	// change of a tree's has.
+	ours := kind + " " + short(id) + "'s"
+	theirs := "the parent of " + ours
+	if kind == "merge" {
+		theirs = "a parent of " + ours
 	}
-	ours := kind + " " + short(commit) + "'s"
 	batch, err := g.readBlobs(ctx, dir)
 	if err != nil {
 		return nil, err

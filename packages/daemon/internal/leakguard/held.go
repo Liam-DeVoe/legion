@@ -67,7 +67,8 @@ func (g *Guard) holds(ctx context.Context, dir, sha string) (bool, error) {
 // lacks is answered missing rather than fetched from its promisor remote. The reads of what the
 // destination holds and of the tag objects a push adds run so (Guard.advertised, Guard.holds,
 // Guard.tagRecords); the reads of a commit's files do not, since a commit read in a partial clone
-// needs the blobs it lacks fetched (blobBatch).
+// needs the blobs it lacks fetched (blobBatch), nor do the reads of a blob or a tree a push adds,
+// which are read as a commit's files are (Guard.blobRecords, Guard.treeRecords).
 var fetchesNothing = []string{"GIT_NO_LAZY_FETCH=1"}
 
 // readsNoConfigFile is the environment of a read that must read neither the machine's git
@@ -77,8 +78,9 @@ var fetchesNothing = []string{"GIT_NO_LAZY_FETCH=1"}
 var readsNoConfigFile = []string{"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null"}
 
 // advertised are the commits the repository at url holds at its branches and tags, of those the
-// repository at dir has, and tags the tag objects it holds at its tags, of those dir has: what a
-// push to url need not publish again (Guard.commits, Guard.tagRecords). The read is of url itself,
+// repository at dir has, and objects the tag objects, blobs and trees it holds at them, of those
+// dir has: what a push to url need not publish again (Guard.commits, Guard.pushRecords). A tag can
+// be at a blob or a tree, as an annotated tag's chain can end at one. The read is of url itself,
 // never of a ref of dir's own, which says nothing reliable of what url holds (Guard.Push says
 // why):
 //
@@ -121,22 +123,22 @@ var readsNoConfigFile = []string{"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/de
 // and for at most heldReadBound, so that a destination that stops answering refuses the push
 // rather than holding it. The `--` keeps a URL that starts with a dash from being read as an
 // option. Each sha it prints is kept where dir has it as a commit, an annotated tag's peeled
-// commit (<tag>^{}) too, or as a tag object, the sha a tag's own line prints, which one cat-file
-// --batch-check of them all, run in dir, answers. A line whose first field is no object id as git
-// prints one, 40 or 64 lower-case hex digits (isObjectID), holds nothing and is not asked of:
-// cat-file reads a name or an expression, HEAD or main~1, as a revision of dir's, and would take
-// the commit it names in dir as one url holds. A sha dir does not have holds nothing, since
-// rev-list cannot walk from it: where it is a commit ahead of dir's, the commits of dir's that it
-// reaches are read, which is the fail-closed direction. The cat-file fetches nothing
-// (fetchesNothing), so that in a partial clone, as an issue pod's fork clones are
-// (--filter=blob:none), a sha dir lacks is answered missing rather than fetched from the promisor
-// remote: the read of what url holds fetches nothing, and a sha dir lacks holds nothing there as
-// it does anywhere. An empty answer, a repository with no branch and no tag, holds nothing. A git
-// that cannot be run, that exits other than 0, or that its bound stops is an error naming url,
-// never a repository read as holding nothing, and the error carries no credential: the URL it
-// names and git's standard error it quotes are each written without the user and password a URL
-// can carry (withoutUserinfo).
-func (g *Guard) advertised(ctx context.Context, dir, url string) (commits, tags []string, err error) {
+// commit (<tag>^{}) too, as a tag object, the sha a tag's own line prints, or as a blob or a tree,
+// which a tag's own line or its peeled one can print; one cat-file --batch-check of them all, run
+// in dir, answers which. A line whose first field is no object id as git prints one, 40 or 64
+// lower-case hex digits (isObjectID), holds nothing and is not asked of: cat-file reads a name or
+// an expression, HEAD or main~1, as a revision of dir's, and would take the commit it names in dir
+// as one url holds. A sha dir does not have holds nothing, since rev-list cannot walk from it:
+// where it is a commit ahead of dir's, the commits of dir's that it reaches are read, which is the
+// fail-closed direction. The cat-file fetches nothing (fetchesNothing), so that in a partial
+// clone, as an issue pod's fork clones are (--filter=blob:none), a sha dir lacks is answered
+// missing rather than fetched from the promisor remote: the read of what url holds fetches
+// nothing, and a sha dir lacks holds nothing there as it does anywhere. An empty answer, a
+// repository with no branch and no tag, holds nothing. A git that cannot be run, that exits other
+// than 0, or that its bound stops is an error naming url, never a repository read as holding
+// nothing, and the error carries no credential: the URL it names and git's standard error it
+// quotes are each written without the user and password a URL can carry (withoutUserinfo).
+func (g *Guard) advertised(ctx context.Context, dir, url string) (commits, objects []string, err error) {
 	read := "git ls-remote " + withoutUserinfo(url)
 	bounded, cancel := context.WithTimeout(ctx, g.heldReadBound)
 	defer cancel()
@@ -180,12 +182,12 @@ func (g *Guard) advertised(ctx context.Context, dir, url string) (commits, tags 
 			switch fields[1] {
 			case "commit":
 				commits = append(commits, fields[0])
-			case "tag":
-				tags = append(tags, fields[0])
+			case "tag", "blob", "tree":
+				objects = append(objects, fields[0])
 			}
 		}
 	}
-	return commits, tags, nil
+	return commits, objects, nil
 }
 
 // heldReadInherits is which names of the caller's environment the read of what a push's

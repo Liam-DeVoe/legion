@@ -91,16 +91,17 @@ It carries:
     A line a commit adds that its parent's file already holds elsewhere is not read: the destination holds that line already, or the guard reads it where the parent is pushed.
     A merge is read the same way from its files, not from git's combined diff, which is wrong from 33 parents and drops a line only the merge adds from 64:
     a file that differs from every parent's is compared with each parent's file at that path, and a merge's own paths are those no parent has (`mergeChanges`, `internal/leakguard/mergefiles.go`).
+    A ref at a tree or a blob, directly or through annotated tags, reaches no commit and is read the same way: a tree as a root commit's files are, each path and every line of each text file, and a blob as a file with no path, every line of it in a record labelled `blob <short>` (`Guard.treeRecords`, `Guard.blobRecords`).
     A read of a commit that fails quotes git's own message without the user and token a URL in it carries, such as the URL of the promisor remote a partial clone's failed lazy fetch names (`withoutUserinfo`).
     The pod's roles share one memory limit, so the read holds one path's files at a time;
 
   - a text file it reads above 32 MiB as a setup error that refuses the push and names the file and its size, whichever the shape (`Guard.blobBound`):
-    a commit's own file, or a file it is compared with.
+    a commit's own file, a file it is compared with, or a tree's file or a blob that a ref is at.
     The guard reads none of the files a commit's file is compared with where the commit's file is binary, and passes over the rest once the files read before them hold every line of it.
     The bound is per file, not per push:
-    what one push holds in memory is no file above it, and every record of the push, each added line, path, identity and message, and each annotated tag's name, tagger and message, until the rules have read them;
+    what one push holds in memory is no file above it, and every record of the push, each added line, path, identity and message, each annotated tag's name, tagger and message, and each line of a blob a ref is at, until the rules have read them;
 
-  - and no commit that a branch or a tag of the destination already reaches, nor an annotated tag the destination already holds, as one `git ls-remote --heads --tags` of the URL git hands the hook reads them (`Guard.advertised`, `internal/leakguard/held.go`).
+  - and no commit that a branch or a tag of the destination already reaches, nor an annotated tag it already holds, nor a tree or a blob one of its tags is at, as one `git ls-remote --heads --tags` of the URL git hands the hook reads them (`Guard.advertised`, `internal/leakguard/held.go`).
     Each push with an update that is not a deletion, to a destination the guard scans, costs that one read, and a read that fails refuses the push as a setup error that names the remote and the URL.
     The read runs outside the clone, in `/` and without the hook's `GIT_DIR`, so no configuration of the clone's leads it to another repository:
     git hands the hook the URL the clone's configuration already led the push to, and under the clone's `url.<base>.pushInsteadOf` that URL can be one its `url.<base>.insteadOf` rewrites.
@@ -117,7 +118,7 @@ It carries:
     A branch or a tag at a commit the clone does not have holds nothing, so where that commit is ahead of the clone's, the clone's commits it reaches are read, which fails closed.
     A push whose destination holds nothing the clone has, an empty local bare repository among them, fails closed the same way:
     it reads every commit the branch reaches, at one read of each, which is thousands for a fork's branch.
-    Both reads that ask what the clone has run with `GIT_NO_LAZY_FETCH=1`: the batch check of the shas `git ls-remote` prints, which keeps those the clone has as commits or tag objects (`Guard.advertised`), and the check of the commit the update says the destination's ref is at now (`Guard.holds`).
+    Both reads that ask what the clone has run with `GIT_NO_LAZY_FETCH=1`: the batch check of the shas `git ls-remote` prints, which keeps those the clone has (`Guard.advertised`), and the check of the commit the update says the destination's ref is at now (`Guard.holds`).
     So a partial clone fetches no object it lacks from its promisor remote, and such an object holds nothing there either.
     No ref of the clone's own counts: git moves a remote's `refs/remotes/<remote>/` for a push to whatever URL the remote pushes to at that time, a local bare one that a role points it at for one run (`git remote set-url --push origin <bare>`) included, and a ref can be written by hand.
 

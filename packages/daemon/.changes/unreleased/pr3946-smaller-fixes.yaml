@@ -14,3 +14,7 @@ body: |-
   without the user and password the URL can carry.
   A push of an annotated tag now has its name, its tagger and its message read by the guard's own
   rules, and those of each tag it is of, unless the destination already holds the tag.
+  A push of a ref at a blob or a tree, or of a tag whose chain ends at one, now has the blob's
+  lines, or the tree's paths and the lines of its files, read by those rules, within the bound a
+  commit's files are read within, unless one of the destination's tags is already at that blob or
+  tree.

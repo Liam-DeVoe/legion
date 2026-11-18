@@ -246,6 +246,139 @@ func TestAnAnnotatedTagsTaggerAndMessageAreRead(t *testing.T) {
 	}
 }
 
+// A ref can be at a blob or a tree, and so can the tag a tag chain ends at, and a push of one
+// publishes that content with no commit around it. A blob is read as a file a commit adds that has
+// no path, each line of it a record labelled by the blob; a tree is read as a root commit's files
+// are, each path it holds and each line of each of its text files. Each file is read within the
+// bound a commit's file is, 64 bytes here: a binary blob adds no line, and a text file above the
+// bound refuses the push as a setup failure that names it. Every case pushes refs/tags/pushed, a
+// ref the destination does not hold, which names nothing. A blob the destination holds, at a tag
+// of its own, is not read again: it names a host here, and a push of it to another ref passes.
+func TestABlobOrATreeARefOrATagIsAtIsRead(t *testing.T) {
+	home, root := t.TempDir(), t.TempDir()
+	repo := filepath.Join(root, "repo")
+	fixture := fixturegit.Isolated(t, home)
+	fixture.Run(root, fixturegit.InitWorkTree(repo, "main")...)
+	base := commitFiles(t, fixture, repo, map[string]string{"README.md": "one\n"}, "the commit the destination holds")
+	named := "the runner answers at " + theHost + "\n"
+	big := strings.Repeat("a line of ordinary prose\n", 4)
+	const failed = "LEAK CHECK SETUP ERROR: the push to origin: the push's commits could not be read: "
+	// blob writes content as a blob and answers it.
+	blob := func(t *testing.T, content string) string {
+		t.Helper()
+		return fixture.Fed(repo, content, "git", "hash-object", "-w", "--stdin")
+	}
+	// tree writes a tree of README.md and docs/notes.md, the second holding notes, and answers it.
+	tree := func(t *testing.T, notes string) string {
+		t.Helper()
+		docs := fixture.Fed(repo, "100644 blob "+blob(t, notes)+"\tnotes.md\n", "git", "mktree")
+		return fixture.Fed(repo, "100644 blob "+blob(t, "one\n")+"\tREADME.md\n040000 tree "+docs+"\tdocs\n", "git", "mktree")
+	}
+	// tag writes the annotated tag name of target and answers the tag object.
+	tag := func(t *testing.T, name, target string) string {
+		t.Helper()
+		fixture.Run(repo, "git", "tag", "--annotate", "--message", "a message of no interest", name, target)
+		return fixture.Run(repo, "git", "rev-parse", "refs/tags/"+name)
+	}
+	held := blob(t, "held "+named)
+	destination := destinationAt(t, fixture, repo, base+":refs/heads/main", held+":refs/tags/held")
+	for _, tc := range []struct {
+		name string
+		// build writes the case's objects and answers the one the push is at, and the report, nil
+		// where the push passes.
+		build func(t *testing.T) (pushed string, want []string)
+		// failure is the setup failure the push is refused with, as a function of the object it is
+		// at, and nil where there is none.
+		failure func(pushed string) string
+	}{
+		{
+			name: "an annotated tag of a blob that names a host",
+			build: func(t *testing.T) (string, []string) {
+				of := blob(t, "one\n"+named)
+				return tag(t, "blob-named", of), []string{"blob " + short(of) + ": " + theClass}
+			},
+		},
+		{
+			name: "a ref at a blob that names a host",
+			build: func(t *testing.T) (string, []string) {
+				pushed := blob(t, named+"two\n")
+				return pushed, []string{"blob " + short(pushed) + ": " + theClass}
+			},
+		},
+		{
+			name: "a ref at a tree whose file names a host",
+			build: func(t *testing.T) (string, []string) {
+				return tree(t, "one\n"+named), []string{"docs/notes.md: " + theClass}
+			},
+		},
+		{
+			name: "an annotated tag of a tree whose file names a host",
+			build: func(t *testing.T) (string, []string) {
+				return tag(t, "tree-named", tree(t, named+"two\n")), []string{"docs/notes.md: " + theClass}
+			},
+		},
+		{
+			name: "a tag of a blob that names nothing",
+			build: func(t *testing.T) (string, []string) {
+				return tag(t, "blob-clean", blob(t, "a line of ordinary prose\n")), nil
+			},
+		},
+		{
+			name: "a ref at a tree that names nothing",
+			build: func(t *testing.T) (string, []string) {
+				return tree(t, "a line of ordinary prose\n"), nil
+			},
+		},
+		{
+			name: "a binary blob",
+			build: func(t *testing.T) (string, []string) {
+				return blob(t, "\x00"+named), nil
+			},
+		},
+		{
+			name: "a blob the destination holds",
+			build: func(t *testing.T) (string, []string) {
+				return held, nil
+			},
+		},
+		{
+			name: "a text blob above the bound",
+			build: func(t *testing.T) (string, []string) {
+				return blob(t, big), nil
+			},
+			failure: func(pushed string) string {
+				return failed + "blob " + short(pushed) + " is 100 bytes, more than the 64 bytes a blob is read up to"
+			},
+		},
+		{
+			name: "a tree whose text file is above the bound",
+			build: func(t *testing.T) (string, []string) {
+				return tree(t, big), nil
+			},
+			failure: func(pushed string) string {
+				return failed + "tree " + short(pushed) + "'s file docs/notes.md is 100 bytes, more than the 64 bytes a tree's file is read up to"
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pushed, want := tc.build(t)
+			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
+			guard.blobBound = 64
+			err := guard.Push(bound(t), PushRequest{
+				Dir:     repo,
+				Remote:  "origin",
+				URL:     destination,
+				Updates: []Update{{LocalRef: "refs/tags/pushed", LocalSHA: pushed, RemoteRef: "refs/tags/pushed", RemoteSHA: noSHA}},
+			})
+			if tc.failure != nil {
+				wantSetupFailure(t, err, tc.failure(pushed))
+				return
+			}
+			wantRefused(t, err, want)
+		})
+	}
+}
+
 // pushOf is a repository whose base the destination holds on its main, the base writing the
 // files held, and head, the commit the push adds, on that base, which makes edit's change to the
 // working tree, where edit is not nil, and then writes the files added, each path to its content.
