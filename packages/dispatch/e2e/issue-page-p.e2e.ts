@@ -190,8 +190,8 @@ test("the header holds its list and its limits at every width @phone", async ({ 
     await requestApproval(seeded.specArtifactId, { summary: "Read it back." });
     // The header's list, each part of the header by what it is: nothing else may be drawn there.
     // Its one link is the parent's, named exactly. The words it draws outside a control are in it:
-    // the project, the crumbs' separators, the key, the status's mark, the priority and the
-    // assignee each drawn under its select, and the one chip's "Not requested".
+    // the project, the crumbs' separators, the key, the priority and the assignee each drawn under
+    // its select, and the one chip's "Not requested". The status's shape is an svg with no words.
     const named = [
       new RegExp(`^a ${seeded.parentKey}$`),
       /^button Open navigation$/,
@@ -216,7 +216,6 @@ test("the header holds its list and its limits at every width @phone", async ({ 
       exactly(`text ${HEADER_PROJECT}`),
       exactly("text ›"),
       exactly(`text ${seeded.key}`),
-      exactly(`text ${statusGlyph("in_progress")}`),
       exactly("text P1"),
       exactly("text alice"),
       exactly(`text ${CONTROL_LABELS.not_requested}`),
@@ -315,11 +314,11 @@ test("the header holds its list and its limits at every width @phone", async ({ 
         await header.getByRole("combobox", { name: "Status" }).inputValue(),
         `the status reads otherwise at ${width} px`
       ).toBe("in_progress");
-      // The status draws its mark beside its word.
+      // The status draws its shape beside its word, as an svg that names the shape it draws.
       await expect(
-        header.locator('label:has(> select[aria-label="Status"]) > [aria-hidden="true"]'),
-        `the status draws another mark at ${width} px`
-      ).toHaveText(statusGlyph("in_progress"));
+        header.locator('label:has(> select[aria-label="Status"]) svg[data-status-glyph]'),
+        `the status draws another shape, or none, at ${width} px`
+      ).toHaveAttribute("data-status-glyph", statusGlyph("in_progress"));
       // Approve is filled with the page's ink, its words the paper's (row 17).
       expect(
         await header
