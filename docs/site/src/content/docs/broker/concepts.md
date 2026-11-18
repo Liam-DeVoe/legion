@@ -371,10 +371,10 @@ marked with tags or annotations:
   `secret retag NAME --type none` removes both classifier names and the rollback guard.
 - **`github-owners`** is required on a `github-app` secret, and read on no other type. It lists
   the GitHub accounts the broker mints installation tokens for, separated by spaces
-  (`acme-org ada`) and compared without regard to case, a form both stores hold. A comma, or an
-  entry no GitHub login can be (one that does not start with an ASCII letter or digit, holds
-  anything but ASCII letters, digits and hyphens, is over 39 characters, or is the word `none`), is
-  refused `github-owners-malformed`. A public App can be installed by any account, so an
+  (`acme-org ada`) and compared without regard to case, a form both stores hold.
+  A comma, or an entry no GitHub login can be (one that does not start with an ASCII letter or digit, holds anything but ASCII letters, digits, hyphens and underscores, is over 39 characters, or is the word `none`), is refused `github-owners-malformed`.
+  An entry may hold an underscore, which GitHub's sign-up form refuses, because a managed user's login ends in `_<shortcode>` (`mona-cat_octo`).
+  A public App can be installed by any account, so an
   installation on an account the list does not
   name gets no token. A `github-app` secret without the tag, or with one that names no account, is
   refused `github-owners-missing`.
@@ -837,6 +837,14 @@ path prefixes it may travel on
 the longest grant of that secret the model judge may approve, at most 900
 ([The model judge](#the-model-judge)). Those hosts carry no port, so an entry binds a name
 on port 443 alone, and another port of that name is another service the proxy tunnels unread.
+A host is a host name, never an IP address: a TLS client sends no server name for an address, so
+the proxy refuses every request to an address in its canonical form `sni mismatch`, and it
+compares no other spelling of one at all (`2001:db8:7:0::1`, `[2001:db8:7::1]`,
+`::ffff:192.0.2.10`, `192.0.2.10.`). A host name is written without a trailing dot too
+(`api.github.com`, not `api.github.com.`), because a client writes it that way. The broker
+refuses to start with a file that gives a host as an address in any spelling, that writes a
+name with a trailing dot, that gives any host a port, that has an empty host, or whose host ends
+in a number, and `airlock-check` refuses that file too.
 A secret the file names is **behind the airlock**,
 and the broker never releases its value to anyone: a read of a grant of it leaves the name out of
 `values` and answers an `airlock` object instead, which carries the proxy's URL, the certificate
@@ -908,8 +916,13 @@ What the airlock does not stop is as much of the design as what it does:
   agent in the middle of a call to ask for a new one.
 
 - A private address that reaches the proxy is refused, because the proxy runs beside the broker,
-  whose own identity reads every secret. A command that needs such a call sets its own `NO_PROXY`
-  entry for that name.
+  whose own identity reads every secret. So is an address inside the broker cluster's own
+  Service, pod and node ranges, which the deployment names in `BROKER_AIRLOCK_CLUSTER_RANGES`
+  beside `BROKER_AIRLOCK_RULES_FILE`: a Service range can be public address space, as GKE's
+  default `34.118.224.0/20` is, so no private-address rule covers its ClusterIPs. In a cluster
+  (`KUBERNETES_SERVICE_HOST` set to a non-empty value; empty or unset is outside a cluster), a
+  broker with a rules file refuses to start without that setting, or when no range in it holds
+  that address. A command that needs such a call sets its own `NO_PROXY` entry for that name.
 
 - A value an agent received before its secret went behind the airlock keeps working until its
   owner rotates it.

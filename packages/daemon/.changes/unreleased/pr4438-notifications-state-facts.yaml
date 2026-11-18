@@ -7,6 +7,8 @@ body: |-
   act carries the person's words, up to 4,000 UTF-16 units of one act or 1,000 of each of several,
   in a block of its own after the facts; the intake keeps those words on the rows the texts are
   built from (migration `20261118092930_person_words`). A notice is published with its kind's
-  urgency, and a `low` text wakes no released pod. A rollback past this release is a roll forward
+  urgency, and a `low` text wakes no released pod. Of the role messages to a role whose pod is
+  released, only a `low` one is left unpublished; a `med` one, such as a design gate's move, is
+  published and wakes the role. A rollback past this release is a roll forward
   (docs/kubernetes.md, "Rolling back the release that carries a person's words in the daemon's
   texts").

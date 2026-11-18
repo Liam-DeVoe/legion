@@ -73,7 +73,8 @@ type Pods interface {
 // still in flight (StartedBy, read by store.IssueReleaseStop), and already delivers the row's
 // task once the relaunched agent is ready. Naming no phase keeps the row out of every phase
 // fence: the issue's phase may move between the wake and the relaunch, and the wake's task is
-// never the phase's work.
+// never the phase's work. It is queued as every worker's task is (queuedRow), so a woken reviewer
+// of an issue in reviewing is told the entry of its round too (PodWake says why).
 func wakeRow(issue record.Issue, role claim.Role, task string) record.SuperviseRequest {
 	return record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role, Generation: issue.Generation, Task: task}
 }
@@ -93,6 +94,14 @@ const roleMessageKeep = time.Hour
 // (pods.WakeBackstop), and what any other wake was about. R6 asks for exactly one such task or
 // message per wake, and the outbox row that carries it is written in the wake's own transaction,
 // so a wake that commits has its task and one that does not has neither.
+//
+// The wake's task is never the phase's work, and for the reviewer it still ends with the daemon's
+// two sentences of the review round (reviewround.Ending), which the queue appends to it as to
+// every task of the reviewer (queuedRow, namingTheReviewRound): in reviewing, while the row holds
+// the task of an entry, they name that entry. The reason is the reviewer's normal path: one
+// waiting for CI it cannot judge yet is released after the idle period and woken by the CI
+// settlement, so the wake is its newest task, and the review it then submits moves the commit it
+// read only when its footer names the entry that stands. The record here names no entry itself.
 func PodWake(issue, kind, detail string) texts.PodWakeRecord {
 	wake := texts.PodWakeRecord{TaskHead: texts.TaskHead{Kind: texts.PodWake, Issue: issue}, Wake: kind}
 	switch kind {

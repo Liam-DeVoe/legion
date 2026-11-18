@@ -129,8 +129,8 @@ func (g *gatedSpawn) Spawn(ctx context.Context, spec runtime.SpawnSpec) (runtime
 	return g.Runtime.Spawn(ctx, spec)
 }
 
-// gatedPublisher is holderPublisher with every publish behind a gate: a notice blocked in it is a
-// lane blocked on the listener.
+// gatedPublisher is holderPublisher with every publish behind a gate, kept or not: a notice
+// blocked in it is a lane blocked on the listener.
 type gatedPublisher struct {
 	*holderPublisher
 	gate *gate
@@ -139,6 +139,11 @@ type gatedPublisher struct {
 func (g *gatedPublisher) Publish(ctx context.Context, topic, message string, payload any, urgency texts.Urgency, key string) error {
 	g.gate.enter()
 	return g.holderPublisher.Publish(ctx, topic, message, payload, urgency, key)
+}
+
+func (g *gatedPublisher) PublishKept(ctx context.Context, topic, message string, payload any, urgency texts.Urgency, key string) (bool, error) {
+	g.gate.enter()
+	return g.holderPublisher.PublishKept(ctx, topic, message, payload, urgency, key)
 }
 
 // postingDispatch is Dispatch as a message post meets it: the bodies posted, by issue, and no

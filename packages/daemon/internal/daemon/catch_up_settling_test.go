@@ -22,7 +22,8 @@ import (
 // hookPublisher is the listener with one operation run inside the publish: while the listener has
 // the notice and has answered nothing, the hook runs to completion, which is where a lane meets
 // the daemon — the publish is outside every transaction of the row's run. The publish is then
-// given answer, nil for the delivery.
+// given answer, nil for the delivery; a kept publish (PublishKept) is answered the same way and
+// never kept.
 type hookPublisher struct {
 	mu        sync.Mutex
 	hook      func() error
@@ -32,6 +33,14 @@ type hookPublisher struct {
 }
 
 func (p *hookPublisher) Publish(_ context.Context, topic, message string, payload any, urgency texts.Urgency, key string) error {
+	return p.publish(outboxPublish{topic: topic, message: message, key: key, payload: payload, urgency: urgency})
+}
+
+func (p *hookPublisher) PublishKept(_ context.Context, topic, message string, payload any, urgency texts.Urgency, key string) (bool, error) {
+	return false, p.publish(outboxPublish{topic: topic, message: message, key: key, payload: payload, urgency: urgency, keep: true})
+}
+
+func (p *hookPublisher) publish(published outboxPublish) error {
 	p.mu.Lock()
 	hook := p.hook
 	p.hook = nil
@@ -48,7 +57,7 @@ func (p *hookPublisher) Publish(_ context.Context, topic, message string, payloa
 	if p.answer != nil {
 		return p.answer
 	}
-	p.delivered = append(p.delivered, outboxPublish{topic: topic, message: message, key: key, payload: payload, urgency: urgency})
+	p.delivered = append(p.delivered, published)
 	return nil
 }
 

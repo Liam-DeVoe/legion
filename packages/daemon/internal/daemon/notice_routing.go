@@ -34,7 +34,9 @@ const noticeSummarySeparator = " on "
 
 // errNoticeWaits is a notice held for its architect: the architect holds no role while its claim
 // can hold it again, or an earlier notice held for the same architect has not gone yet, and a later
-// one must not overtake it. The row is tried again on the outbox's backoff, logged once.
+// one must not overtake it. The row is tried again on the outbox's backoff, logged once, or,
+// while the wake pacing holds its architect's launch, at that launch's turn or parkedWakeBound
+// on, whichever comes first (wakeForDelivery's turn, parkedWait).
 var errNoticeWaits = wait.New("the notice waits for its architect")
 
 // errNoticeUnroutable is a notice whose architect cannot be resolved from the record: its issue is
@@ -149,7 +151,10 @@ func (r *outbox) readNoticeRoute(ctx context.Context, tx pgx.Tx, key string, rou
 // out, and the row behind it runs once, then (deliverNotice's wait.Until), rather than climbing
 // its backoff to it. Behind any other earlier row the moment is zero, and the row behind waits on
 // the outbox's own short backoff (errNoticeWaits): that earlier row's next attempt can be an hour
-// out (a low notice's wait), or sooner than its next_at says (a ready releases it).
+// out (a low notice's wait), or sooner than its next_at says (a ready releases it). A row waiting
+// out its architect's parked launch (parkedWait) is one of these: a med row behind it meets the
+// same park before the fence (deliverNotice's wakeForDelivery), and so waits for that launch's
+// turn or parkedWakeBound on, whichever comes first, as the earlier row does.
 func earlierNoticeFor(tree treeSnapshot, architect claim.Token, runs func(claim.Token) bool, ready bool, now func() time.Time) (int64, time.Time) {
 	for _, other := range tree.earlier {
 		payload, err := record.DecodeOutboxPayload(other)

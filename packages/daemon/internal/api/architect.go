@@ -668,12 +668,15 @@ func (s *server) enterOnUnreadRepository(w http.ResponseWriter, r *http.Request,
 	// later), record the chain under the recorded one, parents first. Nothing is told now: a child
 	// still unrecorded when the repository's recovery has run is named then (tellReleaseWaits).
 	if stop == nil {
-		s.log.Info("api: release_children's todo child waits for GitHub to answer its repository's installation or default-branch read; the daemon records it then",
-			"issue", child.Key, "tree", grant.Tree, "repo", repo)
 		if !s.clearChildReleaseRetry(w, r, child.Key) {
 			return "", false, true
 		}
-		return repo, s.tellReleaseWait(w, r, grant, child.Key, parent, repo, nil), true
+		ok := s.tellReleaseWait(w, r, grant, child, parent, repo, nil)
+		if ok {
+			s.log.Info("api: release_children's todo child waits for GitHub to answer its repository's installation or default-branch read; the daemon records it then",
+				"issue", child.Key, "tree", grant.Tree, "repo", repo)
+		}
+		return repo, ok, true
 	}
 	blocker := *stop
 	if !s.clearChildReleaseRetry(w, r, child.Key) {
@@ -681,7 +684,7 @@ func (s *server) enterOnUnreadRepository(w http.ResponseWriter, r *http.Request,
 	}
 	stalled := ReleaseStalledNotice(grant.Issue, texts.StallUnrecordedBlocker, child.Key, parent)
 	stalled.Blocker, stalled.BlockerStatus, stalled.Repo = blocker.Key, blocker.Status, repo
-	return repo, s.tellReleaseWait(w, r, grant, child.Key, parent, repo, &stalled), true
+	return repo, s.tellReleaseWait(w, r, grant, child, parent, repo, &stalled), true
 }
 
 // ReleaseStalledNotice is the child-release-stalled notice of a release in issue's tree whose
@@ -699,17 +702,27 @@ func ReleaseStalledNotice(issue, stall, child, parent string) texts.ChildRelease
 // on that architect's own issue (grant.Issue): the owner walk takes it to that architect while it
 // holds its role, and on up the tree once it does not, where a notice queued on the tree root
 // would reach the root's architect even for a sub-architect's release. It reports whether the
-// wave goes on: false once the notice's write failed and its answer is written.
-func (s *server) tellReleaseWait(w http.ResponseWriter, r *http.Request, grant credential.Grant, child, parent, repo string, stalled *texts.ChildReleaseStalledRecord) bool {
-	if s.await != nil {
-		s.await(repo, grant.Tree, child, parent)
+// wave goes on: false once an answer is written, the notice's write having failed or the retry
+// scheduled.
+//
+// The daemon may refuse the wait: repo was unread when this request read it, and its recovery has
+// stopped waiting on GitHub for it since (Options.AwaitRecovery answering false). A child left to
+// that recovery would be read by no pass and named to no architect, while this route had answered
+// it released, so it is answered as a child on no unread repository is, with the child-release
+// retry (scheduleChildReleaseRetry), and the notice is not written: its stall says the repository
+// is left out, which the daemon has just said it no longer is.
+func (s *server) tellReleaseWait(w http.ResponseWriter, r *http.Request, grant credential.Grant, child dispatch.Issue, parent, repo string, stalled *texts.ChildReleaseStalledRecord) bool {
+	if s.await != nil && !s.await(repo, grant.Tree, child.Key, parent) {
+		s.log.Info("api: release_children's child was on a repository the daemon no longer holds unread, so its release is retried rather than left to a recovery",
+			"issue", child.Key, "tree", grant.Tree, "repo", repo)
+		return s.scheduleChildReleaseRetry(w, r, grant, child, parent)
 	}
 	if stalled == nil {
 		return true
 	}
 	notice, err := record.NoticeOf(stalled)
 	if err != nil {
-		writeFailure(w, http.StatusInternalServerError, "NOTICE_UNAVAILABLE", fmt.Sprintf("could not tell the architect that %s waits", child))
+		writeFailure(w, http.StatusInternalServerError, "NOTICE_UNAVAILABLE", fmt.Sprintf("could not tell the architect that %s waits", child.Key))
 		return false
 	}
 	// The notice is its own transaction, so it owns the commit hook its write registers (the
@@ -722,7 +735,7 @@ func (s *server) tellReleaseWait(w http.ResponseWriter, r *http.Request, grant c
 		}
 		return s.records.Enqueue(scoped, tx, row)
 	}); err != nil {
-		writeFailure(w, http.StatusInternalServerError, "NOTICE_UNAVAILABLE", fmt.Sprintf("could not tell the architect that %s waits", child))
+		writeFailure(w, http.StatusInternalServerError, "NOTICE_UNAVAILABLE", fmt.Sprintf("could not tell the architect that %s waits", child.Key))
 		return false
 	}
 	committed()
@@ -1051,7 +1064,7 @@ func (s *server) waveRelease(w http.ResponseWriter, r *http.Request) {
 				parent := intake.ObservedIssue(child.view).Parent
 				stalled := ReleaseStalledNotice(grant.Issue, texts.StallUnrecordedAncestor, child.view.Key, parent)
 				stalled.Ancestor, stalled.Repo = above, repo
-				if !s.tellReleaseWait(w, r, grant, child.view.Key, parent, repo, &stalled) {
+				if !s.tellReleaseWait(w, r, grant, child.view, parent, repo, &stalled) {
 					return
 				}
 				continue

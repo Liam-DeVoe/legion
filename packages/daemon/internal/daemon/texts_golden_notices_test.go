@@ -199,6 +199,18 @@ func (b *goldenBuild) notices(r goldenRendering) {
 		b.notice(r, "recovered-unrecorded", arch, recoveredUnrecordedNotice(r.key(99), []string{r.repo}, unrecorded),
 			goldenWant("issue", r.key(99), "stall", texts.StallRecoveredUnrecorded, "repos", r.repo, "unrecorded[0].child", r.key(124),
 				"unrecorded[1].child", r.key(125)))
+		status := []string{"backlog", "icebox"}[r.n-1]
+		noTodo := []texts.LetGoChild{{Child: r.key(128), Parent: parent, ParentRecorded: true, Status: status, Repo: r.repo},
+			{Child: r.key(129), Parent: r.key(130), Status: "todo", Repo: r.repo}}
+		b.notice(r, "let-go-no-todo", arch, letGoNotice(r.key(99), texts.StallLetGoNoTodo, []string{r.repo}, noTodo),
+			goldenWant("issue", r.key(99), "stall", texts.StallLetGoNoTodo, "repos", r.repo, "let_go[0].child", r.key(128),
+				"let_go[0].status", status, "let_go[0].repo", r.repo, "let_go[1].child", r.key(129), "let_go[1].parent", r.key(130)))
+		letGoRefusal := r.words("let-go/refusal", 80)
+		answered := []texts.LetGoChild{{Child: r.key(131), Parent: parent, ParentRecorded: true, Status: "todo", Repo: r.repo,
+			Refusal: letGoRefusal, ForNow: r.n == 2}}
+		b.notice(r, "let-go-answered", arch, letGoNotice(r.key(99), texts.StallLetGoAnswered, []string{r.repo}, answered),
+			goldenWant("issue", r.key(99), "stall", texts.StallLetGoAnswered, "repos", r.repo, "let_go[0].child", r.key(131),
+				"let_go[0].status", "todo", "let_go[0].refusal", letGoRefusal))
 		refusal := r.words("refused/repo", 120)
 		resolved := "elsewhere-" + r.words("resolved", 6) + "/repo"
 		b.notice(r, "refused", arch, workflow.ChildNotRecordedNotice(parent, r.key(127), resolved, refusal),

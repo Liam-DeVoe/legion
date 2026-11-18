@@ -14,8 +14,9 @@ import (
 )
 
 // goldenStep is one step this change took out of a daemon text, for one set of its readers: the
-// kind, main's sentence as the Go literal of its builder at b4a566cb (a format verb, %s or %d,
-// and … stand for any text), the readers, and the passage of the readers' prompt
+// kind, main's sentence as the Go literal of its builder at b4a566cb, or at 237f31c7 for a
+// sentence main wrote since (a format verb, %s or %d, and … stand for any text), the readers, and
+// the passage of the readers' prompt
 // (packages/daemon/internal/prompts) or of a skill they load (skills/) that gives each of them its
 // own rule for the step, quoted word for word from one line of the file.
 type goldenStep struct {
@@ -149,10 +150,14 @@ var goldenSteps = []goldenStep{
 		goPrompts + "worker-common.md", "A message sent with `keep: false` is not kept, and its sender sends it again."},
 	{texts.PodWake, "A message sent with keep: false is not kept, and its sender sends it again.", "architect",
 		goPrompts + "architect-common.md", "A message sent with `keep: false` is not kept, and its sender sends it again."},
-	{texts.PodWake, ") while your pod was gone, which nothing kept: the sender's next attempt reaches you now.", "planner, implementer, tester, reviewer, merger",
-		goPrompts + "worker-common.md", "the sender's next attempt reaches you now."},
-	{texts.PodWake, ") while your pod was gone, which nothing kept: the sender's next attempt reaches you now.", "architect",
-		goPrompts + "architect-common.md", "the sender's next attempt reaches you now."},
+	{texts.PodWake, ") while your pod was gone. A message that Envoy or Dispatch stored for your session reaches you in this session. ", "planner, implementer, tester, reviewer, merger",
+		goPrompts + "worker-common.md", "A message that Envoy or Dispatch stored for your session reaches you in this session."},
+	{texts.PodWake, ") while your pod was gone. A message that Envoy or Dispatch stored for your session reaches you in this session. ", "architect",
+		goPrompts + "architect-common.md", "A message that Envoy or Dispatch stored for your session reaches you in this session."},
+	{texts.PodWake, "A direct Envoy message that Envoy refused reaches you when its sender sends it again.", "planner, implementer, tester, reviewer, merger",
+		goPrompts + "worker-common.md", "A direct Envoy message that Envoy refused reaches you when its sender sends it again."},
+	{texts.PodWake, "A direct Envoy message that Envoy refused reaches you when its sender sends it again.", "architect",
+		goPrompts + "architect-common.md", "A direct Envoy message that Envoy refused reaches you when its sender sends it again."},
 	{texts.PodWake, ". Nothing else asked for you, so take up your phase where you left it.", "planner, implementer, tester, reviewer, merger",
 		goPrompts + "worker-common.md", "`wake: backstop` means that nothing else asked for you: take up your phase where you left it."},
 	{texts.RelaunchNote, "Before you do any of that work again, check what it already did.", "planner, implementer, tester, reviewer, merger",
@@ -230,11 +235,21 @@ var goldenSteps = []goldenStep{
 	{texts.CarriedGateOpened, "; any child waiting on it starts", "architect (root)",
 		"skills/legion-architect/references/wake-routing.md", "the daemon has started any child waiting on it."},
 	{texts.ChildNotRecorded, " Set its repository to one of the project's (dispatch issue-update --repo owner/name), then release it again.", "architect",
-		"skills/legion-architect/references/wake-routing.md", "Set the child's repository to one of the project's (`dispatch issue-update --repo owner/name`), then release it again with `release_children`"},
+		"skills/legion-architect/references/wake-routing.md", "Set the child's repository (`dispatch issue-update --repo owner/name`), or get the named App installed on the repository it has, then release it again with `release_children`."},
+	{texts.ChildNotRecorded, " Set a repository both Legion Apps are installed on, spelled as GitHub spells it (dispatch issue-update --repo owner/name), then release it again.", "architect",
+		"skills/legion-architect/references/wake-routing.md", "Set the child's repository (`dispatch issue-update --repo owner/name`), or get the named App installed on the repository it has, then release it again with `release_children`."},
 	{texts.ChildReleaseStalled, " Release %s first, then release %s again.", "architect",
 		"skills/legion-architect/references/wake-routing.md", "release the parent first where it is not recorded, then run `release_children` for the child again once the parent is recorded in your tree"},
 	{texts.ChildReleaseStalled, "; inspect the tree before trying again", "architect",
 		"skills/legion-architect/references/wake-routing.md", "so inspect the tree before you try again."},
+	{texts.ChildReleaseStalled, "its parent %s is not recorded: release %s first, then %s", "architect",
+		"skills/legion-architect/references/wake-routing.md", "release the parent first where it is not recorded, then run `release_children` for the child again once the parent is recorded in your tree"},
+	{texts.ChildReleaseStalled, "; install the App on it, or set a repository both Legion Apps are installed on, then release %s again)", "architect",
+		"skills/legion-architect/references/wake-routing.md", "Where `refusal` is set and `for_now` is false, install the App the refusal names on the repository, or set a repository both Legion Apps are installed on, then release the child again."},
+	{texts.ChildReleaseStalled, "; the daemon recovers the issues on it once GitHub answers, and records %s then if it is todo)", "architect",
+		"skills/legion-architect/references/wake-routing.md", "Where `for_now` is true, the daemon records the child once GitHub answers for its repository and the child is `todo`."},
+	{texts.ChildReleaseStalled, " in Dispatch now: release it again once it is todo)", "architect",
+		"skills/legion-architect/references/wake-routing.md", "Otherwise, release the child again once it is `todo`."},
 	{texts.WorkerDied, "%s's own architect failed; its notices come to you until it runs again, and the daemon starts it again at %s's next phase start", "architect",
 		"skills/legion-architect/references/wake-routing.md", "The child's notices come to you until that architect runs again, and the daemon starts it again, with fresh budgets, at the child's next phase start."},
 	{texts.WorkerDied, "the %s does not work %s's phase %s; nothing is held", "architect",

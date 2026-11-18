@@ -303,13 +303,22 @@ const (
 	StallUnrecordedBlocker   = "unrecorded-blocker"
 	StallAttemptsSpent       = "attempts-spent"
 	StallRecoveredUnrecorded = "recovered-unrecorded"
+	// StallLetGoNoTodo is a repository the daemon no longer waits for GitHub to answer for,
+	// because no todo issue labelled for Legion or under a parent names it now.
+	StallLetGoNoTodo = "let-go-no-todo"
+	// StallLetGoAnswered is a repository the daemon no longer waits for GitHub to answer for,
+	// because Dispatch's repository mapping, or a read GitHub answered for it at another issue's
+	// preparation, answers for it now.
+	StallLetGoAnswered = "let-go-answered"
 )
 
 // ChildReleaseStalledRecord is the notice that a child a release released is not recorded (api's
-// tellReleaseWait and release retry, the daemon's recovery of an unread repository): why (a Stall
-// word), the child, its parent, the unrecorded issue above it, the unrecorded issue on its parent
-// chain that blocks it with that issue's status, the repository GitHub did not answer for, the
-// releases tried, the repositories recovered, and each child still not recorded after a recovery.
+// tellReleaseWait and release retry, the daemon's recovery of an unread repository, and the
+// daemon's letting go of one): why (a Stall word), the child, its parent, the unrecorded issue
+// above it, the unrecorded issue on its parent chain that blocks it with that issue's status, the
+// repository GitHub did not answer for, the releases tried, the repositories recovered or let go,
+// each child still not recorded after a recovery, and each child a letting go leaves that no
+// recovery will record.
 type ChildReleaseStalledRecord struct {
 	NoticeHead
 	Stall         string            `json:"stall"`
@@ -322,6 +331,7 @@ type ChildReleaseStalledRecord struct {
 	Attempts      int               `json:"attempts,omitempty"`
 	Repos         []string          `json:"repos,omitempty"`
 	Unrecorded    []UnrecordedChild `json:"unrecorded,omitempty"`
+	LetGo         []LetGoChild      `json:"let_go,omitempty"`
 }
 
 // UnrecordedChild is one child a recovery left unrecorded: the child, its parent and whether the
@@ -330,6 +340,23 @@ type UnrecordedChild struct {
 	Child          string `json:"child"`
 	Parent         string `json:"parent"`
 	ParentRecorded bool   `json:"parent_recorded"`
+}
+
+// LetGoChild is one child a release_children left to the recovery of a repository the daemon let
+// go, which no recovery will record now: the child, its parent and whether the parent is recorded
+// now, the status Dispatch's listing gives the child (empty where the listing no longer holds
+// it), and the repository its wait was filed under. Where the parent is recorded and Dispatch's
+// mapping leaves that repository out, it gives that refusal, and whether the refusal is for now,
+// a read GitHub did not answer, which the mapping's own recovery reads again (for_now), or for
+// good, a role App not installed. Refusal is empty where nothing refuses the repository.
+type LetGoChild struct {
+	Child          string `json:"child"`
+	Parent         string `json:"parent"`
+	ParentRecorded bool   `json:"parent_recorded"`
+	Status         string `json:"status"`
+	Repo           string `json:"repo"`
+	Refusal        string `json:"refusal"`
+	ForNow         bool   `json:"for_now"`
 }
 
 // ChildNotRecordedRecord is the notice that a child was not recorded under the tree (workflow's

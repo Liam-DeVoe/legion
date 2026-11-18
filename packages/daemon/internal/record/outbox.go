@@ -487,6 +487,7 @@ type Notice struct {
 	Attempts      int                     `json:"attempts,omitempty"`
 	Repos         []string                `json:"repos,omitempty"`
 	Unrecorded    []texts.UnrecordedChild `json:"unrecorded,omitempty"`
+	LetGo         []texts.LetGoChild      `json:"let_go,omitempty"`
 	Resolved      string                  `json:"resolved,omitempty"`
 	Refusal       string                  `json:"refusal,omitempty"`
 	// Relaunch is what the last let-go of the architect's process ended (catch-up).
@@ -951,6 +952,20 @@ type SuperviseRequest struct {
 	// re-admitted tree's promotion gives a mid-phase child: a claim that already holds a task for
 	// the same generation and phase is given it once it is ready, so the start delivers none.
 	ResumeTask bool `json:"resumeTask,omitempty"`
+	// RoundNamed is the typed fact that Task ends with the daemon's two sentences of the reviewer's
+	// review round (reviewround.Sentences). The queue sets it on each start of the reviewer that
+	// carries a task, once it has named that task (workflow's queuedRow, namingTheReviewRound), and
+	// three starts set it before the queue, since what they send is the task enter stored with the
+	// sentences already in it (workflow's startMarks.stored), so the queue adds none. The outbox's
+	// start carries it into the claim's delivery (supervise.RequestDeliver.RoundNamed), and the one
+	// place each prompt of a delivery is composed reads it there (supervise's Delivery.message): a
+	// reviewer's task with no such fact, which only a row the release before this one queued can
+	// be, is given the daemon's sentences naming no commit and no entry at its end, so no text a
+	// task of the release before ends with is taken for the daemon's. A row the release before
+	// wrote decodes with it false. The release before decodes strictly (DisallowUnknownFields), so
+	// the way back of 20261116234034_phase_reviewed_head deletes the key from each row before that
+	// release boots.
+	RoundNamed bool `json:"roundNamed,omitempty"`
 	// RuleResume marks the boot's resume-by-rule start, and the boot's one-time start of a merger
 	// the `awaiting_merge` cutover left released (workflow's cutoverMergerRepair). If its resumed
 	// claim spends its launch budget, the runner finishes this row rather than retrying it as
@@ -1118,7 +1133,20 @@ func (WorkspaceRemove) OutboxKind() OutboxKind { return OutboxKindWorkspaceRemov
 // runner publishes, Record), and Urgency the urgency its builder decided for its reader from the
 // list (texts.UrgencyOf), since the builder knows the reader and the issue's phase. NewRoleMessage
 // builds one. A row an older daemon queued has no kind: its Body is the whole of what the holder
-// is told, and it is published as that text for one release.
+// is told, and it is published as that text, at med, for one release.
+//
+// A low message to a role whose claim is released is told nothing either, and is not woken for:
+// the row finishes without a publish. The message's three senders in the workflow - tellChecks
+// (a CI settlement), tellGateMoved (a design gate's move) and tellStuckMergeState (an approved
+// round stuck on its merge state) - only inform; before a release stopped its session cleanly,
+// such a message to a released role was dropped all the same once that session expired; and a
+// wake for each would start a pod for every CI settlement, once per released role. Published, the
+// message would meet a released role as one nobody holds: the listener answers holder_lapsed, or
+// unclaimed once the reaper has freed the claim, and raises the role's wake beside either for a
+// med message alone (its wakesItsRole). A med message - a gate's move, an approved round stuck,
+// and a CI settlement to the role that works the issue's phase - is the reader's to act on, so it
+// is published: the listener's wake brings the released pod back, and the message itself, which
+// asks for no keep, ends its row as one to a role with no live holder does.
 type RoleMessage struct {
 	Role    string          `json:"role"`
 	Kind    texts.Kind      `json:"kind,omitempty"`
@@ -1348,9 +1376,13 @@ func (p PhaseEnded) Message(issue string) string {
 // and the pull request as fields. There is nothing for a hook to interpolate, because every fact
 // it could ask for stands beside its words already.
 //
-// A role with no session holds no topic, and the row ends there undelivered with one log line, as
-// a phase-ended message nobody holds does: the words were written for the round the move back
-// opened, and a role that reads them later reads them of a round that is over.
+// The prompt is published with keep, as a phase-ended message is: for a role no live session
+// holds, the listener answers it kept and holds it for an hour for the role's next live holder,
+// and the row ends with one log line, the listener its keeper. A listener before #4079 keeps
+// nothing for a claim whose holder is not live. The daemon's publishKeptToRole says what each
+// answer does to the row, and why a later round's session can be handed the prompt and what
+// bounds that; the move back and the counts Message states tell that reader which round the
+// words were written for.
 type HookPrompt struct {
 	Hook        string         `json:"hook"`
 	Role        claim.Role     `json:"role"`
@@ -1407,7 +1439,9 @@ func (p HookPrompt) Message(issue string) (string, error) {
 //
 // The ask is best effort: the round ends at its bound whether or not the role reads it. So a
 // row whose role no live session holds finishes undelivered, and a row whose round the claim no
-// longer records finishes without a publish (the daemon's updateAsk).
+// longer records finishes without a publish (the daemon's updateAsk). The daemon marks a claim
+// asked only once its row's publish reached a session, so an ask that finished undelivered is
+// lost, not given, and the daemon's sweep writes the claim a new row of this kind at a later tick.
 type UpdateAsk struct {
 	Role     claim.Role `json:"role"`
 	Round    string     `json:"round"`

@@ -29,6 +29,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/wait"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // urgencyIssue is the root every case here sends its texts on: the issue hookRunner records,
@@ -346,6 +347,78 @@ func TestALowTextToAReaderWithNoSessionIsHandledAsAMedOne(t *testing.T) {
 			t.Fatalf("the controller's lane stores %+v, want the awaiting-person notice at low under the row's key", envelope)
 		}
 	})
+}
+
+// releasedRoleMessage queues rec, a role-message record of urgencyIssue, for role's claim, which
+// the idle release released, at the urgency the list gives the kind for role (texts.UrgencyOf,
+// read with v), and runs the outbox once against a listener that records every publish and
+// answers the released role's topic as one no live session holds (holder_lapsed, notify.ErrNoHolder).
+// It answers what was published, the role's machine, the database and the urgency the row carried.
+func releasedRoleMessage(t *testing.T, role claim.Role, rec any, kind texts.Kind, v texts.Variant) ([]outboxPublish, *supervise.Machine, *store.Pool, texts.Urgency) {
+	t.Helper()
+	token := mustClaimToken(t, urgencyIssue, role)
+	publisher := &outboxPublisher{err: fmt.Errorf("publish notice to %s: listener returned 404 Not Found: {\"reason\":\"holder_lapsed\"}: %w",
+		notify.RoleTopicPrefix+string(token), notify.ErrNoHolder)}
+	runner, sup, pool := hookRunner(t, publisher)
+	machine := releasedClaim(t, sup, role)
+	message, err := record.NewRoleMessage(string(token), rec, texts.UrgencyOf(kind, role, v))
+	if err != nil {
+		t.Fatalf("build the %s message: %v", kind, err)
+	}
+	urgencyEnqueue(t, pool, runner.records, urgencyIssue, message)
+	if err := runner.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run the outbox: %v", err)
+	}
+	published := publisher.publishes()
+	t.Logf("%s to the released %s at %s: publishes at %v, delivery wakes %d, released %t, rows left %d",
+		kind, role, message.Urgency, urgenciesOf(published), urgencyWakes(t, pool, role), machine.Claim().Released(), outboxRows(t, pool))
+	return published, machine, pool, message.Urgency
+}
+
+// A gate's move is med for each of its readers: a released merger is told the gate closed and
+// the merge is held, so the row publishes the message at med whatever the claim's release (the
+// listener raises the role's wake for a med publish to a role no live session holds, its
+// wakesItsRole), and the daemon itself wakes nothing for it (roleMessage calls no
+// wakeForDelivery). The row finishes. The negative control is #4088's drop, which ends every
+// role message to a released role before the publish: then nothing is published here.
+func TestAMedRoleMessageToAReleasedRoleIsPublished(t *testing.T) {
+	moved := workflow.GateMovedMessage(urgencyIssue, record.DesignStepSpec, "artifact-spec", 2, false)
+	published, machine, pool, urgency := releasedRoleMessage(t, claim.RoleMerger, moved, texts.GateMoved, texts.Variant{})
+	if urgency != texts.Med {
+		t.Fatalf("the gate move is %s to the merger, want med", urgency)
+	}
+	topic := notify.RoleTopicPrefix + string(mustClaimToken(t, urgencyIssue, claim.RoleMerger))
+	if len(published) != 1 || published[0].topic != topic || published[0].urgency != texts.Med {
+		t.Fatalf("publishes = %#v, want the gate move published once to the released merger's topic %s at med", published, topic)
+	}
+	if wakes := urgencyWakes(t, pool, claim.RoleMerger); wakes != 0 || !machine.Claim().Released() {
+		t.Fatalf("delivery wakes %d and merger released %t, want none and released: the listener's wake report, not the daemon's wakeForDelivery, brings the pod back", wakes, machine.Claim().Released())
+	}
+	if left := outboxRows(t, pool); left != 0 {
+		t.Fatalf("outbox rows left = %d, want the row finished", left)
+	}
+}
+
+// A CI settlement is low for an implementer that does not work the issue's phase: in reviewing,
+// a released implementer is told nothing, and the row ends before the publish (#4088's drop,
+// record.RoleMessage): no publish, so the listener raises no wake, no delivery wake of the
+// daemon's, and the claim stays released.
+func TestALowRoleMessageToAReleasedRoleIsDropped(t *testing.T) {
+	settled := texts.CISettledRecord{RoleHead: texts.RoleHead{Kind: texts.CISettled, Issue: urgencyIssue},
+		PullRequest: "acme/widgets#86", Head: "c0de", Phase: phase.Reviewing, Passed: 3, ListPassed: texts.ListPassed("acme/widgets", 86)}
+	published, machine, pool, urgency := releasedRoleMessage(t, claim.RoleImplementer, settled, texts.CISettled, texts.Variant{Phase: phase.Reviewing})
+	if urgency != texts.Low {
+		t.Fatalf("the CI settlement in reviewing is %s to the implementer, want low", urgency)
+	}
+	if len(published) != 0 {
+		t.Fatalf("publishes = %#v, want none: a low message to a released role is not worth a wake", published)
+	}
+	if wakes := urgencyWakes(t, pool, claim.RoleImplementer); wakes != 0 || !machine.Claim().Released() {
+		t.Fatalf("delivery wakes %d and implementer released %t, want none and released", wakes, machine.Claim().Released())
+	}
+	if left := outboxRows(t, pool); left != 0 {
+		t.Fatalf("outbox rows left = %d, want the row finished undelivered", left)
+	}
 }
 
 // urgenciesOf is the urgency of each publish, in order.

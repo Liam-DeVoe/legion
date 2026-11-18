@@ -2999,6 +2999,140 @@
     },
     {
       "kind": "child-release-stalled",
+      "variant": "let-go-answered",
+      "sample": 1,
+      "reader": "architect",
+      "form": "notice",
+      "urgency": "med",
+      "issue": "ALPHA-1099",
+      "summary": "child-release-stalled on ALPHA-1099",
+      "payload": {
+        "kind": "child-release-stalled",
+        "issue": "ALPHA-1099",
+        "stall": "let-go-answered",
+        "repos": [
+          "alpha-works/alpha-tower"
+        ],
+        "let_go": [
+          {
+            "child": "ALPHA-1131",
+            "parent": "ALPHA-1120",
+            "parent_recorded": true,
+            "status": "todo",
+            "repo": "alpha-works/alpha-tower",
+            "refusal": "gbxr xmjhpo umcldr dfmgwk gkbpfnyn oigdztq mac gqrmvxk mwndbxl pjxszdg gtexfn af",
+            "for_now": false
+          }
+        ]
+      }
+    },
+    {
+      "kind": "child-release-stalled",
+      "variant": "let-go-answered",
+      "sample": 2,
+      "reader": "architect",
+      "form": "notice",
+      "urgency": "med",
+      "issue": "BRAVO-2099",
+      "summary": "child-release-stalled on BRAVO-2099",
+      "payload": {
+        "kind": "child-release-stalled",
+        "issue": "BRAVO-2099",
+        "stall": "let-go-answered",
+        "repos": [
+          "bravo-labs/bravo-yard"
+        ],
+        "let_go": [
+          {
+            "child": "BRAVO-2131",
+            "parent": "BRAVO-2120",
+            "parent_recorded": true,
+            "status": "todo",
+            "repo": "bravo-labs/bravo-yard",
+            "refusal": "zpgqfgx oazkxel ykuii dfbleslg htayk zjjhwagbm lzjqql ppflmbn zdl ditsd amiab pj",
+            "for_now": true
+          }
+        ]
+      }
+    },
+    {
+      "kind": "child-release-stalled",
+      "variant": "let-go-no-todo",
+      "sample": 1,
+      "reader": "architect",
+      "form": "notice",
+      "urgency": "med",
+      "issue": "ALPHA-1099",
+      "summary": "child-release-stalled on ALPHA-1099",
+      "payload": {
+        "kind": "child-release-stalled",
+        "issue": "ALPHA-1099",
+        "stall": "let-go-no-todo",
+        "repos": [
+          "alpha-works/alpha-tower"
+        ],
+        "let_go": [
+          {
+            "child": "ALPHA-1128",
+            "parent": "ALPHA-1120",
+            "parent_recorded": true,
+            "status": "backlog",
+            "repo": "alpha-works/alpha-tower",
+            "refusal": "",
+            "for_now": false
+          },
+          {
+            "child": "ALPHA-1129",
+            "parent": "ALPHA-1130",
+            "parent_recorded": false,
+            "status": "todo",
+            "repo": "alpha-works/alpha-tower",
+            "refusal": "",
+            "for_now": false
+          }
+        ]
+      }
+    },
+    {
+      "kind": "child-release-stalled",
+      "variant": "let-go-no-todo",
+      "sample": 2,
+      "reader": "architect",
+      "form": "notice",
+      "urgency": "med",
+      "issue": "BRAVO-2099",
+      "summary": "child-release-stalled on BRAVO-2099",
+      "payload": {
+        "kind": "child-release-stalled",
+        "issue": "BRAVO-2099",
+        "stall": "let-go-no-todo",
+        "repos": [
+          "bravo-labs/bravo-yard"
+        ],
+        "let_go": [
+          {
+            "child": "BRAVO-2128",
+            "parent": "BRAVO-2120",
+            "parent_recorded": true,
+            "status": "icebox",
+            "repo": "bravo-labs/bravo-yard",
+            "refusal": "",
+            "for_now": false
+          },
+          {
+            "child": "BRAVO-2129",
+            "parent": "BRAVO-2130",
+            "parent_recorded": false,
+            "status": "todo",
+            "repo": "bravo-labs/bravo-yard",
+            "refusal": "",
+            "for_now": false
+          }
+        ]
+      }
+    },
+    {
+      "kind": "child-release-stalled",
       "variant": "recovered-unrecorded",
       "sample": 1,
       "reader": "architect",
