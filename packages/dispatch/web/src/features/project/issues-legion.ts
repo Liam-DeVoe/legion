@@ -98,15 +98,16 @@ const HOUR_MS = 3_600_000;
  * (`legionfacts.Row.At`). The live view sends an entry again only when its stored row moves, so
  * the page grows the values itself. `work_hours` and each phase of `hours_by_phase` gain their
  * rate (`growth`) times the hours from `as_of` to `nowMs`. A phase that only the growth names
- * starts at 0. A clock before `as_of` adds nothing. An entry with no growth, every rate 0, or an
- * `as_of` this cannot read keeps the values it was sent with, in the same object.
+ * starts at 0. A clock before `as_of` adds nothing. An entry none of whose values grows carries
+ * null for both `as_of` and `growth`, and it, an entry whose every rate is 0, and one whose
+ * `as_of` this cannot read keep the values they were sent with, in the same object.
  */
 export function boardFactsAt(entry: LegionBoardFacts, nowMs: number): LegionFacts {
-  const hours = Math.max(0, nowMs - Date.parse(entry.as_of)) / HOUR_MS;
-  const workRate = entry.growth?.work_hours ?? 0;
-  const phaseRates = Object.entries(entry.growth?.hours_by_phase ?? {}).filter(
-    ([, rate]) => rate !== 0
-  );
+  const { as_of: asOf, growth } = entry;
+  if (asOf == null || growth == null) return entry;
+  const hours = Math.max(0, nowMs - Date.parse(asOf)) / HOUR_MS;
+  const workRate = growth.work_hours;
+  const phaseRates = Object.entries(growth.hours_by_phase ?? {}).filter(([, rate]) => rate !== 0);
   if (Number.isNaN(hours) || hours === 0 || (workRate === 0 && phaseRates.length === 0))
     return entry;
   const hoursByPhase: Record<string, number> = { ...entry.hours_by_phase };

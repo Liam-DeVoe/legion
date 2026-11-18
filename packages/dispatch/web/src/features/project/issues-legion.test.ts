@@ -182,7 +182,7 @@ test("a row takes the board's facts first, then its items row, then no Legion wo
 });
 
 /** `boardFacts("ACME-1", 3)`, of 08:00, with the rates `rates` gives and every other rate 0. */
-const growing = (rates: Partial<LegionBoardFacts["growth"]>): LegionBoardFacts => ({
+const growing = (rates: Partial<NonNullable<LegionBoardFacts["growth"]>>): LegionBoardFacts => ({
   ...boardFacts("ACME-1", 3),
   growth: { hours_by_phase: {}, slot_hours: 0, work_hours: 0, work_last_at: 0, ...rates },
 });
@@ -216,7 +216,10 @@ test("a phase that only the growth names starts from 0 hours", () => {
   });
 });
 
-test("rates of 0, a clock before as_of and an as_of this cannot read leave the values as sent", () => {
+test("an entry that does not grow, rates of 0, a clock before as_of and an as_of this cannot read leave the values as sent", () => {
+  // The route sends null for both on an entry none of whose values grows.
+  const closed = { ...growing({ work_hours: 1 }), as_of: null, growth: null };
+  expect(boardFactsAt(closed, TWO_HOURS_ON)).toBe(closed);
   const still = growing({ hours_by_phase: { implementing: 0 } });
   expect(boardFactsAt(still, TWO_HOURS_ON)).toBe(still);
   const empty = growing({ hours_by_phase: null });

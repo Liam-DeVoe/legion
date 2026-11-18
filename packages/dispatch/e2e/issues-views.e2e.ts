@@ -1633,7 +1633,7 @@ test("a missing measure draws an empty cell, sorts last and counts under None, a
   try {
     // M (ACME-1) loses its measured work, Z (ACME-2) its review rounds, C (ACME-4) its times;
     // N has no Legion work and no card. M's entry also loses its growth: an entry with no
-    // measured work does not grow, and the page grows a board entry to its own clock.
+    // measured work does not grow, so the route sends null for its as_of and its growth.
     const [m, z, c] = ["ACME-1", "ACME-2", "ACME-4"];
     await writeRoleEvent(m, "implementer", "2 hours");
     await writeRoleEvent(z, "architect", "45 minutes");
@@ -1651,7 +1651,8 @@ test("a missing measure draws an empty cell, sorts last and counts under None, a
       const mFacts = facts(m);
       if (mFacts != null)
         Object.assign(mFacts, {
-          growth: { hours_by_phase: {}, slot_hours: 0, work_hours: 0, work_last_at: 0 },
+          as_of: null,
+          growth: null,
           hours_by_phase: {},
           work_first_at: null,
           work_hours: 0,
