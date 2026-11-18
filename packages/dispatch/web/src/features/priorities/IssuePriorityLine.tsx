@@ -155,6 +155,9 @@ export function IssuePriorityLine({
       ) : adding ? (
         <form className="flex shrink-0 items-center gap-2" onSubmit={add}>
           <MultiSelect
+            // The form takes the place of the `+` that opened it, which takes the focus away with
+            // it: the form's first control is where the focus goes, in view.
+            autoFocus
             emptyMessage={
               priorities.isPending
                 ? "Loading priorities…"

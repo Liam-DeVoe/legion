@@ -2437,9 +2437,9 @@ func TestAMergedPullRequestReachesTheSubscriberAsOneDelta(t *testing.T) {
 	// The timeline's measures do not move, so the delta sets the window alone. No deploy shipped
 	// the pull request, so no deploy or lead-time-to-production measure moves; it was open two
 	// hours as the first was (hubPR), so the opened-to-merge spread stays; rework share stays 0.
-	// The one measure that counted every merged pull request was change failure rate's per-PR
-	// total, and change failure rate reads null while no failure source exists
-	// (deliveryFlagsSourceNone).
+	// The one measure that counts every merged pull request is change failure rate's per-PR total,
+	// and that total is 0 and does not move when a pull request merges while no failure source
+	// exists (deliveryFlagsSourceNone).
 	if !slices.Equal(set, []string{"window"}) || len(mapsChanged) != 0 {
 		t.Fatalf("delta set = %v, maps = %v; want the window alone, and no map", set, mapsChanged)
 	}

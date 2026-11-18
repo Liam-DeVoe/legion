@@ -709,3 +709,25 @@ test("the issue header's Repository list says the repositories could not be load
     patchIssue.mockRestore();
   }
 });
+
+// INFRA-3135, round 13, the architect's ruling of 2026-11-18T10:54Z: a trigger that replaces a
+// visible control shows the shared chevron, the sign a sighted reader reads that it opens a list.
+// At the merge base (main's #3730) the Repository is a visible text box, so its trigger ends in
+// the chevron every other single pick draws (`ChevronIcon`, `components/DisclosureToggle.tsx`),
+// whether the issue holds a repository of its own or inherits one.
+test("the issue header's Repository trigger ends in the shared chevron, as every list replacing a visible control does", async () => {
+  for (const own of [
+    { repo: "acme/gadgets", resolvedRepo: "acme/gadgets" },
+    { repo: null, resolvedRepo: "acme/widgets" },
+  ]) {
+    const { unmount } = renderControl(own);
+    try {
+      const chevron = trigger().querySelector("svg");
+      expect(chevron, `${own.repo ?? "inherited"}: the trigger draws no chevron`).not.toBeNull();
+      expect(chevron?.querySelector("path")?.getAttribute("d")).toBe("M4 6l4 4 4-4");
+      expect(chevron).toHaveAttribute("aria-hidden", "true");
+    } finally {
+      unmount();
+    }
+  }
+});

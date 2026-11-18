@@ -613,6 +613,18 @@ function stripAtRest(strip: Locator): Promise<number> {
   });
 }
 
+/** Sixteen narrowings over the long Inbox that keep all twenty-two of its items: its four
+ *  priorities and four urgencies, four kinds, and four projects of which CORE holds them all (the
+ *  address keeps a project key no project has, which matches no row). Their chips are more than
+ *  the row shows whole at once at any of `READING_WIDTHS`, and none is wider than the nine
+ *  chips' widest, `Urgency: Blocking`, so each fits between the scroll buttons at 390 px. */
+const SIXTEEN_NARROWINGS = `/?${[
+  "priority=P0,P1,P2,P3",
+  "urgency=blocking,high,med,low",
+  "type=question,decision,approval,reply",
+  "project=CORE,EDGE,MESH,PIER",
+].join("&")}`;
+
 // SLOW(>=2s): twenty-two seeded questions, the row's chips paged through at five widths.
 test("a pointer reaches and removes every chip of the Inbox's row with the row's scroll buttons, at every width", async ({
   page,
@@ -640,8 +652,24 @@ test("a pointer reaches and removes every chip of the Inbox's row with the row's
   for (const size of READING_WIDTHS) {
     const where = `${size.width}x${size.height}`;
     await page.setViewportSize(size);
-    await page.goto(NINE_NARROWINGS);
-    await expect(chips).toHaveCount(9);
+    // Where every chip is shown whole there is nothing to page to, so neither button is drawn:
+    // one chip, which the strip shows whole at every width.
+    await page.goto("/?priority=P0");
+    await expect(chips).toHaveCount(1);
+    // The one chip was counted above, so what the strip shows of it is the settled layout.
+    const alone = await row.evaluate(chipsSeenWhole, shownOf.toString());
+    expect(alone, `${where}: the one chip is not shown whole`).toEqual([true]);
+    await expect(
+      right,
+      `${where}: the one chip is shown whole, yet Scroll filters right is drawn`
+    ).toHaveCount(0);
+    await expect(
+      left,
+      `${where}: the one chip is shown whole, yet Scroll filters left is drawn`
+    ).toHaveCount(0);
+
+    await page.goto(SIXTEEN_NARROWINGS);
+    await expect(chips).toHaveCount(16);
     expect(await scrollLeft(), `${where}: the strip does not open at its start`).toBe(0);
     const seen = new Set<number>();
     const look = async () => {
@@ -651,35 +679,28 @@ test("a pointer reaches and removes every chip of the Inbox's row with the row's
     };
     await look();
     const atStart = seen.size;
-    if (atStart === 9) {
-      // Every chip is shown whole at once: there is nothing for either button to page to.
-      await expect(
-        right,
-        `${where}: all 9 chips are shown whole, yet Scroll filters right is drawn`
-      ).toHaveCount(0);
-      await expect(
-        left,
-        `${where}: all 9 chips are shown whole, yet Scroll filters left is drawn`
-      ).toHaveCount(0);
-      readings.push(`${where}: all 9 chips shown whole at once, and neither scroll button drawn`);
-      continue;
-    }
+    // The paging below is the row's claim at each width, so a width that shows every chip whole
+    // at the start is named here rather than passed by with nothing paged.
+    expect(
+      atStart,
+      `${where}: all 16 chips are shown whole at the start, so no scroll button has a chip to page to`
+    ).toBeLessThan(16);
     await expect(
       left,
       `${where}: the strip is at its start, yet Scroll filters left is drawn`
     ).toHaveCount(0);
     const stops: number[] = [];
-    while (seen.size < 9) {
+    while (seen.size < 16) {
       const before = seen.size;
       await expect(
         right,
-        `${where}: ${before} of 9 chips seen whole after ${stops.length} presses, and Scroll filters right is not drawn`
+        `${where}: ${before} of 16 chips seen whole after ${stops.length} presses, and Scroll filters right is not drawn`
       ).toBeVisible();
       stops.push(Math.round(await pressRight(where)));
       await look();
       expect(
         seen.size,
-        `${where}: press ${stops.length} on Scroll filters right (strip at ${stops.at(-1)}px) brought no more chip wholly into view: ${before} of 9 seen`
+        `${where}: press ${stops.length} on Scroll filters right (strip at ${stops.at(-1)}px) brought no more chip wholly into view: ${before} of 16 seen`
       ).toBeGreaterThan(before);
     }
     await expect(
@@ -702,7 +723,7 @@ test("a pointer reaches and removes every chip of the Inbox's row with the row's
         node.scrollLeft = 0;
       });
       await stripAtRest(strip);
-      // The strip was drawn with its nine chips above and has come to rest, so it has a box.
+      // The strip was drawn with its sixteen chips above and has come to rest, so it has a box.
       const box = await strip.boundingBox();
       if (box === null) throw new Error(`${where}: the strip has no box`);
       await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
@@ -715,7 +736,7 @@ test("a pointer reaches and removes every chip of the Inbox's row with the row's
       wheeled.push(Math.round(await stripAtRest(strip)));
     }
     readings.push(
-      `${where}: ${atStart} of 9 chips shown whole at the start; every chip seen whole after ${stops.length} presses on Scroll filters right (strip at ${stops.join(", ")}px); Shift and the wheel moved the strip 0 to ${wheeled[0]}px, a sideways wheel 0 to ${wheeled[1]}px`
+      `${where}: ${atStart} of 16 chips shown whole at the start; every chip seen whole after ${stops.length} presses on Scroll filters right (strip at ${stops.join(", ")}px); Shift and the wheel moved the strip 0 to ${wheeled[0]}px, a sideways wheel 0 to ${wheeled[1]}px`
     );
   }
 
@@ -780,10 +801,13 @@ async function focusInRow(
 
 /** The two pages of R2 whose chips this row presses: the Inbox with nine narrowings on, which
  *  draw nine chips, and the project List with a label, its search text and its three flags on,
- *  of which the three flags draw chips (the label is its column's filter, the text its box). */
+ *  of which the three flags and the label draw chips, four (the label is its column's filter,
+ *  whose chip the row draws whether its column shows or not, and the text is its box).
+ *  `chips` is how many chips each address draws. */
 const CHIP_FOCUS_SURFACES = [
-  { name: "Inbox", path: NINE_NARROWINGS },
+  { chips: 9, name: "Inbox", path: NINE_NARROWINGS },
   {
+    chips: 4,
     name: "project List",
     path: "/projects/CORE/issues?label=frontend&q=Rollout&needs-you=1&unread=1&unclaimed=1",
   },
@@ -810,13 +834,17 @@ test("a chip taken off from the keyboard hands the focus to the next chip, then 
       if (surface.name === "project List") await openSurface(page, "project List", scene);
       await page.goto(surface.path);
       await expect(chips.first(), `${where}: no chip is drawn`).toBeVisible();
+      await expect(
+        chips,
+        `${where}: the address's narrowings draw another number of chips than ${surface.chips}`
+      ).toHaveCount(surface.chips);
       // The keys a reader takes a chip off with: the last chip first, which has no next chip,
       // then the first chip by Space and by Delete, then Enter until no chip is left.
       let key = "Enter";
       let pick: "last" | "first" = "last";
       for (let removal = 0; removal < 20; removal++) {
-        // The first chip was waited for above and each later turn follows a removal whose count
-        // was waited for, so the chips read are the ones the page settled on.
+        // The chips' count was waited for above and each later turn follows a removal whose
+        // count was waited for, so the chips read are the ones the page settled on.
         const before = await chips.evaluateAll((all) =>
           all.map((chip) => chip.getAttribute("aria-label") ?? "")
         );
@@ -1917,9 +1945,7 @@ test("the Inbox keeps every field, sort, grouping, view and clear it had", async
     const menu = await openDisplay(page, main);
     await menu.getByRole("group", { name: "Sort by" }).locator(`input[value="${sort}"]`).click();
     await expect(page.locator("[data-inbox-row]")).toHaveCount(rows.length);
-    if (sort !== "assignee") {
-      expect(await drawnIds(page), `the ${sort} sort`).toEqual(sortedIds(rows, sort, at));
-    }
+    expect(await drawnIds(page), `the ${sort} sort`).toEqual(sortedIds(rows, sort, at));
   }
   await page.keyboard.press("Escape");
   // Each banding draws the bands the fixture holds, each with its own count: the five fields
@@ -2456,6 +2482,29 @@ test("the Agents page keeps every narrowing, grouping, count, key, pin and broad
   const pinned = ["Planner", "Reviewer", "Tester", "Auditor", "Sleeper"];
   await expect(titles, "the pin's place at the head of its group").toHaveText(pinned);
 
+  // The read mark, read where the page draws it. The Planner answers a second message while its
+  // row is shut, which marks nothing read, so its badge counts that one reply; a mark that was
+  // lost would count the first reply too.
+  const plannerToggle = planner.getByRole("button", { exact: true, name: "Planner" });
+  await plannerToggle.click();
+  await expect(plannerToggle, "the Planner's row did not shut").toHaveAttribute(
+    "aria-expanded",
+    "false"
+  );
+  const askedAgain = await createAgentMessage(KEPT_AGENT.planner, {
+    body: "And the tests?",
+    delivery: "aside",
+  });
+  await replyToMessageDelivery(
+    askedAgain.id,
+    { attempt: 1, body: "Green." },
+    { id: KEPT_AGENT.planner, kind: "session" }
+  );
+  const plannerBadge = planner.getByRole("button", { name: /^New repl/ });
+  await expect(plannerBadge, "the Planner's reply to a shut row").toHaveAccessibleName(
+    "New reply 1 from Planner"
+  );
+
   // What the page stores for the reader, found again after a reload.
   await page.reload();
   await expect(
@@ -2463,10 +2512,11 @@ test("the Agents page keeps every narrowing, grouping, count, key, pin and broad
     "the pin, after a reload"
   ).toBeVisible();
   await expect(titles, "the pinned order, after a reload").toHaveText(pinned);
-  await expect(
-    planner.getByRole("button", { name: /^New repl/ }),
-    "the read mark, after a reload"
-  ).toHaveCount(0);
+  // The badge is drawn from the read state the reload loads, so its number is read only once
+  // that state has answered: one reply unread, the one written after the mark above.
+  await expect(plannerBadge, "the read mark, after a reload").toHaveAccessibleName(
+    "New reply 1 from Planner"
+  );
 
   // The bulk action: select-all over a narrowing, Clear selection, then two rows and a send.
   await pickAgentFilter(page, "role", "tester");
@@ -3275,6 +3325,25 @@ test("the Inbox drawer keeps every field, sort, grouping, count, view, bulk acti
   await expect(peek).toHaveCount(0);
 });
 
+/** The classes of the project page's `Blocked on you · N` pill at the merge base,
+ *  6ef60ff0ceeba4ccaf285f06f5bbe9b859b2e4d8, as a sorted set of tokens, so neither their order
+ *  nor a repeat is read. That commit's `web/dist` was served by `DISPATCH_E2E_SERVER_WEB_DIST`
+ *  (e2e/run-server.sh) over the row below's seed, and the pill's `textContent` and its `href`
+ *  and `class` attributes were read at 1440x900 on `/projects/CORE/issues`: they answered
+ *  `Blocked on you · 3`, `/` and the `class` written here as it came. */
+const PILL_CLASSES_AT_THE_BASE = [
+  ...new Set(
+    [
+      "order-3 shrink-0 md:order-5 inline-flex min-h-11 items-center rounded-full px-3 text-xs",
+      "font-medium md:min-h-9 md:px-2 bg-slate-200 dark:bg-slate-700 text-slate-700",
+      "dark:text-slate-300 text-slate-700 dark:text-slate-300 hover:text-slate-900",
+      "dark:hover:text-slate-100",
+    ]
+      .join(" ")
+      .split(" ")
+  ),
+].sort();
+
 // SLOW(>=2s): a seeded inbox of asks, threads and one credential request, read twice.
 test("the control in the row carries what the banner carried, and narrows the Inbox to what waits on the reader", async ({
   page,
@@ -3333,10 +3402,11 @@ test("the control in the row carries what the banner carried, and narrows the In
     "the old banner's words are still drawn above the Inbox's list"
   ).toHaveCount(0);
 
-  // The control carries the asks waiting on her plus the credential request: three and one.
-  const control_ = page.locator("[data-inbox-needs-you]");
-  await expect(control_).toHaveText("Blocked on you · 4");
-  await expect(control_).toHaveAttribute("aria-label", /^Blocked on you: 4 items/);
+  // The control carries the asks waiting on her plus the credential request: three and one. It
+  // is read in the Inbox's control row, where the banner's number now sits.
+  const needsYou = controlRow(page).locator("[data-inbox-needs-you]");
+  await expect(needsYou).toHaveText("Blocked on you · 4");
+  await expect(needsYou).toHaveAttribute("aria-label", /^Blocked on you: 4 items/);
   const sidebar = page.getByRole("navigation", { name: "Navigation" }).getByRole("link", {
     name: /^Inbox/,
   });
@@ -3349,7 +3419,7 @@ test("the control in the row carries what the banner carried, and narrows the In
   // A press narrows the list to the asks waiting on her, keeps the credential section, and puts
   // `section=needs-you` in the address while taking `assignee` out of it.
   await page.goto("/?assignee=bob");
-  await page.locator("[data-inbox-needs-you]").click();
+  await needsYou.click();
   await expect(page).toHaveURL(/section=needs-you/);
   await expect(page).not.toHaveURL(/assignee=/);
   const credentials = page.getByRole("region", { name: "Credential requests" });
@@ -3362,17 +3432,30 @@ test("the control in the row carries what the banner carried, and narrows the In
   expect([...drawn].sort(), "the narrowed list is not the asks waiting on the reader").toEqual(
     [...mine].sort()
   );
+  await expect(needsYou, "the control in the row draws no number after the press").toHaveText(
+    /^Blocked on you · \d+$/
+  );
+  // The control's text was waited for above in the form that carries its number, so one read
+  // of it is the number the control carries after the press.
+  const carried = Number((await needsYou.textContent())?.replace(/\D+/g, ""));
   expect(
     drawn.length + (await credentials.getByRole("listitem").count()),
-    "the page lists a different number of items than the control carries"
-  ).toBe(4);
+    `the page lists a different number of items than the control's ${carried}`
+  ).toBe(carried);
 
-  // On the project page the same component's pill is drawn as it is today.
+  // On the project page the same component draws its pill as it did at the merge base: its
+  // words with the project's count, the three asks waiting on her, since a credential request
+  // belongs to no project; its link to the Inbox; and its classes (`PILL_CLASSES_AT_THE_BASE`).
   await page.goto("/projects/CORE/issues");
-  await expect(
-    page.getByRole("link", { name: /^Blocked on you · \d+$/ }),
-    "the project page's pill is gone"
-  ).toBeVisible();
+  const pill = page.getByRole("link", { name: /^Blocked on you · / });
+  await expect(pill, "the project page's pill is gone").toHaveText("Blocked on you · 3");
+  await expect(pill, "the project page's pill links elsewhere").toHaveAttribute("href", "/");
+  // The pill's words were waited for above, so the classes read are the ones it is drawn with.
+  const pillClass = (await pill.getAttribute("class")) ?? "";
+  expect(
+    [...new Set(pillClass.split(/\s+/).filter((token) => token !== ""))].sort(),
+    "the project page's pill wears other classes than it wore at the base"
+  ).toEqual(PILL_CLASSES_AT_THE_BASE);
 });
 
 // SLOW(>=2s): seven tables across three pages, each seeded and read.
@@ -3630,18 +3713,19 @@ async function drawnItems(items: Locator, list: string): Promise<DrawnItem[]> {
 
 /**
  * What R8's four lists drew at the merge base, `fork_point(main@origin | @)`, commit
- * dccaf8369449723ff2fe3e3e39faae8c737854ee, in each project the row runs in: `chromium` at
+ * 6ef60ff0ceeba4ccaf285f06f5bbe9b859b2e4d8, in each project the row runs in: `chromium` at
  * 1440x900 and `iphone` at its own 390x664.
  *
- * Measured, not written from the code. That commit's `packages/dispatch/web` was exported with
- * `git archive` into a scratch tree and built there by `vite build` with this workspace's
- * `node_modules`; nothing outside `web/src` differs between that commit and this change, so the
- * server, the contracts and the build are this change's own. The build was served to this row in
- * place of `web/dist` by `DISPATCH_E2E_SERVER_WEB_DIST` (e2e/run-server.sh), over the row's own
- * seed, and `drawnItems` read each list until five readings in a row, 500 ms apart, were the
- * same; that reading was printed and copied here as it came. The Delivery list's rows are
- * found by `tbody tr[aria-rowindex]`, because the base's carry no `data-pr-row`: both builds
- * write `aria-rowindex` on each pull request's row in the list's body.
+ * Measured, not written from the code. That commit's `packages/dispatch/web` was built in a
+ * scratch tree by `vite build` with this workspace's `node_modules`; outside `web/src` only
+ * documents, CI and tests differ between that commit and this change, so the server, the
+ * contracts and the build are this change's own. The build was served to this row in place of
+ * `web/dist` by `DISPATCH_E2E_SERVER_WEB_DIST` (e2e/run-server.sh), over the row's own seed, and
+ * the row was run over it in both projects: `drawnItems` read each list until its reading was
+ * the one written here, and a list whose reading never was would have been printed with each
+ * value it drew instead. Every list's was, in both projects. The Delivery list's rows are found by
+ * `tbody tr[aria-rowindex]`, because the base's carry no `data-pr-row`: both builds write
+ * `aria-rowindex` on each pull request's row in the list's body.
  *
  * Every size kept as a number is one the CSS fixes, which a runner with other fonts draws the
  * same: none moved when this pod drew the lists in three other fonts (`linedHeights`). The Board
@@ -3895,9 +3979,12 @@ const ASKED_OF_LINE = 32;
  *  below 1280 px (`badgeSelectTrigger`). */
 const ASSIGNEE_BADGE = 32;
 
-/** The issue header's `Repository:` line in its details rail from `md`, at the base: the 28 px of
- *  its badge's wrapper (`badgeSelectRailWrapper`'s `md:min-h-7`), the select over the badge taking
- *  no room - the list's trigger now, which overhangs it below 1280 px (`badgeSelectRailTrigger`). */
+/** The issue header's `Repository:` line in its details rail from `md`, around the shared list
+ *  trigger's wrapper: the 28 px of that wrapper (`badgeSelectRailWrapper`'s `md:min-h-7`), which
+ *  the trigger overhangs below 1280 px (`badgeSelectRailTrigger`). The reference is the shared
+ *  trigger's box, not the base's: at 6ef60ff0 the line holds main's visible text box, which this
+ *  change replaces with the shared list's trigger, and the same read of that line, this row's run
+ *  over that commit's build, measured 44 px at 1024x768. */
 const REPOSITORY_LINE = 28;
 
 // R8: "The rows, the cards, the reading pane and the panes' widths do not change." The Inbox's
@@ -3906,10 +3993,11 @@ const REPOSITORY_LINE = 28;
 // page, the project List and the Delivery list to what they drew at the base
 // (`ITEMS_AT_THE_BASE`), item by item: the same parts, in the same order, in a box of the same
 // size, where a height the fonts decide is the one its lines and the base's classes give it
-// (`linedHeights`). It holds an ask card's "Asked of" line, and the issue header's Assignee badge
-// and `Repository:` line, to their heights at the base too, at 1024x768, between `md` and `xl`,
-// the widths where every button is 44 px tall. The Delivery list draws its clock times in the
-// browser's own zone and words, so both are pinned to the ones the base was read in.
+// (`linedHeights`). It holds an ask card's "Asked of" line and the issue header's Assignee badge
+// to their heights at the base too, and the header's `Repository:` line to the box of the shared
+// trigger that replaces the base's text box (`REPOSITORY_LINE`), at 1024x768, between `md` and
+// `xl`, the widths where every button is 44 px tall. The Delivery list draws its clock times in
+// the browser's own zone and words, so both are pinned to the ones the base was read in.
 test.describe("R8's rows and cards", () => {
   test.use({ locale: "en-US", timezoneId: "UTC" });
 
@@ -4045,17 +4133,21 @@ test.describe("R8's rows and cards", () => {
             Math.round((wrapper.parentElement?.getBoundingClientRect().height ?? 0) * 100) / 100
         )
     );
-    /** Each line read at 1024x768: what it is, its height now, and its height at the base. */
-    const lines: [line: string, height: number, base: number][] = askedOf.map((height, index) => [
-      `the Inbox's ask card ${index + 1}'s "Asked of" line`,
-      height,
-      ASKED_OF_LINE,
-    ]);
+    /** Each line read at 1024x768: what it is, its height now, the height it is held to, and
+     *  where that height was read. */
+    const lines: [line: string, height: number, held: number, from: string][] = askedOf.map(
+      (height, index) => [
+        `the Inbox's ask card ${index + 1}'s "Asked of" line`,
+        height,
+        ASKED_OF_LINE,
+        "at the base",
+      ]
+    );
 
-    // The issue header's two badges, read once CORE maps a repository, so its rail draws one:
-    // the Assignee's wrapper, the badge's own item in the wrapping row, and the `Repository:`
-    // line around the repository's wrapper. Each control's wrapper is its parent, at the base as
-    // now.
+    // The issue header's two controls, read once CORE maps a repository, so its rail draws one:
+    // the Assignee's wrapper, the control's parent at the base as now and the badge's own item in
+    // the wrapping row, and the `Repository:` line, the control's grandparent, around the shared
+    // trigger's wrapper.
     await putRepoProject("acme/widgets", { default: true, project: "CORE" });
     await page.goto(`/issues/${issue}`);
     const assigneeControl = page.getByLabel(`Assignee of ${issue}`);
@@ -4073,6 +4165,7 @@ test.describe("R8's rows and cards", () => {
             Math.round((control.parentElement?.getBoundingClientRect().height ?? 0) * 100) / 100
         ),
         ASSIGNEE_BADGE,
+        "at the base",
       ],
       [
         "the issue header's `Repository:` line",
@@ -4083,11 +4176,12 @@ test.describe("R8's rows and cards", () => {
             ) / 100
         ),
         REPOSITORY_LINE,
+        "in the shared trigger's box",
       ]
     );
-    for (const [line, height, base] of lines) {
-      if (Math.abs(height - base) > 0.5) {
-        changed.push(`${line} at 1024x768 is ${height}px, and ${base}px at the base`);
+    for (const [line, height, held, from] of lines) {
+      if (Math.abs(height - held) > 0.5) {
+        changed.push(`${line} at 1024x768 is ${height}px, and ${held}px ${from}`);
       }
     }
     expect(
@@ -5948,6 +6042,88 @@ test("a picked value too long for its list's trigger ends in an ellipsis before 
     wrong.push(
       `the issue header's Priority to advance is ${widths.join(", ")} px wide before a pick, after a short one and after a long one`
     );
+  }
+  expect(wrong, wrong.join("; ")).toEqual([]);
+});
+
+// SLOW(>=2s): one issue page at two widths, its form opened four times.
+// INFRA-3135, round 13 (the tester's, measured in builds Jobs at 43b5b641): `+` on the issue
+// header's priority line takes itself away and puts the form in its place, whose first control
+// is Priority to advance. In Chromium the focus lands on that list's trigger; in Firefox and
+// WebKit it lands on the rail's Edit labels, after the form, and at 390 the details rail
+// scrolls to it, leaving the form the reader opened out of view (the trigger at -389 px in
+// Firefox and -274 px in WebKit, with the rail scrolled 426 and 311 px). At the merge base
+// 6ef60ff0 the form stands in view in all three engines. A focused control taken away, for which
+// these engines fire no `focusout`: the clause of the `webkit` and `firefox` projects that names
+// the page-own focus row (e2e/playwright.config.ts). By a press of Enter and by a click, at 1440
+// and 390: the trigger holds the focus and stands whole in the window and in the rail.
+test("Add a priority opens its form in view with the focus on Priority to advance, at 1440 and 390 @firefox @webkit", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Harbour crane" });
+  await createPriority({ owner: "alice", title: "Ship the daemon" });
+  const wrong: string[] = [];
+  for (const size of [
+    { height: 900, width: 1440 },
+    { height: 664, width: 390 },
+  ]) {
+    await page.setViewportSize(size);
+    for (const press of ["Enter", "click"] as const) {
+      const at = `${size.width}x${size.height}, by ${press}`;
+      await page.goto(`/issues/${issue.key}`);
+      const add = page.getByRole("button", { exact: true, name: `Add a priority to ${issue.key}` });
+      await expect(add).toBeVisible();
+      if (press === "Enter") {
+        await add.focus();
+        await page.keyboard.press("Enter");
+      } else {
+        await add.click();
+      }
+      const trigger = listTrigger(page, "Priority to advance");
+      await expect(trigger, `${at}: the form opened no Priority to advance`).toBeVisible();
+      const focused = await expect(trigger)
+        .toBeFocused()
+        .then(
+          () => true,
+          () => false
+        );
+      if (!focused) {
+        const holder = await page.evaluate(
+          () =>
+            `${document.activeElement?.tagName.toLowerCase()} "${document.activeElement?.getAttribute("aria-label") ?? document.activeElement?.textContent?.trim().slice(0, 40)}"`
+        );
+        wrong.push(`${at}: the focus is on ${holder}, not on Priority to advance`);
+      }
+      const placed = await expect
+        .poll(() =>
+          trigger.evaluate((node) => {
+            const box = node.getBoundingClientRect();
+            const rail = node
+              .closest('[data-testid="issue-metadata-rail"]')
+              ?.getBoundingClientRect();
+            const inWindow = box.left >= 0 && box.right <= window.innerWidth;
+            const inRail =
+              rail === undefined || (box.left >= rail.left - 1 && box.right <= rail.right + 1);
+            return inWindow && inRail
+              ? "whole"
+              : `at ${Math.round(box.left)}-${Math.round(box.right)} px`;
+          })
+        )
+        .toBe("whole")
+        .then(
+          () => "whole",
+          async () =>
+            trigger.evaluate(
+              (node) =>
+                `at ${Math.round(node.getBoundingClientRect().left)}-${Math.round(node.getBoundingClientRect().right)} px`
+            )
+        );
+      if (placed !== "whole") {
+        wrong.push(`${at}: Priority to advance stands ${placed}, out of the window or the rail`);
+      }
+    }
   }
   expect(wrong, wrong.join("; ")).toEqual([]);
 });

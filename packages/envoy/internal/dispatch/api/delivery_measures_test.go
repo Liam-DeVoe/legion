@@ -405,7 +405,11 @@ func TestGetDeliveryMeasuresComputesTheFixture(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	fixture := seedMeasuresFixture(t, database)
 
-	body := getDeliveryMeasures(t, handler, measuresFixtureWindow)
+	raw := getBody(t, handler, "/api/v1/delivery/measures?"+measuresFixtureWindow)
+	var body deliveryMeasuresResponse
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatalf("decode measures?%s: %v, body=%s", measuresFixtureWindow, err, raw)
+	}
 	result := body.Measures
 	if f := result.DeployFrequency; f.SuccessfulDeploys != 5 || f.DeploysWithPRs != 5 {
 		t.Errorf("deploy_frequency = %+v, want {5, 5}", f)
@@ -434,9 +438,8 @@ func TestGetDeliveryMeasuresComputesTheFixture(t *testing.T) {
 	if result.ChangeFailureRate != (measures.ChangeFailureRate{}) {
 		t.Errorf("change_failure_rate = %+v with flags_source none, want every count 0 and every rate null", result.ChangeFailureRate)
 	}
-	raw := dispatchRequest(t, handler, http.MethodGet, "/api/v1/delivery/measures?"+measuresFixtureWindow, nil, "alice").Body.String()
-	if !strings.Contains(raw, noFailureSourceJSON) {
-		_, answered, _ := strings.Cut(raw, `"change_failure_rate"`)
+	if !strings.Contains(string(raw), noFailureSourceJSON) {
+		_, answered, _ := strings.Cut(string(raw), `"change_failure_rate"`)
 		t.Errorf("the answer carries no %s with flags_source none; it answers %.400s", noFailureSourceJSON, answered)
 	}
 	if result.TimeToRestore.MedianMinutes != nil {
