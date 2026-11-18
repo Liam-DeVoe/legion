@@ -91,6 +91,27 @@ export function thinkingPicked(effort: ModEffort): string {
   return `The session's thinking level is now ${effort}.`
 }
 
+/** What stderr says of an accept of message `messageId` Dispatch recorded and gave no copy of its
+ *  answer for (`DispatchWriteLandedError`): the attempt is spent as this session's, and the
+ *  stored body a turn is made of is not in hand. Every host of this package says it in these
+ *  words (`./codex/codex-user-turns`). */
+export function acceptLanded(messageId: string, error: DispatchWriteLandedError): string {
+  return `Dispatch recorded this session's accept of message ${messageId} and gave no copy of its answer (${error.message}), so no turn follows; it arrives as a card`
+}
+
+/** What stderr says of a reply to message `messageId` Dispatch made and gave no copy of its
+ *  answer for (`DispatchWriteLandedError`): it is posted, and the error's message says what was
+ *  made. */
+export function replyLanded(messageId: string, error: DispatchWriteLandedError): string {
+  return `a reply to message ${messageId} landed on Dispatch, which gave no copy of its answer — ${error.message}`
+}
+
+/** What stderr says of a BTW answer to message `messageId` Dispatch made and gave no copy of its
+ *  answer for (`DispatchWriteLandedError`): it answered the attempt, so no error reply follows. */
+export function btwAnswerLanded(messageId: string, error: DispatchWriteLandedError): string {
+  return `a BTW answer to message ${messageId} landed on Dispatch, which gave no copy of its answer — ${error.message}`
+}
+
 /** A message whose row of the conversation has not arrived yet: the person's own words, which
  *  is what the row will say, and the Dispatch message that row is. A `/` message has no such
  *  row - the only row it writes is the one Claude Code echoes the command it ran in, which the
@@ -251,9 +272,7 @@ export function createUserTurnRouter(options: UserTurnRouterOptions): UserTurnRo
           return
         }
         if (refusal.reason === "landed") {
-          warn(
-            `Dispatch recorded this session's accept of message ${delivery.id} and gave no copy of its answer (${refusal.error.message}), so no turn follows; it arrives as a card`,
-          )
+          warn(acceptLanded(delivery.id, refusal.error))
           return
         }
         warn(
@@ -341,7 +360,7 @@ export function createUserTurnRouter(options: UserTurnRouterOptions): UserTurnRo
     await post(delivery, { body }).catch((error: unknown) => {
       warn(
         error instanceof DispatchWriteLandedError
-          ? `a reply to message ${delivery.id} landed on Dispatch, which gave no copy of its answer — ${error.message}`
+          ? replyLanded(delivery.id, error)
           : `a reply to message ${delivery.id} did not reach Dispatch — ${messageFor(error)}`,
       )
     })
@@ -450,7 +469,7 @@ export function createUserTurnRouter(options: UserTurnRouterOptions): UserTurnRo
     })().catch((error: unknown) => {
       warn(
         error instanceof DispatchWriteLandedError
-          ? `a BTW answer to message ${delivery.id} landed on Dispatch, which gave no copy of its answer — ${error.message}`
+          ? btwAnswerLanded(delivery.id, error)
           : `a BTW answer did not reach Dispatch — ${messageFor(error)}`,
       )
     })
