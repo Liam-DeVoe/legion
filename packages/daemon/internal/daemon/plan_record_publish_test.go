@@ -107,7 +107,7 @@ func TestTheRetrosRatingReachesDispatch(t *testing.T) {
 // ERROR line, and nothing says the write was dropped. 404 ISSUE_NOT_FOUND, Dispatch holding no such
 // issue, ends the row instead (TestAPlanRecordThatDispatchRefusesEndsWithAWarning, and
 // TestAStepRecordThatDispatchRefusesEndsWithAWarning for the step record a rating is), and so does
-// a 400 STEP_INPUT naming the rating (TestARatingThatDispatchRefusesByNameEndsWithAWarning).
+// a 400 STEP_INPUT naming the rating (TestARatingOnARecordOfAnotherKindEndsWithAWarning).
 func TestAPlanAndARatingWaitForADispatchThatHasNoRouteForThem(t *testing.T) {
 	notFound := &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "no route for PUT /api/v1/issues/LEGION-1/…"}
 	for _, route := range []struct {
@@ -146,7 +146,7 @@ func TestAPlanAndARatingWaitForADispatchThatHasNoRouteForThem(t *testing.T) {
 // (workflowstore's ratingOfKind), and that answer would come again at every retry and hold the
 // record lane behind it (record.LaneRecord). The one Warn line names the issue, the record's id and
 // Dispatch's code, and the row's failure is not logged as a failed attempt besides.
-func TestARatingThatDispatchRefusesByNameEndsWithAWarning(t *testing.T) {
+func TestARatingOnARecordOfAnotherKindEndsWithAWarning(t *testing.T) {
 	refusal := &dispatch.Error{Status: http.StatusBadRequest, Code: dispatch.StepInput,
 		Message: "rating is the rating a retro gives its plan, and step " + retroRecordID + " is a run of kind step"}
 	rig := newStepRecordRigOf(t, ratingRecordOf(), answersInTurn(refusal))
