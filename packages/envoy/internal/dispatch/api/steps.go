@@ -140,8 +140,8 @@ func (s *server) writeIssueStep(w http.ResponseWriter, r *http.Request, write wo
 	// A body refused for its shape is refused before the transaction and the issue's lock, as the
 	// package refuses a required field it lacks.
 	if rates && write.Rating == nil {
-		writeError(w, codeStepInput, http.StatusBadRequest,
-			"rating is required: the rating route writes a retro's rating, 1 to 5, with its rating_reason")
+		writeError(w, codeStepInput, http.StatusBadRequest, fmt.Sprintf(
+			"rating is required: the rating route writes a retro's rating, %d to %d, with its rating_reason", workflowstore.RatingLeast, workflowstore.RatingMost))
 		return
 	}
 
