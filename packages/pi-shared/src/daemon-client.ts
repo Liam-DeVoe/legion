@@ -94,9 +94,8 @@ export type ActivityInput = z.input<typeof LegionActivityRequest>;
 export type OwedInput = z.input<typeof LegionOwedRequest>;
 
 export interface LegionDaemonClient {
-  /** The daemon's whole state. `signal` aborts the request, its answer's body included: a caller
-   * that stops waiting for a daemon that does not answer aborts it rather than leave it open. */
-  readonly state: (options?: { readonly signal?: AbortSignal }) => Promise<LegionState>;
+  /** The daemon's whole state. */
+  readonly state: () => Promise<LegionState>;
   readonly register: (input: RegisterInput) => Promise<LegionRegistration>;
   /** The same route, for the operator-launched controller: `bootToken` is the capability `legion
    * controller start` fetched, and the answer is the controller's registration. */
@@ -495,8 +494,7 @@ export function createLegionDaemonClient(
   };
 
   return {
-    state: (options) =>
-      read("GET", "/legion/v1/state", LegionStateResponse, undefined, options?.signal),
+    state: () => read("GET", "/legion/v1/state", LegionStateResponse),
     register: (input) => read("POST", "/legion/v1/claims/register", LegionRegisterResponse, input),
     registerController: (input) =>
       read("POST", "/legion/v1/claims/register", LegionControllerRegisterResponse, input),

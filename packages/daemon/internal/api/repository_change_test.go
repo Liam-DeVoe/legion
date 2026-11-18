@@ -67,7 +67,7 @@ func TestTheStateShowsARepositoryCorrectionAndAChangeStillToBeApplied(t *testing
 	for field, want := range map[string]any{
 		"repo":              "acme/widgets",
 		"repoChangePending": "acme/gadgets",
-		"repoChangeReason":  "acme/gadgets is not mapped to project LEGION in Dispatch",
+		"repoChangeReason":  "the review App is not installed on acme/gadgets",
 	} {
 		if waiting[field] != want {
 			t.Errorf("LEGION-212's %s = %v, want %v", field, waiting[field], want)

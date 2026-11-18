@@ -484,20 +484,17 @@ func readDecisionFunc(pkg *checkedPackage, fn *ast.FuncDecl) *decisionFunc {
 	f.asks = slices.Contains(f.calls, decisionRule)
 	f.picks = slices.Contains(f.calls, senderModule+"record.SpecDecision")
 	assigned := localAssignments(info, fn.Body)
-	// written is every field selector an assignment writes, which reads nothing of the field.
+	// written is every field selector an assignment writes, which reads nothing of the field. The
+	// walk visits an assignment before its left-hand selectors, so each is marked before it is read.
 	written := map[*ast.SelectorExpr]bool{}
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
-		if assign, ok := n.(*ast.AssignStmt); ok {
-			for _, lhs := range assign.Lhs {
+		switch node := n.(type) {
+		case *ast.AssignStmt:
+			for _, lhs := range node.Lhs {
 				if sel, ok := ast.Unparen(lhs).(*ast.SelectorExpr); ok {
 					written[sel] = true
 				}
 			}
-		}
-		return true
-	})
-	ast.Inspect(fn.Body, func(n ast.Node) bool {
-		switch node := n.(type) {
 		case ast.Expr:
 			if value := info.Types[node].Value; value != nil && value.Kind() == constant.String {
 				text := constant.StringVal(value)

@@ -623,7 +623,7 @@ func populatedState(t *testing.T) State {
 				// it, so `repo` above is the repository the issue works and these two say what
 				// the change waits on.
 				RepoChangePending: "acme/gadgets",
-				RepoChangeReason:  "acme/gadgets is not mapped to project LEGION in Dispatch",
+				RepoChangeReason:  "the review App is not installed on acme/gadgets",
 				Workers:           map[claim.Role]PhaseView{},
 				// The first part's only member, at the front of the whole line: its place, its
 				// place within its own part, the moment its work came back and no rank at all,

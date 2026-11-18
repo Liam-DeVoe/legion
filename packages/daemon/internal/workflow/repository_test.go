@@ -234,6 +234,47 @@ func TestARecordedIssueResolvedToNoRepositoryIsToldAndLeavesNoChangeWaiting(t *t
 	}
 }
 
+// A recorded issue whose change waits on a repository Legion does not serve is told what a person
+// can do and when Legion moves it, which differ with what Dispatch named. An App can be installed
+// on a repository, mapped or not, so the note asks for that or another repository, and ends with
+// the pass that applies the change: the follow after a read of the mapping for a mapped one, and
+// the issue's next event or the next boot for one no mapping names. A name that is no
+// <owner>/<name> (the preparation's parse refusal) is no repository any App can be installed on, so
+// the note asks only for a repository and ends as it does where the resolution names none: what
+// moves the issue is a person setting one Legion serves.
+func TestARecordedIssueWhoseChangeWaitsIsToldWhatAPersonCanDo(t *testing.T) {
+	for _, tc := range []struct {
+		name, resolved, refusal, want string
+	}{
+		{name: "a mapped repository an App is not installed on", resolved: "acme/gadgets",
+			want: "Legion did not move this issue off sjawhar/legion: the review App is not installed on acme/gadgets. Install it on acme/gadgets, or set another repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name). Legion moves the issue itself once it serves the repository that Dispatch resolves the issue to."},
+		{name: "a repository no mapping names, an App not installed on it", resolved: "other/outside",
+			refusal: "the implement App is not installed on other/outside",
+			want:    "Legion did not move this issue off sjawhar/legion: the implement App is not installed on other/outside. Install it on other/outside, or set another repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name). Legion moves the issue at its next event or at Legion's next boot, once both Legion Apps are installed on other/outside."},
+		{name: "a name that is no owner/name", resolved: "outside",
+			refusal: `the repository Dispatch resolves LEGION-209 to must be "owner/name" (got "outside")`,
+			want:    `Legion did not move this issue off sjawhar/legion: the repository Dispatch resolves LEGION-209 to must be "owner/name" (got "outside"). Set its repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name). Legion moves the issue itself once it serves the repository that Dispatch resolves the issue to.`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			openTree(t, pool)
+			seedIssue(t, pool, record.Issue{Key: "LEGION-209", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "child", Parent: new("LEGION-208"),
+				Phase: phase.Implementing, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress", Rank: "V", LastDispatchSeq: 2})
+			changed := childTodo(3, tc.resolved)
+			changed.Status, changed.RepositoryRefusal = "in_progress", tc.refusal
+			applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))("changed", changed)
+			child := issueRecord(t, pool, "LEGION-209")
+			if child == nil || child.Repo != "sjawhar/legion" || child.RepoCorrection != nil {
+				t.Fatalf("child = %#v, want it still recorded on sjawhar/legion, corrected in nothing", child)
+			}
+			messages := outboxOf(t, pool, "dispatch_message")
+			if len(messages) != 1 || messages[0].issue != "LEGION-209" || messages[0].payload["body"] != tc.want {
+				t.Fatalf("Dispatch messages = %#v, want one on LEGION-209 saying %q", messages, tc.want)
+			}
+		})
+	}
+}
+
 // A retained event names no repository (ResolvedRepoMissing). A recorded issue's is applied with
 // its record's repository, so it says nothing of a repository change; an unrecorded issue's is
 // refused, so the event is retried until its repository is read, and nothing is recorded on a

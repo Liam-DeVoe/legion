@@ -150,8 +150,8 @@ func TestTheArchitectEntryWaitRoundTrips(t *testing.T) {
 		must(t, records.PutPhase(ctx, tx, row))
 	})
 	got := architectRow(issue.Key)
-	if got.EntryTask != resumed || got.EntryAwaiting == nil || got.EntryAwaiting.AnsweredAt == nil ||
-		!got.EntryAwaiting.AnsweredAt.Equal(answered) || !got.EntryAwaiting.Since.At.Equal(wait.Since.At) {
+	if got.EntryTask != resumed || got.EntryAwaiting == nil || !sameInstant(got.EntryAwaiting.AnsweredAt, &answered) ||
+		!got.EntryAwaiting.Since.At.Equal(wait.Since.At) {
 		t.Fatalf("the architect's row = task %q, wait %+v; want %q holding %+v, as it was put", got.EntryTask, got.EntryAwaiting, resumed, wait)
 	}
 	held, put := *got.EntryAwaiting, wait

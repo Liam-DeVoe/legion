@@ -2700,7 +2700,7 @@ It prints `BEGIN`, `ALTER TABLE`, a `NOTICE` that `entry_awaiting` already exist
 a rerun prints a `NOTICE` that `entry_verbatim` already exists beside the first `ALTER TABLE`, the second `ALTER TABLE`, `UPDATE 0`, `ALTER TABLE`, `DELETE 0` and `COMMIT`, and changes nothing.
 Without it the earlier release does not run: its phases read and write name `phases.entry_verbatim`, which 20261118073048_phase_entry_awaiting drops, so each fails on the missing column, and every admission pass fails with them.
 The first `alter table` puts that column back at the default it was added with, and the `update` marks each entry a resume raised, so that release sends the task the row keeps as written, as it did before this release.
-The `drop` and the `delete` are owed to the roll-forward: with the column dropped and the row deleted, `Migrate` runs 20261118073048 again, whose first statement would fail on a column that stands.
+The `drop` and the `delete` are owed to the roll-forward: with the column dropped and the row deleted, `Migrate` runs 20261118073048 again, whose first statement would fail on a column left standing.
 The second `alter table` is what lets the block run twice: on a store it already ran on, it adds the column back empty, the `update` marks nothing and the `drop` takes the column away again.
 What the block costs is the wait on each entry a resume raised before it: the roll-forward gives each such entry the empty wait, as it gives an entry of the earlier release.
 A rollback below contract 146 runs this block first and that contract's block after it, which drops `phases.entry_verbatim` again.

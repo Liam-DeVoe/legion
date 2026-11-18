@@ -187,12 +187,8 @@ function roleUnheld(error: unknown): boolean {
 
 /** `work`'s answer, or a rejection once `ms` have passed without one, when the signal `work` was
  * handed is aborted so what it started does not outlive the bound (`withinBudget` in
- * `src/capability-report.ts` is the same shape, with a fallback answer in place of the throw).
- * The stall watch's own notice bounds its owed read with this (`pi-legion/src/stall-evidence.ts`). */
-export async function withBound<T>(
-  work: (signal: AbortSignal) => Promise<T>,
-  ms: number
-): Promise<T> {
+ * `src/capability-report.ts` is the same shape, with a fallback answer in place of the throw). */
+async function withBound<T>(work: (signal: AbortSignal) => Promise<T>, ms: number): Promise<T> {
   const controller = new AbortController();
   const deadline = Promise.withResolvers<T>();
   const timer = setTimeout(() => {
@@ -205,6 +201,27 @@ export async function withBound<T>(
   } finally {
     clearTimeout(timer);
   }
+}
+
+/** What `claim` owes, asked through `readOwed` with the claim's own credential and bounded by
+ * `ms` (`withBound`). The phase reminder's owed check and the stall watch's notice
+ * (`pi-legion/src/stall-evidence.ts`) both ask it this way, so the two ask the same question.
+ * Each catches its own failure and logs its own line, because a read that fails means something
+ * different to each: the reminder reminds with no work named, and the notice goes to the tree's
+ * architect. */
+export function readOwedWithin(
+  readOwed: PhaseReminderDeps["readOwed"],
+  claim: ClaimCapability,
+  ms: number
+): Promise<LegionOwed> {
+  return withBound(
+    (signal) =>
+      readOwed(
+        { claimToken: claim.claimToken, sessionId: claim.sessionID, secret: claim.secret },
+        signal
+      ),
+    ms
+  );
 }
 
 /** What the owed check decided, for the reminder and the architect notice that may follow it: the
@@ -308,14 +325,7 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
     if (claim === undefined) return UNREAD_CHECK;
     let answer: LegionOwed;
     try {
-      answer = await withBound(
-        (signal) =>
-          deps.readOwed(
-            { claimToken: claim.claimToken, sessionId: claim.sessionID, secret: claim.secret },
-            signal
-          ),
-        boundMs
-      );
+      answer = await readOwedWithin(deps.readOwed, claim, boundMs);
     } catch (error) {
       deps.log.debug("legion: the daemon did not say what this claim owes", {
         issue: claim.issue,

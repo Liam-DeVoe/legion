@@ -883,9 +883,10 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 	// so carries the first-task instruction (workflow.NarrowRootTask): the tree's root as the
 	// record holds it at the narrowing, and what its first task is derived from, read by the reader
 	// every start of a root architect reads it through (workflow.ArchitectStartOf). The reads are
-	// made only where a decision or the kept approval was dropped, since nothing else rewrites the
-	// task.
+	// made only where a decision or the kept approval was dropped (narrowed), since nothing else
+	// rewrites the task.
 	var decided string
+	var narrowed bool
 	var root *record.Issue
 	var start workflow.ArchitectStart
 	var left []record.DecisionMark
@@ -928,7 +929,8 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 			return err
 		}
 		decided, stays = workflow.KeptDecisionsTask(gates, w.gatedSteps, c.Tree, stays)
-		if len(stays.Decisions) != len(named.Decisions) || stays.KeptApproval != named.KeptApproval {
+		narrowed = len(stays.Decisions) != len(named.Decisions) || stays.KeptApproval != named.KeptApproval
+		if narrowed {
 			if root, err = w.records.Issue(scoped, tx, c.Tree); err != nil {
 				return err
 			}
@@ -950,7 +952,7 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 		return "", nil, fmt.Errorf("read what the task held for %s still names of %s's tree: %w", c.Token, c.Tree, err)
 	}
 	committed()
-	if len(stays.Decisions) == len(named.Decisions) && stays.KeptApproval == named.KeptApproval {
+	if !narrowed {
 		return d.Task, d.Kept, nil
 	}
 	// A task that carries the root's own first task keeps it: a decision leaving this tree, or one

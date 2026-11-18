@@ -475,45 +475,48 @@ describe("negative repo-edit: Dispatch's seq cursor and the exact kept-repositor
     expect(after.stderr).toContain("CHECK negative-repo-edit-ACME-2: FAIL");
   });
 
+  // repoEditAfterNote runs `before` on ACME-2 while Dispatch resolves it to acme/widgets, then
+  // `after` once Dispatch names X for it, with an issue.updated naming X after the baseline and
+  // the daemon's own message `note`, and answers what `after` did: the PASS and FAIL cases below
+  // differ only in the note and in what they expect of that answer.
+  const repoEditAfterNote = async (note: string) => {
+    const daemonServer = daemonStub(stateBody);
+    const dispatchServer = dispatchStub({
+      "ACME-2": JSON.stringify({ key: "ACME-2", resolved_repo: "acme/widgets" }),
+    });
+    const env = fullInputs(
+      `http://127.0.0.1:${daemonServer.port}`,
+      `http://127.0.0.1:${dispatchServer.port}`
+    );
+    const { bin, evidence } = newFakeDir();
+    const path = isolatedPath(bin);
+    const before = await spawnScript(
+      ["negative", "repo-edit", "before", "ACME-2"],
+      path,
+      evidence,
+      env
+    );
+    expect(before.status).toBe(0);
+    const runId = baselineRunId(before.stdout);
+    const laterDispatchServer = dispatchStub(
+      { "ACME-2": JSON.stringify({ key: "ACME-2", repo: "other/outside" }) },
+      {
+        "ACME-2": JSON.stringify([
+          issueUpdatedEvent(20, "other/outside"),
+          daemonActorEvent("ACME", 19, `${note}\n\n<!-- legion-outbox:9 -->`),
+        ]),
+      }
+    );
+    const env2 = { ...env, DISPATCH_URL: `http://127.0.0.1:${laterDispatchServer.port}` };
+    return spawnScript(["negative", "repo-edit", "after", runId, "ACME-2"], path, evidence, env2);
+  };
+
   for (const [variant, note] of [
     ["X not mapped, the implement App not installed on it", xTargetedNote],
     ["X mapped, the review App not installed on it", xLeftOutNote],
   ] as const) {
     test(`an issue.updated after the baseline naming X, with the daemon's kept-repository message (${variant}): PASS`, async () => {
-      const daemonServer = daemonStub(stateBody);
-      const dispatchServer = dispatchStub({
-        "ACME-2": JSON.stringify({ key: "ACME-2", resolved_repo: "acme/widgets" }),
-      });
-      const env = fullInputs(
-        `http://127.0.0.1:${daemonServer.port}`,
-        `http://127.0.0.1:${dispatchServer.port}`
-      );
-      const { bin, evidence } = newFakeDir();
-      const path = isolatedPath(bin);
-      const before = await spawnScript(
-        ["negative", "repo-edit", "before", "ACME-2"],
-        path,
-        evidence,
-        env
-      );
-      expect(before.status).toBe(0);
-      const runId = baselineRunId(before.stdout);
-      const laterDispatchServer = dispatchStub(
-        { "ACME-2": JSON.stringify({ key: "ACME-2", repo: "other/outside" }) },
-        {
-          "ACME-2": JSON.stringify([
-            issueUpdatedEvent(20, "other/outside"),
-            daemonActorEvent("ACME", 19, `${note}\n\n<!-- legion-outbox:9 -->`),
-          ]),
-        }
-      );
-      const env2 = { ...env, DISPATCH_URL: `http://127.0.0.1:${laterDispatchServer.port}` };
-      const after = await spawnScript(
-        ["negative", "repo-edit", "after", runId, "ACME-2"],
-        path,
-        evidence,
-        env2
-      );
+      const after = await repoEditAfterNote(note);
       expect(after.status).toBe(0);
       expect(after.stdout).toContain("CHECK negative-repo-edit-ACME-2: PASS");
     });
@@ -524,40 +527,7 @@ describe("negative repo-edit: Dispatch's seq cursor and the exact kept-repositor
     ["a closing sentence naming another repository than X", xOtherRepositoryNote],
   ] as const) {
     test(`an issue.updated after the baseline naming X, with a kept-repository message of neither ending (${variant}): FAIL`, async () => {
-      const daemonServer = daemonStub(stateBody);
-      const dispatchServer = dispatchStub({
-        "ACME-2": JSON.stringify({ key: "ACME-2", resolved_repo: "acme/widgets" }),
-      });
-      const env = fullInputs(
-        `http://127.0.0.1:${daemonServer.port}`,
-        `http://127.0.0.1:${dispatchServer.port}`
-      );
-      const { bin, evidence } = newFakeDir();
-      const path = isolatedPath(bin);
-      const before = await spawnScript(
-        ["negative", "repo-edit", "before", "ACME-2"],
-        path,
-        evidence,
-        env
-      );
-      expect(before.status).toBe(0);
-      const runId = baselineRunId(before.stdout);
-      const laterDispatchServer = dispatchStub(
-        { "ACME-2": JSON.stringify({ key: "ACME-2", repo: "other/outside" }) },
-        {
-          "ACME-2": JSON.stringify([
-            issueUpdatedEvent(20, "other/outside"),
-            daemonActorEvent("ACME", 19, `${note}\n\n<!-- legion-outbox:9 -->`),
-          ]),
-        }
-      );
-      const env2 = { ...env, DISPATCH_URL: `http://127.0.0.1:${laterDispatchServer.port}` };
-      const after = await spawnScript(
-        ["negative", "repo-edit", "after", runId, "ACME-2"],
-        path,
-        evidence,
-        env2
-      );
+      const after = await repoEditAfterNote(note);
       expect(after.status).not.toBe(0);
       expect(after.stderr).toContain("CHECK negative-repo-edit-ACME-2: FAIL");
     });

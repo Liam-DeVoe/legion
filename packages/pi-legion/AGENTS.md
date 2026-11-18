@@ -795,8 +795,10 @@ tree's, or, for a root architect's own call, to the controller, also sends no `k
 kept answer reports that no owner was told. The listener answers a session past its send limit
 with 429 `sender_rate_limited` and the whole seconds until it takes the next message: the stall
 watch waits that long and sends its notice again under the same key, at most 3 times, so the
-notice is sent at most 4 times. It sends again in the background, so no wait holds a step of the
-ladder, and a resend that is answered and not kept records the owner as told. The phase reminder's
+notice is sent at most 4 times. It sends again in the background, so no resend's wait holds a step
+of the ladder: the one wait that does is the owed read the notice of a phase worker names its
+architect from, made before the first publish and bounded at `OWED_READ_BOUND_MS` (3 s). A resend
+that is answered and not kept records the owner as told. The phase reminder's
 notice needs no such resend: a refused publish leaves it unreported, and the next reminder
 publishes it again. A kept notice that no session takes in its hour comes back to this worker's
 session as a dead letter, an Envoy card that names it, unless Envoy drops it

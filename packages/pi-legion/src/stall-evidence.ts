@@ -12,7 +12,11 @@ import { messageFor } from "@legion/envoy-client/errors";
 import { EnvoyApiError, type PublishResult } from "@legion/envoy-client/transport";
 import type { OwedInput } from "@legion/pi-shared/daemon-client";
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops";
-import { type EnvoyPublish, OWED_READ_BOUND_MS, withBound } from "@legion/pi-shared/phase-reminder";
+import {
+  type EnvoyPublish,
+  OWED_READ_BOUND_MS,
+  readOwedWithin,
+} from "@legion/pi-shared/phase-reminder";
 import type {
   StallCall,
   StallEvidence,
@@ -626,9 +630,11 @@ const NOTICE_UNTOLD: NoticeSent = { ownerTold: false, resend: undefined };
  * nothing, and it names the whole seconds until it takes the next message. The teller waits that
  * long and sends the same notice under the same key, up to three times, so one notice is sent at
  * most four times. The resends run detached: the detector awaits the teller before the step that
- * frees the worker, and runs every overdue call in turn, so a wait here would hold that step, and
- * every other stuck call's, for as long as the waits run. A resend that is answered and not kept
- * tells the owner, and from then on the teller's record of the overdue call says so.
+ * frees the worker, and runs every overdue call in turn, so a resend's wait here would hold that
+ * step, and every other stuck call's, for as long as it ran. The one wait that does hold
+ * the step is the owed read a phase worker's notice names its owner from (`owningArchitect`),
+ * made before the first publish and bounded at `OWED_READ_BOUND_MS`. A resend that is answered and
+ * not kept tells the owner, and from then on the teller's record of the overdue call says so.
  *
  * **The ladder stopping short is a second thing, and it is told too.** `tellStopped` is the exit
  * cap, an unreadable counter file and unwritten evidence — the cases where the worker will not
@@ -664,12 +670,9 @@ export function createStallTeller(deps: StallTellerDeps): StallWatchdogTeller {
    */
   const owningArchitect = async (claim: ClaimCapability): Promise<string | undefined> => {
     try {
-      const answer = await withBound(
-        (signal) =>
-          deps.readOwed(
-            { claimToken: claim.claimToken, sessionId: claim.sessionID, secret: claim.secret },
-            signal
-          ),
+      const answer = await readOwedWithin(
+        deps.readOwed,
+        claim,
         deps.owedBoundMs ?? OWED_READ_BOUND_MS
       );
       return answer.architect;
@@ -820,7 +823,8 @@ export function createStallTeller(deps: StallTellerDeps): StallWatchdogTeller {
   const noticeFor = async (): Promise<StallNotice> => {
     const session = deps.session();
     const claim = deps.claim();
-    // Only a phase worker's notice depends on the daemon's answer, so only it pays the read.
+    // Only a phase worker's notice depends on the daemon's answer, so only it pays the read, and
+    // that read, bounded, is the one wait of the teller's that holds the ladder's step.
     const owner =
       session.kind === "phase-worker" && claim !== undefined
         ? await owningArchitect(claim)

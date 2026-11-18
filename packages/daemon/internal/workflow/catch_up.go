@@ -375,9 +375,11 @@ func TreeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []rec
 	if err != nil {
 		return record.CatchUpTree{}, "", err
 	}
-	reason := fmt.Sprintf("the issues under %s, which you own, at generation %d as the daemon records them now; start or resume your issue as your role says", issue.Key, issue.Generation)
+	var reason string
 	if root {
 		reason = fmt.Sprintf("the tree of %s at generation %d as the daemon records it now; start or resume it as your role says", issue.Key, issue.Generation)
+	} else {
+		reason = fmt.Sprintf("the issues under %s, which you own, at generation %d as the daemon records them now; start or resume your issue as your role says", issue.Key, issue.Generation)
 	}
 	if len(awaiting) > 0 {
 		reason += fmt.Sprintf("; in accepting, waiting for your acceptance, which no worker gives: %s (read the evidence, then sign_off or request_backward_move)", strings.Join(awaiting, ", "))

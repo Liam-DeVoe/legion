@@ -1537,10 +1537,12 @@ a repository the mapping names), and `<what to do>` is `Install it on <other>, o
 repository (…).`
 A repository GitHub does not have reads the same way, because GitHub answers its installation
 read as it answers an App not installed.
-A name that is no `owner/name` is said with what is wrong with the name in place of `<why>`.
+A name that is no `owner/name` is said with what is wrong with the name in place of `<why>`, and,
+since no App can be installed on such a name, `<what to do>` is `Set its repository (…).`
 `<when>` is `Legion moves the issue itself once it serves the repository that Dispatch resolves the
-issue to.` for a repository the mapping names, and `Legion moves the issue at its next event or at
-Legion's next boot, once both Legion Apps are installed on <other>.` for one it does not name.
+issue to.` for a repository the mapping names and for a name that is no `owner/name`, and `Legion
+moves the issue at its next event or at Legion's next boot, once both Legion Apps are installed on
+<other>.` for a repository the mapping does not name.
 
 An issue's repository is the one Dispatch resolves for it: the issue's own, else its nearest
 ancestor's, else the project's default.
@@ -1573,10 +1575,10 @@ Mapping the repository to the project in Dispatch does not move the issue by its
 both Apps are installed on is served whether the mapping names it or not.
 When you install a missing App, nothing tells the daemon, and it does not read a missing App again
 on a timer.
-Where the mapping does not name the repository, the daemon keeps no refusal of it and no read of it
-from an earlier pass: it reads both Apps, the repository's name and its default branch from GitHub
-afresh at the issue's preparation, so the issue moves at the issue's next event from Dispatch or at
-the daemon's next boot.
+Where the mapping does not name the repository, the daemon keeps no refusal of it and uses no read
+of it kept from an earlier pass to write the correction: it reads both Apps, the repository's name
+and its default branch from GitHub afresh at the issue's preparation, so the issue moves at the
+issue's next event from Dispatch or at the daemon's next boot.
 The boot's own listing writes nothing for such a repository; the boot asks for the pass over every
 recorded issue instead, which reads GitHub once the boot is over.
 Installing the App starts no pass by itself, and a read of the mapping that serves a repository the

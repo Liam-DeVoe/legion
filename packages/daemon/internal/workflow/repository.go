@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
@@ -245,25 +246,28 @@ func (e *Engine) ApplyRepositoryChange(ctx context.Context, tx pgx.Tx, issue rec
 // noteRepositoryChangeWaits says on a recorded issue that the repository Dispatch now resolves it
 // to, resolved, is not written onto the record: the record keeps the repository it has, for the
 // reason refused gives. It says what a person can do, as RefuseRecording does for an issue it does
-// not record: set a repository where the resolution names none, and otherwise install the App
-// refused names on it or set another repository. Since INFRA-2543 a named repository is refused
-// for what GitHub answers of it alone — a role App not installed on it, or no such repository —
-// whether the mapping names it (the mapping's own installation reads) or not (the preparation's,
-// intake.DispatchIssue.RepositoryRefusal): mapping it admits nothing, so the note never asks for
-// that. It ends with when Legion moves the issue itself: a mapped repository once Legion serves
-// it, which the daemon's follow after the read of the mapping that serves it applies; a
-// repository no mapping names (refused.Unmapped) at the issue's next event or at the next boot,
-// since the served-set follow never fires for such a repository. ApplyRepositoryChange reaches it
-// for a refused or left-out resolution alone, and it says it once per resolution (noteOnce), so a
-// repeated event or listing of the issue says nothing again.
+// not record: set a repository where the resolution names none or a name that is no
+// <owner>/<name> (the preparation's parse refusal), since no App can be installed on either, and
+// otherwise install the App refused names on it or set another repository. Since INFRA-2543 a
+// named repository is refused for what GitHub answers of it alone — a role App not installed on
+// it, or no such repository — whether the mapping names it (the mapping's own installation reads)
+// or not (the preparation's, intake.DispatchIssue.RepositoryRefusal): mapping it admits nothing,
+// so the note never asks for that. It ends with when Legion moves the issue itself: a mapped
+// repository once Legion serves it, which the daemon's follow after the read of the mapping that
+// serves it applies; a repository no mapping names (refused.Unmapped) at the issue's next event or
+// at the next boot, since the served-set follow never fires for such a repository; and a
+// resolution that names no repository, or no <owner>/<name>, once Dispatch resolves the issue to
+// one Legion serves, which takes a person's change of its repository. ApplyRepositoryChange
+// reaches it for a refused or left-out resolution alone, and it says it once per resolution
+// (noteOnce), so a repeated event or listing of the issue says nothing again.
 func (e *Engine) noteRepositoryChangeWaits(ctx context.Context, tx pgx.Tx, issue record.Issue, resolved string, refused Resolution) error {
 	action := "Set its repository (" + setRepositoryHint + ")."
-	if resolved != "" {
-		action = "Install it on " + resolved + ", or set another repository (" + setRepositoryHint + ")."
-	}
 	moves := " Legion moves the issue itself once it serves the repository that Dispatch resolves the issue to."
-	if refused.Unmapped {
-		moves = " Legion moves the issue at its next event or at Legion's next boot, once both Legion Apps are installed on " + resolved + "."
+	if _, err := ghrepo.Parse("the repository", resolved); err == nil {
+		action = "Install it on " + resolved + ", or set another repository (" + setRepositoryHint + ")."
+		if refused.Unmapped {
+			moves = " Legion moves the issue at its next event or at Legion's next boot, once both Legion Apps are installed on " + resolved + "."
+		}
 	}
 	note := "Legion did not move this issue off " + issue.Repo + ": " + refused.Refusal + ". " + action + moves
 	_, err := e.noteOnce(ctx, tx, issue.Key, resolved, note)

@@ -40,19 +40,18 @@ func (r *podUpdateRig) asksOn(issue string) []record.UpdateAsk {
 		if err := json.Unmarshal(row.Payload, &ask); err != nil {
 			r.t.Fatalf("decode update ask %d: %v", row.ID, err)
 		}
-		r.asked[row.ID] = ask
-		r.askedOn[row.ID] = row.Issue
+		r.asked[row.ID] = askedRow{issue: row.Issue, ask: ask}
 	}
 	ids := make([]int64, 0, len(r.asked))
-	for id := range r.asked {
-		if r.askedOn[id] == issue {
+	for id, row := range r.asked {
+		if row.issue == issue {
 			ids = append(ids, id)
 		}
 	}
 	slices.Sort(ids)
 	asks := make([]record.UpdateAsk, len(ids))
 	for i, id := range ids {
-		asks[i] = r.asked[id]
+		asks[i] = r.asked[id].ask
 	}
 	return asks
 }

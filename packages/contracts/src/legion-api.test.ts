@@ -758,7 +758,7 @@ test("the state golden carries an issue's repository correction and the change s
   }).toEqual({
     repo: "acme/widgets",
     repoChangePending: "acme/gadgets",
-    repoChangeReason: "acme/gadgets is not mapped to project LEGION in Dispatch",
+    repoChangeReason: "the review App is not installed on acme/gadgets",
   });
 
   const parses = () => LegionStateResponse.safeParse(state).success;

@@ -156,11 +156,7 @@ func TestThePhaseEntryAwaitingMigrationKeepsAResumesEntryAndItsWayBackPutsTheMar
 			t.Fatalf("after run %d of the way back the marks = %v, want %v: each entry that held a wait is a resume's, which that release sends as written",
 				run, marked, wantMarked)
 		}
-		var recorded int
-		if err := store.Pool().QueryRow(ctx, "select count(*) from schema_version where version = $1::bigint", phaseEntryAwaitingVersion).Scan(&recorded); err != nil {
-			t.Fatalf("read whether this migration is recorded after the way back: %v", err)
-		}
-		if recorded != 0 {
+		if recorded := timesRecorded(t, store, phaseEntryAwaitingVersion); recorded != 0 {
 			t.Fatalf("schema_version holds %d rows of this migration after run %d of the way back, want none: the roll-forward has to run it again", recorded, run)
 		}
 	}
@@ -197,8 +193,7 @@ func columnStands(t *testing.T, store *Store, column string) bool {
 // sameWait is whether got is want, each moment of it read as an instant: a wait read back from
 // JSON keeps the instant of a moment and not always the location it was written in.
 func sameWait(got, want record.Awaiting) bool {
-	if (got.AnsweredAt == nil) != (want.AnsweredAt == nil) || got.AnsweredAt != nil && !got.AnsweredAt.Equal(*want.AnsweredAt) ||
-		!got.Since.At.Equal(want.Since.At) {
+	if !sameInstant(got.AnsweredAt, want.AnsweredAt) || !sameInstant(&got.Since.At, &want.Since.At) {
 		return false
 	}
 	got.AnsweredAt, got.Since.At, want.AnsweredAt, want.Since.At = nil, time.Time{}, nil, time.Time{}

@@ -50,9 +50,9 @@
 -- with, and the update marks each entry a resume raised, so that release sends the task the row
 -- keeps as written, as it did before this one. The drop and the delete go together and are owed
 -- to the roll-forward: with the column dropped and the row deleted, store.apply finds no row of
--- this version and runs this file again, and its first statement fails on a column that stands.
--- The second add lets the block run twice: on a store it already ran on, it adds the column back
--- empty, the update marks nothing and the drop takes the column away again.
+-- this version and runs this file again, whose first statement would fail on a column left
+-- standing. The second add lets the block run twice: on a store it already ran on, it adds the
+-- column back empty, the update marks nothing and the drop takes the column away again.
 --
 -- What the way back costs is the wait on each entry a resume raised before it: the roll-forward
 -- gives each such entry the empty wait, as it gives an entry of the release before this one. A

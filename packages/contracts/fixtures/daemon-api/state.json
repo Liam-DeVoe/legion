@@ -448,7 +448,7 @@
       "repo": "acme/widgets",
       "defaultBranch": "main",
       "repoChangePending": "acme/gadgets",
-      "repoChangeReason": "acme/gadgets is not mapped to project LEGION in Dispatch",
+      "repoChangeReason": "the review App is not installed on acme/gadgets",
       "workers": {},
       "gatedSteps": [
         {
