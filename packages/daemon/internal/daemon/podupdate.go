@@ -1249,8 +1249,9 @@ func (s *supervision) markUpdateTold(ctx context.Context, group []supervise.Clai
 // once some claim of the issue is to be asked. Its row either reaches the session and marks the
 // claim, or ends with nothing marked, and the sweep after that asks again. The cost of a ready
 // claim whose session does not hold its topic is one row and one log line a sweep at most, for
-// as long as that lasts: until the round's bound, or, under an operator's suspension, which keeps
-// the round open past its bound (completePodUpdate's waitsForOperator), until the suspension ends.
+// as long as that lasts: until the round's bound, or, while a suspension that holds (the
+// operator's, the controller's or an architect's) is over a claim of the round, which keeps the
+// round open past its bound (readReplacement's waitsForResume), until a resume lifts it.
 //
 // Every row of the round goes in one enqueue, so the round's asks land together or not at all
 // (workflowRuntime.enqueueOutbox). An enqueue that fails, or a read of the queued asks that

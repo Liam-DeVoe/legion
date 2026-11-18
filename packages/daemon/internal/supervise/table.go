@@ -2827,7 +2827,9 @@ func exit(m *Machine, ctx context.Context, ev Event) error {
 // the outbox marks the claim asked once that publish reached a session (Machine.PublishUpdateAsk):
 // an ask that reached none marks nothing, so a later sweep asks again. A claim whose process is
 // suspended or released is not revived for the ask: if no ask has reached it, the sweep asks it
-// once its agent is ready again, and the round ends at its bound whether or not the role answers.
+// once its agent is ready again, and the round ends at its bound whether or not the role answers,
+// unless a suspension that holds (the operator's, the controller's or an architect's) is over the
+// claim, which keeps the round open until a resume lifts it.
 //
 // A round replaces another the moment the daemon opens it, whatever the claim's worker is doing.
 // The answer the worker gives carries the round its own ask named (PodUpdateSignalled), so an
