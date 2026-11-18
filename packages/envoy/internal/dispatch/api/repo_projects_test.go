@@ -462,3 +462,39 @@ func TestRepoProjectRenamedToIsSetKeptClearedAndHeldToOneStep(t *testing.T) {
 		t.Fatalf("renamed_to after clearing = %q, want null", *got)
 	}
 }
+
+// A mapping's own repository is held to the rule its renamed_to is: the path is a person's text,
+// and the stored name becomes the repository of every issue of the project that names none, whose
+// halves the linked-repository reads and the App's installation read put into GitHub paths as
+// they are. `...git` and `.git` are no dot segments, so the mux does not clean them, and the
+// trailing `.git` that canonicalRepo trims leaves `..` or an empty name behind.
+func TestRepoProjectMappingPathIsHeldToTheNamesGitHubAllows(t *testing.T) {
+	handler := newTestHandler(t)
+	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
+		"key": "CORE", "name": "Core",
+	}, "alice"); response.Code != http.StatusCreated {
+		t.Fatalf("create project: status=%d body=%s", response.Code, response.Body.String())
+	}
+	for _, refused := range []struct {
+		what string
+		path string
+	}{
+		{"a name that is .. once .git is trimmed", "acme/...git"},
+		{"a name that is empty once .git is trimmed", "acme/.git"},
+	} {
+		response := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/"+refused.path,
+			map[string]any{"project": "CORE", "default": true}, "alice")
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("%s: status=%d body=%s, want 400", refused.what, response.Code, response.Body.String())
+		}
+	}
+	listed := dispatchRequest(t, handler, http.MethodGet, "/api/v1/settings/repo-projects", nil, "alice")
+	if listed.Code != http.StatusOK {
+		t.Fatalf("list the mappings: status=%d body=%s", listed.Code, listed.Body.String())
+	}
+	for _, mapping := range decodeBody[[]repoProjectResponse](t, listed) {
+		if mapping.Repo == "acme/.." || mapping.Repo == "acme/" {
+			t.Fatalf("a refused write stored a mapping of %q", mapping.Repo)
+		}
+	}
+}
