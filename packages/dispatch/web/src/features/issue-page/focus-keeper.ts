@@ -114,6 +114,48 @@ function firstHolder(fallbacks: readonly FocusFallback[], loss: FocusLoss): HTML
 }
 
 /**
+ * Hears the reader's pointer presses on `page`, and returns what ends the hearing. `begin` is told
+ * of each press as its pointer goes down; once the press's own move of the focus is done, `done`
+ * is told where the focus was as the press began and what `begin` answered. A mouse press moves
+ * the focus as its button goes down, so a press that has moved it by its pointerup is done then. A
+ * tap moves the focus only after its pointer is up, from the mousedown the browser sends it then,
+ * so a press that has moved no focus by its pointerup is done at its click. That click is heard in
+ * the capture phase on the page, before the target's own handler: the header's Details control
+ * cancels its mousedown so the focus stays where it is, and closes Details from its click, which
+ * must not read as the press moving the focus. A new pointerdown replaces a press still under way.
+ */
+function hearPresses<T>(
+  page: Document,
+  begin: (event: PointerEvent) => T,
+  done: (from: Element | null, start: T) => void
+): () => void {
+  /** The press under way: where the focus was as it began, and what `begin` answered; null while
+   *  no press is under way. */
+  let press: { readonly from: Element | null; readonly start: T } | null = null;
+  const notePress = (event: PointerEvent) => {
+    press = { from: page.activeElement, start: begin(event) };
+  };
+  /** Ends the press under way, if any, and tells `done` of it. */
+  const endPress = () => {
+    if (press === null) return;
+    const { from, start } = press;
+    press = null;
+    done(from, start);
+  };
+  const notePointerUp = () => {
+    if (press !== null && page.activeElement !== press.from) endPress();
+  };
+  page.addEventListener("pointerdown", notePress, true);
+  page.addEventListener("pointerup", notePointerUp, true);
+  page.addEventListener("click", endPress, true);
+  return () => {
+    page.removeEventListener("pointerdown", notePress, true);
+    page.removeEventListener("pointerup", notePointerUp, true);
+    page.removeEventListener("click", endPress, true);
+  };
+}
+
+/**
  * Watches `layer`, a layer outside `region` that the focus left the region for from `opener`,
  * and returns what ends the watch (decision 237). A write may take the opener away while the
  * layer is open, as the header's labels' count goes once every label fits; the layer, as it
@@ -133,10 +175,8 @@ function firstHolder(fallbacks: readonly FocusFallback[], loss: FocusLoss): HTML
  *   `AnchoredPanel` does, takes the control focused in it along and drops the focus to the body
  *   before the press's mousedown. Nor is a press that moved the focus to an element, as one in a
  *   popover the layer opened: a later fall to the body is not its doing. A press is read once its
- *   own move is done: at its pointerup when the focus has moved by then, as a mouse press moves
- *   it as its button goes down; else at its click, as a tap moves it only after its pointer is
- *   up. The click is read before the target's own handler, so a click that closes the layer is
- *   read before it does.
+ *   own move is done (`hearPresses`), and its click is read before the target's own handler, so a
+ *   click that closes the layer is read before it does.
  *
  * The loss names no added elements, since nothing watched the region while the layer was open,
  * and its place is read from where the opener stood when the watch began (`FocusLoss.place`).
@@ -168,11 +208,6 @@ function watchLayer(
   // The page's own top-level container, the app's root, which holds the region and the rest of
   // the page but not a popover drawn straight on the page's body.
   const app = region.closest("body > *");
-  /** The press under way: where the focus was as it began, and whether it fell outside the
-   *  layer; null while no press is under way. A press is under way from its pointerdown until
-   *  the pointerup that finds the focus moved, or else until its click; a new pointerdown
-   *  replaces one still under way. */
-  let press: { readonly from: Element | null; readonly outside: boolean } | null = null;
   /** Whether the reader's last press that moved the focus put it on the page from outside the
    *  layer, off an element still in the page, and no element has taken the focus since: then that
    *  press, not the layer, put the focus on the body. */
@@ -181,33 +216,13 @@ function watchLayer(
    *  an ancestor, or undefined while no read waits. */
   let read: number | undefined;
 
-  const notePress = (event: PointerEvent) => {
-    const outside = !(event.target instanceof Node && layer.contains(event.target));
-    press = { from: page.activeElement, outside };
-  };
-  /** Ends the press under way, if any, and reads it as it stands now. */
-  const endPress = () => {
-    if (press === null) return;
-    const { from, outside } = press;
-    press = null;
+  const readPress = (from: Element | null, outside: boolean) => {
     // A press that left the focus where it was is no move of the reader's, and leaves the mark as
     // it was. A fall to the body is the press's own only while the element the focus left is
     // still in the page: a popover that closes as the press begins takes its focused control
     // along, which drops the focus to the body before the press could move it.
     if (page.activeElement === from) return;
     pressedOntoPage = outside && focusOnDocument() && from?.isConnected === true;
-  };
-  const notePointerUp = () => {
-    // A mouse press moves the focus as its button goes down, so a press that has moved it by its
-    // pointerup is done. A tap moves the focus only after its pointer is up, from the mousedown
-    // the browser sends it then, so a press that has moved no focus yet waits for its click.
-    if (press !== null && page.activeElement !== press.from) endPress();
-  };
-  const noteClick = () => {
-    // Heard in the capture phase on the page, before the target's own click handler: the header's
-    // Details control cancels its mousedown so the focus stays where it is, and closes Details
-    // from its click, which must not read as the press moving the focus.
-    endPress();
   };
   const noteFocus = (event: FocusEvent) => {
     const { target } = event;
@@ -230,9 +245,7 @@ function watchLayer(
     read = undefined;
     observer.disconnect();
     page.removeEventListener("focusin", noteFocus, true);
-    page.removeEventListener("pointerdown", notePress, true);
-    page.removeEventListener("pointerup", notePointerUp, true);
-    page.removeEventListener("click", noteClick, true);
+    stopPresses();
   };
   const readLayer = () => {
     read = undefined;
@@ -257,9 +270,12 @@ function watchLayer(
     observer.observe(node, LAYER_CLOSINGS);
   }
   page.addEventListener("focusin", noteFocus, true);
-  page.addEventListener("pointerdown", notePress, true);
-  page.addEventListener("pointerup", notePointerUp, true);
-  page.addEventListener("click", noteClick, true);
+  // Each press notes as it begins whether it fell outside the layer, which `readPress` reads.
+  const stopPresses = hearPresses(
+    page,
+    (event) => !(event.target instanceof Node && layer.contains(event.target)),
+    readPress
+  );
   return stop;
 }
 
@@ -323,13 +339,19 @@ export function useFocusKeeper(
     /** The observer's records since the last check: what a change added, and where it took an
      *  element out. */
     let heard: MutationRecord[] = [];
-    /** Whether the reader has pressed the pointer somewhere other than `held` since it took the
-     *  focus, and pressed no key since. Such a press is the reader moving the focus: a press on
-     *  the page blurs the control to the body, and the handler that blur runs may remove it before
-     *  the check below runs. A press that moves no focus on purpose (a control that prevents its
-     *  mousedown) leaves the focus on `held` with no focusin to clear the mark, so a key clears
-     *  it: a key acts from where the focus is. */
+    /** Whether a press of the reader's somewhere other than `held` may have moved the focus off
+     *  it. Such a press sets the mark as it begins and keeps it until it is done (`hearPresses`):
+     *  a mouse press on the page blurs the control to the body as its button goes down, and the
+     *  handler that blur runs may remove the control before the check below runs, all before the
+     *  press's pointerup. A press that is done keeps the mark when it moved the focus and clears
+     *  it when it moved none: a control that cancels its own mousedown, as the header's Details
+     *  control does, leaves the focus on `held`, and a write that then takes `held` away is a loss
+     *  the keeper owes the reader. A press on `held` clears it as it begins, and so do a key,
+     *  which acts from where the focus is, and a focus on an element of the region (`hold`). */
     let pointerMoved = false;
+    /** Ends the hearing of the reader's presses (`hearPresses`), which runs while the keeper holds
+     *  an element, or is undefined while it holds none. */
+    let stopPresses: (() => void) | undefined;
     /** The timer of the keeper's move, which waits one task after the check that found the loss,
      *  or undefined while no move waits. */
     let waiting: number | undefined;
@@ -347,10 +369,15 @@ export function useFocusKeeper(
       // A press is the reader acting, which ends a claim to give a control its focus back.
       given = null;
       // A press on the control that holds the focus leaves the focus there and focuses nothing
-      // anew, so no focusin would clear the mark: the write that press starts may then take the
-      // control away, which is a loss the keeper owes the reader.
-      if (held !== null && event.target instanceof Node && held.contains(event.target)) return;
-      pointerMoved = true;
+      // anew, and the write it starts, even before its click, may take the control away, which is
+      // a loss the keeper owes the reader. Any other press is marked until it is done.
+      const onHeld = held !== null && event.target instanceof Node && held.contains(event.target);
+      pointerMoved = !onHeld;
+    };
+    const readPress = (from: Element | null) => {
+      // A press that moved the focus keeps the mark; one that left it where it was is no move of
+      // the reader's.
+      if (page.activeElement === from) pointerMoved = false;
     };
     const noteKey = () => {
       given = null;
@@ -366,7 +393,7 @@ export function useFocusKeeper(
     const hold = (element: HTMLElement) => {
       if (held === null) {
         observer.observe(region, LOSSES);
-        page.addEventListener("pointerdown", notePress, true);
+        stopPresses = hearPresses(page, notePress, readPress);
         page.addEventListener("keydown", noteKey, true);
       }
       held = element;
@@ -380,7 +407,8 @@ export function useFocusKeeper(
       waiting = undefined;
       given = null;
       observer.disconnect();
-      page.removeEventListener("pointerdown", notePress, true);
+      stopPresses?.();
+      stopPresses = undefined;
       page.removeEventListener("keydown", noteKey, true);
     };
     /** Whether the focus has moved from `lost` to an element outside the region: the reader has

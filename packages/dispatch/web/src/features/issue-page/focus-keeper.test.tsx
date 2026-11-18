@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-// biome-ignore lint/style/noRestrictedImports: the press case needs a press, a blur and a removal inside one task, and user-event's press awaits between its events; the tap case needs a tap's order, its pointer up before the blur its mousedown makes, and user-event moves the focus as its pointer goes down.
+// biome-ignore lint/style/noRestrictedImports: the press case needs a press, a blur and a removal inside one task, and user-event's press awaits between its events; the tap cases need a tap's order, its pointer up before the blur its mousedown makes, and user-event moves the focus as its pointer goes down.
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useEffect, useRef, useState } from "react";
@@ -202,6 +202,48 @@ test("a press that moves no focus is no move of the reader's once they press a k
   } finally {
     view.unmount();
     stopFixup();
+  }
+});
+
+test("a press that moves no focus is no move of the reader's when a write then disables the control", async () => {
+  const user = userEvent.setup();
+  const stopFixup = emulateChromiumFocusFixup();
+  const view = render(<Region />);
+  try {
+    act(() => button("Save").focus());
+    // Details cancels its mousedown, so the press leaves the focus on Save. Another reader's write
+    // then disables Save, with no key pressed in between.
+    await user.click(button("Details"));
+    expect(button("Save")).toHaveFocus();
+    view.rerender(<Region save="disabled" />);
+    await waitFor(() => expect(button("First fallback")).toHaveFocus());
+  } finally {
+    view.unmount();
+    stopFixup();
+  }
+});
+
+test("a tap on the page is the reader's move, even when the control then goes", async () => {
+  const view = render(<Region />);
+  try {
+    await onFakeClock(async () => {
+      act(() => button("Save").focus());
+      // A tap on a blank part of the page: its pointer goes down and up with the focus still on
+      // Save, and only the mousedown the browser sends after it blurs Save to the body, before its
+      // click. user-event moves the focus as its pointer goes down.
+      fireEvent.pointerDown(document.body);
+      fireEvent.pointerUp(document.body);
+      expect(button("Save")).toHaveFocus();
+      act(() => button("Save").blur());
+      // The tap's click comes last, on the same blank part of the page, and a write then removes
+      // Save, all before the keeper's check of the blur runs.
+      fireEvent.click(document.body);
+      view.rerender(<Region save="removed" />);
+      await jump(1);
+      expect(document.body).toHaveFocus();
+    });
+  } finally {
+    view.unmount();
   }
 });
 
