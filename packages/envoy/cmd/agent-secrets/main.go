@@ -660,6 +660,41 @@ func nextBackoff(cur time.Duration) time.Duration {
 	return min(2*cur, 10*time.Second)
 }
 
+// waitRecordFile names a file the exec form's wait appends one line to before each step it
+// takes, so a test that runs the built command can judge the wait by the steps it took rather
+// than by how long they took: "read wait=N" before each status read, N the seconds it asks the
+// broker to hold that read for, and "sleep D" before each backoff sleep, D the sleep's length as
+// time.Duration writes it. Only tests set it; unset, the wait writes nothing.
+const waitRecordFile = "AGENT_SECRETS_WAIT_RECORD_FILE"
+
+// waitRecord is the file waitRecordFile names, "" when it is unset.
+type waitRecord string
+
+// read notes a status read about to be sent, asking the broker to hold it for wait seconds.
+func (r waitRecord) read(wait int) {
+	if r != "" {
+		r.add(fmt.Sprintf("read wait=%d", wait))
+	}
+}
+
+// sleep notes a backoff sleep of d about to begin.
+func (r waitRecord) sleep(d time.Duration) {
+	if r != "" {
+		r.add("sleep " + d.String())
+	}
+}
+
+// add appends line to the record. The record is a test's: one that cannot be written fails the
+// test that reads it, never the command, so add drops its errors.
+func (r waitRecord) add(line string) {
+	f, err := os.OpenFile(string(r), os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
+	if err != nil {
+		return
+	}
+	_, _ = f.WriteString(line + "\n")
+	_ = f.Close()
+}
+
 // ---------------------------------------------------------------------------
 // keygen
 // ---------------------------------------------------------------------------
@@ -1137,6 +1172,7 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 		// which answers every read at once; a failed read that comes back sooner gets the same
 		// sleep. Without it the loop would ask such a broker as fast as it answers.
 		backoff := 2 * time.Second
+		steps := waitRecord(os.Getenv(waitRecordFile))
 		for state == "pending" {
 			remaining := time.Until(deadline)
 			if remaining <= 0 {
@@ -1147,6 +1183,7 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 			// record.MaxRequestWaitSeconds: the broker answers within a step of a decision, so
 			// the command learns of it at once rather than at its next poll.
 			asked := min(record.MaxRequestWaitSeconds, int((remaining+time.Second-1)/time.Second))
+			steps.read(asked)
 			sent := time.Now()
 			status, _, err := c.GetRequest(ctx, signer, requestID, asked)
 			switch {
@@ -1164,7 +1201,9 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 				return 1
 			}
 			if state == "pending" && time.Since(sent) < time.Duration(asked)*time.Second {
-				time.Sleep(min(backoff, time.Until(deadline)))
+				pause := min(backoff, time.Until(deadline))
+				steps.sleep(pause)
+				time.Sleep(pause)
 				backoff = nextBackoff(backoff)
 			}
 		}
