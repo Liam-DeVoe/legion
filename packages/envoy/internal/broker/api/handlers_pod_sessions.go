@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"regexp"
+	"slices"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/enroll"
@@ -190,7 +191,7 @@ func (s *server) registerPodSession(w http.ResponseWriter, r *http.Request, regi
 			"service", registrar.Service, "registrar", registrar.Subject, "holder", held.Holder,
 			"account", claims.Subject, "pod", claims.PodUID, "session", body.Session)
 		writeError(w, http.StatusConflict, "SESSION_HELD_BY_ANOTHER_REGISTRAR",
-			fmt.Sprintf("the session name %s is held by another registrar, %s, until its registrations of the name lapse or it releases them", held.Session, held.Holder))
+			fmt.Sprintf("the session name %s is held by another registrar, %s, until its registrations of the name lapse, released or not", held.Session, held.Holder))
 	case err != nil:
 		writeInternal(w, "register the pod's session name", err)
 	default:
@@ -234,4 +235,99 @@ func (s *server) podSessionToken(ctx context.Context, raw string) (enroll.Accoun
 	default:
 		return enroll.AccountClaims{}, err
 	}
+}
+
+// maxReleasedSessions is the most entries a release's session list may hold, counted as sent,
+// before a name given twice is dropped: with readJSON's 1 MiB it bounds what one call asks of the
+// store, by count as well as by bytes, so a caller with more names, or with many long ones, sends
+// them in more than one call.
+const maxReleasedSessions = 4096
+
+// podSessionReleaseBody is POST /v1/oauth/exchange/pod-sessions/release's exact shape.
+type podSessionReleaseBody struct {
+	// The session names whose registrations the caller releases: 1 to 4096 entries, counted as
+	// sent. Any string is a name: one the registration route could never have taken (empty, over
+	// 200 bytes, or with white space or an unprintable character) matches no registration, so it
+	// is released with nothing to release, and a name given twice counts once.
+	Sessions []string `json:"sessions"`
+}
+
+// podSessionReleaseResponse is POST /v1/oauth/exchange/pod-sessions/release's answer: two counts,
+// a fixed size whatever the list, so it fits any client's read limit.
+type podSessionReleaseResponse struct {
+	// The number of distinct session names the request asked to release.
+	Sessions int `json:"sessions"`
+	// The number of the caller's live registrations of those names that are released after the
+	// call, by this call or an earlier one: 0 for names the caller holds no registration of, which
+	// are released all the same.
+	Released int `json:"released"`
+}
+
+// releasePodSessions is POST /v1/oauth/exchange/pod-sessions/release: a deployment's own daemon
+// releases the session names it registered at POST /v1/oauth/exchange/pod-sessions, as it does
+// when the claim those names served ends, so a pod it registered under them, still holding a
+// token it can present, trades under them no more.
+//
+// Who may call is who may call the registration route (serviceAuth): an account
+// BROKER_SERVICE_LOGINS lists, presenting its own projected ServiceAccount token for the broker's
+// audience, and nothing else. The class answers before the handler, as it does for the
+// registration: 401 for the token, 403 ACCOUNT_NOT_LISTED for an account the logins do not name,
+// and 429 with Retry-After from the account class's per-address bucket. BROKER_POD_REGISTRARS
+// does not gate it: a release touches only the caller's own registrations, so a registrar whose
+// entry was taken out still releases what it registered while it was listed. The caller stops
+// every write of the names it releases first, its renewal and any write in flight: a registration
+// write by the caller after the release makes that registration live again.
+//
+// The body is exactly {"sessions": [...]}, at most 1 MiB (413 REQUEST_TOO_LARGE above it); an
+// unknown field, or a body that is not JSON, is 400 INVALID_REQUEST. A list that is missing, null
+// or empty, a body of null included, or that holds more than maxReleasedSessions entries counted
+// as sent, is 400 SESSIONS_INVALID, naming the count. Any string is a name and none is refused:
+// one the registration route could never have taken matches no registration
+// (exchange.ValidSession), so it is released with nothing to release.
+//
+// The release is one transaction (oauthstore.Store.ReleasePodSessions): every live registration of
+// each named session that the caller registered is marked released, once, so a repeat does not
+// move the mark. Nothing is deleted and no expiry moves, and no registration of another registrar
+// is touched or revealed. The answer is 200 {"sessions", "released"}: the number of distinct
+// names asked, and the number of the caller's live registrations of those names that are released
+// after the call. A 200 means every named session is released: from its commit on, the exchange
+// refuses each registration of each named session that the caller registered (a permanent
+// invalid_grant); the rows stay until they expire, at most oauthstore.PodSessionRetention after
+// their last write, and keep each name bound to the caller until then, so no other registrar
+// takes it; and the caller's later registration write of a pod and name makes that one
+// registration live again and nothing else. released: 0, for a name the caller holds no
+// registration of, is still released. A repeat of the call answers the same and changes nothing,
+// so a retry after a lost answer is safe.
+//
+// Every other answer releases nothing: the refusals above, a 5xx, and a 404 or 405 from a broker
+// of an older build or with no OAuth provider, which mounts no /v1/oauth/ route. Only a 200 says
+// the names are released, and anything else is "not released, try again".
+//
+// It revokes no access token: one minted before the release commits, or by an exchange that read
+// the registration just before, lives to its own expiry, at most BROKER_ACCESS_TOKEN_SECONDS (900
+// seconds by default) after the release.
+//
+// Each release is logged at Info, naming the service, the registrar, the number of names asked
+// and the number of registrations released, since the registrar is the authority here and these
+// lines are the record of which registrar stopped its pods' trades, and when.
+func (s *server) releasePodSessions(w http.ResponseWriter, r *http.Request, registrar machine.ServiceAccount) {
+	var body podSessionReleaseBody
+	if !readJSON(w, r, &body, "INVALID_REQUEST") {
+		return
+	}
+	if len(body.Sessions) == 0 || len(body.Sessions) > maxReleasedSessions {
+		writeError(w, http.StatusBadRequest, "SESSIONS_INVALID",
+			fmt.Sprintf("sessions holds %d names; a release names 1 to %d, and a caller with more sends them in more than one call", len(body.Sessions), maxReleasedSessions))
+		return
+	}
+	slices.Sort(body.Sessions)
+	names := slices.Compact(body.Sessions)
+	released, err := s.deps.OAuth.ReleasePodSessions(r.Context(), registrar.Subject, names)
+	if err != nil {
+		writeInternal(w, "release the pod session names", err)
+		return
+	}
+	slog.Info("broker: released a registrar's pod-session registrations",
+		"service", registrar.Service, "registrar", registrar.Subject, "sessions", len(names), "released", released)
+	writeJSON(w, http.StatusOK, podSessionReleaseResponse{Sessions: len(names), Released: released})
 }

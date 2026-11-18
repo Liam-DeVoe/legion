@@ -512,6 +512,18 @@ func (p *Provider) RegisterPodSession(ctx context.Context, registrar, account, p
 	return p.store.RegisterPodSession(ctx, registrar, podUID, session, jkt, generation)
 }
 
+// ReleasePodSessions marks released every live registration of each of the session names
+// sessions that the registrar registrar, the login account of the caller, wrote, and answers how
+// many of the registrar's live registrations of those names are released after the call
+// (oauthstore.Store.ReleasePodSessions). From its commit the exchange refuses a pod's trade under
+// each such registration, and the rows keep each name bound to the registrar until they expire.
+// It is what POST /v1/oauth/exchange/pod-sessions/release does. The policy is not asked: a release
+// admits nothing, and a name no registration could have taken matches no row, so there is nothing
+// the configuration has to refuse.
+func (p *Provider) ReleasePodSessions(ctx context.Context, registrar string, sessions []string) (int, error) {
+	return p.store.ReleasePodSessions(ctx, registrar, sessions)
+}
+
 // writeError answers err as the library's OAuth error JSON, logging a server error's cause.
 func (p *Provider) writeError(ctx context.Context, w http.ResponseWriter, request oauth2.AccessRequester, err error) {
 	if oauth2.ErrorToRFC6749Error(err).CodeField >= http.StatusInternalServerError {

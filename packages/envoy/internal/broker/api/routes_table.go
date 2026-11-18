@@ -201,19 +201,22 @@ func accountAuthAfterRecordKind(needs power, h func(*server, http.ResponseWriter
 
 // serviceAuth is a route for a service calling the broker with its own Kubernetes ServiceAccount
 // token, the account BROKER_SERVICE_LOGINS lets log in as that service — a deployment's Legion
-// daemon, which registers the pods it starts. The token is verified and mapped to its service by
-// the check a token login makes (machine.Service.VerifyServiceToken). The handler is given that
-// check's own answer, one machine.ServiceAccount: the service the caller logs in as, the
-// account whose token it presented, and the pod that token was bound to. The account and the
-// pod come with it because BROKER_SERVICE_LOGINS may name an account BROKER_SERVICES binds to a
-// service: every pod of such an account logs that service in, so a caller here may be the very
-// pod a request names, and the account and the pod uid are what tell the two apart.
+// daemon, which registers the pods it starts and releases the session names it registered. The
+// token is verified and mapped to its service by the check a token login makes
+// (machine.Service.VerifyServiceToken). The handler is given that check's own answer, one
+// machine.ServiceAccount: the service the caller logs in as, the account whose token it
+// presented, and the pod that token was bound to. The account and the pod come with it because
+// BROKER_SERVICE_LOGINS may name an account BROKER_SERVICES binds to a service: every pod of such
+// an account logs that service in, so a caller here may be the very pod a request names, and the
+// account and the pod uid are what tell the two apart.
 //
 // It is a class of its own rather than a power of accountAuth's because the two lists are two
 // authorities: BROKER_API_ACCOUNTS names the callers that relay a person's decisions and read
 // tokens back, and a daemon that registers its own pods is not one of them. A deployment already
-// lists its per-project daemons in BROKER_SERVICE_LOGINS for their token logins, so these routes
-// need no new setting and no new account.
+// lists its per-project daemons in BROKER_SERVICE_LOGINS for their token logins, so the class
+// needs no new login. The login is all a release needs, since a release touches only the caller's
+// own registrations (releasePodSessions); a registration needs an entry of BROKER_POD_REGISTRARS
+// too (registerPodSession), since a session pod logs in as a service as well.
 func serviceAuth(h func(*server, http.ResponseWriter, *http.Request, machine.ServiceAccount)) routeHandler {
 	return routeHandler{auth: authService, serve: func(s *server, w http.ResponseWriter, r *http.Request, who caller) {
 		h(s, w, r, who.service)
@@ -290,6 +293,11 @@ func routes() []apiRoute {
 		// the deployment's own daemon as it starts that pod. Mounted only when the broker runs its
 		// OAuth provider.
 		{http.MethodPost, "/v1/oauth/exchange/pod-sessions", serviceAuth((*server).registerPodSession)},
+		// Release session names the calling daemon registered: each live registration of each name
+		// that it wrote is marked released, so the token exchange refuses its pod's trade under it,
+		// and the row keeps the name bound to that daemon until it expires. Mounted only when the
+		// broker runs its OAuth provider.
+		{http.MethodPost, "/v1/oauth/exchange/pod-sessions/release", serviceAuth((*server).releasePodSessions)},
 		// Extend the calling session's lease.
 		{http.MethodPost, "/v1/enrollments/{id}/renew", renewAuth((*server).renewEnrollment)},
 		// Describe the calling session's enrollment and its live grants.

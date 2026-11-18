@@ -5,11 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"slices"
 	"time"
 
 	"authelia.com/provider/oauth2"
 	"authelia.com/provider/oauth2/handler/rfc8693"
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/broker/exchange"
 )
 
 // What the exchange's handlers ask of the session they run on: the token exchange's own
@@ -583,6 +586,70 @@ func (s *Store) PodSessionRegistered(ctx context.Context, podUID, session, jkt s
 		return false, &PodSessionBoundError{Bound: bound}
 	}
 	return true, nil
+}
+
+// ReleasePodSessions marks released every live registration of each name in sessions that the
+// registrar registrar wrote, and answers released: how many of registrar's live registrations of
+// those names are released once it commits, by this call or an earlier one. It is what POST
+// /v1/oauth/exchange/pod-sessions/release does for the daemon logged in as registrar, once that
+// daemon has stopped writing the names it releases.
+//
+// The exchange refuses a released registration (PodSessionRegistered answers a
+// *PodSessionReleasedError), and the row still holds its name for registrar until it expires:
+// nothing is deleted and no expiry moves, so no other registrar takes the name while a token of
+// the released pod can still be presented (RegisterPodSession), and the sweep deletes the row when
+// it would have anyway. A row released before keeps the moment of its first release, so a repeat
+// changes nothing and answers the same, and a retry after a lost answer is safe. Only registrar's
+// own rows are released or counted: a row of the same name that another registrar, or none, wrote
+// is neither touched nor revealed. registrar's next write of a released row's pod and name takes
+// the row whole and makes that one registration live again (writePodSession).
+//
+// A name exchange.ValidSession refuses is one the registration route never wrote a row of, so it
+// is dropped as matching nothing rather than refused, and a name given twice is asked once. With
+// no name left it reads nothing and answers 0.
+//
+// It is one transaction of its own, the update then the count, and takes no advisory lock: it
+// inserts no row, so it cannot race another registrar's first write of a name as two inserts can
+// (lockPodSessionName), and a write of a row it updates locks that row (lockPodSession), so it
+// waits for the release to commit and then finds the row released. The transaction names read
+// committed, as RegisterPodSession's does, so that two releases of one name by one registrar both
+// commit: the second's update waits on the first's rows, then finds them released and leaves them,
+// and its count, a statement of its own, reads them as the first committed them; under repeatable
+// read that update would fail to serialize instead (SQLSTATE 40001). So a ctx already carrying a
+// transaction is refused; no caller passes one.
+func (s *Store) ReleasePodSessions(ctx context.Context, registrar string, sessions []string) (released int, err error) {
+	if _, joined := TxFrom(ctx); joined {
+		return 0, errors.New("release the pod session names: the release opens a read-committed transaction of its own, and the context already carries one")
+	}
+	names := make([]string, 0, len(sessions))
+	for _, session := range sessions {
+		if exchange.ValidSession(session) {
+			names = append(names, session)
+		}
+	}
+	slices.Sort(names)
+	names = slices.Compact(names)
+	if len(names) == 0 {
+		return 0, nil
+	}
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return 0, fmt.Errorf("release the pod session names: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	_, err = tx.Exec(ctx, `update oauth_pod_sessions set released_at = now()
+		where registrar = $1 and session = any($2) and expires_at > now() and released_at is null`, registrar, names)
+	if err == nil {
+		err = tx.QueryRow(ctx, `select count(*) from oauth_pod_sessions
+			where registrar = $1 and session = any($2) and expires_at > now() and released_at is not null`, registrar, names).Scan(&released)
+	}
+	if err == nil {
+		err = tx.Commit(ctx)
+	}
+	if err != nil {
+		return 0, fmt.Errorf("release the pod session names: %w", err)
+	}
+	return released, nil
 }
 
 // SetTokenExchangeCustomJWT remembers a subject token's jti until exp plus jtiRetentionMargin and

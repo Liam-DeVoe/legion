@@ -4,6 +4,7 @@
 package api_test
 
 import (
+	"crypto/ecdsa"
 	"encoding/json"
 	"net/http"
 	"net/url"
@@ -127,12 +128,19 @@ type exchanged struct {
 // exchange does, with a DPoP proof of a key of its own, and answers what the exchange answered.
 func (ts *testServer) exchangePodToken(t *testing.T, subjectToken, session string) exchanged {
 	t.Helper()
+	return ts.exchangeProvedBy(t, newSigningKey(t), subjectToken, session)
+}
+
+// exchangeProvedBy is exchangePodToken with a DPoP proof of key, so the trade is the one a role
+// holding key makes, which a registration bound to key's thumbprint admits.
+func (ts *testServer) exchangeProvedBy(t *testing.T, key *ecdsa.PrivateKey, subjectToken, session string) exchanged {
+	t.Helper()
 	form := url.Values{
 		"grant_type": {brokerclient.GrantTypeTokenExchange}, "client_id": {oauthwire.ExchangeClientID},
 		"subject_token": {subjectToken}, oauth.FormSubjectTokenType: {oauthwire.SubjectTokenTypeKubernetes},
 		oauthwire.FormSession: {session},
 	}
-	client := &http.Client{Transport: brokerclient.NewDPoPTransport(newSigningKey(t), http.DefaultTransport)}
+	client := &http.Client{Transport: brokerclient.NewDPoPTransport(key, http.DefaultTransport)}
 	answer := send(t, client, request(t, http.MethodPost, ts.URL+"/v1/oauth/token", strings.NewReader(form.Encode()),
 		map[string]string{"Content-Type": "application/x-www-form-urlencoded"}))
 	var body struct {

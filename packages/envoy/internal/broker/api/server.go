@@ -133,9 +133,9 @@ type Deps struct {
 	TrustedProxyHeader string
 	// OAuth is the machine login's OAuth provider and the token exchange. POST
 	// /v1/oauth/device_authorization, POST /v1/oauth/token, POST /v1/oauth/introspect, POST
-	// /v1/oauth/revoke and POST /v1/oauth/exchange/pod-sessions are
-	// mounted only when it is set, with DeviceLogin and both TokenHooks, which it then requires
-	// (Register panics without them).
+	// /v1/oauth/revoke, POST /v1/oauth/exchange/pod-sessions and POST
+	// /v1/oauth/exchange/pod-sessions/release are mounted only when it is set, with DeviceLogin
+	// and both TokenHooks, which it then requires (Register panics without them).
 	OAuth *oauth.Provider
 	// DeviceLogin opens a device login's record from the device authorization request's form and
 	// the user code the provider minted, in the provider's transaction (oauthstore.TxFrom on ctx);
