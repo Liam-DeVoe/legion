@@ -163,7 +163,9 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 // what is stored and a retry under the request's Idempotency-Key makes the write afresh; read
 // after the commit, it would answer 500 for a write that stands, its key marked committed with it
 // (markRequestKeyCommitted), and the retry would hear 409 KEY_COMMITTED and never the ask. An
-// /api/v1 write, which answers the ask it holds and reads nothing back, has none (nil).
+// /api/v1 write answers what its own handler holds or reads on its transaction (a hand-on reads
+// its ask back with loadAsk, an opened ask its waiting person with askWaitingOnPerson), and has
+// none (nil).
 type askReadBack func(ctx context.Context, q queryer, id string) error
 
 // read runs readBack where there is one.

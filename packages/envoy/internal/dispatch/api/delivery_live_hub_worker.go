@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 )
@@ -168,7 +169,7 @@ func (h *deliveryHub) recompute(g *hubGeneration, view *deliveryView, cause stri
 		view.body, view.expiry, view.seq = nil, time.Time{}, read.seq
 		for sub := range view.subs {
 			if !sub.told {
-				sub.conn.Send(liveRefusal(sub.id, "DELIVERY_NOT_CONFIGURED", deliveryNotConfigured(apiV2)))
+				sub.conn.Send(liveRefusal(sub.id, apicode.DeliveryNotConfigured.V1Name(), deliveryNotConfigured(apiV2)))
 				sub.told = true
 				sent++
 			}

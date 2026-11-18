@@ -27,18 +27,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/prioritystore"
 )
 
-// The priority routes' own refusals:
-//   - PRIORITY_INPUT (apicode.PriorityInput) refuses a body no priority can be written from: a
-//     title with nothing in it or one longer than an issue title may be, an id that is no priority
-//     id, a title no id can be derived from, and a patch that names nothing to write.
-//   - PRIORITY_EXISTS (apicode.PriorityExists) refuses a create of an id the store already holds,
-//     as a project create refuses a key it holds (PROJECT_EXISTS): a second create would write
-//     its own history over the first write's.
-//   - PRIORITY_NOT_FOUND (apicode.PriorityNotFound) answers a write addressed to an id no
-//     priority row carries.
-//   - RANK_INPUT (apicode.RankInput) refuses a move to a place the order does not have, which is
-//     the code and the wording the issue board's own drag is refused with (issue_rank.go).
-
 // priorityIDMax is the longest priority id, in bytes, which for the ASCII the grammar admits is
 // characters too. The id is a btree key of priority_nodes and of priority_tuples_inbound, and
 // Postgres refuses a btree entry over about 2,700 bytes, so an id with no bound reached the

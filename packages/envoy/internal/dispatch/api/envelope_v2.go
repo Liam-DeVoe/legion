@@ -20,7 +20,7 @@ type page[T any] struct {
 	Offset int `json:"offset"`
 }
 
-// logPage is one page of a list whose total is null (R5 of dispatch://INFRA-4071/spec, plan t6):
+// logPage is one page of a list whose total is null (R5 of dispatch://INFRA-4071/spec):
 // the global event log, GET /api/v2/events, which a log read forward by id would count whole on
 // every page, about ten times the page for a reader near the oldest event, and the caller's
 // dismissed threads, GET /api/v2/me/threads?state=dismissed, every thread they have ever

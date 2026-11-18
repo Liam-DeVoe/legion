@@ -1,6 +1,6 @@
 package api
 
-// v2_issues.go is the issues of /api/v2 (plan t10 of dispatch://INFRA-4071, its issue half): the
+// v2_issues.go is the issues of /api/v2 (R1 of dispatch://INFRA-4071/spec): the
 // list of issues across projects, which also answers for GET /api/v1/issues/resolve (ref=), and a
 // project's own list of the same rows (R1.3 of dispatch://INFRA-2946/spec); the create; the lean
 // read of one issue, whose include= gives what GET /api/v1/issues/{key} answered (the route map's
@@ -11,7 +11,7 @@ package api
 // claimIssueAs, releaseIssueClaimAs, issueCollaboratorsOf, issueCoverage, issueDecisionsOf,
 // writeDecisionKeep, refs.Closure, readIssueChecks, recordCheckResultFrom,
 // retractCheckResultAs, subscribersOf, unsubscribeSession), each path object checked first and
-// answered with its own 404 (decision 11); a {session_id} keeps today's answer (ruling A).
+// answered with its own 404, and a {session_id} keeps the answer /api/v1 gives it (R7).
 
 import (
 	"context"
@@ -33,7 +33,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
-// resultMissingRefusal is the refusal of a result id no check result has (decision 11).
+// resultMissingRefusal is the refusal of a result id no check result has
+// (dispatch://INFRA-4071/spec R7).
 var resultMissingRefusal = apicode.Refusal{Condition: apicode.ResultMissing, Code: apicode.ResultNotFound}
 
 // The refusals of a parent or blocked_by write that would make a loop, which /api/v2 answers with
@@ -43,8 +44,8 @@ var (
 	dependencyLoopRefusal = apicode.Refusal{Condition: apicode.DependencyLoop, Code: apicode.DependencyCycle}
 )
 
-// issuePinnedAuthority is the authority of GET /api/v2/issues's pinned=true (plan t4 step 2,
-// authorities_v2.go): the pins are one person's, so reading them needs the person scope.
+// issuePinnedAuthority is the authority of GET /api/v2/issues's pinned=true (authorities_v2.go):
+// the pins are one person's, so reading them needs the person scope.
 var issuePinnedAuthority = authorityRule{
 	Where: authorityWhere{In: partQuery, Name: "pinned"}, Value: "true", Scopes: routeScopeSet{model.ScopePerson},
 }
@@ -83,7 +84,7 @@ const issueClaimText = "The status does not move. Answers the issue with legion_
 	"the status and a status another writer sets is undone. 409 CLAIM_CONTENDED means the holder changed twice while " +
 	"the request ran, so nothing was applied and nobody's liveness was checked: read the issue and retry."
 
-// v2IssueRows are the issue routes (plan t10's issue half): rows 80 and 82; 81; the project's
+// v2IssueRows are the issue routes: rows 80 and 82; 81; the project's
 // list R1.3 adds; 83 and 115; 84 and 102; 95; 96; 97; 100; 101; 17; 110; 111; 112; 113; 114; and
 // 173 of the route map.
 func (s *server) v2IssueRows() []routeRow {
@@ -454,7 +455,7 @@ type issueReadV2Query struct {
 // and its artifacts as every /api/v2 read of artifacts answers them, which is what GET
 // /api/v1/issues/{key}/summary answered and more, and each member include= names, which together
 // are what GET /api/v1/issues/{key} answered. It is a type of its own, so no /api/v1 shape's tags
-// change (decision 2).
+// change (dispatch://INFRA-4071/spec R3).
 type issueReadV2 struct {
 	model.Issue
 	Artifacts []artifactV2 `json:"artifacts"`
@@ -557,7 +558,8 @@ type issueReferencesV2 struct {
 
 // referenceMemberV2 is one document of an issue's reference closure as GET
 // /api/v2/issues/{key}/references answers it: /api/v1's model.ReferenceMember, the document's
-// artifact row (artifactV2) in place of the artifact with its versions (decision 2).
+// artifact row (artifactV2) in place of the artifact with its versions (dispatch://INFRA-4071/spec
+// R3).
 type referenceMemberV2 struct {
 	Artifact artifactV2         `json:"artifact"`
 	Depth    int                `json:"depth"`
@@ -650,7 +652,7 @@ type issueChecksV2Query struct {
 // compared_nothing naming which of the two kinds of nothing stopped a check that compared with
 // nothing because there was nothing to compare with (R10 of dispatch://INFRA-4071/spec), where
 // /api/v1 names one reason for both. It is a type of its own, so no /api/v1 shape's tags change
-// (decision 2).
+// (R3).
 type checkV2 struct {
 	model.CheckBlock
 	ComparedNothing string `json:"compared_nothing,omitempty" enum:"no_pull_request,no_repository,repository_unreadable,read_failed"`
@@ -1022,9 +1024,9 @@ func (s *server) listIssueDecisionsV2(w http.ResponseWriter, r *http.Request) {
 
 // putDecisionStateV2 answers PUT /api/v2/issues/{key}/decisions/{block_id}/state: the keep POST
 // /api/v1/artifacts/{id}/blocks/{block_id}/keep records (writeDecisionKeep), of the decision the
-// block opens in the issue's decisions document, once the no-op rule of decision 8 has found the
-// body is a change: a keep of the same text_sha256 by the person who kept it answers the keep as it
-// stands and writes nothing (putChangesNothing).
+// block opens in the issue's decisions document, once the no-op rule of dispatch://INFRA-4071/spec
+// R8 has found the body is a change: a keep of the same text_sha256 by the person who kept it
+// answers the keep as it stands and writes nothing (putChangesNothing).
 func (s *server) putDecisionStateV2(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
@@ -1188,7 +1190,8 @@ func (s *server) listIssueSubscribersV2(w http.ResponseWriter, r *http.Request) 
 
 // unsubscribeIssueSessionV2 answers DELETE /api/v2/issues/{key}/subscribers/{session_id}: the
 // unsubscribe DELETE /api/v1/issues/{key}/subscribers/{session_id} makes (unsubscribeSession), the
-// issue held to exist first; the {session_id} keeps today's answer (ruling A).
+// issue held to exist first; the {session_id} keeps the answer /api/v1 gives it
+// (dispatch://INFRA-4071/spec R7).
 func (s *server) unsubscribeIssueSessionV2(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
@@ -1202,7 +1205,8 @@ func (s *server) unsubscribeIssueSessionV2(w http.ResponseWriter, r *http.Reques
 }
 
 // requireResultV2 answers whether the check result id names exists, and where it does not writes
-// 404 RESULT_NOT_FOUND (decision 11): an id that is no uuid names no result either.
+// 404 RESULT_NOT_FOUND (dispatch://INFRA-4071/spec R7): an id that is no uuid names no result
+// either.
 func (s *server) requireResultV2(w http.ResponseWriter, r *http.Request, id string) bool {
 	held := false
 	if _, err := uuid.Parse(id); err == nil {
@@ -1220,8 +1224,9 @@ func (s *server) requireResultV2(w http.ResponseWriter, r *http.Request, id stri
 // putResultStateV2 answers PUT /api/v2/results/{id}/state: the retraction POST
 // /api/v1/results/{id}/retract records (retractCheckResultAs), answered as the result with its
 // retraction rather than the retraction alone (the route map's row 173). A retraction already
-// standing by the caller, with the same reason, answers the result and writes nothing (decision 8,
-// putChangesNothing); every other retraction of a retracted result stays 409 RESULT_RETRACTED.
+// standing by the caller, with the same reason, answers the result and writes nothing
+// (dispatch://INFRA-4071/spec R8, putChangesNothing); every other retraction of a retracted result
+// stays 409 RESULT_RETRACTED.
 func (s *server) putResultStateV2(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return

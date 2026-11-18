@@ -69,7 +69,7 @@ func (s *server) handAskOn(w http.ResponseWriter, r *http.Request, actor model.A
 	// (400 ASSIGNEE_NOT_ALLOWED), resolved before the transaction opens: allowedLogin reads the
 	// shared pool, which refuses a second connection to a caller already holding one
 	// (store.ErrNestedAcquire), so it cannot run under the transaction below - the reason
-	// editAsk resolves its acting person before it begins. A caller naming nobody who has
+	// rewordAsk resolves its acting person before it begins. A caller naming nobody who has
 	// signed in is therefore told so before the ask is read.
 	askedOf, err := s.allowedLogin(r.Context(), named)
 	if err != nil {

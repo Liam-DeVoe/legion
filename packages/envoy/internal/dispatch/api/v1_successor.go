@@ -1,11 +1,11 @@
 package api
 
 // v1_successor.go is how a /api/v1 answer names the /api/v2 route that answers for it (R3.1 of
-// dispatch://INFRA-4071/spec, decision 9 of its plan): a `Link` header with
-// rel="successor-version", which linkSuccessor, mounted around every /api/v1 route
-// (routeHandler), sets when the answer's status is written. The route's Successor names the
-// /api/v2 route, and its path is filled from the request's own path values, with the successor's
-// query where the /api/v1 route became a filter of it (successor, routes_versions.go).
+// dispatch://INFRA-4071/spec): a `Link` header with rel="successor-version", which linkSuccessor,
+// mounted around every /api/v1 route (routeHandler), sets when the answer's status is written.
+// The route's Successor names the /api/v2 route, and its path is filled from the request's own
+// path values, with the successor's query where the /api/v1 route became a filter of it
+// (successor, routes_versions.go).
 //
 // Rows 6, 17, 89, 91, 92, 161, 164 and 165 of the route map name a /api/v2 route whose path holds
 // a value the v1 request does not carry - the artifact a slug names, the issue a document belongs
@@ -91,9 +91,10 @@ type successorLink struct {
 	// every value the link needs.
 	resolves string
 	// unfilled is the Link of an answer that holds no value for a name the path needs: a refusal
-	// before the handler resolved one (departure 3 of the plan), or a request that named none.
-	// It links /api/v2, where every route is listed, and names the successor in its title, since
-	// a URI reference cannot carry the pattern's braces (RFC 8288 allows the parameter).
+	// before the handler resolved one (a slug that names no document, a missing issue), or a
+	// request that named none. It links /api/v2, where every route is listed, and names the
+	// successor in its title, since a URI reference cannot carry the pattern's braces (RFC 8288
+	// allows the parameter).
 	unfilled string
 	// none is the Link of a successful answer whose handler resolved no value, for a list that
 	// may hold none (successor.None); empty for every other route.

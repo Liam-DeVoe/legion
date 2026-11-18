@@ -1,15 +1,15 @@
 package api
 
-// v2_me.go is the caller's own things under /api/v2/me (plan t11 of dispatch://INFRA-4071, its
-// caller half; the route map's rule 10): who the caller is, in one shape where /api/v1/whoami
+// v2_me.go is the caller's own things under /api/v2/me (R1 of dispatch://INFRA-4071/spec; the
+// route map's rule 10): who the caller is, in one shape where /api/v1/whoami
 // answers two; their personal agent tokens; their answers; and their marks, the person's own state
 // on one object, which eleven /api/v1 rows wrote and read one kind at a time and four routes
 // answer here (the route map's section (e)). Every route runs the work its /api/v1 route runs
 // (agentTokensOf, createAgentTokenFrom, updateAgentTokenScopesFrom, revokeAgentTokenOf,
 // readMyAnswers, writeUserIssueStateIn, writeUserAgentStateIn, writeDocumentRead, moveThreadReadIn,
 // snoozeAskIn, unsnoozeAskIn, markInboxReadThreads, dismissInboxThreads), each path object checked
-// first and answered with its own 404 (decision 11): the {id} of an agent mark is a session and
-// keeps today's answer (ruling A), and an absent mark is its target's default state.
+// first and answered with its own 404 (R7): the {id} of an agent mark is a session and keeps the
+// answer /api/v1 gives it (R7), and an absent mark is its target's default state.
 
 import (
 	"context"
@@ -30,7 +30,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// The refusals of the objects a /api/v2/me route's path names (decision 11).
+// The refusals of the objects a /api/v2/me route's path names (dispatch://INFRA-4071/spec R7).
 var (
 	agentTokenMissingRefusal = apicode.Refusal{Condition: apicode.AgentTokenMissing, Code: apicode.AgentTokenNotFound}
 	askMissingRefusal        = apicode.Refusal{Condition: apicode.AskMissing, Code: apicode.AskNotFound}
@@ -38,7 +38,8 @@ var (
 )
 
 // markTargetRefusals are the 404s of a mark's {kind}/{id}: its target, by kind, which must exist,
-// but for an agent mark's session (ruling A).
+// but for an agent mark's session, which keeps the answer /api/v1 gives it
+// (dispatch://INFRA-4071/spec R7).
 func markTargetRefusals() []apicode.Refusal {
 	return []apicode.Refusal{
 		undeclaredKeyRefusal, issueMissingRefusal, documentMissingRefusal, threadMissingRefusal,
@@ -86,7 +87,7 @@ const markWriteText = "issue {pinned?, last_read_seq?, pinned_items?, seq?, acto
 	"un-snoozes. A field of the wrong JSON type is 400 INVALID_JSON, a value its field refuses 400 INVALID_STATE, and " +
 	"a malformed snooze 400 SNOOZE_INPUT."
 
-// v2MeRows are the caller's own routes (plan t11's caller half): rows 189, 120 to 123, 126, 124 and
+// v2MeRows are the caller's own routes: rows 189, 120 to 123, 126, 124 and
 // 135, 131 and 132, 129, and 125, 127, 128, 130, 133 and 136 of the route map.
 func (s *server) v2MeRows() []routeRow {
 	person := routeScopeSet{model.ScopePerson}
@@ -334,8 +335,8 @@ func (s *server) createAgentTokenV2(w http.ResponseWriter, r *http.Request) {
 }
 
 // requireAgentTokenV2 answers whether the token id names is one owner holds, revoked or not, and
-// where it is not writes 404 AGENT_TOKEN_NOT_FOUND (decision 11): another person's token is no
-// token of the caller's, and an id that is no uuid names none.
+// where it is not writes 404 AGENT_TOKEN_NOT_FOUND (dispatch://INFRA-4071/spec R7): another
+// person's token is no token of the caller's, and an id that is no uuid names none.
 func (s *server) requireAgentTokenV2(w http.ResponseWriter, r *http.Request, owner, id string) bool {
 	held := false
 	if _, err := uuid.Parse(id); err == nil {
@@ -494,30 +495,18 @@ type (
 	}
 )
 
-// sessionsAddressed is the session an agent mark's write goes into: the path's {id}, which is a
-// session for this kind alone (sessionAddressing).
-func (agentMarkV2Input) sessionsAddressed(r *http.Request) []string {
-	return []string{r.PathValue("id")}
-}
-
 // marksPatchV2Input is PATCH /api/v2/me/marks's body: the named items, or the Inbox's narrowing
 // and what to set on the threads it narrows to, never both.
+//
+// An agent mark names a session, in the path's {id} or in an item's, and no session rule holds
+// it: both marks writes declare the person scope, so a broker token that lacks it is refused by
+// the route's own gate (gateRouteScopes) before any session rule, and one that holds it acts as
+// the person, whose agent marks are theirs on every session (refusesAnotherSession binds no row
+// that declares OAuth scopes).
 type marksPatchV2Input struct {
 	Items  []markItemV2        `json:"items"`
 	Filter *inboxThreadFilters `json:"filter"`
 	Set    *markSetV2          `json:"set"`
-}
-
-// sessionsAddressed is the session of each agent item: the item's id, which a broker token's
-// session is held to as an agent mark's path is (sessionAddressing).
-func (body marksPatchV2Input) sessionsAddressed(*http.Request) []string {
-	var sessions []string
-	for _, item := range body.Items {
-		if item.Kind == "agent" {
-			sessions = append(sessions, item.ID)
-		}
-	}
-	return sessions
 }
 
 // markItemV2 is one item of PATCH /api/v2/me/marks: a mark's kind and id, and the members of its
@@ -574,7 +563,7 @@ func markTargetID(kind, id string) string {
 
 // requireThreadV2 answers whether the id names a thread - an ask, or the root of a comment thread
 // or a message thread, each a thread by its root's id (user_threads) - and where it does not
-// writes 404 THREAD_NOT_FOUND (decision 11): an id that is no uuid names none.
+// writes 404 THREAD_NOT_FOUND (dispatch://INFRA-4071/spec R7): an id that is no uuid names none.
 func (s *server) requireThreadV2(w http.ResponseWriter, r *http.Request, id string) bool {
 	held := false
 	if _, err := uuid.Parse(id); err == nil {
@@ -594,8 +583,9 @@ func (s *server) requireThreadV2(w http.ResponseWriter, r *http.Request, id stri
 }
 
 // requireMarkTarget answers whether a mark's target exists, and where it does not writes its
-// kind's 404 (decision 11), or 400 INVALID_KIND for a kind that is none of the six. An agent
-// mark's target is a session, which keeps today's answer (ruling A): it is not held to exist.
+// kind's 404 (dispatch://INFRA-4071/spec R7), or 400 INVALID_KIND for a kind that is none of the
+// six. An agent mark's target is a session, which keeps the answer /api/v1 gives it (R7): it is
+// not held to exist.
 func (s *server) requireMarkTarget(w http.ResponseWriter, r *http.Request, kind, id string) bool {
 	switch kind {
 	case "issue":

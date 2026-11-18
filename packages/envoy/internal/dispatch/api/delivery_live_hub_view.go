@@ -5,6 +5,8 @@ import (
 	"slices"
 	"strconv"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 )
 
 // parseDeliveryLiveView resolves a subscribed view as the matching GET route reads its query, or
@@ -28,7 +30,7 @@ func parseDeliveryLiveView(view DeliveryLiveView) (deliveryLiveSpec, *LiveError)
 		if view.Query != nil {
 			query, err := url.ParseQuery(*view.Query)
 			if err != nil {
-				return invalid("INVALID_QUERY", "query does not parse: "+err.Error())
+				return invalid(apicode.InvalidQuery.V1Name(), "query does not parse: "+err.Error())
 			}
 			spec.query = query
 		}
@@ -46,7 +48,7 @@ func parseDeliveryLiveView(view DeliveryLiveView) (deliveryLiveSpec, *LiveError)
 		case window.Preset == nil && window.From != nil && window.To != nil:
 			from, to, err := parseDeliveryWindow(url.Values{"from": {*window.From}, "to": {*window.To}})
 			if err != nil {
-				return invalid("INVALID_QUERY", err.Error())
+				return invalid(apicode.InvalidQuery.V1Name(), err.Error())
 			}
 			spec.from, spec.to = from.UTC(), to.UTC()
 			spec.key = view.Kind + "|" + spec.from.Format(time.RFC3339Nano) + "," + spec.to.Format(time.RFC3339Nano) + "|" + spec.query.Encode()
@@ -61,7 +63,7 @@ func parseDeliveryLiveView(view DeliveryLiveView) (deliveryLiveSpec, *LiveError)
 		if view.At != nil {
 			at, err := parseOptionalRFC3339(url.Values{"at": {*view.At}}, "at", time.Time{})
 			if err != nil {
-				return invalid("INVALID_QUERY", err.Error())
+				return invalid(apicode.InvalidQuery.V1Name(), err.Error())
 			}
 			at = at.UTC()
 			spec.at = &at

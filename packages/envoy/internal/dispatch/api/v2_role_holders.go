@@ -8,7 +8,7 @@ package api
 // so the name is singular, as R1.1 of dispatch://INFRA-2946/spec names a singleton, and a reader
 // of the /api/v1 name can tell it. Both run the work their /api/v1 route runs
 // (getIssueRoleHolders, putIssueRoleHoldersFrom), the issue checked first and answered 404
-// ISSUE_NOT_FOUND (decision 11).
+// ISSUE_NOT_FOUND (dispatch://INFRA-4071/spec R7).
 
 import (
 	"cmp"
@@ -67,10 +67,10 @@ func (s *server) v2RoleHolderRows() []routeRow {
 
 // putIssueRoleHoldersV2 answers PUT /api/v2/issues/{key}/role-holder-set: the publication PUT
 // /api/v1/issues/{key}/role-holders makes (putIssueRoleHoldersFrom), once the no-op rule of
-// decision 8 has found the body is a change. The set records no setter, and the daemon of the
-// issue's project is its one writer, so a body naming the stored set answers it and writes nothing
-// whoever sends it (noSetterRecorded). The set is compared in workflow order, the order it is
-// stored and answered in, since the body names a set and its order says nothing.
+// dispatch://INFRA-4071/spec R8 has found the body is a change. The set records no setter, and the
+// daemon of the issue's project is its one writer, so a body naming the stored set answers it and
+// writes nothing whoever sends it (noSetterRecorded). The set is compared in workflow order, the
+// order it is stored and answered in, since the body names a set and its order says nothing.
 func (s *server) putIssueRoleHoldersV2(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) || !s.requireIssueV2(w, r, r.PathValue("key")) {
 		return

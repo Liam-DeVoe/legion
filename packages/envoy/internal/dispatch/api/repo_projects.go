@@ -95,11 +95,11 @@ func (s *server) putRepoProject(w http.ResponseWriter, r *http.Request) {
 }
 
 // putRepoProjectFrom maps repo as input says, the work both versions' PUT does once each has read
-// the path's repository and the body. answersUnchanged is /api/v2's no-op rule (decision 8 of the
-// plan of dispatch://INFRA-4071): a mapping records no setter, so a PUT the mapping would be left
-// exactly as it stands by - its project, its default and its rename - answers the mapping as it
-// stands, whoever sends it, and takes no lock and writes no row and no event. /api/v1 writes it
-// as it always has.
+// the path's repository and the body. answersUnchanged is /api/v2's no-op rule
+// (dispatch://INFRA-4071/spec R8): a mapping records no setter, so a PUT the mapping would be
+// left exactly as it stands by - its project, its default and its rename - answers the mapping as
+// it stands, whoever sends it, and takes no lock and writes no row and no event. /api/v1 writes
+// it.
 func (s *server) putRepoProjectFrom(w http.ResponseWriter, r *http.Request, repo string, input putRepoProjectInput, answersUnchanged bool) {
 	actor, ok := s.requireActor(w, r, input.Actor)
 	if !ok {

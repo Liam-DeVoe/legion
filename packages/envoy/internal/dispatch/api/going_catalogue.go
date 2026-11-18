@@ -2,7 +2,7 @@ package api
 
 // going_catalogue.go holds the catalogue of operations an agent may propose on Dispatch's
 // graph, and serves it at GET /api/v1/going/catalogue and at GET /api/v2/going-actions, each
-// naming the rows of its own version (decision 12 of the plan of dispatch://INFRA-4071).
+// naming the rows of its own version.
 //
 // The catalogue is the dispatch tools that write, all but one: the specs in
 // packages/contracts/src/dispatch-tools.ts that agents already operate Dispatch with all day,
@@ -28,11 +28,11 @@ package api
 // GoingCaller performs one an agent already chose. The loop that chooses is not in this package.
 //
 // The two versions name their own rows: goingToolRoutes the /api/v1 rows, which GET
-// /api/v1/going/catalogue keeps serving as it always has, and goingToolRoutesV2 the /api/v2 rows
-// that answer them. A v1 row a v2 route answers in a state body, such as POST
-// /api/v1/asks/{id}/resolve, is a v2 row with the fixed part of that body (goingToolRoute.Body),
-// and the v1 rows a v2 route replaced by one row with an id, such as the document edits by slug,
-// are that one row.
+// /api/v1/going/catalogue serves, and goingToolRoutesV2 the /api/v2 rows that answer them. A v1
+// row a v2 route answers in a state body is a v2 row with the fixed part of that body
+// (goingToolRoute.Body), or two where the one v1 row moves to either of two states, as POST
+// /api/v1/asks/{id}/resolve resolves or retracts; and the v1 rows a v2 route replaced by one row
+// with an id, such as the document edits by slug, are that one row.
 
 import (
 	"bytes"
@@ -51,9 +51,9 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
 
-// goingCataloguePath is the route that serves the /api/v1 catalogue, and goingActionsPath the
-// route that serves the /api/v2 one, named once so the refusal of an action a catalogue does not
-// hold can point at its list without spelling it again.
+// goingCataloguePath is the path of the route that serves the /api/v1 catalogue, and
+// goingActionsPath that of the route that serves the /api/v2 one: the refusal of an action a
+// catalogue does not hold points at its list by them (GoingCatalogue.list).
 const (
 	goingCataloguePath = "/api/v1/going/catalogue"
 	goingActionsPath   = "/api/v2/going-actions"
@@ -276,7 +276,7 @@ var goingToolRoutes = map[string][]goingToolRoute{
 // route picked by the state, so they are two rows told apart by the tool's own `kind`. The three
 // document-edit rows of /api/v1 are one, the document's own by id, since /api/v2 edits a document
 // by its id alone; a call naming a document by slug resolves it first, as a v1 call to the
-// document's own row always had to.
+// document's own row does.
 var goingToolRoutesV2 = map[string][]goingToolRoute{
 	"dispatch_issue": {{
 		Method: http.MethodPost, Pattern: "/api/v2/issues", Path: map[string]string{},
@@ -507,7 +507,7 @@ func (c GoingCatalogue) Lookup(name string) (GoingAction, bool) {
 // TestEveryMutatingRouteIsClassed reads the table in: a route whose method is not GET, each of
 // which writeClasses must class (undecidableWrites), or a v2 row its own Scope. It is the one
 // classification of a write the server has, and each catalogue is held to the routes of its own
-// version (decision 12 of the plan of dispatch://INFRA-4071).
+// version.
 func mutatingRoutes(routes []apiRoute, version apiVersion) map[string]bool {
 	mutating := make(map[string]bool, len(routes))
 	for _, route := range routes {
@@ -674,7 +674,7 @@ func (s *server) getGoingCatalogue(w http.ResponseWriter, r *http.Request) {
 
 // goingActionV2 is one action as GET /api/v2/going-actions serves it: GoingAction's members, its
 // routes the /api/v2 rows with each one's fixed body part. It is a type of its own, so GET
-// /api/v1/going/catalogue's shape does not change (decision 2).
+// /api/v1/going/catalogue's shape does not change (dispatch://INFRA-4071/spec R3).
 type goingActionV2 struct {
 	Action      string                `json:"action"`
 	Description string                `json:"description"`

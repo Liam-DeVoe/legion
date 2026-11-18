@@ -74,10 +74,11 @@ func (s *server) retractCheckResult(w http.ResponseWriter, r *http.Request) {
 // retractCheckResultAs is the retraction both versions write of result resultID for actor, with
 // reason, a reason it holds to be no blank text already, and answers it; it writes a refusal itself
 // and answers false. unchanged, where it is not nil, is the no-op rule of PUT
-// /api/v2/results/{id}/state (decision 8): a result retracted already, by a retraction it answers
-// true for, is answered as it stands with nothing written - the zero retraction and true - where
-// every other second retraction is 409 RESULT_RETRACTED. The rule is applied once the caller is
-// held to the three who may retract the result, so it answers nobody else a retraction.
+// /api/v2/results/{id}/state (dispatch://INFRA-4071/spec R8): a result retracted already, by a
+// retraction it answers true for, is answered as it stands with nothing written - the zero
+// retraction and true - where every other second retraction is 409 RESULT_RETRACTED. The rule is
+// applied once the caller is held to the three who may retract the result, so it answers nobody
+// else a retraction.
 func (s *server) retractCheckResultAs(
 	w http.ResponseWriter, r *http.Request, actor model.Actor, resultID, reason string,
 	unchanged func(model.CheckResultRetracted) bool,

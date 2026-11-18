@@ -88,8 +88,8 @@ func runSubcommand(ctx context.Context, args []string, env settingValues, stdout
 }
 
 // writeRouteIndex runs `envoy-dispatch routes`: the body the route index of one version of the API
-// answers, read from the table alone. With no flag it is GET /api/v1's, as it always was; --version 2
-// is GET /api/v2's.
+// answers, read from the table alone. With no flag it is GET /api/v1's; --version 2 is GET
+// /api/v2's.
 func writeRouteIndex(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("routes", flag.ContinueOnError)
 	flags.SetOutput(stderr)

@@ -735,8 +735,8 @@ func (s *server) requestApproval(w http.ResponseWriter, r *http.Request, input a
 		}
 		events = []model.Event{opened}
 	}
-	// The person this request reaches, named on the answer as the question create names it
-	// (createAskFor in api/asks.go): read under this transaction, once the insert or the
+	// The person this request reaches, named on the answer as the /api/v1 question create names it
+	// (openAsk in api/asks.go): read under this transaction, once the insert or the
 	// hand-back above is in, through the rule every read of that person shares. The settled
 	// branch returned above answers no ask at all and so names nobody; every branch here has
 	// an open request, the one a hand-back puts back in front of the human.

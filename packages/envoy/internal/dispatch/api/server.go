@@ -585,14 +585,15 @@ type queryer interface {
 // Every route refuses a path or query parameter holding U+0000 or a byte that is not UTF-8 before
 // its handler runs (refuseUnstorableParameters), as decodeJSON refuses a U+0000 in a body.
 //
-// Every POST and PATCH route, and every PUT and DELETE route of /api/v2, takes an Idempotency-Key,
-// and a repeat under one is answered from the key rather than run again (keyedWrites,
-// keyedMethod, request_keys.go). Every write route - a POST, PATCH, PUT or DELETE - that names
-// its presser in Dispatch-Login runs only as that person (refuseChangedLogin).
+// Every POST and PATCH route, and every PUT and DELETE route the rules of /api/v2 bind
+// (apiRoute.v2Bound: neither a test hook nor a row of the INFRA-979 tree), takes an
+// Idempotency-Key, and a repeat under one is answered from the key rather than run again
+// (keyedWrites, keyedMethod, request_keys.go). Every write route - a POST, PATCH, PUT or DELETE -
+// that names its presser in Dispatch-Login runs only as that person (refuseChangedLogin).
 //
-// Every /api/v2 route reads its query and its body through one decoder, from the types its row
-// declares, and holds each value its row gives an authority to that authority before its handler
-// runs (decode_v2.go, authorities_v2.go).
+// Every route the rules of /api/v2 bind reads its query and its body through one decoder, from the
+// types its row declares, and holds each value its row gives an authority to that authority before
+// its handler runs (decode_v2.go, authorities_v2.go).
 //
 // Every route the read list does not name (readScopeRoutes), GET /ws/live among them, answers a
 // read-only broker token 403 READ_ONLY_TOKEN before anything else it does (refuseReadOnlyToken).
@@ -1360,7 +1361,7 @@ func refuseMissingScope(w http.ResponseWriter, r *http.Request, scope, message s
 }
 
 // missingScopeError is refuseMissingScope as an error, for a check that cannot run at the gate
-// because what it reads is known only once a row is loaded (answerAsk's approval asks).
+// because what it reads is known only once a row is loaded (recordAnswer's approval asks).
 // writeHandlerError writes the challenge header from the error's scope, so such a refusal is the
 // gate's own answer in every part a caller can see.
 func missingScopeError(scope, message string) *apiError {
@@ -1510,21 +1511,21 @@ func (s *server) actingPerson(w http.ResponseWriter, r *http.Request) (model.Act
 }
 
 // actSessionFromBody records on actor's act the session the request body names, for the
-// person-scope handlers that already decode a body actor: answerAsk, putUserState, editAsk and
-// the follower routes. A
-// credential that proved no session of its own - a personal token - names its agent nowhere
-// else on a route whose body is already read, so the body's actor is taken for it, exactly as
-// `?session=` is taken on every other route (actingPerson). A credential that did prove one - a
-// broker-issued token - decides it, and a body naming another session is the disagreement
-// bearerSessionActor and actingPerson both refuse, 403 ACTOR_SESSION_MISMATCH, rather than a
-// write recorded as a session the caller merely asked for. The act keeps SessionProven only
-// when the body names the session the credential proved; a session the body alone names is not
-// proven.
+// person-scope handlers that decode a body actor: an ask's answer and decline (recordAnswer,
+// recordDecline), its reword (rewordAsk), the issue state (putUserState) and an issue mark's
+// write (planMarkWrite), and the follower routes (askFollowerActor). A credential that proved no
+// session of its own - a personal token - names its agent nowhere else on a route whose body is
+// already read, so the body's actor is taken for it, exactly as `?session=` is taken on every
+// other route (actingPerson). A credential that did prove one - a broker-issued token - decides
+// it, and a body naming another session is the disagreement bearerSessionActor and actingPerson
+// both refuse, 403 ACTOR_SESSION_MISMATCH, rather than a write recorded as a session the caller
+// merely asked for. The act keeps SessionProven only when the body names the session the
+// credential proved; a session the body alone names is not proven.
 //
-// Only those routes read it: decodeJSON refuses an unknown field, so a body actor on a route
-// whose input struct does not declare one is a 400, and four of the mutating rows a person's
-// scope opened are DELETEs with no body at all. A browser's actor names no agent (act is nil),
-// so there is nothing for a body to name, and its body actor is ignored here as it always was.
+// Only those routes read it: a route whose input struct declares no actor ignores a body's
+// (decodeJSON), and four of the mutating rows a person's scope opened are DELETEs with no body at
+// all. A browser's actor names no agent (act is nil), so there is nothing for a body to name, and
+// its body actor is ignored here.
 func actSessionFromBody(w http.ResponseWriter, r *http.Request, actor model.Actor, supplied *model.Actor) (model.Actor, bool) {
 	named := ""
 	if supplied != nil && supplied.Kind == "session" {

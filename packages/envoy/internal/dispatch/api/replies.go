@@ -137,9 +137,8 @@ const (
 // one that scans the table, so the planner scans it - 101,540 rows read to answer 1,540 of them at
 // INFRA-450's a14 seed - and sorts what it keeps.
 //
-// Neither step carries an order over the joins: the route sorts the two kinds of row together
-// (listMyReplies) whatever order each half read them in, so an order here would be one sort for
-// nothing.
+// Neither step carries an order over the joins: readMyReplies sorts the two kinds of row together
+// whatever order each half read them in, so an order here would be one sort for nothing.
 const myRepliesPage = `
 	with recursive picked as (
 		select u.thread_id `
@@ -742,8 +741,9 @@ func withAfter(args []any, after *myRepliesCursor) []any {
 // myRepliesQueries is the statements one state reads its Reply rows through: the page itself,
 // which is the cursor's own query when a Dismissed page resumes from one, and the count the
 // answer's total needs when the read is paged. The Dismissed view has no count - its total is the
-// page it answers (listMyReplies) - so it answers an empty count for that state, which that read
-// never asks for. The Agent half's own statements are myAgentPageQuery's (api/replies_agent.go).
+// page it answers on /api/v1 (readMyReplies) and null on /api/v2 (listMyThreadsV2) - so it answers
+// an empty count for that state, which that read never asks for. The Agent half's own statements
+// are myAgentPageQuery's (api/replies_agent.go).
 func myRepliesQueries(state string, from *myRepliesCursor) (count, page string) {
 	switch state {
 	case myRepliesStateInbox:

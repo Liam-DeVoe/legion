@@ -74,15 +74,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// The scope checks' refusals:
-//   - PROJECT_SCOPE (apicode.ProjectScope) refuses a write the caller's credential does not
-//     cover: an object of another project, or one this check could not resolve to the caller's
-//     own.
-//   - PROJECT_SCOPE_DEPLOYMENT (apicode.ProjectScopeDeployment) refuses a project-scoped caller a
-//     write that belongs to the deployment rather than to any one project.
-//   - SESSION_SCOPE (apicode.SessionScope) refuses a caller whose credential proved one session a
-//     write addressed to another session's own rows.
-
 // brokerCredentialActor is the caller an access token the secrets broker issued decided, and
 // whether this request presents one that resolved at all. Every other credential answers false
 // without resolving anything: a browser cookie, a personal agent token, a Kubernetes

@@ -1,6 +1,6 @@
 package api
 
-// v2_documents.go is the document routes of /api/v2 (plan t7 of dispatch://INFRA-4071): an
+// v2_documents.go is the document routes of /api/v2 (R1 of dispatch://INFRA-4071/spec): an
 // artifact by id with what include= adds, its writes, its versions, its reviews, its asks, its
 // comments, its references and its subscribers; the artifacts of an issue, of a project and of an
 // agent's conversation, each a list a slug filters; and the uploads. Every artifact a read
@@ -10,8 +10,8 @@ package api
 // the artifact the list answers. Every route with a /api/v1 route runs that route's work - the
 // list of a document's versions, which has none, reads the versions row 10 answered inside the
 // artifact - each object its path names that Dispatch stores checked first and answered with its
-// own 404 (decision 11): ARTIFACT_NOT_FOUND, BLOCK_NOT_FOUND, VERSION_NOT_FOUND, ISSUE_NOT_FOUND
-// and PROJECT_NOT_FOUND, and a {session_id} keeps the answer it has today (ruling A).
+// own 404 (R7): ARTIFACT_NOT_FOUND, BLOCK_NOT_FOUND, VERSION_NOT_FOUND, ISSUE_NOT_FOUND and
+// PROJECT_NOT_FOUND, and a {session_id} keeps the answer /api/v1 gives it (R7).
 
 import (
 	"context"
@@ -34,7 +34,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
-// The refusals of the objects a document route's path names (decision 11).
+// The refusals of the objects a document route's path names (dispatch://INFRA-4071/spec R7).
 var (
 	documentMissingRefusal = apicode.Refusal{Condition: apicode.DocumentMissing, Code: apicode.ArtifactNotFound}
 	blockMissingRefusal    = apicode.Refusal{Condition: apicode.BlockMissing, Code: apicode.BlockNotFound}
@@ -83,7 +83,7 @@ const artifactUploadText = "JSON {name, content?, summary?, actor?} stores a mar
 	"ARTIFACT_ROLE_NAME, INVALID_ARTIFACT (no name, no file, a new name or key over 2692 bytes), 413 " +
 	"REQUEST_TOO_LARGE past 25 MB or a markdown document past 1 MiB."
 
-// v2DocumentRows are the document routes (plan t7): rows 5; 4; 9; 10, 15 and 29; 11; 12; 13; 14; 16;
+// v2DocumentRows are the document routes: rows 5; 4; 9; 10, 15 and 29; 11; 12; 13; 14; 16;
 // 18; 19; 20, 89 and 161; 22; 23; 24; 25; 26 and 32; 27; 28; 30, 91 and 164; 6, 31, 92 and 165; 85,
 // 87, 88 and 90; 86; 157, 159, 160, 162 and 163; and 158 of the route map, and the list of a
 // document's versions, which row 10's versions[] member becomes.
@@ -529,7 +529,8 @@ func (s *server) v2DocumentRows() []routeRow {
 // and the size of its newest and how many there are - in place of the versions themselves, which
 // GET /api/v2/artifacts/{id}/versions lists, and a document's approval; it is the row GET
 // /api/v1/projects/{key}/artifacts/{slug}/summary answered, and more. include= adds a document's
-// text and blocks (J1). It is a type of its own, so no /api/v1 shape's tags change (decision 2).
+// text and blocks (J1). It is a type of its own, so no /api/v1 shape's tags change
+// (dispatch://INFRA-4071/spec R3).
 type artifactV2 struct {
 	ID        string      `json:"id"`
 	IssueKey  *string     `json:"issue_key"`
@@ -746,8 +747,9 @@ func (s *server) answerArtifactList(w http.ResponseWriter, r *http.Request, list
 }
 
 // requireArtifactV2 answers whether the artifact id names exists, and where it does not writes 404
-// ARTIFACT_NOT_FOUND (decision 11): an id that is no uuid names no artifact either. The prefix
-// layer has already read an id written short into the whole one it names (resolveIDPrefixes).
+// ARTIFACT_NOT_FOUND (dispatch://INFRA-4071/spec R7): an id that is no uuid names no artifact
+// either. The prefix layer has already read an id written short into the whole one it names
+// (resolveIDPrefixes).
 func (s *server) requireArtifactV2(w http.ResponseWriter, r *http.Request, id string) bool {
 	held := false
 	if _, err := uuid.Parse(id); err == nil {
@@ -894,7 +896,7 @@ func (s *server) requestArtifactApprovalV2(w http.ResponseWriter, r *http.Reques
 
 // approvalRequestV2 is the body POST /api/v2/artifacts/{id}/approval-requests answers:
 // approvalRequestResponse's, its ask the one ask row of /api/v2 rather than the /api/v1 shape,
-// whose opened_event_id the /api/v1 document leaves optional (decision 2).
+// whose opened_event_id the /api/v1 document leaves optional (dispatch://INFRA-4071/spec R6).
 type approvalRequestV2 struct {
 	// Ask is the request's ask, null where nothing is asked: every document it names is approved
 	// at its current version already.
@@ -1416,7 +1418,7 @@ func (s *server) uploadArtifactV2(w http.ResponseWriter, r *http.Request, target
 
 // artifactUploadV2 is the body the three /api/v2 uploads answer: the artifact's row, as every
 // /api/v2 read answers it, in place of the artifact with every version that /api/v1's
-// artifactUploadResponse answers (decision 2), and the version the upload wrote.
+// artifactUploadResponse answers (dispatch://INFRA-4071/spec R3), and the version the upload wrote.
 type artifactUploadV2 struct {
 	Artifact artifactV2    `json:"artifact"`
 	Version  model.Version `json:"version"`

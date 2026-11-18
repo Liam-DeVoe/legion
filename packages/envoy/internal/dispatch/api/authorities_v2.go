@@ -1,26 +1,14 @@
 package api
 
 // authorities_v2.go holds a /api/v2 request to the authority each state, field and query value
-// needs (R1.8 of dispatch://INFRA-2946/spec; R1 and plan t4 of dispatch://INFRA-4071). A route's
-// own scopes, which every request to it needs, stay in its OAuthScopes column and gateRouteScopes;
-// a scope only one value of a request needs is a rule of its Authorities column, and
+// needs (R1.8 of dispatch://INFRA-2946/spec; R1 of dispatch://INFRA-4071/spec). A route's own
+// scopes, which every request to it needs, stay in its OAuthScopes column and gateRouteScopes; a
+// scope only one value of a request needs is a rule of its Authorities column, and
 // gateV2Authorities refuses a request whose credential lacks it before the handler runs, so the
 // table, not a handler, says who may do what.
 //
-// The rules each route declares - written on its row by the route-group task that builds it, and
-// copied here from plan t4 step 2 so each of those tasks takes the list from one place:
-//
-//	`PUT /api/v2/asks/{id}/state` `answered` and `declined` need `person`, `resolved` and
-//	`retracted` none; `PUT /api/v2/comments/{id}/state` `open`, `accepted` and `rejected` need
-//	`person`, `resolved` none; `PATCH /api/v2/asks/{id}` `asked_of` needs `person`;
-//	`PATCH /api/v2/projects/{key}` `default_assignee` needs `person`, `gated_steps` none;
-//	`GET /api/v2/asks` `waiting_on=me` and `include=mark` need `person`; `GET /api/v2/projects`
-//	`include=default_assignee` needs `person`; `GET /api/v2/issues` `pinned=true` needs `person`;
-//	`PUT /api/v2/credential-requests/{id}/state` `approved` and `denied` need `person` and
-//	`approve`.
-//
-// Each is one authorityRule. A state is a value of the body member `state`, a field a body
-// member's presence, a query value a value of a query key:
+// Each route declares its rules on its own row, each one authorityRule. A state is a value of the
+// body member `state`, a field a body member's presence, a query value a value of a query key:
 //
 //	Authorities: []authorityRule{
 //		{Where: authorityWhere{In: partBody, Name: "state"}, Value: "answered", Scopes: routeScopeSet{model.ScopePerson}},
@@ -28,15 +16,17 @@ package api
 //		{Where: authorityWhere{In: partQuery, Name: "include"}, Value: "mark", Scopes: routeScopeSet{model.ScopePerson}},
 //	},
 //
-// A check that depends on the data stays in the handler, and the row's description names it (plan
-// t4 step 3): the `approve` scope of an answer to an approval ask (answerAsk), the
-// author-or-person rule of an ask's reword (editAsk), and the holder's `force` of a claim.
+// A check that depends on the data stays in the handler, and the row's description names it
+// (dispatch://INFRA-2946/artifact/decisions-md, "The authority of each state, field and query
+// value is in the table"): the `approve` scope of an answer to an approval ask (recordAnswer),
+// the author-or-person rule of an ask's reword (rewordAsk), and the holder's `force` of a claim.
 //
 // A write to the rows of one session the path names is held to that session by
 // withinSessionScope (the row's SessionPath). Where the path names a session only for one kind
-// of object - PATCH /api/v2/me/marks/{kind}/{id}, whose {id} is a session when {kind} is `agent`
-// - or the body names several - the agent items of PATCH /api/v2/me/marks - the body names them
-// (sessionAddressing), and this gate holds each to the same rule (plan t4 step 4).
+// of object, or the body names several, the body's type names them (sessionAddressing), and this
+// gate holds each to the same rule. No row of the table declares such a body: the agent marks of
+// PATCH /api/v2/me/marks and /api/v2/me/marks/{kind}/{id} name a session, but both rows declare
+// the person scope, which no session rule binds (marksPatchV2Input).
 
 import (
 	"context"
@@ -50,13 +40,11 @@ import (
 )
 
 // sessionAddressing is a decoded body, or one arm of a union, that names the sessions its write
-// goes into where the row's path does not name one alone: the `agent` arm of PATCH
-// /api/v2/me/marks/{kind}/{id}, whose {id} is a session only for that kind, answers the path's
-// {id}, and the body of PATCH /api/v2/me/marks answers the session of each of its `agent` items.
-// gateV2Authorities holds each session it names to the rule withinSessionScope holds a path's
-// session to (refusesAnotherSession), so a credential that proved one session writes into no
-// other's rows by naming it in a body. The decoder decodes a body as a value of its type, so the
-// type implements it with a value receiver.
+// goes into where the row's path does not name one alone, such as a path whose {id} is a session
+// for one arm of the body only. gateV2Authorities holds each session it names to the rule
+// withinSessionScope holds a path's session to (refusesAnotherSession), so a credential that
+// proved one session writes into no other's rows by naming it in a body. The decoder decodes a
+// body as a value of its type, so the type implements it with a value receiver.
 type sessionAddressing interface {
 	sessionsAddressed(r *http.Request) []string
 }

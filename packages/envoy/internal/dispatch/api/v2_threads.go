@@ -1,7 +1,7 @@
 package api
 
-// v2_threads.go is the comments, messages, broadcasts and handoffs of /api/v2 (plan t9 of
-// dispatch://INFRA-4071): a comment and a message read flat, the item's own fields at top level
+// v2_threads.go is the comments, messages, broadcasts and handoffs of /api/v2 (R1 of
+// dispatch://INFRA-4071/spec): a comment and a message read flat, the item's own fields at top level
 // with its replies beside them and its blocks with include=blocks (the route map's J4); an
 // issue's comments, messages and handoffs, a session's conversations and the broadcasts, each an
 // envelope; the state of a comment and of a message's delivery attempt, each a PUT of a body
@@ -10,7 +10,7 @@ package api
 // reopenCommentAs, commentActionAs, retryCommentMention, answerCommentDelivery,
 // postIssueMessage, sendAgentMessage, retryMessageDelivery, acceptDeliveryAs,
 // answerMessageDelivery, sendBroadcast, recordHandoffInput), each path object checked first and
-// answered with its own 404 (decision 11); a {session_id} keeps today's answer (ruling A).
+// answered with its own 404, and a {session_id} keeps the answer /api/v1 gives it (R7).
 
 import (
 	"context"
@@ -31,7 +31,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
-// The authorities of the thread rows (plan t4 step 2, authorities_v2.go): the comment states a
+// The authorities of the thread rows (authorities_v2.go): the comment states a
 // person decides need the person scope, and a resolve, which any caller may make, none.
 var (
 	commentOpenAuthority = authorityRule{
@@ -45,7 +45,7 @@ var (
 	}
 )
 
-// The refusals of a missing object a thread route's path names (decision 11).
+// The refusals of a missing object a thread route's path names (dispatch://INFRA-4071/spec R7).
 var (
 	commentMissingRefusal   = apicode.Refusal{Condition: apicode.CommentMissing, Code: apicode.CommentNotFound}
 	messageMissingRefusal   = apicode.Refusal{Condition: apicode.MessageMissing, Code: apicode.MessageNotFound}
@@ -59,7 +59,7 @@ var (
 const messageThreadText = "Each thread is one row: its root message's own fields at top level, with the root's delivery " +
 	"attempts in deliveries, and replies, every message replying to it, oldest first, each with its own attempts."
 
-// v2ThreadRows are the comments, messages, broadcasts and handoffs (plan t9): rows 48 and 51; 49;
+// v2ThreadRows are the comments, messages, broadcasts and handoffs: rows 48 and 51; 49;
 // 52; 55; 50, 53, 54 and 56; 98; 99; 109, 137 and 138; 139; 140; 141; 107; 108; 7; 8; 44; 45;
 // 46; 78; 104 and 106; and 105 of the route map.
 func (s *server) v2ThreadRows() []routeRow {
@@ -467,7 +467,7 @@ type commentReadV2Query struct {
 // commentReadV2 is GET /api/v2/comments/{id}'s answer (the route map's J4): the comment's own
 // fields at top level, as GET /api/v1/comments/{id} answers them under comment, its replies beside
 // them, and its blocks with include=blocks, which GET /api/v1/comments/{id}/blocks answered. It is
-// a type of its own, so no /api/v1 shape's tags change (decision 2).
+// a type of its own, so no /api/v1 shape's tags change (dispatch://INFRA-4071/spec R3).
 type commentReadV2 struct {
 	shapedComment
 	Replies []shapedComment `json:"replies"`
@@ -503,7 +503,7 @@ type messageReadV2Query struct {
 // messageThreadV2 is one conversation as every /api/v2 read of messages answers it (the route
 // map's J4): the root message's own fields at top level, with its delivery attempts, and every
 // message replying to it beside them. GET /api/v1's messageRead nests the root under message; this
-// is a type of its own, so no /api/v1 shape's tags change (decision 2).
+// is a type of its own, so no /api/v1 shape's tags change (dispatch://INFRA-4071/spec R3).
 type messageThreadV2 struct {
 	shapedMessage
 	Replies []shapedMessage `json:"replies"`
@@ -600,9 +600,9 @@ type createHandoffV2Input struct {
 }
 
 // requireCommentV2 answers whether the comment id names exists, and where it does not writes 404
-// COMMENT_NOT_FOUND, the code of the object a /api/v2 path names (decision 11): an id that is no
-// uuid names no comment either. The prefix layer has already read an id written short into the
-// whole one it names (resolveIDPrefixes).
+// COMMENT_NOT_FOUND, the code of the object a /api/v2 path names (dispatch://INFRA-4071/spec R7):
+// an id that is no uuid names no comment either. The prefix layer has already read an id written
+// short into the whole one it names (resolveIDPrefixes).
 func (s *server) requireCommentV2(w http.ResponseWriter, r *http.Request, id string) bool {
 	held := false
 	if _, err := uuid.Parse(id); err == nil {
@@ -618,7 +618,7 @@ func (s *server) requireCommentV2(w http.ResponseWriter, r *http.Request, id str
 }
 
 // requireMessageV2 answers whether the message id names exists, and where it does not writes 404
-// MESSAGE_NOT_FOUND (decision 11), as requireCommentV2 answers for a comment.
+// MESSAGE_NOT_FOUND (dispatch://INFRA-4071/spec R7), as requireCommentV2 answers for a comment.
 func (s *server) requireMessageV2(w http.ResponseWriter, r *http.Request, id string) bool {
 	held := false
 	if _, err := uuid.Parse(id); err == nil {
@@ -734,9 +734,9 @@ func commentStateOf(comment model.Comment) string {
 	return "resolved"
 }
 
-// commentStateSetter is who set the state a comment stands in (decision 8): the actor that
-// resolved, accepted or rejected it, and nobody recorded for an open thread, which a reopen
-// leaves with no resolver and a new comment has never had.
+// commentStateSetter is who set the state a comment stands in (dispatch://INFRA-4071/spec R8): the
+// actor that resolved, accepted or rejected it, and nobody recorded for an open thread, which a
+// reopen leaves with no resolver and a new comment has never had.
 func commentStateSetter(comment model.Comment) putSetter {
 	switch {
 	case !comment.Resolved:
@@ -749,13 +749,13 @@ func commentStateSetter(comment model.Comment) putSetter {
 
 // putCommentStateV2 answers PUT /api/v2/comments/{id}/state: each state's arm runs its /api/v1
 // route's work - the reopen (reopenCommentAs), the resolve, the accept or the reject
-// (commentActionAs) - once the no-op rule of decision 8 has found the body is a change. A body
-// equal to the comment's present state from the caller who set it answers the comment and writes
-// nothing (putChangesNothing), an accept's answer with lost null, since nothing was applied that
-// could have lost text. A suggestion accepted or rejected is a thread resolved by whoever decided
-// it, so {state: resolved} on it is that equal body from them, and from anyone else 409
-// ALREADY_ACTIONED, as an accept or a reject of it is: a resolve would record somebody else as
-// the one who decided it.
+// (commentActionAs) - once the no-op rule of dispatch://INFRA-4071/spec R8 has found the body is a
+// change. A body equal to the comment's present state from the caller who set it answers the
+// comment and writes nothing (putChangesNothing), an accept's answer with lost null, since nothing
+// was applied that could have lost text. A suggestion accepted or rejected is a thread resolved by
+// whoever decided it, so {state: resolved} on it is that equal body from them, and from anyone
+// else 409 ALREADY_ACTIONED, as an accept or a reject of it is: a resolve would record somebody
+// else as the one who decided it.
 func (s *server) putCommentStateV2(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -964,9 +964,9 @@ func (s *server) createMessageDeliveryV2(w http.ResponseWriter, r *http.Request)
 
 // putDeliveryStateV2 answers PUT /api/v2/messages/{id}/deliveries/{attempt}/state: the accept POST
 // /api/v1/messages/{id}/deliveries/{attempt}/accept makes (acceptDeliveryAs), once the no-op rule
-// of decision 8 has found the body is a change. The attempt already accepted as the same session
-// answers the attempt and writes nothing (putChangesNothing); every other accept of an accepted
-// message is the accept's own 409 ACCEPT_ALREADY_ACCEPTED or 403 ACCEPT_FORBIDDEN.
+// of dispatch://INFRA-4071/spec R8 has found the body is a change. The attempt already accepted as
+// the same session answers the attempt and writes nothing (putChangesNothing); every other accept
+// of an accepted message is the accept's own 409 ACCEPT_ALREADY_ACCEPTED or 403 ACCEPT_FORBIDDEN.
 func (s *server) putDeliveryStateV2(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) ||
 		!requireBearerCaller(w, r, apicode.AcceptForbidden, "accept requires an agent bearer token") {
@@ -1004,7 +1004,7 @@ func (s *server) putDeliveryStateV2(w http.ResponseWriter, r *http.Request) {
 
 // deliveryAttemptV2 is the attempt number names of message messageID, and where the message has no
 // such attempt - number is no whole number of 1 or more, or names none - it writes 404
-// DELIVERY_NOT_FOUND (decision 11) and answers false.
+// DELIVERY_NOT_FOUND (dispatch://INFRA-4071/spec R7) and answers false.
 func (s *server) deliveryAttemptV2(w http.ResponseWriter, r *http.Request, messageID, number string) (model.MessageDelivery, bool) {
 	missing := errorf(apicode.DeliveryNotFound, "message %s has no delivery attempt %s", messageID, number)
 	attempt, err := strconv.Atoi(number)
@@ -1086,7 +1086,8 @@ func (s *server) createIssueMessageV2(w http.ResponseWriter, r *http.Request) {
 // conversations GET /api/v1/agents/{session_id}/messages reads (agentConversationRootsCTE), every
 // one of them paged by limit and offset in its one activity order rather than /api/v1's window of
 // the 50 that moved last and every unread one, unread=true keeping those holding a reply the
-// caller has not read. A session with no conversation answers an empty page (ruling A).
+// caller has not read. A session with no conversation answers an empty page, as a {session_id}
+// keeps the answer /api/v1 gives it (dispatch://INFRA-4071/spec R7).
 func (s *server) listAgentMessagesV2(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
@@ -1168,7 +1169,7 @@ func (s *server) createBroadcastV2(w http.ResponseWriter, r *http.Request) {
 
 // getHandoffV2 answers GET /api/v2/handoffs/{id}: the handoff GET /api/v1/handoffs/{id} reads
 // (handoffByIDQuery), an id that is no uuid naming no handoff, 404 HANDOFF_NOT_FOUND, as every
-// other id no handoff has (decision 11).
+// other id no handoff has (dispatch://INFRA-4071/spec R7).
 func (s *server) getHandoffV2(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return

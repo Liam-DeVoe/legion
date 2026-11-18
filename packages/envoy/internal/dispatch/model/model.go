@@ -2351,7 +2351,7 @@ type Mention struct {
 // CommentMentionIdempotencyKey is the idempotency key every send of a comment's mention of target
 // goes under, <comment>:<target>:<mention mode>. mentionMode is the mode the comment recorded on
 // that mention (comment_mentions.delivery), never the mode of the attempt being sent: the
-// mention's first attempt is opened in it (createCommentFor in internal/dispatch/api), so this is
+// mention's first attempt is opened in it (writeComment in internal/dispatch/api), so this is
 // one key per mention, the same for its automatic send, for the delivery sweep's resend and for a
 // dashboard Retry in any mode. Whichever copy reaches the recipient second therefore repeats the
 // key of the one that landed and is recognised as the repeat it is (DELIVERY_DUPLICATE_WINDOW_MS

@@ -26,14 +26,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/prioritystore"
 )
 
-// The advances field's refusals:
-//   - ADVANCES_INPUT (apicode.AdvancesInput) refuses an `advances` input no relation can be
-//     written from, as BLOCKED_BY_INPUT refuses a blocker list beside it: more ids than the cap
-//     holds, an id no priority row names, a priority whose state is gone, and a relation whose
-//     issue does not exist. Each of the four is a 400 naming the key it refuses.
-//   - ADVANCES_REVISION (apicode.AdvancesRevision) refuses a write the revision rule does not let
-//     through: the one refusal of this field that is not a 400.
-
 // normalizeIssueAdvances bounds and deduplicates the priority ids of one write, before any row
 // lock is taken, as normalizeIssueBlockers does for blocked_by. The cap counts the issue's own
 // relations alone: inheritance is read-side, so counting what an issue inherits would let an

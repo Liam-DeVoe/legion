@@ -1,6 +1,6 @@
 package api
 
-// v2_misc.go is the routes of /api/v2 no other group holds (plan t12 of dispatch://INFRA-4071):
+// v2_misc.go is the routes of /api/v2 no other group holds (R1 of dispatch://INFRA-4071/spec):
 // the agents and what people wrote to one of them, the block links and the block schema, search
 // and its coverage, the going actions and requests, the limits, the users, the dashboard builds,
 // the session groups, one deploy run, the markdown round trip and the CI reconcile passes. Every
@@ -12,9 +12,9 @@ package api
 // (cireconcile.RecentPasses) and /api/v2 within a window it names (cireconcile.Passes). A list
 // answers the envelope; a report, bytes, a stream and one object answer
 // none (R1.4's departure). The {id} of a session group answers SESSION_GROUP_NOT_FOUND and of a
-// going request GOING_REQUEST_NOT_FOUND (decision 11); {session_id} keeps today's answer (ruling
-// A), and a deploy run keeps its own 404s, since its id is GitHub's and its repository the
-// deployment's (the plan's first departure).
+// going request GOING_REQUEST_NOT_FOUND (R7); {session_id} keeps the answer /api/v1 gives it
+// (R7), and a deploy run keeps its own 404s, since its id is GitHub's and its repository the
+// deployment's, which is also why its route is GET /api/v2/deploy-runs/{id} and no project's.
 
 import (
 	"context"
@@ -35,7 +35,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/sessionanswers"
 )
 
-// The refusals of the objects a route of this file names in its path (decision 11).
+// The refusals of the objects a route of this file names in its path (dispatch://INFRA-4071/spec
+// R7).
 var (
 	sessionGroupMissingRefusal = apicode.Refusal{Condition: apicode.SessionGroupMissing, Code: apicode.SessionGroupNotFound}
 	goingRequestMissingRefusal = apicode.Refusal{Condition: apicode.GoingRequestMissing, Code: apicode.GoingRequestNotFound}
@@ -48,7 +49,7 @@ const sessionGroupText = "A group is a stable id, a name and the agent sessions 
 	"agent writes one, a bearer naming its session in actor, and no event is appended; a credential scoped to " +
 	"one project is refused, since a group belongs to none."
 
-// v2MiscRows are the other routes (plan t12): rows 2, 3, 43, 174, 175 and 177, 176, 75, 76, 77,
+// v2MiscRows are the other routes: rows 2, 3, 43, 174, 175 and 177, 176, 75, 76, 77,
 // 116, 188, 64, 68, 69, 70, 67, 119 and 47 of the route map.
 func (s *server) v2MiscRows() []routeRow {
 	person := routeScopeSet{model.ScopePerson}
@@ -675,7 +676,8 @@ func (s *server) createSessionGroupV2(w http.ResponseWriter, r *http.Request) {
 }
 
 // requireSessionGroupV2 answers whether the group id names exists, and where it does not writes 404
-// SESSION_GROUP_NOT_FOUND (decision 11): an id that is no uuid names no group either.
+// SESSION_GROUP_NOT_FOUND (dispatch://INFRA-4071/spec R7): an id that is no uuid names no group
+// either.
 func (s *server) requireSessionGroupV2(w http.ResponseWriter, r *http.Request, id string) bool {
 	held, err := s.sessionGroupHeld(r.Context(), id)
 	if err != nil {

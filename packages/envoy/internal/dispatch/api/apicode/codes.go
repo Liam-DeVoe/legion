@@ -114,20 +114,26 @@ func statusFromCall(name string) Code {
 
 // The codes both versions answer alike: the name and the status each /api/v1 site wrote.
 var (
-	AcceptAlreadyAccepted              = both("ACCEPT_ALREADY_ACCEPTED", http.StatusConflict)
-	AcceptFailed                       = both("ACCEPT_FAILED", http.StatusConflict)
-	AcceptForbidden                    = both("ACCEPT_FORBIDDEN", http.StatusForbidden)
-	AcceptNotAsideOrSteer              = both("ACCEPT_NOT_ASIDE_OR_STEER", http.StatusConflict)
-	AcceptNotDirect                    = both("ACCEPT_NOT_DIRECT", http.StatusConflict)
-	AcceptNotRequestedByAuthor         = both("ACCEPT_NOT_REQUESTED_BY_AUTHOR", http.StatusConflict)
-	AcceptNotRequestedByPerson         = both("ACCEPT_NOT_REQUESTED_BY_PERSON", http.StatusConflict)
-	AcceptNotWrittenByPerson           = both("ACCEPT_NOT_WRITTEN_BY_PERSON", http.StatusConflict)
-	AcceptStale                        = both("ACCEPT_STALE", http.StatusConflict)
-	AcceptSuperseded                   = both("ACCEPT_SUPERSEDED", http.StatusConflict)
-	AcceptWrittenByAgent               = both("ACCEPT_WRITTEN_BY_AGENT", http.StatusConflict)
-	ActorKind                          = both("ACTOR_KIND", http.StatusBadRequest)
-	ActorSessionMismatch               = both("ACTOR_SESSION_MISMATCH", http.StatusForbidden)
-	AdvancesInput                      = both("ADVANCES_INPUT", http.StatusBadRequest)
+	AcceptAlreadyAccepted      = both("ACCEPT_ALREADY_ACCEPTED", http.StatusConflict)
+	AcceptFailed               = both("ACCEPT_FAILED", http.StatusConflict)
+	AcceptForbidden            = both("ACCEPT_FORBIDDEN", http.StatusForbidden)
+	AcceptNotAsideOrSteer      = both("ACCEPT_NOT_ASIDE_OR_STEER", http.StatusConflict)
+	AcceptNotDirect            = both("ACCEPT_NOT_DIRECT", http.StatusConflict)
+	AcceptNotRequestedByAuthor = both("ACCEPT_NOT_REQUESTED_BY_AUTHOR", http.StatusConflict)
+	AcceptNotRequestedByPerson = both("ACCEPT_NOT_REQUESTED_BY_PERSON", http.StatusConflict)
+	AcceptNotWrittenByPerson   = both("ACCEPT_NOT_WRITTEN_BY_PERSON", http.StatusConflict)
+	AcceptStale                = both("ACCEPT_STALE", http.StatusConflict)
+	AcceptSuperseded           = both("ACCEPT_SUPERSEDED", http.StatusConflict)
+	AcceptWrittenByAgent       = both("ACCEPT_WRITTEN_BY_AGENT", http.StatusConflict)
+	ActorKind                  = both("ACTOR_KIND", http.StatusBadRequest)
+	ActorSessionMismatch       = both("ACTOR_SESSION_MISMATCH", http.StatusForbidden)
+	// AdvancesInput refuses an `advances` input no relation can be written from, as
+	// BlockedByInput refuses a blocker list beside it: more ids than the cap holds, an id no
+	// priority row names, a priority whose state is gone, and a relation whose issue does not
+	// exist. Each of the four is a 400 naming the key it refuses.
+	AdvancesInput = both("ADVANCES_INPUT", http.StatusBadRequest)
+	// AdvancesRevision refuses an `advances` write the revision rule does not let through: the
+	// one refusal of that field that is not a 400.
 	AdvancesRevision                   = both("ADVANCES_REVISION", http.StatusConflict)
 	AgentSecretsAccountTokenUnreadable = both("AGENT_SECRETS_ACCOUNT_TOKEN_UNREADABLE", http.StatusInternalServerError)
 	AgentSecretsUnavailable            = both("AGENT_SECRETS_UNAVAILABLE", http.StatusServiceUnavailable)
@@ -209,13 +215,23 @@ var (
 	FrameInput                         = both("FRAME_INPUT", http.StatusBadRequest)
 	GitHubAppUnconfigured              = both("GITHUB_APP_UNCONFIGURED", http.StatusServiceUnavailable)
 	GitHubUnreadable                   = both("GITHUB_UNREADABLE", http.StatusBadGateway)
-	GoingAskerNamesNobody              = both("GOING_ASKER_NAMES_NOBODY", http.StatusForbidden)
-	GoingInput                         = both("GOING_INPUT", http.StatusBadRequest)
-	GoingRequestNotFound               = both("GOING_REQUEST_NOT_FOUND", http.StatusNotFound)
-	HandoffForbidden                   = both("HANDOFF_FORBIDDEN", http.StatusForbidden)
-	HandoffIDInput                     = both("HANDOFF_ID_INPUT", http.StatusBadRequest)
-	HandoffInput                       = both("HANDOFF_INPUT", http.StatusBadRequest)
-	HandoffNotFound                    = both("HANDOFF_NOT_FOUND", http.StatusNotFound)
+	// GoingAskerNamesNobody refuses the POST of a question by a credential that names nobody:
+	// the deployment's shared token, which resolves as {}. The stream serves a run to the
+	// credential that asked it and to no other, and comparing identities cannot tell two holders
+	// of one shared token apart, so such a run would be readable by nobody - the model called,
+	// the deployment's paced quota spent, and every reader of it answered 404. It is refused
+	// where that is cheap and plain, before anything is recorded.
+	GoingAskerNamesNobody = both("GOING_ASKER_NAMES_NOBODY", http.StatusForbidden)
+	GoingInput            = both("GOING_INPUT", http.StatusBadRequest)
+	// GoingRequestNotFound is the one answer an answer run's stream gives for every run a caller
+	// may not read: a run the record does not hold, an id that is not a uuid, and a run that is
+	// somebody else's. One answer for all three is what keeps an id from telling a caller
+	// anything it did not already know - whether that run exists, and whether it is anyone's.
+	GoingRequestNotFound = both("GOING_REQUEST_NOT_FOUND", http.StatusNotFound)
+	HandoffForbidden     = both("HANDOFF_FORBIDDEN", http.StatusForbidden)
+	HandoffIDInput       = both("HANDOFF_ID_INPUT", http.StatusBadRequest)
+	HandoffInput         = both("HANDOFF_INPUT", http.StatusBadRequest)
+	HandoffNotFound      = both("HANDOFF_NOT_FOUND", http.StatusNotFound)
 	// InternalError is INTERNAL. It is not named after the code alone: the leak guard's
 	// private-host rule (packages/daemon/internal/leakguard/private-names.toml, private_host_rule)
 	// reads a selector of that name followed by a method call as a host under the internal
@@ -296,25 +312,39 @@ var (
 	OIDCTokenInvalid       = both("OIDC_TOKEN_INVALID", http.StatusUnauthorized)
 	OwnerInvalid           = both("OWNER_INVALID", http.StatusBadRequest)
 	// ParentContended is a PATCH whose issue's parent a concurrent reparent moved at every lock
-	// attempt. The Legion daemon retries a status write it refuses
-	// (packages/daemon/internal/dispatch/types.go:113, ParentContended) rather than dropping it,
-	// so the two spellings change together: no mechanism shares a value between the two Go
-	// modules.
-	ParentContended                = both("PARENT_CONTENDED", http.StatusConflict)
-	PauseArmed                     = both("PAUSE_ARMED", http.StatusConflict)
-	PauseNotArmed                  = both("PAUSE_NOT_ARMED", http.StatusNotFound)
-	PausePointInput                = both("PAUSE_POINT_INPUT", http.StatusBadRequest)
-	PlanApprovedByReview           = both("PLAN_APPROVED_BY_REVIEW", http.StatusConflict)
-	PossibleDuplicate              = both("POSSIBLE_DUPLICATE", http.StatusConflict)
-	PreconditionFailed             = both("PRECONDITION_FAILED", http.StatusConflict)
-	PriorityExists                 = both("PRIORITY_EXISTS", http.StatusConflict)
-	PriorityInput                  = both("PRIORITY_INPUT", http.StatusBadRequest)
-	PriorityNotFound               = both("PRIORITY_NOT_FOUND", http.StatusNotFound)
-	ProjectExists                  = both("PROJECT_EXISTS", http.StatusConflict)
-	ProjectNotFound                = both("PROJECT_NOT_FOUND", http.StatusNotFound)
-	ProjectScope                   = both("PROJECT_SCOPE", http.StatusForbidden)
-	ProjectScopeDeployment         = both("PROJECT_SCOPE_DEPLOYMENT", http.StatusForbidden)
-	ProjectUnmapped                = both("PROJECT_UNMAPPED", http.StatusBadRequest)
+	// attempt. The Legion daemon retries a status write it refuses rather than dropping it
+	// (packages/daemon/internal/dispatch/types.go, ParentContended, which PermanentRefusal
+	// reads), so the two spellings change together: no mechanism shares a value between the two
+	// Go modules.
+	ParentContended      = both("PARENT_CONTENDED", http.StatusConflict)
+	PauseArmed           = both("PAUSE_ARMED", http.StatusConflict)
+	PauseNotArmed        = both("PAUSE_NOT_ARMED", http.StatusNotFound)
+	PausePointInput      = both("PAUSE_POINT_INPUT", http.StatusBadRequest)
+	PlanApprovedByReview = both("PLAN_APPROVED_BY_REVIEW", http.StatusConflict)
+	PossibleDuplicate    = both("POSSIBLE_DUPLICATE", http.StatusConflict)
+	PreconditionFailed   = both("PRECONDITION_FAILED", http.StatusConflict)
+	// PriorityExists refuses a create of an id the store already holds, as a project create
+	// refuses a key it holds (ProjectExists): a second create would write its own history over
+	// the first write's.
+	PriorityExists = both("PRIORITY_EXISTS", http.StatusConflict)
+	// PriorityInput refuses a body no priority can be written from: a title with nothing in it
+	// or one longer than an issue title may be, an id that is no priority id, a title no id can
+	// be derived from, and a patch that names nothing to write.
+	PriorityInput = both("PRIORITY_INPUT", http.StatusBadRequest)
+	// PriorityNotFound answers a route addressed to an id no priority row carries: a write of
+	// it, and the read of its history.
+	PriorityNotFound = both("PRIORITY_NOT_FOUND", http.StatusNotFound)
+	ProjectExists    = both("PROJECT_EXISTS", http.StatusConflict)
+	ProjectNotFound  = both("PROJECT_NOT_FOUND", http.StatusNotFound)
+	// ProjectScope refuses a write the caller's credential does not cover: an object of another
+	// project, or one the scope check could not resolve to the caller's own.
+	ProjectScope = both("PROJECT_SCOPE", http.StatusForbidden)
+	// ProjectScopeDeployment refuses a project-scoped caller a write that belongs to the
+	// deployment rather than to any one project.
+	ProjectScopeDeployment = both("PROJECT_SCOPE_DEPLOYMENT", http.StatusForbidden)
+	ProjectUnmapped        = both("PROJECT_UNMAPPED", http.StatusBadRequest)
+	// RankInput refuses a move to a place the order does not have, which is the code and the
+	// wording the issue board's own drag is refused with (the api package's issue_rank.go).
 	RankInput                      = both("RANK_INPUT", http.StatusBadRequest)
 	ReasonRequired                 = both("REASON_REQUIRED", http.StatusBadRequest)
 	ReplyForbidden                 = both("REPLY_FORBIDDEN", http.StatusForbidden)
@@ -340,32 +370,34 @@ var (
 	SessionIDInput                 = both("SESSION_ID_INPUT", http.StatusBadRequest)
 	SessionInGroup                 = both("SESSION_IN_GROUP", http.StatusConflict)
 	SessionRequired                = both("SESSION_REQUIRED", http.StatusBadRequest)
-	SessionScope                   = both("SESSION_SCOPE", http.StatusForbidden)
-	ShuttingDown                   = both("SHUTTING_DOWN", http.StatusServiceUnavailable)
-	SlowWriteCutOff                = both("SLOW_WRITE_CUT_OFF", http.StatusServiceUnavailable)
-	SnoozeInput                    = both("SNOOZE_INPUT", http.StatusBadRequest)
-	SourceAccess                   = both("SOURCE_ACCESS", http.StatusConflict)
-	SourceInput                    = both("SOURCE_INPUT", http.StatusBadRequest)
-	SourceNotFound                 = both("SOURCE_NOT_FOUND", http.StatusNotFound)
-	StateStale                     = both("STATE_STALE", http.StatusConflict)
-	StreamUnavailable              = both("STREAM_UNAVAILABLE", http.StatusServiceUnavailable)
-	SubscriberNotFound             = both("SUBSCRIBER_NOT_FOUND", http.StatusNotFound)
-	SummaryInput                   = both("SUMMARY_INPUT", http.StatusBadRequest)
-	TableWidth                     = both("TABLE_WIDTH", http.StatusBadRequest)
-	TargetAmbiguous                = both("TARGET_AMBIGUOUS", http.StatusConflict)
-	TargetNotFound                 = both("TARGET_NOT_FOUND", http.StatusNotFound)
-	TargetSpansBlocks              = both("TARGET_SPANS_BLOCKS", http.StatusBadRequest)
-	TestHookFailed                 = both("TEST_HOOK_FAILED", http.StatusInternalServerError)
-	TestHooksOff                   = both("TEST_HOOKS_OFF", http.StatusNotFound)
-	ThreadForbidden                = both("THREAD_FORBIDDEN", http.StatusForbidden)
-	ThreadIDInput                  = both("THREAD_ID_INPUT", http.StatusBadRequest)
-	TokenIDInput                   = both("TOKEN_ID_INPUT", http.StatusBadRequest)
-	TokenRevoked                   = both("TOKEN_REVOKED", http.StatusUnauthorized)
-	TokenScopesInput               = both("TOKEN_SCOPES_INPUT", http.StatusBadRequest)
-	TurnRequiresAsk                = both("TURN_REQUIRES_ASK", http.StatusBadRequest)
-	Unauthorized                   = both("UNAUTHORIZED", http.StatusUnauthorized)
-	UnknownCheck                   = both("UNKNOWN_CHECK", http.StatusBadRequest)
-	WaitInput                      = both("WAIT_INPUT", http.StatusBadRequest)
+	// SessionScope refuses a caller whose credential proved one session a write addressed to
+	// another session's own rows.
+	SessionScope       = both("SESSION_SCOPE", http.StatusForbidden)
+	ShuttingDown       = both("SHUTTING_DOWN", http.StatusServiceUnavailable)
+	SlowWriteCutOff    = both("SLOW_WRITE_CUT_OFF", http.StatusServiceUnavailable)
+	SnoozeInput        = both("SNOOZE_INPUT", http.StatusBadRequest)
+	SourceAccess       = both("SOURCE_ACCESS", http.StatusConflict)
+	SourceInput        = both("SOURCE_INPUT", http.StatusBadRequest)
+	SourceNotFound     = both("SOURCE_NOT_FOUND", http.StatusNotFound)
+	StateStale         = both("STATE_STALE", http.StatusConflict)
+	StreamUnavailable  = both("STREAM_UNAVAILABLE", http.StatusServiceUnavailable)
+	SubscriberNotFound = both("SUBSCRIBER_NOT_FOUND", http.StatusNotFound)
+	SummaryInput       = both("SUMMARY_INPUT", http.StatusBadRequest)
+	TableWidth         = both("TABLE_WIDTH", http.StatusBadRequest)
+	TargetAmbiguous    = both("TARGET_AMBIGUOUS", http.StatusConflict)
+	TargetNotFound     = both("TARGET_NOT_FOUND", http.StatusNotFound)
+	TargetSpansBlocks  = both("TARGET_SPANS_BLOCKS", http.StatusBadRequest)
+	TestHookFailed     = both("TEST_HOOK_FAILED", http.StatusInternalServerError)
+	TestHooksOff       = both("TEST_HOOKS_OFF", http.StatusNotFound)
+	ThreadForbidden    = both("THREAD_FORBIDDEN", http.StatusForbidden)
+	ThreadIDInput      = both("THREAD_ID_INPUT", http.StatusBadRequest)
+	TokenIDInput       = both("TOKEN_ID_INPUT", http.StatusBadRequest)
+	TokenRevoked       = both("TOKEN_REVOKED", http.StatusUnauthorized)
+	TokenScopesInput   = both("TOKEN_SCOPES_INPUT", http.StatusBadRequest)
+	TurnRequiresAsk    = both("TURN_REQUIRES_ASK", http.StatusBadRequest)
+	Unauthorized       = both("UNAUTHORIZED", http.StatusUnauthorized)
+	UnknownCheck       = both("UNKNOWN_CHECK", http.StatusBadRequest)
+	WaitInput          = both("WAIT_INPUT", http.StatusBadRequest)
 )
 
 // The codes the contracts package names for its clients, whose names are those constants, so a
@@ -445,14 +477,15 @@ var (
 	DependencyCycle = renamed("DEPENDENCY_CYCLE", http.StatusConflict, "ISSUE_CYCLE")
 
 	// BlockNotFound is a {block_id} the path's document does not hold, the 404 idRoutes'
-	// BlockNotFound names. /api/v1 answered it as it answers a block an operation names
-	// (TargetNotFound); /api/v2 names it as the object its path names (decision 11).
+	// BlockNotFound names. /api/v1 answers it as it answers a block an operation names
+	// (TargetNotFound); /api/v2 names it as the object its path names
+	// (dispatch://INFRA-4071/spec R7).
 	BlockNotFound = renamed("TARGET_NOT_FOUND", http.StatusNotFound, "BLOCK_NOT_FOUND")
 
 	// SessionGroupNotFound is a session group's {id} that names no group, and a group gone before
-	// the write that read it could make it (delivery.ErrSessionGroupNotFound). /api/v1 answered
+	// the write that read it could make it (delivery.ErrSessionGroupNotFound). /api/v1 answers
 	// both as it answers a row nothing holds (NOT_FOUND); /api/v2 names the group, the object its
-	// path names (decision 11).
+	// path names (dispatch://INFRA-4071/spec R7).
 	SessionGroupNotFound = renamed("NOT_FOUND", http.StatusNotFound, "SESSION_GROUP_NOT_FOUND")
 
 	// AskClosed is a first answer to an ask somebody has already answered (transitionAskTx),
@@ -474,8 +507,8 @@ var (
 	StateInvalid = v2Only("STATE_INVALID", http.StatusBadRequest)
 
 	// The objects a v2 path names that have no not-found code of their own under /api/v1, each
-	// the 404 of a path whose object does not exist (decision 11). The broker's ids answer the
-	// broker's own 404 as one of these.
+	// the 404 of a path whose object does not exist (dispatch://INFRA-4071/spec R7). The broker's
+	// ids answer the broker's own 404 as one of these.
 	AskNotFound               = v2Only("ASK_NOT_FOUND", http.StatusNotFound)
 	AgentTokenNotFound        = v2Only("AGENT_TOKEN_NOT_FOUND", http.StatusNotFound)
 	VersionNotFound           = v2Only("VERSION_NOT_FOUND", http.StatusNotFound)

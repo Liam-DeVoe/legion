@@ -23,7 +23,7 @@ import (
 
 // listArchitectureSources answers every source of every project, by project and then in the
 // order each project's sources were added. Its /api/v2 route is one project's list, so its
-// /api/v1 answer links each project it holds (decision 9 of the plan of dispatch://INFRA-4071).
+// /api/v1 answer links each project it holds (dispatch://INFRA-4071/spec R3.1).
 func (s *server) listArchitectureSources(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -118,10 +118,10 @@ func (s *server) putArchitectureSource(w http.ResponseWriter, r *http.Request) {
 }
 
 // putArchitectureSourceFrom saves the source input names, the work both versions' PUT does once
-// each has read its body. answersUnchanged is /api/v2's no-op rule (decision 8 of the plan of
-// dispatch://INFRA-4071): a source records no setter, so a save of the branch an enabled source
-// already has answers that source as it stands, whoever sends it, and writes nothing - no access
-// check, no reset of its bookkeeping, no event. /api/v1 re-saves it as it always has.
+// each has read its body. answersUnchanged is /api/v2's no-op rule (dispatch://INFRA-4071/spec
+// R8): a source records no setter, so a save of the branch an enabled source already has answers
+// that source as it stands, whoever sends it, and writes nothing - no access check, no reset of
+// its bookkeeping, no event. /api/v1 re-saves it.
 func (s *server) putArchitectureSourceFrom(w http.ResponseWriter, r *http.Request, input putArchitectureSourceInput, answersUnchanged bool) {
 	key := r.PathValue("key")
 	actor, ok := s.requireActor(w, r, input.Actor)

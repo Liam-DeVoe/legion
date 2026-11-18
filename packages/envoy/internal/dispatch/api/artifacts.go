@@ -172,14 +172,15 @@ func (s *server) refuseUploadToAClosedIssue(handler http.HandlerFunc) http.Handl
 			handler(w, r)
 			return
 		}
-		// A /api/v2 path names an issue that must exist (decision 11 of the plan of
-		// dispatch://INFRA-4071): a missing one is 404 ISSUE_NOT_FOUND there, and /api/v1 keeps
-		// the 404 NOT_FOUND it has always answered.
+		// A /api/v2 path names an issue that must exist (dispatch://INFRA-4071/spec R7): a missing
+		// one is 404 ISSUE_NOT_FOUND there, and /api/v1 keeps its 404 NOT_FOUND (R3).
 		if requestAPIVersion(r) == apiV2 && errors.Is(refusal, pgx.ErrNoRows) {
 			refusal = errorf(apicode.IssueNotFound, "no issue %s", r.PathValue("key"))
 		}
-		// Only the issue's own refusal (closed, missing) stands aside for the key: a check that
-		// failed is answered as it always was.
+		// Only the issue's own refusal stands aside for the key: a closed issue's on either
+		// version, and a missing issue's on /api/v2 alone, where it is ISSUE_NOT_FOUND above.
+		// /api/v1's missing issue, a bare pgx.ErrNoRows, is answered 404 NOT_FOUND whatever the
+		// key holds, and a check that failed is answered with its own error.
 		var ownerRefusal *apiError
 		if keyed && errors.As(refusal, &ownerRefusal) && ownerRefusal.statusFor(r) < http.StatusInternalServerError {
 			answers, err := s.requestKeyAnswersItself(r.Context(), requestKeyLogin(actor, human), requestKey)
@@ -924,9 +925,10 @@ func (s *server) getArtifactText(w http.ResponseWriter, r *http.Request) {
 	// clients read this route for its markdown, and a tree they discard would cost them the
 	// read and evict from the cache what a browser is reading.
 	//
-	// This markdown is a document version's own text, which the ledger stored the tree of behind
-	// the commit that wrote it (docs.Ledger.storeVersionTrees), so a browser opening a document
-	// this process has not served since it started copies those bytes.
+	// Where this markdown is a document version's own text (unsettled false), the ledger stored
+	// its tree behind the commit that wrote it (docs.Ledger.storeVersionTrees), so a browser
+	// opening a document this process has not served since it started copies those bytes. An
+	// unsettled text is no version's stored markdown, so no commit stored its tree.
 	if wantsDisplayTrees(r) {
 		reader := s.readDisplayTrees(r.Context(), true)
 		reader.text(&answer.MarkdownTree, answer.Markdown)
@@ -942,14 +944,17 @@ func (s *server) artifactTextBody(r *http.Request, artifactID string) (artifactT
 }
 
 // documentText is a document's markdown and token, with its blocks beside them where withBlocks
-// asks for them, and the version that markdown is: what the /api/v1 text routes answer and what
-// include=text and include=blocks add to a /api/v2 artifact row. The markdown, the token and the
-// blocks come from one rendering of one tree (docs.TextWithTokenAndBlocks), so a write by another
-// session cannot leave a listing's byte ranges indexing markdown they were not computed over; nil
-// blocks for a read that asked for none, which pays for none of that rendering. The version is
-// read once the markdown is rendered, by that markdown (versionOfText): no database read holds a
-// room's tree, so the version cannot come from the tree's read, and a version another session
-// writes between the two stores other text, so it is not named over this one.
+// asks for them, and the version it names beside that markdown (versionOfText): the newest
+// version whose stored markdown it is, or, where no version stores it, the newest version with
+// unsettled true. It is what the /api/v1 text routes answer and what include=text adds to a
+// /api/v2 artifact row, with the blocks where include names blocks too; include=blocks alone
+// reads documentBlocks instead (artifactRowsV2). The markdown, the token and the blocks come from
+// one rendering of one tree (docs.TextWithTokenAndBlocks), so a write by another session cannot
+// leave a listing's byte ranges indexing markdown they were not computed over; nil blocks for a
+// read that asked for none, which pays for none of that rendering. The version is read once the
+// markdown is rendered, by that markdown: no database read holds a room's tree, so the version
+// cannot come from the tree's read, and a version another session writes between the two stores
+// other text, so it is not named over this one.
 func (s *server) documentText(ctx context.Context, artifactID string, withBlocks bool) (artifactText, error) {
 	var text artifactText
 	if withBlocks {

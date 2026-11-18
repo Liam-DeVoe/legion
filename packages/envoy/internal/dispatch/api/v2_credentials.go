@@ -1,13 +1,13 @@
 package api
 
-// v2_credentials.go is the credential pages' routes of /api/v2 (plan t11 of dispatch://INFRA-4071,
-// its credential half): the credential requests waiting on the caller and the state route their
+// v2_credentials.go is the credential pages' routes of /api/v2 (R1 of dispatch://INFRA-4071/spec):
+// the credential requests waiting on the caller and the state route their
 // approve and deny become, the machine-login lookup, the grants and the machine logins the caller
 // may revoke, and the caller's own sign-ins, each a relay to the secrets broker as its /api/v1
 // route is (credential_requests.go). Three things change. A broker list, which the broker does
 // not page, is sliced by Dispatch into the envelope. A revoke is a DELETE (the route map's J5),
 // answering 204, or 200 {tokens_ended} for a sign-in. And an id the broker holds no record of
-// answers the broker's own 404 under one code of its object (decision 11): every other answer of
+// answers the broker's own 404 under one code of its object (R7): every other answer of
 // the broker, a refusal among them, is relayed verbatim, as /api/v1 relays it.
 
 import (
@@ -23,7 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// The refusals of the broker's ids a credential route's path names (decision 11), and of every
+// The refusals of the broker's ids a credential route's path names (R7), and of every
 // credential route on a Dispatch with no secrets broker (requireAgentSecrets).
 var (
 	credentialRequestMissingRefusal = apicode.Refusal{Condition: apicode.CredentialRequestMissing, Code: apicode.CredentialRequestNotFound}
@@ -43,7 +43,7 @@ const brokerRelayText = "404 FEATURE_OFF without a configured secrets broker, 50
 const brokerPageText = "limit 1 to 200 (default 50) and offset over what the broker answers, which Dispatch slices; " +
 	"{items, total, limit, offset}"
 
-// v2CredentialRows are the credential routes (plan t11's credential half): rows 57, 58, 59, 61 and
+// v2CredentialRows are the credential routes: rows 57, 58, 59, 61 and
 // 62, 60, 117, 118, 186 and 187 of the route map.
 func (s *server) v2CredentialRows() []routeRow {
 	person := routeScopeSet{model.ScopePerson}
@@ -210,15 +210,16 @@ type credentialRequestStateV2Input struct {
 }
 
 // signInRevokedV2 is DELETE /api/v2/me/signins/{id}'s answer: how many access tokens ended with the
-// sign-in. It is a type of its own, so no /api/v1 shape's tags change (decision 2).
+// sign-in. It is a type of its own, so no /api/v1 shape's tags change (dispatch://INFRA-4071/spec
+// R3).
 type signInRevokedV2 struct {
 	TokensEnded int `json:"tokens_ended"`
 }
 
 // relayBrokerRefusalV2 answers a broker call that failed: the broker's own 404 of the id the path
-// names as missing, that object's code (decision 11), and every other failure as /api/v1 relays it
-// (relayBrokerResponse). The broker answers every id it holds no record of 404 NOT_FOUND, a sign-in
-// of anyone else's among them.
+// names as missing, that object's code (dispatch://INFRA-4071/spec R7), and every other failure as
+// /api/v1 relays it (relayBrokerResponse). The broker answers every id it holds no record of 404
+// NOT_FOUND, a sign-in of anyone else's among them.
 func relayBrokerRefusalV2(w http.ResponseWriter, r *http.Request, err error, missing apicode.Code, object string) {
 	var brokerErr *agentsecrets.Error
 	if errors.As(err, &brokerErr) && brokerErr.Status == http.StatusNotFound && brokerErr.Code == "NOT_FOUND" {
@@ -279,8 +280,8 @@ func (s *server) revokeCredentialGrantV2(w http.ResponseWriter, r *http.Request)
 
 // listCredentialRequestsV2 answers GET /api/v2/credential-requests: one page of the requests GET
 // /api/v1/credential-requests?approver=me relays. A Dispatch with no broker is 404 FEATURE_OFF, as
-// every other credential route answers it, where /api/v1 answers null: an empty page would read
-// as nothing waiting, and the web app stops asking only on the refusal.
+// every other credential route but the capabilities read answers it, where /api/v1 answers null:
+// an empty page would read as nothing waiting, and the web app stops asking only on the refusal.
 func (s *server) listCredentialRequestsV2(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
@@ -298,12 +299,13 @@ func (s *server) listCredentialRequestsV2(w http.ResponseWriter, r *http.Request
 // deny POST /api/v1/credential-requests/{id}/approve and .../deny relay (Client.Approve,
 // Client.Deny), the caller the approver, answered with the request as the broker then records it.
 //
-// The no-op rule of decision 8 is the broker's request already in that state by that approver: a
-// machine login records the one login that may decide it (or anyone), and its typed code is the
-// only thing that selects its record, so the record the code reads (Client.MachineLookup) is held
-// to the path's id, the state sent and the caller as its approver before anything is relayed, and
-// a PUT that would change nothing answers that record and relays no decision. A decision that
-// names no code reads no record: the broker refuses it, and its refusal is relayed.
+// The no-op rule of dispatch://INFRA-4071/spec R8 is the broker's request already in that state by
+// that approver: a machine login records the one login that may decide it (or anyone), and its
+// typed code is the only thing that selects its record, so the record the code reads
+// (Client.MachineLookup) is held to the path's id, the state sent and the caller as its approver
+// before anything is relayed, and a PUT that would change nothing answers that record and relays
+// no decision. A decision that names no code reads no record: the broker refuses it, and its
+// refusal is relayed.
 func (s *server) putCredentialRequestStateV2(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
@@ -399,9 +401,10 @@ func lookupMachineRecord(ctx context.Context, client *agentsecrets.Client, code 
 	return record, raw, nil
 }
 
-// recordSetter is who set a credential request's state as decision 8 compares a caller with: the
-// one login its record names as the approver, or nobody in particular for a record any signed-in
-// person may decide (the approver `anyone`), which records no setter.
+// recordSetter is who set a credential request's state as the no-op rule of
+// dispatch://INFRA-4071/spec R8 compares a caller with: the one login its record names as the
+// approver, or nobody in particular for a record any signed-in person may decide (the approver
+// `anyone`), which records no setter.
 func recordSetter(record wire.RecordResponse) putSetter {
 	if record.Approver == "anyone" {
 		return noSetterRecorded

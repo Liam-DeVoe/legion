@@ -60,7 +60,7 @@ const mentionLookupTimeout = 250 * time.Millisecond
 // zero leaves it bounded by the listener client's own window. A lookup that timeout cut short,
 // while ctx itself is still live, yields the target unanswered, with no pinned session and no
 // resolve error: the listener has not answered, so nothing is known to refuse and nothing is
-// pinned. createCommentFor still counts the session a session:<id> target names
+// pinned. writeComment still counts the session a session:<id> target names
 // (mentionedSession) when it decides what the mention makes redundant. Its attempt row records
 // neither a session nor an error, which is the shape of an attempt stranded before anything was
 // resolved, so the sender resolves it when it sends (mentionResolutionFor).

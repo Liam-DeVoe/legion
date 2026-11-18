@@ -35,8 +35,9 @@ import (
 // draft; Google AIP-155): the dashboard mints one per press and the agents' client one per command,
 // and both retry a failed fetch, a timeout, a 5xx, a 429 and a 409 KEY_IN_FLIGHT under it, none of
 // which says whether the first attempt ran. keyedWrites, which register wraps around every route
-// keyedMethod keys - every POST and PATCH, and every PUT and DELETE of /api/v2 - makes that retry
-// safe with one request_keys row per key (migration 0137):
+// keyedMethod keys - every POST and PATCH, and every PUT and DELETE of a route the rules of /api/v2
+// bind (apiRoute.v2Bound) - makes that retry safe with one request_keys row per key (migration
+// 0137):
 //
 //   - The row is inserted in flight, in a statement of its own, before the handler runs, and on a
 //     context the client's cancellation does not reach. A repeat that finds it answers from it
@@ -179,12 +180,11 @@ func (s *server) writeRefreshed(w http.ResponseWriter, r *http.Request, stored [
 	WriteJSON(w, http.StatusCreated, current)
 }
 
-// keyedMethod reports whether register keys route (decision 7 of the plan of
-// dispatch://INFRA-4071): every write method of a route the rules of /api/v2 bind (R8), a POST, a
-// PATCH, a PUT and a DELETE, and a POST or a PATCH of every other route. On /api/v1 a PUT and a
-// DELETE are idempotent already and stay unkeyed, so no /api/v1 answer changes; so do a test
-// hook's and a row of the INFRA-979 tree's at either version, which no rule of /api/v2 binds
-// (apiRoute.v2Bound). A GET writes nothing.
+// keyedMethod reports whether register keys route: every write method of a route the rules of
+// /api/v2 bind (dispatch://INFRA-4071/spec R8), a POST, a PATCH, a PUT and a DELETE, and a POST or a
+// PATCH of every other route. On /api/v1 a PUT and a DELETE are idempotent already and stay unkeyed,
+// so no /api/v1 answer changes (R3); so do a test hook's and a row of the INFRA-979 tree's at either
+// version, which no rule of /api/v2 binds (apiRoute.v2Bound). A GET writes nothing.
 //
 // The idempotency fingerprint holds the route's whole pattern (writeRequestFields), so one key sent
 // to a /api/v1 route and then to its /api/v2 route is two requests under one key, 422 KEY_REUSED.

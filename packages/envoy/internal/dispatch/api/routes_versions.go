@@ -1,7 +1,7 @@
 package api
 
-// routes_versions.go is how one route table serves two versions of the API (decision 1 of the
-// plan of dispatch://INFRA-4071). Three kinds of row feed it, and routes() makes one apiRoute of
+// routes_versions.go is how one route table serves two versions of the API (R2 of
+// dispatch://INFRA-4071/spec). Three kinds of row feed it, and routes() makes one apiRoute of
 // each (version, row) pair they declare:
 //
 //   - A v1Row (v1Rows, routes_table.go) is a route of /api/v1 as it stood when /api/v2 began, at
@@ -69,15 +69,17 @@ type v1Row struct {
 }
 
 // successor is what answers a v1Row under /api/v2 (R2): the route the route map names for it
-// (dispatch://INFRA-2946/artifact/route-map-md, section (a), with the plan's departures for row
-// 67 and for the two near-copy rows of #4103).
+// (dispatch://INFRA-2946/artifact/route-map-md, section (a)), but for row 67, which maps to the
+// deployment-wide GET /deploy-runs/{id} since its run is read from the deployment's own
+// repository, and for the two near-copy rows of #4103, which the map predates and which map to GET
+// /projects/{key}/near-copy-checks and GET /near-copy-checks/{id}.
 //
 // A `{name}` in Query, and on the right of a Path binding, is filled from the v1 request: its path
 // value of that name, or, where the v1 pattern holds no such wildcard, its query value of that
 // name (`ref={ref}` of GET /api/v1/issues/resolve). A wildcard of the v2 Pattern that no binding
 // names is the v1 path value of the same name. One that the v1 pattern does not hold either is a
 // value the v1 handler resolves while it answers - the artifact a slug names, the issue a
-// document belongs to - and records for the Link header (decision 9); only rows 6, 17, 89, 91,
+// document belongs to - and records for the Link header (R3.1); only rows 6, 17, 89, 91,
 // 92, 161, 164, 165 and 178 of the map need one (TestEveryV1RowNamesItsV2Route).
 type successor struct {
 	// Method and Pattern name the /api/v2 route, its pattern version-free as a routeRow writes
@@ -97,7 +99,7 @@ type successor struct {
 	// own route, at the same path, renamed, or merged with other rows into one.
 	Deleted bool
 	// None is the version-free path of the list a client finds the values of the wildcard its
-	// handler resolves in, which a successful answer that resolved none links (Link, decision 9):
+	// handler resolves in, which a successful answer that resolved none links (Link, R3.1):
 	// row 178, every project's architecture sources, links each project it lists and /projects
 	// when it lists none. Empty for every other row.
 	None string
@@ -328,7 +330,7 @@ type authorityWhere struct {
 // or a query value (`waiting_on` `me` needs `person`; a value of a comma list such as `include`
 // is one of its members). The wrapper that refuses a request lacking one, 403
 // OAUTH_SCOPE_REQUIRED naming the scope, runs after the decoder and before the handler
-// (gateV2Authorities, plan t4). A check that depends on the data, such as who wrote the object,
+// (gateV2Authorities). A check that depends on the data, such as who wrote the object,
 // stays in the handler, and the row's description names it.
 type authorityRule struct {
 	Where  authorityWhere
@@ -424,7 +426,7 @@ type routeRow struct {
 	// OpenAPI emitter.
 	Shape routeShape
 	// Refusals are the refusals the route answers, each a condition and its code, one code per
-	// condition across the whole table (decision 4, TestOneConditionOneCode).
+	// condition across the whole table (R7, TestOneConditionOneCode).
 	Refusals []apicode.Refusal
 	// List is a list's limit bounds, zero for a list that takes 50 and 200 (listBounds.limits)
 	// and for a route that is no list: a route is a list when its Query takes a limit.

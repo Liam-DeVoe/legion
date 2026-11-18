@@ -30,18 +30,6 @@ import (
 // the stream needs is the record's (going.go), so any pod serves the stream of a run another pod
 // is answering, or of a run whose pod is gone.
 
-// GOING_REQUEST_NOT_FOUND (apicode.GoingRequestNotFound) is the one answer the stream gives for
-// every run a caller may not read: a run the record does not hold, an id that is not a uuid, and a
-// run that is somebody else's. One answer for all three is what keeps an id from telling a caller
-// anything it did not already know - whether that run exists, and whether it is anyone's.
-//
-// GOING_ASKER_NAMES_NOBODY (apicode.GoingAskerNamesNobody) refuses the POST of a credential that
-// names nobody: the deployment's shared token, which resolves as {} (server.go). The stream serves
-// a run to the credential that asked it and to no other, and comparing identities cannot tell two
-// holders of one shared token apart, so such a run would be readable by nobody - the model called,
-// the deployment's paced quota spent, and every reader of it answered 404. It is refused where
-// that is cheap and plain, before anything is recorded.
-
 // goingStreamPoll is how often an open stream reads the record for frames the run has stored
 // since its last read. The frames are rows, so a reader learns of one by reading: this is the
 // delay a reader may see on a frame, and at a few reads a second over a run's window it is a
@@ -80,18 +68,8 @@ type goingCapability struct {
 	ModelConfigured bool `json:"model_configured"`
 }
 
-// createGoingRequest records one question and starts its answer: POST /api/v1/going/requests. It
-// answers the stored run, whose id addresses the stream, as soon as the row is committed, and
-// the answer itself runs behind it on s.detached, which shutdown waits for (server.detached): a
-// run takes contracts.GoingRunWindow, which is far too long to hold an answer for.
-//
-// A credential that names nobody is refused here, before anything is recorded
-// (apicode.GoingAskerNamesNobody): the stream would serve its run to no reader at all.
-//
-// A deployment with no model configured records the question exactly the same way and stores the
-// run's error frame instead of answering it (startGoingRun), so a caller learns that from the
-// stream, where every other failure of a run is reported, rather than from a status of this
-// route's own.
+// createGoingRequest answers POST /api/v1/going/requests: the question createGoingRequestFrom
+// records and answers, for the asker goingAsker admits, its body read off the request.
 func (s *server) createGoingRequest(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.goingAsker(w, r)
 	if !ok {
@@ -130,7 +108,15 @@ func (s *server) goingAsker(w http.ResponseWriter, r *http.Request) (model.Actor
 }
 
 // createGoingRequestFrom records the question input asks for actor and starts its answer, the
-// write both versions of the route make once each has read its body.
+// write both versions of the route make once each has read its body. It answers the stored run,
+// whose id addresses the stream, as soon as the row is committed, and the answer itself runs
+// behind it on s.detached, which shutdown waits for (server.detached): a run takes
+// contracts.GoingRunWindow, which is far too long to hold an answer for.
+//
+// A deployment with no model configured records the question exactly the same way and stores the
+// run's error frame instead of answering it (startGoingRun), so a caller learns that from the
+// stream, where every other failure of a run is reported, rather than from a status of the
+// route's own.
 func (s *server) createGoingRequestFrom(w http.ResponseWriter, r *http.Request, actor model.Actor, input createGoingRequestInput) {
 	words := strings.TrimSpace(input.Words)
 	if words == "" {
@@ -269,9 +255,9 @@ func (s *server) goingBodies(ctx context.Context, hits []going.Hit) (map[string]
 }
 
 // streamGoingAnswer writes one run's answer as server-sent events: GET
-// /api/v1/going/requests/{id}/stream. It serves the record and not the process that took the
-// POST, so the stream of a run this pod never ran is the same stream, and a reader that drops
-// resumes from the frame it holds (Last-Event-ID).
+// /api/v1/going/requests/{id}/stream and GET /api/v2/going-requests/{id}/stream. It serves the
+// record and not the process that took the POST, so the stream of a run this pod never ran is the
+// same stream, and a reader that drops resumes from the frame it holds (Last-Event-ID).
 //
 // A run past its ends_at with no terminal frame stored is ended by this reader, with the
 // deadline's error, and the stream ends on whatever terminal frame that write answers
@@ -432,9 +418,9 @@ func writeGoingRequestNotFound(w http.ResponseWriter, r *http.Request) {
 }
 
 // getGoingCapability answers whether this deployment has a model configured, and nothing else:
-// GET /api/v1/going/capability. Any caller Dispatch admits may read it, which is why the answer
-// names no endpoint, no deployment and no credential - a reader learns that a question can be
-// asked, never where it is answered.
+// GET /api/v1/going/capability and GET /api/v2/settings/text-model. Any caller Dispatch admits may
+// read it, which is why the answer names no endpoint, no deployment and no credential - a reader
+// learns that a question can be asked, never where it is answered.
 func (s *server) getGoingCapability(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return

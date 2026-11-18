@@ -2950,7 +2950,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   Dispatch trims labels, preserves case, removes case-insensitive duplicates, and returns `400 LABELS_INPUT` for blank or over-40-character labels;
   every label update emits `issue.updated` with its labels.
   An import through the default project adds `repo:<owner>/<repo>` (`repoLabelPrefix`) once the caller's labels have met those limits:
-  it is Dispatch's record of the issue's source repository, not the caller's label, so neither the 40 characters nor the 20 bind it, and a repository name of any length imports (R14).
+  it is Dispatch's record of the issue's source repository, not the caller's label, so neither the 40 characters nor the 20 bind it, and a repository name of any length imports (R14 of dispatch://INFRA-4071/spec).
   The issue's own `repo:` label is the one equal, case-insensitively, to `repo:` and the `<owner>/<repo>` of one of its `https://github.com/<owner>/<repo>/issues/<n>` links (`ownRepoLabel`; the web label editor's `ownRepoLabelKey` reads the same rule);
   any other `repo:` label, one a caller set among them, is an ordinary label.
   A `labels` replacement keeps the issue's own `repo:` label when it sends it back, past both limits, and holds every other label to them;
@@ -2990,7 +2990,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   One whose newest thread reply is the reply its last hand-back answered (`handed_back_reply_id`) is waiting on the human, and so is one nobody has replied to;
   otherwise the newest comment's `turn` decides.
   The newest reply is the one that committed last:
-  `comments.created_at` defaults to `clock_timestamp()` (migration 0065), the moment its insert runs, and both comment inserts (`createCommentFor`, `replyComment`) leave it to the default and run once their transaction holds the owner row.
+  `comments.created_at` defaults to `clock_timestamp()` (migration 0065), the moment its insert runs, and both comment inserts (`writeComment`, `replyComment`) leave it to the default and run once their transaction holds the owner row.
   The old default, `now()`, was the transaction's start, which sorted a reply that began first but waited for the row before one that committed while it waited;
   an older binary still serving during a rollout names no `created_at` either, so the default orders its replies too.
   The hand-back reads that reply under the same owner row, so a reply that inserts after the hand-back sorts after the reply it recorded and decides the turn, however early its own transaction began.

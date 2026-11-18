@@ -1035,12 +1035,11 @@ func writeAPIRefusal(w http.ResponseWriter, req *http.Request, code apicode.Code
 }
 
 // apiV1DeprecatedAt dates the Deprecation header of every /api/v1 answer (RFC 9745; R3.1 of
-// dispatch://INFRA-4071/spec, decision 10 of its plan): 00:00Z of the day the change that added
-// /api/v2 wrote its last implementing head, which its implementer sets in that round. It is a
-// date in code because no build can know the day it is released: the Envoy image is built before
-// the release job decides its legion-envoy version, and the server knows only the commit it was
-// built from (main's buildCommit), so the date can be some days before the release that carries
-// it.
+// dispatch://INFRA-4071/spec): 00:00Z of the day the change that added /api/v2 wrote its last
+// implementing head, which its implementer sets in that round. It is a date in code because no
+// build can know the day it is released: the Envoy image is built before the release job decides
+// its legion-envoy version, and the server knows only the commit it was built from (main's
+// buildCommit), so the date can be some days before the release that carries it.
 var apiV1DeprecatedAt = time.Date(2026, time.November, 17, 0, 0, 0, 0, time.UTC)
 
 // apiV1Deprecation is the Deprecation header's value, `@` and the date's Unix seconds.

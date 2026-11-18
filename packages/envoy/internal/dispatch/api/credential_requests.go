@@ -5,7 +5,9 @@
 // relays a person's revoke of a grant or a machine login. Every handler does the same five things:
 // require a human caller, require the broker to be configured, resolve or read its input, call
 // the matching agentsecrets.Client method, and forward the broker's exact status and body — the
-// broker decides. The pending list alone answers null rather than 404 FEATURE_OFF without a broker.
+// broker decides. Without a broker, /api/v1's pending list answers null and the capabilities read
+// of both versions answers machine_code_page false (getCredentialCapabilities), rather than 404
+// FEATURE_OFF.
 // The one thing Dispatch supplies is who acts: a machine login's approve and deny, a revoke and the
 // machine-login list send the login actingPerson resolved, in Dispatch's canonical lowercase form,
 // as the approver, which the broker takes on Dispatch's word, and never forward the browser's body,
@@ -48,7 +50,8 @@ func noteActingAgent(r *http.Request, actor model.Actor) {
 
 // requireAgentSecrets answers 404 FEATURE_OFF when this Dispatch has no broker configured
 // (DISPATCH_AGENT_SECRETS_URL unset); every credential route of both versions needs it after
-// actingPerson but /api/v1's pending list, which answers null.
+// actingPerson but /api/v1's pending list, which answers null, and the capabilities read, which
+// answers for a Dispatch with no broker (getCredentialCapabilities).
 func (s *server) requireAgentSecrets(w http.ResponseWriter, r *http.Request) (*agentsecrets.Client, bool) {
 	if s.deps.AgentSecrets == nil {
 		writeError(w, r, apicode.FeatureOff, "agent-secrets is not configured on this Dispatch")

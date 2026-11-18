@@ -155,9 +155,9 @@ func askWaitingOn(ctx context.Context, q queryer, askID string) (string, error) 
 // answering a missing field.
 //
 // It is deliberately not the whole of askReadColumns: a write's answer needs this one field,
-// and the two handlers that call it (createAskFor in api/asks.go, requestArtifactApproval in
-// api/reviews.go) already hold the ask they wrote. A route whose answer is a full ask read
-// back - the hand-on's - reads it through loadAsk instead.
+// and the two functions that call it (openAsk in api/asks.go, requestApproval in api/reviews.go)
+// already hold the ask they wrote. A route whose answer is a full ask read back - the hand-on's -
+// reads it through loadAsk instead.
 func askWaitingOnPerson(ctx context.Context, q queryer, askID string) (string, error) {
 	var person string
 	if err := q.QueryRow(ctx, `select `+askedOfPersonExpression+`

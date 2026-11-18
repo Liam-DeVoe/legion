@@ -178,7 +178,7 @@ type answerAskInput struct {
 	Selected []string `json:"selected"`
 	Text     *string  `json:"text"`
 	// ExpectedEditedAt is required: an answer names the wording it answers, and a body without
-	// the field is refused (400 ASK_REVISION_REQUIRED, answerAsk below). Null is the
+	// the field is refused (400 ASK_REVISION_REQUIRED, recordAnswer below). Null is the
 	// precondition that the ask has never been edited, so the field is required and nullable
 	// both, which is why the handler holds the bytes unparsed (rawFieldSchemas).
 	ExpectedEditedAt json.RawMessage `json:"expected_edited_at" required:"true"`
@@ -213,8 +213,8 @@ func (s *server) answerAsk(w http.ResponseWriter, r *http.Request) {
 // in their own shape, the /api/v2 route reading its own on the write's transaction (readBack). It
 // writes a refusal itself and answers false.
 func (s *server) recordAnswer(w http.ResponseWriter, r *http.Request, actor model.Actor, input answerAskInput, readBack askReadBack) (model.Ask, bool) {
-	// The acting session the body names, where the caller's credential proved none: this route
-	// has always decoded an actor, and a personal token names its session nowhere else.
+	// The acting session the body names, where the caller's credential proved none: both routes
+	// decode an actor, and a personal token names its session nowhere else.
 	actor, ok := actSessionFromBody(w, r, actor, input.Actor)
 	if !ok {
 		return model.Ask{}, false
@@ -479,7 +479,7 @@ func (s *server) recordDecline(w http.ResponseWriter, r *http.Request, actor mod
 	ask, err := s.closeAsk(r.Context(), r.PathValue("id"), actor, askTransition{
 		EventType: "ask.resolved",
 		Apply: func(ctx context.Context, tx pgx.Tx, ask model.Ask) (model.Ask, error) {
-			// The kind is refused here, inside Apply, for the reason answerAsk states for its
+			// The kind is refused here, inside Apply, for the reason recordAnswer states for its
 			// own kind-dependent refusal: an ask's kind is known only once its row is read, and
 			// a read before the transaction would decide on a row another writer could still
 			// move. Under the row lock the kind refused is the kind this write would close.

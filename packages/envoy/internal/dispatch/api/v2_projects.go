@@ -1,20 +1,21 @@
 package api
 
 // v2_projects.go is the projects, architecture, repositories, priorities and deployment settings
-// of /api/v2 (plan t10 of dispatch://INFRA-4071, its project half): the projects and the patch of
+// of /api/v2 (R1 of dispatch://INFRA-4071/spec): the projects and the patch of
 // one, which takes the default assignee and the gated steps two PUTs of /api/v1 wrote (the route
 // map's J16); a project's architecture, its sources and the one sync route the three syncs of
 // /api/v1 become (J15); the related-item search; the near-copy gate's records, in the envelope
-// (the plan's departure 2); the repository mappings and the App's installation on one; the
-// priorities and the acts of one (J29); the three deployment settings (J19); and the counts of the
+// (two rows #4103 added, which no row of the route map names); the repository mappings and the
+// App's installation on one; the priorities and the acts of one (J29); the three deployment
+// settings (J19); and the counts of the
 // related-item checks (J30). Every route runs the work its /api/v1 route runs (createProjectFrom,
 // writeProjectDefaultAssignee, writeProjectGatedSteps, getArchitectureTree, querySources,
 // putArchitectureSourceFrom, deleteArchitectureSourceAs, syncProjectSources, answerRelated,
 // readNearCopyCheck, putRepoProjectFrom, deleteRepoProjectAs, getAppInstallation, readPriorities,
 // createPriorityFrom, patchPriorityFrom, deletePriorityAs, priorityActsOf, getNewIssueSettings,
 // getCredentialCapabilities, getGoingCapability, relatedChecksReportOf), each path object checked
-// first and answered with its own 404 (decision 11); the app-installation read's {owner}/{repo}
-// keeps today's answer (ruling A).
+// first and answered with its own 404 (R7); the app-installation read's {owner}/{repo} keeps the
+// answer /api/v1 gives it (R7).
 
 import (
 	"errors"
@@ -35,7 +36,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/prioritystore"
 )
 
-// The refusals of the objects a project group route's path names (decision 11).
+// The refusals of the objects a project group route's path names (dispatch://INFRA-4071/spec R7).
 var (
 	priorityMissingRefusal      = apicode.Refusal{Condition: apicode.PriorityMissing, Code: apicode.PriorityNotFound}
 	nearCopyCheckMissingRefusal = apicode.Refusal{Condition: apicode.NearCopyCheckMissing, Code: apicode.NearCopyCheckNotFound}
@@ -52,10 +53,10 @@ const projectDefaultAssigneeText = "the person a project's unowned work lands on
 const architectureSourceText = "each source {project, repo, branch, enabled, created_by, created_at, last_sync_at, " +
 	"last_commit, last_error, components}, components how many components the project holds from it"
 
-// v2ProjectRows are the project, architecture, repository, priority and settings routes (plan
-// t10's project half): rows 147 and 182; 148; 166 and 167; 149; 150, 152 and 178; 154; 155; 151,
-// 153 and 156; 168 and 169; the two near-copy rows of #4103; 183; 184; 185; 73; 142; 143; 144;
-// 145; 146; 181; 63; 74; and 172 of the route map.
+// v2ProjectRows are the project, architecture, repository, priority and settings routes: rows 147
+// and 182; 148; 166 and 167; 149; 150, 152 and 178; 154; 155; 151, 153 and 156; 168 and 169; the
+// two near-copy rows of #4103; 183; 184; 185; 73; 142; 143; 144; 145; 146; 181; 63; 74; and 172 of
+// the route map.
 func (s *server) v2ProjectRows() []routeRow {
 	person := routeScopeSet{model.ScopePerson}
 	return []routeRow{
@@ -474,7 +475,7 @@ type projectListV2Query struct {
 // projectV2 is a project as every /api/v2 read of projects answers it: model.Project, and its
 // default assignee where the request asks for it (include=default_assignee, or a patch that wrote
 // it), since the default names a person and only a caller holding the person scope reads it. It is
-// a type of its own, so no /api/v1 shape's tags change (decision 2).
+// a type of its own, so no /api/v1 shape's tags change (dispatch://INFRA-4071/spec R3).
 type projectV2 struct {
 	model.Project
 	DefaultAssignee *string `json:"default_assignee,omitempty"`
@@ -638,7 +639,7 @@ func (s *server) patchProjectV2(w http.ResponseWriter, r *http.Request) {
 }
 
 // requireProjectV2 answers whether the project key names exists, and where it does not writes 404
-// PROJECT_NOT_FOUND (decision 11).
+// PROJECT_NOT_FOUND (dispatch://INFRA-4071/spec R7).
 func (s *server) requireProjectV2(w http.ResponseWriter, r *http.Request, key string) bool {
 	if _, err := s.loadProject(r.Context(), s.deps.Store.Pool, key); err != nil {
 		s.writeHandlerError(w, r, err)
@@ -695,7 +696,8 @@ func (s *server) deleteArchitectureSourceV2(w http.ResponseWriter, r *http.Reque
 }
 
 // putArchitectureSourceV2 answers PUT /api/v2/projects/{key}/architecture-sources/{owner}/{repo}:
-// the save PUT /api/v1 makes there (putArchitectureSourceFrom), under decision 8's no-op rule.
+// the save PUT /api/v1 makes there (putArchitectureSourceFrom), under the no-op rule of
+// dispatch://INFRA-4071/spec R8.
 func (s *server) putArchitectureSourceV2(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) || !s.requireProjectV2(w, r, r.PathValue("key")) {
 		return
@@ -830,7 +832,8 @@ select count(*)
 
 // listNearCopyChecksV2 answers GET /api/v2/projects/{key}/near-copy-checks: the rows GET
 // /api/v1/near-copy-checks?project={key} reads, in the envelope, paged by limit and offset in
-// place of /api/v1's after and next_after (the plan's departure 2).
+// place of /api/v1's after and next_after, since this read is none of the five logs of
+// dispatch://INFRA-4071/spec R5.
 func (s *server) listNearCopyChecksV2(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -875,7 +878,7 @@ func (s *server) listNearCopyChecksV2(w http.ResponseWriter, r *http.Request) {
 
 // getNearCopyCheckV2 answers GET /api/v2/near-copy-checks/{id}: the row GET
 // /api/v1/near-copy-checks/{id} reads (readNearCopyCheck), an id that is no uuid naming no row
-// either (decision 11).
+// either (dispatch://INFRA-4071/spec R7).
 func (s *server) getNearCopyCheckV2(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -955,8 +958,8 @@ func (s *server) listRepositoriesV2(w http.ResponseWriter, r *http.Request) {
 
 // deleteRepositoryV2 answers DELETE /api/v2/repositories/{owner}/{repo}: the removal DELETE
 // /api/v1/settings/repo-projects/{owner}/{repo} makes (deleteRepoProjectAs), the mapping held to
-// exist first, where /api/v1 answers 204 for one that does not (decision 11): a value that is no
-// owner/name names no mapping either.
+// exist first, where /api/v1 answers 204 for one that does not (dispatch://INFRA-4071/spec R7): a
+// value that is no owner/name names no mapping either.
 func (s *server) deleteRepositoryV2(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -982,8 +985,8 @@ func (s *server) deleteRepositoryV2(w http.ResponseWriter, r *http.Request) {
 }
 
 // putRepositoryV2 answers PUT /api/v2/repositories/{owner}/{repo}: the mapping PUT
-// /api/v1/settings/repo-projects/{owner}/{repo} writes (putRepoProjectFrom), under decision 8's
-// no-op rule.
+// /api/v1/settings/repo-projects/{owner}/{repo} writes (putRepoProjectFrom), under the no-op rule
+// of dispatch://INFRA-4071/spec R8.
 func (s *server) putRepositoryV2(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -1008,7 +1011,7 @@ type prioritiesV2Query struct {
 // prioritiesV2 is GET /api/v2/priorities's answer: the envelope of priorities, each beside the work
 // under it, and the two faults beside the envelope, each with its rows only where
 // include=fault_issues asks for them. It is a type of its own, so no /api/v1 shape's tags change
-// (decision 2).
+// (dispatch://INFRA-4071/spec R3).
 type prioritiesV2 struct {
 	page[model.PriorityRow]
 	WorkUnderNoPriority workUnderNoPriorityV2 `json:"work_under_no_priority"`
@@ -1083,8 +1086,8 @@ func (s *server) createPriorityV2(w http.ResponseWriter, r *http.Request) {
 }
 
 // requirePriorityV2 answers whether the priority id names exists, gone or live, and where it does
-// not writes 404 PRIORITY_NOT_FOUND (decision 11). A gone priority's writes are refused with the
-// same code by the store itself (refusePriorityWrite).
+// not writes 404 PRIORITY_NOT_FOUND (dispatch://INFRA-4071/spec R7). A gone priority's writes are
+// refused with the same code by the store itself (refusePriorityWrite).
 func (s *server) requirePriorityV2(w http.ResponseWriter, r *http.Request, id string) bool {
 	_, held, err := prioritystore.Read(r.Context(), s.deps.Store.Pool, id)
 	if err != nil {
@@ -1161,7 +1164,7 @@ type relatedCheckStatsV2Query struct {
 
 // relatedCheckStatsV2 is GET /api/v2/related-check-stats's answer: model.RelatedChecksReport, its
 // project echo the list project= names, where /api/v1's names one project. It is a type of its
-// own, so no /api/v1 shape's tags change (decision 2).
+// own, so no /api/v1 shape's tags change (dispatch://INFRA-4071/spec R3).
 type relatedCheckStatsV2 struct {
 	Project            []string                 `json:"project"`
 	SourceKind         *string                  `json:"source_kind"`

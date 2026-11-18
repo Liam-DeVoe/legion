@@ -653,7 +653,7 @@ func (s *server) claimIssue(w http.ResponseWriter, r *http.Request) {
 // claimIssueAs is the claim both versions make of the body each has read: POST
 // /api/v1/issues/{key}/claim and PUT /api/v2/issues/{key}/claim. A claim its holder sends again
 // keeps the claim as it stands and writes nothing, which is the no-op rule of the /api/v2 PUT
-// (decision 8: a claim's holder is its setter).
+// (dispatch://INFRA-4071/spec R8: a claim's holder is the caller who set it).
 func (s *server) claimIssueAs(w http.ResponseWriter, r *http.Request, input claimIssueInput) {
 	actor, ok := s.requireActor(w, r, input.Actor)
 	if !ok {

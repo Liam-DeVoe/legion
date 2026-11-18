@@ -1,12 +1,12 @@
 package api
 
-// v2_asks.go is the asks of /api/v2 (plan t8 of dispatch://INFRA-4071): one list of asks across
+// v2_asks.go is the asks of /api/v2 (R1 of dispatch://INFRA-4071/spec): one list of asks across
 // projects, GET /api/v2/asks, which answers for GET /api/v1/asks/open, GET /api/v1/inbox and GET
 // /api/v1/references/questions (the route map's J24); one ask, its reword and hand-on, its
 // followers and its state; an issue's asks and the create of one. Every read and every write of an
 // ask answers the one ask row, askV2 (J4, J24), and every write runs the work its /api/v1 route
 // runs (openAsk, rewordAsk, handAskOn, recordAnswer, recordResolution, recordDecline,
-// writeAskFollower), each path object checked first and answered with its own 404 (decision 11).
+// writeAskFollower), each path object checked first and answered with its own 404 (R7).
 
 import (
 	"cmp"
@@ -29,7 +29,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
-// The authorities of the ask rows (plan t4 step 2, authorities_v2.go): a value that reads or
+// The authorities of the ask rows (authorities_v2.go): a value that reads or
 // writes as a person needs the person scope, every other value none.
 var (
 	askMarkAuthority = authorityRule{
@@ -55,7 +55,7 @@ const askRowText = "Each ask is one row: the ask's own fields at top level, open
 	"and last_reply; include=thread adds its thread (replies, rewordings, answers, followers, claimant, route, route_status, " +
 	"route_holder) and include=mark (the person scope) the caller's mark on it, {kind, id, snoozed_until}."
 
-// v2AskRows are the asks (plan t8): rows 33, 79 and 171; 34 and 39; 35 and 37; 40; 41; 36, 38 and
+// v2AskRows are the asks: rows 33, 79 and 171; 34 and 39; 35 and 37; 40; 41; 36, 38 and
 // 42; 93; and 94 of the route map.
 func (s *server) v2AskRows() []routeRow {
 	askIDs := func() *idRoute { return &idRoute{Kind: "ask", NotFound: apicode.AskNotFound} }
@@ -224,11 +224,11 @@ func (s *server) v2AskRows() []routeRow {
 	}
 }
 
-// askV2 is the one ask row of /api/v2 (the route map's J4 and J24; plan t8 step 1): every read of
+// askV2 is the one ask row of /api/v2 (the route map's J4 and J24): every read of
 // asks and every write of one answers it. It is the ask as the dashboard reads it (shapedAsk) with
 // what the lists read beside it - its address, its owner, its issue's priority and its newest
 // reply - at top level, and the members include= adds. It is a type of its own, so no /api/v1
-// shape's tags change (decision 2).
+// shape's tags change (dispatch://INFRA-4071/spec R3).
 type askV2 struct {
 	shapedAsk
 	// OpenedEventID is the id of the ask's ask.opened event, which every ask has: a value, where
@@ -545,7 +545,7 @@ func (s *server) anchorAsksV2(ctx context.Context, rows []askV2) error {
 
 // finishAsksV2 gives every row its identity event's id, its address and its trees, registered
 // with reader for its caller to resolve. A row whose read found no opened event is the server's
-// fault, never an answer without the id (decision 2).
+// fault, never an answer without the id (dispatch://INFRA-4071/spec R6).
 func finishAsksV2(rows []askV2, reader *displayTreeReader) error {
 	for index := range rows {
 		row := &rows[index]
@@ -659,9 +659,9 @@ func (s *server) writeAskV2(w http.ResponseWriter, r *http.Request, status int, 
 }
 
 // requireAskV2 answers whether the ask id names exists, and where it does not writes 404
-// ASK_NOT_FOUND, the code of the object a /api/v2 path names (decision 11): an id that is no uuid
-// names no ask either. The prefix layer has already read an id written short into the whole one it
-// names (resolveIDPrefixes).
+// ASK_NOT_FOUND, the code of the object a /api/v2 path names (dispatch://INFRA-4071/spec R7): an
+// id that is no uuid names no ask either. The prefix layer has already read an id written short
+// into the whole one it names (resolveIDPrefixes).
 func (s *server) requireAskV2(w http.ResponseWriter, r *http.Request, id string) bool {
 	held := false
 	if _, err := uuid.Parse(id); err == nil {
@@ -677,7 +677,7 @@ func (s *server) requireAskV2(w http.ResponseWriter, r *http.Request, id string)
 }
 
 // requireIssueV2 answers whether the issue key names exists, and where it does not writes 404
-// ISSUE_NOT_FOUND (decision 11).
+// ISSUE_NOT_FOUND (dispatch://INFRA-4071/spec R7).
 func (s *server) requireIssueV2(w http.ResponseWriter, r *http.Request, key string) bool {
 	var held bool
 	if err := s.deps.Store.Pool.QueryRow(r.Context(), `select exists (select 1 from issues where key = $1)`, key).Scan(&held); err != nil {
@@ -938,10 +938,11 @@ func (s *server) editAskV2(w http.ResponseWriter, r *http.Request) {
 }
 
 // putAskStateV2 answers PUT /api/v2/asks/{id}/state: each state's arm runs its /api/v1 route's
-// work through the one transition engine (closeAsk), once the no-op rule of decision 8 has found
-// the body is a change, answered with the ask read on the write's transaction (writtenAskV2). An
-// equal state from the caller who set it answers the ask and writes nothing (putChangesNothing):
-// the answer by the person who gave it, the resolution or the decline by the actor who wrote it.
+// work through the one transition engine (closeAsk), once the no-op rule of
+// dispatch://INFRA-4071/spec R8 has found the body is a change, answered with the ask read on the
+// write's transaction (writtenAskV2). An equal state from the caller who set it answers the ask
+// and writes nothing (putChangesNothing): the answer by the person who gave it, the resolution or
+// the decline by the actor who wrote it.
 func (s *server) putAskStateV2(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -1068,9 +1069,10 @@ func (s *server) changeAskFollowerV2(
 }
 
 // followAskV2 answers PUT /api/v2/asks/{id}/followers/{session_id}: 200 with the follower, which
-// /api/v1 answers 204, a follow of a session already following changing nothing (decision 8: a
-// follower records no setter). The follower is read on the follow's own transaction, before it
-// commits, as every other /api/v2 ask write reads what it answers (askReadBack).
+// /api/v1 answers 204, a follow of a session already following changing nothing
+// (dispatch://INFRA-4071/spec R8: a follower records no setter, so any caller's equal PUT is a
+// no-op). The follower is read on the follow's own transaction, before it commits, as every other
+// /api/v2 ask write reads what it answers (askReadBack).
 func (s *server) followAskV2(w http.ResponseWriter, r *http.Request) {
 	var answer model.AskFollower
 	if !s.changeAskFollowerV2(w, r, true, func(ctx context.Context, q queryer, askID, sessionID string) error {

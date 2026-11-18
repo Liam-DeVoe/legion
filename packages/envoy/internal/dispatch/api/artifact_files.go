@@ -97,10 +97,10 @@ func (s *server) refuseUploadBeforeItsObject(ctx context.Context, target artifac
 // fleetServesFilesFromRows reports whether any live server process (processes.Bucketless, read in
 // the upload's transaction) has no bucket: one started without DISPATCH_FILE_STORE_BUCKET, or one
 // of a build that predates the fleet columns (PredatesFleetColumns), which registers no file_store
-// and so reads as having none. Such a process serves a file only from its row, and answers 503
-// FILE_STORE_UNAVAILABLE for a row that holds no bytes, so while one is live an upload keeps its
-// bytes in its row as well as in the bucket. backfill-files moves them out once every process has
-// a bucket.
+// and so reads as having none. Such a process serves a file only from its row, and answers 503 for
+// a row that holds no bytes (FILE_STORE_UNAVAILABLE on /api/v1, FILE_STORE_UNCONFIGURED on
+// /api/v2: apicode.FileStoreUnconfigured), so while one is live an upload keeps its bytes in its
+// row as well as in the bucket. backfill-files moves them out once every process has a bucket.
 func fleetServesFilesFromRows(ctx context.Context, db processes.Querier) (bool, error) {
 	bucketless, err := processes.Bucketless(ctx, db)
 	if err != nil {

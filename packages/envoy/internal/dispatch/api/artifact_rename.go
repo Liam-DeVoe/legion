@@ -104,7 +104,8 @@ func (s *server) renameArtifactTo(w http.ResponseWriter, r *http.Request, actor 
 		return model.Artifact{}, false
 	}
 	// The row as it now is, with the versions and the approval every artifact read carries, is
-	// what GET /api/v1/artifacts/{id} answers and what this route answers too.
+	// what GET /api/v1/artifacts/{id} answers and what PATCH /api/v1/artifacts/{id} answers too;
+	// PATCH /api/v2/artifacts/{id} answers it as its artifact row (renameArtifactV2).
 	if err := loadArtifactDetails(r.Context(), tx, []*model.Artifact{&renamed}); err != nil {
 		s.writeHandlerError(w, r, err)
 		return model.Artifact{}, false

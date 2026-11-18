@@ -183,7 +183,7 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 // /api/v1/comments/{id} and PATCH /api/v2/comments/{id}. It answers the comment itself, or the
 // refusal.
 func (s *server) editCommentAs(w http.ResponseWriter, r *http.Request, actor model.Actor, input editCommentInput) {
-	// An edit stores line feeds alone, as a comment's creation does (createCommentFor): the
+	// An edit stores line feeds alone, as a comment's creation does (writeComment): the
 	// display read ends a line at a carriage return too, but a body that holds one draws
 	// differently in every other reader of the stored text. The carried offsets below are the
 	// dashboard editor's, and a ProseMirror document holds no carriage return, so no offset this

@@ -1,6 +1,6 @@
 package api
 
-// v2_logs.go is the five logs of /api/v2 (plan t6 of dispatch://INFRA-4071, R5 of its spec): the
+// v2_logs.go is the five logs of /api/v2 (R5 of dispatch://INFRA-4071/spec): the
 // global event log, an issue's and a project document's event logs, the reference graph's edges of
 // one node, and the caller's Inbox threads. Each is a list read in order by one position field,
 // which its row names (routeRow.Position) and its index entry and description carry: after and
@@ -30,9 +30,9 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// The refusals every /api/v2 read of a list declares (decision 4): a query key the route does not
-// declare, and a limit or an offset outside the route's bounds (R4, R1.4); and a log's position
-// that names none of its positions (R5).
+// The refusals every /api/v2 read of a list declares, one code per condition (R7): a query key the
+// route does not declare, and a limit or an offset outside the route's bounds (R4, R1.4); and a
+// log's position that names none of its positions (R5).
 var (
 	undeclaredKeyRefusal = apicode.Refusal{Condition: apicode.QueryKeyUndeclared, Code: apicode.QueryKeyUnknown}
 	limitRefusal         = apicode.Refusal{Condition: apicode.LimitOutOfBounds, Code: apicode.InvalidLimit}
@@ -64,7 +64,7 @@ const ownerLogText = "Position: seq, each event's place in its owner's log. afte
 	"the exact count of the events the filters keep. An after above the log's last seq, or an after or a before that is no " +
 	"integer of 0 or more, is 400 POSITION_INVALID naming the parameter and seq; more than 50 ids is 400 INVALID_QUERY."
 
-// v2LogRows are the five logs (plan t6): rows 72, 103, 21, 170 and 134 of the route map.
+// v2LogRows are the five logs: rows 72, 103, 21, 170 and 134 of the route map.
 func (s *server) v2LogRows() []routeRow {
 	return []routeRow{
 		{
@@ -521,7 +521,7 @@ func (s *server) listArtifactEventsV2(w http.ResponseWriter, r *http.Request) {
 	var lastSeq int64
 	if err := s.deps.Store.Pool.QueryRow(r.Context(), `select last_seq from artifacts where id = $1`, artifact.ID).Scan(&lastSeq); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			// Deleted since documentOwnerFromRequest read it: a document nothing holds (decision 11).
+			// Deleted since documentOwnerFromRequest read it: a document nothing holds (R7).
 			s.writeHandlerError(w, r, errorf(apicode.ArtifactNotFound, "no document %s", artifact.ID))
 			return
 		}

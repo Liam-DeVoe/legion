@@ -21,16 +21,16 @@ func setBy(who string) putSetter {
 }
 
 // noSetterRecorded is an object that records no setter - a follower, a repository mapping, an
-// architecture source - whose equal PUT is a no-op whoever sends it (decision 8).
+// architecture source - whose equal PUT is a no-op whoever sends it, since no caller is recorded as
+// having set it.
 var noSetterRecorded = putSetter{anyone: true}
 
-// putChangesNothing reports whether a /api/v2 PUT is the no-op of decision 8 of the plan of
-// dispatch://INFRA-4071 (R8): its whole body, sent, equals the object's current state and fields,
-// current, and caller is the setter the object records, or the object records none. Such a PUT
-// answers 200 with the object and writes nothing - no row, no event, no delivery - and any other
-// is a change, which its handler makes as it makes every change: an answer that replaces an
-// earlier one writes its event, and a first answer from another person to an answered ask stays
-// 409 ASK_ANSWERED.
+// putChangesNothing reports whether a /api/v2 PUT is the no-op of dispatch://INFRA-4071/spec R8:
+// its whole body, sent, equals the object's current state and fields, current, and caller is the
+// setter the object records, or the object records none. Such a PUT answers 200 with the object
+// and writes nothing - no row, no event, no delivery - and any other is a change, which its
+// handler makes as it makes every change: an answer that replaces an earlier one writes its event,
+// and a first answer from another person to an answered ask stays 409 ASK_ANSWERED.
 //
 // current is the object's present state written in the body's own type T, by the handler that
 // read it; a member of the body that is no field of the object - a precondition such as
@@ -38,21 +38,6 @@ var noSetterRecorded = putSetter{anyone: true}
 // the object alone. The two are compared member by member: a nil and an empty slice or map are
 // equal, two times are equal at one instant whatever zone each is written in, and two pointers
 // are equal where both are nil or what they point to is.
-//
-// Each PUT of /api/v2 applies its rule as its route task builds it, plan t5 step 2 word for word:
-//
-//	`PUT /api/v2/asks/{id}/state` (equal state and fields by the person who closed it: 200, no
-//	event; a changed answer by that person writes `ask.answered`; another person's first answer
-//	to an answered ask stays `409 ASK_ANSWERED`); `PUT /api/v2/comments/{id}/state` (by the
-//	person who set the state); `PUT /api/v2/credential-requests/{id}/state` (the broker's request
-//	already in that state by that approver: 200 with the request, no relay);
-//	`PUT /api/v2/issues/{key}/claim` (the holder);
-//	`PUT /api/v2/issues/{key}/decisions/{block_id}/state` (a keep of the same `text_sha256` by the
-//	same person); `PUT /api/v2/messages/{id}/deliveries/{attempt}/state` (the attempt already
-//	accepted as the same `actor`); `PUT /api/v2/results/{id}/state` (a retraction already
-//	recorded by the same caller); `PUT /api/v2/asks/{id}/followers/{session_id}`,
-//	`PUT /api/v2/projects/{key}/architecture-sources/{owner}/{repo}` and
-//	`PUT /api/v2/repositories/{owner}/{repo}` (any caller, no setter recorded).
 //
 // Every /api/v2 PUT answers 200 with the object, the follower PUT included, which /api/v1 answers
 // 204.

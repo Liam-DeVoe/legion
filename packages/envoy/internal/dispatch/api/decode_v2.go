@@ -1,15 +1,14 @@
 package api
 
-// decode_v2.go is the one reader of a /api/v2 route's request (R4; decision 6 of the plan of
-// dispatch://INFRA-4071). A route's row declares the types its query and its body are read into
+// decode_v2.go is the one reader of a /api/v2 route's request (R4 of dispatch://INFRA-4071/spec).
+// A route's row declares the types its query and its body are read into
 // (routeRow.Query, routeRow.Body), and decodeV2Request reads them from those types alone: a query
 // key the type does not declare is refused 400 QUERY_KEY_UNKNOWN before any lookup or write, and a
 // body member it does not declare is ignored, as decodeJSON ignores one. The handler takes what
 // was read from the request's context, v2Query[T](r) and v2Body[T](r), and reads no r.URL.Query(),
 // no r.FormValue and no r.Form (TestNoV2HandlerReadsTheRawQuery).
 //
-// register reads a request in three places of a route's chain, each the place R4 and the plan
-// name for it (routeHandler):
+// register reads a request in three places of a route's chain (routeHandler):
 //
 //   - the query just inside the route's scope gate (gateRouteScopes), so an undeclared key is
 //     refused before any lookup or write; the handlers authenticate themselves, so an anonymous
@@ -49,9 +48,9 @@ package api
 // INVALID_QUERY naming the key and what it takes; a limit outside the row's bounds is 400
 // INVALID_LIMIT naming the bound, and an offset that is no integer of 0 or more 400 INVALID_OFFSET.
 //
-// `session` is declared on every route the decoder reads, once, beside the row's own keys
-// (decision 6): actingPerson and resolveIDPrefixes read the session it names from the decoded
-// request on such a route (decodedSession), and from the raw query on every other.
+// `session` is declared on every route the decoder reads, once, beside the row's own keys (R4):
+// actingPerson and resolveIDPrefixes read the session it names from the decoded request on such a
+// route (decodedSession), and from the raw query on every other.
 //
 // register refuses to mount a table whose /api/v2 rows declare a query or a body the decoder
 // cannot read (undecodableRoutes), so a wrong tag fails the server's start and every test, never
@@ -974,9 +973,11 @@ func readBounded(r *http.Request, limit routeBodyLimit) ([]byte, error) {
 // readUpload reads an upload: a multipart body's declared fields and its file part, or the JSON
 // object the row's Body.Type describes. A multipart field is the member of Body.Type its JSON tag
 // names: a string field takes the part's text, and any other field the part's text read as JSON,
-// as an upload's `actor` always was. A field the type does not declare, and a part other than the
-// file under another name, is ignored and logged, as an undeclared JSON member is. The file is read
-// whole and its spooled parts removed before the handler runs, as uploadArtifactFor reads it.
+// as /api/v1's upload reads its `actor` part (uploadArtifactFor). A field the type does not
+// declare by its exact name (one spelt in another case, which uploadFields does not read, among
+// them), and a part other than the file under another name, is ignored and logged, as an
+// undeclared JSON member is. The file is read whole and its spooled parts removed before the
+// handler runs, as uploadArtifactFor reads it.
 func (d *v2Decoder) readUpload(r *http.Request, decoded *v2Request) error {
 	contentType, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if contentType != "multipart/form-data" {
@@ -1019,9 +1020,10 @@ func (d *v2Decoder) readUpload(r *http.Request, decoded *v2Request) error {
 	if err := json.Unmarshal(fields, value.Interface()); err != nil {
 		return errorf(apicode.InvalidBody, "an upload's field holds no value of its member: %v", err)
 	}
+	declared := membersDeclaredBy(typ)
 	var ignored []string
 	for name := range form.Value {
-		if !declaresMember(membersDeclaredBy(typ), name) {
+		if _, ok := declared[name]; !ok {
 			ignored = append(ignored, name)
 		}
 	}

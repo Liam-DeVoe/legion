@@ -791,7 +791,7 @@ func (s *server) keepDecision(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The keep's /api/v2 route is under the document's issue, which the v1 path does not name
-	// (decision 9); a document of no issue is refused below, as it always was.
+	// (dispatch://INFRA-4071/spec R3.1); a document of no issue is refused below.
 	if document.IssueKey != nil {
 		successorValue(r, "key", *document.IssueKey)
 	}
@@ -860,7 +860,7 @@ func (s *server) writeDecisionKeep(
 // Keep and the view never disagree about which document holds the decisions - and that block is
 // the heading of a decision outside `## Replaced`. Any other block is the block the path names
 // that holds no decision: 404 BLOCK_NOT_FOUND under /api/v2, which /api/v1 names TARGET_NOT_FOUND
-// (decision 11).
+// (dispatch://INFRA-4071/spec R7).
 func (s *server) keptDecision(ctx context.Context, document model.Artifact, blockID string) (model.Decision, error) {
 	notFound := errorf(apicode.BlockNotFound, "no decision %q in %s", blockID, document.Name)
 	if document.IssueKey == nil {
