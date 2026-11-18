@@ -773,7 +773,7 @@ RULES = {
         (f"{ENVOY}/scripts/fixtures/github/*", "internal/contracts/normalize_test.go:2078,2711")),
     f"{ENVOY}/internal/dispatch/api/copy_lock_order_test.go": [
         run(ENVOY, ["./cmd/dispatch"], "internal/dispatch/api/copy_lock_order_test.go:270 go list -deps -export ./cmd/dispatch in packages/envoy", mode="build")],
-    f"{ENVOY}/internal/dispatch/api/delivery_live_diff_test.go": reads((f"{FIX}/live/*", "internal/dispatch/api/delivery_live_diff_test.go:1007,1029")),
+    f"{ENVOY}/internal/dispatch/api/delivery_live_diff_test.go": reads((f"{FIX}/live/*", "internal/dispatch/api/delivery_live_diff_test.go:1031,1053")),
     f"{ENVOY}/internal/dispatch/api/delivery_measures_test.go": reads(
         (f"{ENVOY}/internal/dispatch/delivery/measures/testdata/dora-fixture.json", "internal/dispatch/api/delivery_measures_test.go:82")),
     f"{ENVOY}/internal/dispatch/api/delivery_test.go": reads(
@@ -801,6 +801,11 @@ RULES = {
     f"{ENVOY}/internal/dispatch/docs/approval_carry_test.go": reads((f"{FIX}/decision-blocks/*", "internal/dispatch/docs/approval_carry_test.go:26")),
     f"{ENVOY}/internal/dispatch/docs/history_fold_test.go": reads(
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/fixtures.json", "internal/dispatch/docs/history_fold_test.go:535")),
+    f"{ENVOY}/internal/dispatch/legion/golden_state_test.go": reads(
+        (f"{FIX}/daemon-api/state.json",
+         "internal/dispatch/legion/golden_state_test.go:29 os.ReadFile (goldenStatePath :16, "
+         "../../../../contracts/fixtures/daemon-api): the state document the daemon's own "
+         "internal/api/state_golden_test.go writes, which the sampler's decode must read")),
     f"{ENVOY}/internal/dispatch/outbox/expects_reply_never_false_test.go": reads(
         ("packages/contracts/src/dispatch-api*.ts",
          "internal/dispatch/outbox/expects_reply_never_false_test.go:137-138 globs ../../../../contracts/src/dispatch-api*.ts "
@@ -907,7 +912,7 @@ NOTICES_STEP = "Check every Go release archive's third-party notices can be writ
 def go_notices_runs():
     """Every go command .github/scripts/go-release-notices.sh starts, one per release target of
     each list it reads. The lines are the script's, not the step's: lint's notices step runs the
-    script, and ci-caches.yaml's daemon job runs the same one to fill the cache lint restores."""
+    script, and ci-caches.yaml's notices job runs the same one to fill the cache lint restores."""
     started_by = at("lint", NOTICES_STEP)
     out = []
     for target in targets(GO_TARGETS, "legion"):
@@ -3817,8 +3822,8 @@ GATES = [
     )),
 
     # A second gate on tool_fallback: the tool-fallback-arm job proves the same two halves of
-    # the Bun install on an arm64 runner, the one architecture no other job of this repository
-    # installs a tool on. It drives the same action over the same manifest through the same
+    # the Bun install on an arm64 runner, where no other job of this repository drives the second
+    # half, the install from npm. It drives the same action over the same manifest through the same
     # helper, so one filter selects both jobs, and check-ci-filters.sh keys a claim by
     # (job, step), so the two gates claim different steps and do not collide.
     # It runs no go command either, and reads less than the job above: the action, the version

@@ -31,7 +31,7 @@ env:
 
 jobs:
   envoy-go-race:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     # R6 sizes both numbers from one measurement pair alone, runs 44175873364 and 44195030350 at
     # 4f1f4436 (dispatch://INFRA-1075, check 6224bb0e). The step's -timeout is the smallest whole
     # minute at which its slowest package, on the slower run of the pair, takes at most half of
