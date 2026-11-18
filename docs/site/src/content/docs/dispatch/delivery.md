@@ -160,8 +160,11 @@ filter repeated for several values, such as `&repo=acme/widgets&priority=P0`. `f
 answer as its `measures` for its own window and filters, so an agent reading both needs only the
 timeline. The routes and the page's live updates compute from the same stored facts with the same
 code, so they agree. `flags_source` says whether recorded flags fed the change failure rate;
-`none` means no flags are recorded yet, so `change_failure_rate` is null, `time_to_restore` has
-no median, and `status.change_failure_rate` and `status.change_failure_rate_upper_bound` are null.
+`none` means no flags are recorded yet, so every count in `change_failure_rate` is 0 and its rates
+(each `rate` and `upper_bound_rate`) are null, `time_to_restore` has no median, and
+`status.change_failure_rate` and `status.change_failure_rate_upper_bound` are null.
+`change_failure_rate` itself is always the object, never null, so a Delivery page of an earlier
+build, which reads its fields without checking for null, can still read the answer.
 
 `GET /ws/live` is the one websocket each browser tab keeps open for all of its live views. A
 signed-in person or agent token may open it; only a person may subscribe to an agent conversation.

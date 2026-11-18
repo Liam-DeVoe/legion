@@ -73,6 +73,12 @@ type measuresFixture struct {
 
 const measuresFixtureWindow = "from=2026-08-30T00:00:00Z&to=2026-09-27T20:00:00Z"
 
+// noFailureSourceJSON is a measures answer's change_failure_rate while no failure source exists
+// (flags_source none): the object, every count 0 and every rate null. A page of an earlier build
+// reads its rates with no null guard, so the object is never null.
+const noFailureSourceJSON = `"change_failure_rate":{"per_pr":{"confirmed":0,"pending":0,"rejected":0,"reverts":0,"total":0,"rate":null},` +
+	`"per_deploy":{"confirmed":0,"pending":0,"rejected":0,"reverts":0,"total":0,"rate":null,"confirmed_or_pending":0,"upper_bound_rate":null}}`
+
 // seedMeasuresFixture writes the fixture's settings, issues, pull requests, runs and jobs through
 // the same store calls intake and reconcile use, so Dispatch derives each PR's deploy from the
 // stored rows (containment.go FirstShippingApply) as it does in production.
@@ -376,6 +382,9 @@ func TestGetDeliveryTimelineCarriesTheMeasuresOfItsWindow(t *testing.T) {
 			t.Fatalf("timeline?%s carries no measures", query)
 		}
 		got, want := *timeline.Measures, getDeliveryMeasures(t, handler, query)
+		if !strings.Contains(response.Body.String(), noFailureSourceJSON) {
+			t.Errorf("timeline?%s carries no %s with no failure source", query, noFailureSourceJSON)
+		}
 		if got.ComputedAt.IsZero() {
 			t.Errorf("timeline?%s: measures.computed_at is zero", query)
 		}
@@ -420,10 +429,15 @@ func TestGetDeliveryMeasuresComputesTheFixture(t *testing.T) {
 	if body.FlagsSource != "none" {
 		t.Errorf("flags_source = %q, want none", body.FlagsSource)
 	}
-	// No failure source exists, so the change failure rate is no value and time to restore has no
-	// median: a 0 would be a measured rate, which a target would judge met.
-	if result.ChangeFailureRate != nil {
-		t.Errorf("change_failure_rate = %+v with flags_source none, want null", *result.ChangeFailureRate)
+	// No failure source exists, so the change failure rate measures nothing and time to restore
+	// has no median: a 0 would be a measured rate, which a target would judge met.
+	if result.ChangeFailureRate != (measures.ChangeFailureRate{}) {
+		t.Errorf("change_failure_rate = %+v with flags_source none, want every count 0 and every rate null", result.ChangeFailureRate)
+	}
+	raw := dispatchRequest(t, handler, http.MethodGet, "/api/v1/delivery/measures?"+measuresFixtureWindow, nil, "alice").Body.String()
+	if !strings.Contains(raw, noFailureSourceJSON) {
+		_, answered, _ := strings.Cut(raw, `"change_failure_rate"`)
+		t.Errorf("the answer carries no %s with flags_source none; it answers %.400s", noFailureSourceJSON, answered)
 	}
 	if result.TimeToRestore.MedianMinutes != nil {
 		t.Errorf("time_to_restore.median_minutes = %v, want null", *result.TimeToRestore.MedianMinutes)

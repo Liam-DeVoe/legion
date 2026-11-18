@@ -93,21 +93,23 @@ type DailyPoint struct {
 }
 
 // FlagCounts is the change failure rate's flags by state, counted against PRs or against deploys.
+// Rate is nil, and every count 0, while no failure source exists.
 type FlagCounts struct {
-	Confirmed int     `json:"confirmed"`
-	Pending   int     `json:"pending"`
-	Rejected  int     `json:"rejected"`
-	Reverts   int     `json:"reverts"`
-	Total     int     `json:"total"`
-	Rate      float64 `json:"rate"`
+	Confirmed int      `json:"confirmed"`
+	Pending   int      `json:"pending"`
+	Rejected  int      `json:"rejected"`
+	Reverts   int      `json:"reverts"`
+	Total     int      `json:"total"`
+	Rate      *float64 `json:"rate"`
 }
 
 // DeployFlagCounts is the per-deploy change failure rate, with the rate it would be if every
-// pending flag were confirmed: ConfirmedOrPending counts each deploy once.
+// pending flag were confirmed: ConfirmedOrPending counts each deploy once. UpperBoundRate is nil
+// where Rate is.
 type DeployFlagCounts struct {
 	FlagCounts
-	ConfirmedOrPending int     `json:"confirmed_or_pending"`
-	UpperBoundRate     float64 `json:"upper_bound_rate"`
+	ConfirmedOrPending int      `json:"confirmed_or_pending"`
+	UpperBoundRate     *float64 `json:"upper_bound_rate"`
 }
 
 // DeployFrequency counts the window's successful production deploys, and those that shipped at
@@ -128,7 +130,8 @@ type LeadTime struct {
 	OpenedToMerge           Spread `json:"opened_to_merge"`
 }
 
-// ChangeFailureRate is the flags counted against PRs and against deploys.
+// ChangeFailureRate is the flags counted against PRs and against deploys. Its zero value is the
+// rate while no failure source exists: every count 0 and every rate nil.
 type ChangeFailureRate struct {
 	PerPR     FlagCounts       `json:"per_pr"`
 	PerDeploy DeployFlagCounts `json:"per_deploy"`
@@ -150,17 +153,19 @@ type DeployRunSuccess struct {
 }
 
 // Result is every number the measures panel and GET /api/v1/delivery/measures show for one window
-// and population. ChangeFailureRate is nil, and TimeToRestore holds no median, while no failure
-// source exists (Compute's flags nil): 0 is a measured value and never a stand-in for one, so a
-// rate nothing measured reads no value rather than a 0 a target would judge met.
+// and population. While no failure source exists (Compute's flags nil), ChangeFailureRate's rates
+// are nil and its counts 0, and TimeToRestore holds no median: 0 is a measured value and never a
+// stand-in for one, so a rate nothing measured reads no value rather than a 0 a target would judge
+// met. ChangeFailureRate itself is never null: a Delivery page of an earlier build reads its
+// fields with no null guard.
 type Result struct {
-	DeployFrequency   DeployFrequency    `json:"deploy_frequency"`
-	LeadTime          LeadTime           `json:"lead_time"`
-	ChangeFailureRate *ChangeFailureRate `json:"change_failure_rate"`
-	TimeToRestore     TimeToRestore      `json:"time_to_restore"`
-	ReworkShare       float64            `json:"rework_share"`
-	DeployRunSuccess  DeployRunSuccess   `json:"deploy_run_success"`
-	Daily             []DailyPoint       `json:"daily"`
+	DeployFrequency   DeployFrequency   `json:"deploy_frequency"`
+	LeadTime          LeadTime          `json:"lead_time"`
+	ChangeFailureRate ChangeFailureRate `json:"change_failure_rate"`
+	TimeToRestore     TimeToRestore     `json:"time_to_restore"`
+	ReworkShare       float64           `json:"rework_share"`
+	DeployRunSuccess  DeployRunSuccess  `json:"deploy_run_success"`
+	Daily             []DailyPoint      `json:"daily"`
 }
 
 // Target is one measure's target as the eval that states it holds it: its value, whether the value
@@ -570,24 +575,24 @@ func FoldReworkShare(parts []DayPart) *float64 {
 
 // FoldChangeFailureRate is change-fail-rate over parts: the flags counted against pull requests
 // and against deploys, each rate its summed numerator over its summed denominator, 0 when that
-// denominator is (the measures panel's rates are never null); nil when parts hold none of its
-// three series.
-func FoldChangeFailureRate(parts []DayPart) *ChangeFailureRate {
+// denominator is, so a measured 0 stays 0; the zero ChangeFailureRate, every rate nil, when parts
+// hold none of its three series.
+func FoldChangeFailureRate(parts []DayPart) ChangeFailureRate {
 	perDeploy := FoldSeries(parts, SeriesPerDeploy)
 	upperBound := FoldSeries(parts, SeriesUpperBound)
 	perPR := FoldSeries(parts, SeriesPerPR)
 	if perDeploy.Parts+upperBound.Parts+perPR.Parts == 0 {
-		return nil
+		return ChangeFailureRate{}
 	}
 	reverts := int(perPR.Counts[CountReverts])
-	return &ChangeFailureRate{
+	return ChangeFailureRate{
 		PerPR: FlagCounts{
 			Confirmed: int(perPR.Num),
 			Pending:   int(perPR.Counts[CountPending]),
 			Rejected:  int(perPR.Counts[CountRejected]),
 			Reverts:   reverts,
 			Total:     int(perPR.Den),
-			Rate:      ValueOrZero(perPR.share()),
+			Rate:      new(ValueOrZero(perPR.share())),
 		},
 		PerDeploy: DeployFlagCounts{
 			FlagCounts: FlagCounts{
@@ -596,10 +601,10 @@ func FoldChangeFailureRate(parts []DayPart) *ChangeFailureRate {
 				Rejected:  int(perDeploy.Counts[CountRejected]),
 				Reverts:   reverts,
 				Total:     int(perDeploy.Den),
-				Rate:      ValueOrZero(perDeploy.share()),
+				Rate:      new(ValueOrZero(perDeploy.share())),
 			},
 			ConfirmedOrPending: int(upperBound.Num),
-			UpperBoundRate:     ValueOrZero(upperBound.share()),
+			UpperBoundRate:     new(ValueOrZero(upperBound.share())),
 		},
 	}
 }
@@ -687,7 +692,7 @@ func deliveryDays(prs []PR, runs []Run, flags []Flag, window Window) []*delivery
 //
 // flags is a failure source's flags, nil where no failure source exists. With none, no part of
 // change-fail-rate or failed-deploy-recovery is built, as no day row of either is stored, so the
-// two read no value through their folds (a nil ChangeFailureRate and no median to restore),
+// two read no value through their folds (every failure rate nil and no median to restore),
 // exactly as their evals read them; a source that holds no flag (an empty, non-nil list) measures
 // a rate of 0.
 func Compute(prs []PR, runs []Run, flags []Flag, window Window) Result {

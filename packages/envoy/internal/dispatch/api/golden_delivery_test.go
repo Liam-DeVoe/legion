@@ -83,8 +83,9 @@ type deliveryOracleFixture struct {
 // (deploysShippingOnlyEarlier), and with_prs_per_day the base head's plus that count over the
 // window's days. The change failure rate while no failure source exists (root R11: 0 is a value,
 // never a stand-in): the base head answered an object of zero flag counts and rates over the
-// window's totals, and verdicts over them; this head answers change_failure_rate null and both its
-// verdicts null (takeFailureMeasures). And the Pipeline's slowest-jobs threshold (R5: a series'
+// window's totals, and verdicts over them; this head answers that object with every count 0 and
+// every rate null, which a page of the base head's build still reads, and both its verdicts null
+// (takeFailureMeasures). And the Pipeline's slowest-jobs threshold (R5: a series'
 // min_n is a person's to set, and every reader uses it): the base head ranked by the constant 50
 // and stated nothing, this head ranks by the min_n of pr-ci's job series in the project the
 // deploy repository is mapped to, 50 where none holds one, and states it in
@@ -190,7 +191,7 @@ func TestTheDeliveryRoutesAnswerWhatTheyAnsweredAtTheBaseHead(t *testing.T) {
 			window.From.Format(time.DateOnly), window.To.Format(time.DateOnly), window.Days, earlier, strings.Join(slices.Compact(withPRsMoved), ", "))
 	}
 	t.Logf("history %s (seed %d, %d days to %s), recorded at %s: %d windows, %d requests, %d values compared, %d requests differing; "+
-		"deploys_with_prs moved in %d of the %d windows, by %d deploys in all; %d failure-measure values the base head answered are null; "+
+		"deploys_with_prs moved in %d of the %d windows, by %d deploys in all; %d failure-measure values the base head answered are null or 0 here; "+
 		"%d Pipeline answers state the slowest-jobs threshold %d the base head ranked by; %d Pipeline day cells compared on the days both answers show",
 		recorded.Fixture.Spec.Project, recorded.Fixture.Spec.Seed, recorded.Fixture.Spec.Days, recorded.Fixture.Spec.Now.Format(time.DateOnly),
 		recorded.Head, len(recorded.Windows), requests, values, differing, movedWindows, len(recorded.Windows), moved, failuresNulled,
@@ -280,11 +281,11 @@ func takeWithPRs(t *testing.T, got, want any, earlier, days int) (string, string
 
 // takeFailureMeasures checks got's change failure rate and its verdicts against want's, a
 // measures answer's and the base head's, while no failure source exists, and takes them out of
-// both: got's measures.change_failure_rate, status.change_failure_rate and
-// status.change_failure_rate_upper_bound must each be null; want's change failure rate must be
-// the base head's stand-in, every flag count and rate 0 over a total that is a count, and each of
-// its verdicts a boolean or null. It answers how many of the base head's values the check named
-// and, where any is off, what is.
+// both: got's status.change_failure_rate and status.change_failure_rate_upper_bound must each be
+// null, and its measures.change_failure_rate the base head's object, field for field, with every
+// rate null and every count 0; want's change failure rate must be the base head's stand-in, every
+// flag count and rate 0 over a total that is a count, and each of its verdicts a boolean or null.
+// It answers how many of the base head's values the check named and, where any is off, what is.
 func takeFailureMeasures(t *testing.T, got, want any) (int, string) {
 	t.Helper()
 	field := func(tree any, path ...string) (map[string]any, string) {
@@ -303,10 +304,10 @@ func takeFailureMeasures(t *testing.T, got, want any) (int, string) {
 		if !gotHeld || !wantHeld {
 			return named, fmt.Sprintf("%s is held %t by this answer and %t by the base head's, want both", strings.Join(path, "."), gotHeld, wantHeld)
 		}
-		if gotValue != nil {
-			return named, fmt.Sprintf("%s is %v with no failure source, want null", strings.Join(path, "."), gotValue)
-		}
 		if path[0] == "status" {
+			if gotValue != nil {
+				return named, fmt.Sprintf("%s is %v with no failure source, want null", strings.Join(path, "."), gotValue)
+			}
 			if _, verdict := wantValue.(bool); wantValue != nil && !verdict {
 				return named, fmt.Sprintf("the base head's %s is %v, want a verdict or null", strings.Join(path, "."), wantValue)
 			}
@@ -316,10 +317,18 @@ func takeFailureMeasures(t *testing.T, got, want any) (int, string) {
 			if !ok {
 				return named, fmt.Sprintf("the base head's %s is %v, want its object of flag counts", strings.Join(path, "."), wantValue)
 			}
+			gotRates, ok := gotValue.(map[string]any)
+			if !ok {
+				return named, fmt.Sprintf("%s is %v with no failure source, want the base head's object with null rates", strings.Join(path, "."), gotValue)
+			}
 			for _, cut := range []string{"per_pr", "per_deploy"} {
 				counts, ok := rates[cut].(map[string]any)
 				if !ok {
 					return named, fmt.Sprintf("the base head's change_failure_rate.%s is %v, want an object", cut, rates[cut])
+				}
+				gotCounts, ok := gotRates[cut].(map[string]any)
+				if !ok || len(gotCounts) != len(counts) {
+					return named, fmt.Sprintf("change_failure_rate.%s is %v, want the base head's fields %v", cut, gotRates[cut], slices.Sorted(maps.Keys(counts)))
 				}
 				for name, value := range counts {
 					number, isNumber := value.(json.Number)
@@ -328,6 +337,14 @@ func takeFailureMeasures(t *testing.T, got, want any) (int, string) {
 					}
 					if name != "total" && number.String() != "0" {
 						return named, fmt.Sprintf("the base head's change_failure_rate.%s.%s is %s with no flag stored, want its stand-in 0", cut, name, number)
+					}
+					gotField, held := gotCounts[name]
+					if name == "rate" || name == "upper_bound_rate" {
+						if !held || gotField != nil {
+							return named, fmt.Sprintf("change_failure_rate.%s.%s is %v (held %t) with no failure source, want null", cut, name, gotField, held)
+						}
+					} else if count, isNumber := gotField.(json.Number); !held || !isNumber || count.String() != "0" {
+						return named, fmt.Sprintf("change_failure_rate.%s.%s is %v (held %t) with no failure source, want 0", cut, name, gotField, held)
 					}
 					named++
 				}
