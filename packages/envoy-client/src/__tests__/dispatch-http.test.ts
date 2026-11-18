@@ -1887,23 +1887,30 @@ describe("a broker token Dispatch says is not live", () => {
 
   /**
    * A credential like the broker's: each presentation carries the token it holds now, and
-   * `stale`, which records what it was told, moves it to the next of `tokens`. `refusal`, where
-   * given, is what a presentation after `stale` throws, as a trade the broker refuses does.
+   * `stale`, which records what it was told (the session and the presentation it names), moves it
+   * to the next of `tokens`. `refusal`, where given, is what a presentation after `stale` throws,
+   * as a trade the broker refuses does. `headers` keeps every object it answered, so a row can
+   * check that `stale` names the very presentation the dead token went out in.
    */
   function brokered(tokens: readonly string[], refusal?: Error) {
     const stales: (string | undefined)[] = [];
+    const told: (Readonly<Record<string, string>> | undefined)[] = [];
+    const answered: Readonly<Record<string, string>>[] = [];
     const credential: RequestCredential = {
       scheme: "DPoP",
       headers: () => {
         if (refusal !== undefined && stales.length > 0) throw refusal;
-        return { Authorization: `DPoP ${tokens[stales.length]}`, DPoP: "proof" };
+        const headers = { Authorization: `DPoP ${tokens[stales.length]}`, DPoP: "proof" };
+        answered.push(headers);
+        return headers;
       },
-      stale: (session) => {
+      stale: (session, presented) => {
         stales.push(session);
+        told.push(presented);
       },
       secret: () => tokens[stales.length] ?? "",
     };
-    return { credential, stales };
+    return { credential, stales, told, answered };
   }
 
   /** What each request presented, in order. */
@@ -1913,21 +1920,26 @@ describe("a broker token Dispatch says is not live", () => {
   test("a read is sent once more with a fresh token", async () => {
     const listed = [{ key: "DSP-1", title: "DSP-1", status: "todo" }];
     const { fetchImpl, requests } = fakeFetch([notLive(), jsonResponse(listed)]);
-    const { credential, stales } = brokered(["dead", "fresh"]);
+    const { credential, stales, told, answered } = brokered(["dead", "fresh"]);
     const client = new DispatchClient("http://dispatch.test", credential, fetchImpl);
 
     expect(await client.listAllIssues({})).toEqual(listed as unknown as IssueSummary[]);
     expect(stales).toEqual([undefined]);
+    // The credential is told which presentation was dead: the first `headers` answer itself.
+    expect(told).toHaveLength(1);
+    expect(told[0]).toBe(answered[0] as Readonly<Record<string, string>>);
     expect(presented(requests)).toEqual(["DPoP dead", "DPoP fresh"]);
   });
 
   test("a write is sent once more with a fresh token, under the same Idempotency-Key", async () => {
     const { fetchImpl, requests } = fakeFetch([notLive(), jsonResponse({ id: "message-1" }, 201)]);
-    const { credential, stales } = brokered(["dead", "fresh"]);
+    const { credential, stales, told, answered } = brokered(["dead", "fresh"]);
     const client = new DispatchClient("http://dispatch.test", credential, fetchImpl);
 
     await client.message("DSP-1", { body: "Shipped.", actor });
     expect(stales).toEqual([undefined]);
+    expect(told).toHaveLength(1);
+    expect(told[0]).toBe(answered[0] as Readonly<Record<string, string>>);
     expect(presented(requests)).toEqual(["DPoP dead", "DPoP fresh"]);
     const keys = requests.map(
       (request) => (request.init.headers as Record<string, string>)["Idempotency-Key"]

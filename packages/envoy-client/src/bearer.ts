@@ -91,15 +91,15 @@ export interface RequestCredential {
   /**
    * Tells the credential that the server said the token it presented for `session` (the same
    * argument `headers` takes, and nothing for the credential the caller was built with) is not
-   * live, so the next `headers` for that session presents a fresh one rather than the one in
-   * hand: Dispatch answers `401 BROKER_TOKEN_NOT_ACTIVE` for a broker token the broker no longer
-   * holds live, such as one a person's revoke ended before it lapsed, and a caller that is told
-   * so presents again once (`DispatchClient`'s `#send`). `presented` is the very object of
-   * `headers`' answer the dead token went out in: where given, the credential drops that token
-   * alone, from the session it was presented for, and keeps a token it traded since and the
-   * token of a session its caller moved to in between. A broker credential has its client drop
-   * the token, so the next `headers` trades. A bearer has none: it holds no other token to
-   * present.
+   * live, so that token is never presented again: Dispatch answers `401 BROKER_TOKEN_NOT_ACTIVE`
+   * for a broker token the broker no longer holds live, such as one a person's revoke ended before
+   * it lapsed, and a caller that is told so presents again once (`DispatchClient`'s `#send`).
+   * `presented` is the very object of `headers`' answer the dead token went out in: where given,
+   * the credential drops that token alone, from the session it was presented for, and keeps a
+   * token it traded since and the token of a session its caller moved to in between. The next
+   * `headers` presents the token the credential holds now, and trades where it holds none. A
+   * broker credential has its client drop the token. A bearer has none: it holds no other token
+   * to present.
    */
   stale?(session?: string, presented?: Readonly<Record<string, string>>): void;
   /**

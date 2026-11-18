@@ -396,9 +396,11 @@ landed but Dispatch has no answer to give for it (`409 KEY_COMMITTED`, or a firs
 to keep), the command exits 0 and says it was made: read it back to see it. When an attempt may
 have reached Dispatch and the command got no answer Dispatch's keyed layer gave (no attempt
 answered, a page something in Dispatch's place wrote, a 2xx that is empty, not typed JSON or not
-JSON), the command says the write may or may not have taken effect: read it back before you run
-the command again, since a new command is a new key. Reads, and the `PUT` and `DELETE` of
-`dispatch follow` and `dispatch claim --release`, carry no key and go once. A script that calls
+JSON, but a bodiless 204 or 205), the command says the write may or may not have taken effect:
+read it back before you run the command again, since a new command is a new key. Reads, and the
+`PUT` and `DELETE` of `dispatch follow` and `dispatch claim --release`, carry no key. Each goes
+once, and again only where Dispatch did nothing with it: once more after Dispatch calls the token
+it presented dead, and on an old build's "no route" during a rolling release. A script that calls
 the API directly can send its own key on any `POST` or `PATCH`: 1 to 128 letters, digits, `.`,
 `_`, `:` and `-`, the same on every retry of one write and new for every new write. Dispatch keeps
 each key's answer for 24 hours; the same key with a different request is refused

@@ -374,9 +374,10 @@ export function brokerTokenFor(
  * (`@legion/broker-client/token-client`).
  *
  * A server that says the token presented for a session is not live (`stale`, as Dispatch's
- * `401 BROKER_TOKEN_NOT_ACTIVE` says of a token a revoke ended before it lapsed) has that
- * session's client drop it, so the next `headers` trades afresh: the broker answers a new token,
- * or refuses in its own words, which after a revoke name `agent-secrets login`. A person's
+ * `401 BROKER_TOKEN_NOT_ACTIVE` says of a token a revoke ended before it lapsed) has the client
+ * that presented it drop that token alone, so the next `headers` presents the token the client
+ * holds now, trading where it holds none: the broker answers a new token, or refuses in its own
+ * words, which after a revoke name `agent-secrets login`. A person's
  * sign-in refused for good is remembered against that sign-in (`Held.refused`), so later calls
  * fail with the same words and ask nothing of the issuer or the broker until a new sign-in is on
  * the machine.

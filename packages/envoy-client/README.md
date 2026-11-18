@@ -920,14 +920,17 @@ signed as they would be without it. Its name lies outside `AGENT_SECRETS_*` beca
 `dispatch` command the controller runs under `agent-secrets NAME --` keeps it.
 
 Dispatch answers `401 BROKER_TOKEN_NOT_ACTIVE` for a token the broker no longer holds as live,
-such as one a revoke ended before it lapsed. `DispatchClient` then tells the credential
-(`stale`), presents the credential again, which trades at the broker, and sends the request one
-more time. A write goes again under the same `Idempotency-Key`. A read does this once for each
-send, and a write once for the call: a second such answer is a refusal Dispatch's auth made before
-its keyed layer ran, so it is the write's refusal while nothing may have landed and the write is
-`DispatchWriteUnsettledError` once something may have (`write-outcome.ts`). If the broker refuses
-the new trade, the call fails in the broker's words, unless an attempt of the write may have
-landed: then the write asks again on its pacing, and with no ask left it is
+such as one a revoke ended before it lapsed. `DispatchClient` then tells the credential which
+presentation was dead (`stale(session, presented)`), presents the credential again and sends the
+request one more time. The credential drops that dead token alone, from the client that presented
+it: a session the host moved to in between keeps its live token, and a token the client traded
+since is kept; the next presentation uses the token the client holds now, trading at the broker
+where it holds none. A write goes again under the same `Idempotency-Key`. A read does this once
+for each send, and a write once for the call: a second such answer is a refusal Dispatch's auth
+made before its keyed layer ran, so it is the write's refusal while nothing may have landed and
+the write is `DispatchWriteUnsettledError` once something may have (`write-outcome.ts`). If the
+broker refuses the new trade, the call fails in the broker's words, unless an attempt of the
+write may have landed: then the write asks again on its pacing, and with no ask left it is
 `DispatchWriteUnsettledError`.
 
 A sign-in reaches the sessions that start after it. The broker holds a session name for one

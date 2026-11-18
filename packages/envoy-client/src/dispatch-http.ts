@@ -2113,8 +2113,9 @@ export class DispatchClient {
    * (`#sendOnce`), and once more where Dispatch answers that the token presented is not live
    * (`tokenNotLive`, its `401 BROKER_TOKEN_NOT_ACTIVE`) and the credential can be told so
    * (`RequestCredential.stale`): the broker ended that token before it lapsed, as a person's
-   * revoke of their sign-in does. The credential is told, presents afresh, which trades at the
-   * broker again, and the request goes again. Dispatch authenticates a request before any handler
+   * revoke of their sign-in does. The credential is told which presentation was dead, drops that
+   * token alone, and presents the token it holds now, trading at the broker where it holds none;
+   * the request goes again. Dispatch authenticates a request before any handler
    * runs (`brokerTokenActor`, packages/envoy/internal/dispatch/api/broker_token.go), so that 401
    * says it did nothing. A second such answer is returned as any other refusal is. A trade the
    * broker refuses throws out of the second presentation, so the call fails in the broker's own
