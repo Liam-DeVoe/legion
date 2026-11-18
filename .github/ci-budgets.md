@@ -24,7 +24,7 @@ Every job but `changes` and those CI_OK_EXEMPT names still ends with the ci-ok-r
 the ci-ok job's last step then sets every ci-ok check run on the head that is not its own to its own conclusion, so one verdict stands at the end of every attempt.
 pr-title, the other check that ruleset requires, is the `pr-title` job at the end of this file, in the same shape and for the same reason:
 it runs check-pr-text.sh on a pull request that is not a draft and on the merge queue's group, the two events this workflow runs that carry a pull request's text, and its own check run is the report, so it posts nothing.
-pr-title.yaml carries that same check when the pull request is edited and when a review is submitted or edited, the two events this workflow does not run on, as its own job's check run too;
+pr-title.yaml carries that same check when the pull request is edited, the event this workflow does not run on, as its own job's check run too;
 its header says why it runs on nothing else.
 The docs site's build on a push to main, and its GitHub Pages deploy, are docs-pages.yaml's, a workflow of its own whose header says why.
 Its paths are held to the docs filter below.
@@ -79,10 +79,11 @@ On the run that first moved jobs here (run 44069656523, 2026-11-17), the 24 arm6
 an arm64 job that starts with twenty others still waits for its turn, but the gating jobs started in 7 to 23 s (`lint` 7 s, `ci-ok` 14 s, `changes` 17 s, `pr-title` 23 s).
 What keeps a job on ubuntu-24.04, each a reason of its own machine and not of the job's code:
 
-- a tool whose .github/ci-tools.yaml row is an x86_64 build alone: changie (test), crane (ci-images), mise and jj (pi-shared), elan (airlock-lean);
+- a tool with no arm64 row in .github/ci-tools.yaml: the Pulumi CLI, its docker plugin and uv, which only x86_64 jobs install (envoy-smoke, daemon-go, tool-fallback).
+  A tool that has one is installed from its `-aarch64` row there, as changie (test), crane (ci-images), mise and jj (pi-shared) and elan (airlock-lean) are;
 - the pinned Oh My Pi build, which .omp-pin names and whose release ships linux-x64 alone: daemon-go, plugin-pack, pi-envoy and pi-legion;
 - a browser: dispatch-browser (its container is an image built for linux/amd64 alone), dispatch-two-builds and docs (Playwright's Chromium on the runner's own libraries);
-- an image of this repository built for linux/amd64: worker-image, browser-image, and envoy-smoke, which also installs the x86_64 rows of the Pulumi CLI and its docker plugin;
+- an image of this repository built for linux/amd64: worker-image, browser-image, and envoy-smoke;
 - envoy-go-checks, whose pack step builds the release's listener archives with no CGO_ENABLED, as release-envoy-listener.yaml does on ubuntu-24.04:
   Go's default turns cgo on for a native build and off for a cross build, so only an x86_64 runner builds the release's own pair (ci-job-envoy-go-checks.yaml says what the arm64 runner built instead);
 - tool-fallback, which is the x86_64 half of the tool proof; tool-fallback-arm is its arm64 half.
@@ -158,7 +159,7 @@ That entry writes 854 s for each of those two curls and charges one `ci_tools_fe
 — the release asset, then the ghcr token, the blob request to the package and the read of the store that request's redirect points at
 — each priced at the ceiling .github/scripts/ci-tools.sh's own `--retry-max-time` block derives, which is the one place that per-ladder figure is worked out.
 It was three ladders, 1281 s, until main's #4214: since then a request of the package that carries a credential follows no redirect, so the blob request and the read of the store it points at are two ladders where one request had followed the redirect inside one.
-The figure is the worst row's, a ghcr-mirror row with a release asset of its own (crane, changie and mise); a row whose `primary` is empty costs less, the jj row's token, blob request and store at 3 x 427 = 1281 s and a bun row's one npm tarball at 427 s, and a site below that names one `ci_tools_fetch` is charged the 1708 s whichever row it reads.
+The figure is the worst row's, a ghcr-mirror row with a release asset of its own (crane, changie and mise, and since main's #4313 their `-aarch64` rows, the arm64 builds an arm64 runner installs, which cost the same four ladders); a row whose `primary` is empty costs less, the jj or jj-aarch64 row's token, blob request and store at 3 x 427 = 1281 s and a bun row's one npm tarball at 427 s, and a site below that names one `ci_tools_fetch` is charged the 1708 s whichever row it reads, so a job main's #4313 moved to ubuntu-24.04-arm, which reads the `-aarch64` row where it read the x86_64 one, keeps every figure it carried.
 A reader checks the arithmetic in those two places; no site below repeats either.
 
 Two terms follow from that one, and every step below that holds one names which it holds and its sum rather than deriving either again.
@@ -250,16 +251,25 @@ check-image-trigger-paths.sh reads it as an input of this build for that reason,
 
 ## The ci-images job's ceiling and the tool copy
 
-The tool copy step is this job's slowest retried step, and its arithmetic is derived here once, for the step's budget and the job's ceiling both.
+The tool copy is this job's slowest retried step, and its arithmetic is derived here once, for the steps' budgets and the job's ceiling both.
 Every request .github/scripts/mirror-ci-tools.sh makes rides the one ladder .github/scripts/ci-tools.sh holds (dispatch://INFRA-1545, R2), and each of its requests costs the ceiling .github/scripts/ci-tools.sh's `--retry-max-time` block derives for that request's own bound
 — 397 s at the 30 s a request carrying no asset bytes is given, 427 s at the `max_time: 60` of a request that carries them — and this paragraph derives neither.
-A ghcr-mirror row this run fills costs nine requests, none of its HEADs following a redirect
+A ghcr-mirror row a run fills costs nine requests, none of its HEADs following a redirect
 — the two HEADs that read its state, the asset, the layer's POST and PUT, the config's POST and PUT, the manifest and the read-back, two of them carrying the asset's bytes
-— which is 2 x 427 + 7 x 397 = 3633 s, and the five ghcr-mirror rows of that manifest (crane, changie, mise, jj and elan) with the one token request come to 427 + 5 x 3633 = 18592 s.
-That is a cold fill, the run in which the package answers no request of five rows until every ladder is exhausted, and it is what the step can wait for.
-.github/scripts/check-download-retry.sh charges it so since round 37 of dispatch://INFRA-1545: its DECLARED_LIBRARIES entry for .github/scripts/mirror-ci-tools.sh writes 18592 s, which replaces the one `ci_tools_fetch` it charged before, then 1281 s, a figure that left the step's loop of requests out.
-The step carries the next whole minute above 18592 s, 310 minutes, and the job's ceiling is the Budgets note's rule of one slowest step, 1500 + 18592 = 20092 s -> 335 min.
-Until then this note left the term out of the ceiling, to keep the job near two hours for every change the ci_images filter selects, and the step's own budget of 22 minutes cut a cold fill inside its first row.
+— which is 2 x 427 + 7 x 397 = 3633 s.
+
+THE COPY IS FILLED ONE MACHINE AT A TIME, IN TWO STEPS, AND THE CEILING IS WHY.
+Main's #4313 gave each of the five ghcr-mirror rows (crane, changie, mise, jj and elan) an arm64 build of its own, `<tool>-aarch64`, so the manifest holds ten.
+One step that filled all ten would wait, cold, for 427 + 10 x 3633 = 36757 s, and the job's ceiling by the Budgets note's rule would be 1500 + 36757 = 38257 s -> 638 min, past the 360 minutes GitHub runs a job on one of its hosted runners: a ceiling the runner cannot honour is one the step's own ladder outlives, and the step would then end in GitHub's bare timeout line rather than naming the row that failed.
+So the job runs the script once per machine, `Fill the copy of every x86_64 tool asset the package does not hold` and `Fill the copy of every aarch64 tool asset the package does not hold`, and each run fills the five rows of its machine with the one token request, 427 + 5 x 3633 = 18592 s.
+Which rows a machine's run fills is read by ci-tools.sh's `ci_tools_mirror_rows`, the one reading of that split, which the tool-fallback job's two blob checks read their rows with too:
+an `-aarch64` row is aarch64's and any other x86_64's, as the install actions read it from `uname -m`, and the asset the row's copy is filled from must name that machine as release assets do.
+It refuses, by name and in either machine's run, a ghcr-mirror row the two readings do not agree on, which is how a third machine's row would read, and it refuses a machine no row is built for, so every ghcr-mirror row is filled by exactly one of the two steps or both fail; nothing is skipped in silence.
+That is a cold fill, the run in which the package answers no request of a machine's five rows until every ladder is exhausted, and it is what each step can wait for.
+.github/scripts/check-download-retry.sh charges it so since round 37 of dispatch://INFRA-1545: its DECLARED_LIBRARIES entry for .github/scripts/mirror-ci-tools.sh writes 18592 s for each step that runs the script, which replaces the one `ci_tools_fetch` it charged before, then 1281 s, a figure that left the step's loop of requests out.
+Each step carries the next whole minute above 18592 s, 310 minutes, and the job's ceiling is the Budgets note's rule of one slowest step, 1500 + 18592 = 20092 s -> 335 min.
+Two such steps in one job is the case that rule answers: a run in which both machines' fills meet a package that answers nothing is an outage of the package, where failing at the job's ceiling is the right end, and a fill that meets a transient fault spends its own ladder and no more.
+Until round 37 this note left the term out of the ceiling, to keep the job near two hours for every change the ci_images filter selects, and the step's own budget of 22 minutes cut a cold fill inside its first row.
 
 The package step's own budget is held by hand in `.github/workflows/ci-job-ci-images.yaml`, and the job's ceiling held it too until the tool copy above it was priced, because .github/scripts/check-download-retry.sh prices none of that step's reads:
 those reads are urllib's and subprocess's, inside the Python that .github/scripts/check-ci-images.sh runs, and rule 8 puts a figure on no Python at all.
@@ -286,35 +296,50 @@ The tool-fallback job's comment about the Actions cache holds here too:
 the wrapper passes no-cache for every job whose id starts with `tool-fallback`, so no call of it in this job can be served by the cache either, on any event and any ref.
 The npm half takes ~/.bun/bin away before its install all the same, so no Bun the healthy half left behind satisfies it.
 The `tool_fallback` filter selects this job, as it selects that one:
-both drive the same action over the same manifest through the same helper, so one filter decides both and neither can drift from the other.
+both drive the same actions over the same manifest through the same helper, so one filter decides both and neither can drift from the other.
 CI_OK_SELECTED_BY maps this job to that filter, and .github/scripts/ci_job_reads.py holds a gate of its own on it for what this job reads.
-It needs the `changes` job alone: nothing it runs reads the ghcr copy the ci-images job fills, so it has no reason to wait for that job as tool-fallback does.
+After the Bun halves it proves the other arm64 rows the same way (main's #4313): crane-aarch64, changie-aarch64, mise-aarch64, jj-aarch64 and elan-aarch64, each installed once from its release asset and once under the fault, where each must read its ghcr copy and each install's own 504 is read after a probe of its own (the called file's comments say how).
+Those faulted installs read the copies the ci-images job fills, so this job needs that job for order and carries `!cancelled()`, as tool-fallback does and for the reason that job's comment gives.
 
 The budget its key carries is added up from the slowest run this job can have rather than copied from another job:
 the checkout and the runner's download of the actions (1), the healthy install of the 34 MB release zip (2), the fault and its probe, whose two requests are bounded at 15 s each (1), the faulted install
 — oven-sh/setup-bun's own download against a proxy that refuses it at once, then one ladder of .github/scripts/ci-tools.sh, whose `--retry-max-time 300` allows new attempts for five minutes, then takes the last 64 s wait a decision made just under that limit still sleeps, and then one last attempt of the row's `max_time` 60 s: 424 s at worst, written as 427 s, the ceiling the fetch helper ci-tools.sh derives in its block on that option (8)
 — the 107 MB npm tarball, its gunzip and the write (3), the two readings, each a sha256 of that binary (2), the report step (1), and the machine watch's start and its report (1).
-That is 19 minutes, 1140 s, and this job's unretried term;
-a job its own limit cuts off reports `cancelled`, which ci-ok fails.
+That is 19 minutes, 1140 s, the term of the two Bun halves.
 That ladder was (5) at the 120 s bound this change replaced, where it was 247 s, and the term was 16 minutes.
-The comment above the job's key in `.github/workflows/ci.yaml` adds the job's slowest retried step to that term.
 
-Measured, this job sits far inside the 76 minutes its key carries, and the ladder those 427 s allow for is not driven in the runs measured.
-In five green runs on 2026-11-10 it took 41 s, 41 s, 43 s, 45 s and 50 s (jobs 129726973920, 129733754662, 129745140461, 129743510021 and 129721254112), where the tool-fallback job took 1,611 s to 2,007 s in those same five runs.
-The reason is the shape of this job's faulted install.
+The arm64 rows' cases run after the Bun halves, and their faulted installs run behind the stand-in curl the tool-fallback job uses, which ends each refusal the fault arranges in about a second; the Bun halves run before it and are left as they were measured.
+Their term is one whole ladder per fetch those cases make that can be slow and still be served.
+Before the stand-in that is the release asset of each healthy install, which is the outage this job exists to survive; after it, the primary of each faulted install is refused at once by the fault and cut to about a second by the stand-in, and the slow source left is its ghcr copy.
+install-jj makes two fetches each time, mise's archive and jj itself (mise's own download on the healthy half, the jj copy on the faulted half), so the four healthy and four faulted installs make ten.
+Nine of them are ladders of .github/scripts/ci-tools.sh, at the 427 s its block derives for a row's `max_time` of 60 s;
+the tenth, mise's own fetch of jj on the healthy half, is install-jj's `retry_fetch` at 60 s an attempt, whose slowest run that still ends served is four attempts at that bound, the 150 s of waits and a fifth attempt, 5 x 60 + 150 = 450 s.
+9 x 427 + 450 = 4293 s, 72 minutes (72).
+On the faulted half that same retry meets the fault five times before install-jj reads the jj copy: the fault answers each attempt at once, and the waits between them are 10 + 20 + 40 + 80 = 150 s (3), which every run of this job spends.
+The four probes, each two requests bounded at 15 s (2), and the rest of these cases as measured, the readings, the stand-in and the removals, 25 s in all in run 44073112404 (1).
+That is 78 minutes, 4680 s, and with the Bun halves' 1140 s it is 5820 s, 97 minutes, this job's unretried term;
+a job its own limit cuts off reports `cancelled`, which ci-ok fails, on exactly the day the copies are doing their work.
+Main's #4313 wrote the same construction at its own ladder of 124 s against a host that hangs and with no retry in front of mise's fetch, 10 x 124 s (21) + 2 + 1 = 24 and 15 + 24 = 39, and carried 40.
+The comment above the job's key in `.github/workflows/ci-job-tool-fallback-arm.yaml` adds the job's slowest retried step to that term, either install-jj step's 3416 + 450 = 3866 s: 5820 + 3866 = 9686 s -> 162 min.
+
+Measured, this job sits far inside the 162 minutes its key carries, and the ladders the term above allows for are not driven in the runs measured.
+In five green runs on 2026-11-10, with the Bun halves alone, it took 41 s, 41 s, 43 s, 45 s and 50 s (jobs 129726973920, 129733754662, 129745140461, 129743510021 and 129721254112), where the tool-fallback job took 1,611 s to 2,007 s in those same five runs;
+in run 44073112404 (2026-11-17), with the arm64 rows' cases and before mise's fetch was retried, the whole job took 76 s, 11:31:39Z to 11:32:55Z, the new cases 25 s of it and the two Bun halves 2 s and 33 s, as before them.
+The reason is the shape of this job's faulted Bun install.
 It reads ci_tools_fetch_fallback (.github/actions/setup-bun/action.yml line 174), which reads the second source alone and tries no primary (.github/scripts/ci-tools.sh lines 1259 to 1268), and the primary it does not try is fetched by oven-sh/setup-bun, a Node action that calls no curl.
-The one fetch the helper makes here is of npm, which answers.
+The one fetch the helper makes there is of npm, which answers.
 In the step list of job 129743510021 one step alone is above 3 s: the faulted setup-bun at 32 s, which is the 107 MB npm download.
 The 427 s above stay as the headroom of the run where npm does not answer at once.
-This job is therefore the control of the change INFRA-2621 makes to the tool-fallback job:
-a stand-in curl shortens that job's arranged refusals, and this job, whose measured runs drive no such ladder, must not move.
+The Bun halves are therefore the control of the change INFRA-2621 makes to the tool-fallback job:
+a stand-in curl shortens that job's arranged refusals, and those halves, whose measured runs drive no such ladder, run before this job's own stand-in and must not move.
 What moves here is the ceiling and not the measurement:
 15 minutes stood under this job's own slowest retried step, so the job would have cut that step before it could name its fetch (dispatch://INFRA-1545).
 
-Each of the job's two install steps declares `timeout-minutes: 57`, its own `ci_tools_fetch` arithmetic of 3416 s with the whole minute that figure takes.
-Neither carries `continue-on-error`, so a held install here is loud by itself:
+Each install step of the job declares its own ladder's arithmetic with the whole minute that figure takes: 57 for either setup-bun step's 3416 s, 65 for either install-jj step's 3866 s, and 29 for each other install's one `ci_tools_fetch`, 1708 s, where main's #4313 wrote 11 for each of the eight it added, the bound the tool-fallback job's installs with nowhere to go carry.
+None carries `continue-on-error`, so a held install here is loud by itself:
 the bound fails the job, the steps after it are skipped, and the job uploads its log.
-The job's own limit reaches that install first only when the steps before it took more than about nineteen minutes, which the 41 s to 50 s measured above says they do not.
+The job's own limit reaches an install first only when the steps before it took more than that limit less the install's own budget: 162 - 65 = 97 minutes before an install-jj step, 162 - 57 = 105 before a setup-bun step and 162 - 29 = 133 before any other install.
+The slowest run that still passes is 97 minutes in all, so the steps before any install take less than that, and the 76 s measured above says they take far less.
 The reading either way is a job with a log, which is what the twenty-four installs of tool-fallback cannot give and why their clock exists.
 
 ## The dispatch-browser job's two lanes
@@ -722,7 +747,7 @@ The rule every other budget of `.github/workflows/ci.yaml` is written to (the Bu
 the job's 28.7-minute run, job 129478173535, is 1722 s, and 1722 s and the staging step's 6832 s come to 8554 s, 26 s under the 8580 s of the 143 minutes the key carries.
 It carried 114, the construction this section gave at the staging step's 86 minutes, until review round 29 of dispatch://INFRA-1545 read that 6 s under the sum, and the one minute over the construction that closed it is the minute 143 carries over 142, at no cost to any run that finishes.
 What keeps the job's retried steps diagnosable is still their position, which the paragraph after this one gives.
-The slowest retried step there is the staging step, whose sixteen ladders its own comment derives as 6832 s under the 114 minutes that step carries, above the blob read's 4397 s, install-jj's 3416 + 450 = 3866 s, either setup-bun step's 3416 s and the ci-ok report's 2160 s.
+The slowest retried step there is the staging step, whose sixteen ladders its own comment derives as 6832 s under the 114 minutes that step carries, above either blob read's 4397 s (one step per machine's five ghcr-mirror rows, as "The ci-images job's ceiling and the tool copy" says why), install-jj's 3416 + 450 = 3866 s, either setup-bun step's 3416 s and the ci-ok report's 2160 s.
 The three minutes of steps this section counts for the job are all that runs before it
 — measured at 0.3 minutes in job 129478173535, a 28.7-minute run of the job
 — so a staging step that spends its whole ladder ends on its own budget at about 114 minutes with the job's limit unspent, and that step names the fetch that failed rather than the job reporting GitHub's bare timeout line.

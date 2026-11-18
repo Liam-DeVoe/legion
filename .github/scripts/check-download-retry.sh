@@ -803,25 +803,28 @@
 #          shell of its own; either is charged once, at its most expensive path, though each
 #          path and each run can call its functions (shell_arithmetic, SHARED_LIBRARIES). The
 #          step is refused unless a DECLARED_LIBRARIES entry writes what the library
-#          contributes to it, which then replaces that charge. The tool-fallback steps that
-#          source .github/scripts/ci-tools.sh and run ci-tools-proof.sh's `version-answers`,
-#          which fetches nothing, are declared at 1708 s, the library's one `ci_tools_fetch`,
-#          and so is the step 'Seed mise's install of jj with the staged binary, one byte
-#          changed', which runs ci-tools-proof.sh three times, none of the runs calling a
-#          function that fetches. The ci-ok-report action, which reaches runner-shutdown.sh
-#          through ci-ok-report.sh and through the ci-ok.sh that runs, each of which makes one
-#          call of runner_shutdown_kills in a shell of its own, is declared at 2 x (300 + 480) =
-#          1560 s, which .github/ci-budgets.md's Budgets note writes into the report's 2160 s.
+#          contributes to it, which then replaces that charge. The tool-fallback and
+#          tool-fallback-arm steps that source .github/scripts/ci-tools.sh and run
+#          ci-tools-proof.sh's `version-answers`, which fetches nothing, are declared at 1708 s,
+#          the library's one `ci_tools_fetch`, and so are the step 'Seed mise's install of jj
+#          with the staged binary, one byte changed', which runs ci-tools-proof.sh three times,
+#          and the tool-fallback-arm steps that run its `version-answers` and its `refusals`,
+#          none of the runs calling a function that fetches. The ci-ok-report action, which
+#          reaches runner-shutdown.sh through ci-ok-report.sh and through the ci-ok.sh that runs,
+#          each of which makes one call of runner_shutdown_kills in a shell of its own, is
+#          declared at 2 x (300 + 480) = 1560 s, which .github/ci-budgets.md's Budgets note
+#          writes into the report's 2160 s.
 #        * a library's fetching functions called more than once after sourcing it, or inside a
 #          loop whose passes this check cannot read, which are charged as the library's one
 #          charge (library_functions). The body is refused unless a DECLARED_LIBRARIES entry,
 #          for the step or for the file whose calls they are, writes what the library
 #          contributes. ci-tools-proof.sh's `stage`, which calls ci_tools_fetch once for each
 #          of its five staged rows, is declared for the staging step at the 6832 s its budget
-#          writes and for every other step running that script at 1708 s; the blob check's
-#          loop of ci_tools_registry_head calls at its own 4397 s; mirror-ci-tools.sh's fill at
-#          a cold fill of the five ghcr-mirror rows, 427 + 5 x 3633 = 18592 s, which
-#          .github/ci-budgets.md derives; and
+#          writes and for every other step running that script at 1708 s; each of the two
+#          blob checks' loops of ci_tools_registry_head calls, one per machine's ghcr-mirror
+#          rows, at its own 4397 s; mirror-ci-tools.sh's fill at a cold fill of the five
+#          ghcr-mirror rows of the one machine its argument names, 427 + 5 x 3633 = 18592 s,
+#          which .github/ci-budgets.md derives; and
 #          ci-ok-report.sh's two calls of shutdown_killed, of which a run makes one, at 780 s.
 #
 #      What is read correctly, though a reader may expect otherwise: a retried call written
@@ -4206,7 +4209,8 @@ DECLARED_LOOPS: list[DeclaredArithmetic] = [
                        "Two callers loop over it, and each is priced by a DECLARED_LIBRARIES "
                        "entry instead. .github/scripts/mirror-ci-tools.sh makes nine of these "
                        "requests for each ghcr-mirror row it fills, and its entry is a cold "
-                       "fill, 18592 s, which .github/ci-budgets.md's \"The ci-images job's "
+                       "fill of the one machine's rows a run fills, 18592 s, which "
+                       ".github/ci-budgets.md's \"The ci-images job's "
                        "ceiling and the tool copy\" derives. "
                        ".github/scripts/ci-tools-proof.sh's `stage` calls ci_tools_fetch once "
                        "per row of its STAGED_ROWS, a call of a function this file defines, "
@@ -4248,6 +4252,7 @@ class DeclaredLibrary:
 # The tree's own readings of these three shapes, each at the worst case its `why` derives, which
 # is the figure the budget holding it writes (dispatch://INFRA-1545, round 37).
 TOOL_FALLBACK = ".github/workflows/ci-job-tool-fallback.yaml"
+TOOL_FALLBACK_ARM = ".github/workflows/ci-job-tool-fallback-arm.yaml"
 CI_TOOLS = ".github/scripts/ci-tools.sh"
 RUNNER_SHUTDOWN = ".github/scripts/runner-shutdown.sh"
 DECLARED_LIBRARIES: list[DeclaredLibrary] = [
@@ -4279,9 +4284,10 @@ DECLARED_LIBRARIES: list[DeclaredLibrary] = [
                     "for crane, changie and jj, which fetches nothing, and calls "
                     "ci_tools_verify, a digest read off disk: 1 x 1708 s, the figure the step's "
                     "comment writes for its 29 minutes"),
-    # A script that sources the library, run three times by one step, each run a shell of its
-    # own: the one tree instance of that shape, counted at b5aba1e5 with this check's own
-    # survey instrumented (dispatch://INFRA-1545, round 37).
+    # A script that sources the library, run more than once by one step, each run a shell of its
+    # own: this step, counted at b5aba1e5 with this check's own survey instrumented
+    # (dispatch://INFRA-1545, round 37), and the reading steps tool-fallback-arm took from main's
+    # #4313 below it.
     DeclaredLibrary(TOOL_FALLBACK,
                     "Seed mise's install of jj with the staged binary, one byte changed",
                     CI_TOOLS, 1708,
@@ -4294,23 +4300,64 @@ DECLARED_LIBRARIES: list[DeclaredLibrary] = [
                     "step is charged the library once, as it sources it, the charge every step "
                     "running a subcommand of the rig but `stage` carries: 1 x 1708 s, the figure "
                     "the step's comment writes for its 29 minutes"),
-    DeclaredLibrary(TOOL_FALLBACK, "Check the package holds the blob of every mirrored row",
+    # The readings main's #4313 added to tool-fallback-arm, after its healthy and its faulted
+    # installs of the -aarch64 rows. `version-answers` compares a printed version with the row
+    # and `refusals` reads the fault proxy's own log, and neither calls a function that fetches.
+    DeclaredLibrary(TOOL_FALLBACK_ARM, "Read what the release assets served of the other arm64 rows",
+                    CI_TOOLS, 1708,
+                    "the step sources ci-tools.sh and runs ci-tools-proof.sh `version-answers` "
+                    "for each of the five other -aarch64 rows, which fetches nothing, and calls "
+                    "ci_tools_verify, a digest read off disk: 1 x 1708 s, the figure the step's "
+                    "comment writes for its 29 minutes"),
+    DeclaredLibrary(TOOL_FALLBACK_ARM, "Read the crane the copy served", CI_TOOLS, 1708,
+                    "the step runs ci-tools-proof.sh twice, `version-answers crane-aarch64` and "
+                    "`refusals github.com`, each a shell of its own that sources ci-tools.sh and "
+                    "neither calling a function that fetches: 1 x 1708 s, the figure the step's "
+                    "comment writes for its 29 minutes"),
+    DeclaredLibrary(TOOL_FALLBACK_ARM, "Read the changie the copy served", CI_TOOLS, 1708,
+                    "the step runs ci-tools-proof.sh twice, `version-answers changie-aarch64` and "
+                    "`refusals github.com`, each a shell of its own that sources ci-tools.sh and "
+                    "neither calling a function that fetches: 1 x 1708 s, the figure the step's "
+                    "comment writes for its 29 minutes"),
+    DeclaredLibrary(TOOL_FALLBACK_ARM, "Read the mise and the jj the copies served", CI_TOOLS, 1708,
+                    "the step sources ci-tools.sh, runs ci-tools-proof.sh `version-answers` for "
+                    "mise-aarch64 and jj-aarch64 and `refusals github.com`, none of which fetches, "
+                    "and calls ci_tools_verify, a digest read off disk: 1 x 1708 s, the figure "
+                    "the step's comment writes for its 29 minutes"),
+    DeclaredLibrary(TOOL_FALLBACK_ARM, "Read the elan the copy served", CI_TOOLS, 1708,
+                    "the step runs ci-tools-proof.sh twice, `version-answers elan-aarch64` and "
+                    "`refusals github.com`, each a shell of its own that sources ci-tools.sh and "
+                    "neither calling a function that fetches: 1 x 1708 s, the figure the step's "
+                    "comment writes for its 29 minutes"),
+    DeclaredLibrary(TOOL_FALLBACK, "Check the package holds the blob of every x86_64 mirrored row",
                     CI_TOOLS, 4397,
                     "the anonymous pull token at 60 s an attempt, 427 s, and one HEAD per "
-                    "ghcr-mirror row of .github/ci-tools.yaml through ci_tools_registry_head, "
+                    "ghcr-mirror row built for x86_64, the rows ci-tools.sh's "
+                    "`ci_tools_mirror_rows x86_64` selects, through ci_tools_registry_head, "
                     "whose two requests - the package's answer and the read of the store a "
                     "redirect points at - take 30 s an attempt each, 2 x 397 = 794 s each over "
-                    "the five such rows, 3970 s, both per-ladder figures ci-tools.sh's own "
-                    "`--retry-max-time` block writes: 427 + 3970 = 4397 s, the sum the step's "
-                    "comment writes for its 74 minutes"),
+                    "the five such rows (crane, changie, mise, jj and elan), 3970 s, both "
+                    "per-ladder figures ci-tools.sh's own `--retry-max-time` block writes: "
+                    "427 + 3970 = 4397 s, the sum the step's comment writes for its 74 minutes"),
+    DeclaredLibrary(TOOL_FALLBACK, "Check the package holds the blob of every aarch64 mirrored row",
+                    CI_TOOLS, 4397,
+                    "the step above's reads over the ghcr-mirror rows built for aarch64, the "
+                    "rows `ci_tools_mirror_rows aarch64` selects: the pull token, 427 s, and "
+                    "2 x 397 = 794 s for each of the five such rows (crane-aarch64, "
+                    "changie-aarch64, mise-aarch64, jj-aarch64 and elan-aarch64), 3970 s: "
+                    "427 + 3970 = 4397 s, the sum the step's comment writes for its 74 minutes"),
     DeclaredLibrary(".github/scripts/mirror-ci-tools.sh", None, CI_TOOLS, 18592,
-                    "a cold fill, which .github/ci-budgets.md's \"The ci-images job's ceiling "
-                    "and the tool copy\" derives: a ghcr-mirror row costs nine requests, none "
-                    "of its HEADs following a redirect, the two of them carrying the asset's "
-                    "bytes at 427 s and seven at 397 s, the per-ladder figures ci-tools.sh's "
-                    "own `--retry-max-time` block writes, 2 x 427 + 7 x 397 = 3633 s; the five "
-                    "ghcr-mirror rows .github/ci-tools.yaml holds (crane, changie, mise, jj and "
-                    "elan) with the one token request are 427 + 5 x 3633 = 18592 s"),
+                    "a cold fill of the ghcr-mirror rows of the one machine the script's argument "
+                    "names, the rows ci-tools.sh's `ci_tools_mirror_rows` selects, which "
+                    ".github/ci-budgets.md's \"The ci-images job's ceiling and the tool copy\" "
+                    "derives: a ghcr-mirror row costs nine requests, none of its HEADs following "
+                    "a redirect, the two of them carrying the asset's bytes at 427 s and seven at "
+                    "397 s, the per-ladder figures ci-tools.sh's own `--retry-max-time` block "
+                    "writes, 2 x 427 + 7 x 397 = 3633 s; .github/ci-tools.yaml holds five such "
+                    "rows for each machine (crane, changie, mise, jj and elan, and their "
+                    "-aarch64 rows), and with the one token request they are "
+                    "427 + 5 x 3633 = 18592 s. The ci-images job runs it once per machine, in a "
+                    "step of its own each, and this figure is each step's"),
     DeclaredLibrary(".github/actions/ci-ok-report/action.yml", None, RUNNER_SHUTDOWN, 1560,
                     "two calls of runner_shutdown_kills, each a check-run read, 5 x 30 + 150 = "
                     "300 s, and the annotations loop runner-shutdown.sh's DECLARED_LOOPS entry "

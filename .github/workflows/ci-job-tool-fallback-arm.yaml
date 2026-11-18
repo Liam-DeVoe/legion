@@ -1,9 +1,9 @@
 name: CI job tool-fallback-arm
 
 # The steps of ci.yaml's `tool-fallback-arm` job, in a file of its own.
-# ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
-# whole `if:` that decides whether these steps run, so this file carries no `if:` of its own. The
-# comment above that job says what the arm64 half proves and why it needs the `changes` job alone.
+# ci.yaml's job of the same id calls this file, and that caller keeps `needs: [changes, ci-images]`
+# and the whole `if:` that decides whether these steps run, so this file carries no `if:` of its
+# own. The comment above that job says what the arm64 half proves and why it needs both jobs.
 #
 # The split is for the filters. The tool_fallback filter names this file beside ci.yaml and the
 # tool-fallback job's own file, so a change to these steps selects this job alone, where a change
@@ -31,11 +31,14 @@ jobs:
   tool-fallback-arm:
     runs-on: ubuntu-24.04-arm
     # The budget (.github/ci-budgets.md, "The tool-fallback-arm job", adds up its first term
-    # part by part and says what this job measures against it): 1140 s, the slowest run this
-    # job can have, plus its slowest retried step alone - either setup-bun step's two
-    # `ci_tools_fetch` calls, 3416 s, above the rig steps' one of 1708 s each.
-    # 1140 + 3416 = 4556 s -> 76 min.
-    timeout-minutes: 76
+    # part by part and says what this job measures against it): 5820 s, the slowest run this
+    # job can have - the 1140 s of the two Bun halves and the 4680 s of the arm64 rows' cases
+    # after them - plus its slowest retried step alone: either install-jj step's two
+    # `ci_tools_fetch` calls and its `mise install` of the jj release, 3416 + 450 = 3866 s,
+    # above either setup-bun step's 3416 s, the ci-ok report's 2160 s and the other installs'
+    # and the rig steps' one of 1708 s each.
+    # 5820 + 3866 = 9686 s -> 162 min.
+    timeout-minutes: 162
     # Why this job's install bounds are loud and its own limit does not reach them first:
     # .github/ci-budgets.md, "The tool-fallback-arm job".
     steps:
@@ -63,6 +66,53 @@ jobs:
       - name: Read the Bun the release asset served
         timeout-minutes: 29
         run: .github/scripts/ci-tools-proof.sh installed-bun bun-linux-aarch64
+
+      # The healthy path of the other arm64 rows, with nothing faulted: each action picks its
+      # -aarch64 row from `uname -m`, reads the release asset that row names, and holds the
+      # bytes to the row's digest before it puts the tool on PATH. install-jj does that twice:
+      # the mise it installs jj with is the mise-aarch64 row, and the jj mise installs is held
+      # to the jj-aarch64 row.
+      # install-crane's own retry arithmetic: one `ci_tools_fetch`, 1708 s (ci-budgets.md's
+      # Budgets note) -> 29 min.
+      - timeout-minutes: 29
+        uses: ./.github/actions/install-crane
+
+      # install-changie's own retry arithmetic: one `ci_tools_fetch`, 1708 s (ci-budgets.md's
+      # Budgets note) -> 29 min.
+      - timeout-minutes: 29
+        uses: ./.github/actions/install-changie
+
+      # install-jj's own retry arithmetic: two `ci_tools_fetch` calls and its `mise install`
+      # of the jj release, 3416 + 450 = 3866 s (ci-budgets.md's Budgets note) -> 65 min.
+      - timeout-minutes: 65
+        uses: ./.github/actions/install-jj
+
+      # install-elan's own retry arithmetic: one `ci_tools_fetch`, 1708 s (ci-budgets.md's
+      # Budgets note) -> 29 min.
+      - timeout-minutes: 29
+        uses: ./.github/actions/install-elan
+
+      # What each installed tool answers, against the row it was held to, and the jj binary held
+      # to its row once more where the job's PATH finds it.
+      # One `ci_tools_fetch`, 1708 s: the step and the rig source .github/scripts/ci-tools.sh,
+      # and neither fetches here (ci-budgets.md's Budgets note) -> 29 min.
+      - name: Read what the release assets served of the other arm64 rows
+        timeout-minutes: 29
+        run: |
+          set -euo pipefail
+          # shellcheck source=.github/scripts/ci-tools.sh
+          . .github/scripts/ci-tools.sh
+          wrong=""
+          .github/scripts/ci-tools-proof.sh version-answers crane-aarch64 "$(crane version)" || wrong="$wrong crane-aarch64"
+          .github/scripts/ci-tools-proof.sh version-answers changie-aarch64 "$(changie --version)" || wrong="$wrong changie-aarch64"
+          .github/scripts/ci-tools-proof.sh version-answers mise-aarch64 "$(mise --version)" || wrong="$wrong mise-aarch64"
+          .github/scripts/ci-tools-proof.sh version-answers jj-aarch64 "$(jj --version)" || wrong="$wrong jj-aarch64"
+          .github/scripts/ci-tools-proof.sh version-answers elan-aarch64 "$(elan --version)" || wrong="$wrong elan-aarch64"
+          ci_tools_verify jj-aarch64 "$(command -v jj)" "the jj on this runner's PATH" || wrong="$wrong jj-aarch64"
+          if [ -n "$wrong" ]; then
+            echo "::error::these arm64 installs answer something other than the row they were held to:$wrong" >&2
+            exit 1
+          fi
 
       # The fault and the routing of every later step through it, as in the tool-fallback job:
       # the rig starts the proxy over the release hosts its own FAULT_HOSTS names and writes the
@@ -100,6 +150,127 @@ jobs:
       - name: Read the Bun npm served
         timeout-minutes: 29
         run: .github/scripts/ci-tools-proof.sh installed-bun bun-linux-aarch64 --expect-refused github.com
+
+      # The stand-in curl the tool-fallback job runs, from here on: every install below tries
+      # its primary first, which the fault refuses, and the stand-in ends each such refusal in
+      # about a second where the pinned ladder would ride it out for a minute. It shortens no
+      # fetch of a host the fault does not hold, so the ghcr copies are read on the pinned
+      # ladder. The Bun halves above ran before it.
+      # One `ci_tools_fetch`, 1708 s: the rig sources .github/scripts/ci-tools.sh
+      # (ci-budgets.md's Budgets note) -> 29 min.
+      - name: Shorten the ladder of every fetch this job arranges to fail
+        timeout-minutes: 29
+        run: .github/scripts/ci-tools-proof.sh shorten-ladder
+
+      # Each faulted install below is read the way the npm half above is: a probe marks the fault
+      # proxy's log before it, and `refusals` after it reads the 504 that install met, so each
+      # reading names the refusal that sent that one install to its ghcr copy. The version and
+      # the digest say the right bytes arrived; neither can say which source served them.
+      # One `ci_tools_fetch`, 1708 s: the rig sources .github/scripts/ci-tools.sh
+      # (ci-budgets.md's Budgets note) -> 29 min.
+      - name: Mark the fault's log before the faulted crane install
+        timeout-minutes: 29
+        run: .github/scripts/ci-tools-proof.sh probe github.com
+
+      # install-crane's own retry arithmetic: one `ci_tools_fetch`, 1708 s (ci-budgets.md's
+      # Budgets note) -> 29 min.
+      - timeout-minutes: 29
+        uses: ./.github/actions/install-crane
+
+      # One `ci_tools_fetch`, 1708 s: the rig sources .github/scripts/ci-tools.sh
+      # (ci-budgets.md's Budgets note) -> 29 min.
+      - name: Read the crane the copy served
+        timeout-minutes: 29
+        run: |
+          set -euo pipefail
+          .github/scripts/ci-tools-proof.sh version-answers crane-aarch64 "$(crane version)" ||
+            { echo "::error::the crane the copy served does not answer the crane-aarch64 row's version" >&2; exit 1; }
+          .github/scripts/ci-tools-proof.sh refusals github.com
+
+      # One `ci_tools_fetch`, 1708 s: the rig sources .github/scripts/ci-tools.sh
+      # (ci-budgets.md's Budgets note) -> 29 min.
+      - name: Mark the fault's log before the faulted changie install
+        timeout-minutes: 29
+        run: .github/scripts/ci-tools-proof.sh probe github.com
+
+      # install-changie's own retry arithmetic: one `ci_tools_fetch`, 1708 s (ci-budgets.md's
+      # Budgets note) -> 29 min.
+      - timeout-minutes: 29
+        uses: ./.github/actions/install-changie
+
+      # One `ci_tools_fetch`, 1708 s: the rig sources .github/scripts/ci-tools.sh
+      # (ci-budgets.md's Budgets note) -> 29 min.
+      - name: Read the changie the copy served
+        timeout-minutes: 29
+        run: |
+          set -euo pipefail
+          .github/scripts/ci-tools-proof.sh version-answers changie-aarch64 "$(changie --version)" ||
+            { echo "::error::the changie the copy served does not answer the changie-aarch64 row's version" >&2; exit 1; }
+          .github/scripts/ci-tools-proof.sh refusals github.com
+
+      # One `ci_tools_fetch`, 1708 s: the rig sources .github/scripts/ci-tools.sh
+      # (ci-budgets.md's Budgets note) -> 29 min.
+      - name: Mark the fault's log before the faulted jj install
+        timeout-minutes: 29
+        run: .github/scripts/ci-tools-proof.sh probe github.com
+
+      # mise's own install of jj goes, so the faulted install must reach the release host and
+      # read the copy, as in the tool-fallback job.
+      - name: Take mise's install away, so the faulted install must read the copy
+        run: rm -rf "$HOME/.local/share/mise"
+
+      # Two rows meet the fault here: the mise-aarch64 archive the action's first step fetches,
+      # and the jj-aarch64 binary mise cannot fetch, which the second step reads from its copy.
+      # mise's own fetch of jj is retried in front of that copy, and the fault refuses each of
+      # its five attempts, so this install spends that retry's 150 s of waits before it reads
+      # the copy (.github/ci-budgets.md, "The tool-fallback-arm job").
+      # install-jj's own retry arithmetic: two `ci_tools_fetch` calls and its `mise install`
+      # of the jj release, 3416 + 450 = 3866 s (ci-budgets.md's Budgets note) -> 65 min.
+      - timeout-minutes: 65
+        uses: ./.github/actions/install-jj
+
+      # One `ci_tools_fetch`, 1708 s: the step and the rig source .github/scripts/ci-tools.sh,
+      # and neither fetches here (ci-budgets.md's Budgets note) -> 29 min.
+      - name: Read the mise and the jj the copies served
+        timeout-minutes: 29
+        run: |
+          set -euo pipefail
+          # shellcheck source=.github/scripts/ci-tools.sh
+          . .github/scripts/ci-tools.sh
+          wrong=""
+          .github/scripts/ci-tools-proof.sh version-answers mise-aarch64 "$(mise --version)" || wrong="$wrong mise-aarch64"
+          .github/scripts/ci-tools-proof.sh version-answers jj-aarch64 "$(jj --version)" || wrong="$wrong jj-aarch64"
+          ci_tools_verify jj-aarch64 "$(command -v jj)" "the jj on this runner's PATH" || wrong="$wrong jj-aarch64"
+          if [ -n "$wrong" ]; then
+            echo "::error::these faulted installs answer something other than the row they were held to:$wrong" >&2
+            exit 1
+          fi
+          .github/scripts/ci-tools-proof.sh refusals github.com
+
+      # One `ci_tools_fetch`, 1708 s: the rig sources .github/scripts/ci-tools.sh
+      # (ci-budgets.md's Budgets note) -> 29 min.
+      - name: Mark the fault's log before the faulted elan install
+        timeout-minutes: 29
+        run: .github/scripts/ci-tools-proof.sh probe github.com
+
+      # The action installs nothing where it finds an elan, so the one the healthy half left goes.
+      - name: Take elan away, so the faulted install must read the copy
+        run: rm -rf "$RUNNER_TEMP/elan" "$RUNNER_TEMP/elan-init"
+
+      # install-elan's own retry arithmetic: one `ci_tools_fetch`, 1708 s (ci-budgets.md's
+      # Budgets note) -> 29 min.
+      - timeout-minutes: 29
+        uses: ./.github/actions/install-elan
+
+      # One `ci_tools_fetch`, 1708 s: the rig sources .github/scripts/ci-tools.sh
+      # (ci-budgets.md's Budgets note) -> 29 min.
+      - name: Read the elan the copy served
+        timeout-minutes: 29
+        run: |
+          set -euo pipefail
+          .github/scripts/ci-tools-proof.sh version-answers elan-aarch64 "$(elan --version)" ||
+            { echo "::error::the elan the copy served does not answer the elan-aarch64 row's version" >&2; exit 1; }
+          .github/scripts/ci-tools-proof.sh refusals github.com
 
       # `always()`, because the reading a reader wants most is the one from a job that failed.
       - name: Report what this job ran on

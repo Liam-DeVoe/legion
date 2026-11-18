@@ -118,9 +118,13 @@
 #   ci_tools_source_name <row>
 #                   <primary|second>      the one word that source is named by, for a call site
 #                                         that must write no source word of its own.
-#   ci_tools_rows [<second source>]       every row's name, in the manifest's own order, and
-#                                         only the rows whose second source is that word where
-#                                         the argument is given.
+#   ci_tools_rows                         every row's name, in the manifest's own order.
+#   ci_tools_mirror_rows <machine>        the names of the `ghcr-mirror` rows built for that
+#                                         machine, x86_64 or aarch64, in the manifest's own
+#                                         order. It refuses a ghcr-mirror row built for neither
+#                                         by name, and a machine no such row is built for, so
+#                                         the two machines' calls together read every such row
+#                                         once.
 #   ci_tools_github_url <url>             that URL with the CI_TOOLS_GITHUB_BASE seam in place
 #                                         of its https://github.com prefix.
 #   ci_tools_curl <file> <max_time>
@@ -442,24 +446,22 @@ ci_tools_digest() {
   ci_tools_field "$1" digest
 }
 
-# ci_tools_rows [<second source>]: every row's name, in the manifest's own order, and only the
-# rows whose `second_source` is that word where the argument is given. One reader of the
-# manifest's row list, so a job's step names neither the file nor its shape.
+# ci_tools_rows: every row's name, in the manifest's own order. One reader of the manifest's row
+# list, so a job's step names neither the file nor its shape.
 ci_tools_rows() {
-  if [ "$#" -gt 1 ]; then
-    ci_tools__error "ci_tools_rows takes an optional second source, and this call gave $#"
+  if [ "$#" -ne 0 ]; then
+    ci_tools__error "ci_tools_rows takes no argument, and this call gave $#"
     return 1
   fi
   local manifest names
   manifest=$(ci_tools__manifest) || return 1
-  names=$(CI_TOOLS_SECOND="${1:-}" CI_TOOLS_FILE="$manifest" PYTHONDONTWRITEBYTECODE=1 python3 - <<'PY'
+  names=$(CI_TOOLS_FILE="$manifest" PYTHONDONTWRITEBYTECODE=1 python3 - <<'PY'
 import os
 import sys
 
 import yaml
 
 path = os.environ["CI_TOOLS_FILE"]
-want = os.environ["CI_TOOLS_SECOND"]
 try:
     with open(path) as handle:
         document = yaml.safe_load(handle) or {}
@@ -468,14 +470,109 @@ except OSError as error:
     raise SystemExit(1)
 for row in document.get("tools") or []:
     name = row.get("name")
-    if not name:
-        continue
-    if want and row.get("second_source") != want:
-        continue
-    print(name)
+    if name:
+        print(name)
 PY
   ) || return 1
   [ -z "$names" ] || printf '%s\n' "$names"
+}
+
+# ci_tools_mirror_rows <x86_64|aarch64>: the names of the `ghcr-mirror` rows built for that
+# machine, in the manifest's own order.
+# The package's copy is filled and checked one machine at a time, by a step per machine in
+# ci.yaml's ci-images job (.github/scripts/mirror-ci-tools.sh) and in its tool-fallback job (its
+# blob checks), because each of those reads costs a ladder per row and the ten rows of both
+# machines in one step would put the ci-images job past the 360 minutes a GitHub-hosted job may
+# run (.github/ci-budgets.md, "The ci-images job's ceiling and the tool copy"). This is the one
+# reading of which rows a machine's step reads, so the filler and the check cannot split the
+# manifest two ways.
+# A row's machine is read twice, and the two readings must agree. Its name is the first:
+# `<tool>-aarch64` is the arm64 build of the `<tool>` row (.github/scripts/check-ci-tools.sh's
+# rule 2 holds the pair to one version), and every install action reads the one or the other
+# from `uname -m`, so an `-aarch64` row is aarch64's and any other row x86_64's. The file name of
+# its `mirror_from`, the asset its copy is filled from, is the second: it must name that machine
+# the way release assets do — x86_64, amd64 or x64, or aarch64 or arm64, as a word between `-`,
+# `_` or `.` — and not the other one. The name alone cannot see a third machine: a
+# `<tool>-riscv64` row reads as x86_64 by it. The asset can, since such a row's asset names no
+# word of x86_64, so a row the two readings do not agree on is filled and checked by no step of
+# either machine. Every call reads every ghcr-mirror row, and refuses each such row by name
+# whichever machine it asked for, so neither machine's step can pass while a row is read by
+# none; and a machine no row is built for is refused too, since a step that reads nothing proves
+# nothing about the copy.
+ci_tools_mirror_rows() {
+  if [ "$#" -ne 1 ]; then
+    ci_tools__error "ci_tools_mirror_rows takes a machine, x86_64 or aarch64, and this call gave $#"
+    return 1
+  fi
+  local manifest names
+  manifest=$(ci_tools__manifest) || return 1
+  names=$(CI_TOOLS_MACHINE="$1" CI_TOOLS_FILE="$manifest" PYTHONDONTWRITEBYTECODE=1 python3 - <<'PY'
+import os
+import re
+import sys
+
+import yaml
+
+# The words a release asset names each machine with, and the suffix of a row built for it.
+WORDS = {"x86_64": ("x86_64", "amd64", "x64"), "aarch64": ("aarch64", "arm64")}
+ARM64_SUFFIX = "-aarch64"
+
+path = os.environ["CI_TOOLS_FILE"]
+want = os.environ["CI_TOOLS_MACHINE"]
+if want not in WORDS:
+    sys.stderr.write(
+        f"::error::ci-tools: ci_tools_mirror_rows reads the ghcr-mirror rows of x86_64 or aarch64, "
+        f"and this call asked for '{want}'\n"
+    )
+    raise SystemExit(1)
+try:
+    with open(path) as handle:
+        document = yaml.safe_load(handle) or {}
+except OSError as error:
+    sys.stderr.write(f"::error::ci-tools: this run cannot read {path} ({error})\n")
+    raise SystemExit(1)
+
+
+def named(asset, machine):
+    return any(re.search(rf"(?:^|[-_.]){re.escape(word)}(?:[-_.]|$)", asset)
+               for word in WORDS[machine])
+
+
+picked = []
+refused = False
+for row in document.get("tools") or []:
+    name = row.get("name")
+    if not name or row.get("second_source") != "ghcr-mirror":
+        continue
+    by_name = "aarch64" if str(name).endswith(ARM64_SUFFIX) else "x86_64"
+    asset = str(row.get("mirror_from") or "").rsplit("/", 1)[-1]
+    by_asset = [machine for machine in WORDS if named(asset, machine)]
+    if by_asset != [by_name]:
+        refused = True
+        read = " and ".join(by_asset) or "neither x86_64 nor aarch64"
+        sys.stderr.write(
+            f"::error::ci-tools: {name}: this ghcr-mirror row is filled and checked by no machine's "
+            f"step. Its name reads {by_name} (an `{ARM64_SUFFIX}` row is aarch64's and any other "
+            f"x86_64's, as the install actions read it from `uname -m`), and the asset its copy is "
+            f"filled from, '{asset}', names {read}. Name the row and its asset for one of the two "
+            f"machines, or give this reading and the ci-images and tool-fallback jobs a step for "
+            f"the machine it is built for\n"
+        )
+        continue
+    if by_name == want:
+        picked.append(name)
+if refused:
+    raise SystemExit(1)
+if not picked:
+    sys.stderr.write(
+        f"::error::ci-tools: {path} holds no ghcr-mirror row built for {want}, so the step that "
+        f"reads that machine's rows would read nothing: add the rows, or take the step out\n"
+    )
+    raise SystemExit(1)
+print("\n".join(picked))
+PY
+  ) || return 1
+  printf '%s\n' "$names"
 }
 
 # ci_tools__hold <row> <file> <source> <digest> <what that digest is of>: holds <file> to that

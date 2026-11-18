@@ -68,12 +68,18 @@ jobs:
       # exists to survive and a red ci-ok during that outage helps nobody. Here a cold row is a
       # refusal, because this job records a pass for a fallback it drove, and a pass recorded for
       # a row whose second source does not exist yet is a pass for nothing.
+      # One step per machine, as the filler runs one per machine in the ci-images job: each
+      # reads the ghcr-mirror rows built for its machine with ci_tools_mirror_rows, the one
+      # reading of that split both sides make, which refuses a row built for neither machine by
+      # name and a machine no row is built for, so every ghcr-mirror row is checked by exactly
+      # one of the two steps or both fail (.github/ci-budgets.md, "The ci-images job's ceiling
+      # and the tool copy", says why the reads are split).
       # Its own retry arithmetic, read off the loop below rather than taken as one ladder: the
       # anonymous pull token, at the 60 s an attempt .github/scripts/ci-tools.sh's token
-      # helper defaults to, 427 s; and one HEAD per ghcr-mirror row of .github/ci-tools.yaml,
-      # through ci_tools_registry_head, whose two requests - the package's answer and the read
-      # of the store a redirect points at - each take 30 s an attempt, 2 x 397 = 794 s each
-      # over the five such rows (crane, changie, mise, jj and elan), 3970 s.
+      # helper defaults to, 427 s; and one HEAD per ghcr-mirror row of its machine, through
+      # ci_tools_registry_head, whose two requests - the package's answer and the read of the
+      # store a redirect points at - each take 30 s an attempt, 2 x 397 = 794 s each over the
+      # five x86_64 rows (crane, changie, mise, jj and elan), 3970 s.
       # Both per-ladder figures come from one place, .github/scripts/ci-tools.sh's own
       # `--retry-max-time` block, which writes them as 427 s at 60 and 397 s at 30; neither is
       # derived here.
@@ -81,15 +87,15 @@ jobs:
       # function the sourced file defines is a reading it refuses unless declared, and its
       # DECLARED_LIBRARIES entry for this step writes these 4397 s in place of the one
       # `ci_tools_fetch`, 1708 s, it would charge otherwise.
-      - name: Check the package holds the blob of every mirrored row
+      - name: Check the package holds the blob of every x86_64 mirrored row
         timeout-minutes: 74
         run: |
           set -euo pipefail
           # shellcheck source=.github/scripts/ci-tools.sh
           . .github/scripts/ci-tools.sh
           registry=$(ci_tools_registry)
+          rows=$(ci_tools_mirror_rows x86_64)
           token=$(ci_tools_ghcr_token)
-          rows=$(ci_tools_rows ghcr-mirror)
           cold=""
           for row in $rows; do
             url=$(ci_tools_blob_url "$row")
@@ -101,6 +107,33 @@ jobs:
             # holds no attempts of its own (dispatch://INFRA-1545, R2). It reads the status
             # itself, which is the question here: a 404 is this step's answer about a cold row,
             # not a fetch that failed.
+            status=$(ci_tools_registry_head --follow "$token" /dev/null "$url")
+            echo "$row: $registry answers $status for $url"
+            [ "$status" = 200 ] || cold="$cold $row"
+          done
+          if [ -n "$cold" ]; then
+            echo "::error::the package answered no 200 for the blob of$cold (each answer is above), so this job would record a pass for a second source that is not there; the ci-images job this one needs fills it with .github/scripts/mirror-ci-tools.sh, where a cold row stays green on purpose" >&2
+            exit 1
+          fi
+
+      # The same check over the ghcr-mirror rows built for aarch64, the copies the
+      # tool-fallback-arm job's faulted installs read. Its own retry arithmetic is the step
+      # above's over the five aarch64 rows (crane-aarch64, changie-aarch64, mise-aarch64,
+      # jj-aarch64 and elan-aarch64): 427 + 5 x 794 = 4397 s -> 74 min, which its own
+      # DECLARED_LIBRARIES entry writes.
+      - name: Check the package holds the blob of every aarch64 mirrored row
+        timeout-minutes: 74
+        run: |
+          set -euo pipefail
+          # shellcheck source=.github/scripts/ci-tools.sh
+          . .github/scripts/ci-tools.sh
+          registry=$(ci_tools_registry)
+          rows=$(ci_tools_mirror_rows aarch64)
+          token=$(ci_tools_ghcr_token)
+          cold=""
+          for row in $rows; do
+            url=$(ci_tools_blob_url "$row")
+            # The HEAD, and what its status says, as in the step above.
             status=$(ci_tools_registry_head --follow "$token" /dev/null "$url")
             echo "$row: $registry answers $status for $url"
             [ "$status" = 200 ] || cold="$cold $row"

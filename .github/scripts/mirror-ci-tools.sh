@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Fills the copy of every `second_source: ghcr-mirror` row of .github/ci-tools.yaml in the
-# package that file's `registry:` names.
+# Fills the copy of every `second_source: ghcr-mirror` row of .github/ci-tools.yaml built for one
+# machine, x86_64 or aarch64, in the package that file's `registry:` names.
 # An hour of 504s on GitHub's release assets holds every merge of this repository, because each
 # of those installs reads one source and has nowhere else to go (dispatch://INFRA-1873).
 # The copy in the package is the second source those installs read, and this script is what puts
@@ -17,6 +17,17 @@
 # This script therefore pushes the asset's own bytes through the registry API, which stores a
 # blob under the digest of the bytes it is given, and builds the small config and manifest around
 # them itself.
+#
+# ONE MACHINE'S ROWS A RUN, AND ITS ONE ARGUMENT NAMES THE MACHINE.
+# ci.yaml's ci-images job runs this script twice, in a step per machine, because a cold fill
+# costs a ladder for every request a row makes and a run that filled every row of both machines
+# would put that job past the 360 minutes a GitHub-hosted job may run (.github/ci-budgets.md,
+# "The ci-images job's ceiling and the tool copy"). Which rows a machine's run fills is read with
+# .github/scripts/ci-tools.sh's `ci_tools_mirror_rows`, which the tool-fallback job's two blob
+# checks read their rows with too, so the filler and the check split the manifest one way. That
+# reading refuses a ghcr-mirror row built for neither machine by name, and a machine no row is
+# built for, in either machine's run and before this run asks the package anything, so no row is
+# left to neither run: every ghcr-mirror row is filled by exactly one of the two, or both refuse.
 #
 # THIS SCRIPT IS THE ONLY JUDGE OF THAT COPY'S STATE.
 # It reads the package, it decides what each row needs, and it says what it did.
@@ -36,7 +47,8 @@
 # WHAT THIS SCRIPT DECIDES, AND WHAT IT READS FROM THE HELPER BESIDE IT.
 # The copy is written here and read by every install through .github/scripts/ci-tools.sh, so the
 # two must agree on the row, the digest and the address, and this script holds no second copy of
-# any of that: it reads the rows with `ci_tools_rows`, each row's second source with
+# any of that: it reads the rows with `ci_tools_rows` and this machine's ghcr-mirror rows with
+# `ci_tools_mirror_rows`, each row's second source with
 # `ci_tools_source_name` and their fields with `ci_tools_field`, fetches the asset with
 # `ci_tools_curl`, reads the package's blobs and tags with `ci_tools_registry_head` and opens and
 # closes every upload and puts every manifest with `ci_tools_curl_status`, so every request this
@@ -81,8 +93,10 @@
 # An `npm` row needs no copy of ours, and this run prints one line per such row and reads
 # nothing for it.
 #
-# It prints exactly one of `held`, `filled` or `cold` per ghcr-mirror row, one line per npm row,
-# and one summary line at the end that counts each.
+# It prints which ghcr-mirror rows this run's machine is built for, exactly one of `held`,
+# `filled` or `cold` per such row, one line per npm row, and one summary line at the end that
+# counts each. A ghcr-mirror row of the other machine is that machine's run's, and this run reads
+# nothing for it.
 #
 # THE THREE SEAMS, each read with a default, so a CI job sets none of them. They are
 # .github/scripts/ci-tools.sh's own names, so one reader learns one set:
@@ -99,9 +113,9 @@
 # .github/scripts/mirror-ci-tools.test.sh serves the package and the release host from a local
 # HTTP origin through those seams, so no case of it reaches the network.
 #
-# Run from anywhere: .github/scripts/mirror-ci-tools.sh
-# CI runs it in ci.yaml's ci-images job, after that job's image copy, under the login that job
-# already holds for the package. Its tests run in ci.yaml's test job.
+# Run from anywhere: .github/scripts/mirror-ci-tools.sh <x86_64|aarch64>
+# CI runs it in ci.yaml's ci-images job, once per machine and after that job's image copy, under
+# the login that job already holds for the package. Its tests run in ci.yaml's test job.
 set -euo pipefail
 
 # The directory of this script, resolved before the cd below, so the helper beside it is found
@@ -130,6 +144,12 @@ MANIFEST_TYPE=application/vnd.oci.image.manifest.v1+json
 
 error() { printf '::error file=%s::%s\n' "$manifest" "$*" >&2; }
 
+if [ "$#" -ne 1 ]; then
+  error "this run fills the copy of one machine's ghcr-mirror rows, and takes that machine, x86_64 or aarch64, as its one argument; this call gave $#, so it reads nothing and fills nothing."
+  exit 1
+fi
+machine=$1
+
 if [ -z "${GITHUB_ACTOR:-}" ] || [ -z "${GITHUB_TOKEN:-}" ]; then
   error "this run has no GITHUB_ACTOR and GITHUB_TOKEN to mint a push token from, and it writes to the package ci.yaml's ci-images job logs in to, so it reads nothing and fills nothing."
   exit 1
@@ -147,6 +167,14 @@ if [ -z "$rows" ]; then
   error "this file holds no row, so there is nothing to fill."
   exit 1
 fi
+
+# The ghcr-mirror rows of this run's machine, from the helper's one reading of which machine a
+# row is built for. It reads every ghcr-mirror row of the manifest, and refuses one built for
+# neither machine, or a machine no row is built for, naming either, so a failure here stops the
+# run before it asks the package anything.
+machine_rows=$(ci_tools_mirror_rows "$machine")
+machine_rows=$(printf '%s\n' "$machine_rows" | tr '\n' ' ')
+echo "$machine: this run fills the copy of ${machine_rows% }"
 
 # The package every copy lives in, which the manifest names once for the whole file, and the
 # registry API address of it. Both come from the helper, so the address this run pushes to is
@@ -352,6 +380,11 @@ for name in $rows; do
     uncopied=$((uncopied + 1))
     continue
   fi
+  # A ghcr-mirror row of the other machine is the other machine's run's to fill.
+  case " $machine_rows" in
+    *" $name "*) ;;
+    *) continue ;;
+  esac
   # The fields of a ghcr-mirror row this run fills, each read through the helper, so this
   # script learns the manifest's shape from the one reader of it.
   digest=$(ci_tools_digest "$name")

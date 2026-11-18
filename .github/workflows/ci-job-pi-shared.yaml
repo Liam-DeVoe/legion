@@ -22,7 +22,7 @@ on:
 
 jobs:
   pi-shared:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     # Budget (ci-budgets.md's Budgets note): 600 s, the 10 minutes this job carried, above its 36 s
     # measured maximum, plus its slowest retried step alone — install-jj, whose two
     # `ci_tools_fetch` calls and `mise install` of the jj release are 3416 + 450 = 3866 s, above
