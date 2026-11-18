@@ -629,10 +629,9 @@ describe("userConfigChain", () => {
       .catch(() => 0);
     return Number.isInteger(pid) && pid > 0 ? pid : undefined;
   }
-  // The same hang guard the rows below carry, for the same reason: removing a handful of
-  // temporary directories is not work this suite measures, but it runs at bun's implicit 5 s
-  // hook limit, which a loaded machine exceeds — at 240 busy loops on 2 CPUs this hook timed out
-  // once in 20 runs and failed a row that had already passed its assertion.
+  // A hang guard: what can hang is a kill or a removal of the rows' directories that never
+  // returns. 60_000. Worst measured cost: 5 104.35 ms over 15 invocations in 3 runs of this
+  // describe at 75 busy loops (the 240 rung) on a two-CPU, 8 GiB pod.
   afterEach(async () => {
     rowGeneration += 1;
     for (const pidFile of pidFiles.splice(0)) {
@@ -692,8 +691,13 @@ describe("userConfigChain", () => {
 
   it("chains the user config files jj prints, in order", async () => {
     const env = await withJj("printf '/u/a.toml\\n/u/b.toml\\n'");
-    expect(await userConfigChain(5_000, env)).toBe("/u/a.toml:/u/b.toml");
-  });
+    // The bound sits above this row's own limit, as the detached-child row's does, so it can
+    // never fire inside a run the runner allows: the fake jj answers at once, and how long a
+    // loaded host takes to start it is no part of this row's subject.
+    expect(await userConfigChain(120_000, env)).toBe("/u/a.toml:/u/b.toml");
+    // A hang guard: what can hang is a `jj` that never prints. 60_000. Worst measured cost:
+    // 3 494.54 ms at 75 busy loops (the 240 rung) on a two-CPU, 8 GiB pod.
+  }, 60_000);
 
   // Each of the three rows below runs a fake jj that sleeps 300 s, far above every per-test limit
   // in this file. So a `userConfigChain` that stopped bounding its wait, or a kill that leaves the

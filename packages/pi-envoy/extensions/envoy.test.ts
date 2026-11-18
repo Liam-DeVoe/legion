@@ -1901,8 +1901,8 @@ async function settle(): Promise<void> {
 // under `jest.useFakeTimers()` a `Bun.sleep` never resolves (measured on bun 1.4.4: a row
 // awaiting `Bun.sleep(5)` there timed out, where real timers resolve it in 14 ms), so from the
 // first warning on the loop would stop polling. No caller is in such a scope:
-// `jest.useFakeTimers()` is called only in `onTestClock` and the store-beat row, and neither
-// calls this.
+// `jest.useFakeTimers()` is called only in `onTestClock`, the store-beat row and the context-frame
+// rows' `onFrameClock`, and none of them calls this.
 async function until(condition: () => boolean, what: string): Promise<void> {
   const generation = rowGeneration;
   const start = performance.now();
@@ -13932,8 +13932,8 @@ console.log(JSON.stringify(args));
        *  its row, whether the row returned or the runner abandoned it at its limit. */
       const workDirectories: string[] = [];
       // A bound on work, not a hang guard: the poll below waits at most 1_000 turns for a killed
-      // group to end. 60_000. Worst measured cost, on green runs: 563.68 ms at 96 busy loops (48
-      // per CPU) on a two-CPU pod.
+      // group to end. 60_000. Worst measured cost: 159.52 ms over 81 invocations in 3 runs of this
+      // describe at 30 busy loops (the 96 rung) on a two-CPU, 8 GiB pod.
       afterEach(async () => {
         for (const directory of workDirectories.splice(0)) {
           let pid = 0;
@@ -14323,6 +14323,9 @@ console.log(JSON.stringify(args));
             delivery.content.includes("A person ran this shell command")
           )
         ).toEqual([]);
+        // A hang guard: what can hang is a command that never starts, which the `until` above waits
+        // for with no deadline of its own, or a reply that never arrives. 20_000. Worst measured
+        // cost: 6 877.67 ms at 30 busy loops (the 96 rung) on a two-CPU, 8 GiB pod.
       }, 20_000);
 
       // The same move, with no session event for it: the host moves its session manager first
@@ -14372,6 +14375,9 @@ console.log(JSON.stringify(args));
             delivery.content.includes("A person ran this shell command")
           )
         ).toEqual([]);
+        // A hang guard: what can hang is a command that never starts, which the `until` above waits
+        // for with no deadline of its own, or a reply that never arrives. 20_000. Worst measured
+        // cost: 10 302.74 ms at 30 busy loops (the 96 rung) on a two-CPU, 8 GiB pod.
       }, 20_000);
 
       // The same move, made before the command is asked for: the delivery awaits the whole body
@@ -15068,6 +15074,9 @@ console.log(JSON.stringify(args));
           attempt: 1,
           body: `!echo $$ > pid && touch running && until [ -f go ]; do sleep 0.05; done && printf first\n\n\`\`\`\nfirst\n\`\`\`\n\n${withheldOutput}`,
         });
+        // A hang guard: what can hang is a first command that never starts, which the `until` above
+        // waits for with no deadline of its own, or a reply that never arrives. 20_000. Worst
+        // measured cost: 8 798.46 ms at 30 busy loops (the 96 rung) on a two-CPU, 8 GiB pod.
       }, 20_000);
 
       // The agent's copy is withheld where the session the command was asked of is not the one
@@ -15110,6 +15119,9 @@ console.log(JSON.stringify(args));
           )
         ).toEqual([]);
         expect(movedSessionFrames()).toEqual([]);
+        // A hang guard: what can hang is a command that never starts, which the `until` above waits
+        // for with no deadline of its own, or a reply that never arrives. 20_000. Worst measured
+        // cost: 7 392.25 ms at 30 busy loops (the 96 rung) on a two-CPU, 8 GiB pod.
       }, 20_000);
 
       // A command runs in a process group of its own, and the session that was asked for it is
@@ -15144,6 +15156,10 @@ console.log(JSON.stringify(args));
         expect(replies[0]?.body).toMatchObject({
           body: "!echo $$ > pid && exec sleep 600\n\nThe command printed nothing.\n\nThe command was stopped.",
         });
+        // A hang guard: what can hang is a command that never writes its pid, which the `until`
+        // above waits for with no deadline of its own, or a shutdown that does not end it, whose
+        // reply then never arrives. 20_000. Worst measured cost: 5 785.05 ms at 30 busy loops (the
+        // 96 rung) on a two-CPU, 8 GiB pod.
       }, 20_000);
 
       // A session shutting down runs no command: one started now would outlive the session it
@@ -16300,6 +16316,21 @@ console.log(JSON.stringify(args));
       return replay.frames;
     };
 
+    /**
+     * Runs `calls` on the test's clock (`jest.useFakeTimers`, on for the call). The publisher
+     * reads `Date.now()` and arms the global `setTimeout` itself, so its interval moves only as
+     * the row moves that clock, with `jest.advanceTimersByTime` or `jest.setSystemTime`, and no
+     * load on the host can end the interval between two handler calls.
+     */
+    const onFrameClock = async (calls: () => Promise<void>): Promise<void> => {
+      jest.useFakeTimers();
+      try {
+        await calls();
+      } finally {
+        jest.useRealTimers();
+      }
+    };
+
     test("carries the window the host reports once a turn's message ends", async () => {
       const { context, fixture } = await bootDirectSession("context-frame-message", {
         contextUsage: () => ({ contextWindow: 200_000, percent: 25, tokens: 50_000 }),
@@ -16335,12 +16366,17 @@ console.log(JSON.stringify(args));
       });
       await attachViewer();
 
-      await fixture.handlers.get("turn_start")?.({}, context);
-      tokens = 60_000;
-      await fixture.handlers.get("message_end")?.({ message }, context);
+      await onFrameClock(async () => {
+        await fixture.handlers.get("turn_start")?.({}, context);
+        tokens = 60_000;
+        await fixture.handlers.get("message_end")?.({ message }, context);
+      });
 
       expect(publishedContext().map((frame) => frame.tokens)).toEqual([50_000]);
-    });
+      // A hang guard: what can hang is the session's boot, or a handler that waits on a timer of
+      // the test's clock, which moves only as the row moves it. 60_000. Worst measured cost:
+      // 8 793.18 ms at 75 busy loops (the 240 rung) on a two-CPU, 8 GiB pod.
+    }, 60_000);
 
     // The reading a turn's last message is owed is held, not dropped: a turn whose last message
     // ends inside the interval - a short reply, a quick tool round - is the last reading of that
@@ -16355,17 +16391,23 @@ console.log(JSON.stringify(args));
       });
       await attachViewer();
 
-      await fixture.handlers.get("turn_start")?.({}, context);
-      tokens = 60_000;
-      await fixture.handlers.get("message_end")?.({ message }, context);
-      expect(publishedContext().map((frame) => frame.tokens)).toEqual([50_000]);
-      // The turn is over by the time the frame goes out, and this host answers for the turn
-      // that is running.
-      tokens = 5;
+      await onFrameClock(async () => {
+        await fixture.handlers.get("turn_start")?.({}, context);
+        tokens = 60_000;
+        await fixture.handlers.get("message_end")?.({ message }, context);
+        expect(publishedContext().map((frame) => frame.tokens)).toEqual([50_000]);
+        // The turn is over by the time the frame goes out, and this host answers for the turn
+        // that is running.
+        tokens = 5;
 
-      await until(() => publishedContext().length > 1, "the frame the message's reading was owed");
+        // The interval set above runs out on the test's clock, which runs the trailing frame.
+        jest.advanceTimersByTime(50);
+      });
       expect(publishedContext().map((frame) => frame.tokens)).toEqual([50_000, 60_000]);
-    });
+      // A hang guard: what can hang is the session's boot, or a handler that waits on a timer of
+      // the test's clock, which moves only as the row moves it. 60_000. Worst measured cost:
+      // 8 501.09 ms at 75 busy loops (the 240 rung) on a two-CPU, 8 GiB pod.
+    }, 60_000);
 
     // No older reading may follow a newer one. The trailing frame is due at the interval's end,
     // and a message that ends after that time but before the timer's callback runs publishes at
@@ -16379,32 +16421,30 @@ console.log(JSON.stringify(args));
       });
       await attachViewer();
 
-      await fixture.handlers.get("turn_start")?.({}, context);
-      tokens = 60_000;
-      await fixture.handlers.get("message_end")?.({ message }, context);
-      expect(publishedContext().map((frame) => frame.tokens)).toEqual([50_000]);
+      await onFrameClock(async () => {
+        await fixture.handlers.get("turn_start")?.({}, context);
+        tokens = 60_000;
+        await fixture.handlers.get("message_end")?.({ message }, context);
+        expect(publishedContext().map((frame) => frame.tokens)).toEqual([50_000]);
 
-      // The interval is up and the trailing timer is due, with nothing having let the event loop
-      // run its callback yet: this is the window the message below ends in. The loop is held on
-      // the real clock rather than awaited, and no fake one serves here: the publisher arms the
-      // global `setTimeout` and reads `Date.now()` itself, and advancing a fake clock past the
-      // interval would run the very callback this row must leave pending.
-      // Ten milliseconds past the 50 ms interval set above.
-      const due = performance.now() + 60;
-      while (performance.now() < due) {
-        // Held on purpose; see above.
-      }
-      tokens = 70_000;
-      await fixture.handlers.get("message_end")?.({ message }, context);
+        // The interval is up and the trailing timer is due, with nothing having let its callback
+        // run yet: this is the window the message below ends in. `jest.setSystemTime` moves the
+        // `Date.now()` the publisher reads ten milliseconds past the 50 ms interval set above and
+        // runs no timer.
+        jest.setSystemTime(Date.now() + 60);
+        tokens = 70_000;
+        await fixture.handlers.get("message_end")?.({ message }, context);
 
-      // The trailing timer came due before this one was armed, so the loop runs its callback
-      // first: once this resolves, a frame it would have published has been published.
-      const ran = Promise.withResolvers<void>();
-      setTimeout(ran.resolve, 0);
-      await ran.promise;
+        // Past the trailing frame's own time on the timers' clock as well, so a frame it would
+        // have published has been published.
+        jest.advanceTimersByTime(100);
+      });
       // Nothing older followed the newer reading, and the last frame a viewer draws is that one.
       expect(publishedContext().map((frame) => frame.tokens)).toEqual([50_000, 70_000]);
-    });
+      // A hang guard: what can hang is the session's boot, or a handler that waits on a timer of
+      // the test's clock, which moves only as the row moves it. 60_000. Worst measured cost:
+      // 18 701.39 ms at 75 busy loops (the 240 rung) on a two-CPU, 8 GiB pod.
+    }, 60_000);
 
     for (const [name, usage] of [
       ["the host names no window", { contextWindow: 0, percent: 12, tokens: 24_000 }],

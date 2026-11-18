@@ -184,6 +184,41 @@ const untilAborted = (req: CompleteRequest): Promise<Completion> => {
   );
   return promise;
 };
+/**
+ * Runs the session's shutdown on the test's clock (`jest.useFakeTimers`, on for the call) and
+ * answers how far that clock had moved when the handler returned. The handler's two timers, the
+ * grace it gives each waiting call (`SHUTDOWN_GRACE_MS`) and its own wait (`SHUTDOWN_WAIT_MS`),
+ * then fire in the order of their lengths whatever the host's load, where on the real clock a
+ * starved host can run the wait out before the grace's entry is written. The clock stops at
+ * 5_000, past both, so a handler that never returns answers undefined and fails the row's next
+ * assertion.
+ */
+async function shutdownOnTestClock(g: BoundGate): Promise<number | undefined> {
+  jest.useFakeTimers();
+  try {
+    let clock = 0;
+    let returnedAt: number | undefined;
+    let failure: { reason: unknown } | undefined;
+    Promise.resolve(g.event("session_shutdown")).then(
+      () => {
+        returnedAt = clock;
+      },
+      (reason: unknown) => {
+        failure = { reason };
+      }
+    );
+    while (returnedAt === undefined && failure === undefined && clock < 5_000) {
+      for (let i = 0; i < 50; i++) await Promise.resolve();
+      if (returnedAt !== undefined || failure !== undefined) break;
+      clock += 50;
+      jest.advanceTimersByTime(50);
+    }
+    if (failure !== undefined) throw failure.reason;
+    return returnedAt;
+  } finally {
+    jest.useRealTimers();
+  }
+}
 
 type Completion = { text: string; error?: string; usage?: GateEntry["usage"] };
 type Result =
@@ -1757,25 +1792,23 @@ describe("deadline and abandonment", () => {
       COMMENT
     );
     await started.promise;
-    await g.event("session_shutdown");
+    const returnedAt = await shutdownOnTestClock(g);
     // "Inside the runner's 2 s cap" is the budgets themselves: the runner gives a session_shutdown
     // handler 2 s (SESSION_SHUTDOWN_HANDLER_TIMEOUT_MS, beside `SHUTDOWN_GRACE_MS` and
     // `SHUTDOWN_WAIT_MS` in askgate-core.ts), so the grace must
     // end inside the handler's wait and that wait inside the cap. No elapsed time decides this.
     expect(core.SHUTDOWN_GRACE_MS).toBeLessThan(core.SHUTDOWN_WAIT_MS);
     expect(core.SHUTDOWN_WAIT_MS).toBeLessThan(2_000);
+    // On the test's clock the grace ended the call that never settles, and its entry was written,
+    // before the handler's wait ran out.
     expect(g.entries).toMatchObject([{ decision: "allow", outcome: "shutdown" }]);
+    expect(returnedAt).toBeGreaterThanOrEqual(core.SHUTDOWN_GRACE_MS);
+    expect(returnedAt).toBeLessThan(core.SHUTDOWN_WAIT_MS);
     await gated;
-    // The row's own bound is a hang guard, the file's convention: a grace that never fires leaves
-    // the handler waiting on a completion that never settles. Its work is at most the 1.5 s wait,
-    // far below this. The row's remaining load ceiling is that wait itself, a production budget,
-    // not this guard: at 240 busy loops, 120 per CPU, the gate's SHUTDOWN_WAIT_MS of 1.5 s does
-    // not complete on a host starved that far, so the handler returns before the grace writes its
-    // entry and `g.entries` reaches the assertion above empty. One run in 20 went that way,
-    // charged 8822.15 ms against this guard, so no per-test limit guards it. This row's
-    // acceptance rung is therefore 96 busy loops, 48 per CPU, the rung the here-document row of
-    // this file takes for its own production ceiling.
-  }, 30_000);
+    // A hang guard: what can hang is the call whose model call never settles, should the grace not
+    // end it. 60_000, below the gate's 90 s deadline by the rule above `DryRunner`. Worst measured
+    // cost: 4 412.72 ms at 75 busy loops (the 240 rung) on a two-CPU, 8 GiB pod.
+  }, 60_000);
 });
 
 describe("the switch is not in the gate (test 10)", () => {
@@ -7068,28 +7101,22 @@ describe("rules check", () => {
     ]);
 
     const shut = await bothPending({}, false);
-    await shut.g.event("session_shutdown");
-    // What bounds the shutdown on a clock is the fake-clock row "at shutdown a decision record
-    // started as the handler returned is cut short, and its follow-up entry lands before the
-    // handler returns", whose `returnedAt` must land at or after the grace's 1_000 ms and before
-    // the handler's 1_500 ms wait; the row "shutdown stays inside the runner's 2 s cap even when
-    // the aborted call never settles" asserts the two budgets against the runner's 2 s.
+    // On the test's clock (`shutdownOnTestClock`) the grace ends both calls, whose model calls
+    // never settle, and their entry is written before the handler's wait runs out, whatever the
+    // host's load.
+    const returnedAt = await shutdownOnTestClock(shut.g);
     expect(shut.signals.map((s) => s.aborted)).toEqual([true, true]);
     expect(shut.g.entries).toMatchObject([
       { decision: "allow", outcome: "shutdown", ruleOutcome: "shutdown" },
     ]);
+    expect(returnedAt).toBeGreaterThanOrEqual(core.SHUTDOWN_GRACE_MS);
+    expect(returnedAt).toBeLessThan(core.SHUTDOWN_WAIT_MS);
     await shut.gated;
     expect(shut.g.entries).toHaveLength(1);
-    // The row's own bound is a hang guard, the file's convention: a grace that never fires leaves
-    // the handler waiting on two completions that never settle. Its work is at most the 1.5 s
-    // wait, far below this. The row's remaining load ceiling is that wait itself, a production
-    // budget, not this guard, and it is the one the row named above carries: at 240 busy loops,
-    // 120 per CPU, the gate's SHUTDOWN_WAIT_MS of 1.5 s does not complete on a host starved that
-    // far, so the handler returns before the grace writes its entry and `shut.g.entries` reaches
-    // the assertion above empty. One run in 20 went that way, charged 21590.58 ms against this
-    // 30_000 guard, so no per-test limit guards it. So this row's acceptance rung is 96 busy
-    // loops, 48 per CPU, as that row's is.
-  }, 30_000);
+    // A hang guard: what can hang is a call whose model calls never settle, should a stop not end
+    // it. 60_000, below the gate's 90 s deadline by the rule above `DryRunner`. Worst measured
+    // cost: 3 069.33 ms at 75 busy loops (the 240 rung) on a two-CPU, 8 GiB pod.
+  }, 60_000);
   test("at shutdown a decision record started as the handler returned is cut short, and its follow-up entry lands before the handler returns", async () => {
     // Fake timers, and a clock that moves with them: the shutdown grace and wait run their full
     // length without the test waiting for them.
