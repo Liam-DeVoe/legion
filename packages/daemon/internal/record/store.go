@@ -2387,7 +2387,7 @@ func (s *Postgres) RecentClaimIssues(ctx context.Context, tx pgx.Tx, dispatchPro
 	return issues, nil
 }
 
-const outboxColumns = `id, kind, issue, payload, attempts, next_at, last_error, created_at, lease_token, lease_until`
+const outboxColumns = `id, kind, issue, payload, attempts, next_at, last_error, created_at, lease_token, lease_until, state_seq, state_at, state_tx`
 
 func (s *Postgres) Enqueue(ctx context.Context, tx pgx.Tx, row OutboxRow) error {
 	if !json.Valid(row.Payload) {
@@ -2608,15 +2608,15 @@ func (s *Postgres) OwedStarts(ctx context.Context, tx pgx.Tx, project string) ([
 
 // The outbox's runnable predicates are one SQL text, so the lanes' list of due rows (DueRows), their
 // claim (ClaimRow) and the state report's held rows (HeldRows) can never disagree about which row
-// may run. Each refers to the statement's first five parameters, which outboxDueArgs supplies — $1
-// is now, $2 to $4 the kinds the ordering rules name, $5 the lifecycle lane's kinds — so a statement
-// embedding one numbers its own parameters from $6. The outer table is `outbox`, unaliased, which
-// the rules' subqueries name.
+// may run. Each refers to the statement's first six parameters, which outboxDueArgs supplies — $1
+// is now, $2 to $4 the kinds the ordering rules name, $5 the lifecycle lane's kinds, $6 the state
+// lane's kinds — so a statement embedding one numbers its own parameters from $7. The outer table
+// is `outbox`, unaliased, which the rules' subqueries name.
 
 // outboxUnleasedDue is a row due at $1 that no live lease holds.
 const outboxUnleasedDue = `outbox.next_at <= $1 and (outbox.lease_until is null or outbox.lease_until <= $1)`
 
-// outboxInOrder is the three rules that hold a due row back behind something else of its issue. An
+// outboxInOrder is the four rules that hold a due row back behind something else of its issue. An
 // issue's Dispatch status writes run one at a time in the order they were made: a status row waits
 // while an older one for the same issue is unfinished, because each carries the status its
 // predecessor leaves, and a newer write run first would find the board short of it and finish
@@ -2628,18 +2628,25 @@ const outboxUnleasedDue = `outbox.next_at <= $1 and (outbox.lease_until is null 
 // admission cap counts the issues the daemon has started, and this row is the delivery that puts one to work, so
 // it is where the cap is applied. Supervise rows need no other such rule: a stop names the run it
 // ends through the claim's own record of the newest start run against it (claims.last_start_row),
-// so ordering them here would buy nothing that survives a retry the runtime delayed.
+// so ordering them here would buy nothing that survives a retry the runtime delayed. And a state
+// row ($6 is the state lane's kinds) waits while an unfinished state row of its project has a
+// lower sequence: every state row carries the bare project key as its issue, and takes its
+// sequence when its transaction commits (OutboxRow.StateSeq), so the project's one state lane
+// publishes its rows strictly in sequence order, and a row that fails holds every later one until
+// it is published (LaneState).
 //
-// None of the three holds an issue's later rows back. A row that is merely unclaimable takes no
-// lease, and the lane rule (outboxLaneFree) blocks only on a live lease, so an issue whose worker
-// start waits for a slot still runs its close's suspend, its Dispatch status writes and its
+// None of the four holds back any row but the ones it names. A row that is merely unclaimable
+// takes no lease, and the lane rule (outboxLaneFree) blocks only on a live lease, so an issue whose
+// worker start waits for a slot still runs its close's suspend, its Dispatch status writes and its
 // notices as they come due. That is what lets a transition apply at once and hold only the start.
 const outboxInOrder = `not (outbox.kind = $2 and exists (select 1 from outbox older
 			where older.kind = $2 and older.issue = outbox.issue and older.id < outbox.id))
 		and not (outbox.kind = $3 and outbox.payload->>'op' = 'start' and exists (select 1 from outbox branch
 			where branch.kind = $4 and branch.issue = outbox.issue and branch.id < outbox.id))
 		and not (outbox.kind = $3 and outbox.payload->>'op' = 'start' and coalesce(outbox.payload->>'needsSlot', '') = 'true'
-			and not exists (select 1 from slots where slots.issue = outbox.issue))`
+			and not exists (select 1 from slots where slots.issue = outbox.issue))
+		and not (outbox.kind = any($6::text[]) and exists (select 1 from outbox earlier
+			where earlier.kind = any($6::text[]) and earlier.issue = outbox.issue and earlier.state_seq < outbox.state_seq))`
 
 // outboxLaneFree is the rule that a lifecycle row ($5 is the lifecycle lane's kinds) runs only while
 // no other lifecycle row of its issue is under a live lease. Each lifecycle row reads the issue and
@@ -2662,10 +2669,15 @@ const outboxClaimable = outboxUnleasedDue + ` and ` + outboxInOrder + ` and ` + 
 // statement embedding the predicates takes: the lane rule is the lifecycle lane's alone.
 var lifecycleKindNames = kindNames(laneKinds[LaneLifecycle])
 
+// stateKindNames is the state lane's kinds as the outbox stores them, the $6 every statement
+// embedding the predicates takes: the sequence rule is the state lane's alone.
+var stateKindNames = kindNames(laneKinds[LaneState])
+
 // outboxDueArgs is the parameters of a statement that embeds the predicates: now, the ordering
-// rules' kinds and the lifecycle lane's kinds first, then the statement's own.
+// rules' kinds, the lifecycle lane's kinds and the state lane's kinds first, then the statement's
+// own.
 func outboxDueArgs(now time.Time, own ...any) []any {
-	return append([]any{now, string(OutboxKindDispatchStatus), string(OutboxKindSupervise), string(OutboxKindIssueBranch), lifecycleKindNames}, own...)
+	return append([]any{now, string(OutboxKindDispatchStatus), string(OutboxKindSupervise), string(OutboxKindIssueBranch), lifecycleKindNames, stateKindNames}, own...)
 }
 
 // kindNames is kinds as the text the outbox stores them in, an empty list for none.
@@ -2688,8 +2700,8 @@ func kindNames(kinds []OutboxKind) []string {
 // take it from its own daemon.
 func (s *Postgres) DueRows(ctx context.Context, tx pgx.Tx, project, issue string, kinds []OutboxKind, now time.Time) ([]OutboxRow, error) {
 	rows, err := tx.Query(ctx, `select `+outboxColumns+` from outbox
-		where split_part(outbox.issue, '-', 1) = $6 and ($7::text = '' or outbox.issue = $7::text)
-		and (cardinality($8::text[]) = 0 or outbox.kind = any($8::text[]))
+		where split_part(outbox.issue, '-', 1) = $7 and ($8::text = '' or outbox.issue = $8::text)
+		and (cardinality($9::text[]) = 0 or outbox.kind = any($9::text[]))
 		and `+outboxClaimable+`
 		order by next_at, id`, outboxDueArgs(now, project, issue, kindNames(kinds))...)
 	if err != nil {
@@ -2755,8 +2767,8 @@ func (s *Postgres) ClaimRow(ctx context.Context, tx pgx.Tx, id int64, now time.T
 		where id = $1 and kind = $2 and payload->>'kind' = 'catch-up'`, id, string(OutboxKindNotice)); err != nil {
 		return OutboxRow{}, false, fmt.Errorf("claim outbox row %d: %w", id, err)
 	}
-	row, err := scanOutbox(tx.QueryRow(ctx, `update outbox set lease_token = $7, lease_until = $8
-		where outbox.id = $6 and `+outboxClaimable+`
+	row, err := scanOutbox(tx.QueryRow(ctx, `update outbox set lease_token = $8, lease_until = $9
+		where outbox.id = $7 and `+outboxClaimable+`
 		returning `+outboxColumns, outboxDueArgs(now, id, token, now.Add(leaseFor))...))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return OutboxRow{}, false, nil
@@ -2859,7 +2871,7 @@ func (s *Postgres) UnfinishedLanes(ctx context.Context, tx pgx.Tx, project strin
 func (s *Postgres) HeldRows(ctx context.Context, tx pgx.Tx, project, issue string, now time.Time) ([]HeldRow, error) {
 	rows, err := tx.Query(ctx, `select `+outboxColumns+`, (select min(running.id) from outbox running
 			where running.issue = outbox.issue and running.id <> outbox.id and running.kind = any($5::text[]) and running.lease_until > $1) as waits_on
-		from outbox where split_part(outbox.issue, '-', 1) = $6 and ($7::text = '' or outbox.issue = $7::text)
+		from outbox where split_part(outbox.issue, '-', 1) = $7 and ($8::text = '' or outbox.issue = $8::text)
 		and outbox.kind = any($5::text[])
 		and `+outboxUnleasedDue+` and not (`+outboxClaimable+`) and not `+outboxLaneFree+`
 		order by next_at, id`,
@@ -3112,8 +3124,11 @@ func (s *Postgres) RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (
 		var payload []byte
 		var age time.Duration
 		var running bool
+		// A supervise row is no state row, so its three state columns are null and stay zero here.
+		var stateSeq, stateTx *int64
+		var stateAt *time.Time
 		if err := rows.Scan(&row.ID, &kind, &row.Issue, &payload, &row.Attempts, &row.NextAt, &row.LastError,
-			&row.CreatedAt, &row.LeaseToken, &row.LeaseUntil, &role, &generation, &age, &running); err != nil {
+			&row.CreatedAt, &row.LeaseToken, &row.LeaseUntil, &stateSeq, &stateAt, &stateTx, &role, &generation, &age, &running); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("read the queued role runs of %d issues: %w", len(issues), err)
 		}
@@ -3306,18 +3321,43 @@ func (s *Postgres) PendingStatusWrites(ctx context.Context, tx pgx.Tx, project s
 }
 
 // scanOutbox reads one row of outboxColumns, then extra: the destinations of any columns the
-// statement selects after them.
+// statement selects after them. The three state columns are null on every row but a committed
+// state row's, and read as zero there (OutboxRow.StateSeq).
 func scanOutbox(row scanner, extra ...any) (OutboxRow, error) {
 	var out OutboxRow
 	var kind string
 	var payload []byte
+	var stateSeq, stateTx *int64
+	var stateAt *time.Time
 	if err := row.Scan(append([]any{&out.ID, &kind, &out.Issue, &payload, &out.Attempts, &out.NextAt, &out.LastError,
-		&out.CreatedAt, &out.LeaseToken, &out.LeaseUntil}, extra...)...); err != nil {
+		&out.CreatedAt, &out.LeaseToken, &out.LeaseUntil, &stateSeq, &stateAt, &stateTx}, extra...)...); err != nil {
 		return OutboxRow{}, err
 	}
 	out.Kind = OutboxKind(kind)
 	out.Payload = append(json.RawMessage(nil), payload...)
+	if stateSeq != nil {
+		out.StateSeq = *stateSeq
+	}
+	if stateAt != nil {
+		out.StateAt = *stateAt
+	}
+	if stateTx != nil {
+		out.StateTx = *stateTx
+	}
 	return out, nil
+}
+
+// StateSeq reads state_publication.last_seq of project, which the commit trigger of migration
+// 20261118164019_state_events steps once for each state row the project's daemon commits. Read in
+// the state route's snapshot, it names which events that snapshot holds: every one at or below it,
+// and none above it.
+func (s *Postgres) StateSeq(ctx context.Context, tx pgx.Tx, project string) (int64, error) {
+	var seq int64
+	if err := tx.QueryRow(ctx, `select coalesce((select last_seq from state_publication where project = $1), 0)`,
+		project).Scan(&seq); err != nil {
+		return 0, fmt.Errorf("read the state sequence of %s: %w", project, err)
+	}
+	return seq, nil
 }
 
 func leaseToken() (string, error) {

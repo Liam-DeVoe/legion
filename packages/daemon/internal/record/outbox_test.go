@@ -83,6 +83,16 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		MergeQueueRead{Number: 42, Head: "c0de"},
 		MergeQueueRemoval{Number: 42, Head: "c0de"},
 		MergeQueueRemoval{Number: 42, Head: "c0de", Unread: true},
+		// The state rows' values are raw JSON, which the jsonb column hands back in its own
+		// spacing and key order; a string, a number, null and the empty object come back as
+		// written, so the comparison below holds them byte for byte.
+		StateChange{Project: "LEGION", Run: "0b9f5c2e-4f1d-4c8a-9d57-2f3a6e8b1c40", Issue: "LEGION-208", Changes: []StateFieldChange{
+			{Field: StateFieldPhase, Old: json.RawMessage(`null`), New: json.RawMessage(`"planning"`)},
+			{Field: StateFieldSlot, Old: json.RawMessage(`null`), New: json.RawMessage(`3`)},
+			{Field: StateFieldClaim, Role: claim.RoleImplementer, Old: json.RawMessage(`"launching"`), New: json.RawMessage(`"working"`)},
+		}},
+		StateAdmission{Project: "LEGION", Run: "0b9f5c2e-4f1d-4c8a-9d57-2f3a6e8b1c40", Admission: json.RawMessage(`{}`)},
+		StateBoot{Project: "LEGION", Run: "0b9f5c2e-4f1d-4c8a-9d57-2f3a6e8b1c40", Settings: json.RawMessage(`{}`), Migrated: true},
 	}
 	for _, payload := range payloads {
 		t.Run(string(payload.OutboxKind()), func(t *testing.T) {
@@ -226,9 +236,10 @@ func TestEveryOutboxKindIsInExactlyOneLane(t *testing.T) {
 		OutboxKindGateSeed, OutboxKindLingerClose, OutboxKindIssueSuspend, OutboxKindWorkspaceRemove, OutboxKindIssueBranch,
 		OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound, OutboxKindRoleMessage, OutboxKindPhaseEnded, OutboxKindHookPrompt, OutboxKindUpdateAsk,
 		OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindGatedStepsPublish, OutboxKindClaimRelease, OutboxKindDesignGatesPublish,
-		OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindRoleHoldersPublish}
+		OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindRoleHoldersPublish,
+		OutboxKindStateChange, OutboxKindStateAdmission, OutboxKindStateBoot}
 	lanes := map[OutboxKind][]OutboxLane{}
-	for _, lane := range []OutboxLane{LaneLifecycle, LaneBoard, LaneRoleMessage, LaneClaim} {
+	for _, lane := range []OutboxLane{LaneLifecycle, LaneBoard, LaneRoleMessage, LaneClaim, LaneState} {
 		for _, kind := range LaneKinds(lane) {
 			lanes[kind] = append(lanes[kind], lane)
 		}
@@ -343,6 +354,22 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a merge-queue removal of no pull request", payload: MergeQueueRemoval{Head: "c0de"}, reason: "a merge-queue removal names the pull request that left the queue and the head"},
 		{name: "a merge-queue removal with no head", payload: MergeQueueRemoval{Number: 42, Unread: true}, reason: "a merge-queue removal names the pull request that left the queue and the head"},
 		{name: "a check look bound without a look", payload: CheckLook{}, reason: "check look bound requires the look it bounds"},
+		{name: "a state change of no project", payload: stateChange("", "run", phaseMoved), reason: `the project "", which is no bare Dispatch project key`},
+		{name: "a state change keyed by an issue rather than its project", payload: stateChange("LEGION-208", "run", phaseMoved), reason: `the project "LEGION-208", which is no bare Dispatch project key`},
+		{name: "a state change of no run", payload: stateChange("LEGION", "", phaseMoved), reason: "names no run"},
+		{name: "a state change of no issue", payload: StateChange{Project: "LEGION", Run: "run", Changes: []StateFieldChange{phaseMoved}}, reason: `the issue "", which is no issue key`},
+		{name: "a state change naming no field", payload: stateChange("LEGION", "run"), reason: "names no field the write moved"},
+		{name: "a state change of a field Dispatch does not observe", payload: stateChange("LEGION", "run", StateFieldChange{Field: "status", Old: json.RawMessage(`null`), New: json.RawMessage(`"todo"`)}), reason: `the field "status", which is none of`},
+		{name: "a claim change naming no role", payload: stateChange("LEGION", "run", StateFieldChange{Field: StateFieldClaim, Old: json.RawMessage(`null`), New: json.RawMessage(`"launching"`)}), reason: `the role "", which is none of a claim's six`},
+		{name: "a claim change of the controller", payload: stateChange("LEGION", "run", StateFieldChange{Field: StateFieldClaim, Role: claim.RoleController, Old: json.RawMessage(`null`), New: json.RawMessage(`"launching"`)}), reason: `the role "controller", which is none of a claim's six`},
+		{name: "a phase change naming a role", payload: stateChange("LEGION", "run", StateFieldChange{Field: StateFieldPhase, Role: claim.RoleTester, Old: json.RawMessage(`null`), New: json.RawMessage(`"testing"`)}), reason: "only a claim change names one"},
+		{name: "a change with no old value", payload: stateChange("LEGION", "run", StateFieldChange{Field: StateFieldTree, New: json.RawMessage(`"LEGION-200"`)}), reason: "write null as null"},
+		{name: "a change whose new value is no JSON", payload: stateChange("LEGION", "run", StateFieldChange{Field: StateFieldTree, Old: json.RawMessage(`null`), New: json.RawMessage(`LEGION-200`)}), reason: "write null as null"},
+		{name: "a state admission of no project", payload: StateAdmission{Run: "run", Admission: json.RawMessage(`{}`)}, reason: "which is no bare Dispatch project key"},
+		{name: "a state admission with no block", payload: StateAdmission{Project: "LEGION", Run: "run"}, reason: "carries no admission block"},
+		{name: "a state admission whose block is null", payload: StateAdmission{Project: "LEGION", Run: "run", Admission: json.RawMessage(`null`)}, reason: "carries no admission block"},
+		{name: "a state boot of no run", payload: StateBoot{Project: "LEGION", Settings: json.RawMessage(`{}`)}, reason: "names no run"},
+		{name: "a state boot with no settings", payload: StateBoot{Project: "LEGION", Run: "run"}, reason: "carries no settings"},
 		{name: "unsupported payload", payload: unsupportedOutboxPayload{}, reason: "unknown outbox payload"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -352,6 +379,15 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 			}
 		})
 	}
+}
+
+// phaseMoved is a change a state change in the refusal table carries where the case is about
+// something else of the row.
+var phaseMoved = StateFieldChange{Field: StateFieldPhase, Old: json.RawMessage(`"planning"`), New: json.RawMessage(`"implementing"`)}
+
+// stateChange is a state change of LEGION-208 in project, written by run, naming changes.
+func stateChange(project, run string, changes ...StateFieldChange) StateChange {
+	return StateChange{Project: project, Run: run, Issue: "LEGION-208", Changes: changes}
 }
 
 // A message's artifact is refused before its row is queued wherever Dispatch would refuse the

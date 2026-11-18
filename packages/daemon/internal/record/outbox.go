@@ -55,6 +55,13 @@ const (
 	// OutboxKindRoleHoldersPublish publishes the live role sessions of one issue onto its Dispatch
 	// row (RoleHoldersPublish).
 	OutboxKindRoleHoldersPublish OutboxKind = "role_holders_publish"
+	// OutboxKindStateChange, OutboxKindStateAdmission and OutboxKindStateBoot are the daemon's
+	// state events (StateChange, StateAdmission, StateBoot). Like gated_steps_publish, each row's
+	// issue column holds the bare project key, so a project's state events run on one lane
+	// (LaneState).
+	OutboxKindStateChange    OutboxKind = "state_change"
+	OutboxKindStateAdmission OutboxKind = "state_admission"
+	OutboxKindStateBoot      OutboxKind = "state_boot"
 )
 
 // OutboxLane is which executor of an issue runs a kind. An issue's rows run on four lanes side by
@@ -83,6 +90,14 @@ const (
 // own, because that row may wait up to an hour on a holder that has not stopped, and an hour of
 // waiting on one issue's claim must delay no status write and no notice of that same issue, which
 // is what a place on the board lane would cost it.
+//
+// The state lane runs the daemon's state events (state_change, state_admission, state_boot), and
+// it is a project's lane, not an issue's: every state row carries the bare Dispatch project key in
+// its issue column, as the gated-steps publish does, so a project has exactly one state lane. Each
+// row takes its sequence when its transaction commits (OutboxRow.StateSeq), and the lane publishes
+// the rows strictly in that order (store.go's outboxInOrder): a row that fails holds every later
+// state row of its project until it is published. Dispatch reads the sequence for gaps, and lanes
+// that ran side by side, one per issue, would publish out of sequence.
 type OutboxLane string
 
 const (
@@ -90,6 +105,7 @@ const (
 	LaneBoard       OutboxLane = "board"
 	LaneRoleMessage OutboxLane = "role_message"
 	LaneClaim       OutboxLane = "claim"
+	LaneState       OutboxLane = "state"
 )
 
 // laneKinds is each lane's kinds in the order LaneKinds lists them. Every OutboxKind is in exactly
@@ -99,6 +115,7 @@ var laneKinds = map[OutboxLane][]OutboxKind{
 	LaneBoard:       {OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindRoleMessage, OutboxKindGatedStepsPublish, OutboxKindDesignGatesPublish, OutboxKindRoleHoldersPublish},
 	LaneRoleMessage: {OutboxKindPhaseEnded, OutboxKindHookPrompt, OutboxKindUpdateAsk, OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval},
 	LaneClaim:       {OutboxKindClaimRelease},
+	LaneState:       {OutboxKindStateChange, OutboxKindStateAdmission, OutboxKindStateBoot},
 }
 
 // LaneOf is the lane that runs kind.
@@ -1074,6 +1091,94 @@ type RoleHoldersPublish struct {
 
 func (RoleHoldersPublish) OutboxKind() OutboxKind { return OutboxKindRoleHoldersPublish }
 
+// StateChange is one write that moved what Dispatch observes of an issue: the issue and each field
+// the write moved, from its old value to its new one (StateFieldChange). Project is the Dispatch
+// project key the daemon works for, and the row's issue column holds that key too, so every state
+// row of the project runs on its one state lane (LaneState). Issue is the issue the change is of.
+// Run is the id of the daemon run that wrote the row. The row carries no sequence and no time: it
+// takes both when its transaction commits (OutboxRow.StateSeq, StateAt), and the executor puts
+// them, Project and Run on the message it publishes.
+type StateChange struct {
+	Project string             `json:"project"`
+	Run     string             `json:"run"`
+	Issue   string             `json:"issue"`
+	Changes []StateFieldChange `json:"changes"`
+}
+
+func (StateChange) OutboxKind() OutboxKind { return OutboxKindStateChange }
+
+// StateField names one field of an issue that a state change can move.
+type StateField string
+
+// The five fields Dispatch observes of an issue, named as the state route serves them.
+const (
+	StateFieldPhase     StateField = "phase"
+	StateFieldTree      StateField = "tree"
+	StateFieldSlot      StateField = "slot"
+	StateFieldWaitingOn StateField = "waitingOn"
+	StateFieldClaim     StateField = "claim"
+)
+
+// stateFields is every StateField, which is every field a change may name.
+var stateFields = []StateField{StateFieldPhase, StateFieldTree, StateFieldSlot, StateFieldWaitingOn, StateFieldClaim}
+
+// StateFieldChange is one field a write moved. Role names the claim's role on a claim change, and
+// is empty on a change of any other field. Old and New are the field's values before and after the
+// write, each encoded as the state route serves it at that issue: a phase string, a tree key, a
+// slot's index, the waitingOn object, a claim's state, or null where the issue holds none (and as
+// Old on the issue's first write). They are raw JSON so that a null stays null and a value is the
+// route's own encoding. A change carries both, so a nil value is refused: null is written as null.
+type StateFieldChange struct {
+	Field StateField      `json:"field"`
+	Role  claim.Role      `json:"role,omitempty"`
+	Old   json.RawMessage `json:"old"`
+	New   json.RawMessage `json:"new"`
+}
+
+// StateAdmission is the whole admission block the state route serves (api.Admission), written
+// when an admission pass changed it. Project and Run are a StateChange's. The block is raw JSON
+// because this package cannot import api: its producer encodes the route's own type.
+type StateAdmission struct {
+	Project   string          `json:"project"`
+	Run       string          `json:"run"`
+	Admission json.RawMessage `json:"admission"`
+}
+
+func (StateAdmission) OutboxKind() OutboxKind { return OutboxKindStateAdmission }
+
+// StateBoot is a daemon run's first state event: the settings the state route serves
+// (api.SettingsOf), as raw JSON for the reason StateAdmission's block is, and Migrated, whether that
+// boot applied a migration. Project and Run are a StateChange's.
+type StateBoot struct {
+	Project  string          `json:"project"`
+	Run      string          `json:"run"`
+	Settings json.RawMessage `json:"settings"`
+	Migrated bool            `json:"migrated"`
+}
+
+func (StateBoot) OutboxKind() OutboxKind { return OutboxKindStateBoot }
+
+// projectKey is a Dispatch project key, the part of an issue key before its hyphen.
+var projectKey = regexp.MustCompile(`^[A-Z][A-Z0-9]*$`)
+
+// validateStateRow holds the two fields every state row carries: the bare project key its lane
+// is keyed by, and the run that wrote it.
+func validateStateRow(kind OutboxKind, project, run string) error {
+	if !projectKey.MatchString(project) {
+		return fmt.Errorf("a %s row names the project %q, which is no bare Dispatch project key", kind, project)
+	}
+	if run == "" {
+		return fmt.Errorf("a %s row names no run", kind)
+	}
+	return nil
+}
+
+// jsonObject says whether raw is one JSON object.
+func jsonObject(raw json.RawMessage) bool {
+	trimmed := bytes.TrimSpace(raw)
+	return json.Valid(trimmed) && len(trimmed) > 0 && trimmed[0] == '{'
+}
+
 // IssueBranch creates the row's issue's branch, legion/<KEY>, on GitHub at the repository's default
 // branch, where GitHub does not have it yet, before any role of the issue starts: GitHub can refuse
 // the push that creates a branch of a large repository, where it takes a push that moves one. A
@@ -1454,6 +1559,24 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
 		payload = value
+	case OutboxKindStateChange:
+		value := StateChange{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
+	case OutboxKindStateAdmission:
+		value := StateAdmission{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
+	case OutboxKindStateBoot:
+		value := StateBoot{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
 	case OutboxKindIssueBranch:
 		value := IssueBranch{}
 		if err := decoder.Decode(&value); err != nil {
@@ -1719,6 +1842,46 @@ func validateOutboxPayload(payload OutboxPayload) error {
 	case RoleHoldersPublish:
 		if value.Issue == "" {
 			return fmt.Errorf("a role-holders publish requires the issue whose role sessions it writes")
+		}
+	// A state row's message is what Dispatch writes its observations from, so a row that would
+	// publish a message the contract refuses (legionStateMessage) is refused here instead.
+	case StateChange:
+		if err := validateStateRow(OutboxKindStateChange, value.Project, value.Run); err != nil {
+			return err
+		}
+		if !claim.IsIssueKey(value.Issue) {
+			return fmt.Errorf("a state change names the issue %q, which is no issue key", value.Issue)
+		}
+		if len(value.Changes) == 0 {
+			return fmt.Errorf("a state change of %s names no field the write moved", value.Issue)
+		}
+		for _, change := range value.Changes {
+			if !slices.Contains(stateFields, change.Field) {
+				return fmt.Errorf("a state change of %s names the field %q, which is none of %v", value.Issue, change.Field, stateFields)
+			}
+			if change.Field == StateFieldClaim && !claim.IsRole(change.Role) {
+				return fmt.Errorf("a claim change of %s names the role %q, which is none of a claim's six", value.Issue, change.Role)
+			}
+			if change.Field != StateFieldClaim && change.Role != "" {
+				return fmt.Errorf("a %s change of %s names the role %q; only a claim change names one", change.Field, value.Issue, change.Role)
+			}
+			if !json.Valid(change.Old) || !json.Valid(change.New) {
+				return fmt.Errorf("a %s change of %s carries an old or a new value that is no JSON value; write null as null", change.Field, value.Issue)
+			}
+		}
+	case StateAdmission:
+		if err := validateStateRow(OutboxKindStateAdmission, value.Project, value.Run); err != nil {
+			return err
+		}
+		if !jsonObject(value.Admission) {
+			return fmt.Errorf("a state admission of %s carries no admission block", value.Project)
+		}
+	case StateBoot:
+		if err := validateStateRow(OutboxKindStateBoot, value.Project, value.Run); err != nil {
+			return err
+		}
+		if !jsonObject(value.Settings) {
+			return fmt.Errorf("a state boot of %s carries no settings", value.Project)
 		}
 	case CheckWakeDue:
 		if value.Look <= 0 {

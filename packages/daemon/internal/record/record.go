@@ -1363,6 +1363,14 @@ type OutboxRow struct {
 	CreatedAt  time.Time
 	LeaseToken string
 	LeaseUntil *time.Time
+	// StateSeq, StateAt and StateTx are a state row's sequence, time and transaction (LaneState),
+	// which the row takes when the transaction that inserted it commits (the commit trigger of
+	// migration 20261118164019_state_events): the project's next sequence, the time every state
+	// row of that transaction shares, and that transaction's id. They are zero on a row of any
+	// other kind, and on a state row read inside the transaction that inserted it.
+	StateSeq int64
+	StateAt  time.Time
+	StateTx  int64
 }
 
 // Handover is a root linger's pending move of one child to an independent tree. It persists from
@@ -1949,6 +1957,9 @@ type Store interface {
 	FinishLeasedOutbox(ctx context.Context, tx pgx.Tx, id int64, leaseToken string) error
 	RetryOutbox(ctx context.Context, tx pgx.Tx, id int64, leaseToken string, nextAt time.Time, lastErr string) error
 	PendingStatusWrites(ctx context.Context, tx pgx.Tx, project string) ([]OutboxRow, error)
+	// StateSeq is the sequence of the newest state row project's daemon committed
+	// (state_publication.last_seq), 0 while the project has none.
+	StateSeq(ctx context.Context, tx pgx.Tx, project string) (int64, error)
 	Handover(ctx context.Context, tx pgx.Tx, issue string) (*Handover, error)
 	PutHandover(ctx context.Context, tx pgx.Tx, handover Handover) error
 	CancelTreeHandovers(ctx context.Context, tx pgx.Tx, tree string, generation uint64) error
