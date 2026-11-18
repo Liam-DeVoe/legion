@@ -1641,7 +1641,7 @@ test("a title typed back to the issue's title while a write of another is out st
   const landing = Promise.withResolvers<IssueDetails>();
   const patchIssue = answerIssuePatches()
     .mockImplementationOnce(() => landing.promise)
-    .mockImplementationOnce(async (_key, input) => ({ ...issue, ...input }));
+    .mockImplementationOnce(async () => ({ ...issue, title: issue.title }));
   const queryClient = headerClient();
   const view = renderHeader("/issues/CORE-1", queryClient);
 
