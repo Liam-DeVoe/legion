@@ -41,8 +41,9 @@ var projectedTables = []string{"block_refs", "comments", "document_blocks"}
 // The source scan is coverage - it names every writer there is, so a new one cannot arrive
 // unnoticed - and the Postgres halves are the proof: a failure injected between the two writes
 // leaves neither side, a row whose node was never written is refused inside the statement that
-// writes it, and the real write paths leave every row with its node and its tuples from the
-// transaction that wrote the row.
+// writes it, the real write paths leave every row they insert with its node and its tuples from
+// the transaction that inserted the row, and an update of a column a tuple projects carries the
+// transaction of the tuple it appended.
 func TestNoProjectionRowIsWrittenWithoutTheStore(t *testing.T) {
 	ctx := context.Background()
 	sources := readProjectionWriters(t)
@@ -69,8 +70,13 @@ func TestNoProjectionRowIsWrittenWithoutTheStore(t *testing.T) {
 	t.Run("a failure between the two writes leaves neither side", func(t *testing.T) {
 		requireNeitherSideSurvivesAFailure(t, ctx, run)
 	})
-	t.Run("the real write paths leave every row with its node and its tuples", func(t *testing.T) {
+	// The rows are read before any step of the run updates one: an update moves a row's xmin to
+	// its own transaction, which the row's node need not share, so the reparent below comes after.
+	t.Run("the real write paths leave every row they insert with its node and its tuples", func(t *testing.T) {
 		requireEveryRowHasItsNodeAndTuples(t, ctx, run)
+	})
+	t.Run("a reparent's row carries the transaction of the part_of tuple it appended", func(t *testing.T) {
+		requireAReparentCarriesItsTuplesTransaction(t, ctx, run)
 	})
 	t.Run("no kind outside the list this change moves reached the store", func(t *testing.T) {
 		requireOnlyTheMovedKindsReachedTheStore(t, ctx, run)
@@ -406,8 +412,9 @@ func withoutSQLComments(body string) string {
 // --- the fixture the Postgres halves run on ---------------------------------------------
 
 // projectionRun is one database the real write paths wrote: an issue with its spec document, a
-// plain comment, a comment anchored to that document, a comment on a project document, and a
-// session's reply to a mention, which is the delivery path's own write.
+// plain comment, a comment anchored to that document, a comment on a project document, a
+// session's reply to a mention, which is the delivery path's own write, and a project document
+// holding a quote, one of whose paragraphs the run later moves out of that quote.
 type projectionRun struct {
 	handler  http.Handler
 	database *store.Store
@@ -419,6 +426,8 @@ type projectionRun struct {
 	// blocks the index wrote.
 	comments  []string
 	projectID string
+	// moverID is the document requireAReparentCarriesItsTuplesTransaction reparents a block of.
+	moverID string
 }
 
 func newProjectionRun(t *testing.T) *projectionRun {
@@ -468,6 +477,9 @@ func newProjectionRun(t *testing.T) *projectionRun {
 		t.Fatalf("comment on the project document: status=%d body=%s", owned.Code, owned.Body.String())
 	}
 	ownedComment := decodeBody[model.Comment](t, owned)
+	// The document a later step reparents a block of (moverMarkdown). Its rows are inserted here,
+	// with every other row the strict read holds to its inserting transaction.
+	run.moverID = createProjectDocument(t, handler, run.project, "Moves", moverMarkdown).ID
 
 	mentioned := decodeMentionedComment(t, postMentionedComment(t, handler, run.issue, map[string]any{
 		"body": "Can this ship, @s1?", "mentions": []map[string]any{{"target": "session:s1"}},
@@ -1049,13 +1061,15 @@ func requireNeitherSideSurvivesAFailure(t *testing.T, ctx context.Context, run *
 // --- what the real write paths left -------------------------------------------------------
 
 // requireEveryRowHasItsNodeAndTuples reads the plain case: every row the run's own requests
-// wrote names a node the store holds, and the transaction that wrote the row wrote that node
-// and stated at least one fact about it.
+// inserted names a node the store holds, and the transaction that inserted the row wrote that
+// node and stated at least one fact about it.
 //
 // A row's xmin is the transaction that wrote it, which is how the three are compared: the row's
 // xmin, its node's and each of its tuples'. Both sides are required of every row, so a row whose
 // node another transaction wrote, or whose transaction stated no fact about its node, fails
-// naming the transactions it read.
+// naming the transactions it read. Every row is read before any step of the run updates one: a
+// later update moves the row's xmin to its own transaction, which its node need not share, and
+// requireAReparentCarriesItsTuplesTransaction holds such an update to the tuple it appended.
 func requireEveryRowHasItsNodeAndTuples(t *testing.T, ctx context.Context, run *projectionRun) {
 	t.Helper()
 	for _, table := range projectedTables {
@@ -1139,6 +1153,142 @@ func (r *projectionRun) relations(t *testing.T, ctx context.Context, kind string
 		t.Fatalf("read the %s tuples of the run's comments: %v", kind, err)
 	}
 	return ends
+}
+
+// moverMarkdown is the document requireAReparentCarriesItsTuplesTransaction reparents a block of:
+// a quote holding two paragraphs, the second of which (moverLine) the run moves out of the quote
+// to the document's own level. An edit's move lands a block at that level alone
+// (pmdoc.MoveBlock), so the block moves out of a container rather than into one, and the quote
+// keeps its first paragraph, as a move that would empty it is refused. Each paragraph is one
+// line, so the moved one's text reads the same outside the quote as inside it, and the version
+// that moves it changes no text of it.
+const (
+	moverLine     = "A line that moves."
+	moverMarkdown = "# Moves\n\n> A quoted line.\n>\n> " + moverLine + "\n"
+)
+
+// moverBlock is one document_blocks row of the mover document, as the reparent reads it.
+type moverBlock struct {
+	id, blockType, excerpt, parent, address, xmin string
+	changedVersion                                int
+}
+
+// moverBlocks reads every document_blocks row of the run's mover document.
+func (r *projectionRun) moverBlocks(t *testing.T, ctx context.Context) []moverBlock {
+	t.Helper()
+	rows, err := r.database.Pool.Query(ctx, `
+		select block_id, type, coalesce(excerpt, ''), coalesce(parent_block_id, ''), coalesce(node_address, ''),
+		       xmin::text, changed_version
+		from document_blocks where artifact_id = $1::uuid
+		order by block_id
+	`, r.moverID)
+	if err != nil {
+		t.Fatalf("read the mover document's blocks: %v", err)
+	}
+	defer rows.Close()
+	var blocks []moverBlock
+	for rows.Next() {
+		var block moverBlock
+		if err := rows.Scan(&block.id, &block.blockType, &block.excerpt, &block.parent, &block.address,
+			&block.xmin, &block.changedVersion); err != nil {
+			t.Fatalf("scan a block of the mover document: %v", err)
+		}
+		blocks = append(blocks, block)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the mover document's blocks: %v", err)
+	}
+	return blocks
+}
+
+// requireAReparentCarriesItsTuplesTransaction drives one update of a column a tuple projects
+// through a real write path, and reads both transaction ids. The run moves the mover document's
+// second quoted paragraph out of its quote, as a person's edit does, and changes no text of it.
+// The version that edit settles into is indexed in its own transaction, which appends the
+// part_of tuple from the block to the document and the retraction of its part_of the quote, and
+// updates the block's document_blocks row to name no parent, the column that tuple projects
+// (reconcileBlockParents, refs/block_nodes.go): the row's xmin must be that tuple's. The block's
+// node is not written again, because nothing of it moved, so its xmin is printed beside the two
+// and compared with neither. An update of a column no tuple projects - a comment's body, its
+// resolution, a block's text - is the foreign key's and the census's to hold, not this one's.
+func requireAReparentCarriesItsTuplesTransaction(t *testing.T, ctx context.Context, run *projectionRun) {
+	t.Helper()
+	before := run.moverBlocks(t, ctx)
+	var moving, quote moverBlock
+	for _, block := range before {
+		switch {
+		case block.blockType == "blockquote":
+			quote = block
+		case block.blockType == "paragraph" && block.excerpt == moverLine:
+			moving = block
+		}
+	}
+	if quote.id == "" || moving.id == "" || moving.parent != quote.id {
+		t.Fatalf("the mover document holds %+v, want the paragraph %q inside a quote", before, moverLine)
+	}
+	moved := dispatchRequest(t, run.handler, http.MethodPost, "/api/v1/artifacts/"+run.moverID+"/edits", map[string]any{
+		"ops": []map[string]any{{"op": "move", "block": moving.id, "after": "block:" + quote.id}},
+	}, "alice")
+	if moved.Code != http.StatusOK || !strings.Contains(moved.Body.String(), `"changed":true`) {
+		t.Fatalf("move the paragraph out of the quote: status=%d body=%s", moved.Code, moved.Body.String())
+	}
+	// The edit's version settles after the edit answers. The tuple its block index appends is
+	// read once it has committed, and the row after it, so both are the reparent's.
+	var asserted []string
+	for deadline := time.Now().Add(15 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		var err error
+		asserted, err = readStrings(ctx, run.database.Pool, `
+			select xmin::text from graph_tuples
+			where from_kind = $1 and from_id = $2 and kind = $3 and to_kind = 'artifact' and asserted
+			order by seq
+		`, refs.BlockNodeKind, moving.address, graphstore.TuplePartOf)
+		if err != nil {
+			t.Fatalf("read the moved block's part_of tuple to its document: %v", err)
+		}
+		if len(asserted) != 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("15s after the move the store holds no part_of tuple from %s to its document", moving.address)
+		}
+	}
+	if len(asserted) != 1 {
+		t.Fatalf("the store holds %d part_of tuples from %s to its document, want the one its reparent appended", len(asserted), moving.address)
+	}
+	var after moverBlock
+	for _, block := range run.moverBlocks(t, ctx) {
+		if block.id == moving.id {
+			after = block
+		}
+	}
+	if after.parent != "" {
+		t.Fatalf("after the move the moved block's row names the parent %q, and its part_of tuple names its document", after.parent)
+	}
+	// A changed_version that moved would be the row rewritten for its text, an update of a
+	// column no tuple projects, and not the reparent this check reads.
+	if after.changedVersion != moving.changedVersion {
+		t.Fatalf("the move took the moved block's changed_version from %d to %d, so its row was rewritten for its text and not for its parent alone",
+			moving.changedVersion, after.changedVersion)
+	}
+	retracted, err := readStrings(ctx, run.database.Pool, `
+		select xmin::text from graph_tuples
+		where from_kind = $1 and from_id = $2 and kind = $3 and to_kind = $1 and to_id = $4 and not asserted
+		order by seq
+	`, refs.BlockNodeKind, moving.address, graphstore.TuplePartOf, quote.address)
+	if err != nil {
+		t.Fatalf("read the retraction of the moved block's part_of the quote: %v", err)
+	}
+	var node string
+	if err := run.database.Pool.QueryRow(ctx, `select xmin::text from graph_nodes where kind = $1 and id = $2`,
+		refs.BlockNodeKind, moving.address).Scan(&node); err != nil {
+		t.Fatalf("read the moved block's node: %v", err)
+	}
+	t.Logf("the moved block %s: its row at xmin %s (inserted at %s), the part_of tuple its reparent appended at xmin %s, the retraction of its part_of the quote at xmin %v, its node at xmin %s",
+		moving.address, after.xmin, moving.xmin, asserted[0], retracted, node)
+	if after.xmin != asserted[0] {
+		t.Errorf("the reparented block %s's row carries xmin %s and the part_of tuple its reparent appended carries xmin %s: the update of the column and the fact it projects are not one transaction's",
+			moving.address, after.xmin, asserted[0])
+	}
 }
 
 // requireOnlyTheMovedKindsReachedTheStore fails on a node of any kind but the three this change
