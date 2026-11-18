@@ -157,10 +157,7 @@ export async function bootLegionClaim(host: LegionClaimHost): Promise<LegionClai
     host.afterReadyRead();
     await host.claimRole(claim.claimToken);
   } catch (error) {
-    host.log(
-      `claim boot failed after claims/register registered ${claim.claimToken}; ${host.stopping}: ${messageFor(error)}`
-    );
-    host.stop();
+    stopAfterRegistration(host, claim.claimToken, error);
     return undefined;
   }
   host.onRoleRegained(async (role, reason) => {
@@ -174,4 +171,14 @@ export async function bootLegionClaim(host: LegionClaimHost): Promise<LegionClai
       await readTask("at the relay's new epoch");
     },
   };
+}
+
+/** The one path every failure after a registration takes — the ready, the read after it and the
+ * role claim, a refused claim of a pane relaunched with `--resume` among them: it reports the
+ * failure in one sentence and stops the session, since none of them changes on retry. */
+function stopAfterRegistration(host: LegionClaimHost, role: string, error: unknown): void {
+  host.log(
+    `claim boot failed after claims/register registered ${role}; ${host.stopping}: ${messageFor(error)}`
+  );
+  host.stop();
 }
