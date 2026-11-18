@@ -1644,6 +1644,18 @@ describe("dispatch api", () => {
           claim: { actor: { kind: "session", id: "ses-architect" }, at: "2026-11-18T05:00:00Z" },
         });
       }
+      // Dispatch's own answer to a path no build of it serves (the router's `staticHandler`): it
+      // names the route and where every route is listed.
+      if (pathname.startsWith("/api/v1/issuez/")) {
+        return Response.json(
+          {
+            code: "NOT_FOUND",
+            error: `no route for ${request.method} ${pathname}`,
+            hint: "GET /api/v1 lists every route",
+          },
+          { status: 404 }
+        );
+      }
       return Response.json(
         { code: "NOT_FOUND", error: `issue ${pathname.split("/")[4]} not found` },
         { status: 404 }
@@ -1735,6 +1747,18 @@ describe("dispatch api", () => {
       { method: "GET", path: "/api/v1/issues/DSP-404", authorization: "Bearer test-token" },
     ]);
   });
+
+  // The help of `dispatch api` promises Dispatch's error with its code on a refused read. A path
+  // the caller wrote reaches no route far more often because the path is wrong than because a
+  // release is in progress, so the words that a release is in progress and to try again in one
+  // minute, which send an agent to wait and ask again, are not Dispatch's answer: its answer names
+  // the route. The timeout leaves room for the client's waits between no-route attempts.
+  test("exits 1 on a path Dispatch has no route for, printing Dispatch's own error", async () => {
+    const { code, stdout } = await run(["api", "--path", "/api/v1/issuez/DSP-1"], session);
+    expect(code).toBe(1);
+    expect(stdout).toContain("no route for GET /api/v1/issuez/DSP-1");
+    expect(stdout).not.toContain("a new release of Dispatch is in progress");
+  }, 20_000);
 });
 
 // Two refusals an agent meets as the exit status of a command and the words on its own stdout,
