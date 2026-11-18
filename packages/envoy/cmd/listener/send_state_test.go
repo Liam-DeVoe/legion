@@ -17,9 +17,11 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 
+	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
@@ -909,5 +911,79 @@ func TestTheRegistryRouteAnswersAStoppedSessionOnlyWhenAsked(t *testing.T) {
 	if unknown.Code != http.StatusNotFound {
 		t.Fatalf("GET /v1/registry/ses_registry_unknown?include=unresponsive,stopped: status %d, body %s; want 404",
 			unknown.Code, unknown.Body.String())
+	}
+}
+
+// dispatch://INFRA-3686/spec R5 has the listener raise no wake for "a low publish of the
+// daemon's" to a role no live session holds, and every other publish and send wakes as today. An
+// agent session whose broker token proves it publishes at urgency low to such a role and leaves
+// source_session out of the body (pi-envoy's envoy_publish leaves it out where replyAddress gives
+// ""). The publish is that session's, not the daemon's: the sender limit already counts it as the
+// token's session, and the daemon publishes under the shared listener bearer, which proves no
+// session. So it raises the role's wake report, as the same publish naming source_session does.
+func TestALowPublishOfATokenSessionWithNoSourceSessionWakesTheRole(t *testing.T) {
+	d, client := keptRoleDeps(t)
+	wakesCtx, stopWakes := context.WithCancel(context.Background())
+	t.Cleanup(stopWakes)
+	d.wakes = newWakeReporter(wakesCtx, client)
+	wakes, err := client.Conn.SubscribeSync(bus.LegionWakeTopic)
+	if err != nil {
+		t.Fatalf("subscribe to %s: %v", bus.LegionWakeTopic, err)
+	}
+	t.Cleanup(func() { _ = wakes.Unsubscribe() })
+	if err := client.Conn.Flush(); err != nil {
+		t.Fatalf("flush the wake subscription: %v", err)
+	}
+	const (
+		omitted = "wake-token-omits-session"
+		named   = "wake-token-names-session"
+		sender  = "ses_wake_token_sender"
+	)
+	publishAs := func(role, fields string) *httptest.ResponseRecorder {
+		body := `{"topic":"` + contracts.RoleTopicPrefix + role + `","source":"agent","message":"take a look"` + fields + `}`
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/v1/messages/publish", strings.NewReader(body))
+		request.Header.Set("Content-Type", "application/json")
+		request = request.WithContext(withBrokerCaller(request.Context(), brokertoken.Caller{Session: sender, Person: "ada@example.com"}))
+		publishHandler(d, logging.New("test")).ServeHTTP(recorder, request)
+		return recorder
+	}
+
+	recorder := publishAs(omitted, `,"urgency":"low"`)
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("a low publish with no source_session: status %d, body %s; want 202", recorder.Code, recorder.Body.String())
+	}
+	var kept keptPublishAnswer
+	if err := json.Unmarshal(recorder.Body.Bytes(), &kept); err != nil {
+		t.Fatalf("decode the 202: %v", err)
+	}
+	waitForKeptRoleMessage(t, client, omitted, kept.EventID)
+	sweepCtx, cancelSweep := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelSweep()
+	sweepWakes, err := keptLaneWakesItsRole(sweepCtx, client, omitted, 1, time.Now())
+	if err != nil {
+		t.Fatalf("read role %s's kept lane for a wake: %v", omitted, err)
+	}
+	if recorder := publishAs(named, `,"urgency":"low","source_session":"`+sender+`"`); recorder.Code != http.StatusAccepted {
+		t.Fatalf("a low publish naming source_session: status %d, body %s; want 202", recorder.Code, recorder.Body.String())
+	}
+
+	raised := map[string]int{}
+	for {
+		msg, err := wakes.NextMsg(1500 * time.Millisecond)
+		if errors.Is(err, natsgo.ErrTimeout) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("read the wake reports: %v", err)
+		}
+		raised[wakeReportRole(t, msg)]++
+	}
+	if raised[named] != 1 {
+		t.Fatalf("control: the low publish naming its session raised %d wake reports, want 1", raised[named])
+	}
+	if raised[omitted] != 1 || !sweepWakes {
+		t.Fatalf("the low publish of session %s, which its broker token proved, with no source_session raised %d wake reports and its kept copy wakes on the sweep: %t; want 1 and true",
+			sender, raised[omitted], sweepWakes)
 	}
 }
