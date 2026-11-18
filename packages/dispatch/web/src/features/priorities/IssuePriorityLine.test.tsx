@@ -9,6 +9,7 @@ import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
 import type { Issue, Priorities, PriorityRow } from "../../api/types";
+import { writesOf } from "../writes/write-store";
 import { IssuePriorityLine } from "./IssuePriorityLine";
 
 /**
@@ -79,6 +80,7 @@ function renderLine(advances: Issue["advances"], closed = false, read: Prioritie
     listPriorities,
     patchIssue,
     q,
+    queryClient,
     /** The picker's list, once its trigger has opened it. */
     picker: () => screen.findByRole("listbox", { name: "Priorities options" }),
     /** The issue read again, with another set and revision, under the same line. */
@@ -268,6 +270,31 @@ test("a remove carries the revision it was read at, and a stale one's refusal is
     );
     expect((await view.q.findByRole("alert")).textContent).toBe(refusal);
     expect(view.invalidations).toHaveBeenCalledWith({ queryKey: ["issue"] });
+  } finally {
+    view.unmountAll();
+  }
+});
+
+// The line shows its own refusal (`inline`), so a stale revision refused while the page is open is
+// the line's to say, and nothing of it stands in the shell's pending-writes line for a Retry,
+// which would send the stale revision again.
+test("a stale revision refused on the page is the line's alone: nothing of it is left for a Retry", async () => {
+  const user = userEvent.setup();
+  const view = renderLine([{ id: "evals-now", inherited: false }]);
+  const refusal = "advances revision 41 is not the revision this issue holds, 57";
+  view.patchIssue.mockRejectedValue(
+    new ApiError(409, { code: "ADVANCES_REVISION", error: refusal })
+  );
+  try {
+    await user.click(view.trigger());
+    const listbox = await view.picker();
+    await user.click(
+      await within(listbox).findByRole("option", { name: "P1 Evals collecting data now" })
+    );
+    await user.click(view.trigger());
+    expect((await view.q.findByRole("alert")).textContent).toBe(refusal);
+    expect(writesOf(view.queryClient).rows()).toEqual([]);
+    expect(view.patchIssue).toHaveBeenCalledTimes(1);
   } finally {
     view.unmountAll();
   }

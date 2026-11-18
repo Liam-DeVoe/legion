@@ -59,10 +59,11 @@ export function PrioritiesTable({
   const [openId, setOpenId] = useState<string>();
   const [dragging, setDragging] = useState<string>();
   const [openFilter, setOpenFilter] = useState<string>();
-  const { canWrite, describe, keep, kept, patch, rename } = usePriorityWrites();
-
   const items = useMemo(() => buildPriorityItems(rows), [rows]);
   const order = useMemo(() => items.map((item) => item.priority.id), [items]);
+  // The table shows every row's priority, drawn or scrolled away, and settles each one's
+  // conflicts with the reader (`usePriorityWrites`).
+  const { canWrite, describe, keep, kept, patch, rename } = usePriorityWrites(order);
   const open = items.find((item) => item.priority.id === openId);
   // A drag writes the place the reader can see. Under another sort, a grouping or a page of
   // rows that is not the whole order, where a row lands is not where it was dropped, so the

@@ -1,27 +1,25 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api, priorityPatchRequest } from "../../api/client";
 import type { CreatePriorityInput, PatchPriorityInput } from "../../api/types";
 import { useIsHuman } from "../../hooks/useIsHuman";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { type Shape, shape } from "../writes/write-storage";
+import { defineWriteKind, ofKind, useWrites } from "../writes/write-store";
 import { NOTHING_KEPT } from "./field-arrival";
 
-/** One write of an existing priority: its id, what it changes, and the words the shell's
- *  pending-writes indicator names the write by while it is out. */
+/** One write of an existing priority's owner or order: its id, what it changes, and the words the
+ *  shell's pending-writes indicator names the write by while it is out. A title or a description
+ *  is written through `rename` and `describe` instead (`PriorityTextWrite`). */
 export interface PriorityPatch {
   readonly id: string;
   readonly input: PatchPriorityInput;
   readonly label: string;
-  /** For a title or a description, the chain of this page's writes of it the write goes on
-   *  (`TextChain.id`): what it settles is that chain's, and nothing of a chain that replaced it. */
-  readonly chain?: number;
 }
 
 /** The attributes a write names the text its edit started from for (`expected`). The owner and
  *  the order take none. */
 export type EditedText = "description" | "title";
-
-const EDITED_TEXTS: readonly EditedText[] = ["description", "title"];
 
 /**
  * Where this page's writes of one text of one priority stand, for what the next write of it
@@ -30,7 +28,7 @@ const EDITED_TEXTS: readonly EditedText[] = ["description", "title"];
  * by the time the next goes, and once it lands it holds it until somebody else writes.
  */
 export interface TextChain {
-  /** Which chain it is: a write carries it (`PriorityPatch.chain`), so one still out on a chain
+  /** Which chain it is: a write carries it (`TextPress.chain`), so one still out on a chain
    *  that was replaced settles nothing of the chain that replaced it. */
   readonly id: number;
   /** The writes pressed here that have not settled. */
@@ -80,6 +78,97 @@ export function settledText(chain: TextChain, refused: boolean): TextChain | und
   return next.out === 0 && next.refused ? undefined : next;
 }
 
+/** One write of a priority's title or description as the write store holds it, and a reload
+ *  keeps it: the priority, the text written - the reader's own - and the text the write names as
+ *  the one it goes over (`expected`). */
+export interface PriorityTextWrite {
+  readonly id: string;
+  readonly attribute: EditedText;
+  readonly text: string;
+  readonly expected: string;
+}
+
+const keptTextWrite = shape.record({
+  attribute: shape.oneOf("description", "title"),
+  expected: shape.string,
+  id: shape.string,
+  text: shape.string,
+}) satisfies Shape<PriorityTextWrite>;
+
+/** A press of a title or a description: its write, the words the shell's line names it by, and
+ *  the chain of this page's writes of that text it goes on (`TextChain.id`): what it settles is
+ *  that chain's, and nothing of a chain that replaced it. */
+interface TextPress {
+  readonly write: PriorityTextWrite;
+  readonly label: string;
+  readonly chain: number;
+}
+
+/** The pages mounted now that show priorities (`usePriorityWrites`), each asked to take a write
+ *  of a text a conflict refused: one that shows its priority keeps the reader's text beside that
+ *  priority's field, and says so. */
+const mountedPages = new Set<(write: PriorityTextWrite) => boolean>();
+
+/**
+ * A title or a description written: made from its request alone on its priority's line
+ * (`priority:<id>`, `priorityPatchRequest`), and kept across a reload with its record. Dispatch
+ * refuses one whose `expected` another person's text has replaced (`409 PRIORITY_CHANGED`), and
+ * would refuse that body the same way every time, so no Retry sends it again: a page mounted now
+ * that shows its priority takes the refusal (`claims`) and keeps the reader's text beside the
+ * field, and where none does, the shell's line offers that text to copy (`draft`).
+ */
+export const priorityTextWrite = defineWriteKind<PriorityTextWrite>({
+  claims: (_client, write) => [...mountedPages].some((takes) => takes(write.detail)),
+  draft: (write) => write.detail.text,
+  kept: keptTextWrite,
+  name: "priority-text",
+});
+
+/** A new priority, its record the title it is written with. Dispatch refuses one whose id - the
+ *  title's slug - a priority already carries (`409 PRIORITY_EXISTS`), and a Retry would send the
+ *  same title, so the same id: the shell's line offers the title to copy instead (`draft`). */
+export const newPriorityWrite = defineWriteKind<string>({
+  draft: (write) => write.detail,
+  kept: shape.string,
+  name: "priority-new",
+});
+
+/** The reader's texts a page keeps beside one text of one priority, newest first, none twice, and
+ *  for each a conflict brought back (`priorityTextWrite.claims`), the text its write went over. */
+interface KeptTexts {
+  readonly texts: readonly string[];
+  readonly over: ReadonlyMap<string, string>;
+}
+
+/** The key a priority's text is held under here: its chain's, and its kept texts'. */
+function textKey(attribute: EditedText, id: string): string {
+  return `${attribute}:${id}`;
+}
+
+/** Notes that the page reads `held` where `kept` stands: each text a claimed write went over that
+ *  is not `held` the page has read past (`past`, by text key), for good, so a later read of that
+ *  text again - another person writing it back - is a text like any other. */
+function notePast(
+  past: Map<string, Set<string>>,
+  key: string,
+  kept: KeptTexts | undefined,
+  held: string
+): void {
+  for (const over of kept?.over.values() ?? []) {
+    if (over === held) continue;
+    const read = past.get(key) ?? new Set<string>();
+    read.add(over);
+    past.set(key, read);
+  }
+}
+
+/** Whether the page has yet to read past `over`, the text a claimed write went over. */
+function unread(past: Map<string, Set<string>>, key: string, over: string | undefined): boolean {
+  return over !== undefined && past.get(key)?.has(over) !== true;
+}
+
+const NO_PRIORITIES: readonly string[] = [];
+
 /**
  * The three writes these pages make: a new priority, a change to one, and the move that is a
  * drag of the order. Each goes out under its own key and is retried under it (`useKeyedWrite`),
@@ -97,26 +186,41 @@ export function settledText(chain: TextChain, refused: boolean): TextChain | und
  *
  * The reader's own texts a title or a description keeps beside itself while it shows another
  * person's (`ChangedMeanwhile`) are held here, by priority and attribute (`kept`, `keep`), and
- * not in the field: closing the description's disclosure, or a row of the table scrolling away,
- * takes the field with it, and the field drawn again shows them again. Leaving the page lets
- * them go.
+ * not in the field: a row of the table scrolling away takes the field with it, and the field
+ * drawn again shows them again, and a description that keeps any is drawn though its disclosure
+ * or its row is closed. Leaving the page lets them go. A write of a priority in `shown` that
+ * Dispatch refuses `409 PRIORITY_CHANGED` is the page's to settle with the reader, whether it was
+ * pressed here or a reload took it up, before this page was drawn or since
+ * (`priorityTextWrite.claims`, `Writes.claim`): its text is kept beside the field, ahead of any
+ * kept there, and nothing stands for it on the shell's line. The page shows that text once it
+ * reads another text than the one the write went over, so it never offers the reader's text
+ * before it shows the other person's; until then no write over that text is sent, since
+ * Dispatch would refuse it the same way.
  *
  * Whether the reader may write at all is `useIsHuman`: every priority write is classed as the
  * deployment's (`internal/dispatch/api/priorities.go`), which a credential scoped to a project
  * and a token naming no person are both refused, so a page that offered the controls to them
  * would offer a refusal.
  */
-export function usePriorityWrites() {
+export function usePriorityWrites(shown: readonly string[] = NO_PRIORITIES) {
   const queryClient = useQueryClient();
+  const writes = useWrites();
   const canWrite = useIsHuman();
   const chains = useRef(new Map<string, TextChain>());
   const made = useRef(0);
-  const [keptTexts, setKeptTexts] = useState<ReadonlyMap<string, readonly string[]>>(
-    () => new Map()
+  const [keptTexts, setKeptTexts] = useState<ReadonlyMap<string, KeptTexts>>(() => new Map());
+  // For each text key, the texts a claimed write went over that the page has read past.
+  const readPast = useRef(new Map<string, Set<string>>());
+  const showing = useRef(shown);
+  showing.current = shown;
+  const refresh = useCallback(
+    () => queryClient.invalidateQueries({ queryKey: ["priorities"] }),
+    [queryClient]
   );
-  const refresh = () => queryClient.invalidateQueries({ queryKey: ["priorities"] });
   const add = useKeyedWrite({
-    label: (input: CreatePriorityInput) => `New priority “${input.title}”`,
+    detail: (input: CreatePriorityInput) => input.title,
+    kind: newPriorityWrite,
+    label: (input) => `New priority “${input.title}”`,
     write: (input, bounds) => api.createPriority(input, bounds),
     onSettled: () => void refresh(),
   });
@@ -124,46 +228,105 @@ export function usePriorityWrites() {
     label: (patch_: PriorityPatch) => patch_.label,
     target: (patch_) => `priority:${patch_.id}`,
     request: (patch_) => priorityPatchRequest(patch_.id, patch_.input),
+    onSettled: () => void refresh(),
+  });
+  const text = useKeyedWrite({
+    detail: (press: TextPress) => press.write,
+    kind: priorityTextWrite,
+    label: (press) => press.label,
+    target: (press) => `priority:${press.write.id}`,
+    // The text, and the text it goes over as `expected`.
+    request: ({ write }) =>
+      priorityPatchRequest(
+        write.id,
+        write.attribute === "title"
+          ? { expected: { title: write.expected }, title: write.text }
+          : { description: write.text, expected: { description: write.expected } }
+      ),
     // Counted here, on every write, rather than in the press's own callbacks, which TanStack
     // calls for the last press alone.
-    onSettled: (_data, error, patch_) => {
-      const landed: [string, TextChain][] = [];
-      for (const attribute of EDITED_TEXTS) {
-        if (patch_.input.expected?.[attribute] == null) continue;
-        const key = `${attribute}:${patch_.id}`;
-        const chain = chains.current.get(key);
-        if (chain === undefined || chain.id !== patch_.chain) continue;
+    onSettled: (_data, error, press) => {
+      const key = textKey(press.write.attribute, press.write.id);
+      const chain = chains.current.get(key);
+      let landed: TextChain | undefined;
+      if (chain !== undefined && chain.id === press.chain) {
         const next = settledText(chain, error !== null);
         if (next === undefined) chains.current.delete(key);
         else chains.current.set(key, next);
-        if (next?.out === 0) landed.push([key, next]);
+        if (next?.out === 0) landed = next;
       }
       const refreshed = refresh();
-      if (landed.length === 0) return;
+      if (landed === undefined) return;
       void refreshed.then(() => {
-        for (const [key, chain] of landed) {
-          if (chains.current.get(key) === chain) chains.current.delete(key);
-        }
+        if (chains.current.get(key) === landed) chains.current.delete(key);
       });
     },
   });
-  const { mutate } = patch;
+  /** Keeps `write`'s text beside its priority's field, ahead of any kept there, as the text a
+   *  conflict brought back over `write.expected`, and reads the priorities again, so the page
+   *  reads the other person's text where it has not yet. */
+  const take = useCallback(
+    (write: PriorityTextWrite) => {
+      const key = textKey(write.attribute, write.id);
+      readPast.current.get(key)?.delete(write.expected);
+      setKeptTexts((current) => {
+        const before = current.get(key);
+        const over = new Map(before?.over);
+        over.set(write.text, write.expected);
+        const texts = [write.text, ...(before?.texts ?? []).filter((one) => one !== write.text)];
+        return new Map(current).set(key, { over, texts });
+      });
+      void refresh();
+    },
+    [refresh]
+  );
+  // The conflicts of the priorities this page shows are its own to settle with the reader, from
+  // the moment it is drawn until it goes.
+  useEffect(() => {
+    const takes = (write: PriorityTextWrite) => {
+      if (!showing.current.includes(write.id)) return false;
+      take(write);
+      return true;
+    };
+    mountedPages.add(takes);
+    return () => {
+      mountedPages.delete(takes);
+    };
+  }, [take]);
+  // And those refused before it was drawn - a reload's, taken up before the page was - which
+  // stand on the shell's line until a page that shows their priority takes them.
+  useEffect(() => {
+    for (const row of writes.rows()) {
+      const write = ofKind(row, priorityTextWrite);
+      if (write === undefined || !shown.includes(write.detail.id)) continue;
+      if (writes.claim(write.id)) take(write.detail);
+    }
+  }, [shown, take, writes]);
+  const { mutate } = text;
   const writeText = useCallback(
-    (id: string, attribute: EditedText, text: string, held: string, label: string) => {
-      const key = `${attribute}:${id}`;
+    (id: string, attribute: EditedText, written: string, held: string, label: string) => {
+      const key = textKey(attribute, id);
       const chain = chains.current.get(key);
       const expected = expectedText(chain, held);
-      if (text === expected) return;
+      if (written === expected) return;
+      const stand = keptTexts.get(key);
+      notePast(readPast.current, key, stand, held);
+      const stale = [...(stand?.over.values() ?? [])].some(
+        (over) => over === expected && unread(readPast.current, key, over)
+      );
+      if (stale) {
+        // Dispatch refused a write over `expected` because another person's text stands there,
+        // and the page has not read it yet: this body would be refused the same way. The text
+        // stays kept, to be offered once the page reads theirs.
+        take({ attribute, expected, id, text: written });
+        return;
+      }
       made.current += 1;
-      const next = pressedText(chain, text, held, made.current);
+      const next = pressedText(chain, written, held, made.current);
       chains.current.set(key, next);
-      const input: PatchPriorityInput =
-        attribute === "title"
-          ? { expected: { title: expected }, title: text }
-          : { description: text, expected: { description: expected } };
-      mutate({ chain: next.id, id, input, label });
+      mutate({ chain: next.id, label, write: { attribute, expected, id, text: written } });
     },
-    [mutate]
+    [keptTexts, mutate, take]
   );
   /** Writes `title` as priority `id`'s title, where the page reads `held`. A title with nothing
    *  in it is refused by the server, so none is sent. */
@@ -179,18 +342,39 @@ export function usePriorityWrites() {
       writeText(id, "description", description, held, label),
     [writeText]
   );
-  /** The reader's texts kept beside priority `id`'s `attribute`, newest first. */
+  /** The reader's texts kept beside priority `id`'s `attribute`, newest first, where the page
+   *  reads `held`: but for a text a conflict brought back while the page still reads the text its
+   *  write went over, which waits until the page reads the other person's. */
   const kept = useCallback(
-    (id: string, attribute: EditedText) => keptTexts.get(`${attribute}:${id}`) ?? NOTHING_KEPT,
+    (id: string, attribute: EditedText, held: string): readonly string[] => {
+      const key = textKey(attribute, id);
+      const stand = keptTexts.get(key);
+      if (stand === undefined) return NOTHING_KEPT;
+      notePast(readPast.current, key, stand, held);
+      const waits = (one: string) => unread(readPast.current, key, stand.over.get(one));
+      if (!stand.texts.some(waits)) return stand.texts;
+      const shownTexts = stand.texts.filter((one) => !waits(one));
+      return shownTexts.length === 0 ? NOTHING_KEPT : shownTexts;
+    },
     [keptTexts]
   );
-  /** Keeps `texts` beside priority `id`'s `attribute`, in place of what was kept there. */
+  /** Keeps `texts` beside priority `id`'s `attribute`, in place of what was kept there, and lets
+   *  go of what each text no longer kept went over. A text still waiting for the page to read the
+   *  other person's (`kept`) was never shown, so it is no field's to let go, and stays. */
   const keep = useCallback((id: string, attribute: EditedText, texts: readonly string[]) => {
+    const key = textKey(attribute, id);
     setKeptTexts((current) => {
-      const key = `${attribute}:${id}`;
+      const before = current.get(key);
+      const waiting = (before?.texts ?? []).filter(
+        (one) => !texts.includes(one) && unread(readPast.current, key, before?.over.get(one))
+      );
+      const all = [...texts, ...waiting];
       const next = new Map(current);
-      if (texts.length === 0) next.delete(key);
-      else next.set(key, texts);
+      if (all.length === 0) next.delete(key);
+      else {
+        const over = new Map([...(before?.over ?? [])].filter(([one]) => all.includes(one)));
+        next.set(key, { over, texts: all });
+      }
       return next;
     });
   }, []);

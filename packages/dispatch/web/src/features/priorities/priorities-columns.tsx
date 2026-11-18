@@ -37,9 +37,9 @@ export interface PriorityRowActions {
   readonly onRename: (item: PriorityItem, title: string) => void;
   readonly onDescribe: (item: PriorityItem, description: string) => void;
   /** The reader's texts kept beside a priority's title or description while it shows another
-   *  person's, and the change of them: held by the page (`usePriorityWrites`) rather than by
-   *  the field, which a row scrolling away takes with it. */
-  readonly kept: (id: string, attribute: EditedText) => readonly string[];
+   *  person's, where the page reads `held`, and the change of them: held by the page
+   *  (`usePriorityWrites`) rather than by the field, which a row scrolling away takes with it. */
+  readonly kept: (id: string, attribute: EditedText, held: string) => readonly string[];
   readonly onKeep: (id: string, attribute: EditedText, texts: readonly string[]) => void;
   /** The row the reader is dragging, and the two ends of that drag. */
   readonly dragging: string | undefined;
@@ -100,6 +100,7 @@ function TitleCell({ item }: { item: PriorityItem }) {
   const actions = useRowActions();
   const open = actions.openId === item.priority.id;
   const { description, id, title } = item.priority;
+  const keptDescription = actions.kept(id, "description", description);
   return (
     <div className="flex min-w-0 items-start gap-1">
       <button
@@ -114,7 +115,7 @@ function TitleCell({ item }: { item: PriorityItem }) {
       <div className="min-w-0 flex-1 space-y-1">
         {actions.canWrite ? (
           <InPlaceField
-            kept={actions.kept(id, "title")}
+            kept={actions.kept(id, "title", title)}
             label={`Title of ${item.order}`}
             onKeptChange={(texts) => actions.onKeep(id, "title", texts)}
             onSave={(next) => actions.onRename(item, next)}
@@ -124,11 +125,14 @@ function TitleCell({ item }: { item: PriorityItem }) {
         ) : (
           <p className="font-medium">{title}</p>
         )}
-        {open ? (
+        {/* An open row draws its whole description, and so does a closed one that keeps the
+            reader's text beside it: the notice of a write another person's change refused is on
+            the row whether it is open or not. */}
+        {open || keptDescription.length > 0 ? (
           <PriorityDescription
             canWrite={actions.canWrite}
             description={description}
-            kept={actions.kept(id, "description")}
+            kept={keptDescription}
             label={`Description of ${item.order}`}
             onKeptChange={(texts) => actions.onKeep(id, "description", texts)}
             onSave={(next) => actions.onDescribe(item, next)}

@@ -76,8 +76,9 @@ function take(held: Held, markdown: string): void {
  * and no write of theirs is out, so leaving the editor never writes the old text back over it.
  * Else it is taken in all the same, the waiting write is stopped, and the reader's text is kept
  * beside the editor (`ChangedMeanwhile`) until they use it again or let it go. Where the page
- * holds those texts (`kept`, `onKeptChange`) they outlive the editor - a disclosure closed, a row
- * of the table scrolled away - and an editor drawn again shows them again; else they go with it.
+ * holds those texts (`kept`, `onKeptChange`) they outlive the editor - a row of the table
+ * scrolled away - and an editor drawn again shows them again, and the page draws the editor
+ * while it holds any, a closed disclosure included; else they go with it.
  * A reader who may not write reads it in the same editor, read-only; with none written, they
  * read that none is, and a writer reads it above the empty editor.
  *

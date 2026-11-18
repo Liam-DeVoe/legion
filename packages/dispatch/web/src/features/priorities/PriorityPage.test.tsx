@@ -6,10 +6,11 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { onFakeClock } from "../../__tests__/fake-clock";
 import { recordedEditors, selectText, writeAtEnd } from "../../__tests__/recorded-editors";
 import { answerPriorityPatches } from "../../__tests__/send-answers";
-import { api } from "../../api/client";
+import { ApiError, api, priorityPatchRequest } from "../../api/client";
 import { prioritiesQuery } from "../../api/queries";
 import type { IssueSummary, Priorities, Priority, PriorityRow } from "../../api/types";
 import { DocumentRuntime } from "../doc/runtime";
+import { writesOf } from "../writes/write-store";
 import { PriorityPage } from "./PriorityPage";
 
 function priority(id: string, overrides: Partial<PriorityRow> = {}): PriorityRow {
@@ -169,7 +170,7 @@ function page(id = "rocq-lean", issues: IssueSummary[] = [], writer = true) {
     priorities.mockResolvedValue(written);
     act(() => client.setQueryData(prioritiesQuery().queryKey, written));
   };
-  return { editors, listing, patch, view, writtenElsewhere };
+  return { client, editors, listing, patch, view, writtenElsewhere };
 }
 
 test("the header carries the order, the title in place, the owner and the three counts", async () => {
@@ -248,15 +249,13 @@ test("the reader's description kept beside the editor outlives the disclosure cl
   const notice = () =>
     screen.queryByRole("alert", { name: "Description of P2, changed by another person" });
   expect(notice()).not.toBeNull();
+  // Closed while it keeps the reader's text, the description stays drawn with its notice: the
+  // reader's text is on the page until they choose.
   await user.click(screen.getByRole("button", { name: "Description" }));
-  await waitFor(() =>
-    expect(screen.queryByRole("textbox", { name: "Description of P2" })).toBeNull()
-  );
-  expect(notice()).toBeNull();
-  await user.click(screen.getByRole("button", { name: "Description, closed" }));
+  expect(screen.getByRole("button", { name: "Description, closed" })).toBeDefined();
   await editors.named("Description of P2");
   const kept = notice();
-  if (kept === null) throw new Error("no notice beside the description opened again");
+  if (kept === null) throw new Error("no notice beside the closed description");
   expect(within(kept).getByText(/Speedruns run again\. Mine\./)).toBeDefined();
   expect(patch).not.toHaveBeenCalled();
   await user.click(within(kept).getByRole("button", { name: "Use my text" }));
@@ -265,6 +264,10 @@ test("the reader's description kept beside the editor outlives the disclosure cl
     description: "# Rocq and Lean speed work restarted\n\nSpeedruns run again. Mine.\n",
     expected: { description: "Written elsewhere." },
   });
+  // With nothing kept, the description is closed, as the reader asked.
+  await waitFor(() =>
+    expect(screen.queryByRole("textbox", { name: "Description of P2" })).toBeNull()
+  );
 });
 
 test("a title the reader empties writes nothing, and left, shows the title again", async () => {
@@ -383,4 +386,52 @@ test("an id no priority carries says so and gives the way back", async () => {
   page("not-written");
   expect(await screen.findByText("No priority of that id is written.")).toBeDefined();
   expect(screen.getByRole("link", { name: "‹ Priorities" })).toBeDefined();
+});
+
+// A write a reload took up is the page's to settle with the reader as much as one pressed on it:
+// refused because another person wrote the description since the reader's edit started, it
+// stands on no line with a Retry that would send it again. The description shows it beside the
+// other person's text, drawn though the reader had closed it, and nothing of it is sent again.
+test("a description a reload took up and another person's change refused is kept beside the description, closed or not", async () => {
+  const user = userEvent.setup();
+  const { client, editors, patch } = page();
+  await editors.named("Description of P2");
+  await user.click(screen.getByRole("button", { name: "Description" }));
+  await waitFor(() =>
+    expect(screen.queryByRole("textbox", { name: "Description of P2" })).toBeNull()
+  );
+  const mine = "Speedruns run again, every night.\n\nMine.";
+  const body = { description: mine, expected: { description: "Speedruns run." } };
+  const request = priorityPatchRequest("rocq-lean", body);
+  const key = "resumed-description";
+  sessionStorage.setItem(
+    `dispatch.write:${key}`,
+    JSON.stringify({
+      carried: "PATCH",
+      detail: { attribute: "description", expected: "Speedruns run.", id: "rocq-lean", text: mine },
+      key,
+      kind: "priority-text",
+      label: "Description of the priority “Rocq and Lean speed work restarted”",
+      login: "alice",
+      presentation: "indicator",
+      pressedAt: Date.now(),
+      request,
+      sent: true,
+      state: { status: "sending" },
+      target: "priority:rocq-lean",
+      version: 1,
+    })
+  );
+  patch.mockRejectedValueOnce(
+    new ApiError(409, { code: "PRIORITY_CHANGED", error: "the description was written meanwhile" })
+  );
+  act(() => writesOf(client).resume("alice"));
+  const notice = await screen.findByRole("alert", {
+    name: "Description of P2, changed by another person",
+  });
+  expect(within(notice).getByText(/Speedruns run again, every night\./)).toBeDefined();
+  expect(within(notice).getByRole("button", { name: "Use my text" })).toBeDefined();
+  expect(writesOf(client).rows()).toEqual([]);
+  expect(patch).toHaveBeenCalledTimes(1);
+  expect(patch.mock.calls[0]?.[1]).toEqual(body);
 });

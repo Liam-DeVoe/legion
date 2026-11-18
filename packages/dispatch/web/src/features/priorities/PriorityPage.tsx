@@ -46,7 +46,10 @@ export function PriorityPage(): ReactNode {
   const [open, setOpen] = useState(true);
   // Where the title's notice of the reader's kept texts is drawn: under the heading, not in it.
   const [titleNoticeAt, setTitleNoticeAt] = useState<HTMLElement | null>(null);
-  const { canWrite, describe, keep, kept, patch, rename } = usePriorityWrites();
+  // The one priority this page shows, whose conflicts it settles with the reader
+  // (`usePriorityWrites`).
+  const shown = useMemo(() => [id], [id]);
+  const { canWrite, describe, keep, kept, patch, rename } = usePriorityWrites(shown);
   // The way out of this scope, in the issue table's own shape: the issues advancing this
   // priority, project by project, each as that project's table narrowed to them. The chip the
   // address raises there names this priority and gives the whole table back when it is removed.
@@ -91,6 +94,7 @@ export function PriorityPage(): ReactNode {
     );
 
   const { description, title } = item.priority;
+  const keptDescription = kept(id, "description", description);
   const owners = [...new Set(items.map(ownerOf))].sort((a, b) => a.localeCompare(b));
 
   return (
@@ -107,7 +111,7 @@ export function PriorityPage(): ReactNode {
                 // Keyed by the priority, as each field below is: the page stays mounted from one
                 // priority to the next, and a field holds what its priority's edit started from.
                 <InPlaceField
-                  kept={kept(id, "title")}
+                  kept={kept(id, "title", title)}
                   key={id}
                   label="Title"
                   noticeAt={titleNoticeAt}
@@ -168,11 +172,13 @@ export function PriorityPage(): ReactNode {
             label={open ? "Description" : "Description, closed"}
             onToggle={() => setOpen((was) => !was)}
           />
-          {open ? (
+          {/* Drawn while closed too where it keeps the reader's text beside it, so the notice of
+              a write another person's change refused is on the page whether it is open or not. */}
+          {open || keptDescription.length > 0 ? (
             <PriorityDescription
               canWrite={canWrite}
               description={description}
-              kept={kept(id, "description")}
+              kept={keptDescription}
               key={id}
               label={`Description of ${item.order}`}
               onKeptChange={(texts) => keep(id, "description", texts)}

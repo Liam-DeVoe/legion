@@ -9,7 +9,7 @@ import { useCallback, useRef, useState } from "react";
 import type { WriteBounds, WriteRequest } from "../../api/client";
 import { newSendKey } from "../../lib/send-key";
 import { retriesUnderItsKey } from "./keyed-write";
-import { plainWrite, useWrites } from "./write-store";
+import { plainWrite, useWrites, type WriteKind } from "./write-store";
 
 /** A write a surface makes for the reader: `useMutation`'s options, but for `mutationFn`, which
  *  the write path makes from `write` or `request` and `label`. Its data is Dispatch's answer, or
@@ -17,7 +17,7 @@ import { plainWrite, useWrites } from "./write-store";
  *  replay of an answer it did not keep): a landing all the same, which `onSuccess` handles - a
  *  create form lets go of its draft and says what was made (`LandedWithoutAnswer`) rather than
  *  opening it. */
-export type KeyedWriteOptions<TData, TVariables, TContext> = Omit<
+export type KeyedWriteOptions<TData, TVariables, TContext, D = null, K = D> = Omit<
   UseMutationOptions<TData | null, DefaultError, TVariables, TContext>,
   "mutationFn" | "networkMode"
 > & {
@@ -31,7 +31,16 @@ export type KeyedWriteOptions<TData, TVariables, TContext> = Omit<
   /** Whether the write ends the person's session (a sign-out): a lapse of that session lands it
    *  rather than holding it for the next sign-in (`WriteSpec.endsWithSession`). */
   readonly endsWithSession?: boolean;
-} & KeyedWriteMade<TData, TVariables>;
+} & KeyedWriteMade<TData, TVariables> &
+  KeyedWriteKind<TVariables, D, K>;
+
+/** The kind of write each press is (`WriteKind`), with its record made from the press's
+ *  variables: what the store keeps of it beyond its request, and what its kind reads - the
+ *  reader's own text, say, which a surface keeps when Dispatch refuses it. Left out, a plain
+ *  write with no record (`plainWrite`). */
+export type KeyedWriteKind<TVariables, D, K> =
+  | { readonly kind?: undefined; readonly detail?: undefined }
+  | { readonly kind: WriteKind<D, K>; readonly detail: (variables: TVariables) => D };
 
 /** How a write is made: by an attempt of its own (`write`, under the bounds the store gives it:
  *  its key, its login and its deadline), or, on a line, from its request alone. Writes to one
@@ -84,7 +93,9 @@ export type KeyedWriteResult<TData, TVariables, TContext> = UseMutationResult<
 /**
  * The one way a surface that is not a composer writes to Dispatch: each `mutate` is one press,
  * made under a key of its own and tried under it until Dispatch decides it, shown by the shell's
- * pending-writes indicator while it is out and, refused, with Retry and Discard (`Writes.run`).
+ * pending-writes indicator while it is out and, refused, with Retry and Discard (`Writes.run`) -
+ * no Retry for a conflict only the reader can settle (`isConflict`), which its kind's surface may
+ * take to settle with them (`WriteKind.claims`).
  * The mutation settles with Dispatch's answer - `null` for a landing without one - its refusal, or
  * `SendStoppedError` once the reader stops it, so the surface keeps its optimistic state until
  * then and rolls it back on anything but a landing. A `mutate` of the same variables a press the
@@ -96,16 +107,22 @@ export type KeyedWriteResult<TData, TVariables, TContext> = UseMutationResult<
  * offer Stop trying. A press that lands with no answer is kept as `unanswered` for the surface
  * to say so, until the next press or `forgetUnanswered`.
  */
-export function useKeyedWrite<TData, TVariables = void, TContext = unknown>({
+export function useKeyedWrite<TData, TVariables = void, TContext = unknown, D = null, K = D>({
+  detail,
   endsWithSession,
   file,
   inline,
+  kind,
   label,
   request,
   target,
   write,
   ...options
-}: KeyedWriteOptions<TData, TVariables, TContext>): KeyedWriteResult<TData, TVariables, TContext> {
+}: KeyedWriteOptions<TData, TVariables, TContext, D, K>): KeyedWriteResult<
+  TData,
+  TVariables,
+  TContext
+> {
   const writes = useWrites();
   /** The last press the reader stopped, which a Retry of the same variables makes again. */
   const stopped = useRef<{ readonly key: string; readonly variables: TVariables } | undefined>(
@@ -124,12 +141,14 @@ export function useKeyedWrite<TData, TVariables = void, TContext = unknown>({
       const key =
         again !== undefined && sameVariables(again.variables, variables) ? again.key : newSendKey();
       const press = {
-        detail: null,
+        // A press names a kind and its record together, or neither (`KeyedWriteKind`): with
+        // neither it is a plain write, whose record is `D`'s default, `null`.
+        detail: (detail === undefined ? null : detail(variables)) as D,
         endsWithSession,
         file: file?.(variables),
         inline: typeof inline === "function" ? inline(variables) : inline,
         key,
-        kind: plainWrite,
+        kind: (kind ?? plainWrite) as WriteKind<D, K>,
         label: label(variables),
         presentation: "indicator",
       } as const;

@@ -1,6 +1,7 @@
-import type { ReactNode } from "react";
+import { type ReactNode, useId } from "react";
 
 import { apiErrorMessage } from "../../api/client";
+import { useCopyFeedback } from "../../hooks/useCopyFeedback";
 import {
   borderDefault,
   calloutWarningBorder,
@@ -9,6 +10,7 @@ import {
   secondaryButtonCompact,
   textSecondaryOnSurface,
 } from "../../theme/classes";
+import { conflictWords } from "./conflicts";
 import {
   expiredRetryNote,
   SendExpiredError,
@@ -17,7 +19,7 @@ import {
   sameKeyRetryNote,
 } from "./keyed-write";
 import { StopTrying } from "./StopTrying";
-import { useWriteSelection, useWrites, type Write } from "./write-store";
+import { useWriteSelection, useWrites, type Write, writeDraft } from "./write-store";
 
 /** Why the refused write was not saved, in the reader's words. */
 function refusalReason(refusal: Error): string {
@@ -31,6 +33,34 @@ function refusalReason(refusal: Error): string {
     return `Dispatch has not confirmed it. ${sameKeyRetryNote("saved")}`;
   }
   return apiErrorMessage(refusal, "Dispatch could not be reached");
+}
+
+/** The reader's own text a write a conflict refused carried, drawn as they wrote it, with a way
+ *  to copy it: no Retry sends it again, and the reader may want it to write again by hand. */
+function DraftToCopy({ text }: { text: string }): ReactNode {
+  const { copy, status } = useCopyFeedback();
+  const id = useId();
+  return (
+    <span className="block basis-full space-y-1">
+      <span className="block" id={id}>
+        Your text:
+      </span>
+      <span
+        aria-labelledby={id}
+        className={`block max-h-32 overflow-y-auto whitespace-pre-wrap border-l-2 pl-2 ${borderDefault} ${textSecondaryOnSurface}`}
+        role="note"
+      >
+        {text}
+      </span>
+      <button className={secondaryButtonCompact} onClick={() => copy(text)} type="button">
+        {status === "copied"
+          ? "Copied"
+          : status === "idle"
+            ? "Copy your text"
+            : "Copy failed - select the text"}
+      </button>
+    </span>
+  );
 }
 
 /** The writes the indicator shows: every one shown there that Dispatch has not yet made. */
@@ -68,8 +98,11 @@ export function uploadedPercent(row: Write): number | undefined {
  * person's sign-out in another tab, `Waiting for a sign-out in another tab`; one waiting its turn
  * behind another that was never sent, `Waiting to send` with Discard; an upload whose body is
  * still going up, `Uploading… N%`, which is never "still trying" until an attempt of it has
- * failed; a late one with Stop trying; a refused one with why, Retry and Discard. A write still
- * within its deadline is only counted, since there is nothing to do about it yet.
+ * failed; a late one with Stop trying; a refused one with why, Retry and Discard. A refusal only
+ * the reader can settle (`isConflict`) says why in its own words and offers no Retry, since
+ * Dispatch refuses its body the same way every time: the reader's own text the write carried is
+ * drawn as written, to copy, beside Discard. A write still within its deadline is only counted,
+ * since there is nothing to do about it yet.
  */
 export function PendingWritesIndicator(): ReactNode {
   const writes = useWrites();
@@ -106,13 +139,29 @@ export function PendingWritesIndicator(): ReactNode {
         <ul className={`max-h-48 space-y-1 overflow-y-auto ${out.length === 0 ? "" : "mt-2"}`}>
           {named.map((row) => {
             const uploaded = uploadedPercent(row);
+            const conflict = row.status === "refused" ? conflictWords(row.refusal) : undefined;
+            const draft = conflict === undefined ? undefined : writeDraft(row);
             return (
               <li
                 className="flex min-h-8 flex-wrap items-center gap-x-2 gap-y-1"
                 data-pending-write={row.id}
                 key={row.id}
               >
-                {row.status === "refused" ? (
+                {conflict !== undefined ? (
+                  <>
+                    <span className={`min-w-0 flex-1 ${dangerText}`}>
+                      {conflict}: {row.label}
+                    </span>
+                    {draft === undefined ? null : <DraftToCopy text={draft} />}
+                    <button
+                      className={secondaryButtonCompact}
+                      onClick={() => writes.discard(row.id)}
+                      type="button"
+                    >
+                      Discard
+                    </button>
+                  </>
+                ) : row.status === "refused" ? (
                   <>
                     <span className={`min-w-0 flex-1 ${dangerText}`}>
                       Not saved: {row.label} — {refusalReason(row.refusal)}

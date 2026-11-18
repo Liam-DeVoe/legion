@@ -1852,3 +1852,186 @@ test("an entry kept with no carried loads, and reads as what it sent", async () 
     }
   });
 });
+
+/** Whether the surface of `claimedWrite` takes a conflict to settle with the reader now, and how
+ *  often its kind undid a write. */
+const surface = { claims: false, undone: 0 };
+
+/** A write whose surface may take a conflict that refused it (`WriteKind.claims`): a priority's
+ *  title, as far as the store is concerned, its record the reader's text. */
+const claimedWrite = defineWriteKind<{ readonly text: string }>({
+  claims: () => surface.claims,
+  draft: (write) => write.detail.text,
+  kept: (value): value is { readonly text: string } =>
+    typeof value === "object" && value !== null && typeof Reflect.get(value, "text") === "string",
+  name: "test-claimed",
+  undone: () => {
+    surface.undone += 1;
+  },
+});
+
+/** Dispatch's refusal of a write over a text another person has since replaced: the same body is
+ *  refused the same way every time it is sent. */
+const changed = new ApiError(409, {
+  code: "PRIORITY_CHANGED",
+  error: "the title was written meanwhile",
+});
+
+/** Presses a write of `claimedWrite` in `writes`, each attempt answered by `answer`; `keys` hears
+ *  each attempt's key. */
+function claimedPress(writes: Writes, answer: () => Promise<unknown>, keys: string[] = []) {
+  return writes
+    .run({
+      detail: { text: "Mine" },
+      kind: claimedWrite,
+      label: "Rename the priority",
+      presentation: "indicator",
+      write: (bounds) => {
+        keys.push(bounds.key);
+        bounds.sent?.(patch);
+        return answer();
+      },
+    })
+    .catch((error: unknown) => error);
+}
+
+// A conflict only the reader can settle that a surface takes goes from the store at once, as an
+// inline refusal does: nothing of it is kept, and nothing stands for it on the shell's line. Its
+// kind still undoes it, and what became of it is still told, for the surface that pressed it.
+test("a conflict a surface claims leaves the store, its outcome still told", async () => {
+  await onFakeClock(async () => {
+    const { tab, writes } = storeOf();
+    surface.claims = true;
+    surface.undone = 0;
+    const outcomes: string[] = [];
+    const stop = writes.onOutcome((outcome) => outcomes.push(outcome.kind));
+    try {
+      const keys: string[] = [];
+      const refused = claimedPress(writes, () => Promise.reject(changed), keys);
+      await settle();
+      expect(await refused).toBe(changed);
+      expect(writes.rows()).toEqual([]);
+      expect(tab.kept(keys[0] ?? "")).toBeUndefined();
+      expect(outcomes).toEqual(["refused"]);
+      expect(surface.undone).toBe(1);
+    } finally {
+      stop();
+      surface.claims = false;
+      tab.close();
+    }
+  });
+});
+
+// One no surface takes stays refused for the reader to discard, and no Retry sends its body
+// again: Dispatch would refuse it the same way.
+test("a conflict no surface claims stays refused, and its Retry sends nothing", async () => {
+  await onFakeClock(async () => {
+    const { tab, writes } = storeOf();
+    try {
+      const keys: string[] = [];
+      void claimedPress(writes, () => Promise.reject(changed), keys);
+      await settle();
+      const refused = row(writes);
+      expect(refused).toMatchObject({ refusal: changed, status: "refused" });
+      writes.retry(refused?.id ?? 0);
+      await tick(60_000);
+      expect(keys).toHaveLength(1);
+      expect(row(writes)).toMatchObject({ refusal: changed, status: "refused" });
+      expect(writes.discard(refused?.id ?? 0)).toBe(true);
+      expect(writes.rows()).toEqual([]);
+    } finally {
+      tab.close();
+    }
+  });
+});
+
+// Any other refusal of the same kind is none of the surface's: it stays on the line, and its
+// Retry sends it again.
+test("a refusal that is no conflict stays refused, and its Retry sends it again", async () => {
+  await onFakeClock(async () => {
+    const { tab, writes } = storeOf();
+    surface.claims = true;
+    try {
+      const keys: string[] = [];
+      let answer: () => Promise<unknown> = () => Promise.reject(verdict);
+      void claimedPress(writes, () => answer(), keys);
+      await settle();
+      expect(row(writes)).toMatchObject({ refusal: verdict, status: "refused" });
+      answer = async () => ({ key: "CORE-1" });
+      writes.retry(row(writes)?.id ?? 0);
+      await settle();
+      expect(keys).toHaveLength(2);
+      expect(writes.rows()).toEqual([]);
+    } finally {
+      surface.claims = false;
+      tab.close();
+    }
+  });
+});
+
+/** A page that has just resumed one write of `claimedWrite`, kept in `tab` under `key` refused by
+ *  Dispatch as `changed`. */
+function resumedConflict(tab: KeptTab, key: string): Writes {
+  tab.storage.setItem(
+    `dispatch.write:${key}`,
+    JSON.stringify({
+      carried: "PATCH",
+      detail: { text: "Mine" },
+      key,
+      kind: claimedWrite.name,
+      label: "Rename the priority",
+      login: "alice",
+      presentation: "indicator",
+      pressedAt: Date.now(),
+      request: patch,
+      sent: true,
+      state: {
+        refusal: { code: "PRIORITY_CHANGED", kind: "api", message: changed.message, status: 409 },
+        status: "refused",
+      },
+      target: null,
+      version: 1,
+    })
+  );
+  const writes = new Writes(signedIn(), tab.page(), memoryFiles());
+  writes.resume("alice");
+  return writes;
+}
+
+// A reload's kept conflict comes back as it stood. One a surface takes is let go unshown, and so
+// is one a surface drawn later takes after the fact (`claim`); until then it stands refused, and
+// no Retry of it sends its body again.
+test("a resumed conflict a surface claims is not shown, and one claimed later goes", async () => {
+  await onFakeClock(async () => {
+    const tab = keptTab();
+    const send = spyOn(api, "send").mockResolvedValue({ key: "CORE-1" } as never);
+    try {
+      surface.claims = true;
+      const claimed = resumedConflict(tab, "claimed-key");
+      await settle();
+      expect(claimed.rows()).toEqual([]);
+      expect(tab.kept("claimed-key")).toBeUndefined();
+
+      surface.claims = false;
+      const shown = resumedConflict(tab, "shown-key");
+      await settle();
+      const refused = row(shown);
+      expect(refused).toMatchObject({ kind: claimedWrite.name, status: "refused" });
+      expect(refused?.status === "refused" && refused.refusal).toMatchObject({
+        code: "PRIORITY_CHANGED",
+        status: 409,
+      });
+      shown.retry(refused?.id ?? 0);
+      await settle();
+      expect(send).not.toHaveBeenCalled();
+      expect(shown.claim(refused?.id ?? 0)).toBe(true);
+      expect(shown.rows()).toEqual([]);
+      expect(tab.kept("shown-key")).toBeUndefined();
+      expect(send).not.toHaveBeenCalled();
+    } finally {
+      surface.claims = false;
+      send.mockRestore();
+      tab.close();
+    }
+  });
+});

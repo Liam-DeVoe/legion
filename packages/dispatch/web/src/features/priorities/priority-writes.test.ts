@@ -7,6 +7,7 @@ import { answerPriorityPatches } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
 import { prioritiesQuery } from "../../api/queries";
 import type { Priorities, Priority } from "../../api/types";
+import { writesOf } from "../writes/write-store";
 import {
   expectedText,
   pressedText,
@@ -137,9 +138,10 @@ afterEach(() => {
 /**
  * A page's writes of priority `p1`'s title, beside the page's read of the priorities: each write
  * and each read is answered only when the test says, in the order it went out. `sent` is what
- * each write that went out changed.
+ * each write that went out changed. The page shows the priorities `shown` names: the conflicts of
+ * those are its to settle with the reader.
  */
-function pageWrites() {
+function pageWrites(shown: readonly string[] = []) {
   const whoami = { event_head: "0", kind: "user" as const, login: "alice" };
   const viewer = spyOn(api, "whoAmI").mockResolvedValue(whoami);
   const reads: { resolve: (body: Priorities) => void }[] = [];
@@ -156,23 +158,44 @@ function pageWrites() {
   });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(["whoami"], whoami);
-  const hook = renderHook(
-    () => {
-      useQuery(prioritiesQuery());
-      return usePriorityWrites();
-    },
-    {
-      wrapper: ({ children }: { children: ReactNode }) =>
-        createElement(QueryClientProvider, { client }, children),
-    }
-  );
+  const wrapper = ({ children }: { children: ReactNode }) =>
+    createElement(QueryClientProvider, { client }, children);
+  /** Draws a page showing `ids`, beside its read of the priorities. */
+  const draw = (ids: readonly string[]) =>
+    renderHook(
+      () => {
+        useQuery(prioritiesQuery());
+        return usePriorityWrites(ids);
+      },
+      { wrapper }
+    );
+  const hook = draw(shown);
+  const others: { unmount: () => void }[] = [];
+  let drawn = true;
   restores.push(() => {
-    hook.unmount();
+    if (drawn) hook.unmount();
+    for (const other of others) other.unmount();
     client.clear();
     for (const spy of [viewer, listing, patches]) spy.mockRestore();
   });
   const sent = () => patches.mock.calls.map(([, input]) => input);
   return {
+    client,
+    /** The page's texts kept beside `p1`'s title, where it reads `held`. */
+    kept: (held: string) => hook.result.current.kept("p1", "title", held),
+    /** Draws another page, which shows `ids`, on the same app. */
+    drawAnother: (ids: readonly string[]) => {
+      const other = draw(ids);
+      others.push(other);
+      return other;
+    },
+    /** How many times the page has read the priorities. */
+    readCount: () => reads.length,
+    /** Takes the page away. */
+    undraw: () => {
+      drawn = false;
+      hook.unmount();
+    },
     /** Lands or refuses the write that went out `index`th. */
     answer: async (index: number, refused: boolean) => {
       await waitFor(() => expect(answers.length).toBeGreaterThan(index));
@@ -198,6 +221,8 @@ function pageWrites() {
       await waitFor(() => expect(sent().length).toBeGreaterThan(index));
       return sent()[index];
     },
+    /** How many writes have gone out. */
+    sentCount: () => sent().length,
   };
 }
 
@@ -242,4 +267,58 @@ test("a write pressed before the page read what landed goes on the chain, and th
   rename("Three", "Old");
   await answer(1, false);
   expect(await sentAt(2)).toEqual({ expected: { title: "Two" }, title: "Three" });
+});
+
+/** A page that shows `p1`, as its own page does. */
+const SHOWS_P1: readonly string[] = ["p1"];
+
+// A write the server refused because another person's title stands where the reader's edit
+// started is the page's to settle with the reader where the page shows that priority: nothing
+// stands for it on the shell's line, and the reader's text is kept beside the title. It waits
+// until the page reads the other person's title, and until then no write over the old title is
+// sent, since the server would refuse it the same way.
+test("a page showing a priority takes its refused title, offers it once the read moves, and never sends the stale text again", async () => {
+  const { answer, client, kept, read, readCount, rename, sentAt, sentCount } = pageWrites(SHOWS_P1);
+  await read(0);
+  rename("Mine", "Old");
+  expect(await sentAt(0)).toEqual({ expected: { title: "Old" }, title: "Mine" });
+  await answer(0, true);
+  expect(writesOf(client).rows()).toEqual([]);
+  // The page still reads "Old": the reader's text waits for the other person's.
+  expect(kept("Old")).toEqual([]);
+  // A "Use my text" pressed now would name "Old" again: nothing is sent, the page reads the
+  // priorities again, and the text stays kept.
+  const before = readCount();
+  rename("Mine", "Old");
+  // Given every turn it would take to go out, it does not.
+  await act(async () => {
+    await settle();
+  });
+  expect(sentCount()).toBe(1);
+  await waitFor(() => expect(readCount()).toBeGreaterThan(before));
+  expect(kept("Old")).toEqual([]);
+  // The page reads Bob's title: the reader's text is offered beside it, and written over it.
+  expect(kept("Bob")).toEqual(["Mine"]);
+  rename("Mine", "Bob");
+  expect(await sentAt(1)).toEqual({ expected: { title: "Bob" }, title: "Mine" });
+});
+
+// A page that shows other priorities, or is no longer drawn, takes nothing: the refusal stands on
+// the shell's line. A page drawn later that shows the priority takes it from there.
+test("a page not drawn takes no refusal, and one drawn later that shows the priority takes it from the line", async () => {
+  const { answer, client, drawAnother, read, rename, sentAt, undraw } = pageWrites(SHOWS_P1);
+  const elsewhere = drawAnother(["p2"]);
+  await read(0);
+  rename("Mine", "Old");
+  await sentAt(0);
+  undraw();
+  await answer(0, true);
+  const writes = writesOf(client);
+  expect(writes.rows().map((row) => row.status)).toEqual(["refused"]);
+  expect(elsewhere.result.current.kept("p1", "title", "Bob")).toEqual([]);
+  const later = drawAnother(SHOWS_P1);
+  await waitFor(() => expect(writes.rows()).toEqual([]));
+  // It waits for the page to read the other person's title, as it would have on the line.
+  expect(later.result.current.kept("p1", "title", "Old")).toEqual([]);
+  expect(later.result.current.kept("p1", "title", "Bob")).toEqual(["Mine"]);
 });
