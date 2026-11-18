@@ -153,7 +153,7 @@ function stubIssueApi() {
     spyOn(api, "listProjects").mockResolvedValue([]),
     spyOn(api, "listAgents").mockResolvedValue([]),
     // The repository's control reads the project's repository mappings at once for an issue
-    // that resolves to none, as this one does; a project that maps none shows no repository.
+    // that resolves to none, as this one does; a project that maps none suggests no repository.
     spyOn(api, "listRepoProjects").mockResolvedValue([]),
     spyOn(api, "listProjectArchitectureSources").mockResolvedValue([]),
     spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] }),
@@ -2200,11 +2200,15 @@ test("Add lists Assignee once a header drawn after it draws the assignee's contr
   }
 });
 
-// The review of 5906c38b: with Details open, the repository's control draws its select only once
-// its own read of the project's mappings answers, in a commit of that control alone. Add, read
-// after its own commits only, never saw the select, so on an issue with a value for every other
-// property Details drew no Add beside the control it would press.
-test("Add is drawn once the repository's control draws its select", async () => {
+// The review of 5906c38b: with Details open, the repository's control drew its select only once
+// its own read of the project's mappings answered, in a commit of that control alone, and Add,
+// read after its own commits only, never saw it, so on an issue with a value for every other
+// property Details drew no Add beside the control it would press. The control is drawn at once
+// now, whatever that read answers: on an issue that resolves to no repository the row reads
+// "None", a button whose press draws the box in its place. So nothing here waits on the read,
+// which is held out throughout; what the case still holds is that Add is drawn beside that one
+// control, lists Repository, and that choosing it reaches the box.
+test("Add lists Repository on an empty repository row and presses None, which opens the box", async () => {
   const user = userEvent.setup();
   const { getIssue, restore } = stubIssueApi();
   const priorities = spyOn(api, "listPriorities").mockResolvedValue(noLivePriorities);
@@ -2214,8 +2218,8 @@ test("Add is drawn once the repository's control draws its select", async () => 
     edges: [],
     node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
   });
-  // The issue resolves to no repository, so its control reads the mappings at once and draws
-  // its select once they answer with one for the project.
+  // The issue resolves to no repository, so its control reads the mappings at once; the read
+  // never answers here, and the control is drawn without it.
   const mappings = Promise.withResolvers<RepoProject[]>();
   const listRepoProjects = spyOn(api, "listRepoProjects").mockImplementation(
     () => mappings.promise
@@ -2240,44 +2244,40 @@ test("Add is drawn once the repository's control draws its select", async () => 
   const { unmount } = renderDetails(undefined, drawer);
 
   try {
-    // Every other read of the panel has answered, so the select is drawn in a commit of the
-    // repository's control alone.
     await screen.findByRole("link", { name: "CORE-3" });
     await waitFor(() => expect(priorities).toHaveBeenCalled());
     await waitFor(() =>
       expect(detailsRow(PROPERTY_LABELS.blocks)).toHaveTextContent(CONTROL_LABELS.none)
     );
     expect(listRepoProjects).toHaveBeenCalled();
+    const none = within(detailsRow(PROPERTY_LABELS.repository)).getByRole("button", {
+      name: `${CONTROL_LABELS.none}, ${repoControlName("CORE-1")}`,
+    });
+    expect(none, "the empty Repository row does not read None").toHaveTextContent(
+      CONTROL_LABELS.none
+    );
     expect(
-      screen.queryByRole("button", { name: CONTROL_LABELS.add }),
-      "Add is drawn before the one control it reaches is"
+      screen.queryByRole("combobox", { name: repoControlName("CORE-1") }),
+      "the empty Repository row draws its box before None is pressed"
     ).not.toBeInTheDocument();
-
-    mappings.resolve([
-      {
-        created_at: "2026-09-10T00:00:00Z",
-        created_by: { id: "alice", kind: "user" },
-        default: true,
-        project: "CORE",
-        renamed_to: null,
-        repo: "acme/widgets",
-      },
-    ]);
-    expect(
-      await screen.findByRole("combobox", { name: repoControlName("CORE-1") }),
-      "the repository's control drew no select for the mapping"
-    ).toBeInTheDocument();
     await waitFor(() =>
       expect(
         screen.queryByRole("button", { name: CONTROL_LABELS.add }),
-        "Repository has no value and its control is drawn, but Details draws no Add"
+        "Repository has no value and its row draws None, but Details draws no Add"
       ).toBeInTheDocument()
     );
     await user.click(screen.getByRole("button", { name: CONTROL_LABELS.add }));
+    const entry = await screen.findByRole("menuitem", { name: PROPERTY_LABELS.repository });
     expect(
-      await screen.findByRole("menuitem", { name: PROPERTY_LABELS.repository }),
-      "the add menu lists no Repository for the select the row draws"
+      entry,
+      "the add menu lists no Repository for the None the row draws"
     ).toBeInTheDocument();
+    await user.click(entry);
+    const box = await screen.findByRole("combobox", { name: repoControlName("CORE-1") });
+    await waitFor(() =>
+      expect(box, "the menu's Repository put no focus in the repository's box").toHaveFocus()
+    );
+    expect(none, "the menu's Repository left None drawn beside the box").not.toBeInTheDocument();
   } finally {
     unmount();
     listRepoProjects.mockRestore();

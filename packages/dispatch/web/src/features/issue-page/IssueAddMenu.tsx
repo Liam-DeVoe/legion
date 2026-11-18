@@ -36,11 +36,10 @@ import { USABLE_CONTROL_ATTRIBUTES, usableControl } from "./usable-control";
  * `blockedByControlName`, `repoControlName`, `componentsControlName`, `addPriorityControlName` -
  * so the two sides cannot drift apart, and lists one only while that control takes a press
  * (`usableControl`). A press on an entry opens that property's control, and a control that
- * takes no press opens nothing: a project that maps no repository offers no repository to set,
- * and while the priorities' save was out, Add listed Advances beside the disabled "Add a
- * priority to CORE-1", and a press on it left the form shut and the focus on the body (the
- * tester, on 8a8f3f6b). A control of Details still takes a press while Details is closed, since
- * the reach opens Details first.
+ * takes no press opens nothing: while the priorities' save was out, Add listed Advances beside
+ * the disabled "Add a priority to CORE-1", and a press on it left the form shut and the focus on
+ * the body (the tester, on 8a8f3f6b). A control of Details still takes a press while Details is
+ * closed, since the reach opens Details first.
  *
  * Which entries can be reached - which decides whether Add is drawn at all, and what its open
  * menu lists - is read from the page, never while the menu renders: during a render the page
@@ -55,7 +54,8 @@ import { USABLE_CONTROL_ATTRIBUTES, usableControl } from "./usable-control";
  * own commits only, Add went when it opened the priorities' form, which replaces "Add a
  * priority to CORE-1", and stayed gone once Cancel drew that control again in a commit of
  * `IssuePriorityLine` alone; the repository's select and the components' picker, each drawn
- * once its own read answers, were never seen either (the review of 5906c38b).
+ * then once its own read answered, were never seen either (the review of 5906c38b). The
+ * repository's row still swaps its "None" and its box in commits of its own control alone.
  */
 export function IssueAddMenu({
   drawerBox,
@@ -248,27 +248,42 @@ export function IssueAddMenu({
     // reached with Details open, since shut it takes neither a press nor the focus. Either is
     // reached only while it takes a press (`controlNamed`): a press on an entry opens that
     // property's control, and a control that would not take it opens nothing, so its entry
-    // is not listed and a press finds nothing to reach. The control is scrolled into view first,
-    // since its popover is placed from the control's place on the screen.
-    const atControl = (name: string) => ({
-      open: () => {
-        const control = controlNamed(name);
-        const reach = () => {
-          control?.scrollIntoView({ block: "nearest" });
-          if (control instanceof HTMLSelectElement) control.focus();
-          else control?.click();
-        };
-        const inHeader = control?.closest(ISSUE_HEADER) != null;
-        const shut = control?.closest("[hidden]") != null;
-        if (drawer !== undefined && (inHeader ? drawer.open : shut && !drawer.open)) {
-          drawer.setOpen(!inHeader);
-          requestAnimationFrame(() => requestAnimationFrame(reach));
-          return;
+    // is not listed and a press finds nothing to reach. A row that draws one of two controls
+    // for its property names both, and the first of them that takes a press is the one
+    // reached. The control is scrolled into view first, since its popover is placed from the
+    // control's place on the screen. A select or a text box is focused rather than clicked,
+    // since a script's click opens no select's list and puts no focus in a text box.
+    const atControl = (...names: readonly string[]) => {
+      const reached = () => {
+        for (const name of names) {
+          const control = controlNamed(name);
+          if (control !== null) return control;
         }
-        reach();
-      },
-      reachable: () => controlNamed(name) !== null,
-    });
+        return null;
+      };
+      return {
+        open: () => {
+          const control = reached();
+          const reach = () => {
+            control?.scrollIntoView({ block: "nearest" });
+            if (control instanceof HTMLSelectElement || control instanceof HTMLInputElement) {
+              control.focus();
+            } else {
+              control?.click();
+            }
+          };
+          const inHeader = control?.closest(ISSUE_HEADER) != null;
+          const shut = control?.closest("[hidden]") != null;
+          if (drawer !== undefined && (inHeader ? drawer.open : shut && !drawer.open)) {
+            drawer.setOpen(!inHeader);
+            requestAnimationFrame(() => requestAnimationFrame(reach));
+            return;
+          }
+          reach();
+        },
+        reachable: () => reached() !== null,
+      };
+    };
     const fields: AddableField[] = [];
     if (details.parent === null) {
       fields.push({
@@ -313,9 +328,15 @@ export function IssueAddMenu({
       });
     }
     if (details.repo === null) {
+      // Inside `NoTooltips` the row of an issue that resolves to no repository draws "None",
+      // whose press draws the repository's box with the focus in it; any other row draws the
+      // box itself. "None" is tried first, so the entry presses it rather than finding no box.
       fields.push({
         label: PROPERTY_LABELS.repository,
-        ...atControl(repoControlName(details.key)),
+        ...atControl(
+          `${CONTROL_LABELS.none}, ${repoControlName(details.key)}`,
+          repoControlName(details.key)
+        ),
       });
     }
     if ((details.components.ids ?? []).length === 0) {

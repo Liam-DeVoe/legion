@@ -1,5 +1,6 @@
 import AxeBuilder from "@axe-core/playwright";
 import { labelsControlName } from "../web/src/features/issue/IssueLabels";
+import { repoControlName } from "../web/src/features/issue/RepoControl";
 import { DETAILS_ROW_REQUEST_EVENT } from "../web/src/features/issue-page/details-rows";
 import {
   MARGIN_SECTION_ORDER,
@@ -416,11 +417,14 @@ test("every property with a value is visible in Details at every width @phone", 
       const pullRequest = detailsRow(page, PROPERTY_LABELS.pull_request).getByRole("link", {
         name: new RegExp(`#${PULL_NUMBER}\\b`),
       });
+      // The repository is the value of the row's box: the one text of the row that holds it is
+      // the box's description, which only a screen reader is given.
+      const repository = detailsRow(page, PROPERTY_LABELS.repository).getByRole("combobox", {
+        exact: true,
+        name: repoControlName(one),
+      });
       const values: readonly (readonly [string, Locator])[] = [
-        [
-          "the repository",
-          detailsRow(page, PROPERTY_LABELS.repository).getByText(REPOSITORY).first(),
-        ],
+        ["the repository", repository],
         ["the pull request", pullRequest],
         [
           "the other link",
@@ -478,6 +482,10 @@ test("every property with a value is visible in Details at every width @phone", 
         await expect(at, `${what} is not drawn in Details at ${width} px`).toBeVisible();
         await expectInsideSideways(page, at, `${what} at ${width} px`);
       }
+      await expect(
+        repository,
+        `the repository's box does not hold ${REPOSITORY} at ${width} px`
+      ).toHaveValue(REPOSITORY);
       await expect(detailsRow(page, PROPERTY_LABELS.blocked_by)).toContainText(three);
       await expect(detailsRow(page, PROPERTY_LABELS.blocked_by)).toContainText(seeded.titles.three);
       for (const label of [
@@ -903,6 +911,15 @@ test("each control in Details saves and reads back", async ({ browser }) => {
     await expect(detailsRow(page, PROPERTY_LABELS.parent).getByRole("button").first()).toHaveText(
       CONTROL_LABELS.set_parent
     );
+    // TWO resolves to no repository, so its Repository row reads None, as an empty row does:
+    // a button whose press draws the repository's box.
+    await expect(
+      detailsRow(page, PROPERTY_LABELS.repository).getByRole("button", {
+        exact: true,
+        name: `${CONTROL_LABELS.none}, ${repoControlName(two)}`,
+      }),
+      "TWO resolves to no repository, but its Repository row does not read None"
+    ).toHaveText(CONTROL_LABELS.none);
     await addControl(page).click();
     // Add lists Assignee only where the header draws the assignee's control, which the menu
     // presses, and only while TWO has no assignee: an issue someone is assigned to has a value for
@@ -911,9 +928,10 @@ test("each control in Details saves and reads back", async ({ browser }) => {
     await expect(
       issuePage(page).getByRole("heading", { level: 1, name: twoStored.title })
     ).toBeVisible();
-    const listsAssignee =
-      (await page.locator(`[aria-label="Assignee of ${two}"]`).count()) > 0 &&
-      twoStored.assignee === null;
+    // One read is the header's answer here: the assignee's control waits on no read, so a header
+    // that draws it draws it in the commit that drew the heading awaited above.
+    const assigneeControls = await page.locator(`[aria-label="Assignee of ${two}"]`).count();
+    const listsAssignee = assigneeControls > 0 && twoStored.assignee === null;
     await expect(
       openMenu(page).getByRole("menuitem"),
       "the Add menu lists other than TWO's empty fields, in `IssueAddMenu`'s order"
