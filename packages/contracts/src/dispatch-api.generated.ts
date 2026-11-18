@@ -6084,12 +6084,12 @@ export interface components {
     };
     PrivateProjectChannels: {
       project: string;
-      slack_channels: string[] | null;
+      slack_channels: string[];
       /** Format: date-time */
       slack_channels_changed_at: null | string;
     };
     PrivateProjectsAnswer: {
-      projects: components["schemas"]["PrivateProjectChannels"][] | null;
+      projects: components["schemas"]["PrivateProjectChannels"][];
     };
     ProgressCount: {
       done: number;

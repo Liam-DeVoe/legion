@@ -90,7 +90,7 @@ func (s *server) getAccessPerson(w http.ResponseWriter, r *http.Request) {
 // privateProjectsAnswer is GET /api/v1/access/private-projects' body. Projects is always an
 // array, [] when no project is private (access.PrivateProjects), and never left out.
 type privateProjectsAnswer struct {
-	Projects []model.PrivateProjectChannels `json:"projects"`
+	Projects []model.PrivateProjectChannels `json:"projects" nullable:"false"`
 }
 
 // getAccessPrivateProjects answers every private project's Slack channels and when each list last

@@ -25696,10 +25696,7 @@
             "items": {
               "type": "string"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           },
           "slack_channels_changed_at": {
             "format": "date-time",
@@ -25722,10 +25719,7 @@
             "items": {
               "$ref": "#/components/schemas/PrivateProjectChannels"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           }
         },
         "required": [

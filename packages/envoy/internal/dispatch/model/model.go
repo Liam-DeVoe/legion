@@ -399,7 +399,7 @@ type AccessAnswer struct {
 // none, and when that list last changed, null until its first write.
 type PrivateProjectChannels struct {
 	Project                string     `json:"project"`
-	SlackChannels          []string   `json:"slack_channels"`
+	SlackChannels          []string   `json:"slack_channels" nullable:"false"`
 	SlackChannelsChangedAt *time.Time `json:"slack_channels_changed_at"`
 }
 
