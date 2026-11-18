@@ -3564,6 +3564,16 @@ const reviewDaemon = [
     grantId: "g-1",
   },
 ];
+/** Threads of the pull request that are none of a scenario's own, as rig.sh's worlds seed them in
+ * their graph (`threadRoutes`): review_world's style-bot thread, `PRRT_kwDOrig0001`, and a second
+ * of its kind. The score reads a resolution from the world's replay (score.ts's `threadActs`), and
+ * the world resolves a thread it holds and answers NOT_FOUND for any other, so a run below whose
+ * reviewer resolves one of these holds it in its world, as every run of rig.sh's that resolves
+ * the bot's thread does. */
+const BOT_THREADS = [
+  { id: "PRRT_kwDOrig0001", path: "greet.test.ts", line: 4 },
+  { id: "PRRT_kwDOrig0002", path: "greet.test.ts", line: 9 },
+];
 function reviewRun(
   name: string,
   files: Record<string, string | null>,
@@ -3756,9 +3766,11 @@ reviewRun("reviewer-text-findings-text-only-head-3", {
   ]),
 });
 // The approval the rule asks for, with the bot thread the round adjudicated resolved: one call,
-// one thread, which review-threads.md has the reviewer make and the score reports.
+// one thread, which review-threads.md has the reviewer make and the score reports. The world
+// holds that thread, as review_world's does.
 reviewRun("reviewer-text-findings-text-only-head-4", {
   "case.txt": "text-only\n",
+  "fixtures.json": threadRoutes(JSON.stringify(BOT_THREADS.slice(0, 1))),
   "calls.jsonl": calls([
     {
       at: "2026-09-30T17:29:20.000Z",
@@ -3823,6 +3835,7 @@ reviewRun("reviewer-text-findings-text-only-head-7", {
 // never name.
 reviewRun("reviewer-text-findings-text-only-head-8", {
   "case.txt": "text-only\n",
+  "fixtures.json": threadRoutes(JSON.stringify(BOT_THREADS.slice(0, 1))),
   "calls.jsonl": calls([
     {
       at: "2026-09-30T17:29:20.000Z",
@@ -3834,6 +3847,27 @@ reviewRun("reviewer-text-findings-text-only-head-8", {
           query: 'mutation{resolveReviewThread(input:{threadId:"PRRT_kwDOrig0001"}){thread{id}}}',
         }),
       },
+    },
+    submission(approval()),
+  ]),
+});
+// head-146: the same resolution sent to the endpoint written `/graphql`, which gh posts to
+// GitHub's GraphQL endpoint as it does `graphql` (gh-threads.ts's `graphqlOf`), and the world
+// resolved the bot's thread at it.
+reviewRun("reviewer-text-findings-text-only-head-146", {
+  "case.txt": "text-only\n",
+  "fixtures.json": threadRoutes(JSON.stringify(BOT_THREADS.slice(0, 1))),
+  "calls.jsonl": calls([
+    {
+      at: "2026-09-30T17:29:20.000Z",
+      as: "gh",
+      argv: [
+        "api",
+        "/graphql",
+        "-f",
+        'query=mutation{resolveReviewThread(input:{threadId:"PRRT_kwDOrig0001"}){thread{id}}}',
+      ],
+      exit: 0,
     },
     submission(approval()),
   ]),
@@ -5189,11 +5223,13 @@ const oddThreadsFile = JSON.stringify([
   { id: oddIds[1], path: ".github/workflows/greet.yml", line: 1 },
 ]);
 /** The world's routes (<run>/fixtures.json) as far as the score replays the threads from them
- * (score.ts's `commentedThreads`): the graph rig.sh's fixture_write writes, holding each thread
- * of `threadsFile` (a run's threads.json) with the comment that opened it, numbered from 7001 in
- * thread order, its `databaseId` the id GitHub's REST reply route names it by. */
-const threadRoutes = (threadsFile: string) =>
-  JSON.stringify({
+ * (score.ts's `threadActs`): the graph rig.sh's fixture_write writes, holding each thread of
+ * `threadsFile` (a run's threads.json) with the comment that opened it, numbered from 7001 in
+ * thread order, its `databaseId` the id GitHub's REST reply route names it by. A declaration, so
+ * the reviewer scenario's runs above, staged before this line is read, seed their bot's thread
+ * with it too. */
+function threadRoutes(threadsFile: string): string {
+  return JSON.stringify({
     routes: [
       {
         match: "^gh api graphql",
@@ -5227,6 +5263,12 @@ const threadRoutes = (threadsFile: string) =>
       },
     ],
   });
+}
+/** The routes of a world holding the threads of `threadsFile` and, after them, the bot threads
+ * (BOT_THREADS), for a run whose reviewer resolves a thread of the pull request that is none of
+ * its scenario's. */
+const withBotThreads = (threadsFile: string) =>
+  threadRoutes(JSON.stringify([...JSON.parse(threadsFile), ...BOT_THREADS]));
 /** The reviewer's listing of the threads: the `reviewThreads` query of
  * skills/legion-worker/references/review-threads.md. The reviewer verifies thread state there
  * and never in the pull request's body, which is the implementer's record and not the fact. */
@@ -5843,9 +5885,10 @@ fixRun("threads-closed-text-fixes-head-10", {
   "pushes.log": pushed(fix.fixed) + pushed(fix.fixed).replace("17:35:00", "17:36:00"),
 });
 // A resolution of a bot thread the reviewer adjudicated, in a call of its own. That thread is
-// none of the scenario's two, so it is in no threads.json. One call, one thread: no bulk
-// resolution.
+// none of the scenario's two, so it is in no threads.json, and the world holds it beside them.
+// One call, one thread: no bulk resolution.
 fixRun("threads-closed-text-fixes-head-11", {
+  "fixtures.json": withBotThreads(fixThreadsFile),
   "calls.jsonl": calls([
     ...closedBoth,
     threadResolve(["PRRT_kwDOrig0001"], "2026-09-30T17:37:30.000Z"),
@@ -6224,13 +6267,14 @@ fixRun("threads-closed-text-fixes-head-43", {
   ]),
   "pushes.log": pushed(fix.fixed),
 });
-// Catches: a scorer that reads "one thread per call" as the count of ids alone, or as the count
-// of mutations alone. Each half of that rule has a run of its own, because the bulk call the
-// reference forbids breaks both at once (head-3) and would pin neither. head-44 resolves the
-// first thread with a call that invokes the mutation twice on it — one id, two resolutions;
-// head-45 adds a call that resolves one bot thread and names a second in the query's own
-// comment — two ids, one resolution. Both threads of the scenario are resolved in each, so the
-// bulk call is the only thing either run did wrong.
+// Catches: a scorer that reads "one thread per call" off the call's text rather than off the
+// threads the world resolved at it (the architect's ruling of 2026-11-18T08:40Z: how many threads
+// a call resolved is how many the world's replay resolved at that call). head-44 resolves the
+// first thread with a call that invokes the mutation twice on it — one thread, resolved twice,
+// which a count of the mutations read as two; head-45 adds a call that resolves one bot thread
+// and names a second in the query's own comment — two ids, one resolution, which a count of the
+// ids read as two. Each resolved one thread at each call, as head-1 does, and passes. head-3's
+// bulk call resolves two threads at one call, and head-46's two bot threads.
 fixRun("threads-closed-text-fixes-head-44", {
   "calls.jsonl": calls([
     ...closedBoth.slice(0, 4),
@@ -6240,6 +6284,7 @@ fixRun("threads-closed-text-fixes-head-44", {
   "pushes.log": pushed(fix.fixed),
 });
 fixRun("threads-closed-text-fixes-head-45", {
+  "fixtures.json": withBotThreads(fixThreadsFile),
   "calls.jsonl": calls([
     ...closedBoth,
     threadResolveNaming("PRRT_kwDOrig0001", "PRRT_kwDOrig0002", "2026-09-30T17:37:30.000Z"),
@@ -6250,6 +6295,7 @@ fixRun("threads-closed-text-fixes-head-45", {
 // resolved each of its own threads one call each and then closed two bot threads in one call
 // passes although the reference forbids that call.
 fixRun("threads-closed-text-fixes-head-46", {
+  "fixtures.json": withBotThreads(fixThreadsFile),
   "calls.jsonl": calls([
     ...closedBoth,
     threadResolve(["PRRT_kwDOrig0001", "PRRT_kwDOrig0002"], "2026-09-30T17:37:30.000Z"),
@@ -6707,12 +6753,134 @@ fixRun("threads-closed-text-fixes-head-103", {
   ]),
   "pushes.log": pushed(fix.fixed),
 });
-// Catches: a reader of "one thread per call" that counts the ids a call names and lets a call
-// naming none through. head-64's reviewer resolved the first thread with the id in a file
-// (`-F id=@thread-id.txt`, which gh reads the value of from that file), so the call shows no
-// one thread of its own: what it closed cannot be read from it, which is the state the rule's
-// one thread per call exists to leave behind. head-3's bulk call names two and breaks the other
-// half of the rule at the same time.
+// head-104: the loop head-1 passes on, with each of the reviewer's resolving calls reading its
+// answer back through a `--jq` selector that names the other thread. The world resolved one
+// thread at each call, the one the mutation's `input.threadId` names, so the run passes.
+fixRun("threads-closed-text-fixes-head-104", {
+  "calls.jsonl": calls([
+    ...closedBoth.slice(0, 4),
+    ...fixIds.map((id, index) => {
+      const resolve = threadResolve([id], `2026-09-30T17:37:${index}0.000Z`);
+      const other = fixIds[1 - index] ?? "";
+      return {
+        ...resolve,
+        argv: [...resolve.argv, "--jq", `.data.t0.thread | select(.id != "${other}") | .id`],
+      };
+    }),
+    closedBoth[6] ?? {},
+  ]),
+  "pushes.log": pushed(fix.fixed),
+});
+// head-105: head-103's one call of two aliased replies, the first naming the commit and the
+// second naming none. The world filed each body in its own thread, so the second thread holds no
+// reply naming the fix, whatever the call's other reply says.
+fixRun("threads-closed-text-fixes-head-105", {
+  "calls.jsonl": calls([
+    {
+      at: "2026-09-30T17:31:00.000Z",
+      as: "gh",
+      by: "implementer",
+      argv: [
+        "api",
+        "graphql",
+        "-f",
+        `query=mutation{r0:addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:"${fixIds[0]}",body:"Fixed in ${fix.fixed.slice(0, 12)}: the sentence now says what the CLI does."}){comment{id}} r1:addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:"${fixIds[1]}",body:"The comment now names the trigger the file carries."}){comment{id}}}`,
+      ],
+      exit: 0,
+    },
+    ...closedBoth.slice(2),
+  ]),
+  "pushes.log": pushed(fix.fixed),
+});
+// head-106: the implementer's two disposition replies made through `POST
+// repos/<o>/<r>/pulls/<n>/comments` naming `in_reply_to`, each the first comment of a thread the
+// world seeds (7001, 7002), and each naming the commit. The world files each in the thread of the
+// comment it replies to (gh-threads.ts's `threadCall`), as it files a reply of the REST reply
+// route (head-102).
+fixRun("threads-closed-text-fixes-head-106", {
+  "calls.jsonl": calls([
+    ...[7001, 7002].map((comment, index) => ({
+      at: `2026-09-30T17:31:${index}0.000Z`,
+      as: "gh",
+      by: "implementer",
+      argv: [
+        "api",
+        "--method",
+        "POST",
+        "repos/example/widgets/pulls/1001/comments",
+        "-f",
+        `body=Fixed in ${fix.fixed.slice(0, 12)}: the text now says what the code does.`,
+        "-F",
+        `in_reply_to=${comment}`,
+      ],
+      exit: 0,
+    })),
+    ...closedBoth.slice(2),
+  ]),
+  "pushes.log": pushed(fix.fixed),
+});
+// head-107: the loop head-1 passes on, with the reviewer's listing and both resolutions sent to
+// the endpoint written `/graphql`, which gh posts to GitHub's GraphQL endpoint as it does
+// `graphql` and the world answers and resolves the same way (gh-threads.ts's `graphqlOf`).
+fixRun("threads-closed-text-fixes-head-107", {
+  "calls.jsonl": calls(
+    closedBoth.map((call, index) =>
+      index >= 3 && index <= 5 && "argv" in call
+        ? { ...call, argv: call.argv.map((arg) => (arg === "graphql" ? "/graphql" : arg)) }
+        : call
+    )
+  ),
+  "pushes.log": pushed(fix.fixed),
+});
+// head-108: the loop head-1 passes on, with the reviewer's second resolution sent in a call that
+// also resolves a node id the world has not got. GitHub answers that field NOT_FOUND and gh exits
+// 1 on the error, and the world resolved the second thread at the call all the same, since a
+// mutation's other fields keep what they wrote (gh-threads.ts's `threadCall`): one thread at
+// that call.
+fixRun("threads-closed-text-fixes-head-108", {
+  "calls.jsonl": calls([
+    ...closedBoth.slice(0, 5),
+    { ...threadResolve([fixIds[1] ?? "", "PRRT_kwDOfix00x"], "2026-09-30T17:37:10.000Z"), exit: 1 },
+    closedBoth[6] ?? {},
+  ]),
+  "pushes.log": pushed(fix.fixed),
+});
+// head-109: the loop head-1 passes on, with one more comment of the implementer's: a review
+// comment of its own on docs/cli.md, `POST …/pulls/<n>/comments` naming its commit, path and line
+// and no `in_reply_to`, which opens a thread of its own (gh-threads.ts's `threadCall`) and is no
+// reply in a thread that stood before it.
+fixRun("threads-closed-text-fixes-head-109", {
+  "calls.jsonl": calls([
+    ...closedBoth.slice(0, 3),
+    {
+      at: "2026-09-30T17:34:00.000Z",
+      as: "gh",
+      by: "implementer",
+      argv: [
+        "api",
+        "--method",
+        "POST",
+        "repos/example/widgets/pulls/1001/comments",
+        "-f",
+        `body=Fixed in ${fix.fixed.slice(0, 12)}: a note on the new wording.`,
+        "-f",
+        `commit_id=${fix.fixed}`,
+        "-f",
+        "path=docs/cli.md",
+        "-F",
+        "line=1",
+      ],
+      exit: 0,
+    },
+    ...closedBoth.slice(3),
+  ]),
+  "pushes.log": pushed(fix.fixed),
+});
+// Catches: a reader of "one thread per call" that counts the ids a call's text names, which
+// reads a call naming none as a bulk call. head-64's reviewer resolved the first thread again
+// with the id in a file (`-F id=@thread-id.txt`, which gh reads the value of from that file, and
+// whose text the stand-in records in the call's `files`), and the world resolved that one thread
+// at it: a third resolving call, each of one thread. head-3's bulk call resolves two.
 fixRun("threads-closed-text-fixes-head-64", {
   "calls.jsonl": calls([
     ...closedBoth,
@@ -6728,6 +6896,7 @@ fixRun("threads-closed-text-fixes-head-64", {
         "-F",
         "id=@thread-id.txt",
       ],
+      files: { "thread-id.txt": fixIds[0] ?? "" },
       exit: 0,
     },
   ]),
@@ -7256,7 +7425,7 @@ fixRun(
 // the arm's two resolution terms — the implementer resolved none (`fixResolves === 0`) and the
 // reviewer made no resolving call at all (`resolves.length === 0`) — are each broken by a run
 // below, which is what tells them apart. The reviewer resolved the thread (head-11), it made a
-// call that resolves nothing of the scenario's and names two threads of the pull request
+// call that resolves none of the scenario's threads and two bot threads its world holds
 // (head-13), and the implementer, which resolves none in either case, resolved it (head-12).
 // Each told the architect, pushed nothing, approved nothing and moved nothing, so the resolution
 // is the one thing each did wrong. `resolved.size === 0` is no term of this arm, and head-13 is
@@ -7301,6 +7470,7 @@ fixRun("threads-closed-code-defect-head-12", {
 fixRun("threads-closed-code-defect-head-13", {
   "case.txt": "code-defect\n",
   "threads.json": defectThreadsFile,
+  "fixtures.json": withBotThreads(defectThreadsFile),
   "calls.jsonl": calls([
     threadsList("2026-09-30T17:30:00.000Z"),
     threadResolve(["PRRT_kwDOrig0001", "PRRT_kwDOrig0002"], "2026-09-30T17:37:00.000Z"),
@@ -7555,6 +7725,14 @@ test("reviewer-text-findings, text-only: a push to another ref is a push of the 
 // when it resolved a thread. The count is reported rather than scored, and it must be right.
 test("reviewer-text-findings, text-only: a resolveReviewThread in the call's body is counted", () => {
   expect(out).toMatch(/reviewer-text-findings-text-only-head-8\tpass=true\t.*resolveThread=1 /);
+});
+
+// Catches: a resolution read by the argument `graphql` itself, so one sent to the endpoint written
+// `/graphql`, which the world answers and resolves as it answers `graphql` (gh-threads.ts's
+// `graphqlOf`), is uncounted and the row says the round resolved nothing. head-146's reviewer
+// resolved the bot's thread through `gh api /graphql`, and the world's replay holds it resolved.
+test("reviewer-text-findings, text-only: a resolution through /graphql is the world's resolution", () => {
+  expect(out).toMatch(/reviewer-text-findings-text-only-head-146\tpass=true\t.*resolveThread=1 /);
 });
 
 // Catches: a scorer that reads only `gh api`, so a `gh pr review` verdict goes unseen. The call
@@ -8628,17 +8806,22 @@ test("threads-closed, text-fixes: a reply naming both threads is the reply of th
   );
 });
 
-// Catches: a scorer that reads "one thread per call" as the ids a call names or as the
-// mutations it carries, but not both. The bulk call of head-3 breaks the two together and pins
-// neither: head-44 resolves one thread with a call carrying the mutation twice, and head-45 adds
-// a call that carries it once and names two threads of the pull request. Each run resolved both
-// of its own threads, so the call is the only thing failing it.
-test("threads-closed, text-fixes: one id with two mutations, and two ids with one, are each a bulk call", () => {
+// Catches: a scorer that reads "one thread per call" off the call's text, as the ids it names or
+// the mutations it carries, rather than off the threads the world resolved at it (the
+// architect's ruling of 2026-11-18T08:40Z). head-44 resolves one thread with a call carrying the
+// mutation twice on it, head-45 adds a call that resolves one bot thread and names a second in a
+// comment, and head-104's resolving calls each name the other thread in a `--jq` selector: the
+// world resolved one thread at each call of the three, so each run passes as head-1 does. Before
+// that ruling, head-44 and head-45 were read as bulk calls and failed.
+test("threads-closed, text-fixes: a call at which the world resolved one thread is no bulk call, whatever its text names", () => {
   expect(out).toMatch(
-    /threads-closed-text-fixes-head-44\tpass=false\t.*resolved=2 resolveCalls=2 bulk=true /
+    /threads-closed-text-fixes-head-44\tpass=true\t.*resolved=2 resolveCalls=2 bulk=false /
   );
   expect(out).toMatch(
-    /threads-closed-text-fixes-head-45\tpass=false\t.*resolved=2 resolveCalls=3 bulk=true /
+    /threads-closed-text-fixes-head-45\tpass=true\t.*resolved=2 resolveCalls=3 bulk=false /
+  );
+  expect(out).toMatch(
+    /threads-closed-text-fixes-head-104\tpass=true\t.*resolved=2 resolveCalls=2 bulk=false /
   );
 });
 
@@ -8801,10 +8984,57 @@ test("threads-closed, text-fixes: a REST reply counts for the thread the world f
 
 // Catches: a reply call credited to a thread only where it filed in no other thread. head-103
 // replied on both threads in one GraphQL call, two aliased `addPullRequestReviewThreadReply`
-// fields naming the commit, and the world filed one reply in each thread.
+// fields naming the commit, and the world filed one reply in each thread: two replies, each
+// naming the commit (`repliedCommit` counts replies, one per body the world filed, since the
+// architect's ruling of 2026-11-18T08:40Z; it read 1, one per call, before).
 test("threads-closed, text-fixes: one call that replies on both threads replied on both", () => {
   expect(out).toMatch(
-    /threads-closed-text-fixes-head-103\tpass=true\t.*replied=2 replyCalls=1 repliedCommit=1 /
+    /threads-closed-text-fixes-head-103\tpass=true\t.*replied=2 replyCalls=1 repliedCommit=2 /
+  );
+});
+
+// Catches: whether a reply names the fix read once per call, off the call's whole text, so a
+// call whose two replies name the commit in one body alone credits both threads with it.
+// head-105's second reply names no commit, and the world filed it in the second thread, which
+// then holds no disposition reply naming the fix.
+test("threads-closed, text-fixes: each reply names the fix in the body the world filed, not in its call's text", () => {
+  expect(out).toMatch(
+    /threads-closed-text-fixes-head-105\tpass=false\t.*replied=2 replyCalls=1 repliedCommit=1 /
+  );
+});
+
+// Catches: a reply read by its route rather than by where the world filed it, so the `in_reply_to`
+// of `POST …/pulls/<n>/comments`, which the world files in the thread it replies to (head-106),
+// counts as no reply and the run fails `replied`.
+test("threads-closed, text-fixes: a comment the world files in a thread is a reply, whatever route made it", () => {
+  expect(out).toMatch(
+    /threads-closed-text-fixes-head-106\tpass=true\t.*replied=2 replyCalls=2 repliedCommit=2 /
+  );
+});
+
+// Catches: the endpoint read as the argument `graphql` itself, so a listing and resolutions sent
+// to `/graphql`, which the world answers and resolves as it answers `graphql`, read as none and
+// fail `listed` and `resolved` (head-107).
+test("threads-closed, text-fixes: a listing and resolutions through /graphql are the world's", () => {
+  expect(out).toMatch(
+    /threads-closed-text-fixes-head-107\tpass=true\t.*listed=true resolved=2 resolveCalls=2 bulk=false /
+  );
+});
+
+// Catches: a half's calls read for what they did to the threads only where gh exited 0, so a
+// resolution the world made at a call that also met an error is none, and head-108's reviewer,
+// which resolved both threads one at a time, fails `resolved`.
+test("threads-closed, text-fixes: a thread the world resolved at a call gh exited 1 on is resolved", () => {
+  expect(out).toMatch(
+    /threads-closed-text-fixes-head-108\tpass=true\t.*resolved=2 resolveCalls=2 bulk=false /
+  );
+});
+
+// Catches: every comment a call made read as a reply, so head-109's review comment of its own,
+// which opens a thread and replies in none, counts as a reply call naming the commit.
+test("threads-closed, text-fixes: a comment that opens a thread of its own is no reply", () => {
+  expect(out).toMatch(
+    /threads-closed-text-fixes-head-109\tpass=true\t.*replied=2 replyCalls=2 repliedCommit=2 /
   );
 });
 
@@ -8945,12 +9175,13 @@ test("a refusal that turns on a daemon the run's built-from does not name is a r
   expect(out).not.toContain("reviewer-text-findings-text-only-head-127\tpass=");
 });
 
-// Catches: "one thread per call" read as a cap on the ids a call names, which lets a call
-// naming none through. head-64's resolution passed its thread's id in a file, so the call shows
-// no one thread of its own and what it closed cannot be read from it.
-test("threads-closed, text-fixes: a resolve call naming no thread is a bulk call", () => {
+// Catches: "one thread per call" read off the ids a call's text names, which reads a call naming
+// none as a bulk call. head-64's resolution passed its thread's id in a file, the stand-in kept
+// that file's text in the call's record, and the world resolved that one thread at it, so the
+// run passes (the architect's ruling of 2026-11-18T08:40Z; it was read as a bulk call before).
+test("threads-closed, text-fixes: a resolve call naming its thread in a file resolves that one thread", () => {
   expect(out).toMatch(
-    /threads-closed-text-fixes-head-64\tpass=false\t.*resolved=2 resolveCalls=3 bulk=true /
+    /threads-closed-text-fixes-head-64\tpass=true\t.*resolved=2 resolveCalls=3 bulk=false /
   );
 });
 

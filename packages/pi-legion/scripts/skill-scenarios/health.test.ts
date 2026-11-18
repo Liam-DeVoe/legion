@@ -1341,7 +1341,7 @@ describe("health: rule 15, service provenance, the run's own Dispatch server", (
 });
 
 // A path a tool call names under /tmp, read as rig.sh's private_world mounts it from the run's
-// world (world_paths, which health reads through `rig.sh world`): the run's own <run>/tmp, bound
+// world (world_paths, which the run recorded in its namespace.txt): the run's own <run>/tmp, bound
 // over the machine's, but under a path the world shows at or under /tmp, which the namespace
 // binds back onto its own path. Catches: a write into a run's own /tmp read as one into the
 // machine's, which the tester measured on 2026-11-16 in 2 of 8 runs and in 4 of 8 at c273084d
@@ -1349,8 +1349,14 @@ describe("health: rule 15, service provenance, the run's own Dispatch server", (
 // run's own); and, on a host whose work directory is under /tmp (no TMPDIR), a path the world
 // shows there read as the run's own, or the run's own directory read as the machine's /tmp.
 describe("health: a path under /tmp, as the run's namespace mounts it", () => {
+  /** A world that covers, and hides again, nothing. */
+  const bare = { covers: [], credentials: [], hidden: [] };
   test("a path under /tmp is the run's own <run>/tmp, and every other path is itself", () => {
-    const pod = { own: RUN, shown: [RUN, "/work/profiles/head", "/work/profiles/head/key"] };
+    const pod = {
+      ...bare,
+      own: RUN,
+      shown: [RUN, "/work/profiles/head", "/work/profiles/head/key"],
+    };
     expect(mounted(pod, "/tmp/body.md")).toBe(`${RUN}/tmp/body.md`);
     expect(mounted(pod, "/tmp/reply/x.json")).toBe(`${RUN}/tmp/reply/x.json`);
     expect(mounted(pod, "/tmp")).toBe(`${RUN}/tmp`);
@@ -1367,7 +1373,11 @@ describe("health: a path under /tmp, as the run's namespace mounts it", () => {
     const work = "/tmp/skill-scenarios";
     const own = `${work}/runs/threads-closed-text-fixes-head-1`;
     const head = `${work}/profiles/head`;
-    const world = { own, shown: [own, head, `${head}/key`, `${work}/services`, "/usr/bin"] };
+    const world = {
+      ...bare,
+      own,
+      shown: [own, head, `${head}/key`, `${work}/services`, "/usr/bin"],
+    };
     for (const named of [
       own,
       `${own}/ws/README.md`,
@@ -1388,7 +1398,47 @@ describe("health: a path under /tmp, as the run's namespace mounts it", () => {
   });
 
   test("a world that shows /tmp itself keeps the machine's", () => {
-    expect(mounted({ own: RUN, shown: [RUN, "/tmp"] }, "/tmp/body.md")).toBe("/tmp/body.md");
+    expect(mounted({ ...bare, own: RUN, shown: [RUN, "/tmp"] }, "/tmp/body.md")).toBe(
+      "/tmp/body.md"
+    );
+  });
+
+  // The rest of private_world's mounts, each in its order (rig.sh:1265-1285), on the world
+  // round 25's threads-closed-text-fixes-head-1 (6f38c7583a6d) recorded: its covers, its
+  // credentials, its own directory with its logs hidden again, and a path shown under a cover.
+  // Catches: `mounted` reading /tmp alone, so a name under /dev/shm, a covered path, a credentials
+  // path or the hidden logs reads as the machine's own path, which another run's read of the same
+  // name then matches (rule 9) and the line of writes outside the run lists; and the other way, a
+  // path the world shows under a cover read as covered.
+  test("a name under /dev/shm, a cover, a credentials path or a hide reaches no path of the machine's", () => {
+    const scratch = "/legion/scratch/tmp";
+    const own = `${scratch}/b1/w/runs/6f38c7583a6d`;
+    const recorded = {
+      own,
+      covers: [scratch, "/legion/workspaces", `${scratch}/b1/w`],
+      credentials: ["/var/run/legion", "/run/legion", "/var/run/secrets", "/run/secrets"],
+      shown: [own, `${scratch}/b1/w/installs/4c0768d2ae4b`, `${scratch}/bin`, "/usr/bin"],
+      hidden: [`${own}/logs`],
+    };
+    for (const named of [
+      "/dev/shm/LWEVAL-1-review.json",
+      "/dev/shm",
+      `${scratch}/another-role/notes.md`,
+      `${scratch}/b1/w/runs/2ba32fad2738/out.txt`,
+      "/legion/workspaces/sjawhar/legion/infra-764/README.md",
+      "/run/secrets/kubernetes.io/token",
+      `${own}/logs/dispatch.log`,
+    ])
+      expect([named, mounted(recorded, named)]).toEqual([named, undefined]);
+    for (const named of [
+      `${own}/ws/README.md`,
+      `${scratch}/b1/w/installs/4c0768d2ae4b/skills/x/SKILL.md`,
+      `${scratch}/bin/jq`,
+      "/usr/bin/git",
+      "/etc/hostname",
+    ])
+      expect(mounted(recorded, named)).toBe(named);
+    expect(mounted(recorded, "/tmp/body.md")).toBe(`${own}/tmp/body.md`);
   });
 });
 

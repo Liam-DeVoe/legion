@@ -55,14 +55,18 @@
  *   9. another run's write: no tool call of the run reads a path another run of those given wrote
  *      last before the read (`otherRunWrite`). A run's own writes outside its directory, HOME and
  *      TMPDIR are recorded (`writesOf`) and are no verdict on it. Rules 8 and 9 and that record
- *      read a path under /tmp as the run's namespace mounts it (`mounted`): it is the run's own
- *      <run>/tmp, but under a path its world shows there, where it is that path. A run from
- *      before the rig gave each run a namespace (one with no <run>/namespace.txt) wrote and read
- *      the machine's /tmp, and is read so;
+ *      read a path as the mounts the run's namespace recorded make it (`mounted`): under /tmp it
+ *      is the run's own <run>/tmp, but under a path its world shows there, where it is that
+ *      path; under /dev/shm or a path its world covers it is a tmpfs of the agent's launch alone,
+ *      which no other run reads, and rule 8 judges such a name as written. A run from before the
+ *      rig gave each run a namespace (one with no <run>/namespace.txt) wrote and read the
+ *      machine's paths, and is read so;
  *  10. outside its world: no tool call names a path its world hides — the scratch root, the issue
  *      workspaces, the work directory, every label's checkout — outside its own directory, its
- *      /tmp and every path its world shows again (`outsideWorld`). The world is rig.sh's one
- *      declaration of it (world_paths, `rig.sh world`), the one the run's namespace mounts;
+ *      /tmp (a namespace's <run>/tmp, for a run that ran in one) and every path its world shows
+ *      again (`outsideWorld`). The world is rig.sh's one declaration of it (world_paths), as the
+ *      run recorded it for its namespace (<run>/namespace.txt), or, for a run from before the
+ *      namespace, as `rig.sh world` declares it (`namespaceOf`);
  *  11. another process: no tool call reads a /proc/<n>/environ or cmdline but the caller's own:
  *      /proc/self's, /proc/thread-self's, or its shell's (`$$`, `${$}`, `$BASHPID`, `${BASHPID}`)
  *      (`otherProcess`). It reads only a run from before the rig gave each run a namespace (one
@@ -82,7 +86,8 @@
  *      included; no host an `eval` cell reaches (`evalHosts`): each `tool.<name>(…)` call of it by
  *      that tool's own reading, and every network URL in the rest of it, in any language; no
  *      http(s) URL a `read`, `fetch` or `grep` is given as its path; no network URL in a file the
- *      run wrote and then ran (`fileRuns`); and no network URL in any string argument of a tool
+ *      run wrote and then ran, where the agent that ran it reached it (`fileRuns`, `Keeper`); and
+ *      no network URL in any string argument of a tool
  *      TEXT_TOOLS does not name, a tool nobody named included. A URL in text a call writes (a
  *      review body, a reply, a commit message, a file never run) is a link, not a reach. A bash
  *      command is read by each program's own grammar, in the positions that take a host
@@ -338,9 +343,10 @@ interface Run {
   /** The run's own directory: the one its record (or, for a run recorded before the names left
    * the world, its pane file) names, and the one health was given. */
   readonly own: readonly string[];
-  /** Whether the run's agents ran in a namespace of the run's own (NAMESPACE), where a path under
-   * /tmp is the run's own or one its world shows (`mounted`), and never the machine's /tmp, and
-   * every process /proc shows is the run's own (`otherProcess`). */
+  /** Whether the run's agents ran in a namespace of the run's own (NAMESPACE), whose mounts the
+   * run recorded (`namespaceOf`): a path under /tmp is the run's own or one its world shows, a
+   * path under /dev/shm or a path its world covers is a tmpfs of the agent's launch alone
+   * (`mounted`), and every process /proc shows is the run's own (`otherProcess`). */
   readonly namespaced: boolean;
   /** Every tool call of every transcript of the run, with the transcript it is in and when. */
   readonly calls: readonly { file: string; tool: string; args: ToolArgs; at: number }[];
@@ -392,8 +398,9 @@ function paneOf(dir: string): Map<string, string> {
 }
 
 /** The world rig.sh's launch writes for the namespace it starts each agent of a run in
- * (<run>/namespace.txt, world_paths' lines). A run that holds it ran there; a run from before the
- * rig made a namespace holds none, and its agents wrote and read the machine's own paths. */
+ * (<run>/namespace.txt, world_paths' lines), which private_world mounts. A run that holds it ran
+ * there and is read by it (`namespaceOf`); a run from before the rig made a namespace holds none,
+ * and its agents wrote and read the machine's own paths. */
 const NAMESPACE = "namespace.txt";
 
 export function loadRun(dir: string, scenario: string, label: string): Run {
@@ -462,8 +469,12 @@ export function loadRun(dir: string, scenario: string, label: string): Run {
     wrote,
     heard,
     writes: writesOf(ran, calls, writable),
+    // A read of the launch's own tmpfs reads nothing another run wrote (`reachedIn`).
     reads: calls.flatMap((call) =>
-      readsOf(call.tool, call.args).map((read) => ({ ...call, path: reachedIn(ran, read) }))
+      readsOf(call.tool, call.args).flatMap((read) => {
+        const reached = reachedIn(ran, read);
+        return reached === undefined ? [] : [{ ...call, path: reached }];
+      })
     ),
     before: existsSync(path.join(dir, "scratch-before.txt"))
       ? readFileSync(path.join(dir, "scratch-before.txt"), "utf8")
@@ -1319,59 +1330,78 @@ function otherRun(target: string, run: Run): string | undefined {
 
 /** Rule 8: the first tool call of the run that names a path under another run's directory, the
  * name read as the run's namespace mounts it (`reachedIn`): a directory named as a run under a
- * namespace's /tmp is the run's own scratch, <run>/tmp, where no other run is. What it cannot see
- * is a reach that names no such path: a `find` or a glob from a directory above the runs, a path
- * built in a variable, or a command that reads the runs directory itself and acts on what it
- * listed. */
+ * namespace's /tmp is the run's own scratch, <run>/tmp, where no other run is. Where the
+ * namespace leaves the name no path of the machine's (a covered path, among them the work
+ * directory every run is in), the name is judged as the agent wrote it: it is the reach the
+ * agent tried. What it cannot see is a reach that names no such path: a `find` or a glob from a
+ * directory above the runs, a path built in a variable, or a command that reads the runs
+ * directory itself and acts on what it listed. */
 function otherRunReach(run: Run): string | undefined {
   for (const call of run.calls)
     for (const target of namedPaths(call.tool, call.args)) {
-      const other = otherRun(reachedIn(run, target), run);
+      const other = otherRun(reachedIn(run, target) ?? target, run);
       if (other !== undefined)
         return `another run: a ${call.tool} call in ${call.file} names ${target}, under ${other}`;
     }
   return undefined;
 }
 
-/** A run's namespace as rig.sh declares it (world_paths, read through `rig.sh world`, the one
- * declaration its namespace mounts too): what the namespace hides behind an empty tmpfs
- * (`cover`), the credentials it hides the same way (`credentials`), and what it shows again
- * (`rw`, `ro`), the run's own directory first (`own`: world_paths prints it before every other
- * path it shows, and private_world binds it first). It is not gh-call.ts's `World`, the run's
- * world.json. */
+/** A run's namespace as rig.sh declares it (world_paths, the one declaration its namespace
+ * mounts): what the namespace hides behind an empty tmpfs (`cover`), the credentials it hides the
+ * same way (`credentials`), what it shows again (`rw`, `ro`), the run's own directory first
+ * (`own`: world_paths prints it before every other path it shows, and private_world binds it
+ * first), and what of those it hides again behind an empty read-only tmpfs (`hide`). It is not
+ * gh-call.ts's `World`, the run's world.json. */
 interface RunNamespace {
   readonly own: string;
   readonly covers: readonly string[];
   readonly credentials: readonly string[];
   readonly shown: readonly string[];
+  readonly hidden: readonly string[];
 }
 
 const namespaces = new Map<string, RunNamespace>();
 
-/** The run's namespace, from `rig.sh world <label> <run dir>`, read once per run. */
-function namespaceOf(run: Pick<Run, "dir" | "label">): RunNamespace {
+/** The run's namespace, read once per run. A run that ran in one is read by what it recorded:
+ * <run>/namespace.txt (NAMESPACE), the lines world_paths printed for it when launch started its
+ * agents there, which private_world mounted. Working its world out again at judging time reads
+ * another one: `rig.sh world` takes its scratch-root cover from the judge's TMPDIR, its
+ * workspaces from the judge's LEGION_WORKSPACE and its label's install from the work directory as
+ * it stands, so INFRA-764 round 25's reviewer-text-findings-defect-head-1 (b37dc3dc7f25), judged
+ * from a copy whose work directory was gone, read "outside its world" for a skill file of its
+ * label's install, which its namespace.txt shows (`ro …/installs/4c0768d2ae4b`). A run from
+ * before the rig made a namespace holds none and keeps the world `rig.sh world <label> <run dir>`
+ * declares for such a run, one that showed its checkout, the rig's directory and the services. */
+function namespaceOf(run: Pick<Run, "dir" | "label" | "namespaced">): RunNamespace {
   const known = namespaces.get(run.dir);
   if (known !== undefined) return known;
-  const made = Bun.spawnSync(
-    ["bash", path.join(import.meta.dir, "rig.sh"), "world", run.label, run.dir],
-    { stdout: "pipe", stderr: "pipe" }
-  );
-  if (made.exitCode !== 0)
-    throw new Error(
-      `rig.sh world ${run.label} ${run.dir} exited ${made.exitCode}: ${made.stderr.toString().trim()}`
+  let declared = "";
+  if (run.namespaced) declared = readFileSync(path.join(run.dir, NAMESPACE), "utf8");
+  else {
+    const made = Bun.spawnSync(
+      ["bash", path.join(import.meta.dir, "rig.sh"), "world", run.label, run.dir],
+      { stdout: "pipe", stderr: "pipe" }
     );
+    if (made.exitCode !== 0)
+      throw new Error(
+        `rig.sh world ${run.label} ${run.dir} exited ${made.exitCode}: ${made.stderr.toString().trim()}`
+      );
+    declared = made.stdout.toString();
+  }
   const world = {
     own: "",
     covers: [] as string[],
     credentials: [] as string[],
     shown: [] as string[],
+    hidden: [] as string[],
   };
-  for (const line of made.stdout.toString().split("\n")) {
+  for (const line of declared.split("\n")) {
     const at = line.indexOf(" ");
     const where = path.posix.normalize(line.slice(at + 1));
     const kind = line.slice(0, at);
     if (kind === "cover") world.covers.push(where);
     else if (kind === "credentials") world.credentials.push(where);
+    else if (kind === "hide") world.hidden.push(where);
     else if (kind === "rw" || kind === "ro") {
       if (world.shown.length === 0) world.own = where;
       world.shown.push(where);
@@ -1381,30 +1411,56 @@ function namespaceOf(run: Pick<Run, "dir" | "label">): RunNamespace {
   return world;
 }
 
-/** The machine's path that `named`, a path a tool call names, is in a run's namespace, as
- * rig.sh's private_world mounts it from the same declaration: /tmp is the run's own <run>/tmp,
- * bound over the machine's, and each path the world shows at or under /tmp is bound back onto
- * its own path after that, so a name under /tmp that a shown path holds is that path, the run's
- * own or one the runs of its label share, by what the path is. Every name outside /tmp is
- * itself. */
-export function mounted(world: Pick<RunNamespace, "own" | "shown">, named: string): string {
-  if (!inside(named, "/tmp") || world.shown.some((shown) => inside(named, shown))) return named;
-  return path.posix.join(world.own, named);
+/** The machine's path that `named`, a path a tool call names, reaches in a run's namespace, by
+ * the mounts rig.sh's private_world makes from the run's world, in its order, where the last
+ * mount that holds the name decides what it is:
+ *   1. each cover and credentials path: an empty tmpfs;
+ *   2. each path the world shows (`rw`, `ro`): bound back at its own path;
+ *   3. /tmp: the run's own <run>/tmp, bound over the machine's;
+ *   4. each shown path at or under /tmp: bound back at its own path again;
+ *   5. each `hide` path: an empty read-only tmpfs;
+ *   6. /dev/shm: an empty tmpfs.
+ * So a name under a shown path, and one outside every mount, is that path; a name under /tmp is
+ * <run>/tmp's; and a name under a tmpfs (1, 5, 6) reaches no path of the machine's, which is
+ * undefined: each launch mounts tmpfs of its own, which the agent and the processes it starts
+ * alone hold and which go when it exits, so no other run, and no later agent of the run, reads
+ * what it wrote there. Read by /tmp alone, two runs that each wrote and read /dev/shm/x read as
+ * one run reading the other's write (INFRA-764's class search of namespace reads, 2026-11-18). */
+export function mounted(
+  world: Pick<RunNamespace, "own" | "covers" | "credentials" | "shown" | "hidden">,
+  named: string
+): string | undefined {
+  const under = (dirs: readonly string[]) => dirs.some((dir) => inside(named, dir));
+  if (inside(named, "/dev/shm") || under(world.hidden)) return undefined;
+  if (inside(named, "/tmp"))
+    return under(world.shown.filter((shown) => inside(shown, "/tmp")))
+      ? named
+      : path.posix.join(world.own, named);
+  if (under(world.shown)) return named;
+  return under([...world.covers, ...world.credentials]) ? undefined : named;
 }
 
 /** The machine's path a tool call of the run reaches by the name `named`: the name as the run's
- * namespace mounts it (`mounted`), and the name itself for a run that ran in none. */
-function reachedIn(run: Pick<Run, "dir" | "label" | "namespaced">, named: string): string {
+ * namespace mounts it (`mounted`), undefined where that is a tmpfs of the agent's launch alone,
+ * and the name itself for a run that ran in none. */
+function reachedIn(
+  run: Pick<Run, "dir" | "label" | "namespaced">,
+  named: string
+): string | undefined {
   return run.namespaced ? mounted(namespaceOf(run), named) : named;
 }
 
 /** Rule 10: the first path a tool call of the run names under what its world hides
  * — the scratch root, the issue workspaces, the work directory and every label's checkout (those
- * of the runs given too, by their built-from) — outside the run's own directory, its /tmp (the
- * namespace's $R/tmp) and every path its world shows again. The world is the one its namespace
- * mounted, so the allowlist is that declaration, and a path under the other label's checkout is
- * outside it. A run from before the namespace is held to the same world. What it cannot see is
- * what rule 8 cannot: a reach that names no path. */
+ * of the runs given too, by their built-from) — outside the run's own directory, its /tmp and
+ * every path its world shows again. The world is the one its namespace mounted (`namespaceOf`),
+ * so the allowlist is that declaration, and a path under the other label's checkout is outside
+ * it. Its /tmp is the namespace's <run>/tmp, so a run that ran in one names nothing hidden
+ * there; a run from before the namespace is held to the same world, but its /tmp was the
+ * machine's, which holds what that world hides wherever it lies under /tmp (the default work
+ * directory, `${TMPDIR:-/tmp}/work`, and the scratch root itself where TMPDIR is unset), so a
+ * name there is judged as every other name is. What it cannot see is what rule 8 cannot: a reach
+ * that names no path. */
 function outsideWorld(run: Run, runs: readonly Run[]): string | undefined {
   const world = namespaceOf(run);
   const hidden = [
@@ -1417,7 +1473,7 @@ function outsideWorld(run: Run, runs: readonly Run[]): string | undefined {
       }
     }),
   ];
-  const allowed = [...run.own, "/tmp", ...world.shown];
+  const allowed = [...run.own, ...(run.namespaced ? ["/tmp"] : []), ...world.shown];
   for (const call of run.calls)
     for (const target of namedPaths(call.tool, call.args)) {
       if (allowed.some((dir) => inside(target, dir))) continue;
@@ -3478,10 +3534,18 @@ function searchRefusal(query: string, allowed: OffWorldAllowed): string | undefi
   return undefined;
 }
 
+/** The agent whose launch alone keeps a file a call of the run wrote at `target`, named by the
+ * transcript that call is in (`launchOf`), or undefined for a file every agent of the run
+ * reaches: what a tmpfs of one launch holds (`mounted`: /dev/shm, a covered path) is gone for
+ * the next agent the run boots, which rig.sh's worker_boot starts in a launch of its own. */
+export type Keeper = (target: string, transcript: string) => string | undefined;
+
 /** The first call of `calls` that reaches a host not in `hosts`, as a reason, read in the order the
  * calls were made (a transcript's own order where two calls share a time): every `web_search` call
  * but one about the world's workflow (`searchRefusal`), and the hosts each call reaches
- * (`reachesOf`), given the files the calls before it wrote. A reach some hosts serve in place of
+ * (`reachesOf`), given the files the calls before it wrote that its agent reaches: a file one
+ * agent's launch alone kept (`keeper`, none by default) is that agent's, and a later agent that
+ * runs the same path runs nothing of it. A reach some hosts serve in place of
  * the world's (`served`) is held to those, and a gh run by a path (`gh`) to the run's own
  * stand-in, <own>/bin/gh of each of `own`, the run's directories, a relative path read from the
  * run's cwd (<own>/cwd, where launch starts the agent). Any other reach off the world is allowed
@@ -3491,7 +3555,8 @@ export function offWorldReach(
   calls: readonly Call[],
   hosts: ReadonlySet<string>,
   own: readonly string[] = [],
-  allowed: OffWorldAllowed = NOTHING_ALLOWED
+  allowed: OffWorldAllowed = NOTHING_ALLOWED,
+  keeper: Keeper = () => undefined
 ): string | undefined {
   const allowedHosts = [...hosts].join(", ");
   const { repositories } = allowed.uses;
@@ -3514,7 +3579,11 @@ export function offWorldReach(
         return `off-world network: a ${call.shown} call in ${call.file} searches the web, which no host of the run's world serves${why}`;
       continue;
     }
-    const off = reachesOf(call, written).find(outside);
+    const reached = written.filter((file) => {
+      const kept = keeper(file.path, file.file);
+      return kept === undefined || kept === keeper(file.path, call.file);
+    });
+    const off = reachesOf(call, reached).find(outside);
     if (off !== undefined)
       return `off-world network: a ${call.shown} call in ${call.file} reaches ${off.host} (${off.named})${off.via ?? ""}, ${
         off.gh !== undefined
@@ -3543,13 +3612,35 @@ export function offWorldAllowed(run: Pick<Run, "dir" | "label">): OffWorldAllowe
   };
 }
 
+/** The role whose launch the transcript `transcript` (a path under <run>) is of: rig.sh's
+ * worker_boot starts each role the run boots (ANSWERS' `boots`) in a launch of its own and keeps
+ * its transcripts in <run>/sessions/<role>/, the first role's in <run>/sessions/ itself, and a
+ * subagent's beside its parent's, in its parent's launch (rule 1 reads the same layout,
+ * `unfinished`). */
+function launchOf(run: Pick<Run, "scenario">, transcript: string): string {
+  const roles = ANSWERS[run.scenario]?.boots ?? [];
+  const dir = transcript.split("/")[1] ?? "";
+  return roles.slice(1).includes(dir) ? dir : (roles[0] ?? "");
+}
+
 /** Rule 13: the first call of the run that reaches a host off its world (`worldHosts`,
  * `offWorldReach`), a gh held to the run's own stand-in in either of its directories, but a GET
- * of a repository the world's workflow names and a web search about one (`offWorldAllowed`). No
- * tool is taken out of a profile for this: a profile without a tool is a world that differs from
- * production. */
+ * of a repository the world's workflow names and a web search about one (`offWorldAllowed`). A
+ * file a call writes into a tmpfs of its agent's launch (`reachedIn`) is that agent's alone, so a
+ * later agent's run of its path runs nothing (`Keeper`); a run from before the namespace kept
+ * every file where each of its agents reached it. No tool is taken out of a profile for this: a
+ * profile without a tool is a world that differs from production. */
 function offWorld(run: Run): string | undefined {
-  return offWorldReach(run.calls, worldHosts(run), run.own, offWorldAllowed(run));
+  return offWorldReach(
+    run.calls,
+    worldHosts(run),
+    run.own,
+    offWorldAllowed(run),
+    (target, transcript) =>
+      target.startsWith("/") && reachedIn(run, path.posix.normalize(target)) === undefined
+        ? launchOf(run, transcript)
+        : undefined
+  );
 }
 
 /** Commands whose operands are files they write: every operand, or the last, which is the
@@ -3616,11 +3707,13 @@ export function writtenBy(tool: string, args: ToolArgs): string[] {
 
 /** What the run wrote outside its own directory, its HOME and its TMPDIR (`writable`): every path
  * a tool call writes there (`writtenBy`), read as the run's namespace mounts it (`reachedIn`), so
- * a write into a namespace's /tmp is one into the run's own <run>/tmp and none of these; and
- * every entry rig.sh's scratch_clean found had appeared in the machine's shared scratch while the
- * run ran (<run>/scratch-created.txt, `<epoch seconds> <path>`), which rig.sh reads outside the
- * namespace and is the machine's path as it stands, whoever wrote it (`appearedOnly`). A run's own
- * writes are no verdict on it; another run that reads one is (`otherRunWrite`). */
+ * a write into a namespace's /tmp is one into the run's own <run>/tmp and none of these, and a
+ * write into a tmpfs of the agent's launch alone (/dev/shm, a covered path) is none either, since
+ * the machine keeps nothing of it; and every entry rig.sh's scratch_clean found had appeared in
+ * the machine's shared scratch while the run ran (<run>/scratch-created.txt, `<epoch seconds>
+ * <path>`), which rig.sh reads outside the namespace and is the machine's path as it stands,
+ * whoever wrote it (`appearedOnly`). A run's own writes are no verdict on it; another run that
+ * reads one is (`otherRunWrite`). */
 function writesOf(
   run: Pick<Run, "dir" | "label" | "namespaced">,
   calls: readonly { file: string; tool: string; args: ToolArgs; at: number }[],
@@ -3629,7 +3722,10 @@ function writesOf(
   const created = path.join(run.dir, "scratch-created.txt");
   return [
     ...calls.flatMap((call) =>
-      writtenBy(call.tool, call.args).map((written) => ({ ...call, path: reachedIn(run, written) }))
+      writtenBy(call.tool, call.args).flatMap((written) => {
+        const reached = reachedIn(run, written);
+        return reached === undefined ? [] : [{ ...call, path: reached }];
+      })
     ),
     ...(existsSync(created) ? readFileSync(created, "utf8").split("\n") : []).flatMap((line) => {
       const at = line.indexOf(" ");
@@ -3676,6 +3772,8 @@ const SHARED_SCRATCH = ["/tmp"];
  * started: a path it reads under /tmp is its own <run>/tmp or one its world shows (`mounted`),
  * its own directory among them where the work directory is itself under /tmp, so the second
  * holds for no read of it, and the first for one only where another run wrote that same path.
+ * Nor does it read or write the machine's /dev/shm, or a path its world covers: each is a tmpfs of
+ * the agent's launch alone (`mounted`), so neither a read nor a write there is in its record.
  * A run that reads only what it wrote itself is clean, and so is the run whose write another
  * read: it is the reader that met a world another run had changed. The rule sees only the runs it
  * is given, so `rig.sh health` reads a batch's runs together; given one run, it sees no other

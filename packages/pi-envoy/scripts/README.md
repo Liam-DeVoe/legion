@@ -639,9 +639,12 @@ no tool call reads a path another of the runs given wrote last before the read, 
 before the rig gave each run a namespace (one with no `<run>/namespace.txt`), a `/tmp` entry that
 was there before the run (its `scratch-before.txt`, or the `--tmp-snapshot` file of `/tmp` entries
 taken before the
-batch); no tool call names a path its world hides (by `rig.sh world`: under the scratch root, the
-issue workspaces, the work directory or any label's checkout, the other runs' given included)
-outside its own directory, `/tmp` and what its world shows again; no tool call reads another
+batch); no tool call names a path its world hides (by the world the run recorded for its
+namespace, `<run>/namespace.txt`, or, for a run from before the namespace, by `rig.sh world`:
+under the scratch root, the issue workspaces, the work directory or any label's checkout, the
+other runs' given included) outside its own directory, what its world shows again and, for a run
+in a namespace, `/tmp`, which is its own `<run>/tmp` (a run from before the namespace named the
+machine's `/tmp`, where the work directory can lie); no tool call reads another
 process's `/proc/<n>/environ` or `cmdline`; no tool call names a path under `/var/run/legion` or
 `/var/run/secrets`, by either name; no `bash` call prints the run's GitHub token: `gh auth status`
 with `-t` or `--show-token`, alone or among joined short flags (`-at`), or `gh auth token`, read
@@ -686,7 +689,9 @@ repository's full name and each half, its issue's key and project, its issue bra
 `world.json`; not the base branch) and no word of the measurement as the names rule reads one
 (`proseNames`); a `bash` command, a `read`, a
 `fetch`, an `eval` cell's code, a here-document an interpreter reads on stdin and a file the run
-wrote and then ran are read for the hosts they reach; an `eval` cell's `tool.<name>(…)` call is
+wrote and then ran are read for the hosts they reach (a file an agent wrote into a tmpfs of its
+own launch, such as `/dev/shm`, is gone for the next agent the run boots, so only the agent that
+wrote it runs it); an `eval` cell's `tool.<name>(…)` call is
 read as a direct call of that tool would be; text a call writes (a `--body`, a commit message, a
 message to Envoy, a file never run) reaches nothing; and a tool nobody named has every argument
 read. A `bash` command is read by each program's own grammar, in the places that take a host: a
@@ -704,13 +709,16 @@ alone. A run's own writes outside its directory are recorded and are no verdict 
 it: `health: wrote outside its own directory, HOME and TMPDIR (no verdict): <n> of <m> runs` goes
 on, where <n> is not 0, with each such run's name and the paths it wrote
 (`: <run> (<path>, <path>, <path> and <k> more); <run> (…)`, the first three paths of a run and a
-count of the rest), so the line says which runs they were and where each wrote. A path under
-`/tmp` is read as the run's namespace mounts it, by the same `rig.sh world`: it is the run's own
-`<run>/tmp`, and a write to it is none outside the run, unless the run's world shows a path there
-(its own directory, its label's profile and the batch's services, on a host whose work directory
-is under `/tmp`), where it is that path. The two rules that read another run read `/tmp` the same
-way, so a run in a namespace is held to nothing another run's `/tmp`, or the machine's, held; a
-run with no `<run>/namespace.txt` wrote and read the machine's `/tmp`, and is read so.
+count of the rest), so the line says which runs they were and where each wrote. A path is read as
+the run's namespace mounts it, by the world the run recorded (`<run>/namespace.txt`) and in the
+order `rig.sh`'s `private_world` mounts it. Under `/tmp` it is the run's own `<run>/tmp`, and a
+write to it is none outside the run, unless the run's world shows a path there (its own
+directory, its label's profile and the batch's services, on a host whose work directory is under
+`/tmp`), where it is that path. Under `/dev/shm`, a covered path or a credentials path it is a
+tmpfs of that agent's launch alone, so a write there is none outside the run and no other run
+reads it. The two rules that read another run read paths the same way, so a run in a namespace is
+held to nothing another run's `/tmp` or `/dev/shm`, or the machine's, held; a run with no
+`<run>/namespace.txt` wrote and read the machine's paths, and is read so.
 Give a batch's runs in one call: given one run, `health` sees no other run's writes. It reads
 every transcript under each run's `sessions/`, every role's and every subagent's. It scores nothing
 and writes nothing: it prints `<run>  healthy` or `<run>  unhealthy: <reason>` for each run, keyed
@@ -896,8 +904,11 @@ The gh stand-in answers GitHub from the world's seed and the effect of every cal
 read from the run's own `calls.jsonl` (`gh-threads.ts`, one replay for the gh stand-in and the
 daemon stand-in). A thread a review's inline comment or a comment of its own opens is listed by
 `reviewThreads` and by the REST review comments; `resolveReviewThread` reads back
-`isResolved: true`; a reply, through GraphQL or the REST reply route, is its thread's last
-comment; and each comment's `databaseId` is its REST id. Every world's base is protected as
+`isResolved: true`; a reply, through GraphQL, the REST reply route or the `in_reply_to` of a new
+comment, is its thread's last comment; and each comment's `databaseId` is its REST id.
+`score.ts` reads the same replay for what each call did to a thread: the threads the world
+resolved at it, and each reply it filed, by the thread and the body the world filed, never by the
+node ids its text names. Every world's base is protected as
 production's `main` is, by one repository ruleset alone holding production's seven rules
 (`rig.sh`'s `base_ruleset_routes`; what the world does with each is the next section), and the
 pull request's review decision, merge state and mergeability are computed from those rules, the
