@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { type LegionRole, roleToken } from "@legion/contracts";
+import { type LegionRole, type LegionStepRole, roleToken } from "@legion/contracts";
 import {
   LEGION_PHASES,
   LEGION_WORKFLOW_PHASES,
@@ -58,7 +58,7 @@ const noControllerGrant = async (sessionId: string): Promise<never> => {
 };
 
 /** The handoff report of a tool that must never complete a phase. */
-const noHandoffReport = async (phase: LegionPhase, role: LegionRole): Promise<never> => {
+const noHandoffReport = async (phase: LegionPhase, role: LegionStepRole): Promise<never> => {
   throw new Error(`no handoff report expected for the ${role} at ${phase}`);
 };
 
@@ -380,10 +380,7 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
     status: { type: "string", enum: ["todo", "backlog", "icebox"] },
     phase: { type: "string", enum: [...LEGION_PHASES] },
     settings: { type: "boolean" },
-    role: {
-      type: "string",
-      enum: ["architect", "planner", "implementer", "tester", "reviewer", "merger"],
-    },
+    role: { type: "string", pattern: "^[a-z][a-z0-9-]{0,31}$" },
   },
   required: ["op"],
   additionalProperties: false,
@@ -2016,6 +2013,12 @@ test("the controller reads the state without a grant and sets an issue's status 
     "compact",
     { grantId: "controller-grant-1", issue: "LEGION-209", role: "implementer" },
   ]);
+  // A claim of a role of the deployment (contract 161) is recovered as Legion's own roles' are.
+  await run({ op: "fresh_session", issue: "LEGION-209", role: "checker" });
+  expect(calls.at(-1)).toEqual([
+    "freshSession",
+    { grantId: "controller-grant-1", issue: "LEGION-209", role: "checker" },
+  ]);
   // Refused before any mint: a status the board does not have, a missing issue, a role no claim
   // is on — the controller's own among them — and every operation of a claim.
   const before = calls.length;
@@ -2062,7 +2065,44 @@ test("the controller reads the state without a grant and sets an issue's status 
     isError: true,
   });
   expect(calls).toHaveLength(before);
-  expect(minted).toEqual(["ses_controller", "ses_controller", "ses_controller"]);
+  expect(minted).toEqual(["ses_controller", "ses_controller", "ses_controller", "ses_controller"]);
+});
+
+// Contract 161: the summary lists each worker of an issue's map, a role of the deployment's after
+// Legion's own in their workflow order, so the controller sees the claim that works a step.
+test("read_state's summary lists the claim of a role of the deployment under its issue", async () => {
+  const state = stateOf92Issues(1);
+  const running = state.issues["INFRA-100"];
+  const merger = running?.workers.merger;
+  if (running === undefined || merger === undefined) {
+    throw new Error("INFRA-100 lacks its merger");
+  }
+  running.workers = { checker: merger, ...running.workers };
+  const { daemon } = recordingDaemon({ state });
+  const summary = await controllerTool(daemon, []).execute(
+    "",
+    { op: "read_state" },
+    undefined,
+    undefined,
+    context("ses_controller")
+  );
+  const text = summary.content[0]?.type === "text" ? summary.content[0].text : "";
+  // INFRA-100 is the one issue still running, so every indented line is one of its own.
+  const under = text
+    .split("\n")
+    .filter((line) => line.startsWith("  "))
+    .map((line) => line.trim().split(" ")[0]);
+  expect(under).toEqual([
+    "slot",
+    "gate",
+    "architect",
+    "planner",
+    "implementer",
+    "tester",
+    "reviewer",
+    "merger",
+    "checker",
+  ]);
 });
 
 test("read_state with no field summarizes 92 issues under the tool's limit, naming every one", async () => {
