@@ -46,10 +46,10 @@ type Querier interface {
 // closed at the newest input they read (metrics.ClosedFacts, embedded, so each fact has the one
 // name the computation gives it and a new fact is stored and grown with no list of its own to
 // edit), beside what no computation of the facts answers: the project and the issue, why the
-// issue waits, its repository and when the row was written. The migrations state what each
-// column means (20261117100000, 20261117100017 and 20261117100026). A fact's column is its name in
-// snake case but for PhaseHours, which is hours_by_phase, Tree, which is root_key, and the two
-// hours after the first review, implementing_after_first_review and testing_after_first_review.
+// issue waits, its repository and when the row was written. The migration that creates the table
+// states what each column means (20261117100000). A fact's column is its name in snake case but
+// for PhaseHours, which is hours_by_phase, Tree, which is root_key, and the two hours after the
+// first review, implementing_after_first_review and testing_after_first_review.
 // Root is no column: a read sets it from root_key (scanRow), as the computation answers it.
 //
 // PhaseHours holds the board's column ids, a column with no hours left out, so an issue whose

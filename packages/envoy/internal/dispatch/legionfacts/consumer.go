@@ -510,13 +510,13 @@ func computeProjectWork(ctx context.Context, pool *store.Pool, project string, w
 // much as a row that moved. A failure leaves the cursors and the marks where they were, so the
 // next pass reads the same rows again.
 //
-// The rows' and the filings' triggers record their changes in the change log's outbox (migration
-// 20261117100024) and take no lock, so the transaction never takes the change log's lock
-// (delivery.LockChanges); once it has committed, the pass moves them into the log
+// The rows' and the filings' triggers record their changes in the change log's outbox (migrations
+// 20261117100002 and 20261117100019) and take no lock, so the transaction never takes the change
+// log's lock (delivery.LockChanges); once it has committed, the pass moves them into the log
 // (delivery.DrainPending). A drain that fails is logged and fails nothing: the rows committed, and
-// their notification wakes every live hub, which drains before it reads, as the refresher does at
-// each pass. The drain's notification is also the wake of the other process of a roll, whose
-// build the project's record may name (Deps.Deliveries).
+// the next drain of any process moves their changes (delivery.DrainPending states the bound). The
+// drain's notification is also the wake of the other process of a roll, whose build the project's
+// record may name (Deps.Deliveries).
 func writePass(ctx context.Context, pool *store.Pool, computed []projectPass, positions map[string]feedCursor, now time.Time, self process, remapped bool) ([]string, error) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {

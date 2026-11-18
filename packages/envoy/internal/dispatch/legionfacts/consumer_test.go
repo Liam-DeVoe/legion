@@ -486,7 +486,7 @@ func TestAPassWithNoInputMovingWritesNoRowOpenOrClosed(t *testing.T) {
 }
 
 // factsChanges is how many changes of kind issue_facts the change log and its outbox hold, which
-// a write of a stored row records (migration 20261117100024).
+// a write of a stored row records (migration 20261117100002).
 func (c *consumer) factsChanges(t *testing.T) int {
 	t.Helper()
 	var count int

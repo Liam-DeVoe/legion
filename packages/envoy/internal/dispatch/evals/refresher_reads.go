@@ -404,7 +404,7 @@ func (s *Store) legionInputStart(ctx context.Context, project string) (*time.Tim
 // (eval, series, day), the order every statement that inserts or locks one eval's day rows takes
 // them in (writeDays); left to the database's collation, a series `latency` and a series `Queue`
 // would be taken in the other order. Its change rows wait in the change log's outbox (migration
-// 20261117100024), so it takes no change log lock; a batch of them is moved into the log once it
+// 20261117100014), so it takes no change log lock; a batch of them is moved into the log once it
 // has committed (drainChanges).
 func (r *refresh) fillLoggedZeros(ctx context.Context, project string, ids []string) (int64, error) {
 	logged := `select eval_id from evals_current where project_key = $1 and source = $2`

@@ -65,7 +65,7 @@ type writeTx struct {
 // returned.
 //
 // Every registry write logs a change for its versions, readings and day rows, whose triggers
-// record each in the change log's outbox (delivery_changes_pending, migration 20261117100024) and
+// record each in the change log's outbox (delivery_changes_pending, migration 20261117100001) and
 // take no lock, so the write never takes the change log's lock (delivery.LockChanges). Once it has
 // committed, committed moves a batch of the outbox into the log (drainChanges) before the caller
 // answers.
@@ -129,8 +129,8 @@ func (s *Store) committed(ctx context.Context, w *writeTx) {
 // thousands of rows) would otherwise be moved whole by the next write that answers a person. A
 // write that finds more than a batch ahead of its own rows leaves them pending, as it does when
 // its drain fails, which is logged and fails nothing: the write committed, its pending rows with
-// it, and the live hub's drain before each read, the refresher's at each pass and the next write's
-// drain move them, each the lowest ids first.
+// it, and the next drain of any process moves them, or else the next process's boot before it
+// serves (delivery.DrainPending states the bound).
 func (s *Store) drainChanges(ctx context.Context) {
 	if _, _, err := delivery.DrainPendingBatch(ctx, s.database.Pool); err != nil && ctx.Err() == nil {
 		slog.Warn("dispatch: an eval write could not move its changes into the delivery change log; the next drain moves them", "error", err)

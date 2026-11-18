@@ -6,9 +6,11 @@
 --
 -- The trigger is statement-level, after insert, and reads the statement's inserted rows as one
 -- transition table, so a write of any number of readings logs one change row per eval it wrote,
--- not one per reading: a batch of a thousand readings wakes a view once. Each row goes through
--- delivery_change_log (0100), under the same advisory lock every other kind's trigger takes, so
--- seq is allocated in commit order and pg_notify('delivery_changes', '') goes out at commit.
+-- not one per reading: a batch of a thousand readings wakes a view once. Each row is recorded in
+-- the change log's outbox through delivery_change_log_pending (20261117100001), which takes no
+-- lock, so a readings write never takes the change log's lock (6900, 0100); the pending row's
+-- notification on 'delivery_changes' goes out at the writer's commit, and a drain moves the row
+-- into delivery_changes (R19, delivery.DrainPending).
 --
 -- delivery_changes keeps two columns for a name, repo and ref. repo holds the project key and ref
 -- the eval id, as an issue_facts row holds a project and an issue (20261117100002), because a
@@ -34,7 +36,7 @@ begin
     group by eval_id
     order by eval_id
   loop
-    perform delivery_change_log('eval_readings', null, split_part(written.eval_id, '/', 1), written.eval_id,
+    perform delivery_change_log_pending('eval_readings', null, split_part(written.eval_id, '/', 1), written.eval_id,
       written.first_at, written.last_at);
   end loop;
   return null;

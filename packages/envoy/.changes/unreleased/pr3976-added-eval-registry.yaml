@@ -18,19 +18,20 @@ body: |-
   has an `evals` view that wakes when a reading, a version or a day row of its project lands.
   The eval writes, the refresher's and the Legion facts' record their changes in an outbox,
   `delivery_changes_pending`, and never take the delivery change log's lock: a drain moves them
-  into `delivery_changes` 250 at a time, each batch a short statement of its own, run by the
-  writer right after its commit, by the live hub before each read, by the refresher at each pass
-  and by the server's boot before it serves, so a correction of 1,400 readings holds no lock the
-  delivery intake waits on, and no burst holds it longer than one batch.
-  A change whose writer died before its drain is moved by the next wake of any live process's
-  hub, which its commit's notification sends, else by the next server's boot. A run's jobs write
-  is one statement that takes the jobs in their names' order, so two listings of one run in
-  opposite orders no longer deadlock; the `issue.deployed` write marks its pull request in its
-  last statement; a session group's write runs its reads, the title rule's read of every pull
-  request among them, before it takes the change log's lock, and sends its writes after the lock
-  in one round trip; and every writer of a repository's mapping, the delivery fixtures included,
-  takes the mapping routes' locks. So each table has one position for that lock: every path
-  takes it before the table's row locks or in the statement that ends its transaction.
+  into `delivery_changes` 250 at a time, each batch a short statement of its own, run by each
+  eval write for one batch right after its commit, by each Legion facts pass right after its
+  commit, by the live hub before each read, by the refresher at each pass and by the server's
+  boot before it serves, so a correction of 1,400 readings holds no lock the delivery intake
+  waits on, and no burst holds it longer than one batch.
+  A change whose writer died before its drain is moved by the next drain of any process, or else
+  by the next server's boot before it serves. A run's jobs write is one statement that takes the
+  jobs in their names' order, so two listings of one run in opposite orders no longer deadlock;
+  the `issue.deployed` write marks its pull request in its last statement; a session group's write
+  runs its reads, the title rule's read of every pull request among them, before it takes the
+  change log's lock, and sends its writes after the lock in one round trip; and every writer of a
+  repository's mapping, the delivery fixtures included, takes the mapping routes' locks. So each
+  table has one position for that lock: every path takes it before the table's row locks or in
+  the statement that ends its transaction.
   The per-issue Legion facts also store parked, queued and slot-wait hours, the role bars with
   their segments, idle hours by role, the hours after the first review, the children and the
   started and merged times, and the filings a Legion session made are stored in `issue_filings`.

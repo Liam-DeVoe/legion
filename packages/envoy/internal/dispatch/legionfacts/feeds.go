@@ -578,7 +578,7 @@ func readChangePage(ctx context.Context, q Querier, after feedCursor, now time.T
 // the pass keeps the ones of the projects it computes (passPage).
 //
 // No column of the change names the issue the pull request left, and its merge does: each merge
-// is a probe of issue_facts_merged (migration 20261117100027), which answers the rows stored with
+// is a probe of issue_facts_merged (migration 20261117100000), which answers the rows stored with
 // that merge, and each of those a probe of delivery_pull_requests_merged_at (migration 0080) by
 // the same moment. A row whose issue still holds a pull request merged then keeps its merge and
 // is left out, and a row the change did not move is one the computation answers the same row for

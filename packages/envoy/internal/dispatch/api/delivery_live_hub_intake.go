@@ -409,7 +409,7 @@ func (view *deliveryView) touchedBy(change delivery.Change, now time.Time) bool 
 		// issue the board names nowhere yet - a new member of a shown tree, the first row of an
 		// issue, a row a build's whole read writes - moves its answer as a row of an issue it does
 		// name does: the change marks the board of its project, which the trigger carries in the
-		// change's repo (migration 20261117100026), and a closed row of a tree the board does not
+		// change's repo (migration 20261117100002), and a closed row of a tree the board does not
 		// show is recomputed into the same body and sends nothing. No other kind of view reads a
 		// facts row, so every delivery view is left: a build's whole read rewrites every row of a
 		// project whose values or writer moved, and a timeline, measures or pipeline answer cannot

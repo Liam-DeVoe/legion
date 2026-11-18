@@ -16,7 +16,7 @@ import (
 
 // TestReadClosedInReadsTheClosedFactsIndex: ReadClosedIn's statement, as it sends it (wideSelect
 // and closedInWhere), reads one project's issues closed in a window through issue_facts_closed
-// (migration 20261117100009) and never scans issue_facts, on an analyzed store of five projects of
+// (migration 20261117100000) and never scans issue_facts, on an analyzed store of five projects of
 // 4,000 stored facts each, nine in ten closed, one a day back over a year: enough rows that the
 // planner prices a scan of the whole table above the index read.
 func TestReadClosedInReadsTheClosedFactsIndex(t *testing.T) {
@@ -57,7 +57,7 @@ func TestReadClosedInReadsTheClosedFactsIndex(t *testing.T) {
 
 // TestTheOtherBuildsRowsReadReadsTheWrittenBuildIndex: the read of the rows another build wrote
 // (otherBuildsRowsQuery), which every first page of the build a project's record names makes,
-// reaches issue_facts through issue_facts_written_build (migration 20261117100026) and never scans
+// reaches issue_facts through issue_facts_written_build (migration 20261117100000) and never scans
 // the table, on an analyzed store of five projects of 4,000 stored rows each, every project
 // recorded under the running build and three rows of one written by another, as a roll's last
 // write leaves them.
@@ -103,7 +103,7 @@ func TestTheOtherBuildsRowsReadReadsTheWrittenBuildIndex(t *testing.T) {
 
 // TestTheOtherBuildsFilingsReadReadsTheWrittenBuildIndex: the read of the filings another build
 // wrote (otherBuildsFilingsQuery), which the same pages make, reaches issue_filings through
-// issue_filings_written_build (migration 20261117100026) and never scans the table, on an analyzed
+// issue_filings_written_build (migration 20261117100007) and never scans the table, on an analyzed
 // store of five projects of 4,000 filings each, every project recorded under the running build and
 // three filings of one written by another.
 func TestTheOtherBuildsFilingsReadReadsTheWrittenBuildIndex(t *testing.T) {
@@ -150,8 +150,8 @@ func TestTheOtherBuildsFilingsReadReadsTheWrittenBuildIndex(t *testing.T) {
 // answers the rows of the keys it is given, of every issue of the trees it is given and of every
 // open issue of the project, and no other row, and every arm of its statement (boardSelect and
 // shownWhere) reaches issue_facts through an index keyed by its own condition: the primary key for
-// the keys, issue_facts_root (migration 20261117100026) for the trees and issue_facts_closed
-// (migration 20261117100009) for the open rows, under closed_at IS NULL; never a scan of the table
+// the keys, issue_facts_root (migration 20261117100000) for the trees and issue_facts_closed
+// (the same migration) for the open rows, under closed_at IS NULL; never a scan of the table
 // nor a read of the project's whole range filtered after it (dispatch://INFRA-2916, k23).
 //
 // The store has the shape at which the planner prices a scan of the whole table no dearer than the
@@ -337,7 +337,7 @@ func TestTheStoredFilingsReadKeepsItsIndexesUnderAGenericPlan(t *testing.T) {
 // TestTheLostMergesReadProbesTheMergedFactsIndex: the read of the stored rows a pull request's
 // change left with a merge no pull request backs (lostMergesQuery), which every page of changes
 // holding a pull request's makes, reaches issue_facts through issue_facts_merged (migration
-// 20261117100027), a probe a merge, and the pull requests through delivery_pull_requests_merged_at
+// 20261117100000), a probe a merge, and the pull requests through delivery_pull_requests_merged_at
 // (migration 0080), and scans neither table, with the values and under the generic plan pgx's
 // cached statement settles on, each with the planner's settings as the pass runs it. The store
 // holds five projects of 4,000 stored rows each, nine in ten merged, each merge one pull request's,

@@ -37,7 +37,7 @@ import (
 //     begins every project's Legion walk again, since the mapping decides the repository an issue
 //     or a filing with none of its own resolves to (ReadLegionDay).
 //   - issue_facts: the issue's Legion close day before the change and after it, which the change
-//     names itself (t_old and t_new, migration 20261117100026) and no read is made to find: a
+//     names itself (t_old and t_new, migration 20261117100002) and no read is made to find: a
 //     Legion day counts an issue on its close day alone, so an issue closed again on another day
 //     rewrites its old day and its new one, and an open issue whose facts moved touches no day.
 //     eval_day_members is not read for it, since the day it holds the issue under is the close

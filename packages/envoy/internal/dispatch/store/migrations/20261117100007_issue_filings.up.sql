@@ -21,13 +21,22 @@
 --   root_key        the root of the filed issue's tree as it stands now, which the consumer
 --                   rewrites when that tree moves, as it does issue_facts.root_key, so the roots
 --                   and children cuts read the tree of today and not the tree at the filing.
+--   written_build   the build that wrote the filing (legionfacts.Deps.Build), '' on a filing no
+--                   pass of the consumer wrote. The rule that decides whose filing an issue is
+--                   lives in the build, so the build a project's record of its whole read names
+--                   (issue_facts_computed.computed_build, 20261117100003) computes again every
+--                   filing of that project another build wrote (legionfacts.otherBuildsFilings),
+--                   as it does the rows of issue_facts.
 -- issue_filings_day, (project_key, filed_at), is the read of one project's filings of one day,
 -- which is what a day row of the splitting eval counts. issue_filings_filer, (project_key,
 -- filer_issue) over the filings a phase worker made (a filer issue that is not the empty string;
 -- the controller's name none), is the Legion facts consumer's read of the stored filings whose
 -- filer's issue a pass recomputes (legionfacts' filingsToCompute), which a filing's class and
 -- phase move with; that read carries the same predicate, so its plan proves the index without
--- the values it runs with.
+-- the values it runs with. issue_filings_written_build, (project_key, written_build), is the read
+-- of the filings another build wrote, taken as issue_facts_written_build is (20261117100000): two
+-- ranges of each project, the filings whose writer sorts before the running build and those that
+-- sort after it.
 --
 -- One new table: nothing existing is read or rewritten, and the release before this one neither
 -- reads nor writes it, so the two builds roll together (cmd/dispatch/README.md, "Database
@@ -42,7 +51,9 @@ create table issue_filings (
     filer_issue text not null default '',
     filer_phase text not null default '',
     class text not null check (class in ('in_tree_at_design', 'in_tree_later', 'out_of_tree', 'by_the_controller')),
-    root_key text not null default ''
+    root_key text not null default '',
+    written_build text not null default ''
 );
 create index issue_filings_day on issue_filings (project_key, filed_at);
 create index issue_filings_filer on issue_filings (project_key, filer_issue) where filer_issue <> '';
+create index issue_filings_written_build on issue_filings (project_key, written_build);

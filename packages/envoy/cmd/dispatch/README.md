@@ -1378,7 +1378,7 @@ The loops that run passes (`duty.RunWoken`) start two passes no closer together 
   The release before this one polls the row every 30 s and may run beside it during a roll.
 
 - The eval day-row refresher (`evals.Store.RunRefresher`, lease `eval-days`) keeps every project's `eval_days` true to its inputs.
-  It is woken by `delivery_changes`, which every delivery table's trigger notifies (`0100`), as does that of `repo_projects` (`20261117100020`), and the triggers of `issue_facts`, `issue_filings` and the eval tables notify as they record their changes in the change log's outbox (`20261117100024`), and by `dispatch_events`.
+  It is woken by `delivery_changes`, which every delivery table's trigger notifies (`0100`), as does that of `repo_projects` (`20261117100020`), and the triggers of `issue_facts`, `issue_filings` and the eval tables notify as they record their changes in the change log's outbox (`20261117100001`), and by `dispatch_events`.
   Passes start at least 10 s apart.
   The first pass of each process seeds every project's evals (`evals.Store.Ensure`, the catalogue this build states), and each later pass every project no seed has reached (one made by SQL), each project whose seed failed, and each whose seed was refused because its `evals-md` is a file once that artifact is a document again.
   A pass first moves the outbox's pending changes into the change log (`delivery.DrainPending`), then reads the changes and the events after its two cursors (`eval_days_cursor`, `20261117100021`), the events at or below the safe horizon as the suggestion outcome sweep reads them, and rewrites each day they name (`internal/dispatch/evals/refresher_work.go` lists what each change touches).
@@ -1402,10 +1402,11 @@ A process that finds it held tries again
 
 **Boot passes** run once at start:
 
-- The drain of the delivery change log's outbox (`delivery.DrainPending`, `20261117100023`) runs once, before the process serves, with no lease: two drains take turns on the change log's lock and move each pending change once.
-  An eval or Legion write records its change in the outbox and drains it right after its commit; a write whose process was killed between the two leaves the change pending, and its commit's notification woke every live process's hub, which drains before it reads.
-  This drain moves what such a write left while no process was alive, logs `dispatch: moved the delivery changes left pending into the change log` with `moved=<n>`, and its own notification wakes every hub listening by then; this process's refresher reads the moved changes on its first pass.
-  A drain that fails is logged and the boot goes on, since the hub and the refresher drain again.
+- The drain of the delivery change log's outbox (`delivery.DrainPending`, `20261117100001`) runs once, before the process serves, with no lease: two drains take turns on the change log's lock and move each pending change once.
+  An eval write records its changes in the outbox and moves one batch of it, the lowest ids first, right after its commit, and a Legion facts pass moves every pending change right after its commit.
+  A pending row left by a writer killed between its commit and its drain is moved by the next drain of any process, or else by the next process's boot before it serves (`delivery.DrainPending` states the bound).
+  This drain is that boot's: it moves what such a write left while no process was alive, logs `dispatch: moved the delivery changes left pending into the change log` with `moved=<n>`, and its own notification wakes every hub listening by then; this process's refresher reads the moved changes on its first pass.
+  A drain that fails is logged and the boot goes on, since the hub, the refresher, the eval writes and the Legion facts passes drain again.
 
 - The embedding coverage pass (`embedqueue.Cover`, Search below) runs once, with no lease.
   After it only its identity steps run again:
@@ -3847,7 +3848,7 @@ Each item below names a path with its method and identity, then its purpose.
   Each entry holds its hours by column (an issue's hours in retro under `retro`, beside merging's), its work time, its review rounds, its root and depth in the tree, the hours it held a slot, why it waits, and when the row was written; an open issue's hours, work time and last moment of work are given at the moment of the read, each grown from the newest input the row was closed at by the rate the row stores.
   Each entry also carries `as_of`, the moment its values are of (the read's for a row that grows, the row's own for one that does not), and `growth`, how fast each value that grows after it grows, by the entry's own names: hours an hour for `work_hours`, `slot_hours` and each `hours_by_phase` column, and for `work_last_at` 1 while a bar is still open and 0 where it stands, every rate 0 for a row that does not grow; a holder gives each value at its own clock as the read does, the value plus its rate times the hours from `as_of`.
   The `legion` view sends an `issues` entry only when its stored row moves (its `updated_at`, its growth, why it waits, its close or any other stored value): an entry's revision leaves out the values that grow and `as_of`, so a recompute that only moved the clock sends none, and an entry sent is sent whole, at the moment of its recompute.
-  The rows are read by key through the primary key, by tree root through `issue_facts_root` (`20261117100026`) and the open rows through `issue_facts_closed` (`closed_at is null`), never as the project's rows filtered after the read.
+  The rows are read by key through the primary key, by tree root through `issue_facts_root` (`20261117100000`) and the open rows through `issue_facts_closed` (`closed_at is null`), never as the project's rows filtered after the read.
   The header carries the slots in use, the slot cap, the queue's length, the last read of the daemon with its failure, the oldest `updated_at` of the rows served (those the map carries, not every row of the project) and the age of the facts consumer's cursor.
   The cursor age is of the deployment's one consumer and not of the project, so it says how fresh the facts are and is null on a deployment whose consumer has never run.
   `404 LEGION_NOT_CONFIGURED` when the project names no daemon, `400 INVALID_PROJECT` for a key that is not a project key, `404 PROJECT_NOT_FOUND` for a project that does not exist.

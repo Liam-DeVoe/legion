@@ -6,9 +6,11 @@
 -- migration, as 20261117100002 is for issue_facts: the transaction holds issue_filings's lock
 -- alone, for milliseconds.
 --
--- The function calls delivery_change_log (0100) under the advisory lock every other kind's trigger
--- takes, so seq is allocated in commit order and pg_notify('delivery_changes', '') goes out at
--- commit.
+-- The function records each change in the change log's outbox through
+-- delivery_change_log_pending (20261117100001), which takes no lock, so no write of a filing takes
+-- the change log's lock (6900, 0100); the pending row's notification on 'delivery_changes' goes
+-- out at the writer's commit, and a drain moves the row into delivery_changes (R19,
+-- delivery.DrainPending).
 --
 -- repo holds the project key and ref the filed issue's key, as an issue_facts row's change does
 -- (20261117100002): the project is the one whose Legion session filed the issue, which is the
@@ -29,15 +31,15 @@
 create function issue_filings_changed() returns trigger language plpgsql as $$
 begin
   if tg_op = 'INSERT' then
-    perform delivery_change_log('issue_filings', null, new.project_key, new.issue_key, null, new.filed_at);
+    perform delivery_change_log_pending('issue_filings', null, new.project_key, new.issue_key, null, new.filed_at);
   elsif tg_op = 'DELETE' then
-    perform delivery_change_log('issue_filings', null, old.project_key, old.issue_key, old.filed_at, null);
+    perform delivery_change_log_pending('issue_filings', null, old.project_key, old.issue_key, old.filed_at, null);
   elsif to_jsonb(old) is distinct from to_jsonb(new) then
     if old.project_key = new.project_key then
-      perform delivery_change_log('issue_filings', null, new.project_key, new.issue_key, old.filed_at, new.filed_at);
+      perform delivery_change_log_pending('issue_filings', null, new.project_key, new.issue_key, old.filed_at, new.filed_at);
     else
-      perform delivery_change_log('issue_filings', null, old.project_key, old.issue_key, old.filed_at, null);
-      perform delivery_change_log('issue_filings', null, new.project_key, new.issue_key, null, new.filed_at);
+      perform delivery_change_log_pending('issue_filings', null, old.project_key, old.issue_key, old.filed_at, null);
+      perform delivery_change_log_pending('issue_filings', null, new.project_key, new.issue_key, null, new.filed_at);
     end if;
   end if;
   return null;

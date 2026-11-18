@@ -18,7 +18,7 @@ import (
 //
 // An issue_facts row holds no repository: Repo carries the project key and Ref the issue key,
 // because a stored Legion fact belongs to a project and an issue (migration 20261117100002). Its
-// TOld and TNew are the issue's closed_at before and after the change (migration 20261117100026),
+// TOld and TNew are the issue's closed_at before and after the change (the same migration),
 // since a Legion day row counts an issue on its close day alone: an insert carries TNew alone, a
 // delete TOld alone, and each is nil where the issue was or is open, so a change of an open
 // issue's facts carries neither.
@@ -71,11 +71,11 @@ const ChangeRetention = 24 * time.Hour
 
 // ChangesChannel is the Postgres notification channel a delivery change announces itself on: the
 // trigger that writes each delivery_changes row (migration 0100, delivery_change_log), the trigger
-// that records each pending row (delivery_change_log_pending, 20261117100023) and the drain that
+// that records each pending row (delivery_change_log_pending, 20261117100001) and the drain that
 // moves pending rows into the log (DrainPending) each send it, and Postgres delivers it at their
-// commit. The Delivery page's live hub and the Legion facts consumer both listen on it, and this
-// package owns the row, so the name is declared here alone, as SettingsChannel is beside the
-// settings row.
+// commit. The Delivery page's live hub, the eval day-row refresher and the Legion facts consumer
+// listen on it, and this package owns the row, so the name is declared here alone, as
+// SettingsChannel is beside the settings row.
 const ChangesChannel = "delivery_changes"
 
 // lockChangesStatement takes the change log's lock for the rest of its transaction (LockChanges).
@@ -120,7 +120,7 @@ const lockChangesStatement = `select pg_advisory_xact_lock(6900, 0)`
 // before it.
 //
 // No eval, refresher or Legion facts write takes it: their changes wait in the outbox
-// (delivery_changes_pending, migration 20261117100023), and the drain moves them into the log in a
+// (delivery_changes_pending, migration 20261117100001), and the drain moves them into the log in a
 // short transaction of its own after they commit.
 func LockChanges(ctx context.Context, tx pgx.Tx) error {
 	if _, err := tx.Exec(ctx, lockChangesStatement); err != nil {
@@ -145,7 +145,7 @@ const drainBatch = 250
 // DrainPending moves every committed pending change row (delivery_changes_pending, the outbox the
 // eval and Legion tables' triggers record their changes in) into delivery_changes, and answers how
 // many it moved. It moves them a batch at a time (DrainPendingBatch), each batch one statement of
-// its own, delivery_changes_drain (migration 20261117100023), never a statement of a caller's
+// its own, delivery_changes_drain (migration 20261117100001), never a statement of a caller's
 // transaction, and moves another batch while a whole one moved. So it holds the change log's lock
 // for one batch's statement and its commit at a time, whatever the burst: each batch takes the lock
 // first, before the pending rows it deletes, and moves the lowest pending ids in id order, keeping
@@ -159,9 +159,25 @@ const drainBatch = 250
 // the start of each pass; and the server's boot, before it serves. An eval write, the registry's
 // and the refresher's, drains one batch instead (DrainPendingBatch), so a route that answers after
 // its drain waits for one batch at most, whatever backlog another writer left: those callers move
-// the rest. A writer killed between its commit and its drain loses nothing: its pending row's
-// notification reached every live process's hub at that commit, and each drains on that wake, or
-// else the next process's boot does.
+// the rest.
+//
+// A writer killed between its commit and its drain loses no change: its pending rows committed
+// with its write, and the next drain of any process moves them, whichever runs first:
+//
+//   - a live hub's (api's deliveryHub), before its next read of the log, which the rows'
+//     notification on ChangesChannel wakes at the writer's commit. Only a process where a page
+//     subscribes has one running: a hub starts its listener at its first subscription and stops it
+//     when its last one leaves, and drains nothing while no page subscribes;
+//   - the next eval write's, one batch, the lowest ids first (evals' drainChanges), so a row behind
+//     a whole batch of others waits for a later drain;
+//   - the next Legion facts pass's, every pending row, after its commit (legionfacts' writePass);
+//   - the day-row refresher's next pass, every pending row, at its start (evals' refresh). The
+//     rows' notification wakes the refresher of every live process, and the process that holds the
+//     refresher's lease, eval-days, starts that pass no sooner than 10 s after its last pass started
+//     (evals.RefresherGap). Where the killed process held the lease, a woken process finds it held
+//     and tries again every 10 s plus up to a tenth (duty.RunWoken), so it takes the lease at its
+//     first try after the killed process's database session ends, and its pass drains;
+//   - with no process alive, the next process's boot drain, before it serves (cmd/dispatch's main).
 func DrainPending(ctx context.Context, pool *store.Pool) (int64, error) {
 	var total int64
 	for {

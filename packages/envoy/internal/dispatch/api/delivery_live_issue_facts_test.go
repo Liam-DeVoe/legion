@@ -19,7 +19,7 @@ import (
 
 // issueFactsChange is one delivery_changes row of the stored per-issue Legion facts: the project
 // in Repo and the issue in Ref, with the issue's close before and after the change (migration
-// 20261117100026).
+// 20261117100002).
 func issueFactsChange(project, issue string, closedBefore, closedAfter time.Time) delivery.Change {
 	return delivery.Change{Seq: 1, Kind: "issue_facts", Repo: project, Ref: issue, TOld: &closedBefore, TNew: &closedAfter}
 }

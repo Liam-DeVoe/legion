@@ -173,7 +173,7 @@ func TestAFactsWriteThatMovesOnlyTheUpdatedTimeLogsNoChange(t *testing.T) {
 // rows that count the issue, which are its close day before the change and after it, because a
 // Legion day row counts an issue on its close day alone (dispatch://INFRA-2916, R26). The change's
 // t_old holds the row's closed_at before and its t_new the closed_at after, each null where the
-// issue was or is open (migration 20261117100026), so no day of the issue's work is named.
+// issue was or is open (migration 20261117100002), so no day of the issue's work is named.
 //
 // One closed issue whose work falls on two days is written, its work moved with its close where
 // it stood, its close moved two days on, reopened and closed again, and then its row deleted; an

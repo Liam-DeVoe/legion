@@ -70,7 +70,7 @@ func (p ProjectDay) WithZeros(zeros []DayRow) ProjectDay {
 // zeroes are those of slugs alone and the stale members it deletes those of families alone, so
 // the delivery and the Legion writes of one day leave each other's rows and members as they are.
 // what names the rows in a refusal. Its upsert's change rows wait in the change log's outbox
-// (migration 20261117100024), so the transaction takes no change log lock, and they are moved into
+// (migration 20261117100014), so the transaction takes no change log lock, and they are moved into
 // the log once it has committed (drainChanges).
 func (s *Store) writeProjectDay(ctx context.Context, what string, day ProjectDay, slugs, families []string, builtBy string) error {
 	date := measures.Midnight(day.Day)
