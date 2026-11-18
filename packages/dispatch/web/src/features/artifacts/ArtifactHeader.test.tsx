@@ -60,17 +60,21 @@ test("the header carries data-landing-ring for as long as it carries the ring", 
     try {
       const header = screen.getByTestId("artifact-header");
       expect(header.className).toContain(highlightRing);
-      expect(header.getAttribute("data-landing-ring")).toBe("");
+      // Presence, not the value: the only reader is a presence selector
+      // (`[data-landing-ring]`, `e2e/review-routes.ts`), and the two other trees that spell this
+      // mark render it as `""` and as `"true"`. A row that pinned one of those would fail on the
+      // other for nothing a reader or a wait can see.
+      expect(header.hasAttribute("data-landing-ring")).toBe(true);
 
       // Two seconds of it, and no shorter.
       await tick(1_900);
       expect(header.className).toContain(highlightRing);
-      expect(header.getAttribute("data-landing-ring")).toBe("");
+      expect(header.hasAttribute("data-landing-ring")).toBe(true);
 
       // And gone at the end of them, the ring and the mark together.
       await tick(200);
       expect(header.className).not.toContain(highlightRing);
-      expect(header.getAttribute("data-landing-ring")).toBeNull();
+      expect(header.hasAttribute("data-landing-ring")).toBe(false);
     } finally {
       view.unmount();
     }
@@ -86,7 +90,7 @@ test("a header with no landing highlight carries neither the ring nor the mark",
   try {
     const header = screen.getByTestId("artifact-header");
     expect(header.className).not.toContain(highlightRing);
-    expect(header.getAttribute("data-landing-ring")).toBeNull();
+    expect(header.hasAttribute("data-landing-ring")).toBe(false);
   } finally {
     view.unmount();
   }

@@ -65,7 +65,8 @@
  *    page the reader navigated to (`web/src/features/artifacts/ArtifactHeader.tsx`), and this
  *    file shoots each page twice - light, then dark - so the ring is a state one shot can hold
  *    and the other cannot. Both answers were seen: the committed baselines held it in both
- *    schemes, and CI run 44155672869 failed `issue-artifact-dark` by 3,070 pixels without it.
+ *    schemes, and CI run 44155672869 failed `issue-artifact-dark` by 3,070 pixels, of which the
+ *    ring's own band is 2,508 (the forced control below) and the rest is that run's own change.
  *    Re-taking the baseline settles nothing, because the next run rolls the same dice.
  *
  *    The ring is a real thing a reader is shown, so it is neither masked nor turned off for the
@@ -75,7 +76,9 @@
  *    row. The wait is for the thing itself and not for a duration: two seconds of wall clock
  *    here would be the same race timed with a stopwatch, and this layer's own clock is a fake
  *    one. The cost is that no baseline holds the ring, so what this layer reviews of the
- *    highlight is nothing; the ring's own shape is held by `ArtifactHeader.test.tsx`.
+ *    highlight is nothing. `ArtifactHeader.test.tsx` holds the mark to the ring - the attribute,
+ *    the class and the two seconds, and no pixel of either - and what the ring is drawn in is
+ *    `highlightRing` (`web/src/theme/classes.ts`), which no layer compares against a swatch.
  *  - Scrollbars. Headless Chromium is launched with `--hide-scrollbars`
  *    (`playwright-core/lib/coreBundle.js`), so no scrollbar is in any capture. The shot is
  *    `fullPage`, the whole scrollable page rather than whatever part of it the window is

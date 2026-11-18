@@ -115,7 +115,9 @@ export function ArtifactHeader({
   // can catch, so that layer waits for this attribute to be gone rather than for a duration
   // (`e2e/review-routes.ts`'s `waitForRouteSettled`). The name is the one
   // cybermonklabs/legion#2697 and #2813 give the same state, so a forward merge joins the three
-  // rather than reconciling three spellings of it.
+  // rather than reconciling three names for it. Only the name is shared: #2813 renders the
+  // value `"true"` where these two render `""`, and nothing reads either - the wait is a
+  // presence selector, and so is the row of `ArtifactHeader.test.tsx` that holds this mark.
   useEffect(() => {
     if (!highlight) {
       setHighlighted(false);
