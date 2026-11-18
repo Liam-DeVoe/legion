@@ -6,8 +6,9 @@
 // instead of passing at another one.
 //
 // The `cut` mode, at head: the head itself, taken for the label's checkout, fails once for each
-// sentence the head's search cuts; a copy with each of those sentences deleted, and nothing else,
-// is clean; and the label's sentence planted in that copy fails again, naming its text.
+// sentence the head's search cuts; a copy with each of those sentences deleted, or made the label's
+// form that its entry names, and nothing else changed, is clean; and the label's sentence planted in
+// that copy fails again, naming its text.
 //
 //   bun test rule-search.test.ts
 //
@@ -143,10 +144,11 @@ describe("rule-search", () => {
     );
 
     test.if(tree === "head")(
-      `${label}: cut, a copy with each sentence the head's search cuts deleted is clean, and the rule planted in it fails`,
+      `${label}: cut, a copy with each sentence the head's search cuts deleted, or made its entry's form, is clean, and the rule planted in it fails`,
       () => {
         const head = copy();
         const ablated = copy();
+        let forms = 0;
         for (const [file, cut] of headSentences(head, label).cuts) {
           let text = readFileSync(path.join(ablated, file), "utf8");
           for (const sentence of cut) {
@@ -157,10 +159,19 @@ describe("rule-search", () => {
                 .join("\\s+")
             );
             expect(words.test(text)).toBe(true);
-            text = text.replace(words, "");
+            // A sentence whose entry names its label's form becomes that form, as the label has it.
+            const form = RULES[label]?.entries.find(
+              (entry) =>
+                entry.file === file &&
+                entry.form !== undefined &&
+                sentence.text.includes(entry.has ?? "\u0000")
+            )?.form;
+            if (form !== undefined) forms++;
+            text = text.replace(words, () => form ?? "");
           }
           writeFileSync(path.join(ablated, file), text);
         }
+        if (label === "ablate-ci-pass") expect(forms).toBeGreaterThan(0);
         expect(searchCut(ablated, head, label).faults).toEqual([]);
         // A cut can take a link with it, so the plant goes in the first of its texts the copy reads.
         const read = roleTexts(ablated, role).files;

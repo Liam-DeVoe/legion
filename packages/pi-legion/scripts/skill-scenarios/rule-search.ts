@@ -45,8 +45,9 @@
 // The head checkout's own search must be clean. Then each sentence that it cuts must be gone from
 // the label's checkout, word for word, and each hit there must be a sentence that the head's search
 // keeps, unchanged, or the label's form of a sentence that an entry cuts (one that a `cut` entry of
-// either tree matches: a sentence with words cut, or a base sentence restored). A hit that is
-// neither, a sentence the head keeps that the label changed included, is a FAULT.
+// either tree matches by its words or by its `form`: a sentence with words cut, or a base sentence
+// restored). A hit that is neither, a sentence the head keeps that the label changed included, is
+// a FAULT.
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
@@ -65,10 +66,13 @@ interface Entry {
   /** Keeps each hit in a fenced block of the file: a format, a template or a command. It may match
    * any number of hits, none included. */
   readonly fenced?: true;
-  /** Present only on a sentence that T5.12 adds (head) or removes (base). */
+  /** Present only on a sentence that T5.12 or T5.13 adds (head) or removes (base). */
   readonly at?: Tree;
   /** What the label does to this sentence. */
   readonly cut?: string;
+  /** Words of the label's form of a `cut` sentence, where the cut changes the words of `has`: the
+   * `cut` mode takes a sentence of the label's checkout that holds them for that form. */
+  readonly form?: string;
   /** Why the sentence does not state the label's rule. */
   readonly keep?: string;
 }
@@ -902,6 +906,7 @@ const ENTRIES_CI_PASS: readonly Entry[] = [
     file: "skills/legion-worker/references/ci-checks.md",
     has: "A `check` block can carry `ci_check`: the name of the GitHub check run that proves the check at the head.",
     cut: "The label cuts it to `the name of a GitHub check run`.",
+    form: "A `check` block can carry `ci_check`: the name of a GitHub check run.",
   },
   {
     file: "skills/legion-worker/references/ci-checks.md",
@@ -1143,6 +1148,7 @@ const ENTRIES_CI_PASS: readonly Entry[] = [
     file: "skills/legion-worker/references/pr-body.md",
     has: "A check with `ci_check` names the CI check run that proves it in place of a `run`",
     cut: "The label cuts it to `A check with ci_check names a GitHub check run in place of a run`.",
+    form: "A check with `ci_check` names a GitHub check run in place of a `run`.",
   },
   {
     file: "skills/legion-worker/references/pr-body.md",
@@ -2173,7 +2179,15 @@ export function searchCut(checkout: string, head: string, label: string): Outcom
         );
         continue;
       }
-      const owner = ownersOf(rule.entries, file, sentence).find((entry) => entry.cut !== undefined);
+      const owner = rule.entries.find(
+        (entry) =>
+          entry.cut !== undefined &&
+          (ownersOf([entry], file, sentence).length === 1 ||
+            (entry.file === file &&
+              entry.form !== undefined &&
+              !sentence.fenced &&
+              sentence.text.includes(entry.form)))
+      );
       if (owner !== undefined) {
         cut++;
         cutFiles.add(file);
