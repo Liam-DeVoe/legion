@@ -34,6 +34,42 @@ func TestTheTargetsDirectionEnumIsTheEvalsDirections(t *testing.T) {
 	}
 }
 
+// TestTheTargetsJudgesEnumIsEveryDeliveryJudge (R5): a delivery answer states the statistics each
+// target judges (measures.Target.Judges), and the generated contract types each of them from the
+// field's enum tag, which the page names every judge by (lib/target.ts's STATISTICS, a record over
+// that union). measures cannot import this package, so the tag restates the judges a register
+// write takes of the delivery evals (deliveryJudges); this ties the two, and holds what every
+// delivery eval of the catalogue judges, its target_judges or its primary series' headline
+// (JudgesOf), to the enum, so a judge added or renamed here fails here, and the contract made from
+// the tag fails the page's compile until the page names it.
+func TestTheTargetsJudgesEnumIsEveryDeliveryJudge(t *testing.T) {
+	field, _ := reflect.TypeFor[measures.Target]().FieldByName("Judges")
+	every := map[string]bool{}
+	for _, judges := range deliveryJudges {
+		for _, judge := range judges {
+			every[judge] = true
+		}
+	}
+	enum := slices.Sorted(maps.Keys(every))
+	if tag := field.Tag.Get("enum"); tag != strings.Join(enum, ",") {
+		t.Errorf("measures.Target.Judges's enum is %q, want every judge the delivery evals take %q", tag, strings.Join(enum, ","))
+	}
+	for _, slug := range DeliveryTargetSlugs {
+		index := slices.IndexFunc(catalogue, func(entry catalogueEntry) bool { return entry.definition.Slug == slug })
+		if index < 0 {
+			t.Fatalf("the catalogue holds no %s", slug)
+		}
+		entry := Entry{Definition: catalogue[index].definition, Series: catalogue[index].series}
+		headline := entry
+		headline.Definition.TargetJudges = nil
+		for _, judge := range slices.Concat(JudgesOf(entry), JudgesOf(headline)) {
+			if !every[judge] {
+				t.Errorf("%s judges %q, which the enum of a delivery target's judges does not hold", slug, judge)
+			}
+		}
+	}
+}
+
 // TestEveryJudgeADeliveryTargetTakesIsStatedByTheDeliveryAnswers (R5): a person may name any
 // statistic an eval's read states as a judge of its target, and the measures answer and the
 // Pipeline judge the six delivery targets' figures by the same targets (VerdictOf). So for each

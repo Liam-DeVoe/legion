@@ -541,7 +541,10 @@ test("a lead-time card colours a day by that day's value of the judged statistic
   cleanup();
 
   // Judged by its median alone, the same day meets, and under the other direction it misses.
-  const byMedian = { ...TARGETS.merge_to_production_minutes, judges: ["minutes.median"] };
+  const byMedian: NonNullable<Targets["merge_to_production_minutes"]> = {
+    ...TARGETS.merge_to_production_minutes,
+    judges: ["minutes.median"],
+  };
   view({
     ...PIPELINE,
     merge_to_production: longTail,

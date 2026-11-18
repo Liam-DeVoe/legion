@@ -44,7 +44,7 @@ func TestEveryFactEqualsTheIndependentReadingOfTheRequirement(t *testing.T) {
 	}
 	computed := map[string]metrics.IssueFacts{}
 	for key, closed := range metrics.ProjectFactsClosed(population, nil) {
-		computed[key] = closed.Grown(closed.Growth, population.To.Sub(closed.AsOf))
+		computed[key] = closed.FactsAt(population.To)
 	}
 	computedScope := population.Project
 	computedWindow := independent.Window{From: population.From, To: population.To}

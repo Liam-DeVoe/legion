@@ -36,7 +36,7 @@ func TestTheSeededHistoryAnswersFactsForEveryIssueLegionWorked(t *testing.T) {
 	}
 	facts := map[string]metrics.IssueFacts{}
 	for key, closed := range metrics.ProjectFactsClosed(population, nil) {
-		facts[key] = closed.Grown(closed.Growth, population.To.Sub(closed.AsOf))
+		facts[key] = closed.FactsAt(population.To)
 	}
 	if len(facts) < 200 {
 		t.Fatalf("the facts hold %d issues of the %d seeded, want at least the 200 the checks count",

@@ -44,9 +44,7 @@ func TestALossMetOnALaterPageIsAnswered(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	held := cursors[changesCursor]
-	lost, err := delivery.CursorLost(t.Context(), run.database.Pool,
-		delivery.ChangeCursor{Seq: held.position, At: held.at, ReadAt: held.updatedAt}, run.at)
+	lost, err := delivery.CursorLost(t.Context(), run.database.Pool, cursors[changesCursor], run.at)
 	if err != nil {
 		t.Fatal(err)
 	}

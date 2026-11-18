@@ -55,6 +55,7 @@ import { formatAge } from "./lib/freshness";
 import {
   dayMeets,
   judgeWord,
+  LEAD_TIME_MINUTES,
   leadTimeValue,
   shownJudges,
   type Target,
@@ -67,10 +68,6 @@ import { SpreadBars } from "./SpreadBars";
 import { TargetBadge } from "./TargetBadge";
 
 const CARD = `flex min-w-0 flex-col gap-1.5 rounded border px-3 py-2 ${surfaceBg} ${borderDefault}`;
-
-/** The statistics a lead-time chart's axis measures, minutes: a target judging one of them is
- *  drawn on it as the dashed line, and one judging the count alone is not. */
-const LEAD_TIME_MINUTES = ["minutes.median", "minutes.p90", "minutes.max"];
 
 /** `/pipeline`: how long PR checks, the staging end-to-end gate and the two deploys take, and how
  *  often each ends in success, over the last seven UTC days. */
@@ -249,12 +246,7 @@ export function PipelineView({
                       <td className={`px-2 py-1 text-right ${textMutedOnCanvas}`}>{job.total.n}</td>
                       <td className="px-2 py-1 text-right">{formatRate(job.total.success_rate)}</td>
                       <td className="px-2 py-1">
-                        {/* No target judges a job's days: every day neutral. */}
-                        <SpreadBars
-                          days={(job.days ?? []).map((day) => ({ ...day, met: null }))}
-                          format={formatDuration}
-                          noun="results"
-                        />
+                        <SpreadBars days={job.days ?? []} format={formatDuration} noun="results" />
                       </td>
                     </tr>
                   );
@@ -393,12 +385,7 @@ function TimingCard(props: {
           p90={timing.total.p90_minutes}
         />
       </div>
-      {/* No target judges a stage's days: every day neutral. */}
-      <SpreadBars
-        days={(timing.days ?? []).map((day) => ({ ...day, met: null }))}
-        format={formatDuration}
-        noun="runs"
-      />
+      <SpreadBars days={timing.days ?? []} format={formatDuration} noun="runs" />
       <div className={`text-xs ${textSecondaryOnSurface}`} data-health>
         Success today <span className="font-semibold">{formatRate(today.success_rate)}</span>
         <span className={textMutedOnSurface}>
@@ -418,7 +405,6 @@ function TimingCard(props: {
           label: d.day,
           partial: d.partial,
           value: d.success_rate,
-          met: null,
         }))}
       />
       <div className={`text-[11px] ${textMutedOnSurface}`}>

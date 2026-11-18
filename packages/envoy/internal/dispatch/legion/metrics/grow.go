@@ -26,18 +26,20 @@ import (
 // of a set of spans or a sum of such measures, and a span still open grows one hour an hour.
 type Growth map[string]float64
 
-// The names Growth keys a fact by, the facts of a map by the prefix their key follows.
+// The names Growth keys a fact by, the facts of a map by the prefix their key follows. The four
+// exported are the ones a board entry carries a rate of (api's legionBoardGrowthOf): the work
+// time, the slot hours, the last moment of measured work and each column's hours.
 const (
-	growthWorkHours      = "work_hours"
-	growthSlotHours      = "slot_hours"
+	GrowthWorkHours      = "work_hours"
+	GrowthSlotHours      = "slot_hours"
 	growthParkedHours    = "parked_hours"
 	growthQueuedHours    = "queued_hours"
 	growthSlotWaitHours  = "slot_wait_hours"
 	growthImplementing   = "implementing_hours_after_first_review"
 	growthTesting        = "testing_hours_after_first_review"
 	growthWorkFirstAt    = "work_first_at"
-	growthWorkLastAt     = "work_last_at"
-	growthPhasePrefix    = "phase_hours."
+	GrowthWorkLastAt     = "work_last_at"
+	GrowthPhasePrefix    = "phase_hours."
 	growthBarPrefix      = "bars."
 	growthBarHours       = "hours"
 	growthSegmentsPrefix = "segments."
@@ -54,8 +56,8 @@ type namedHours struct {
 // measuring a growth (hoursFacts) and applying one (addHours) both read.
 func (f *IssueFacts) scalarHours() [7]namedHours {
 	return [7]namedHours{
-		{growthWorkHours, &f.WorkHours},
-		{growthSlotHours, &f.SlotHours},
+		{GrowthWorkHours, &f.WorkHours},
+		{GrowthSlotHours, &f.SlotHours},
 		{growthParkedHours, &f.ParkedHours},
 		{growthQueuedHours, &f.QueuedHours},
 		{growthSlotWaitHours, &f.SlotWaitHours},
@@ -72,7 +74,7 @@ func (f IssueFacts) hoursFacts() map[string]float64 {
 		facts[scalar.name] = *scalar.field
 	}
 	for id, hours := range f.PhaseHours {
-		facts[growthPhasePrefix+id] = hours
+		facts[GrowthPhasePrefix+id] = hours
 	}
 	for role, bar := range f.Bars {
 		facts[growthBarPrefix+role+"."+growthBarHours] = bar.Hours
@@ -92,7 +94,7 @@ func (f *IssueFacts) workMoment(name string) **time.Time {
 	switch name {
 	case growthWorkFirstAt:
 		return &f.WorkFirstAt
-	case growthWorkLastAt:
+	case GrowthWorkLastAt:
 		return &f.WorkLastAt
 	}
 	return nil
@@ -151,7 +153,7 @@ func (f *IssueFacts) addHours(name string, delta float64) {
 			return
 		}
 	}
-	if id, phase := strings.CutPrefix(name, growthPhasePrefix); phase {
+	if id, phase := strings.CutPrefix(name, GrowthPhasePrefix); phase {
 		if f.PhaseHours == nil {
 			return
 		}

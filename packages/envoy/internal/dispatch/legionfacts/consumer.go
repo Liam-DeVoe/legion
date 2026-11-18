@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -88,8 +89,8 @@ const PassGap = 10 * time.Second
 const feedPage = 1000
 
 // The cursors, one row of issue_facts_cursor each, named for the feed it is read by. A cursor
-// holds the position of the last row of its feed a committed pass read (feedCursor), and the
-// change cursor when the change at that position was recorded.
+// holds the position of the last row of its feed a committed pass read and when that pass ran
+// (readCursors), and the change cursor when the change at that position was recorded.
 const (
 	eventsCursor       = "events"
 	observationsCursor = "legion_observations"
@@ -340,12 +341,17 @@ func passPage(ctx context.Context, deps Deps, sched schedule, safe int64, now ti
 	for _, page := range []feed{read.events, read.observations, read.changes} {
 		for _, touched := range page.touches {
 			if project := needed(touched.project); project != nil {
+				if touched.admission {
+					project.admission = true
+				}
+				// The project's own observations, its admission block and its settings, name
+				// no issue and so no row: a move of the block owes the open rows (admission).
+				if touched.issue == legion.AdmissionKey {
+					continue
+				}
 				project.keys[touched.issue] = true
 				if touched.moved {
 					project.moved[touched.issue] = true
-				}
-				if touched.admission {
-					project.admission = true
 				}
 			}
 		}
@@ -424,10 +430,10 @@ func passPage(ctx context.Context, deps Deps, sched schedule, safe int64, now ti
 		computed = append(computed, one)
 	}
 
-	positions := map[string]feedCursor{
-		eventsCursor:       {position: read.events.position},
-		observationsCursor: {position: read.observations.position},
-		changesCursor:      {position: read.changes.position, at: read.changes.at},
+	positions := map[string]delivery.ChangeCursor{
+		eventsCursor:       {Seq: read.events.position, ReadAt: now},
+		observationsCursor: {Seq: read.observations.position, ReadAt: now},
+		changesCursor:      {Seq: read.changes.position, At: read.changes.at, ReadAt: now},
 	}
 	changed, err := writePass(ctx, deps.Pool, computed, positions, now, self, read.changes.remapped)
 	if err != nil {
@@ -517,7 +523,7 @@ func computeProjectWork(ctx context.Context, pool *store.Pool, project string, w
 // the next drain of any process moves their changes (delivery.DrainPending states the bound). The
 // drain's notification is also the wake of the other process of a roll, whose build the project's
 // record may name (Deps.Deliveries).
-func writePass(ctx context.Context, pool *store.Pool, computed []projectPass, positions map[string]feedCursor, now time.Time, self process, remapped bool) ([]string, error) {
+func writePass(ctx context.Context, pool *store.Pool, computed []projectPass, positions map[string]delivery.ChangeCursor, now time.Time, self process, remapped bool) ([]string, error) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("open the Legion facts' write: %w", err)
@@ -546,7 +552,7 @@ func writePass(ctx context.Context, pool *store.Pool, computed []projectPass, po
 	if err := markComputedWhole(ctx, tx, computed, now, self); err != nil {
 		return nil, err
 	}
-	if err := advanceCursors(ctx, tx, positions, now); err != nil {
+	if err := advanceCursors(ctx, tx, positions); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {

@@ -65,16 +65,19 @@ const (
 
 // evalQueryKeys is the query keys one eval read takes, read from the query struct its route shape
 // names (routeShapes' Params): every key it declares, the struct's `query` tags (queryKeysOf),
-// any other of which the read refuses (undeclaredQueryKey), and those of them it takes one value
-// of, the fields that are no list (oneValueQueryKeys), each of which it refuses named twice
-// (repeatedQueryKey). A list field there is a key the read takes any number of values of.
+// any other of which the read refuses (undeclaredQueryKey), and those it takes one value of, in
+// name order, each of which it refuses named twice (repeatedQueryKey): the fields that are no
+// list (oneValueQueryKeys) and the global session parameter, which every route reads one value of
+// (actingPerson). A list field there is a key the read takes any number of values of.
 type evalQueryKeys struct {
 	declared, oneValue []string
 }
 
 // evalQueryKeysOf is the query keys of params, an eval read's query struct.
 func evalQueryKeysOf(params any) evalQueryKeys {
-	return evalQueryKeys{declared: queryKeysOf(params), oneValue: oneValueQueryKeys(params)}
+	oneValue := append(oneValueQueryKeys(params), evalSessionQueryKey)
+	slices.Sort(oneValue)
+	return evalQueryKeys{declared: queryKeysOf(params), oneValue: oneValue}
 }
 
 // The query keys each eval read takes (evalQueryKeysOf), read once when the package starts. A
@@ -581,19 +584,18 @@ func invalidEvalQuery(err error) error {
 	return errorf(http.StatusBadRequest, "INVALID_QUERY", "%s", err.Error())
 }
 
-// repeatedQueryKey refuses a query naming more than once a key its eval route takes one value of:
-// one of oneValue, the keys of the route shape's query struct that are no list
-// (oneValueQueryKeys, evalQueryKeys), or the global session parameter, which every route reads
-// one value of (actingPerson). 400 INVALID_QUERY naming the first such key in name order, nil
-// where none is. Such a key is read as its first value, so `?kind=legion&kind=ci` would be
-// answered the Legion evals alone: a question other than the one asked, as a key the route does
-// not take would be (undeclaredQueryKey). A list key of the shape (the cross-project read's
-// projects, every read's repositories) is taken any number of times.
+// repeatedQueryKey refuses a query naming more than once a key its route takes one value of: 400
+// INVALID_QUERY naming the first such key in the order oneValue gives them, nil where none is. A
+// delivery read's oneValue is the keys of its shape's query struct that are no list, in the order
+// the shape declares them (oneValueQueryKeys); an eval read's is those and the global session
+// parameter, in name order (evalQueryKeys), and a readings write's the session parameter alone.
+// Such a key is read as its first value, so `?kind=legion&kind=ci` would be answered the Legion
+// evals alone, and ?from=A&from=B the window from A: a question other than the one asked, as a key
+// the route does not take would be (undeclaredQueryKey). A list key of the shape (the
+// cross-project read's projects, every read's repositories, the delivery reads' facets) is taken
+// any number of times, and a delivery route passes over a key it does not read.
 func repeatedQueryKey(query url.Values, oneValue []string) error {
-	for _, key := range slices.Sorted(maps.Keys(query)) {
-		if key != evalSessionQueryKey && !slices.Contains(oneValue, key) {
-			continue
-		}
+	for _, key := range oneValue {
 		if err := namedOnce(query, key); err != nil {
 			return err
 		}
@@ -974,7 +976,7 @@ func (s *server) logEvalReadings(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if err := repeatedQueryKey(query, nil); err != nil {
+	if err := repeatedQueryKey(query, []string{evalSessionQueryKey}); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

@@ -170,15 +170,17 @@ type Result struct {
 // in the order the eval's verdict judges them (evals.JudgesOf: its target_judges, or its primary
 // series' headline statistic where it names none), so a reader names the figure a verdict is of.
 // The answer's status is the window's verdict (evals.VerdictOf); a page that judges one day of a
-// chart compares that day's value of each judge with the value the same way. The enum is the two
-// directions the evals name (evals.DirectionHigherBetter, evals.DirectionLowerBetter), which this
-// package cannot import; evals' TestTheTargetsDirectionEnumIsTheEvalsDirections holds the two
-// together.
+// chart compares that day's value of each judge with the value the same way. The direction's enum
+// is the two directions the evals name (evals.DirectionHigherBetter, evals.DirectionLowerBetter),
+// and the judges' is every judge a register write takes of the delivery evals (evals'
+// deliveryJudges), which this package cannot import; evals'
+// TestTheTargetsDirectionEnumIsTheEvalsDirections and TestTheTargetsJudgesEnumIsEveryDeliveryJudge
+// hold each pair together.
 type Target struct {
 	Value     float64  `json:"value"`
 	Inclusive bool     `json:"inclusive"`
 	Direction string   `json:"direction" enum:"higher_better,lower_better"`
-	Judges    []string `json:"judges"`
+	Judges    []string `json:"judges" enum:"deploys.deploys,deploys.per_day,deploys.with_prs,deploys.with_prs_per_day,issues.value,minutes.max,minutes.median,minutes.n,minutes.p90,per_deploy.confirmed,per_deploy.pending,per_deploy.rate,per_deploy.rejected,per_deploy.total,per_pr.confirmed,per_pr.pending,per_pr.rate,per_pr.rejected,per_pr.reverts,per_pr.total,runs.cancelled,runs.concluded,runs.rate,runs.reached_production,upper_bound.confirmed_or_pending,upper_bound.rate"`
 }
 
 // Targets are the targets a delivery answer judges its measures by: each the target of the eval

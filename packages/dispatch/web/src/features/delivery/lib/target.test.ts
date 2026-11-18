@@ -3,6 +3,7 @@ import type { DeliveryDailyPoint, DeliveryLeadTimeCell } from "../../../api/type
 import {
   dailyValue,
   dayMeets,
+  type Judge,
   judgeWord,
   leadTimeValue,
   meetsTarget,
@@ -25,7 +26,7 @@ function deploys(over: Partial<NonNullable<Target>> = {}): NonNullable<Target> {
 }
 
 /** A lead-time target, under 45 minutes, judging `judges`, with `over`. */
-function minutes(judges: string[], over: Partial<NonNullable<Target>> = {}): NonNullable<Target> {
+function minutes(judges: Judge[], over: Partial<NonNullable<Target>> = {}): NonNullable<Target> {
   return { value: 45, inclusive: false, direction: "lower_better", judges, ...over };
 }
 
@@ -91,7 +92,9 @@ test("a target judging its card's own figure alone names no statistic, and names
 });
 
 test("a judge this page has no word for reads as the server wrote it, and a target with no judges as its value", () => {
-  expect(targetLabel(deploys({ judges: ["latency.p99"] }))).toBe("latency.p99 \u2265 20");
+  // A server newer than the page's contract can judge a statistic the contract does not name.
+  const newer = "latency.p99" as string as Judge;
+  expect(targetLabel(deploys({ judges: [newer] }))).toBe("latency.p99 \u2265 20");
   expect(targetLabel(deploys({ judges: null }))).toBe("\u2265 20");
   expect(shownJudges(deploys({ judges: null }))).toEqual([]);
   expect(shownJudges(null)).toEqual([]);
@@ -115,10 +118,10 @@ test("a judged max implies the same series' median and p90 under lower_better, a
     "minutes.median",
     "minutes.p90",
   ]);
-  expect(shownJudges(minutes(["job:lint.max", "minutes.median"]))).toEqual([
-    "job:lint.max",
-    "minutes.median",
-  ]);
+  // Another series' max, which the contract names for no delivery target: the rule reads the
+  // series a judge is of, not its statistic alone.
+  const otherMax = "job:lint.max" as string as Judge;
+  expect(shownJudges(minutes([otherMax, "minutes.median"]))).toEqual([otherMax, "minutes.median"]);
   // Better higher, a longest value over the target says nothing of the median.
   const higher = minutes(["minutes.max", "minutes.median"], { direction: "higher_better" });
   expect(shownJudges(higher)).toEqual(["minutes.max", "minutes.median"]);

@@ -391,8 +391,8 @@ func TestTheFirstPassWalksEveryFamilyFromItsFirstInputDayWithZeroRows(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := cursors[changesCursor]; got.position != head || got.at == nil || headAt == nil || !got.at.Equal(*headAt) {
-		t.Errorf("the changes cursor stands at %d recorded %v, want the log's head %d recorded %v", got.position, got.at, head, headAt)
+	if got := cursors[changesCursor]; got.Seq != head || got.At == nil || headAt == nil || !got.At.Equal(*headAt) {
+		t.Errorf("the changes cursor stands at %d recorded %v, want the log's head %d recorded %v", got.Seq, got.At, head, headAt)
 	}
 	age, found, err := r.registry.RefresherAge(t.Context(), r.now.Add(time.Minute))
 	if err != nil || !found || age != time.Minute {

@@ -146,14 +146,8 @@ func (s *Store) drainChanges(ctx context.Context) {
 // readings write that read a series' listing without it could write that listing into its day
 // rows after a register write had listed or unlisted the series and its stored rows (relistDays).
 func lockEval(ctx context.Context, tx pgx.Tx, evalID string) error {
-	if _, err := tx.Exec(ctx, lockEvalStatement, evalID); err != nil {
-		return fmt.Errorf("lock eval %s: %w", evalID, err)
-	}
-	return nil
+	return lockEvals(ctx, tx, []string{evalID})
 }
-
-// lockEvalStatement takes the lock of the eval $1 names (lockEval).
-const lockEvalStatement = `select pg_advisory_xact_lock(hashtext('eval:' || $1))`
 
 // lockEvals takes the lock of each eval evalIDs names (lockEval), in one statement, in the byte
 // order of the ids, so two writers that each take several evals' locks through it wait on each

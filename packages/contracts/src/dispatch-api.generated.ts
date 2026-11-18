@@ -4618,7 +4618,36 @@ export interface components {
       /** @enum {string} */
       direction: "higher_better" | "lower_better";
       inclusive: boolean;
-      judges: string[] | null;
+      judges:
+        | (
+            | "deploys.deploys"
+            | "deploys.per_day"
+            | "deploys.with_prs"
+            | "deploys.with_prs_per_day"
+            | "issues.value"
+            | "minutes.max"
+            | "minutes.median"
+            | "minutes.n"
+            | "minutes.p90"
+            | "per_deploy.confirmed"
+            | "per_deploy.pending"
+            | "per_deploy.rate"
+            | "per_deploy.rejected"
+            | "per_deploy.total"
+            | "per_pr.confirmed"
+            | "per_pr.pending"
+            | "per_pr.rate"
+            | "per_pr.rejected"
+            | "per_pr.reverts"
+            | "per_pr.total"
+            | "runs.cancelled"
+            | "runs.concluded"
+            | "runs.rate"
+            | "runs.reached_production"
+            | "upper_bound.confirmed_or_pending"
+            | "upper_bound.rate"
+          )[]
+        | null;
       /** Format: double */
       value: number;
     };

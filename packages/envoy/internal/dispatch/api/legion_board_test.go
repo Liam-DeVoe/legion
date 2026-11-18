@@ -793,7 +793,7 @@ func TestEachProjectsDaemonAnswersItsOwnLegionBoardAndMetrics(t *testing.T) {
 		}
 		facts := map[string]metrics.IssueFacts{}
 		for key, closed := range metrics.ProjectFactsClosed(population, nil) {
-			facts[key] = closed.Grown(closed.Growth, population.To.Sub(closed.AsOf))
+			facts[key] = closed.FactsAt(population.To)
 		}
 		var finished []string
 		for _, key := range slices.Sorted(maps.Keys(facts)) {

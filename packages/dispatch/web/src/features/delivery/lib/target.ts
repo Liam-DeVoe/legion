@@ -11,8 +11,9 @@ import { pct } from "./format";
 /** One measure's target, or null where it is off. */
 export type Target = DeliveryTargets["deploys_per_day"];
 
-/** Which way a measure is better: its eval's direction, as the contract types it. */
-export type Better = NonNullable<Target>["direction"];
+/** One statistic a target may judge, `<series>.<stat>`: every judge the server's register write
+ *  takes of the six delivery evals, as the contract types it. */
+export type Judge = NonNullable<NonNullable<Target>["judges"]>[number];
 
 /** How a caption names one statistic a target may judge, and writes a value of it. */
 interface Statistic {
@@ -35,8 +36,10 @@ const perPR = (value: number) => `${pct(value, 0)} per PR`;
 
 /** Every statistic a delivery eval's target may judge: the judges the server's register write
  *  takes of the six delivery evals (packages/envoy/internal/dispatch/evals/delivery_targets.go,
- *  `deliveryJudges`), each figure the measures answer states of them. */
-const STATISTICS: Readonly<Record<string, Statistic>> = {
+ *  `deliveryJudges`), each figure the measures answer states of them. The contract's enum of a
+ *  target's judges is that list (`Judge`), so a judge the server comes to take and this record
+ *  does not name fails the compile. */
+const STATISTICS: Readonly<Record<Judge, Statistic>> = {
   "deploys.per_day": { word: "deploys", format: perDay, alone: perDay },
   "deploys.with_prs_per_day": { word: "deploys with a PR", format: perDay },
   "deploys.deploys": { word: "deploys", format: count },
@@ -68,9 +71,11 @@ const STATISTICS: Readonly<Record<string, Statistic>> = {
   "issues.value": { word: "unowned P0 issues", format: count, alone: count },
 };
 
-/** A judge as a caption names it; one this page does not know reads as the server wrote it. */
+/** A judge as a caption names it; one this page does not know, from a server newer than its
+ *  contract, reads as the server wrote it. */
 function statistic(judge: string): Statistic {
-  return STATISTICS[judge] ?? { word: judge, format: count };
+  const known: Readonly<Partial<Record<string, Statistic>>> = STATISTICS;
+  return known[judge] ?? { word: judge, format: count };
 }
 
 /** The statistics target's verdict judges, in the order the server judges them: the eval's whole
@@ -182,13 +187,25 @@ export function dayMeets(
   return unknown ? null : true;
 }
 
+/** Whether target shows (`shownJudges`) any of `judges`: false where it is off, which shows none. */
+export function showsAnyJudge(target: Target, judges: readonly string[]): boolean {
+  return shownJudges(target).some((judge) => judges.includes(judge));
+}
+
 /** Where a chart draws target's dashed line: the target's value where one of its shown judges
  *  (`shownJudges`) is one of `drawn`, the statistics the chart's axis measures, and undefined
  *  where it is off or shows none of them, since its value is then of another figure than the
  *  bars'. */
 export function targetLine(target: Target, drawn: readonly string[]): number | undefined {
-  return shownJudges(target).some((judge) => drawn.includes(judge)) ? target?.value : undefined;
+  return showsAnyJudge(target, drawn) ? target?.value : undefined;
 }
+
+/** The statistics a day's deploys and a day's run success are a value of (`dailyValue`): the
+ *  judges the two charts' bars, their dashed target line and the per-day table's two toned
+ *  columns show a figure of. A target judging another statistic colours a day by that one where
+ *  the day states it, and draws no line over bars of another figure. */
+export const DEPLOY_BARS: readonly Judge[] = ["deploys.per_day", "deploys.deploys"];
+export const RUN_SUCCESS_BARS: readonly Judge[] = ["runs.rate"];
 
 /** A measures answer's day row's value of a judge of deploy-frequency or deploy-run-success, null
  *  where the row states none (a deploy with a PR, a failure rate). A day's deploys are that day's
@@ -210,6 +227,10 @@ export function dailyValue(day: DeliveryDailyPoint, judge: string): number | nul
       return null;
   }
 }
+
+/** The statistics a lead-time chart's axis measures, minutes (`leadTimeValue`): a target judging
+ *  one of them is drawn on it as the dashed line, and one judging the count alone is not. */
+export const LEAD_TIME_MINUTES: readonly Judge[] = ["minutes.median", "minutes.p90", "minutes.max"];
 
 /** A Pipeline lead-time cell's value of a lead-time eval's judge, a day's or the seven days',
  *  null where it states none. */

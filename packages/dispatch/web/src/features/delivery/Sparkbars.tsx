@@ -10,8 +10,9 @@ export interface SparkbarPoint {
   label: string; // tooltip prefix, e.g. "2026-09-27"
   value: number | null; // null: nothing to measure that day
   partial: boolean;
-  // Whether the day meets the target; null draws its bar neutral, as every bar is with no target.
-  met: boolean | null;
+  // Whether the day meets the target; null or absent draws its bar neutral, as every bar is with
+  // no target.
+  met?: boolean | null;
 }
 
 interface Props {
@@ -62,7 +63,7 @@ export function Sparkbars({ points, target, max, format }: Props) {
               y={y(p.value)}
               width={BAR - 2}
               height={Math.max(HEIGHT - y(p.value), 1)}
-              className={p.met === null ? chartBar.neutral : p.met ? chartBar.met : chartBar.missed}
+              className={p.met == null ? chartBar.neutral : p.met ? chartBar.met : chartBar.missed}
             />
           )}
         </g>

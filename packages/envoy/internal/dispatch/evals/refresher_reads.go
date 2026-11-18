@@ -407,7 +407,10 @@ func (s *Store) legionInputStart(ctx context.Context, project string) (*time.Tim
 // 20261117100014), so it takes no change log lock; a batch of them is moved into the log once it
 // has committed (drainChanges).
 func (r *refresh) fillLoggedZeros(ctx context.Context, project string, ids []string) (int64, error) {
-	logged := `select eval_id from evals_current where project_key = $1 and source = $2`
+	// loggedEvals is project's logged evals ($1 the project, $2 SourceLogged), which the fill reads
+	// twice, each read ending in the ids it keeps.
+	const loggedEvals = `select eval_id from evals_current where project_key = $1 and source = $2`
+	logged := loggedEvals
 	args := []any{project, SourceLogged}
 	if ids != nil {
 		logged += ` and eval_id = any($3)`
@@ -443,7 +446,7 @@ func (r *refresh) fillLoggedZeros(ctx context.Context, project string, ids []str
 			       last_value(listed) over (series_days rows between unbounded preceding and unbounded following) as listed
 			from eval_days
 			where project_key = $1 and writer = $5 and repo = ''
-			  and eval_id = any(array(select eval_id from evals_current where project_key = $1 and source = $2 and eval_id = any($6)))
+			  and eval_id = any(array(`+loggedEvals+` and eval_id = any($6)))
 			window series_days as (partition by eval_id, series order by day)
 		) stored
 		cross join generate_series((stored.day + 1)::timestamp,

@@ -6,6 +6,7 @@ body: |-
   delivery `DeliveryTargets` is a `DeliveryTarget`, `{value, inclusive, direction, judges}`, or
   null where its eval's target is off: `direction` is the eval's, `higher_better` or
   `lower_better`, and `judges` the statistics its verdict judges (`<series>.<stat>`, its
-  `target_judges`, or its primary series' headline statistic where it names none). Every
+  `target_judges`, or its primary series' headline statistic where it names none), each typed as
+  one of the judges a register write takes of the six delivery evals. Every
   `DeliveryKpiStatus` field is nullable, and `DeliveryPipelineResponse` carries `status`, a
   `DeliveryPipelineStatus` of its two lead-time cards' verdicts.

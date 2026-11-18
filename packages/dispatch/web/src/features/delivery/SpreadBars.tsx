@@ -12,9 +12,9 @@ export interface SpreadBarDay {
   median_minutes: number | null;
   p90_minutes: number | null;
   partial: boolean;
-  // Whether the day meets the target, both its bars coloured by it; null draws them neutral, as
-  // every day is with no target.
-  met: boolean | null;
+  // Whether the day meets the target, both its bars coloured by it; null or absent draws them
+  // neutral, as every day is with no target.
+  met?: boolean | null;
 }
 
 interface Props {
@@ -72,7 +72,7 @@ export function SpreadBars({ days, target, noun, format }: Props) {
                 width={BAR - 2}
                 height={Math.max(HEIGHT - y(d.p90_minutes), 1)}
                 className={
-                  d.met === null
+                  d.met == null
                     ? chartBar.neutralFaint
                     : d.met
                       ? chartBar.metFaint
@@ -85,7 +85,7 @@ export function SpreadBars({ days, target, noun, format }: Props) {
                 width={BAR - 2}
                 height={Math.max(HEIGHT - y(d.median_minutes), 1)}
                 className={
-                  d.met === null ? chartBar.neutral : d.met ? chartBar.met : chartBar.missed
+                  d.met == null ? chartBar.neutral : d.met ? chartBar.met : chartBar.missed
                 }
               />
             </>

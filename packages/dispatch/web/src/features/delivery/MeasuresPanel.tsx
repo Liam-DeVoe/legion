@@ -31,9 +31,11 @@ import {
 import { buildIssuePath } from "../refs/routes";
 import { formatMinutes, NO_VALUE, pct } from "./lib/format";
 import {
+  DEPLOY_BARS,
   dailyValue,
   dayMeets,
-  shownJudges,
+  RUN_SUCCESS_BARS,
+  showsAnyJudge,
   type Target,
   targetLabel,
   targetLine,
@@ -45,13 +47,6 @@ const UNOWNED_P0_SHOWN = 6;
 
 /** What a pending read shows in each number's place. */
 const PENDING = "\u2026";
-
-/** The statistics a day's deploys and a day's run success are a value of (`lib/target.ts`'s
- *  `dailyValue`): the judges the two charts' bars, their dashed target line and the per-day
- *  table's two toned columns show a figure of. A target judging another statistic colours a day
- *  by that one where the day states it, and draws no line over bars of another figure. */
-const DEPLOY_BARS = ["deploys.per_day", "deploys.deploys"];
-const RUN_SUCCESS_BARS = ["runs.rate"];
 
 /** The change-failure-rate card's breakdown: deploys with a confirmed break, and how many more
  *  have only unreviewed (pending) flags. `confirmedOrPending` counts each deploy once (the
@@ -129,7 +124,7 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
     met: (response: DeliveryMeasuresResponse) => boolean | null
   ): string => {
     if (data === undefined) return textMutedOnSurface;
-    return shownJudges(target(data)).includes(judge) ? tone(met(data)) : textPrimaryOnSurface;
+    return showsAnyJudge(target(data), [judge]) ? tone(met(data)) : textPrimaryOnSurface;
   };
   const targets = data?.targets;
   const status = data?.status;
@@ -301,12 +296,11 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
             </span>
             <span className="flex items-baseline gap-1">
               <BigNumber
-                className={
-                  data !== undefined &&
-                  shownJudges(data.targets.opened_to_merge_median_minutes).includes("minutes.p90")
-                    ? tone(data.status.opened_to_merge)
-                    : textPrimaryOnSurface
-                }
+                className={judgedTone(
+                  "minutes.p90",
+                  (d) => d.targets.opened_to_merge_median_minutes,
+                  (d) => d.status.opened_to_merge
+                )}
               >
                 {show((d) => formatMinutes(d.measures.lead_time.opened_to_merge.p90_minutes))}
               </BigNumber>
@@ -441,7 +435,7 @@ function Definitions({ data }: { data: DeliveryMeasuresResponse }): ReactNode {
   // statistic the cell shows, and none where it judges another: that verdict is of a figure the
   // cell does not show. An off target judges nothing, which reads muted.
   const cellTone = (d: DeliveryDailyPoint, target: Target, shown: readonly string[]): string =>
-    target !== null && !shownJudges(target).some((judge) => shown.includes(judge))
+    target !== null && !showsAnyJudge(target, shown)
       ? ""
       : tone(dayMeets(target, (judge) => dailyValue(d, judge)));
   const frequency = measures.deploy_frequency;

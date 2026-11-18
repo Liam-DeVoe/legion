@@ -156,23 +156,23 @@ type legionBoardGrowth struct {
 
 // legionBoardGrowthOf is a stored row's growth in the entry's own names. metrics.Growth keys the
 // work time, the slot hours and the last moment of work by those same names and the hours of a
-// column by `phase_hours.` and the column id (legion/metrics/grow.go). Its other keys name facts
-// the entry does not carry - the bars, the idle hours by role, the parked, queued and slot-wait
-// hours, the hours after the first review - and are left out, as is work_first_at: past the
-// moment a row is closed at, the end of a bar still open is the one moment that moves
-// (legion/metrics/closed.go), so the computation gives the first moment of work no rate.
+// column by its prefix and the column id, the four names legion/metrics/grow.go exports for this.
+// Its other keys name facts the entry does not carry - the bars, the idle hours by role, the
+// parked, queued and slot-wait hours, the hours after the first review - and are left out, as is
+// work_first_at: past the moment a row is closed at, the end of a bar still open is the one moment
+// that moves (legion/metrics/closed.go), so the computation gives the first moment of work no rate.
 func legionBoardGrowthOf(growth metrics.Growth) legionBoardGrowth {
 	rates := legionBoardGrowth{HoursByPhase: map[string]float64{}}
 	for name, rate := range growth {
 		switch name {
-		case "work_hours":
+		case metrics.GrowthWorkHours:
 			rates.WorkHours = rate
-		case "slot_hours":
+		case metrics.GrowthSlotHours:
 			rates.SlotHours = rate
-		case "work_last_at":
+		case metrics.GrowthWorkLastAt:
 			rates.WorkLastAt = rate
 		default:
-			if column, phase := strings.CutPrefix(name, "phase_hours."); phase {
+			if column, phase := strings.CutPrefix(name, metrics.GrowthPhasePrefix); phase {
 				rates.HoursByPhase[column] = rate
 			}
 		}

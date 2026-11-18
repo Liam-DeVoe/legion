@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"hash/fnv"
+	"maps"
 	"reflect"
+	"slices"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
@@ -384,18 +386,20 @@ var deliveryLiveKinds = map[string]deliveryLiveClasses{
 	// An entry is sent only when its stored row moved. Each read closes every open row at its own
 	// clock (legionfacts.Row.At), so an open issue's hours, work time, slot hours and last moment
 	// of work, and the as_of they are of, differ on every recompute, a sampler's read once a
-	// minute among them; the entry's revision leaves those five out, so a recompute that moved
-	// only the clock sends no entry, where it would otherwise resend every open issue's (about
-	// 2,600 at INFRA's size). What the revision keeps moves whenever the stored row does: a write
-	// of a row whose values moved stamps its updated_at (legionfacts.WriteProject), and its
-	// growth, why it waits, its close and every other value the entry carries are kept as stored.
-	// The entry carries its as_of and its growth, so a page closes the values it holds at its own
-	// clock by the rule the read closes them by, and an entry that is sent goes whole, its values
-	// grown to the moment of the recompute that sent it.
+	// minute among them; the entry's revision leaves out every value the entry's growth names
+	// (legionBoardGrowth's fields, which are the entry's own names for the values it grows) and
+	// their as_of, so a recompute that moved only the clock sends no entry, where it would
+	// otherwise resend every open issue's (about 2,600 at INFRA's size), and a value that comes to
+	// grow is left out once its rate joins the growth. What the revision keeps moves whenever the
+	// stored row does: a write of a row whose values moved stamps its updated_at
+	// (legionfacts.WriteProject), and its growth, why it waits, its close and every other value
+	// the entry carries are kept as stored. The entry carries its as_of and its growth, so a page
+	// closes the values it holds at its own clock by the rule the read closes them by, and an entry
+	// that is sent goes whole, its values grown to the moment of the recompute that sent it.
 	legionBoardView: {
 		body: reflect.TypeFor[legionBoardResponse](),
 		maps: map[string][]string{
-			"issues": {"hours_by_phase", "work_hours", "slot_hours", "work_last_at", "as_of"},
+			"issues": append(slices.Sorted(maps.Keys(bodyKeysOf(reflect.TypeFor[legionBoardGrowth]()))), "as_of"),
 		},
 		whole: map[string][]string{
 			"project": nil, "header": nil, "columns": nil, "settings": nil,

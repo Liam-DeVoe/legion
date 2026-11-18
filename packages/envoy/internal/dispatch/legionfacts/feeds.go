@@ -66,16 +66,16 @@ type pages struct {
 // stale for ever, since a pull request merged inside the gap is read by no page and no pass
 // computes a row its feeds did not name. The issues that page's own changes named are kept and
 // computed, which is work the next page makes again from the held cursor.
-func readPages(ctx context.Context, q Querier, cursors map[string]feedCursor, safe int64, now time.Time, limit int, unfed bool) (pages, error) {
+func readPages(ctx context.Context, q Querier, cursors map[string]delivery.ChangeCursor, safe int64, now time.Time, limit int, unfed bool) (pages, error) {
 	if len(cursors) == 0 {
 		return readFeedHeads(ctx, q, safe)
 	}
 	read := pages{}
 	var err error
-	if read.events, err = readEventPage(ctx, q, cursors[eventsCursor].position, safe, limit); err != nil {
+	if read.events, err = readEventPage(ctx, q, cursors[eventsCursor].Seq, safe, limit); err != nil {
 		return pages{}, err
 	}
-	if read.observations, err = readObservationPage(ctx, q, cursors[observationsCursor].position, limit); err != nil {
+	if read.observations, err = readObservationPage(ctx, q, cursors[observationsCursor].Seq, limit); err != nil {
 		return pages{}, err
 	}
 	if read.changes, read.lost, err = readChangePage(ctx, q, cursors[changesCursor], now, limit); err != nil {
@@ -88,13 +88,15 @@ func readPages(ctx context.Context, q Querier, cursors map[string]feedCursor, sa
 	}
 	if !unfed {
 		held := cursors[changesCursor]
-		read.changes.position, read.changes.at, read.lost = held.position, held.at, false
+		read.changes.position, read.changes.at, read.lost = held.Seq, held.At, false
 		read.more, read.unfed = true, true
 		return read, nil
 	}
-	if read.changes.position, read.changes.at, err = changesHead(ctx, q); err != nil {
-		return pages{}, err
+	head, err := delivery.ChangesHead(ctx, q)
+	if err != nil {
+		return pages{}, fmt.Errorf("read the head of the delivery changes: %w", err)
 	}
+	read.changes.position, read.changes.at = head.Seq, head.At
 	return read, nil
 }
 
@@ -107,32 +109,15 @@ func readFeedHeads(ctx context.Context, q Querier, safe int64) (pages, error) {
 	if err := q.QueryRow(ctx, `select coalesce(max(id), 0) from legion_observations`).Scan(&observations); err != nil {
 		return pages{}, fmt.Errorf("read the head of the Legion observations: %w", err)
 	}
-	changes, at, err := changesHead(ctx, q)
+	changes, err := delivery.ChangesHead(ctx, q)
 	if err != nil {
-		return pages{}, err
+		return pages{}, fmt.Errorf("read the head of the delivery changes: %w", err)
 	}
 	return pages{
 		events:       feed{position: safe},
 		observations: feed{position: observations},
-		changes:      feed{position: changes, at: at},
+		changes:      feed{position: changes.Seq, at: changes.At},
 	}, nil
-}
-
-// changesHead is the newest change the log holds and when it was recorded, which a cursor moved
-// to the log's head rests on; 0 and nil where the log is empty.
-func changesHead(ctx context.Context, q Querier) (int64, *time.Time, error) {
-	head, err := delivery.LatestChangeSeq(ctx, q)
-	if err != nil {
-		return 0, nil, fmt.Errorf("read the head of the delivery changes: %w", err)
-	}
-	if head == 0 {
-		return 0, nil, nil
-	}
-	at, err := delivery.ChangeAt(ctx, q, head)
-	if err != nil {
-		return 0, nil, fmt.Errorf("read the delivery change at %d: %w", head, err)
-	}
-	return head, at, nil
 }
 
 // feed is what one page of one feed read: where that feed now stands, the issues it named, the
@@ -173,8 +158,9 @@ type filing struct {
 // and the tree it left, which is read from the issue's stored root_key (leftTrees).
 //
 // The admission block is an observation of the project under legion.AdmissionKey, which is no
-// issue's key and holds no stored row. It moves the waiting reason of rows nothing else on the
-// page names (readObservationPage), so the pass states the project's open rows for it (openRows).
+// issue's key and holds no stored row. Where it moved what a waiting reason reads of it, it moves
+// the reason of rows nothing else on the page names (readObservationPage), so the pass states the
+// project's open rows for it (openRows).
 type touch struct {
 	project   string
 	issue     string
@@ -429,7 +415,7 @@ func sessionIssues(ctx context.Context, q Querier, sessions, titles []string) ([
 
 // readObservationPage is the page of the daemon's observations after the cursor: up to limit
 // rows above after, each naming its project, its issue, whether it moves that issue between
-// trees and whether it is the project's admission block.
+// trees and whether it moves the project's admission block in what a waiting reason reads.
 //
 // An observation of legion.FieldTree is the daemon naming the issue's tree, and that is a move
 // of the same kind as a parent link moving: it takes the issue out of the tree it stood in and
@@ -447,9 +433,14 @@ func sessionIssues(ctx context.Context, q Querier, sessions, titles []string) ([
 // it (rowsOf, reasonOf): the issue's place in the daemon's line, the blockers the block names and
 // so the column the issue stands in. A blocker that finishes moves an issue from the block's
 // Blocked to its Waiting, and the sampler writes the block alone, since nothing of the issue
-// itself moved. The row is marked (touch.admission), and the pass states the project's open rows
-// beside the rows its other changes touch (rowsToCompute), so the reasons the block moved are
-// computed again.
+// itself moved. The sampler writes the block whenever any part of it moved, its cap, its active
+// slots and its live trees among them, and those move no reason, so the row is compared with the
+// project's block before it (blockMoved): that block's value is the newest row of the same field
+// observed before this one, one probe of legion_observations_point (migration 20261103170923) in
+// this page's own statement, and only for an admission row. A row that moved the block in what a
+// reason reads is marked (touch.admission), and the pass states the project's open rows beside
+// the rows its other changes touch (rowsToCompute), so the reasons the block moved are computed
+// again; any other row of the block, and the project's settings, which no row reads, mark nothing.
 //
 // It needs no horizon, and that is the one way this cursor differs from the events cursor. One
 // leased sampler writes legion_observations (legion.RunSampler, one pass a minute, one process
@@ -457,10 +448,20 @@ func sessionIssues(ctx context.Context, q Querier, sessions, titles []string) ([
 // ids a reader pages by are commit order.
 func readObservationPage(ctx context.Context, q Querier, after int64, limit int) (feed, error) {
 	rows, err := q.Query(ctx, `
-		select id, project, issue_key, field = $2, issue_key = $3 and field = $4
-		from legion_observations
-		where id > $1
-		order by id
+		select observation.id, observation.project, observation.issue_key, observation.field = $2,
+		       observation.issue_key = $3 and observation.field = $4,
+		       case when observation.issue_key = $3 and observation.field = $4
+		            then nullif(observation.value, 'null'::jsonb) end,
+		       case when observation.issue_key = $3 and observation.field = $4 then (
+		           select nullif(earlier.value, 'null'::jsonb)
+		           from legion_observations earlier
+		           where earlier.project = observation.project and earlier.issue_key = observation.issue_key
+		             and earlier.field = observation.field and earlier.observed_at < observation.observed_at
+		           order by earlier.observed_at desc
+		           limit 1) end
+		from legion_observations observation
+		where observation.id > $1
+		order by observation.id
 		limit $5
 	`, after, legion.FieldTree, legion.AdmissionKey, legion.FieldAdmission, limit)
 	if err != nil {
@@ -470,8 +471,12 @@ func readObservationPage(ctx context.Context, q Querier, after int64, limit int)
 	page := feed{position: after}
 	for rows.Next() {
 		var touched touch
-		if err := rows.Scan(&page.position, &touched.project, &touched.issue, &touched.moved, &touched.admission); err != nil {
+		var block, before []byte
+		if err := rows.Scan(&page.position, &touched.project, &touched.issue, &touched.moved, &touched.admission, &block, &before); err != nil {
 			return feed{}, fmt.Errorf("read the Legion observations after %d: %w", after, err)
+		}
+		if touched.admission {
+			touched.admission = blockMoved(before, block)
 		}
 		page.touches = append(page.touches, touched)
 	}
@@ -480,6 +485,29 @@ func readObservationPage(ctx context.Context, q Querier, after int64, limit int)
 	}
 	page.full = len(page.touches) == limit
 	return page, nil
+}
+
+// blockMoved is whether an admission row whose value is after moved what a waiting reason reads of
+// the project's block from before, the value of the admission row before it (each nil for no row
+// and for a `null` one): whether a block is read at all, its Waiting and its Blocked
+// (legion.NewWaitingLine). A value is read as the facts read it (metrics' readReported, through
+// legion.ParseAdmission), and a value of another shape is no block. The cap, the active slots and
+// the live trees move no reason.
+func blockMoved(before, after []byte) bool {
+	read := func(value []byte) *legion.Admission {
+		if value == nil {
+			return nil
+		}
+		block, _ := legion.ParseAdmission(value)
+		return block
+	}
+	was, is := read(before), read(after)
+	if was == nil || is == nil {
+		return (was == nil) != (is == nil)
+	}
+	return !slices.Equal(was.Waiting, is.Waiting) || !slices.EqualFunc(was.Blocked, is.Blocked, func(a, b legion.BlockedIssue) bool {
+		return a.Issue == b.Issue && slices.Equal(a.BlockedBy, b.BlockedBy)
+	})
 }
 
 // readChangePage is the page of delivery changes after the cursor (delivery.ChangesSince, whose
@@ -511,12 +539,12 @@ func readObservationPage(ctx context.Context, q Querier, after int64, limit int)
 // would have named cannot be known, so every project is computed whole. A change pruned after its
 // retention while passes committed within it is no loss: the routine prune of a quiet day takes
 // the change the cursor rests on, or every row, and the pass after it reads on.
-func readChangePage(ctx context.Context, q Querier, after feedCursor, now time.Time, limit int) (feed, bool, error) {
-	changes, err := delivery.ChangesSince(ctx, q, after.position, limit)
+func readChangePage(ctx context.Context, q Querier, after delivery.ChangeCursor, now time.Time, limit int) (feed, bool, error) {
+	changes, err := delivery.ChangesSince(ctx, q, after.Seq, limit)
 	if err != nil {
-		return feed{}, false, fmt.Errorf("read the delivery changes after %d: %w", after.position, err)
+		return feed{}, false, fmt.Errorf("read the delivery changes after %d: %w", after.Seq, err)
 	}
-	page := feed{position: after.position, at: after.at, full: len(changes) == limit}
+	page := feed{position: after.Seq, at: after.At, full: len(changes) == limit}
 	repos, refs := make([]string, 0, len(changes)), make([]string, 0, len(changes))
 	merges := []time.Time{}
 	for _, change := range changes {
@@ -534,10 +562,9 @@ func readChangePage(ctx context.Context, q Querier, after feedCursor, now time.T
 			merges = append(merges, *change.TOld)
 		}
 	}
-	cursor := delivery.ChangeCursor{Seq: after.position, At: after.at, ReadAt: after.updatedAt}
-	lost, err := delivery.CursorLost(ctx, q, cursor, now)
+	lost, err := delivery.CursorLost(ctx, q, after, now)
 	if err != nil {
-		return feed{}, false, fmt.Errorf("read the delivery change at %d: %w", after.position, err)
+		return feed{}, false, fmt.Errorf("read the delivery change at %d: %w", after.Seq, err)
 	}
 	if len(repos) == 0 {
 		return page, lost, nil
@@ -620,30 +647,23 @@ const lostMergesQuery = `
 		where request.issue_key = fact.issue_key and request.merged_at = fact.merged_at
 		  and request.unfetchable_at is null)`
 
-// feedCursor is where one feed stands: the position the last committed pass read through, when
-// that pass ran (updatedAt), and for the change cursor when the change at the position was
-// recorded (at, nil for the other two and for a position no change holds), which the lost-cursor
-// rule reads (delivery.CursorLost).
-type feedCursor struct {
-	position  int64
-	at        *time.Time
-	updatedAt time.Time
-}
-
-// readCursors is where each feed stands, by cursor name. A name with no row stands at 0, which is
-// a feed this database has read nothing of, and no row at all is a database no pass has committed
-// on, which is what readPages reads its feeds' heads for.
-func readCursors(ctx context.Context, q Querier) (map[string]feedCursor, error) {
+// readCursors is where each feed stands, by cursor name: the position the last committed pass read
+// through (Seq), when that pass ran (ReadAt, the row's updated_at), and for the change cursor when
+// the change at the position was recorded (At, nil for the other two and for a position no change
+// holds), which the lost-cursor rule reads (delivery.CursorLost). A name with no row stands at 0,
+// which is a feed this database has read nothing of, and no row at all is a database no pass has
+// committed on, which is what readPages reads its feeds' heads for.
+func readCursors(ctx context.Context, q Querier) (map[string]delivery.ChangeCursor, error) {
 	rows, err := q.Query(ctx, `select name, position, at, updated_at from issue_facts_cursor where name = any($1::text[])`, cursorNames)
 	if err != nil {
 		return nil, fmt.Errorf("read the Legion facts' cursors: %w", err)
 	}
 	defer rows.Close()
-	cursors := make(map[string]feedCursor, len(cursorNames))
+	cursors := make(map[string]delivery.ChangeCursor, len(cursorNames))
 	for rows.Next() {
 		var name string
-		var cursor feedCursor
-		if err := rows.Scan(&name, &cursor.position, &cursor.at, &cursor.updatedAt); err != nil {
+		var cursor delivery.ChangeCursor
+		if err := rows.Scan(&name, &cursor.Seq, &cursor.At, &cursor.ReadAt); err != nil {
 			return nil, fmt.Errorf("read the Legion facts' cursors: %w", err)
 		}
 		cursors[name] = cursor
@@ -654,26 +674,27 @@ func readCursors(ctx context.Context, q Querier) (map[string]feedCursor, error) 
 	return cursors, nil
 }
 
-// advanceCursors moves the three cursors to the positions this page read, the change cursor with
-// when the change at its position was recorded (feedCursor.at), and stamps each with the moment
-// its pass ran at, which is the moment CursorAge measures from and the one the lost-cursor rule
-// reads as the pass's last read; the positions' own updatedAt is not read. A cursor whose feed
-// held nothing new keeps its position and takes the new stamp: the pass covered the feed up to
-// there, and the stamp is what says how recently a pass read the feeds.
+// advanceCursors writes the three cursors as positions holds them, the rows readCursors reads
+// back: each at the position this page read (Seq), the change cursor with when the change at its
+// position was recorded (At), and each stamped with its ReadAt, the moment its pass ran at, which
+// is the moment CursorAge measures from and the one the lost-cursor rule reads as the pass's last
+// read. A cursor whose feed held nothing new keeps its position and takes the new stamp: the pass
+// covered the feed up to there, and the stamp is what says how recently a pass read the feeds.
 //
 // It runs in the transaction that wrote the rows the positions cover (writePass).
-func advanceCursors(ctx context.Context, tx pgx.Tx, positions map[string]feedCursor, now time.Time) error {
+func advanceCursors(ctx context.Context, tx pgx.Tx, positions map[string]delivery.ChangeCursor) error {
 	through, recorded := make([]int64, len(cursorNames)), make([]*time.Time, len(cursorNames))
+	stamps := make([]time.Time, len(cursorNames))
 	for index, name := range cursorNames {
-		through[index], recorded[index] = positions[name].position, positions[name].at
+		through[index], recorded[index], stamps[index] = positions[name].Seq, positions[name].At, positions[name].ReadAt
 	}
 	_, err := tx.Exec(ctx, `
 		insert into issue_facts_cursor (name, position, at, updated_at)
-		select name, position, at, $4
-		from unnest($1::text[], $2::bigint[], $3::timestamptz[]) as given(name, position, at)
+		select name, position, at, read_at
+		from unnest($1::text[], $2::bigint[], $3::timestamptz[], $4::timestamptz[]) as given(name, position, at, read_at)
 		on conflict (name) do update
 		set position = excluded.position, at = excluded.at, updated_at = excluded.updated_at
-	`, cursorNames, through, recorded, now)
+	`, cursorNames, through, recorded, stamps)
 	if err != nil {
 		return fmt.Errorf("move the Legion facts' cursors: %w", err)
 	}

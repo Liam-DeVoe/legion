@@ -65,8 +65,10 @@ func pauseInserts(t *testing.T, r rig, table, when string) pgx.Tx {
 // behind the pause or behind first, or answers, then lets first on and answers both writers'
 // errors. A second writer that needs no lock first holds answers at once: in the old orders it
 // waited on the change log's lock, which no eval writer takes any more. Each writer runs under
-// lockOrderBound, so a wait that never ends answers the deadline.
-func race(t *testing.T, holder pgx.Tx, first, second func(ctx context.Context) error) (error, error) {
+// lockOrderBound, so a wait that never ends answers the deadline. Each of whileWaiting runs once
+// the second writer waits or answered, before first is let on: what a test observes of the two
+// writers' waits.
+func race(t *testing.T, holder pgx.Tx, first, second func(ctx context.Context) error, whileWaiting ...func()) (error, error) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), lockOrderBound)
 	defer cancel()
@@ -90,6 +92,9 @@ func race(t *testing.T, holder pgx.Tx, first, second func(ctx context.Context) e
 		if time.Now().After(deadline) {
 			t.Fatalf("the second writer neither waited, behind the pause or the first writer, nor answered")
 		}
+	}
+	for _, observe := range whileWaiting {
+		observe()
 	}
 	if err := holder.Commit(t.Context()); err != nil {
 		t.Fatalf("let the first writer on: %v", err)
@@ -192,15 +197,25 @@ func collateSeriesAsADeploymentDoes(t *testing.T, r rig) {
 // deployment's collation. Each has a row on the 4th and none after it; the readings write carries
 // a reading of each on the 6th, and the fill writes each series' zero rows through the 7th. The
 // readings write is paused at its insert of latency's row of the 6th, having inserted Queue's,
-// since it takes the rows by their bytes. The fill took its rows in the collation's order: it
-// inserted latency's rows of the 5th to the 7th, then Queue's of the 5th, and waited for the
-// readings write's uncommitted Queue row of the 6th, and the readings write, let on, waited for
-// the fill's latency row of the 6th: a deadlock. Both now land: each series holds its readings on
-// the 4th and the 6th and zero rows on the 5th and the 7th.
+// since it takes the rows by their bytes.
+//
+// It pins that the two never deadlock, by either of two guards. Every writer of an eval's day rows
+// takes the eval's lock first (lockEval, lockEvals), so the fill waits for the readings write to
+// commit before it reads or inserts a row; and every statement that inserts or locks those rows
+// takes them in the byte order of their keys (writeDays), so two writers that did run side by side
+// would take them in one order. With the lock taken the second guard is never reached, so the
+// deadlock this test looks for comes back only once both are gone: the fill, taking its rows in
+// the collation's order, inserted latency's rows of the 5th to the 7th, then Queue's of the 5th,
+// and waited for the readings write's uncommitted Queue row of the 6th, and the readings write,
+// let on, waited for the fill's latency row of the 6th. What it observes of the first guard alone
+// is that the fill waited on the eval's advisory lock while the paused readings write held it
+// (requireQueuedOnTheEvalLock), which fails once the fill stops taking the lock. Both land: each
+// series holds its readings on the 4th and the 6th and zero rows on the 5th and the 7th.
 func TestAReadingsWriteAndTheZeroFillOfTwoSeriesNeverDeadlock(t *testing.T) {
 	r := newRig(t)
 	collateSeriesAsADeploymentDoes(t, r)
 	slug := "fill-order"
+	evalID := EvalID(r.project, slug)
 	reading := func(series, key string, value float64, day int) json.RawMessage {
 		return row(t, map[string]any{"series": series, "row_kind": "run", "row_key": key, "value": value, "measured_at": at(day, 9, 0)})
 	}
@@ -214,13 +229,13 @@ func TestAReadingsWriteAndTheZeroFillOfTwoSeriesNeverDeadlock(t *testing.T) {
 		},
 		func(ctx context.Context) error {
 			return r.registry.newRefresh("fill-race", at(7, 12, 0), walkBatch).fillLogged(ctx, r.project, nil)
-		})
+		},
+		func() { requireQueuedOnTheEvalLock(t, holder, evalID, "the zero fill") })
 	requireNoDeadlock(t, "the readings write", readingsErr)
 	requireNoDeadlock(t, "the zero fill", fillErr)
 	if t.Failed() {
 		return
 	}
-	evalID := EvalID(r.project, slug)
 	for _, series := range []string{"Queue", "latency"} {
 		for _, want := range []struct {
 			day time.Time
@@ -230,6 +245,35 @@ func TestAReadingsWriteAndTheZeroFillOfTwoSeriesNeverDeadlock(t *testing.T) {
 				t.Errorf("the row of %s on %s holds n %d, want %d", series, want.day.Format(time.DateOnly), got.N, want.n)
 			}
 		}
+	}
+}
+
+// requireQueuedOnTheEvalLock fails the test unless a backend waits, not granted, on the advisory
+// lock of evalID (the key lockEvals takes, hashtext('eval:' || id) as a bigint, which pg_locks
+// shows as its high half in classid, its low half in objid and objsubid 1) behind a backend that
+// holds it and itself waits behind holder: a race's second writer, what names, queued on the eval's
+// lock behind the paused first. It reads pg_locks through holder's own connection, as
+// storetest.WaitForLockWaiters does.
+func requireQueuedOnTheEvalLock(t *testing.T, holder pgx.Tx, evalID, what string) {
+	t.Helper()
+	var queued bool
+	if err := holder.QueryRow(context.Background(), `
+		select exists (
+			select 1
+			from pg_locks waiter
+			join pg_locks held on held.locktype = waiter.locktype and held.database = waiter.database
+			  and held.classid = waiter.classid and held.objid = waiter.objid and held.objsubid = waiter.objsubid
+			where waiter.locktype = 'advisory' and not waiter.granted and held.granted
+			  and waiter.classid = ((hashtext('eval:' || $1)::bigint >> 32) & 4294967295)::oid
+			  and waiter.objid = (hashtext('eval:' || $1)::bigint & 4294967295)::oid
+			  and waiter.objsubid = 1
+			  and held.pid = any(pg_blocking_pids(waiter.pid))
+			  and pg_backend_pid() = any(pg_blocking_pids(held.pid)))
+	`, evalID).Scan(&queued); err != nil {
+		t.Fatalf("read the waits on the lock of %s: %v", evalID, err)
+	}
+	if !queued {
+		t.Errorf("%s did not wait on the advisory lock of %s while the paused writer held it", what, evalID)
 	}
 }
 

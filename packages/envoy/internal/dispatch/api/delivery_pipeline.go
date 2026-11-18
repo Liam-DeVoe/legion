@@ -62,7 +62,7 @@ type deliveryPipelinePRChecks struct {
 // request. Its clock is `at` (RFC3339, default now; parsePipelineAt): the seven shown days end on
 // at's UTC day, and the failing-jobs table looks back 24 hours from at, so a test or a screenshot
 // pins "today" to a fixture's day. A query naming at more than once is refused
-// (repeatedDeliveryKey), since it would be answered its first value's day. Runs are read by start
+// (repeatedQueryKey), since it would be answered its first value's day. Runs are read by start
 // over the whole of the shown days, today included past at. The PR checks are the pull_request
 // runs; the deploy jobs are read from the push runs on main (decision 6); the lead times are every
 // population pull request merged in the shown days, before any facet, since the Pipeline page
@@ -72,7 +72,7 @@ func (s *server) getDeliveryPipeline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	query := r.URL.Query()
-	if err := repeatedDeliveryKey(query, deliveryPipelineOneValueKeys); err != nil {
+	if err := repeatedQueryKey(query, deliveryPipelineOneValueKeys); err != nil {
 		writeError(w, "INVALID_QUERY", http.StatusBadRequest, err.Error())
 		return
 	}

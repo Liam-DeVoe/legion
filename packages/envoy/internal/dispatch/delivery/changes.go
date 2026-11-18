@@ -330,6 +330,24 @@ func CursorLost(ctx context.Context, q Querier, cursor ChangeCursor, now time.Ti
 	return moved && (young || stalled), nil
 }
 
+// ChangesHead is the change cursor at the newest change the log holds: its seq and when it was
+// recorded, and Seq 0 with no At where the log is empty. It is where a reader's cursor rests once
+// it is moved to the log's head (the eval day-row refresher's and the Legion facts consumer's on
+// their first read and on a lost cursor, the delivery live hub's on its first read and on a lost
+// one), and the position a hub's recompute reads through. The two are one row of one statement,
+// so they name one change. ReadAt is zero: when its reader read the log is the reader's to stamp.
+func ChangesHead(ctx context.Context, q Querier) (ChangeCursor, error) {
+	var head ChangeCursor
+	err := q.QueryRow(ctx, `select seq, at from delivery_changes order by seq desc limit 1`).Scan(&head.Seq, &head.At)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ChangeCursor{}, nil
+	}
+	if err != nil {
+		return ChangeCursor{}, err
+	}
+	return head, nil
+}
+
 // PruneChanges deletes every change recorded more than ChangeRetention before the database's now(),
 // and answers how many it deleted. Each row's at is the database's clock too, so the cutoff and the
 // rows it compares share one clock whichever process prunes.

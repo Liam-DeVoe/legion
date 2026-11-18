@@ -271,45 +271,44 @@ func (r *refresh) page(ctx context.Context, safe int64, limit int) (bool, error)
 		return false, err
 	}
 	work := newPageWork()
-	positions := map[string]feedCursor{}
+	positions := map[string]delivery.ChangeCursor{}
 	full := false
 	if len(cursors) == 0 {
-		head, err := r.store.changesHead(ctx)
+		head, err := delivery.ChangesHead(ctx, r.store.database.Pool)
 		if err != nil {
-			return false, err
+			return false, fmt.Errorf("read the head of the delivery changes: %w", err)
 		}
-		positions[changesCursor], positions[eventsCursor] = head, feedCursor{position: safe}
+		positions[changesCursor], positions[eventsCursor] = head, delivery.ChangeCursor{Seq: safe}
 		work.restartAll()
 	} else {
 		after := cursors[changesCursor]
-		cursor := delivery.ChangeCursor{Seq: after.position, At: after.at, ReadAt: after.updatedAt}
-		lost, err := delivery.CursorLost(ctx, r.store.database.Pool, cursor, r.now)
+		lost, err := delivery.CursorLost(ctx, r.store.database.Pool, after, r.now)
 		if err != nil {
-			return false, fmt.Errorf("read the delivery change at %d: %w", after.position, err)
+			return false, fmt.Errorf("read the delivery change at %d: %w", after.Seq, err)
 		}
 		if lost {
-			if positions[changesCursor], err = r.store.changesHead(ctx); err != nil {
-				return false, err
+			if positions[changesCursor], err = delivery.ChangesHead(ctx, r.store.database.Pool); err != nil {
+				return false, fmt.Errorf("read the head of the delivery changes: %w", err)
 			}
 			work.restartAll()
 		} else {
-			changes, err := delivery.ChangesSince(ctx, r.store.database.Pool, after.position, limit)
+			changes, err := delivery.ChangesSince(ctx, r.store.database.Pool, after.Seq, limit)
 			if err != nil {
-				return false, fmt.Errorf("read the delivery changes after %d: %w", after.position, err)
+				return false, fmt.Errorf("read the delivery changes after %d: %w", after.Seq, err)
 			}
 			positions[changesCursor] = after
 			for _, change := range changes {
 				at := change.At
-				positions[changesCursor] = feedCursor{position: change.Seq, at: &at}
+				positions[changesCursor] = delivery.ChangeCursor{Seq: change.Seq, At: &at}
 				work.addChange(change)
 			}
 			full = len(changes) == limit
 		}
-		events, err := r.store.readRefresherEvents(ctx, cursors[eventsCursor].position, safe, limit)
+		events, err := r.store.readRefresherEvents(ctx, cursors[eventsCursor].Seq, safe, limit)
 		if err != nil {
 			return false, err
 		}
-		positions[eventsCursor] = feedCursor{position: events.position}
+		positions[eventsCursor] = delivery.ChangeCursor{Seq: events.position}
 		full = full || events.full
 		work.addEvents(events)
 	}

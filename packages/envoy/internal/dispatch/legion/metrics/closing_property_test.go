@@ -212,7 +212,7 @@ func TestFactsClosedAtAnyMomentAreTheComputationAtThatMoment(t *testing.T) {
 				continue
 			}
 			compared++
-			for _, difference := range factsDifferences(facts.Grown(facts.Growth, moment.Sub(facts.AsOf)), want) {
+			for _, difference := range factsDifferences(facts.FactsAt(moment), want) {
 				differedA++
 				t.Errorf("(a) %s closed at %s (%s after its closing moment %s): %s",
 					key, moment.UTC(), moment.Sub(facts.AsOf), facts.AsOf.UTC(), difference)
@@ -239,7 +239,7 @@ func TestFactsClosedAtAnyMomentAreTheComputationAtThatMoment(t *testing.T) {
 func factsDifferences(got, want IssueFacts) []string {
 	differences := []string{}
 	hours, wanted := flatHours(got), flatHours(want)
-	for _, name := range slices.Sorted(maps.Keys(bothKeys(hours, wanted))) {
+	for _, name := range slices.Sorted(maps.Keys(eitherSide(hours, wanted))) {
 		if math.Abs(hours[name]-wanted[name]) > closingTolerance {
 			differences = append(differences, fmt.Sprintf("%s is %g and the computation's %g", name, hours[name], wanted[name]))
 		}
@@ -261,7 +261,7 @@ func otherDifferences(got, want IssueFacts) []string {
 	} {
 		switch {
 		case (moment.got == nil) != (moment.want == nil):
-			differences = append(differences, fmt.Sprintf("%s is %v and the computation's %v", moment.name, utcOf(moment.got), utcOf(moment.want)))
+			differences = append(differences, fmt.Sprintf("%s is %v and the computation's %v", moment.name, utc(moment.got), utc(moment.want)))
 		case moment.got != nil && math.Abs(moment.got.Sub(*moment.want).Hours()) > closingTolerance:
 			differences = append(differences, fmt.Sprintf("%s is %s and the computation's %s", moment.name, moment.got.UTC(), moment.want.UTC()))
 		}
@@ -274,7 +274,7 @@ func otherDifferences(got, want IssueFacts) []string {
 		{"tree", got.Tree, want.Tree}, {"tree_depth", got.TreeDepth, want.TreeDepth},
 		{"sent_back", got.SentBack, want.SentBack}, {"children", got.Children, want.Children},
 	}
-	for _, role := range slices.Sorted(maps.Keys(bothKeys(got.Bars, want.Bars))) {
+	for _, role := range slices.Sorted(maps.Keys(eitherSide(got.Bars, want.Bars))) {
 		exact = append(exact, struct {
 			name      string
 			got, want any
@@ -296,7 +296,7 @@ func growthDifferences(closed ClosedFacts, want IssueFacts, moment time.Time) []
 	elapsed := moment.Sub(closed.AsOf).Hours()
 	differences := []string{}
 	at, wanted := flatHours(closed.IssueFacts), flatHours(want)
-	for _, name := range slices.Sorted(maps.Keys(bothKeys(at, wanted))) {
+	for _, name := range slices.Sorted(maps.Keys(eitherSide(at, wanted))) {
 		grown := at[name] + closed.Growth[name]*elapsed
 		if math.Abs(grown-wanted[name]) > closingTolerance {
 			differences = append(differences, fmt.Sprintf("%s is %g at the closing moment and grows %g an hour, so %g, and the computation answers %g",
@@ -337,8 +337,8 @@ func flatHours(facts IssueFacts) map[string]float64 {
 	return flat
 }
 
-// bothKeys is every key either map holds.
-func bothKeys[Left, Right any](left map[string]Left, right map[string]Right) map[string]struct{} {
+// eitherSide is every key either side holds.
+func eitherSide[Left, Right any](left map[string]Left, right map[string]Right) map[string]struct{} {
 	keys := map[string]struct{}{}
 	for key := range left {
 		keys[key] = struct{}{}
@@ -349,8 +349,8 @@ func bothKeys[Left, Right any](left map[string]Left, right map[string]Right) map
 	return keys
 }
 
-// utcOf is a moment as a failure prints it: UTC, or nil.
-func utcOf(at *time.Time) any {
+// utc is a moment as a failure prints it: UTC, or nil.
+func utc(at *time.Time) any {
 	if at == nil {
 		return nil
 	}

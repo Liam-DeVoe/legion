@@ -58,7 +58,7 @@ func TestTheLegionDayRowsOfTheStoredRowsAreTheComputationsOnBothSidesOfAMidnight
 		}
 		facts := map[string]metrics.IssueFacts{}
 		for key, closed := range metrics.ProjectFactsClosed(population, nil) {
-			facts[key] = closed.Grown(closed.Growth, population.To.Sub(closed.AsOf))
+			facts[key] = closed.FactsAt(population.To)
 		}
 		open := 0
 		for _, fact := range facts {

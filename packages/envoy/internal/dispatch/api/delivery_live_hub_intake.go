@@ -146,12 +146,7 @@ func (h *deliveryHub) applyFeed(g *hubGeneration, taken hubEventFeed) {
 
 // readChangeCursor reads where the delivery change log stands.
 func (h *deliveryHub) readChangeCursor(g *hubGeneration) bool {
-	ctx, pool := g.readContext(), h.server.deps.Store.Pool
-	seq, err := delivery.LatestChangeSeq(ctx, pool)
-	var at *time.Time
-	if err == nil && seq > 0 {
-		at, err = delivery.ChangeAt(ctx, pool, seq)
-	}
+	head, err := delivery.ChangesHead(g.readContext(), h.server.deps.Store.Pool)
 	if err != nil {
 		if g.ctx.Err() == nil {
 			slog.Warn("dispatch: delivery live hub could not read where the change log stands; retrying", "error", err)
@@ -160,7 +155,7 @@ func (h *deliveryHub) readChangeCursor(g *hubGeneration) bool {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	g.changeSeq, g.changeAt, g.changeRead = seq, timeOrZero(at), h.clock.Now()
+	g.changeSeq, g.changeAt, g.changeRead = head.Seq, timeOrZero(head.At), h.clock.Now()
 	return true
 }
 
@@ -201,20 +196,14 @@ func (h *deliveryHub) catchUpChanges(g *hubGeneration) error {
 			return err
 		}
 		if lost {
-			latest, err := delivery.LatestChangeSeq(ctx, pool)
+			head, err := delivery.ChangesHead(ctx, pool)
 			if err != nil {
 				return err
-			}
-			var latestAt *time.Time
-			if latest > 0 {
-				if latestAt, err = delivery.ChangeAt(ctx, pool, latest); err != nil {
-					return err
-				}
 			}
 			now := h.clock.Now()
 			h.mu.Lock()
 			defer h.mu.Unlock()
-			g.changeSeq, g.changeAt, g.changeRead = latest, timeOrZero(latestAt), now
+			g.changeSeq, g.changeAt, g.changeRead = head.Seq, timeOrZero(head.At), now
 			g.epoch++
 			h.dirtyAllLocked(g, now)
 			return nil
