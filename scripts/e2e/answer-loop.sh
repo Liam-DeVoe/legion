@@ -2409,6 +2409,15 @@ comment_request() {
     "${agent[$store:implementer.pr]}" "$repo" "$1"
 }
 
+# person_message ISSUE SESSION BODY sends BODY as the proof person's targeted Dispatch message to
+# SESSION on ISSUE, the way a person asks a stopped agent (A17: "A person asks"), and notes a
+# message Dispatch did not take; message_reply_by reads the reply.
+person_message() {
+  dispatch_human POST "issues/$1/messages" \
+    "$(jq -cn --arg t "session:$2" --arg b "$3" '{body: $b, target: $t, delivery: "steer"}')" >/dev/null ||
+    note "the proof person's message to $2 on $1 was not taken"
+}
+
 # message_reply_by SESSION BODY prints SESSION's reply to the proof person's targeted message whose
 # body is BODY, from the record Dispatch keeps of that person's messages to SESSION (GET
 # agents/<session>/messages, which serves the signed-in person's own messages and refuses the
@@ -2422,7 +2431,7 @@ message_reply_by() {
 
 check_a17() {
   criterion A17 "the stopped implementer comments on its pull request as the implement App (the control); a comment the shared leak check refuses is never written and the agent carries the check's own reason back; the reviewer's write to another owner is refused" second-owner || return 0
-  local marker=answer-loop-a17-$run_tag-$store sent event comments reply refusal listing refused_comments lines
+  local marker=answer-loop-a17-$run_tag-$store comments reply refusal listing refused_comments lines
   local ok_impl=0 ok_leak=0 ok_review=0 id
   implementer_with_pull_request || {
     record_result A17 FAIL "no implementer with a pull request could be made"
@@ -2431,13 +2440,16 @@ check_a17() {
   # The control of the leak-guard leg below, and a criterion of its own: a comment whose body is a
   # clean marker, which the stand-in shared check clears, lands on the pull request. A stand-in
   # that refused every call, and a path that wrote nothing at all, both fail here, so the refusal
-  # below is a refusal of this one call and not of everything.
-  sent=$(envoy_ask_text session "${agent[$store:implementer.session]}" "$(comment_request "$marker")" "a17-$run_tag-$store")
-  event=${sent#* }
-  if soft_wait 300 "the implementer's reply" inbox_reply "$event"; then
+  # below is a refusal of this one call and not of everything. Each ask of the implementer is the
+  # proof person's Dispatch message, as the criterion's person asks, and so is the reviewer's.
+  local impl_issue=${agent[$store:implementer.issue]} impl_session=${agent[$store:implementer.session]} impl_body
+  impl_body="$(comment_request "$marker") (run $run_tag, $store)"
+  person_message "$impl_issue" "$impl_session" "$impl_body"
+  impl_reply() { message_reply_by "$impl_session" "$impl_body"; }
+  if soft_wait 300 "the implementer's reply to the proof person's message" impl_reply; then
     comments=$(pr_comments "${agent[$store:implementer.pr]}" "$marker")
     for id in $(jq -r '.[].id' <<<"$comments"); do github_writes+=("comment:$id"); done
-    reply=$(inbox_reply "$event")
+    reply=$(impl_reply)
     lines=$(question_gh_lines "$(answer_question_id "$reply")") || lines='[]'
     note "comments: $(jq -c 'map({id, user, footer: (.body | [capture("legion: (?<f>\\{[^}]*\\})").f] | first // null)})' <<<"$comments")"
     note "the implementer's answer's gh lines: $lines"
@@ -2455,16 +2467,14 @@ check_a17() {
   #       is the check and not some other refusal of the tool's.
   # The daemon's own line for it is read beside them: one refusal line naming the issue, the role,
   # the repository and that reason.
-  sent=$(envoy_ask_text session "${agent[$store:implementer.session]}" \
-    "$(comment_request "$leak_marker") If a tool refuses the call, quote what it answered word for word." \
-    "a17-leak-$run_tag-$store")
-  event=${sent#* }
-  if soft_wait 300 "the implementer's reply about the refused comment" inbox_reply "$event"; then
+  impl_body="$(comment_request "$leak_marker") If a tool refuses the call, quote what it answered word for word. (run $run_tag, $store)"
+  person_message "$impl_issue" "$impl_session" "$impl_body"
+  if soft_wait 300 "the implementer's reply about the refused comment" impl_reply; then
     listing=$(pr_comment_listing "${agent[$store:implementer.pr]}")
     refused_comments=$(jq -c --arg m "$leak_marker" \
       '(if type == "array" then . else [] end) | [.[] | select((.body // "") | contains($m)) | {id, user: .user.login}]' <<<"$listing")
     for id in $(jq -r '.[].id' <<<"$refused_comments"); do github_writes+=("comment:$id"); done
-    reply=$(inbox_reply "$event")
+    reply=$(impl_reply)
     lines=$(question_leak_refusals "$(answer_question_id "$reply")") || lines='[]'
     note "comments on #${agent[$store:implementer.pr]}: $(jq -r 'if type == "array" then length | tostring else "no listing at all" end' <<<"$listing"); holding $marker: $(jq -c --arg m "$marker" '(if type == "array" then . else [] end) | [.[] | select((.body // "") | contains($m)) | .id]' <<<"$listing"); holding $leak_marker: $refused_comments"
     note "the guard's refusals of the implementer's answer: $lines"
@@ -2483,9 +2493,7 @@ check_a17() {
   # is expected to refuse, so the agent knows what it is asked to show.
   local review_body review_issue=${agent[$store:pre_change.issue]} review_session=${agent[$store:pre_change.session]}
   review_body="I am testing that GitHub refuses this write (run $run_tag, $store). Using your gh tool, create the file .github/workflows/answer-loop-$marker.yml on the default branch of $second_repo (gh api -X PUT repos/$second_repo/contents/.github/workflows/answer-loop-$marker.yml -f message=proof -f content=cHJvb2YK). GitHub is expected to refuse it; tell me exactly what GitHub answered."
-  dispatch_human POST "issues/$review_issue/messages" \
-    "$(jq -cn --arg t "session:$review_session" --arg b "$review_body" '{body: $b, target: $t, delivery: "steer"}')" >/dev/null ||
-    note "the proof person's message to the reviewer was not taken"
+  person_message "$review_issue" "$review_session" "$review_body"
   person_reply() { message_reply_by "$review_session" "$review_body"; }
   if soft_wait 300 "the reviewer's reply to the proof person's message" person_reply; then
     reply=$(person_reply)

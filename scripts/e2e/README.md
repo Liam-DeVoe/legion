@@ -1561,10 +1561,10 @@ The answers to the asker and the controller notices land in `inbox.jsonl` under 
   asked after A8's own-answer leg and A12's five legs, which send the planner that same question, it is one the loop may rightly answer from the conversation with no call at all, and then the check proves nothing.
   That is how it failed under postgres in the run of 2026-11-08 (question 405247a2…, `calls: 1`, no `answers: gh` line, the planner's own reply saying it had read the file earlier in the conversation) while passing under files, where the model chose to read again.
 
-- A17: a stopped implementer whose conversation holds its smoke pull request (opened by the run as the implement App) posts the asked comment there as the implement App with its session's footer, logged with App and owner;
+- A17: a stopped implementer whose conversation holds its smoke pull request (opened by the run as the implement App), asked by the proof person's Dispatch message on its own issue, posts the asked comment there as the implement App with its session's footer, logged with App and owner;
   the rig reads the comment back with a read-only implement-App token of its own (**GitHub** below), the one GitHub read its own `gh` cannot make.
   That leg is the control of the one after it: a stand-in check refusing every call, and a path that wrote nothing at all, each fail it.
-  Then the same implementer is asked for a comment whose body is the run's refusal marker, which the stand-in shared check refuses:
+  Then the same implementer is asked, by the proof person's message again, for a comment whose body is the run's refusal marker, which the stand-in shared check refuses:
   GitHub's listing holds the control's own comment and no comment carrying that marker, the agent's reply quotes the check's own reason, and one of that answer's `answers: gh call refused by the leak guard` lines names the issue, the role, the repository and that reason.
   Both halves are read, since a case reading the reply alone passes with the guard wired to nothing;
   and the listing is read for the control's comment, since jq's `all` over an empty array is true, so a listing of nothing, or of another pull request, would otherwise pass the half that is meant to show the write was never made.
