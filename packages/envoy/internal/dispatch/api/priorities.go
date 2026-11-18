@@ -18,6 +18,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
@@ -70,8 +71,8 @@ var priorityIDPattern = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 func priorityIDRefusal(id string, derived bool) string {
 	var reason string
 	switch {
-	case len(id) > priorityIDMax:
-		reason = fmt.Sprintf("an id is at most %d characters, and this one is %d", priorityIDMax, len(id))
+	case utf8.RuneCountInString(id) > priorityIDMax:
+		reason = fmt.Sprintf("an id is at most %d characters, and this one is %d", priorityIDMax, utf8.RuneCountInString(id))
 	case !priorityIDPattern.MatchString(id):
 		reason = fmt.Sprintf("%q is no priority id: an id is lowercase letters and digits in groups joined by single hyphens", id)
 	case id == noAdvancesFilter:
