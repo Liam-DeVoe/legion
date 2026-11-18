@@ -26,6 +26,23 @@ export GOWORK=off GOTOOLCHAIN=local GOFLAGS=
 # shellcheck source=.github/scripts/test-lib.sh
 source "$script_dir/test-lib.sh"
 
+# The interpreter python3 names, asked once in this harness's own environment, and every run of
+# the script below starts it by that path, never by the script's shebang. The first python3 on PATH
+# can be a version manager's shim that hands the interpreter a PATH of its own: mise 2026.10.11's
+# python3 shim, in the mise-activated environment an Oh My Pi session's Python runner has, started
+# the interpreter with that environment's PATH and without what the caller had put in front of it.
+# So the stand-in go the stalled-download case puts first on PATH never reached the script, which
+# built with mise's go instead, and the case failed all five of its checks, alone or beside another
+# harness. disk_watch.test.sh resolves its interpreter the same way.
+if ! python=$(python3 -I -c 'import sys; print(sys.executable)'); then
+  echo "could not resolve the python3 interpreter" >&2
+  exit 1
+fi
+if [[ "$python" != /* || ! -x "$python" ]]; then
+  echo "python3 did not report an absolute executable path: $python" >&2
+  exit 1
+fi
+
 # module <name>: an empty Go module of that name with one package at its root. Echoes its path.
 module() {
   local root="$work/$1"
@@ -52,12 +69,13 @@ tests() {
 # status, keeping the two streams apart, because a refusal must print nothing on standard output.
 run_shards() { run_script "$shards" "$@"; }
 
-# run_script <script> <directory> <argument>...: run_shards, for the script or a stand-in for it.
+# run_script <script> <directory> <argument>...: run_shards, for the script or a stand-in for it,
+# each a Python file this harness's interpreter runs.
 run_script() {
   local script=$1 directory=$2
   shift 2
   set +e
-  out=$(cd "$directory" && "$script" "$@" 2>"$work/stderr")
+  out=$(cd "$directory" && "$python" "$script" "$@" 2>"$work/stderr")
   status=$?
   set -e
   err=$(cat "$work/stderr")
@@ -517,47 +535,79 @@ check "prints nothing on standard output" "$(is "$out" "")"
 check "passes on the compiler's error" "$(contains "$err" 'undefined: undefined')"
 check "  once" "$(is "$(grep -c 'undefined: undefined' <<<"$err")" 1)"
 
-echo "case: go's standard error reaches the script's as go writes it"
 # The race leg's setup-go keeps no module cache, so the script's build is the step that downloads
 # the modules, and a download that stalls runs until the job's timeout: the log must name the
 # module while it waits, not after. A stand-in go, first on PATH, writes a downloading line, then
-# makes $work/written, then waits until the harness releases it (or its scratch directory is gone),
-# and fails as a build does. The harness waits on the stand-in's file, or on the script's end,
-# whichever comes first (await_file): with the line written and the script still running, the
+# makes <directory>/written, then waits until the harness releases it (or its scratch directory is
+# gone), and fails as a build does. The harness waits on the stand-in's file, or on the script's
+# end, whichever comes first (await_file): with the line written and the script still running, the
 # line must already be on the script's standard error.
-stand_in=$work/stand-in
-mkdir "$stand_in"
-cat >"$stand_in/go" <<EOF
+#
+# stalled_build <directory> [<PATH entry> <label>]: runs the script's build of the split package
+# with a stand-in go of <directory> first on PATH, and <PATH entry> after it when given, then
+# checks what it printed, each check's name ending in <label>.
+stalled_build() {
+  local dir=$1 entry=${2:-} under=${3:-} building
+  mkdir "$dir"
+  cat >"$dir/go" <<EOF
 #!/usr/bin/env bash
 echo 'go: downloading example.com/stalled v1.0.0' >&2
-: >'$work/written'
-until [ -e '$work/released' ]; do
-  [ -d '$work' ] || exit 1
+: >'$dir/written'
+until [ -e '$dir/released' ]; do
+  [ -d '$dir' ] || exit 1
   sleep 0.1
 done
 echo 'go: example.com/stalled@v1.0.0: the download failed' >&2
 exit 1
 EOF
-chmod +x "$stand_in/go"
-(cd "$root" && PATH="$stand_in:$PATH" exec "$shards" pattern 0 1 . >"$work/stalled.out" 2>"$work/stalled.err") &
-building=$!
-await_file "$work/written" "$building"
-seen=$(grep -q -x 'go: downloading example.com/stalled v1.0.0' "$work/stalled.err" && echo true || echo false)
-running=$(kill -0 "$building" 2>/dev/null && echo true || echo false)
-touch "$work/released"
-set +e
-wait "$building"
-status=$?
-set -e
-err=$(cat "$work/stalled.err")
-check "the downloading line is on standard error while go still runs" "$(is "$came/$seen/$running" file/true/true)"
-check "the failed build exits 2" "$(is "$status" 2)"
-check "prints nothing on standard output" "$(is "$(cat "$work/stalled.out")" "")"
-check "go's error is on standard error once" \
-  "$(is "$(grep -c -x 'go: example.com/stalled@v1.0.0: the download failed' <<<"$err")" 1)"
-# shellcheck disable=SC2016 # literal backticks of the message, no expansion wanted
-check "and the refusal is the last line, after it" \
-  "$(contains "$(tail -n 1 <<<"$err")" '^go-test-shards.py: `go test -c -o .* \.` exited 1; its standard error is above$')"
+  chmod +x "$dir/go"
+  (cd "$root" && PATH="$dir${entry:+:$entry}:$PATH" exec "$python" "$shards" pattern 0 1 . >"$dir/out" 2>"$dir/err") &
+  building=$!
+  await_file "$dir/written" "$building"
+  seen=$(grep -q -x 'go: downloading example.com/stalled v1.0.0' "$dir/err" && echo true || echo false)
+  running=$(kill -0 "$building" 2>/dev/null && echo true || echo false)
+  touch "$dir/released"
+  set +e
+  wait "$building"
+  status=$?
+  set -e
+  err=$(cat "$dir/err")
+  # shellcheck disable=SC2154 # came is set by await_file (test-lib.sh)
+  check "the downloading line is on standard error while go still runs$under" "$(is "$came/$seen/$running" file/true/true)"
+  check "the failed build exits 2$under" "$(is "$status" 2)"
+  check "prints nothing on standard output$under" "$(is "$(cat "$dir/out")" "")"
+  check "go's error is on standard error once$under" \
+    "$(is "$(grep -c -x 'go: example.com/stalled@v1.0.0: the download failed' <<<"$err")" 1)"
+  # shellcheck disable=SC2016 # literal backticks of the message, no expansion wanted
+  check "and the refusal is the last line, after it$under" \
+    "$(contains "$(tail -n 1 <<<"$err")" '^go-test-shards.py: `go test -c -o .* \.` exited 1; its standard error is above$')"
+}
+
+echo "case: go's standard error reaches the script's as go writes it"
+stalled_build "$work/stalled"
+
+echo "case: the same with a python3 first on PATH that starts the interpreter with a PATH of its own"
+# What a version manager's shim can do, as the comment on $python above says mise's did: this
+# python3 starts the interpreter with the PATH this harness had before the case put anything in
+# front of it, so a run of the script by its shebang, which finds this python3, builds with this
+# harness's go and not the stand-in. The script, started by its interpreter's path, never meets
+# it. The two checks before the case show the resetting python3 does what the row needs, so the row
+# can fail.
+resetting=$work/resetting-python
+mkdir -p "$resetting/probe"
+printf '%s' "$PATH" >"$resetting/path"
+cat >"$resetting/python3" <<EOF
+#!/bin/sh
+PATH=\$(cat '$resetting/path') exec '$python' "\$@"
+EOF
+printf '#!/bin/sh\nexit 0\n' >"$resetting/probe/go"
+chmod +x "$resetting/python3" "$resetting/probe/go"
+check "a shebang's python3 is the resetting one" \
+  "$(is "$(PATH="$resetting/probe:$resetting:$PATH" command -v python3)" "$resetting/python3")"
+check "  and the interpreter it starts finds this harness's go, not the one first on its caller's PATH" \
+  "$(is "$(PATH="$resetting/probe:$resetting:$PATH" python3 -c 'import shutil; print(shutil.which("go"))')" \
+    "$(command -v go)")"
+stalled_build "$work/stalled-resetting" "$resetting" ", a resetting python3 on PATH"
 
 echo "case: a pattern longer than one argument may be"
 # 1,300 names of 115 characters make a one-shard pattern of about 150,000 bytes, past
