@@ -174,7 +174,7 @@ func (g *Guard) Push(ctx context.Context, req PushRequest) error {
 	}
 	records, err := g.pushRecords(ctx, req, held, objects)
 	if err != nil {
-		return &SetupFailure{What: what, Why: "the push's commits could not be read", Err: err}
+		return &SetupFailure{What: what, Why: "what the push adds could not be read", Err: err}
 	}
 	return g.rules(ctx, what, records)
 }
@@ -191,9 +191,9 @@ func (g *Guard) Push(ctx context.Context, req PushRequest) error {
 // side is at, where that is a tag, and each tag that tag is of, down to the first of objects, the
 // tag objects, blobs and trees the destination holds at its branches and tags. The blob or the
 // tree it adds is the one its local side is at, or the one the last of those tags is of, where
-// that is not one of objects; such an update reaches no commit, since rev-list passes over a blob
-// or a tree it is fed. A commit, a tag, a blob or a tree reached by two of the push's refs is read
-// once, and a deletion adds none.
+// that is not one of objects, and such an update is not walked for commits, since a blob or a tree
+// reaches none. A commit, a tag, a blob or a tree reached by two of the push's refs is read once,
+// and a deletion adds none.
 func (g *Guard) pushRecords(ctx context.Context, req PushRequest, held, objects []string) ([]Record, error) {
 	// not is held as rev-list's negative revisions, a line ^<sha> each, written once for every
 	// update's read of the commits it adds (Guard.commits).
@@ -222,19 +222,20 @@ func (g *Guard) pushRecords(ctx context.Context, req PushRequest, held, objects 
 			return nil, err
 		}
 		records = append(records, tagged...)
-		var of []Record
-		switch kind {
-		case "blob":
+		if kind == "blob" || kind == "tree" {
 			read[object] = true
-			of, err = g.blobRecords(ctx, req.Dir, object)
-		case "tree":
-			read[object] = true
-			of, err = g.treeRecords(ctx, req.Dir, object)
+			var of []Record
+			if kind == "blob" {
+				of, err = g.blobRecords(ctx, req.Dir, object)
+			} else {
+				of, err = g.treeRecords(ctx, req.Dir, object)
+			}
+			if err != nil {
+				return nil, err
+			}
+			records = append(records, of...)
+			continue
 		}
-		if err != nil {
-			return nil, err
-		}
-		records = append(records, of...)
 		commits, err := g.commits(ctx, req.Dir, not.String(), update)
 		if err != nil {
 			return nil, err
@@ -310,8 +311,8 @@ func (g *Guard) tagRecords(ctx context.Context, dir, sha string, read map[string
 }
 
 // short is an object, a commit, a tag, a blob or a tree, as a report names it.
-func short(commit string) string {
-	return commit[:min(len(commit), 7)]
+func short(id string) string {
+	return id[:min(len(id), 7)]
 }
 
 // git is gitFed with nothing of its own in git's environment and nothing on its standard input.

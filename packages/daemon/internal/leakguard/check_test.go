@@ -318,7 +318,7 @@ func TestAReadStoppedByItsBoundNamesItsProgramItsTimeAndItsBound(t *testing.T) {
 			// never answers is the one of the push's commits.
 			name: "a git read of the push's records",
 			body: "case \" $* \" in *\" ls-remote \"*) exit 0 ;; esac\n",
-			want: "the push's commits could not be read: git ran 2 s and was stopped by its bound of 2 s",
+			want: "what the push adds could not be read: git ran 2 s and was stopped by its bound of 2 s",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

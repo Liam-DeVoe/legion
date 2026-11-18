@@ -163,6 +163,14 @@ func TestAPushsRecordsAreReadFromItsCommits(t *testing.T) {
 	}
 }
 
+// annotatedTag writes the annotated tag name of target in repo with message, made by tagger's
+// identity, and answers the tag object. A tag of a tag is written with no advice of git's.
+func annotatedTag(t *testing.T, tagger fixturegit.Runner, repo, name, target, message string) string {
+	t.Helper()
+	tagger.Run(repo, "git", "-c", "advice.nestedTag=false", "tag", "--annotate", "--message", message, name, target)
+	return tagger.Run(repo, "git", "rev-parse", "refs/tags/"+name)
+}
+
 // An annotated tag publishes its name, its tagger and its message with it, so a push of one reads
 // each, as records labelled as a commit's identity and message are, and reads the tag a tag is of
 // in turn, whose name no ref of the push need name.
@@ -176,14 +184,7 @@ func TestAnAnnotatedTagsTaggerAndMessageAreRead(t *testing.T) {
 	fixture := fixturegit.Isolated(t, home)
 	fixture.Run(root, fixturegit.InitWorkTree(repo, "main")...)
 	base := commitFiles(t, fixture, repo, map[string]string{"README.md": "one\n"}, "the commit the destination holds")
-	// tag writes the annotated tag name of target with message, made by tagger's identity, and
-	// answers the tag object.
-	tag := func(t *testing.T, tagger fixturegit.Runner, name, target, message string) string {
-		t.Helper()
-		tagger.Run(repo, "git", "-c", "advice.nestedTag=false", "tag", "--annotate", "--message", message, name, target)
-		return tagger.Run(repo, "git", "rev-parse", "refs/tags/"+name)
-	}
-	held := tag(t, fixture, "held", base, "moved the run to "+theHost+" this morning")
+	held := annotatedTag(t, fixture, repo, "held", base, "moved the run to "+theHost+" this morning")
 	destination := destinationAt(t, fixture, repo, base+":refs/heads/main", "refs/tags/held:refs/tags/held")
 	for _, tc := range []struct {
 		name string
@@ -194,35 +195,35 @@ func TestAnAnnotatedTagsTaggerAndMessageAreRead(t *testing.T) {
 		{
 			name: "the message names a host",
 			build: func(t *testing.T) (string, []string) {
-				pushed := tag(t, fixture, "message", base, "moved the run to "+theHost+" this morning")
+				pushed := annotatedTag(t, fixture, repo, "message", base, "moved the run to "+theHost+" this morning")
 				return pushed, []string{"tag " + short(pushed) + " message: " + theClass}
 			},
 		},
 		{
 			name: "the tagger identity names a host",
 			build: func(t *testing.T) (string, []string) {
-				pushed := tag(t, fixture.With("GIT_COMMITTER_EMAIL=builder@"+theHost), "tagger", base, "a message of no interest")
+				pushed := annotatedTag(t, fixture.With("GIT_COMMITTER_EMAIL=builder@"+theHost), repo, "tagger", base, "a message of no interest")
 				return pushed, []string{"tag " + short(pushed) + " tagger: " + theClass}
 			},
 		},
 		{
 			name: "the message of the tag a tag is of names a host",
 			build: func(t *testing.T) (string, []string) {
-				inner := tag(t, fixture, "inner", base, "moved the run to "+theHost+" this morning")
-				return tag(t, fixture, "outer", inner, "a message of no interest"), []string{"tag " + short(inner) + " message: " + theClass}
+				inner := annotatedTag(t, fixture, repo, "inner", base, "moved the run to "+theHost+" this morning")
+				return annotatedTag(t, fixture, repo, "outer", inner, "a message of no interest"), []string{"tag " + short(inner) + " message: " + theClass}
 			},
 		},
 		{
 			name: "the name of the tag a tag is of names a host",
 			build: func(t *testing.T) (string, []string) {
-				inner := tag(t, fixture, "inner-"+theHost, base, "a message of no interest")
-				return tag(t, fixture, "named", inner, "a message of no interest"), []string{"tag " + short(inner) + " name: " + theClass}
+				inner := annotatedTag(t, fixture, repo, "inner-"+theHost, base, "a message of no interest")
+				return annotatedTag(t, fixture, repo, "named", inner, "a message of no interest"), []string{"tag " + short(inner) + " name: " + theClass}
 			},
 		},
 		{
 			name: "a tag that names nothing",
 			build: func(t *testing.T) (string, []string) {
-				return tag(t, fixture, "clean", base, "a message of no interest"), nil
+				return annotatedTag(t, fixture, repo, "clean", base, "a message of no interest"), nil
 			},
 		},
 		{
@@ -262,7 +263,7 @@ func TestABlobOrATreeARefOrATagIsAtIsRead(t *testing.T) {
 	base := commitFiles(t, fixture, repo, map[string]string{"README.md": "one\n"}, "the commit the destination holds")
 	named := "the runner answers at " + theHost + "\n"
 	big := strings.Repeat("a line of ordinary prose\n", 4)
-	const failed = "LEAK CHECK SETUP ERROR: the push to origin: the push's commits could not be read: "
+	const failed = "LEAK CHECK SETUP ERROR: the push to origin: what the push adds could not be read: "
 	// blob writes content as a blob and answers it.
 	blob := func(t *testing.T, content string) string {
 		t.Helper()
@@ -273,12 +274,6 @@ func TestABlobOrATreeARefOrATagIsAtIsRead(t *testing.T) {
 		t.Helper()
 		docs := fixture.Fed(repo, "100644 blob "+blob(t, notes)+"\tnotes.md\n", "git", "mktree")
 		return fixture.Fed(repo, "100644 blob "+blob(t, "one\n")+"\tREADME.md\n040000 tree "+docs+"\tdocs\n", "git", "mktree")
-	}
-	// tag writes the annotated tag name of target and answers the tag object.
-	tag := func(t *testing.T, name, target string) string {
-		t.Helper()
-		fixture.Run(repo, "git", "tag", "--annotate", "--message", "a message of no interest", name, target)
-		return fixture.Run(repo, "git", "rev-parse", "refs/tags/"+name)
 	}
 	held := blob(t, "held "+named)
 	destination := destinationAt(t, fixture, repo, base+":refs/heads/main", held+":refs/tags/held")
@@ -295,7 +290,7 @@ func TestABlobOrATreeARefOrATagIsAtIsRead(t *testing.T) {
 			name: "an annotated tag of a blob that names a host",
 			build: func(t *testing.T) (string, []string) {
 				of := blob(t, "one\n"+named)
-				return tag(t, "blob-named", of), []string{"blob " + short(of) + ": " + theClass}
+				return annotatedTag(t, fixture, repo, "blob-named", of, "a message of no interest"), []string{"blob " + short(of) + ": " + theClass}
 			},
 		},
 		{
@@ -314,13 +309,13 @@ func TestABlobOrATreeARefOrATagIsAtIsRead(t *testing.T) {
 		{
 			name: "an annotated tag of a tree whose file names a host",
 			build: func(t *testing.T) (string, []string) {
-				return tag(t, "tree-named", tree(t, named+"two\n")), []string{"docs/notes.md: " + theClass}
+				return annotatedTag(t, fixture, repo, "tree-named", tree(t, named+"two\n"), "a message of no interest"), []string{"docs/notes.md: " + theClass}
 			},
 		},
 		{
 			name: "a tag of a blob that names nothing",
 			build: func(t *testing.T) (string, []string) {
-				return tag(t, "blob-clean", blob(t, "a line of ordinary prose\n")), nil
+				return annotatedTag(t, fixture, repo, "blob-clean", blob(t, "a line of ordinary prose\n"), "a message of no interest"), nil
 			},
 		},
 		{

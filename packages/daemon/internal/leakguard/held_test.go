@@ -489,7 +489,7 @@ exec `+shQuote(fixturegit.CompiledGit(t))+` "$@"
 // (blobBatch) each quote it. The stand-in git here fails the one call each case names as such a
 // fetch fails, and runs the real git for every other call.
 func TestAFailedReadOfACommitQuotesGitWithoutACredential(t *testing.T) {
-	const failed = "LEAK CHECK SETUP ERROR: the push to origin: the push's commits could not be read: "
+	const failed = "LEAK CHECK SETUP ERROR: the push to origin: what the push adds could not be read: "
 	unreachable := " exited 128: fatal: unable to access '" + theURL + "/': Could not resolve host: github.com"
 	for _, tc := range []struct {
 		name string

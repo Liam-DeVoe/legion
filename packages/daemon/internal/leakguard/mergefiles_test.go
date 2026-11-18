@@ -48,7 +48,7 @@ func TestAMergesFileAboveTheBoundRefusesThePush(t *testing.T) {
 	big := strings.Repeat("a line of ordinary prose\n", 4)
 	line := "at " + theHost
 	atBound := line + strings.Repeat(" ", 63-len(line)) + "\n"
-	const failed = "LEAK CHECK SETUP ERROR: the push to origin: the push's commits could not be read: "
+	const failed = "LEAK CHECK SETUP ERROR: the push to origin: what the push adds could not be read: "
 	for _, tc := range []struct {
 		name        string
 		side, added map[string]string

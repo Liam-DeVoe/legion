@@ -89,10 +89,8 @@ func (g *Guard) blobRecords(ctx context.Context, dir, blob string) ([]Record, er
 	}
 	label := "blob " + short(blob)
 	var records []Record
-	for line := range lines(file) {
-		if strings.TrimSpace(line) != "" {
-			records = append(records, Record{Label: label, Text: line})
-		}
+	for line := range textLines(file) {
+		records = append(records, Record{Label: label, Text: line})
 	}
 	return records, nil
 }
@@ -130,14 +128,12 @@ type fileChange struct {
 // already, and the files it changes that lines can be added at (fileChange), as one diff-tree
 // lists them against its parent:
 //
-//	git diff-tree -r -M --no-commit-id -z [--root] <commit>
-//	git diff-tree -r -M --no-commit-id -z <empty tree> <tree>
+//	git diff-tree -r -M --no-commit-id -z [<empty tree>] <commit or tree>
 //
-// --root for a root commit, whose list is otherwise empty. --root takes a commit alone, so a tree,
-// which has no parent either, is listed against the tree that holds nothing (emptyTree), as --root
-// lists a root commit: each file it holds is one it adds. Renames are found (-M), so that a file
-// the commit renames is compared with the file it is renamed from. Of each file the commit has as
-// a blob, a regular file or a symbolic link:
+// A root commit and a tree have no parent, and are listed against the tree that holds nothing
+// (emptyTree), so that each file either holds is one it adds: a diff-tree of either alone lists
+// nothing. Renames are found (-M), so that a file the commit renames is compared with the file it
+// is renamed from. Of each file the commit has as a blob, a regular file or a symbolic link:
 //
 //   - a modification or a rename that leaves the parent's blob as it is, which changes the file's
 //     mode or its path alone, adds no line, and nothing of it is read;
@@ -151,11 +147,8 @@ type fileChange struct {
 // cat-file answers, and no git's command line grows with it.
 func (g *Guard) commitChanges(ctx context.Context, dir, kind, id string, parents int) (paths []string, changes []fileChange, err error) {
 	args := []string{"diff-tree", "-r", "-M", "--no-commit-id", "-z"}
-	switch {
-	case kind == "tree":
+	if parents == 0 {
 		args = append(args, emptyTree(id))
-	case parents == 0:
-		args = append(args, "--root")
 	}
 	out, err := g.git(ctx, dir, append(args, id)...)
 	if err != nil {
@@ -258,19 +251,15 @@ func (g *Guard) addedLines(ctx context.Context, dir, kind, id string, changes []
 		// A record's text is a copy, so that the file it was read from is not held for it.
 		if len(change.held) == 0 {
 			// Compared with no file, the commit's file adds its every line.
-			for line := range lines(file) {
-				if strings.TrimSpace(line) != "" {
-					records = append(records, Record{Label: change.path, Text: strings.Clone(line)})
-				}
+			for line := range textLines(file) {
+				records = append(records, Record{Label: change.path, Text: strings.Clone(line)})
 			}
 			return nil
 		}
 		// own are the lines of the commit's file that no file read so far holds.
 		own := map[string]bool{}
-		for line := range lines(file) {
-			if strings.TrimSpace(line) != "" {
-				own[line] = true
-			}
+		for line := range textLines(file) {
+			own[line] = true
 		}
 		for _, blob := range change.held {
 			if len(own) == 0 {
@@ -311,6 +300,18 @@ func lines(file string) iter.Seq[string] {
 	return func(yield func(string) bool) {
 		for line := range strings.Lines(file) {
 			if !yield(strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r")) {
+				return
+			}
+		}
+	}
+}
+
+// textLines are the lines of file (lines) that hold more than white space, the lines a record is
+// made of: a blank line names nothing.
+func textLines(file string) iter.Seq[string] {
+	return func(yield func(string) bool) {
+		for line := range lines(file) {
+			if strings.TrimSpace(line) != "" && !yield(line) {
 				return
 			}
 		}
