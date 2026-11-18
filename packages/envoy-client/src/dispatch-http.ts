@@ -123,7 +123,10 @@ export class DispatchServiceError extends Error {
     message: string,
     readonly candidates?: DispatchServiceErrorShape["candidates"],
     readonly current?: DispatchServiceErrorShape["current"],
-    readonly mismatches?: DispatchServiceErrorShape["mismatches"]
+    readonly mismatches?: DispatchServiceErrorShape["mismatches"],
+    /** Dispatch's `hint`, where to look next, which only its answer to a path no route serves
+     *  carries (`DispatchServiceErrorShape["hint"]`); `messageFor` prints it after the message. */
+    readonly hint?: string
   ) {
     super(message);
   }
@@ -2351,7 +2354,8 @@ export class DispatchClient {
           error.error,
           error.candidates,
           error.current,
-          error.mismatches
+          error.mismatches,
+          typeof error.hint === "string" ? error.hint : undefined
         );
       }
       const quoted = excerpt(text, this.token);

@@ -1759,6 +1759,14 @@ describe("dispatch api", () => {
     expect(stdout).toContain("no route for GET /api/v1/issuez/DSP-1");
     expect(stdout).not.toContain("a new release of Dispatch is in progress");
   }, 20_000);
+
+  // Dispatch's no-route answer carries a `hint` beside its error, saying where every route is
+  // listed, and a caller who wrote a wrong path needs that line most.
+  test("prints the hint Dispatch gives beside its no-route error", async () => {
+    const { code, stdout } = await run(["api", "--path", "/api/v1/issuez/DSP-1"], session);
+    expect(code).toBe(1);
+    expect(stdout).toContain("GET /api/v1 lists every route");
+  });
 });
 
 // Two refusals an agent meets as the exit status of a command and the words on its own stdout,

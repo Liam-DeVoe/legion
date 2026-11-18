@@ -15,20 +15,35 @@ function dispatchCode(error: Error): string | undefined {
 }
 
 /**
+ * The `hint` Dispatch gave beside its refusal `error`, or undefined for an error carrying none.
+ * Only Dispatch's answer to a path no route serves carries one ("GET /api/v1 lists every route").
+ * Structural like `dispatchCode`, for the same reason.
+ */
+function dispatchHint(error: Error): string | undefined {
+  if (!("fromDispatch" in error) || !("hint" in error)) return undefined;
+  const hint = error.hint;
+  return typeof hint === "string" && hint !== "" ? hint : undefined;
+}
+
+/**
  * Coerce an unknown thrown value into a human-readable message.
  *
  * A refusal Dispatch decided reads `<CODE>: <message>`, because `skill://dispatch` has every agent
  * branch on an error's code rather than on its words, and the code was in no line the command
  * printed: a reader had to run the same call through curl to see it (reported by the tree of
  * dispatch://INFRA-1523). A message that already opens with its own code is left as it is, and
- * every other thrown value prints as it always did.
+ * every other thrown value prints as it always did. Where Dispatch gave a hint beside its refusal,
+ * it follows the message after "; ", since the hint says where to look next.
  */
 export function messageFor(error: unknown): string {
   if (!(error instanceof Error)) return String(error);
   const code = dispatchCode(error);
-  return code === undefined || error.message.startsWith(code)
-    ? error.message
-    : `${code}: ${error.message}`;
+  const message =
+    code === undefined || error.message.startsWith(code)
+      ? error.message
+      : `${code}: ${error.message}`;
+  const hint = dispatchHint(error);
+  return hint === undefined ? message : `${message}; ${hint}`;
 }
 
 /** True when `error` is a Node errno error carrying `code` (ENOENT, EPERM, …). */
