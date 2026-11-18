@@ -46,9 +46,9 @@ name: Dispatch browser suite
 # report, the memory samples and the CPU samples still reach the run, which a cancelled job loses.
 # A job budget is the backstop above the sum of its step budgets, so it never fires first.
 #
-# What the job set below costs, measured rather than estimated, at pull request #3513's last code
-# commit, b724461b, on 2026-11-17. The full lane: 2,398 s over eight jobs for 1,493 rows, 1.61
-# machine-seconds a row (run 44147547896), in an own time of 1,109 s - its binaries job, longest
+# What the job set below costs, measured rather than estimated, at b724461b on 2026-11-17. The
+# full lane, run 44147547896: 2,398 s over eight jobs for 1,493 rows, 1.61 machine-seconds a row,
+# in an own time of 1,109 s - its binaries job, longest
 # leg and merge job, end to end. The same lane on the default branch that day costs twelve jobs
 # and a median of 3,292 s for 1,479 rows over its 20 green runs up to 21:01Z (3,068 to 3,645 s),
 # 2.23 s a row at the median of their per-row figures, so the shape below spends 0.72 of a row's

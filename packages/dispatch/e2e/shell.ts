@@ -240,12 +240,16 @@ declare global {
 function lazyComponentsRendered(page: Page, urls: readonly string[]): Promise<boolean> {
   return page.evaluate(async (chunks) => {
     const roots = window.__shellReactRoots;
-    // Only a hook that no longer works leaves no root here. `settled()` polls only once the
-    // reference-preview chunk has come down, and that chunk is asked for by the render an effect
-    // of a committed tree begins (`web/src/features/refs/RefPreviewLayer.tsx`, `setWanted`), so
-    // React has committed a root by then. Read as "not rendered yet", a hook React never found
-    // would hold the poll to its timeout; a throw ends it at once, since `expect.poll` does not
-    // catch an error of the function it polls (playwright/lib/matchers/expect.js:13397).
+    // Two things leave no root here: a hook that no longer works, and a poll whose evaluate lands
+    // in a document a navigation has just made, which reads the empty set the init script below
+    // made there before React commits. No row polls across a navigation today: `failAssetWhen`
+    // aborts only once `ready()` has resolved, so no load reloads while its own poll runs, and a
+    // poll begins only once the reference-preview chunk has come down, which the render an effect
+    // of a committed tree begins asks for (`web/src/features/refs/RefPreviewLayer.tsx`,
+    // `setWanted`), so React has committed a root in that document by then. Read as "not rendered
+    // yet", a hook React never found would hold the poll to its timeout; a throw ends it at once,
+    // since `expect.poll` does not catch an error of the function it polls
+    // (playwright/lib/matchers/expect.js:13397).
     if (roots === undefined || roots.size === 0) {
       throw new Error("React committed no root to the DevTools hook `shellLoads` installs");
     }

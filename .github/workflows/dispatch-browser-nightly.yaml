@@ -8,8 +8,8 @@ name: Dispatch browser nightly
 # seven jobs on eight machines: one builds every artefact the run executes, two shard machines
 # run the parallel projects, one runs the three `-alone` projects in turn, the two-process job,
 # the fake-embedder job and the containerised visual review take one each, and one merge job
-# joins the legs' reports. At pull request #3513's last code commit, b724461b, that lane cost 2,398
-# machine-seconds for 1,493 rows, 1.61 s a row (run 44147547896), where the default branch's
+# joins the legs' reports. Measured at b724461b, run 44147547896, that lane cost 2,398
+# machine-seconds for 1,493 rows, 1.61 s a row, where the default branch's
 # twelve-job lane cost a median of 3,292 s for 1,479 rows, 2.23 s a row, over that day's 20 green
 # runs. This run covers a day with no such event, and is what runs the full
 # lane on main's tip (.github/workflows/dispatch-browser.yaml, which holds every step). The

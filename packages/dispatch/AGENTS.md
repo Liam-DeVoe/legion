@@ -2298,9 +2298,9 @@ row's four parts summed to a median of 828 ms.
 That run's report is gone with the pod it ran in, so these figures are what was recorded of it,
 and that command run again at another head takes them afresh there.
 The fresh context's 0.25 s is untouched by either change, and the fixture does not measure it.
-Across a whole run, the full lane at pull request #3513's last code commit, `b724461b`, cost
-2,398 machine-seconds over its eight jobs for 1,493 rows, 1.61 s a row (run 44147547896,
-2026-11-17), where the default branch's twelve-job lane cost a median of 3,292 s for 1,479 rows,
+Across a whole run, the full lane measured at `b724461b`, run 44147547896 on 2026-11-17, cost
+2,398 machine-seconds over its eight jobs for 1,493 rows, 1.61 s a row, where the default
+branch's twelve-job lane cost a median of 3,292 s for 1,479 rows,
 2.23 s a row, over that day's 20 green runs up to 21:01Z; its pull-request lane cost 718 s over
 five jobs for 289 rows (run 44147484156).
 
