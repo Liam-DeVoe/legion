@@ -28,13 +28,19 @@ const BarrierKey = "_kvwatch-barrier"
 // consumer past one (Watcher.consume) before it removes anything.
 //
 // It publishes through the jetstream context, which a KeyValue's own Delete does not reach, since
-// check refuses BarrierKey there. The publish is held to RequestTimeout under ctx.
+// check refuses BarrierKey there. The publish is held to RequestTimeout under ctx, and the server's
+// refusal of it under the connection's grant ends it as soon as it arrives, an error wrapping
+// ErrPublishDenied (refusedOn), rather than after that wait with a bare "context deadline
+// exceeded": a read writes one barrier, so this costs what a watch's create costs, not what every
+// key write would.
 func (kv KeyValue) WriteBarrier(ctx context.Context) (uint64, error) {
 	ctx, cancel := context.WithTimeout(ctx, RequestTimeout)
 	defer cancel()
 	msg := nats.NewMsg("$KV." + kv.Bucket() + "." + BarrierKey)
 	msg.Header.Set(kvOperationHeader, kvDeleteMarker)
-	ack, err := kv.streams.PublishMsg(ctx, msg, jetstream.WithExpectStream("KV_"+kv.Bucket()))
+	ack, err := refusedOn(kv, kv.keySubjects(BarrierKey)(), func() (*jetstream.PubAck, error) {
+		return kv.streams.PublishMsg(ctx, msg, jetstream.WithExpectStream("KV_"+kv.Bucket()))
+	})
 	if err != nil {
 		return 0, err
 	}

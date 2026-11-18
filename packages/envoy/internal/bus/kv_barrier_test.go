@@ -107,6 +107,57 @@ func TestEveryKeyValueCallRefusesTheBarrierKey(t *testing.T) {
 	}
 }
 
+// A read's barrier and its list of the bucket's keys that the connection's grant refuses end at
+// once with the server's refusal, an error naming ErrPublishDenied and the refused subject, rather
+// than after RequestTimeout with a bare "context deadline exceeded": the server answers a refused
+// request with nothing and reports the refusal on the connection, and both calls read that report
+// as it arrives (refusedOn). The bucket is opened on a client whose grant never covers its keys'
+// subjects, so the barrier is refused; once it is open, the grant also drops the STREAM.INFO of the
+// bucket's stream that the open needed, so the list's page is refused too.
+func TestABarrierAndAKeyListTheGrantRefusesEndAtOnceNamingTheRefusal(t *testing.T) {
+	const bucket = "envoy_denied_barrier"
+	seed, public := testnats.User(t)
+	grant := testnats.StartNkeyGranted(t, public, "_INBOX.>", accountInfoSubject(), openSubject(bucket), createSubject(bucket))
+	t.Setenv("NATS_NKEY_SEED", seed)
+	client, err := Connect([]string{grant.URL})
+	if err != nil {
+		t.Fatalf("connect the granted client: %v", err)
+	}
+	t.Cleanup(client.Close)
+	js, err := client.Conn.JetStream(nats.MaxWait(RequestTimeout))
+	if err != nil {
+		t.Fatalf("open JetStream: %v", err)
+	}
+	kv, err := EnsureKeyValue(t.Context(), client.Conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage})
+	if err != nil {
+		t.Fatalf("create the bucket: %v", err)
+	}
+	grant.Grant(t, "_INBOX.>", accountInfoSubject())
+	for _, row := range []struct {
+		name    string
+		refused string
+		call    func() error
+	}{
+		{"barrier", "$KV." + bucket + "." + BarrierKey, func() error { _, err := kv.WriteBarrier(t.Context()); return err }},
+		{"key list", openSubject(bucket), func() error { _, err := kv.StoredKeys(t.Context(), 0); return err }},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			started := time.Now()
+			err := row.call()
+			took := time.Since(started)
+			if !errors.Is(err, ErrPublishDenied) {
+				t.Fatalf("a %s the grant refuses = %v (after %s), want ErrPublishDenied", row.name, err, took)
+			}
+			if want := `Permissions Violation for Publish to "` + row.refused + `"`; !strings.Contains(err.Error(), want) {
+				t.Fatalf("the refused %s = %v, want it to name %q", row.name, err, want)
+			}
+			if took > refusalAnswerBound {
+				t.Fatalf("the refused %s ended after %s, want within %s, far below RequestTimeout's %s", row.name, took, refusalAnswerBound, RequestTimeout)
+			}
+		})
+	}
+}
+
 func second[T any](_ T, err error) error { return err }
 
 // barrierRevision is the revision of the bucket's latest barrier record.

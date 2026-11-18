@@ -118,7 +118,10 @@ func (kv KeyValue) subjectsPrefix() string {
 }
 
 // subjectsPageAt is the bucket's stream's STREAM.INFO with its subjects from offset on, one page
-// of StoredKeys' list, asked within ctx.
+// of StoredKeys' list, asked within ctx. The server's refusal of the request under the
+// connection's grant ends it as soon as it arrives, an error wrapping ErrPublishDenied
+// (refusedOn), rather than after ctx's own wait with a bare "context deadline exceeded": a read
+// makes one list, so this costs what a watch's create costs, not what every key read would.
 func (kv KeyValue) subjectsPageAt(ctx context.Context, offset int) (subjectsPage, error) {
 	request, err := json.Marshal(struct {
 		SubjectsFilter string `json:"subjects_filter"`
@@ -127,7 +130,10 @@ func (kv KeyValue) subjectsPageAt(ctx context.Context, offset int) (subjectsPage
 	if err != nil {
 		return subjectsPage{}, err
 	}
-	answer, err := kv.streams.Conn().RequestWithContext(ctx, "$JS.API.STREAM.INFO.KV_"+kv.Bucket(), request)
+	subject := jsAPI("STREAM.INFO", "KV_"+kv.Bucket())
+	answer, err := refusedOn(kv, []string{subject}, func() (*nats.Msg, error) {
+		return kv.streams.Conn().RequestWithContext(ctx, subject, request)
+	})
 	if err != nil {
 		return subjectsPage{}, err
 	}
