@@ -397,11 +397,14 @@ function spotsOf(element: Element, region: Element): Spot[] {
  *  the controls the page draws, the path of the page it was focused on, whether the page took it
  *  from the reader (`taken`: the element was disabled, hidden or taken away) rather than the
  *  reader moving off it, and - in a dialog - the loss the dialog was opened from (`opener`):
- *  the place the focus left for it, or null for a dialog the focus entered from the body. */
+ *  the place the focus left for it, or null for a dialog the focus entered from the body. A loss
+ *  kept only as a dialog's opener holds no spots and no arrivals: the hand-off reads only its
+ *  element, region, place, path and opener. */
 interface Loss {
   /** The elements the page added from the moment the element went until the loss is answered,
-   *  noted while its check or its wait is out: what can now stand where it stood (`standingAt`). */
-  readonly arrived: ReadonlySet<Node>;
+   *  noted into it while its check or its wait is out - none the page only moved, which stood in
+   *  the page before (`noteArrivals`): what can now stand where it stood (`standingAt`). */
+  readonly arrived: Set<Node>;
   readonly caused: boolean;
   readonly element: HTMLElement;
   readonly index: number;
@@ -410,8 +413,8 @@ interface Loss {
   readonly region: Element;
   /** Where the element stood, and where each parent of it up to the region stood, nearest first
    *  (`controlsInPlace`): read at its `focusout` while it is still in the page, or, for an element
-   *  taken away with no `focusout`, off the record that took it, ahead of the spots read when it
-   *  took the focus. */
+   *  taken away with no `focusout`, off the last record that took it (`removalOf`), ahead of the
+   *  spots read when it took the focus. */
   readonly spots: readonly Spot[];
   readonly taken: boolean;
 }
@@ -451,18 +454,33 @@ interface Removal {
   readonly spot: Spot;
 }
 
-/** The removal in `records` that took `element` away, itself or with a parent, read at a point
- *  still in the page: where the parent it was taken from went too, later in the same batch, the
- *  record that took that parent. */
+/** The last of `records` that took `node` away, itself or with a parent: its index (`at`), the
+ *  record, and the node it removed that holds `node` (`taken`). The last, since a node the batch
+ *  moved - a removal and an addition of it - and then took away left the page from the place the
+ *  last record names, not the one the move took it from. */
+function recordTaking(
+  records: readonly MutationRecord[],
+  node: Node
+): { at: number; record: MutationRecord; taken: Node } | undefined {
+  let found: { at: number; record: MutationRecord; taken: Node } | undefined;
+  for (const [at, record] of records.entries()) {
+    for (const taken of record.removedNodes) {
+      if (taken.contains(node)) found = { at, record, taken };
+    }
+  }
+  return found;
+}
+
+/** The removal in `records` that took `element` away, itself or with a parent, read off the last
+ *  record that took it (`recordTaking`) at a point still in the page: where the parent it was
+ *  taken from went too, later in the same batch, the last record that took that parent. */
 function removalOf(records: readonly MutationRecord[], element: Element): Removal | undefined {
   let node: Node = element;
   let removal: Removal | undefined;
   for (;;) {
-    const holds = (removed: Node) => removed.contains(node);
-    const at = records.findIndex((each) => [...each.removedNodes].some(holds));
-    const record = records[at];
-    const taken = record === undefined ? undefined : [...record.removedNodes].find(holds);
-    if (record === undefined || taken === undefined) return removal;
+    const found = recordTaking(records, node);
+    if (found === undefined) return removal;
+    const { at, record, taken } = found;
     removal = {
       at: removal?.at ?? at,
       spot: {
@@ -679,13 +697,15 @@ function handOn(loss: Loss, main: HTMLElement | null, caused: boolean): void {
  * (`causedByReader`), and its dialog's opener. It holds where the element stood in the page too:
  * the parent it stood in and the siblings either side of it, and the same for each parent of it
  * up to the region (`spotsOf`). For a `focusout` they are read there and then, while the element
- * is still in the page; for a control taken away with no `focusout`, the record that took it -
- * its parent and its siblings at that moment - is that spot, with the spots read as the element
- * took the focus behind it for a record whose parent has gone too. From the loss on, while its
- * check or its wait is out, the page's watcher notes every element the page adds (`arrived`); for
- * a loss read off a removal, the batch that took the element counts from that record on. A move
- * from one control to another in the same region is no loss. A new loss cancels whatever is still
- * out for the one before it.
+ * is still in the page; for a control taken away with no `focusout`, the last record that took
+ * it - its parent and its siblings at that moment, since a control the batch moved first was
+ * taken from there - is that spot, with the spots read as the element took the focus behind it
+ * for a record whose parent has gone too. From the loss on, while its check or its wait is out,
+ * the page's watcher notes every element the page adds (`arrived`), but none it only moves - a
+ * keyed node React moves with `insertBefore`, which one batch reports as its removal and its
+ * addition, stood in the page before; for a loss read off a removal, the batch that took the
+ * element counts from that last record on. The focus moving from one control to another in the
+ * same region is no loss. A new loss cancels whatever is still out for the one before it.
  *
  * The check runs a frame and a task after the loss, once React has committed and run its passive
  * effects, so every component's own hand-off has had its turn first: every `useFocusPlace`
@@ -758,28 +778,32 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
     /** The element holding the focus, its region, the path it was focused on and where it stood
      *  as it took the focus (`spotsOf`), until it loses the focus by a `focusout`; one still noted
      *  here once it has left the page went with no `focusout` at all. */
-    let focused: {
-      element: HTMLElement;
-      path: string;
-      region: Element;
-      spots: readonly Spot[];
-    } | null = null;
+    let focused: Pick<Loss, "element" | "path" | "region" | "spots"> | null = null;
     /** The loss each dialog the focus has entered was opened from, or null for one it entered
      *  from the body. */
     const openedFrom = new Map<Element, Loss | null>();
     /** Where a `focusout` is handing the focus, and the loss it leaves in another region. */
     let moving: { from: Loss | null; to: Element } | null = null;
-    /** Cancels the check or the wait still out for the latest loss. */
-    let pending: (() => void) | null = null;
-    /** The elements the page has added since the latest loss went (that loss's `arrived`), noted
-     *  only while its check or its wait is out (`pending`). */
-    let arriving = new Set<Node>();
-    /** Notes each element `records` added to the page as one the latest loss's place may now
-     *  hold. */
-    const noteArrivals = (records: readonly MutationRecord[]) => {
-      for (const each of records) {
-        for (const node of each.addedNodes) {
-          if (node instanceof Element) arriving.add(node);
+    /** The check or the wait still out for the latest loss: what cancels it, and the set the
+     *  page's watcher adds the page's new elements to while it is out (that loss's `arrived`). */
+    let pending: { readonly arrived: Set<Node>; readonly cancel: () => void } | null = null;
+    /** The arrivals of a loss kept only as a dialog's opener, which is never checked: none. */
+    const noArrivals = new Set<Node>();
+    /** Notes into `arrived` each element `records` added to the page from the record at `from`
+     *  on, as one a loss's place may now hold. A node an earlier record of the same batch removed,
+     *  and that had not arrived, is one the page moved - React moves a keyed node with
+     *  `insertBefore`, which the batch reports as its removal and then its addition - so it stood
+     *  in the page before the loss, and it is not noted. */
+    const noteArrivals = (records: readonly MutationRecord[], arrived: Set<Node>, from = 0) => {
+      const removed = new Set<Node>();
+      for (const [at, each] of records.entries()) {
+        if (at >= from) {
+          for (const node of each.addedNodes) {
+            if (node instanceof Element && !removed.has(node)) arrived.add(node);
+          }
+        }
+        for (const node of each.removedNodes) {
+          if (!arrived.has(node)) removed.add(node);
         }
       }
     };
@@ -845,7 +869,7 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
       } else if (!element.isConnected || !rendered(element)) {
         handOn(loss, main.current, loss.caused);
       } else if (element.matches(":disabled")) {
-        pending = wait(loss);
+        pending = { arrived: loss.arrived, cancel: wait(loss) };
       } else if (loss.taken) {
         if (loss.caused) land(element);
         else focusNoScroll(element);
@@ -883,7 +907,7 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
       if (!(element instanceof HTMLElement)) return;
       const path = focused?.element === element ? focused.path : window.location.pathname;
       focused = null;
-      pending?.();
+      pending?.cancel();
       pending = null;
       const region = regionOf(element, main.current);
       const next = event.relatedTarget;
@@ -894,37 +918,34 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
         moving = { from: null, to: next };
         return;
       }
-      const arrived = new Set<Node>();
-      const loss: Loss = {
-        arrived,
+      const fields = {
         caused: causedByReader(element),
         element,
         index: countBefore(drawnIn(region, main.current), element),
         opener: openedFrom.get(region) ?? null,
         path,
         region,
-        spots: spotsOf(element, region),
         taken: element.matches(":disabled") || !rendered(element),
       };
       // A focus going straight to another region is kept only as the place it left: the opener
-      // of the dialog it is entering.
+      // of the dialog it is entering, whose spots and arrivals the hand-off never reads.
       if (next instanceof Element) {
-        moving = { from: loss, to: next };
+        moving = { from: { ...fields, arrived: noArrivals, spots: [] }, to: next };
         return;
       }
       // What the page changed before this loss is none of what a press draws in its place: those
       // records are dropped unread, and only the ones after it are noted as arrivals.
       watcher.takeRecords();
-      arriving = arrived;
-      pending = afterComponents(() => check(loss));
+      const loss: Loss = { ...fields, arrived: new Set<Node>(), spots: spotsOf(element, region) };
+      pending = { arrived: loss.arrived, cancel: afterComponents(() => check(loss)) };
     };
 
     // A focused element taken away with no `focusout` - Firefox's and WebKit's way, for the
-    // element or a parent of it - is read off the mutation that took it, at the place it was
+    // element or a parent of it - is read off the last mutation that took it, at the place it was
     // taken from, or at the region's end where no record of this batch names it. Every batch
     // that comes while a loss's check or wait is out is noted first as that loss's arrivals.
     const watcher = new MutationObserver((records) => {
-      if (pending !== null) noteArrivals(records);
+      if (pending !== null) noteArrivals(records, pending.arrived);
       const held = focused;
       if (held === null || held.element.isConnected) return;
       focused = null;
@@ -934,12 +955,11 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
         removal === undefined || !held.region.isConnected
           ? drawnIn(held.region, main.current).length
           : placeOfRemoval(held.region, removal.spot, main.current);
-      pending?.();
-      // What this batch added from the record that took the element on is what can stand in its
-      // place; what it added before that record is not.
+      pending?.cancel();
+      // What this batch added from the last record that took the element on is what can stand in
+      // its place; what it added before that record is not.
       const arrived = new Set<Node>();
-      arriving = arrived;
-      noteArrivals(records.slice(removal?.at ?? 0));
+      noteArrivals(records, arrived, removal?.at ?? 0);
       const loss: Loss = {
         arrived,
         caused: causedByReader(held.element),
@@ -949,7 +969,7 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
         spots: removal === undefined ? held.spots : [removal.spot, ...held.spots],
         taken: true,
       };
-      pending = afterComponents(() => check(loss));
+      pending = { arrived, cancel: afterComponents(() => check(loss)) };
     });
     watcher.observe(document.body, { childList: true, subtree: true });
     /** The record a scroll or a resize reads into: the noted element's, while a loss of it could
@@ -993,7 +1013,7 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
     };
     const readerMoved = (event: Event) => {
       notePress(event);
-      pending?.();
+      pending?.cancel();
       pending = null;
     };
     /** Whether the reader's Escape is being answered: set by its `keydown` until the next task,
@@ -1023,7 +1043,7 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
       document.removeEventListener("change", notePress, true);
       document.removeEventListener("scroll", noteScroll, true);
       window.removeEventListener("resize", noteResize);
-      pending?.();
+      pending?.cancel();
       sight = null;
       rescueMounted = false;
       lastPress = null;

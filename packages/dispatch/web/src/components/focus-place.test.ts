@@ -435,12 +435,12 @@ test("a loss in a dialog that stays open hands the focus inside it, never to the
   });
 });
 
-/** A button labelled `label`, appended to `parent`. */
-function buttonIn(parent: Element, label: string): HTMLButtonElement {
+/** A button labelled `label`, put in `parent` before `before`, else at its end. */
+function buttonIn(parent: Element, label: string, before: Node | null = null): HTMLButtonElement {
   const button = document.createElement("button");
   button.type = "button";
   button.textContent = label;
-  parent.append(button);
+  parent.insertBefore(button, before);
   return button;
 }
 
@@ -1025,10 +1025,7 @@ function changeAnswer(main: HTMLElement, after: HTMLElement): Replacement {
 
 /** Add a priority: the `+` goes, and the form drawn where it stood has the list's trigger first. */
 function addPriority(main: HTMLElement, after: HTMLElement): Replacement {
-  const pressed = document.createElement("button");
-  pressed.type = "button";
-  pressed.textContent = "+";
-  main.insertBefore(pressed, after);
+  const pressed = buttonIn(main, "+", after);
   const drawn = document.createElement("form");
   const first = buttonIn(drawn, "Priority to advance");
   buttonIn(drawn, "Add");
@@ -1107,7 +1104,58 @@ test("a control taken away with nothing new in its place walks back to the neare
       else leave();
       await settled();
       expect(send).toHaveFocus();
-      expect(box).not.toHaveFocus();
     });
   }
+});
+
+// (al) A sibling the same commit moves into the place of the control a press took away stood in
+// the page before the press, so it is nothing new there: the focus walks back by count, as for a
+// control taken away with nothing in its place, to the control now at the pressed one's place,
+// and not onto the moved sibling. React moves a keyed node with `insertBefore`, which the page
+// reports as its removal and then its addition in the batch that takes the pressed control away.
+test("a sibling moved into a pressed control's place is nothing new there, so the focus walks back", async () => {
+  for (const withFocusout of [true, false]) {
+    await withRescue(async () => {
+      const { buttons, main } = mainOf("Moved", "Before", "Pressed", "After");
+      const [moved, , pressed, after] = buttons as [
+        HTMLButtonElement,
+        HTMLButtonElement,
+        HTMLButtonElement,
+        HTMLButtonElement,
+      ];
+      pressed.focus();
+      pressed.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
+      // React takes the pressed control away, then moves the first sibling into its place.
+      const leave = () => {
+        pressed.remove();
+        main.insertBefore(moved, after);
+      };
+      if (withFocusout) lose(pressed, leave);
+      else leave();
+      await settled();
+      expect(after).toHaveFocus();
+    });
+  }
+});
+
+// (am) One batch of the page's records can hold a commit that moves the pressed control - a live
+// update reordering what it stands among - and the press's own commit that takes it away and
+// draws a form where it stood. With no `focusout` (Firefox and WebKit), the place is read off the
+// last record that took the control, where it was taken from, and not off the move's removal,
+// where it no longer stood: the focus lands on the first control of the form drawn there.
+test("a control moved and then taken away in one batch hands the focus to the form drawn where it was taken from", async () => {
+  await withRescue(async () => {
+    const { buttons, main } = mainOf("Before", "After");
+    const [before, after] = buttons as [HTMLButtonElement, HTMLButtonElement];
+    const { drawn, first, pressed } = addPriority(main, before);
+    pressed.focus();
+    pressed.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
+    // A live update moves the `+` after Before; the press's commit then takes it away and puts
+    // its form where it stood.
+    main.insertBefore(pressed, after);
+    pressed.remove();
+    main.insertBefore(drawn, after);
+    await settled();
+    expect(first).toHaveFocus();
+  });
 });

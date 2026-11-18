@@ -1,17 +1,16 @@
 import { expect, spyOn, test } from "bun:test";
 import { MAX_ISSUE_ADVANCES } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, waitFor, within } from "@testing-library/react";
+import { render, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { type ReactNode, useRef } from "react";
 import { MemoryRouter } from "react-router-dom";
 
+import { afterRescue, RescuedMain } from "../../__tests__/focus-rescue";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { listOf, panelOf, pickNamed, textBoxes } from "../../__tests__/list-picks";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
 import type { Issue, Priorities, PriorityRow } from "../../api/types";
-import { useFocusRescue } from "../../components/focus-place";
 import { IssuePriorityLine } from "./IssuePriorityLine";
 
 /**
@@ -54,23 +53,11 @@ const body: Priorities = {
 /** The revision of the issue's own set the line's read answered, which each press carries. */
 const REVISION = 41;
 
-/** The shell's main content holding the line and a control of the page after it, with the
- *  page's focus rescue mounted on it as `app.tsx` mounts it. */
-function RescuedPage({ children }: { children: ReactNode }) {
-  const main = useRef<HTMLElement>(null);
-  useFocusRescue(main);
-  return (
-    <main ref={main}>
-      {children}
-      <button type="button">Elsewhere</button>
-    </main>
-  );
-}
-
 // Queries are scoped to this render's container: bun runs every test file in one document, and
 // a sibling file's un-unmounted render would otherwise leak its links into a `screen`-wide query.
-// `rescue` mounts the line in the shell's main content with the page's focus rescue; `redraw`
-// draws it again for the issue's `advances` a later read answers.
+// `rescue` mounts the line in the shell's main content with the page's focus rescue, beside a
+// control of the page after it; `redraw` draws it again for the issue's `advances` a later read
+// answers.
 function renderLine(
   advances: Issue["advances"],
   { closed = false, rescue = false }: { closed?: boolean; rescue?: boolean } = {}
@@ -90,7 +77,14 @@ function renderLine(
     return (
       <MemoryRouter>
         <QueryClientProvider client={queryClient}>
-          {rescue ? <RescuedPage>{line}</RescuedPage> : line}
+          {rescue ? (
+            <RescuedMain>
+              {line}
+              <button type="button">Elsewhere</button>
+            </RescuedMain>
+          ) : (
+            line
+          )}
         </QueryClientProvider>
       </MemoryRouter>
     );
@@ -305,21 +299,6 @@ test("the Priority to advance list holds a text box that narrows the priorities,
     view.unmountAll();
   }
 });
-
-/** Lets the page's focus rescue answer a loss: its check runs a frame and then a task after it,
- *  so a frame and two zero-delay turns of the event loop here come after that check. */
-async function afterRescue(): Promise<void> {
-  await act(async () => {
-    const drawn = Promise.withResolvers<void>();
-    requestAnimationFrame(() => drawn.resolve());
-    await drawn.promise;
-    for (const _ of [0, 1]) {
-      const turn = Promise.withResolvers<void>();
-      setTimeout(turn.resolve, 0);
-      await turn.promise;
-    }
-  });
-}
 
 // The `+` is replaced in its place by the form it opens, and its press takes the focus away with
 // it. The page's focus rescue lands that focus on what the press drew there: the form's first
