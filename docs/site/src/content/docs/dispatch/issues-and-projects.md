@@ -339,7 +339,10 @@ agents using it stop working at once.
   yet.**
 
 Press `t` and then `s`, `k`, `p`, `c`, `h`, `a`, `v`, `d`, or `o` to switch to Spec, Verification,
-Plan, Conversation, Children, Artifacts, Activity, Decisions, or Collaborators.
+Plan, Conversation, Children, Artifacts, Activity, Decisions, or Collaborators. After you press
+`t`, the bottom right corner lists each key that can come next. Press `]` for the next tab and `[`
+for the previous one. After the last tab `]` goes to the first, and before the first `[` goes to
+the last. [Keyboard shortcuts](/legion/dispatch/keyboard/#issue) lists the issue page's other keys.
 
 An issue with no Verification document, or no plan document, shows on that tab the
 `dispatch artifact` command that makes one.

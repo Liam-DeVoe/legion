@@ -47,6 +47,15 @@ The arrow keys do the same while the focus is in the list. The selected row is i
 address as `?item=<id>`, so a link or a reload keeps your place. A question the agent withdraws,
 or that somebody answers elsewhere, leaves the list at once, and the next row is selected.
 
+While the focus is in the list, `Space` and `Shift+Space` scroll the right column down and up, and
+`g g` and `Shift+G` take it to its top and its end. The selection and the focus stay where they
+are. `l` moves the focus into the right column, and `Escape` brings it back to the list.
+
+After you snooze, dismiss, approve, request changes on or answer a row, the row after it is
+selected, and it takes the keyboard focus. If no row comes after it, the row before it is
+selected. If no row is left, the focus goes to the list's empty message. This works the same with
+the **Later** band folded or open, where there is no second column, and in the drawer.
+
 Three things stay in the column until you select another row: a question you had typed an answer
 into, which is shown closed with your text to copy; a question whose answer you sent and the
 server has not decided yet; and a thread you have just read, which is drawn as read where it
@@ -200,9 +209,9 @@ the chip to remove the filter, or the **↗** beside it to open the agent's
 
 ### Later and snooze
 
-You can put off an ask instead of answering it now. Every ask has a **Snooze** control with four
+You can put off an ask instead of answering it now. Every ask has a **Snooze** menu with four
 choices, at the head of the right column, or on the ask's own row where there is no second
-column:
+column. Choose **Snooze**, or press `b` or `h`, to open it:
 
 | Choice | Comes back |
 | --- | --- |
@@ -211,18 +220,30 @@ column:
 | Next week | At 09:00 next Monday, in your own time zone. |
 | Until I clear it | Only when you end the snooze. |
 
+Click a choice, or move to it with the arrow keys and press `Enter`, or press its digit, `1` to
+`4`. `Escape`, `Tab` and a click outside the menu close it, and nothing changes. On a snoozed ask
+the menu also offers **Un-snooze**, on `0`.
+
 A snoozed ask moves into the folded **Later** band, which is there whatever you group the list
 by. Open the band to see when each ask comes back and to end a snooze early. A snooze outranks
 whose turn it is: an agent replying to a snoozed ask does not bring it back, and it does not
 count toward the sidebar's **Inbox** number or **Blocked on you**. A thread cannot be snoozed: it
 is read or it is not.
 
-To snooze several asks at once, tick each row's checkbox, or press `x` on the row the right
+To act on several rows at once, tick each row's checkbox, or press `x` on the row the right
 column is showing (on the focused row where there is no second column). A bar appears over the
-list, at the foot of the window (at its top on a phone), so no row moves: it reads `3 selected`,
-with the same four choices and **Clear selection**. If the server refuses some of them, the bar
-says how many and why, and those rows stay ticked. Press `Escape` with no row focused to drop
-every tick.
+list, at the foot of the window (at its top on a phone), so no row moves. It reads `3 selected`,
+and it holds:
+
+- **Snooze**, while asks are ticked: the same four choices, for every ticked ask. `b` and `h`
+  open it too.
+- **Dismiss**, while threads are ticked: it takes every ticked thread out of the Inbox. In the
+  **Dismissed** view it reads **Move to Inbox**.
+- **Select all**, which ticks every row that the list's filters and search match.
+- **Clear selection**.
+
+If the server refuses some of them, the bar says how many and why, and those rows stay ticked.
+Press `Escape` with no row focused to drop every tick.
 
 ## Replies and agent messages
 
