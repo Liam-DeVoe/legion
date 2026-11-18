@@ -58,6 +58,19 @@ type Deps struct {
 	Machine             *requests.Machine
 	MachineLogin        *machine.Service
 	Proof               *proof.Verifier
+	// PodRegistrars is BROKER_POD_REGISTRARS, the registrar and pod account pairs POST
+	// /v1/oauth/exchange/pod-sessions admits: a registration whose caller's login account no
+	// entry pairs with the account of the pod it registers is 403 POD_REGISTRAR_NOT_LISTED,
+	// whatever BROKER_SERVICE_LOGINS lists. Nil, the setting unset, lists no pair, so the route
+	// admits no registration at all.
+	PodRegistrars PodRegistrars
+	// PodRegistrationTokens verifies a registration's pod token at
+	// BROKER_POD_REGISTRATION_AUDIENCE, against the cluster issuer and key set Enroll.Pod verifies
+	// the broker's own audience with (cmd/broker builds both on one oidc.Keys). Only POST
+	// /v1/oauth/exchange/pod-sessions reads it, beside Enroll.Pod, so no other route accepts a
+	// token of that audience. Nil is a broker with no such audience, whose registration route
+	// accepts the broker's own audience alone.
+	PodRegistrationTokens enroll.PodVerifier
 	// Policy is the live agent-secret policy, which POST /v1/secrets/{name}/reread rereads one
 	// name of (policy.Current.RefreshOne).
 	Policy *policy.Current

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -8,6 +9,7 @@ import (
 	"regexp"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/broker/enroll"
 	"github.com/sjawhar/envoy/internal/broker/exchange"
 	"github.com/sjawhar/envoy/internal/broker/machine"
 	"github.com/sjawhar/envoy/internal/oidc"
@@ -20,8 +22,9 @@ var thumbprintShape = regexp.MustCompile(`^[A-Za-z0-9_-]{43}$`)
 // podSessionBody is POST /v1/oauth/exchange/pod-sessions's exact shape.
 type podSessionBody struct {
 	// The pod's own projected Kubernetes ServiceAccount token, whose audience is the broker's
-	// (BROKER_K8S_OIDC_AUDIENCE): the very token the registrar hands POST /v1/enrollments as it
-	// enrolls that pod. It is what names the pod — its account is the token's subject and its uid
+	// (BROKER_K8S_OIDC_AUDIENCE), the very token the registrar hands POST /v1/enrollments as it
+	// enrolls that pod, or, where it is set, BROKER_POD_REGISTRATION_AUDIENCE, which no other
+	// route accepts. It is what names the pod — its account is the token's subject and its uid
 	// the kubernetes.io pod uid — so a registrar cannot register a pod whose token it does not
 	// hold, and nothing is taken on the registrar's word but the session name.
 	PodToken string `json:"pod_token"`
@@ -60,32 +63,54 @@ type podSessionResponse struct {
 }
 
 // registerPodSession is POST /v1/oauth/exchange/pod-sessions: a deployment's own daemon, logging
-// in as the service BROKER_SERVICE_LOGINS names its account (serviceAuth), records that one pod
-// may exchange under one session name. The token exchange binds a session name to a principal —
-// the listed service account — and never to a pod, so two pods of one account are one principal
-// there and nothing in that claim can tell them apart; this row is what does, and the exchange
-// refuses a pod of a free-session account whose uid no registration names for the name it asks
-// for. A relaunch is a second pod uid registered for the same name, so a successor is never
-// refused what its predecessor held.
+// in as the service BROKER_SERVICE_LOGINS names its account (serviceAuth) and listed in
+// BROKER_POD_REGISTRARS for the pod's account, records that one pod may exchange under one
+// session name. The token exchange binds a session name to a principal — the listed service
+// account — and never to a pod, so two pods of one account are one principal there and nothing
+// in that claim can tell them apart; this row is what does, and the exchange refuses a pod of a
+// free-session account whose uid no registration names for the name it asks for. A relaunch is
+// a second pod uid registered for the same name, so a successor is never refused what its
+// predecessor held.
 //
-// The body's token is verified with the verifier an enrolling pod's token is verified with
-// (Deps.Enroll.Pod), which the serviceAuth class has already proved the broker has: an expired
-// token is 401 POD_TOKEN_EXPIRED and one that does not verify 401 POD_TOKEN_INVALID. The pod it
-// names must not be the caller's own: a token naming the account the caller logs in as and the
-// very pod the caller's own token names is 403 POD_CALLER_IS_THE_POD. A registrar records which
-// pod may write under which name, and a pod that wrote its own row would pick the name it
-// writes under, which is the one choice this row takes from it. BROKER_SERVICE_LOGINS may name
-// an account BROKER_SERVICES binds to a service, so every pod of that account logs the service
-// in and reaches this route; without this a session pod would register itself under the name a
-// sibling pod holds. A registrar whose own token names no pod, and one registering any pod but
-// the one it runs in, are untouched. The policy
-// then refuses a token bound to no pod (400 POD_NOT_BOUND), an account neither
-// BROKER_EXCHANGE_ACCOUNTS nor BROKER_EXCHANGE_READ_ACCOUNTS lists (403 POD_ACCOUNT_NOT_LISTED, a
-// code of its own, since the caller's own list refusing is ACCOUNT_NOT_LISTED and the two lists
-// are two facts), an account whose entry fixes a session, which every read entry does (409
-// SESSION_FIXED, since such a pod needs no registration and registering one would say something
-// the configuration already says), and a session name no request could name back (400
-// SESSION_INVALID). Each refusal names the account or the name it refused and repeats no token.
+// The refusals come in this order: the body; the pod token; the list (403
+// POD_REGISTRAR_NOT_LISTED); the caller's own pod (403 POD_CALLER_IS_THE_POD); the thumbprint
+// (400 THUMBPRINT_INVALID); the generation (400 GENERATION_INVALID); and then the policy's.
+//
+// The body's token is verified at two audiences (podSessionToken): the broker's own, with the
+// verifier an enrolling pod's token is verified with (Deps.Enroll.Pod), which the serviceAuth
+// class has already proved the broker has, and, when BROKER_POD_REGISTRATION_AUDIENCE is set, that
+// one (Deps.PodRegistrationTokens), which no other route accepts, so a registrar can hold a pod's
+// token that registers it and does nothing else. A token either verifier accepts names the pod.
+// Any other is answered the verdict of the verifier whose audience it carries: an expired token
+// of either audience is 401 POD_TOKEN_EXPIRED, which a registrar retries, and every other, one of
+// neither audience included, 401 POD_TOKEN_INVALID.
+//
+// The caller must then be listed for the pod's account: an entry of BROKER_POD_REGISTRARS
+// (Deps.PodRegistrars) pairs the account it logs in as with the account the verified token
+// names, or the registration is 403 POD_REGISTRAR_NOT_LISTED, naming both accounts. The list,
+// and not BROKER_SERVICE_LOGINS, is the registration's authority: a session pod logs in as a
+// service too, and a login alone would let it register any pod whose token it holds for a name
+// of its choosing. The check needs the verified token, whose account its refusal names, and
+// comes before the caller's own pod, so a login no entry names is refused it for every pod, its
+// own included, and with the setting unset every registration is refused it, the one 403 a
+// registrar retries.
+//
+// The pod the token names must not be the caller's own: a token naming the account the caller
+// logs in as and the very pod the caller's own token names is 403 POD_CALLER_IS_THE_POD, reached
+// through an entry that pairs an account with itself. A registrar records which pod may write
+// under which name, and a pod that wrote its own row would pick the name it writes under, which
+// is the one choice this row takes from it. BROKER_SERVICE_LOGINS may name an account
+// BROKER_SERVICES binds to a service, so every pod of that account logs the service in and
+// reaches this route; without this a session pod listed for its own account would register
+// itself under the name a sibling pod holds. A registrar whose own token names no pod, and one
+// registering any pod but the one it runs in, are untouched. The policy then refuses a token
+// bound to no pod (400 POD_NOT_BOUND), an account neither BROKER_EXCHANGE_ACCOUNTS nor
+// BROKER_EXCHANGE_READ_ACCOUNTS lists (403 POD_ACCOUNT_NOT_LISTED, a code of its own, since the
+// caller's own list refusing is ACCOUNT_NOT_LISTED and the two lists are two facts), an account
+// whose entry fixes a session, which every read entry does (409 SESSION_FIXED, since such a pod
+// needs no registration and registering one would say something the configuration already
+// says), and a session name no request could name back (400 SESSION_INVALID). Each refusal names
+// the account or the name it refused and repeats no token.
 //
 // The body may name the thumbprint of the key the session's own role proves, which binds the
 // registration to that key (oauthstore.Store.RegisterPodSession), and a thumbprint that is not
@@ -107,13 +132,18 @@ func (s *server) registerPodSession(w http.ResponseWriter, r *http.Request, regi
 	if !readJSON(w, r, &body, "INVALID_REQUEST") {
 		return
 	}
-	claims, err := s.deps.Enroll.Pod.VerifyAccount(r.Context(), body.PodToken)
+	claims, err := s.podSessionToken(r.Context(), body.PodToken)
 	switch {
 	case errors.Is(err, oidc.ErrExpired):
 		writeError(w, http.StatusUnauthorized, "POD_TOKEN_EXPIRED", "the pod's ServiceAccount token has expired")
 		return
 	case err != nil:
 		writeError(w, http.StatusUnauthorized, "POD_TOKEN_INVALID", "the pod's ServiceAccount token does not verify")
+		return
+	}
+	if !s.deps.PodRegistrars.Lists(registrar.Subject, claims.Subject) {
+		writeError(w, http.StatusForbidden, "POD_REGISTRAR_NOT_LISTED",
+			fmt.Sprintf("%s is not listed to register pods of %s (BROKER_POD_REGISTRARS)", registrar.Subject, claims.Subject))
 		return
 	}
 	if claims.Subject == registrar.Subject && registrar.PodUID != "" && claims.PodUID == registrar.PodUID {
@@ -158,5 +188,30 @@ func (s *server) registerPodSession(w http.ResponseWriter, r *http.Request, regi
 			slog.Info("broker: registered a pod to write under a session name", attrs...)
 		}
 		writeJSON(w, http.StatusOK, podSessionResponse{PodUID: claims.PodUID, Session: body.Session, Thumbprint: stored.JKT, Generation: stored.Generation, ExpiresAt: stored.ExpiresAt})
+	}
+}
+
+// podSessionToken verifies a registration's pod token, raw: at the broker's own audience
+// (Deps.Enroll.Pod) and, where BROKER_POD_REGISTRATION_AUDIENCE is set, at that audience too
+// (Deps.PodRegistrationTokens). A token either verifier accepts is answered its claims. Any other
+// is answered the error of the verifier whose audience it carries: an oidc.ErrAudience from one
+// verifier yields to the other's error. A verifier judges a token's audience before its expiry,
+// so an expired token of either audience answers oidc.ErrExpired, as it did when the route had
+// one verifier, and the daemon retries it; a token of neither audience answers the second
+// verifier's oidc.ErrAudience. registerPodSession is the one caller, so no other route accepts a
+// token of the registration audience.
+func (s *server) podSessionToken(ctx context.Context, raw string) (enroll.AccountClaims, error) {
+	claims, err := s.deps.Enroll.Pod.VerifyAccount(ctx, raw)
+	if err == nil || s.deps.PodRegistrationTokens == nil {
+		return claims, err
+	}
+	registration, registrationErr := s.deps.PodRegistrationTokens.VerifyAccount(ctx, raw)
+	switch {
+	case registrationErr == nil:
+		return registration, nil
+	case errors.Is(err, oidc.ErrAudience):
+		return enroll.AccountClaims{}, registrationErr
+	default:
+		return enroll.AccountClaims{}, err
 	}
 }
