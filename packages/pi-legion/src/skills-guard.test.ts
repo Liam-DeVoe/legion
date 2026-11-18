@@ -177,6 +177,18 @@ test("no skill or prompt promises an update round no daemon can open", () => {
 // (or any role) cannot read GitHub. The commands live in the two references SKILL.md sends the
 // controller to (its session and its triage), so SKILL.md must link both, and the strings are
 // read from those three files only.
+//
+// The row reads every file under packages/daemon/internal, the pages under
+// docs/site/src/content/docs, the controller skill and four more paths, so it is real work, and
+// Bun's default of 5 s is a bound nobody chose for it. Measured on 2026-11-18 in an issue pod with
+// two CPUs, with both sweep files in one process (`bun test
+// packages/pi-legion/src/skills-guard.test.ts packages/pi-envoy/src/skills-guard.test.ts`): quiet,
+// five runs of the row took 0.73 to 1.49 s; with three CPU-bound processes beside it, four of five
+// runs took 3.68 to 4.21 s and the fifth was stopped at the default (`this test timed out after
+// 5000ms`). Beside a twelve-world skill-scenario batch on 2026-11-17, it failed at 6.6 s. Thirty
+// seconds is twenty times the slowest quiet run and more than four times the slowest loaded one, so
+// a loaded pod still finishes it. The row is synchronous, so Bun cannot stop it mid-run; it reports
+// a run past the bound as timed out once it returns.
 test("the controller skill reads pull requests as the review App, and nothing says the controller holds no GitHub credential", () => {
   const controllerDir = path.join(staged, "legion-controller");
   const entry = readFileSync(path.join(controllerDir, "SKILL.md"), "utf8");
@@ -223,7 +235,7 @@ test("the controller skill reads pull requests as the review App, and nothing sa
         .map(({ number }) => `${path.relative(REPO_ROOT, file)}:${number}`);
     });
   expect(offending).toEqual([]);
-});
+}, 30_000);
 
 // INFRA-83 took the `CI:` line out of the pull request body, and the forward merge of main put the
 // paragraph that defined it back into skills/legion-worker/references/pr-body.md with no conflict
