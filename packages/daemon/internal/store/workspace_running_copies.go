@@ -519,7 +519,10 @@ func firstRestoreAsk(ctx context.Context, tx pgx.Tx, issue, podUID string) (time
 // The daemon calls it before it answers a registration of a role in that pod, the first and every
 // one after it (internal/supervise's register and reregister, through Deps.PodRegistered), so no
 // role is told it registered while the store still reads the copy unspent; a call that fails
-// refuses the registration, and the agent's registration deadline relaunches it. The record is the
+// refuses the registration, and the agent's registration deadline relaunches it. Refusing is the
+// safe side: a registration answered with no record would leave the copy unspent, so it could be
+// sent again to a pod where a role has worked, which is the one send this record exists to stop,
+// while a store fault that refuses the registration costs one launch failure. The record is the
 // pod's: the first registration's time stays, and nothing a later role start or a restarted
 // container does clears it (firstRestoreAsk leaves the row as it is).
 //
