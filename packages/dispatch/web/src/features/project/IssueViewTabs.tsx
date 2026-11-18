@@ -1,7 +1,6 @@
 import { type ReactNode, useId, useState } from "react";
 import type { LegionBoardHeader } from "../../api/types";
-import { CONTROL } from "../../components/control-names";
-import { PanelTrigger } from "../../components/PanelTrigger";
+import { ViewPanel } from "../../components/ViewPanel";
 import {
   activeTabIndicatorBorder,
   activeTabIndicatorText,
@@ -286,9 +285,8 @@ function SaveView({
   // The answer of the last press of Save, until the name changes.
   const [answer, setAnswer] = useState<ViewNameCheck | undefined>(undefined);
   return (
-    <PanelTrigger
+    <ViewPanel
       align="right"
-      control={CONTROL.viewPanel}
       label="Save view"
       onOpenChange={(next) => {
         if (next) {
@@ -363,7 +361,7 @@ function SaveView({
           </span>
         </form>
       )}
-    </PanelTrigger>
+    </ViewPanel>
   );
 }
 
@@ -421,9 +419,8 @@ export function DaemonHint({
 }): ReactNode {
   const [open, setOpen] = useState(false);
   return (
-    <PanelTrigger
+    <ViewPanel
       align="right"
-      control={CONTROL.viewPanel}
       label="i"
       onOpenChange={setOpen}
       open={open}
@@ -454,7 +451,7 @@ export function DaemonHint({
           )}
         </div>
       )}
-    </PanelTrigger>
+    </ViewPanel>
   );
 }
 
