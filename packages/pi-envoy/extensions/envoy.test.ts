@@ -21284,6 +21284,16 @@ describe("consumer delivery", () => {
     readonly relaySubscribed: boolean;
   }
 
+  /** The listener's interest entry a row's sessions register with (`bootConsumer`'s `registry`). */
+  interface InterestEntry {
+    readonly topics: Set<string>;
+    /** The topics of every release a session asked for, landed or refused, in order. */
+    readonly releases: string[][];
+    /** While set, every release fails, as a listener that is down fails it, and the entry keeps
+     *  the topics. */
+    refusing: boolean;
+  }
+
   interface SentCard {
     readonly content: string;
     readonly customType?: string;
@@ -21327,6 +21337,15 @@ describe("consumer delivery", () => {
        *  does: the frame fails, and its third delivery is given up on, which is when the
        *  session is told what it was never shown (`@legion/envoy-client/consumer-delivery`). */
       readonly refuseCard?: (message: SentCard) => boolean;
+      /**
+       * The listener's interest entry for the session: a registration it accepts merges its
+       * topics in, a release takes them out, and a read of the interests answers it. Without it a
+       * read answers no topic and every release lands.
+       */
+      readonly registry?: InterestEntry;
+      /** The host refuses to append an entry of each custom type this answers true for, as a
+       *  session file that cannot be written refuses it. */
+      readonly refuseEntry?: (customType: string) => boolean;
     } = {}
   ) {
     process.env.ENVOY_RESUBSCRIBE_DELAY_MS = "10";
@@ -21361,6 +21380,7 @@ describe("consumer delivery", () => {
             { status: refusing.status }
           );
         }
+        for (const topic of body.topics) options.registry?.topics.add(topic);
         return response({
           session_id: SESSION,
           machine_id: "test",
@@ -21372,11 +21392,27 @@ describe("consumer delivery", () => {
           }),
         });
       }
+      if (url.pathname === "/v1/interests/unsubscribe" && options.registry !== undefined) {
+        const body = JSON.parse(init?.body?.toString() ?? "{}") as {
+          readonly topics: readonly string[];
+        };
+        options.registry.releases.push([...body.topics]);
+        if (options.registry.refusing) {
+          return new Response(JSON.stringify({ error: "the listener is down" }), { status: 409 });
+        }
+        for (const topic of body.topics) options.registry.topics.delete(topic);
+        return response({});
+      }
       if (
         url.pathname.startsWith("/v1/interests/") &&
         url.pathname !== "/v1/interests/unsubscribe"
       ) {
-        return response({ session_id: SESSION, machine_id: "test", dir: "/tmp", topics: [] });
+        return response({
+          session_id: SESSION,
+          machine_id: "test",
+          dir: "/tmp",
+          topics: [...(options.registry?.topics ?? [])],
+        });
       }
       const read = await options.dispatch?.(url);
       if (read !== undefined) return read;
@@ -21424,6 +21460,12 @@ describe("consumer delivery", () => {
         events.push(`handed ${message.details?.event_id ?? message.content}`);
         if (turn === "idle") void write(message);
         else held.push(message);
+      },
+      appendEntry: (customType, data) => {
+        if (options.refuseEntry?.(customType) === true) {
+          throw new Error("the session file could not be written");
+        }
+        fixture.pi.appendEntry(customType, data);
       },
     });
     const prior = options.entries ?? [];
@@ -21532,6 +21574,11 @@ describe("consumer delivery", () => {
         fixture.tools
           .find((tool) => tool.name === "envoy_subscribe")
           ?.execute("", { topics: [topic] }),
+      /** The person unfollows `topics` (`envoy_unsubscribe`). */
+      unfollow: (topics: readonly string[]) =>
+        fixture.tools
+          .find((tool) => tool.name === "envoy_unsubscribe")
+          ?.execute("", { topics: [...topics] }),
       stop: () => fixture.handlers.get("session_shutdown")?.({}, context),
     };
     return session;
@@ -21702,6 +21749,107 @@ describe("consumer delivery", () => {
     expect(appended.filter((entry) => entry.customType === REPLAY_STATE_ENTRY)).toEqual([]);
     expect(JSON.stringify(appended)).not.toContain(kept);
     expect(JSON.stringify(appended)).not.toContain("notifications.team.moved-to");
+  });
+
+  // A resume follows every topic the listener's entry holds but one the person unfollowed whose
+  // release at the listener failed, which it releases instead (`recoverRegisteredInterests`):
+  // `releasedOnResume` in @legion/envoy-client/delivery-ledger is the rule, and each row below
+  // holds one side of it. The person's unfollow is recorded in the newest ledger state; a topic
+  // that state does not name is no evidence, and it is followed again from the entry.
+  test("a resume releases a topic the person unfollowed whose release failed, and does not follow it again", async () => {
+    const base = "notifications.dispatch.issue.INFRA-557";
+    const topic = `${base}.>`;
+    const registry: InterestEntry = { topics: new Set(), releases: [], refusing: false };
+    const first = await bootConsumer("resume-releases-a", { registry });
+    await first.follow(topic);
+    await settle();
+    registry.refusing = true;
+    const answer = await first.unfollow([topic]);
+    registry.refusing = false;
+    expect(answer?.details).toMatchObject({ registrationError: expect.any(String) });
+    // The process stops before anything released them: the entry still holds the topic and the
+    // base its follow derived.
+    expect([...registry.topics]).toEqual(expect.arrayContaining([topic, base]));
+    await first.stop();
+
+    const second = await bootConsumer("resume-releases-b", { registry, entries: first.entries() });
+    expect(second.registrations.at(-1)?.topics).not.toContain(topic);
+    expect(second.registrations.at(-1)?.topics).not.toContain(base);
+    expect([...registry.topics]).not.toContain(topic);
+    expect([...registry.topics]).not.toContain(base);
+    // The release landed, so the newest ledger state holds no record of the unfollow any more.
+    const states = second.fixture.entries.filter(
+      (entry) => entry.customType === REPLAY_STATE_ENTRY
+    );
+    expect(states.at(-1)?.data).not.toHaveProperty("unfollowed");
+  });
+
+  test("a resume follows again a topic whose follow the ledger never wrote, and releases the person's unfollow", async () => {
+    const unfollowed = "notifications.team.alpha";
+    const unwritten = "notifications.team.deploys";
+    const registry: InterestEntry = { topics: new Set(), releases: [], refusing: false };
+    let refusingState = false;
+    const first = await bootConsumer("resume-unwritten-a", {
+      registry,
+      refuseEntry: (customType) => refusingState && customType === REPLAY_STATE_ENTRY,
+    });
+    await first.follow(unfollowed);
+    await settle();
+    registry.refusing = true;
+    const answer = await first.unfollow([unfollowed]);
+    registry.refusing = false;
+    expect(answer?.details).toMatchObject({ registrationError: expect.any(String) });
+    // From here the session file takes no ledger state, as one that cannot be written refuses it.
+    refusingState = true;
+    await first.follow(unwritten);
+    await settle();
+    // The registration took the follow; the ledger state did not.
+    expect([...registry.topics]).toContain(unwritten);
+    const states = first.fixture.entries.filter((entry) => entry.customType === REPLAY_STATE_ENTRY);
+    expect(JSON.stringify(states.at(-1)?.data)).not.toContain(unwritten);
+    await first.stop();
+
+    const releasesBefore = registry.releases.length;
+    const second = await bootConsumer("resume-unwritten-b", { registry, entries: first.entries() });
+    expect(second.registrations.at(-1)?.topics).toContain(unwritten);
+    expect([...registry.topics]).toContain(unwritten);
+    expect(second.registrations.at(-1)?.topics).not.toContain(unfollowed);
+    expect([...registry.topics]).not.toContain(unfollowed);
+    // The resume released the person's unfollow and nothing the state merely does not name.
+    expect(registry.releases.slice(releasesBefore).flat()).toEqual([unfollowed]);
+  });
+
+  test("a resume follows again the base an X.> follow derived after the person unfollowed it, and releases the person's unfollow", async () => {
+    const base = "notifications.dispatch.issue.INFRA-558";
+    const wildcard = `${base}.>`;
+    const unfollowed = "notifications.team.alpha";
+    const registry: InterestEntry = { topics: new Set(), releases: [], refusing: false };
+    const first = await bootConsumer("resume-derived-a", { registry });
+    await first.follow(base);
+    await first.follow(unfollowed);
+    await settle();
+    registry.refusing = true;
+    const answer = await first.unfollow([base, unfollowed]);
+    registry.refusing = false;
+    expect(answer?.details).toMatchObject({
+      removed: [base, unfollowed],
+      registrationError: expect.any(String),
+    });
+    // The `X.>` follow derives the base again: a follow after the person's unfollow of it.
+    await first.follow(wildcard);
+    await settle();
+    expect(first.registrations.at(-1)?.topics).toEqual(expect.arrayContaining([base, wildcard]));
+    await first.stop();
+
+    const releasesBefore = registry.releases.length;
+    const second = await bootConsumer("resume-derived-b", { registry, entries: first.entries() });
+    expect(second.registrations.at(-1)?.topics).toEqual(expect.arrayContaining([base, wildcard]));
+    expect([...registry.topics]).toEqual(expect.arrayContaining([base, wildcard]));
+    expect(second.registrations.at(-1)?.topics).not.toContain(unfollowed);
+    expect([...registry.topics]).not.toContain(unfollowed);
+    // The base was never released, not even for the registration to add it back: the resume
+    // released the person's unfollow alone.
+    expect(registry.releases.slice(releasesBefore).flat()).toEqual([unfollowed]);
   });
 
   // The acceptance line of dispatch://INFRA-771: no Envoy session receives from a plain NATS

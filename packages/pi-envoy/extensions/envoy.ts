@@ -195,6 +195,7 @@ import {
   REPLAY_DELIVERED_ENTRY,
   REPLAY_NOTICE_ENTRY,
   REPLAY_STATE_ENTRY,
+  releasedSubjects,
   rememberedSubjects,
   replaySnapshot,
 } from "../src/missed-messages";
@@ -2337,11 +2338,13 @@ export default function envoyExtension(pi: PiApi): void {
         relay: relay?.sessionID === sessionID ? relay.delivery : undefined,
         close: unfollow,
         unregister: async (topics) => {
-          await active?.client.unsubscribe({ sessionID, topics }).catch((error: unknown) =>
-            logger.warn("envoy: a subscription removal was not taken out of the registry", {
-              topics,
-              error: messageFor(error),
-            })
+          await active?.client.unsubscribe({ sessionID, topics }).then(
+            () => ledger?.released(topics),
+            (error: unknown) =>
+              logger.warn("envoy: a subscription removal was not taken out of the registry", {
+                topics,
+                error: messageFor(error),
+              })
           );
         },
         followedChanged: ledgerFollowedChanged,
@@ -2420,11 +2423,12 @@ export default function envoyExtension(pi: PiApi): void {
 
   // The ledger's followed topics are written once a pass has opened the session's inbound: before
   // that, a topic restored from the transcript is not followed again yet, and the write would
-  // drop it.
+  // drop it. `unfollowed` names the topics the person unfollowed in this change, which the ledger
+  // records until the listener releases them (`DeliveryLedger.followedChanged`).
   const ledgerOpen = (): boolean =>
     !shuttingDown && sessionID !== "" && registrationState.inboundOpenSession() === sessionID;
-  const ledgerFollowedChanged = async (): Promise<void> => {
-    if (ledger !== undefined && ledgerOpen()) await ledger.followedChanged();
+  const ledgerFollowedChanged = async (unfollowed: readonly string[] = []): Promise<void> => {
+    if (ledger !== undefined && ledgerOpen()) await ledger.followedChanged(unfollowed);
   };
 
   // Consumer delivery (`@legion/envoy-client/consumer-delivery`). While a pass holds the
@@ -3456,8 +3460,10 @@ export default function envoyExtension(pi: PiApi): void {
     // hears its listed channels through the topics its role owns (pi-legion's
     // controller-session.ts).
     // The topics the newest ledger state names come back too: the listener reaps a dead session's
-    // interests after its grace, and the transcript still says what the session followed. A topic
-    // it unfollowed is absent from that state. Agent and role subjects are never among them.
+    // interests after its grace, and the transcript still says what the session followed. Agent
+    // and role subjects are never among them. Every topic the entry holds is followed again but
+    // one the person unfollowed whose release at the listener failed, which is released here
+    // instead; `releasedOnResume` (`@legion/envoy-client/delivery-ledger`) states that rule.
     const registry = await handle.readInterest(sessionID);
     const slackRetired = publishedInterface?.roleClaim.slackRoleOwned === true;
     const registered = registry?.topics ?? [];
@@ -3473,15 +3479,34 @@ export default function envoyExtension(pi: PiApi): void {
         retired,
         "envoy: could not unregister a resumed controller's retired Slack topics"
       );
+    const entries = activeSessionContext?.sessionManager.getEntries() ?? [];
+    // The person's unfollows the entry still holds (`releasedSubjects`), released as a step of
+    // this pass too. A release that lands forgets their records; one that fails keeps them, so
+    // the next resume releases them, and they are not followed here either way.
+    const unfollowed = releasedSubjects(
+      entries,
+      registered.filter((topic) => !retired.includes(topic)),
+      followed
+    );
+    if (
+      unfollowed.length > 0 &&
+      (await handle.unregisterTopics(
+        sessionID,
+        unfollowed,
+        "envoy: could not release the topics this session unfollowed; the next resume releases them"
+      ))
+    ) {
+      await ledger?.released(unfollowed);
+    }
     // The newest ledger state's topics (`rememberedTopics`), but a retired Slack topic. They are
     // followed again, so the registration that ends this pass carries them and the session's
     // consumer relays what the stream kept for them.
-    const remembered = rememberedSubjects(
-      activeSessionContext?.sessionManager.getEntries() ?? []
-    ).filter((topic) => !(slackRetired && slackTopicChannel(topic) !== undefined));
+    const remembered = rememberedSubjects(entries).filter(
+      (topic) => !(slackRetired && slackTopicChannel(topic) !== undefined)
+    );
     for (const topic of new Set([...registered, ...remembered])) {
       if (topic === legacyAgentSubject(sessionID) || topic.startsWith(ROLE_TOPIC_PREFIX)) continue;
-      if (retired.includes(topic)) continue;
+      if (retired.includes(topic) || unfollowed.includes(topic)) continue;
       await handle.subscribe(topic);
     }
   };
@@ -4896,14 +4921,18 @@ export default function envoyExtension(pi: PiApi): void {
           const removed = candidates
             .filter((subject) => !registrationState.isRoleBound(subject))
             .filter((subject) => followed.delete(subject));
-          // Persisted at once, so the topic stays unfollowed across a restart.
-          if (removed.length > 0) await ledgerFollowedChanged();
           const registryRemoved = removed.filter((topic) => !topic.startsWith(ROLE_TOPIC_PREFIX));
+          // Persisted at once, with the person's unfollow of each topic the listener is sent: a
+          // resume releases one whose release below failed rather than follow it again from the
+          // listener's entry (`releasedOnResume` in `@legion/envoy-client/delivery-ledger`), and
+          // a release that lands forgets the record.
+          if (removed.length > 0) await ledgerFollowedChanged(registryRemoved);
           const registrationError =
             registryRemoved.length === 0
               ? undefined
               : await client
                   .unsubscribe({ sessionID, topics: registryRemoved })
+                  .then(() => ledger?.released(registryRemoved))
                   .then(registerSession)
                   .then(() => undefined, messageFor);
           const unsubscribed = `Unsubscribed: ${removed.join(", ") || "(none)"}`;

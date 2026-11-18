@@ -33,6 +33,7 @@ import {
   type DeliveryLedger,
   envoyNoticeText,
   failureNoticeFields,
+  releasedOnResume,
 } from "@legion/envoy-client/delivery-ledger"
 import { activeDispatchSettings } from "@legion/envoy-client/dispatch-config"
 import { DispatchClient } from "@legion/envoy-client/dispatch-http"
@@ -872,7 +873,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       relay: relay?.sessionID === identity.id ? relay.delivery : undefined,
       close: (topic) => userTopics.delete(topic),
       unregister: unfollowRemovedTopics,
-      followedChanged: () => ledger.followedChanged(),
+      followedChanged: (closed) => ledger.followedChanged(closed),
     })
   }
 
@@ -1049,15 +1050,15 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
    * stops taking them at once. Both callers here — `unfollowRemovedTopics`, a removal's
    * best-effort drop, and the public `unfollow` below — take these same two steps in this order;
    * only whether they wait for them differs, and which topics `unfollow` sends: no role's topic.
-   * No registry write is made when nothing is left to send. Until a read of the entry has
-   * succeeded, the topics are also kept in `unfollowedBeforeRead`, so that read does not follow
-   * them again when the registry write fails.
+   * No registry write is made when nothing is left to send. Each caller records the person's
+   * unfollow in the ledger in the same step (`ledger.followedChanged`), so neither the first read
+   * of the entry nor a restart follows a topic again whose registry write fails
+   * (`releasedOnResume`); a registry write that lands forgets the record (`ledger.released`).
    */
   function dropFromTopicsAndRegistry(
     topics: readonly string[],
     unregistered: readonly string[] = topics,
   ): Promise<void> {
-    if (!interestsRead) for (const topic of topics) unfollowedBeforeRead.add(topic)
     followedTopics.unfollow(topics)
     // The relay takes the topics the session follows now, before a registration carries them:
     // the same set the registration will carry (`registrationTopics`).
@@ -1080,7 +1081,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
         topics: unregistered,
         clientInstanceID: options.clientInstanceID,
       }),
-    )
+    ).then(() => ledger.released(unregistered))
   }
 
   /**
@@ -1465,18 +1466,11 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
   let interestsRead = false
 
   /**
-   * The topics this session stopped following while `interestsRead` was false and has not
-   * followed again since (`dropFromTopicsAndRegistry`, `follow`). The first read skips them: when
-   * their release at the listener failed, the entry still lists them, and adopting them would
-   * follow again a topic the session unfollowed. The reconciliation of the next heartbeat then
-   * releases them. Emptied by that read, and never filled after it.
-   */
-  const unfollowedBeforeRead = new Set<string>()
-
-  /**
    * Brings the registry entry and the topic set this session registers into line
    * with each other. The first successful read adopts every topic the entry lists
-   * except those in `unfollowedBeforeRead`; every later read subtracts every topic
+   * but a person's unfollow whose release failed, which it releases instead
+   * (`releasedOnResume`, read against the ledger's state: the file's at start, with
+   * every unfollow of this process since). Every later read subtracts every topic
    * the entry lists that `followedTopics.topics()` no longer names.
    *
    * Subtracting is safe only while `followedTopics.topics()` is authoritative for
@@ -1523,19 +1517,35 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     const registry = await options.client.getInterest(identity.id).catch(undefinedOnNotFound)
     if (shuttingDown) return
     if (!interestsRead) {
-      for (const topic of registry?.topics ?? []) {
+      const entry = registry?.topics ?? []
+      const released = releasedOnResume(entry, ledger.state(), userTopics)
+      for (const topic of entry) {
         if (
           topic === directSubject ||
           topic.startsWith(ROLE_TOPIC_PREFIX) ||
-          unfollowedBeforeRead.has(topic)
+          released.includes(topic)
         ) {
           continue
         }
         userTopics.add(topic)
         followedTopics.follow(topic)
       }
-      unfollowedBeforeRead.clear()
       interestsRead = true
+      if (released.length === 0) return
+      // Not followed here whether or not this release lands: a failed one leaves the record, and
+      // the topic not followed, so the next heartbeat's subtraction below releases it.
+      try {
+        await options.client.unsubscribe({
+          sessionID: identity.id,
+          topics: released,
+          clientInstanceID: options.clientInstanceID,
+        })
+        await ledger.released(released)
+      } catch (error) {
+        process.stderr.write(
+          `envoy-channel: could not release the topics this session unfollowed (${messageFor(error)}); the next heartbeat releases them\n`,
+        )
+      }
       return
     }
     if (registry === undefined) return
@@ -1550,6 +1560,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       topics: drifted,
       clientInstanceID: options.clientInstanceID,
     })
+    await ledger.released(drifted)
   }
 
   // One tick at a time, and at most one pending behind it. `serialized` already
@@ -1794,7 +1805,6 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       for (const topic of expandSubscriptionTopics(topics)) {
         if (topic === directSubject || userTopics.has(topic)) continue
         userTopics.add(topic)
-        unfollowedBeforeRead.delete(topic)
         followedTopics.follow(topic)
         fresh.push(topic)
       }
@@ -1822,14 +1832,17 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       // A role's topic leaves the followed set and the record but is never sent to the listener,
       // whose release of it frees this process's role claim: the role claim holds that topic, not
       // this follow, as pi-envoy's `envoy_unsubscribe` has it. A release that fails is answered
-      // rather than thrown, as it is there: the topics stay unfollowed, and the heartbeat's
-      // interest reconciliation takes them out of the entry.
-      const unsubscribing = dropFromTopicsAndRegistry(
-        removed,
-        removed.filter((topic) => !topic.startsWith(ROLE_TOPIC_PREFIX)),
-      ).then(() => undefined, messageFor)
-      // Recorded at once, so a restart does not follow the topics again from the delivery state.
-      await ledger.followedChanged()
+      // rather than thrown, as it is there: the topics stay unfollowed, the heartbeat's interest
+      // reconciliation takes them out of the entry, and a restart before it releases them.
+      const unregistered = removed.filter((topic) => !topic.startsWith(ROLE_TOPIC_PREFIX))
+      const unsubscribing = dropFromTopicsAndRegistry(removed, unregistered).then(
+        () => undefined,
+        messageFor,
+      )
+      // Recorded at once, with the person's unfollow of each topic the listener is sent: neither a
+      // restart nor the first read of the interests follows one again whose release failed
+      // (`releasedOnResume` in `@legion/envoy-client/delivery-ledger`).
+      await ledger.followedChanged(unregistered)
       const registrationError = await unsubscribing
       return registrationError === undefined ? { removed } : { removed, registrationError }
     },

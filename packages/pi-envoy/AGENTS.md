@@ -662,9 +662,10 @@ relays it again to the session it names once that session is open here.
 Two transcript entries hold it, written with `pi.appendEntry` and rebuilt by
 `restoreLocalSessionState` from every entry of the session file (`replaySnapshot`):
 `envoy-replay-delivered` (`{event_id?, dedupe_key?, at}`), one per frame the ledger records,
-shown or named in a failure notice; and `envoy-replay-state` (`{topics}`, `LedgerStateSchema`),
-written only when it changed, the newest being the state, which holds the topics the session
-follows so a restart follows them again.
+shown or named in a failure notice; and `envoy-replay-state` (`{topics, unfollowed?}`,
+`LedgerStateSchema`), written only when it changed, the newest being the state, which holds the
+topics the session follows so a restart follows them again, and the person's unfollows whose
+release the listener has not confirmed.
 A one-time notice raised but not told yet is held in the session's own transcript rather than in
 that state (`requeueNotices`), so a process that ends before telling it tells it after the
 restart. The ledger also takes the frame of
@@ -675,7 +676,10 @@ keeps the state at any age. `recoverRegisteredInterests` resubscribes the union 
 the listener's registered interests and the newest state's topics (`rememberedTopics`: neither an
 agent subject nor a role lane), so a session stopped longer
 than the listener's 10-minute grace still follows its topics and is relayed what the stream kept
-for them; an unfollow (`envoy_unsubscribe`, a removal) is written at once and stays unfollowed.
+for them. An unfollow (`envoy_unsubscribe`, a removal) is written at once with its record, and the
+release that lands forgets the record; a topic the entry still holds is released and not followed
+on that record alone (`releasedSubjects`), never because the state does not name it. The rule is
+`releasedOnResume`'s in `@legion/envoy-client/delivery-ledger`.
 
 A frame that fails to show is answered `nak`, so the relay sends it again. On its third delivery
 (`ConsumerFrame.deliveries`) the session is shown one card in its place naming the

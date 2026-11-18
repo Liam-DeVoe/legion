@@ -875,8 +875,8 @@ test("an unsubscribe whose release fails answers its error, and a restart does n
 // followed set holds only the direct subject. A topic the session unfollowed while no read had
 // succeeded - the startup read failed with anything but a 404 - is still in the entry when its
 // release failed too, and that adopt must not follow it again: the person unsubscribed.
-// pi-envoy adopts nothing from the entry (it follows only from the tool, its ledger and a held
-// role), so its unfollowed topic stays unfollowed already.
+// pi-envoy's resume follows the entry's topics too, and both clients release such a topic by one
+// rule, `releasedOnResume` in @legion/envoy-client/delivery-ledger, which states when it holds.
 test("a topic unfollowed before the first good read of the interests is not adopted back by that read", async () => {
   const stateDirectory = scratchState()
   const topic = "notifications.dispatch.issue.DSP-9"

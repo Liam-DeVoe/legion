@@ -191,7 +191,9 @@ export function replayFollowedSubjects(
  * session back after the listener reaped its interests still follows them and takes what its
  * consumer kept for them: every subject of the state but agent subjects (the host opens its own,
  * and another's is not its to follow) and role lanes (held through a role's claim). An unfollowed
- * topic is absent from the newest state, so it stays unfollowed.
+ * topic is absent from the newest state, so it does not come back from here; the listener's entry
+ * can still hold it, and whether a resume releases it or follows it from there is
+ * `releasedOnResume`'s rule (`./delivery-ledger`).
  */
 export function rememberedTopics(topics: readonly string[] | undefined): string[] {
   return (topics ?? []).filter(

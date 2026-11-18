@@ -9,6 +9,7 @@ import {
   type LedgerSnapshot,
   type LedgerState,
   LedgerStateSchema,
+  releasedOnResume,
 } from "@legion/envoy-client/delivery-ledger";
 import { rememberedTopics } from "@legion/envoy-client/stream-topics";
 
@@ -24,10 +25,11 @@ const ENVOY_MESSAGE = "envoy-message";
 export const REPLAY_DELIVERED_ENTRY = "envoy-replay-delivered";
 
 /**
- * Transcript entry holding the ledger state (`LedgerState`: `{topics}`), written only when it
- * changed; the newest one is the state. Its topics are every
- * subject the session followed, so a restart after the listener reaped its interests still follows
- * its topics.
+ * Transcript entry holding the ledger state (`LedgerState`: `{topics, unfollowed?}`), written only
+ * when it changed; the newest one is the state. Its topics are every subject the session followed,
+ * so a restart after the listener reaped its interests still follows its topics, and `unfollowed`
+ * the person's unfollows whose release is still owed, which a resume releases
+ * (`releasedSubjects`).
  */
 export const REPLAY_STATE_ENTRY = "envoy-replay-state";
 
@@ -205,6 +207,16 @@ function writtenCards(
  *  (`rememberedTopics`: neither an agent subject nor a role lane). */
 export function rememberedSubjects(entries: readonly unknown[]): readonly string[] {
   return rememberedTopics(newestState(entries)?.topics);
+}
+
+/** The topics of the listener's entry (`registered`) that a resume releases and does not follow
+ *  again, by the newest replay state and what the session follows now (`releasedOnResume`). */
+export function releasedSubjects(
+  entries: readonly unknown[],
+  registered: readonly string[],
+  followedNow: Iterable<string>
+): string[] {
+  return releasedOnResume(registered, newestState(entries), followedNow);
 }
 
 /** The replay notices a session's entries record as held and not as handed, in the order held

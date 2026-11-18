@@ -102,6 +102,9 @@ and the role claim holds that topic, not the follow.
 When no topic is left to send, `unfollow` sends no unsubscribe.
 When the unsubscribe fails, `unfollow` does not throw,
 and the heartbeat's interest reconciliation removes the topics from the entry.
+The ledger records the person's unfollow of each topic it sends with the followed topics, and an unsubscribe that lands forgets the record.
+The first good read of the interests, in this process or after a restart, releases each topic the entry still holds on that record and does not follow it, and follows every other topic of the entry: `releasedOnResume` in `@legion/envoy-client/delivery-ledger` is that rule.
+A `subscription.removed` frame's topics are recorded the same way.
 The tool returns `removed`, `kept`,
 and `registrationError` when the unsubscribe failed.
 pi-envoy keeps a subject that another plugin opened while the session holds its role.

@@ -117,7 +117,12 @@ the host, so a caller told `false` - the host moved while the write waited behin
 before it, or the write failed - reports the loss rather than settling the frame in silence.
 
 The state holds the topics the session follows, so a host can follow them again after the
-listener reaped its interests;
+listener reaped its interests, and the person's unfollows whose release the listener has not
+confirmed: `followedChanged(unfollowed)` records them, and `released(topics)` or a follow again
+forgets them. A resume releases such a topic from the listener's entry rather than follow it from
+there, and follows every other topic the entry holds; `releasedOnResume(entry, state,
+followedNow)` is that rule, and its doc comment is the one place it is written. An older client
+ignores the added `unfollowed` field.
 `restore(snapshot)` loads what a host persisted, dropping expired ledger entries and keeping the
 state at any age. A write carries the state only when it changed. A frame the host fails to show is answered `nak` and sent again, and
 on its third delivery the host shows a notice naming it instead (`showFailureNotice`); a host whose
