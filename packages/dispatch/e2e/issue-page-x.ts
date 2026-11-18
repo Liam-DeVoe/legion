@@ -331,7 +331,7 @@ export interface NodeStateIds {
   readonly check2: string;
   /** The fourth check, failing at the seed's head, which is overtaken. */
   readonly check4: string;
-  /** The first decision of `decisions.md`, which is proposed. */
+  /** The first decision of the spec's `## Decisions` part, which is proposed. */
   readonly decision1: string;
   /** The lens on statement 8. */
   readonly lens: string;
