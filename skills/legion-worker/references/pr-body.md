@@ -35,7 +35,8 @@ later phase keeps it current rather than replacing it:
 
 **Checks:** one line per `check` block of the issue's Verification document, in the document's
 order. Each is the line `dispatch result` printed when the result was recorded, or the
-`Pull request line` that `dispatch results` prints for a check with `ci_check`:
+`Pull request line` that `dispatch results` prints under the line of this pull request's head,
+for a check with `ci_check`:
 - Check <block id> (<when>): <pass|fail> at <the commit>, recorded by <role>. <the reading that role recorded, cut with an ellipsis where it is long>
 - Check <block id> (before_merge): <pass|fail> at <the commit>, from CI run <name>. <the check's words>
 - Check <block id> (before_merge): CI run <name> has no result (<case>)
@@ -171,8 +172,8 @@ and decides there, the only gate on such an issue.
 
 - **The implementer records a result for every `before_merge` check before its phase completes,
   and writes the `Checks` lines when the pull request opens.** A check carrying `ci_check` is
-  CI's: the implementer records nothing for it and copies its `Pull request line` from
-  `dispatch results` (`skill://legion-worker/references/ci-checks.md`).
+  CI's: the implementer records nothing for it and copies the `Pull request line` of this pull
+  request's head from `dispatch results` (`skill://legion-worker/references/ci-checks.md`).
   A check with no surface yet is the report of *When no surface reaches the changed path* below,
   never a check left unrecorded. The results are on the Dispatch issue, the lines in the
   PR body, because the reviewer and the merger verify facts on GitHub and never from a handoff.
@@ -184,9 +185,9 @@ and decides there, the only gate on such an issue.
   check with `ci_check`, whose results come from CI: the one `dispatch results` derives, and each
   one its CI job recorded. It runs no check whose `run` is a whole test suite in the pod: that
   check's words are wrong, and the architect rewrites it with `ci_check`. A `ci_check` check with no
-  pass standing at the head (its `A pass stands:` line), because a result from CI there is a fail, a
-  pass and a fail from CI are there, or its run concluded `skipped`, `neutral` or `cancelled`, is a
-  test failure. A run still going, or GitHub
+  pass standing at the head (the line of that head under the check), because a result from CI there
+  is a fail, a pass and a fail from CI are there, or its run concluded `skipped`, `neutral` or
+  `cancelled`, is a test failure. A run still going, or GitHub
   unread, goes in `implementerProof.how` and fails no round. A name no run answers once the head's
   checks have settled goes to the architect as a finding. It re-runs the
   implementer's command or drives the same surface independently, and records the verdict in

@@ -46,7 +46,7 @@ Dispatch message (step 5) is for a finished retro only.
    request, and the tester's and reviewer's handoffs
    (`dispatch handoff-read --issue <issue> --phase test`, then the review
    at the version your task's `Handoff:` line names, `--phase review --version <n>`, the command
-   that line quotes). A pass stands for every `before_merge` check of the issue at the approved
+   that line quotes). Every `before_merge` check of the issue reads yes on the line of the approved
    head, from the implementer and from the tester alike, and the pull request
    body's `Checks` block carries each of those lines. A check carrying `ci_check` is CI's: a pass
    from CI is the pass it needs: the one `dispatch results` derives, or one its CI job recorded at
@@ -54,8 +54,8 @@ Dispatch message (step 5) is for a finished retro only.
    cybermonklabs/legion a surface may also be the daemon's real-process tests, a live proof under
    `scripts/e2e/`, or a live check at the operator's next daemon restart recorded on the pull
    request. A `ci_check` check has no pass standing at that head when no pass stands at that head
-   (its `A pass stands:` line) because a result from CI there is a fail, a pass and a fail from
-   CI are there, or its run concluded `skipped`, `neutral` or `cancelled`. Wait for a run that has not
+   (the line of that head under the check) because a result from CI there is a fail, a pass and a
+   fail are there, or its run concluded `skipped`, `neutral` or `cancelled`. Wait for a run that has not
    concluded, and read again where GitHub could not be read. Send a name that no run answers
    (`absent`) to the architect as a finding, because the words of the check are wrong. Neither
    wait nor that finding moves the issue back. A check whose `run` is a whole test suite has wrong

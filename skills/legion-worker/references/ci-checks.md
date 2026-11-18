@@ -23,17 +23,19 @@ when Dispatch stores the edit as a new version of the document, about 2 s after 
 in it: until then, a role's result of a check given `ci_check` is taken, and the store then
 removes that `ci_check` as above, and a role's result of a check whose `ci_check` was removed is
 refused. The CI job stays a job like any other, and the rules for a red CI job apply
-to it. `dispatch results --issue <issue>` reads the named check run at the head of the issue's pull
-request and derives one result from it. A run of the named job on a push of the change's branch
-also records its own result, at the commit it tested, through the secrets broker. The command
-prints the derived result, the same `A pass stands:` line a recorded check gets, and the line for
-the pull request body. Then it prints each result that the job recorded, as a recorded result
-prints, with `on branch <branch>` after `by ci`:
+to it. `dispatch results --issue <issue>` reads the named check run at the head of each open pull
+request of the issue, in that pull request's repository, and derives one result at each. A run of
+the named job on a push of the change's branch also records its own result, at the commit it
+tested, through the secrets broker. The command prints the derived result of the newest open head
+and the same `A pass stands:` line a recorded check gets. Then it prints one line for each head,
+each with the line for that pull request's body. Then it prints each result that the job
+recorded, as a recorded result prints, with `on branch <branch>` after `by ci`:
 
 ```
 - <id> (before_merge): <verdict> at <sha> by ci (CI run <name>, <conclusion>), <currency>. <text>
   A pass stands: <yes, from ci | no | not known>.
-  Pull request line: - Check <id> (before_merge): <verdict> at <sha>, from CI run <name>. <words>
+  - #<number> at <commit>: yes, from <roles>. Pass <id> decides it.
+    Pull request line: - Check <id> (before_merge): <verdict> at <sha>, from CI run <name>. <words>
   - <verdict> by ci on branch <branch> at <sha>. <where that commit stands>. …
 ```
 
@@ -42,7 +44,8 @@ When the run gives no result, the command prints the case in place of a verdict:
 ```
 - <id> (before_merge): <no result | its CI job's results below, and CI run <name> derives none>: <detail> <text>
   A pass stands: <no | not known>.
-  Pull request line: - Check <id> (before_merge): CI run <name> has no result (<case>)
+  - #<number> at <commit>: no, as it holds no result.
+    Pull request line: - Check <id> (before_merge): CI run <name> has no result (<case>)
   - <verdict> by ci on branch <branch> at <sha>. <where that commit stands>. …
 ```
 
@@ -65,16 +68,16 @@ is still going (below). Each read is made at the head, so a push needs no write 
 Read `dispatch results --issue <issue>` first. Then run and record only the checks that carry no
 `ci_check` and whose `run` is no whole test suite, and the proofs on a real surface that CI cannot
 make. A check with `ci_check` needs no pass from the implementer. It is an entry in `failures`
-when no pass of it stands at that head (its `A pass stands:` line): a result from CI there is a
-fail, CI holds a pass and a fail at that commit (`not known`), or its run concluded `skipped`,
-`neutral` or `cancelled`.
+when no pass of it stands at that head (the line of that head under the check): a result from CI
+there is a fail, CI holds a pass and a fail at that commit (`not known`), or its run concluded
+`skipped`, `neutral` or `cancelled`.
 
 ## The `Checks` line
 
 The implementer writes the line of each such check in the pull request body's `Checks` block. It
-copies the `Pull request line` that `dispatch results` prints. While the named run gives no
-result, that line is the no-result line. The next role that writes the body reads
-`dispatch results` again and puts the derived line in its place.
+copies the `Pull request line` that `dispatch results` prints under the line of its own head. While
+the named run gives no result, that line is the no-result line. The next role that writes the body
+reads `dispatch results` again and puts the derived line in its place.
 
 ## A run that is still going
 
