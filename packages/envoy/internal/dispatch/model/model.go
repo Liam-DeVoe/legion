@@ -1408,10 +1408,15 @@ type CheckPassStands struct {
 // PassStandsYes where a pass stands there; PassStandsNo with PassSubjectReasonFail where only a
 // fail stands there, or PassSubjectReasonNoResult where nothing does; PassStandsUnknown with
 // PassStandsReasonPassAndFail where a check CI proves holds a pass and a fail of CI at that commit.
+// Roles names each role whose pass counts there, for PassStandsYes alone. Results holds the ids of
+// the results that decide the state: for PassStandsYes the newest pass of each role in Roles, for
+// PassStandsNo with PassSubjectReasonFail the newest fail, and for PassSubjectReasonNoResult none.
 type PassStandsSubject struct {
-	Basis  CheckBasis `json:"basis"`
-	Answer string     `json:"answer" enum:"yes,no,unknown"`
-	Reason string     `json:"reason,omitempty" enum:"fail,no_result,pass_and_fail"`
+	Basis   CheckBasis `json:"basis"`
+	Answer  string     `json:"answer" enum:"yes,no,unknown"`
+	Reason  string     `json:"reason,omitempty" enum:"fail,no_result,pass_and_fail"`
+	Roles   []string   `json:"roles,omitempty"`
+	Results []string   `json:"results,omitempty"`
 }
 
 // The reasons a pass_stands answer and its subjects give.

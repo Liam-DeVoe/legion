@@ -8,6 +8,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"slices"
 	"testing"
 )
 
@@ -123,6 +124,11 @@ func eachHeadWants(t *testing.T, what string, subject eachHeadSubject, answer, r
 	}
 }
 
+// eachHeadSame reports whether got and want hold the same ids or roles, in any order.
+func eachHeadSame(got, want []string) bool {
+	return slices.Equal(slices.Sorted(slices.Values(got)), slices.Sorted(slices.Values(want)))
+}
+
 // TestEachOpenHeadHoldsTheStateOfItsOwnResults: R2. #70 is open at H1 and #71 at H2. The tester's
 // pass of k1 at H1 makes H1 yes, and H2, which holds no result, no for no_result. The tester's
 // fail at H2 then makes H2 no for its fail, and H1 stays yes.
@@ -217,5 +223,40 @@ func TestAPassStandsForTheCheckOnlyWhenEachOpenHeadReadsYes(t *testing.T) {
 			t.Fatalf("k1 has %d subjects, want one for each of the %d open heads and none for the merged one: %+v",
 				got, len(open), check.PassStands)
 		}
+	}
+}
+
+// TestTheRolesOfAHeadAreThePassesAtThatHead: R6. The implementer's pass is at H1 and the tester's
+// at H2. Each head names the one role whose pass counts there and that pass's id, and the check
+// answers yes with no role, since no role passed at each head. The tester's pass at H1 too makes
+// the check's answer name the tester, and H1's results then hold both passes.
+func TestTheRolesOfAHeadAreThePassesAtThatHead(t *testing.T) {
+	rig := newCIJobRig(t)
+	writeHead(t, rig.database, ciJobRepository, 70, eachHeadH1, "open", rig.issue)
+	writeHead(t, rig.database, ciJobRepository, 71, eachHeadH2, "open", rig.issue)
+
+	implementerAtH1 := eachHeadResult(t, rig.handler, rig.issue, "k1", "implementer", "pass", eachHeadH1)
+	testerAtH2 := eachHeadResult(t, rig.handler, rig.issue, "k1", "tester", "pass", eachHeadH2)
+	check := eachHeadRead(t, rig.handler, rig.issue, "k1", "")
+	if check.PassStands.Answer != "yes" || len(check.PassStands.Roles) != 0 {
+		t.Fatalf("with the implementer's pass at H1 alone and the tester's at H2 alone, k1 answers %+v, want yes with no role", check.PassStands)
+	}
+	for _, want := range []struct {
+		head, role, result string
+	}{{eachHeadH1, "implementer", implementerAtH1}, {eachHeadH2, "tester", testerAtH2}} {
+		subject := eachHeadAt(t, check, want.head)
+		if subject.Answer != "yes" || !slices.Equal(subject.Roles, []string{want.role}) || !slices.Equal(subject.Results, []string{want.result}) {
+			t.Fatalf("the head at %s reads %+v, want yes from %s alone, decided by %s", want.head, subject, want.role, want.result)
+		}
+	}
+
+	testerAtH1 := eachHeadResult(t, rig.handler, rig.issue, "k1", "tester", "pass", eachHeadH1)
+	check = eachHeadRead(t, rig.handler, rig.issue, "k1", "")
+	if check.PassStands.Answer != "yes" || !slices.Equal(check.PassStands.Roles, []string{"tester"}) {
+		t.Fatalf("with the tester's pass at each head, k1 answers %+v, want yes from the tester alone", check.PassStands)
+	}
+	if subject := eachHeadAt(t, check, eachHeadH1); !eachHeadSame(subject.Roles, []string{"implementer", "tester"}) ||
+		!eachHeadSame(subject.Results, []string{implementerAtH1, testerAtH1}) {
+		t.Fatalf("the head at H1 reads %+v, want the roles implementer and tester, decided by %s and %s", subject, implementerAtH1, testerAtH1)
 	}
 }

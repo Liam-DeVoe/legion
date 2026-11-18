@@ -83,17 +83,16 @@ func passStandsOf(check model.CheckBlock, compared comparison) model.CheckPassSt
 }
 
 // eachSubjectStands is passStandsOf for a `before_merge` check compared with heads: yes only
-// where a pass stands at each subject, with the roles of those passes; no where one subject holds
-// only a fail or nothing; unknown where none is no and one is unknown (R7), or where a branch head
-// could not be read, or where a pass is held up only by a commit Dispatch could not place. Every
-// answer names each subject's state.
+// where a pass stands at each subject; no where one subject holds only a fail or nothing; unknown
+// where none is no and one is unknown (R7), or where a branch head could not be read, or where a
+// pass is held up only by a commit Dispatch could not place. Every answer names each subject's
+// state. A yes names a role only where each subject names it (R6), in the order of the first
+// subject: two roles that passed at two heads are no role that passed at each.
 func eachSubjectStands(check model.CheckBlock, compared comparison, conflicted map[string]bool) model.CheckPassStands {
 	stands := model.CheckPassStands{Answer: model.PassStandsYes, Subjects: make([]model.PassStandsSubject, 0, len(compared.subjects))}
-	subjects := map[string]bool{}
 	for _, basis := range compared.subjects {
 		subject := subjectState(check, basis, conflicted)
 		stands.Subjects = append(stands.Subjects, subject)
-		subjects[basis.Commit] = true
 		switch {
 		case subject.Answer == model.PassStandsNo:
 			stands.Answer = model.PassStandsNo
@@ -115,10 +114,11 @@ func eachSubjectStands(check model.CheckBlock, compared comparison, conflicted m
 	if stands.Answer != model.PassStandsYes {
 		return stands
 	}
-	for _, result := range check.Results {
-		if result.Verdict == "pass" && standingCommit(result) == model.CommitAtBasis && subjects[result.CommitSHA] &&
-			!slices.Contains(stands.Roles, result.Role) {
-			stands.Roles = append(stands.Roles, result.Role)
+	for _, role := range stands.Subjects[0].Roles {
+		if !slices.ContainsFunc(stands.Subjects, func(subject model.PassStandsSubject) bool {
+			return !slices.Contains(subject.Roles, role)
+		}) {
+			stands.Roles = append(stands.Roles, role)
 		}
 	}
 	return stands
@@ -127,22 +127,35 @@ func eachSubjectStands(check model.CheckBlock, compared comparison, conflicted m
 // subjectState is the state of one subject of a check: yes where a pass stands at its commit,
 // no where only a fail stands there (model.PassSubjectReasonFail) or nothing does
 // (model.PassSubjectReasonNoResult), and unknown where a check CI proves holds a pass and a fail
-// of CI at that commit (R7, ciConflicts).
+// of CI at that commit (R7, ciConflicts). It walks every result that counts at the commit, newest
+// first, so a yes names each role whose pass counts there and the newest pass of each, and a no
+// for a fail names the newest fail (model.PassStandsSubject).
 func subjectState(check model.CheckBlock, basis model.CheckBasis, conflicted map[string]bool) model.PassStandsSubject {
 	state := model.PassStandsSubject{Basis: basis, Answer: model.PassStandsNo, Reason: model.PassSubjectReasonNoResult}
 	if conflicted[basis.Commit] {
 		state.Answer, state.Reason = model.PassStandsUnknown, model.PassStandsReasonPassAndFail
 		return state
 	}
+	newestFail := ""
 	for _, result := range check.Results {
 		if result.CommitSHA != basis.Commit || standingCommit(result) != model.CommitAtBasis {
 			continue
 		}
-		if result.Verdict == "pass" {
-			state.Answer, state.Reason = model.PassStandsYes, ""
-			return state
+		switch {
+		case result.Verdict != "pass":
+			if newestFail == "" {
+				newestFail = result.ID
+			}
+		case !slices.Contains(state.Roles, result.Role):
+			state.Roles = append(state.Roles, result.Role)
+			state.Results = append(state.Results, result.ID)
 		}
-		state.Reason = model.PassSubjectReasonFail
+	}
+	switch {
+	case len(state.Roles) > 0:
+		state.Answer, state.Reason = model.PassStandsYes, ""
+	case newestFail != "":
+		state.Reason, state.Results = model.PassSubjectReasonFail, []string{newestFail}
 	}
 	return state
 }
