@@ -1186,11 +1186,15 @@ func expiryOf(token map[string]any) (time.Time, bool) {
 }
 
 // registeredPodSession refuses an exchange whose claims name an instance (exchange.Claims.Instance,
-// a pod uid) that no registration names for the session the token would write under, reading
-// oauthstore.Store.PodSessionRegistered in the exchange's own transaction. An exchange whose
-// claims carry no instance is not gated: a fixed-session entry's pod, a workflow run and a dev box
-// each carry a name their configuration or their person decides, and nothing of theirs is
-// registered.
+// a pod uid) that no live registration names for the session the token would write under,
+// reading oauthstore.Store.PodSessionRegistered in the exchange's own transaction. A registration
+// counts only while it names the registrar that wrote it and that registrar has not released it:
+// the registrar a live registration names holds the name (oauthstore.Store.RegisterPodSession
+// refuses it to every other), so a pod trades under a name only when the daemon holding that
+// name registered it. A row no registrar is named on, which a broker of the build before
+// registrars wrote, is answered as no row is. An exchange whose claims carry no instance is not
+// gated: a fixed-session entry's pod, a workflow run and a dev box each carry a name their
+// configuration or their person decides, and nothing of theirs is registered.
 //
 // It is the second, independent rule beside the claim on the session name: the claim refuses
 // another principal the name, and this refuses another pod of the same principal, which the claim
@@ -1218,6 +1222,14 @@ func expiryOf(token map[string]any) (time.Time, bool) {
 // line of its own naming the principal, the pod, the session, the key the registration is bound to
 // and the key the trade proved: writeError logs only a server error, and without the line the
 // refusal reads in the log as an expired grant or a registration not yet written does.
+//
+// A registration its registrar released is refused invalid_grant with the library's own
+// description, never oauthwire.PodSessionNotRegistered: no later trade cures it, since only the
+// registrar's own next write of that pod and name makes the registration live again. Its hint
+// names the session and nothing of who released it, because no exchange refusal names another
+// daemon: the pod asking is not that daemon's, and a private project's daemon account carries
+// the project's name. It logs a WARN line naming the principal, the pod, the session and the
+// registrar, which the operator reads and the pod does not.
 func (p *Provider) registeredPodSession(ctx context.Context, session *oauthstore.ExchangeSession) error {
 	if session.Instance == "" {
 		return nil
@@ -1226,7 +1238,12 @@ func (p *Provider) registeredPodSession(ctx context.Context, session *oauthstore
 	presented := session.GetDPoPJWKThumbprint()
 	registered, err := p.store.PodSessionRegistered(ctx, session.Instance, name, presented)
 	var bound *oauthstore.PodSessionBoundError
+	var released *oauthstore.PodSessionReleasedError
 	switch {
+	case errors.As(err, &released):
+		slog.Warn("broker: the token exchange refused a pod's trade under a registration its registrar released",
+			"principal", session.Principal, "pod", session.Instance, "session", name, "registrar", released.Registrar)
+		return oauth2.ErrInvalidGrant.WithHintf("Refused: this pod's registration for session '%s' was released; a pod trades only under a registration its registrar has not released.", name)
 	case errors.As(err, &bound):
 		slog.Warn("broker: the token exchange refused a pod's trade proved with a key other than the one its registration for the session is bound to",
 			"principal", session.Principal, "pod", session.Instance, "session", name,

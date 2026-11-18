@@ -320,22 +320,22 @@ func (r *registrationRig) loggedOnly(t *testing.T, what string, want map[string]
 }
 
 // TestAFreshRegistrationLogsWhatWasSentAndStored: a registration's first write is logged at Info
-// as registered, naming the thumbprint and generation the registrar sent beside those stored, and
-// no key replaced, since there was none to replace.
+// as registered, naming the registrar and the thumbprint and generation it sent beside those
+// stored, and no key replaced, since there was none to replace.
 func TestAFreshRegistrationLogsWhatWasSentAndStored(t *testing.T) {
 	const kA = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 	rig := newRegistrationRig(t, "pod-uid-fresh")
 	rig.register(t, map[string]any{"session": "implementer-g1", "thumbprint": kA, "generation": 1})
 	rig.loggedOnly(t, "the first write of implementer-g1 with kA at generation 1", map[string]any{
-		"level": slog.LevelInfo, "msg": registeredMessage, "session": "implementer-g1",
+		"level": slog.LevelInfo, "msg": registeredMessage, "session": "implementer-g1", "registrar": daemonAccount,
 		"sent_thumbprint": kA, "sent_generation": int64(1), "thumbprint": kA, "generation": int64(1),
 	})
 }
 
 // TestARegistrationReplacingAKeyLogsTheKeyItReplaced: a write that binds the registration to
-// another key is logged as registered with the thumbprint it replaced beside what was sent and
-// stored. A renewal naming the key the row holds, and a write naming no key, which keeps it,
-// replace nothing and name nothing replaced.
+// another key is logged as registered, naming the registrar and the thumbprint it replaced beside
+// what was sent and stored. A renewal naming the key the row holds, and a write naming no key,
+// which keeps it, replace nothing and name nothing replaced.
 func TestARegistrationReplacingAKeyLogsTheKeyItReplaced(t *testing.T) {
 	const kA, kB = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
 	rig := newRegistrationRig(t, "pod-uid-relaunched")
@@ -344,25 +344,26 @@ func TestARegistrationReplacingAKeyLogsTheKeyItReplaced(t *testing.T) {
 
 	rig.register(t, map[string]any{"session": "implementer-g1", "thumbprint": kA, "generation": 1})
 	rig.loggedOnly(t, "a renewal of implementer-g1 with the key it holds, kA at generation 1", map[string]any{
-		"level": slog.LevelInfo, "msg": registeredMessage, "session": "implementer-g1",
+		"level": slog.LevelInfo, "msg": registeredMessage, "session": "implementer-g1", "registrar": daemonAccount,
 		"sent_thumbprint": kA, "sent_generation": int64(1), "thumbprint": kA, "generation": int64(1),
 	})
 	rig.register(t, map[string]any{"session": "implementer-g1", "thumbprint": kB, "generation": 2})
 	rig.loggedOnly(t, "a write of implementer-g1 replacing kA with kB at generation 2", map[string]any{
-		"level": slog.LevelInfo, "msg": registeredMessage, "session": "implementer-g1",
+		"level": slog.LevelInfo, "msg": registeredMessage, "session": "implementer-g1", "registrar": daemonAccount,
 		"sent_thumbprint": kB, "sent_generation": int64(2), "thumbprint": kB, "generation": int64(2),
 		"replaced_thumbprint": kA,
 	})
 	rig.register(t, map[string]any{"session": "implementer-g1", "generation": 2})
 	rig.loggedOnly(t, "a write of implementer-g1 naming no key at generation 2", map[string]any{
-		"level": slog.LevelInfo, "msg": registeredMessage, "session": "implementer-g1",
+		"level": slog.LevelInfo, "msg": registeredMessage, "session": "implementer-g1", "registrar": daemonAccount,
 		"sent_thumbprint": "", "sent_generation": int64(2), "thumbprint": kB, "generation": int64(2),
 	})
 }
 
 // TestARegistrationTheGenerationRuleRefusesLogsALineOfItsOwn: a write of a lower generation
 // than the row's changes nothing, so it is not logged as registered: it logs a WARN line of its
-// own naming the thumbprint and generation it sent beside the row's, which it left as it was.
+// own naming the registrar and the thumbprint and generation it sent beside the row's, which it
+// left as it was.
 func TestARegistrationTheGenerationRuleRefusesLogsALineOfItsOwn(t *testing.T) {
 	const kA, kB = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
 	rig := newRegistrationRig(t, "pod-uid-late")
@@ -371,7 +372,7 @@ func TestARegistrationTheGenerationRuleRefusesLogsALineOfItsOwn(t *testing.T) {
 
 	rig.register(t, map[string]any{"session": "implementer-g1", "thumbprint": kA, "generation": 1})
 	rig.loggedOnly(t, "a late write of implementer-g1 with kA at generation 1 after kB at generation 2", map[string]any{
-		"level": slog.LevelWarn, "msg": notAppliedMessage, "session": "implementer-g1",
+		"level": slog.LevelWarn, "msg": notAppliedMessage, "session": "implementer-g1", "registrar": daemonAccount,
 		"sent_thumbprint": kA, "sent_generation": int64(1), "thumbprint": kB, "generation": int64(2),
 	})
 }
