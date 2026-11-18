@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
@@ -41,9 +42,12 @@ const linkedPullRequestReads = 10
 
 // refuseUnknownCommit refuses a result at a commit that no repository the result may name a
 // commit of holds: 400 RESULT_COMMIT_UNKNOWN, naming the commit and every `owner/repo` GitHub
-// said holds no such commit. It answers the repository the result's commit is taken to be of,
-// which the read-through after the write reads (readThroughPullRequests) and recordCheckResult
-// keeps with the row where it is a linked repository.
+// said holds no such commit, and each linked pull request in a repository Dispatch cannot read,
+// with its reason and what mends it (linkedReads.couldNotRead): the issue already links such a
+// pull request, so a refusal that left it out would tell the caller to link what it has linked.
+// It answers the repository the result's commit is taken to be of, which the read-through after
+// the write reads (readThroughPullRequests) and recordCheckResult keeps with the row where it is
+// a linked repository.
 //
 // A result may name a commit of two kinds of repository. The first is repo, the repository the
 // check's issue resolves to, which recordCheckResult resolved for this refusal; a nil repo is
@@ -150,8 +154,8 @@ func (s *server) refuseUnknownCommit(ctx context.Context, q refs.Queryer, issueK
 		return repo, nil
 	}
 	return nil, errorf(http.StatusBadRequest, "RESULT_COMMIT_UNKNOWN",
-		"%s no commit %s: record the result once the commit is pushed, or link the issue to an open or merged pull request of the repository that holds it%s",
-		repositoriesHold(checked), sha, reads.leftUnread())
+		"%s no commit %s: record the result once the commit is pushed, or link the issue to an open or merged pull request of the repository that holds it%s%s",
+		repositoriesHold(checked), sha, reads.couldNotRead(), reads.leftUnread())
 }
 
 // linkedReadRefusal is the refusal of a record whose read of repo, a linked repository, did not
@@ -161,11 +165,23 @@ func (s *server) refuseUnknownCommit(ctx context.Context, q refs.Queryer, issueK
 // stored, so the record is made again whole. GitHub's error is worded as a check CI proves words
 // one (gitHubErrorText): where GitHub refused the read (githubapp.StatusError) or rate-limited it
 // (githubapp.RateLimitError), the body the error's text ends with is replaced by the `message`
-// GitHub wrote, and left out where it wrote none. A rate limit names GitHub's wait, in the
-// sentence and in Retry-After, rounded up to whole seconds as every Retry-After Dispatch writes
-// is (ratelimit.RetryAfterSeconds); any other failed read names none, since GitHub gave none.
+// GitHub wrote, and left out where it wrote none. Any other error keeps GitHub's body whole — an
+// installation token mint GitHub refused carries it, up to the megabyte githubapp reads of an
+// answer — so the error is cut to linkedReadReasonBytes, saying so. Where the read that failed
+// is the installation token mint (delivery.ErrTokenMint), as for a suspended installation's 403,
+// the sentence names the mint, since GitHub was asked nothing about the repository itself. A
+// rate limit names GitHub's wait, in the sentence and in Retry-After, rounded up to whole seconds
+// as every Retry-After Dispatch writes is (ratelimit.RetryAfterSeconds); any other failed read
+// names none, since GitHub gave none.
 func linkedReadRefusal(repo, sha string, err error) error {
 	reason := gitHubErrorText(err)
+	if len(reason) > linkedReadReasonBytes {
+		cut := linkedReadReasonBytes
+		for !utf8.RuneStart(reason[cut]) {
+			cut--
+		}
+		reason = fmt.Sprintf("%s… (GitHub's error, cut to its first %d of %d bytes)", reason[:cut], cut, len(reason))
+	}
 	limited, rateLimited := githubapp.AsRateLimit(err)
 	again := "record the result again"
 	retryAfter := 0
@@ -173,12 +189,19 @@ func linkedReadRefusal(repo, sha string, err error) error {
 		retryAfter = ratelimit.RetryAfterSeconds(limited.Wait)
 		again = fmt.Sprintf("record the result again in %s, the wait GitHub named", time.Duration(retryAfter)*time.Second)
 	}
-	refusal := errorf(http.StatusBadGateway, "GITHUB_UNREADABLE",
-		"GitHub could not be read for whether %s, a repository the issue links a pull request in, holds commit %s: %s. Nothing was recorded: %s",
-		repo, sha, reason, again)
+	failed := fmt.Sprintf("GitHub could not be read for whether %s, a repository the issue links a pull request in, holds commit %s", repo, sha)
+	if errors.Is(err, delivery.ErrTokenMint) {
+		failed = fmt.Sprintf("Dispatch's GitHub App could not mint an installation token for %s, a repository the issue links a pull request in, so GitHub could not be read for whether it holds commit %s", repo, sha)
+	}
+	refusal := errorf(http.StatusBadGateway, "GITHUB_UNREADABLE", "%s: %s. Nothing was recorded: %s", failed, reason, again)
 	refusal.retryAfter = retryAfter
 	return refusal
 }
+
+// linkedReadReasonBytes is the most bytes of GitHub's error linkedReadRefusal's sentence
+// carries, about a kilobyte: room for the status and a message as GitHub writes one, while the
+// refusal stays a sentence a caller prints whole.
+const linkedReadReasonBytes = 1024
 
 // repositoriesHold is the subject of a refusal's sentence, every repository it checked: "a
 // holds" for one, "a and b hold" for two, "a, b and c hold" for more.
@@ -186,13 +209,52 @@ func repositoriesHold(repos []string) string {
 	if len(repos) == 1 {
 		return repos[0] + " holds"
 	}
-	return strings.Join(repos[:len(repos)-1], ", ") + " and " + repos[len(repos)-1] + " hold"
+	return joinAnd(repos) + " hold"
+}
+
+// joinAnd lists items as a sentence does: "a", "a and b", "a, b and c".
+func joinAnd(items []string) string {
+	if len(items) == 1 {
+		return items[0]
+	}
+	return strings.Join(items[:len(items)-1], ", ") + " and " + items[len(items)-1]
 }
 
 // linkedReads is what one record has left of its bound on the linked pull requests it reads
-// (linkedPullRequestReads), and how many linked pull requests the bound left unread.
+// (linkedPullRequestReads), how many linked pull requests the bound left unread, and each
+// repository Dispatch cannot read (delivery.RepositoryUnreadable) with its linked pull requests,
+// each named `owner/repo#n (repository_unreadable)`, in the order the record met them.
 type linkedReads struct {
 	left, unread int
+	unreadRepos  []string
+	unreadPulls  []string
+}
+
+// cannotRead keeps link, a repository whose read answered err, and all its linked pull requests,
+// where err says Dispatch cannot read that repository: the answer is about the whole repository,
+// so none of its pull requests can be read until someone grants the App it.
+func (r *linkedReads) cannotRead(link linkedRepository, err error) {
+	if !delivery.RepositoryUnreadable(err) {
+		return
+	}
+	r.unreadRepos = append(r.unreadRepos, link.repo)
+	for _, number := range link.numbers {
+		r.unreadPulls = append(r.unreadPulls, fmt.Sprintf("%s#%d (%s)", link.repo, number, model.ReasonRepositoryUnreadable))
+	}
+}
+
+// couldNotRead is the clause a refusal names the linked pull requests Dispatch could not read
+// with, each with its reason, and says how to mend; "" where it met no repository it cannot read.
+func (r linkedReads) couldNotRead() string {
+	switch len(r.unreadPulls) {
+	case 0:
+		return ""
+	case 1:
+		return fmt.Sprintf("; Dispatch could not read the linked pull request %s: grant Dispatch's GitHub App %s, or link a readable pull request",
+			r.unreadPulls[0], r.unreadRepos[0])
+	}
+	return fmt.Sprintf("; Dispatch could not read the linked pull requests %s: grant Dispatch's GitHub App %s, or link a readable pull request",
+		joinAnd(r.unreadPulls), joinAnd(r.unreadRepos))
 }
 
 // leftUnread is the clause a refusal ends with where the bound left links unread, and "" where
@@ -269,6 +331,7 @@ func (s *server) linkedRepositoryHolds(ctx context.Context, link linkedRepositor
 		open, readErr := delivery.PullRequestOpenOrMerged(ctx, s.deps.GitHub, link.repo, number)
 		switch {
 		case linkCannotCount(readErr):
+			reads.cannotRead(link, readErr)
 			return false, false, nil
 		case errors.Is(readErr, delivery.ErrPullRequestNotFound):
 			// No such pull request: it counts for nothing, and the next one is read.
@@ -279,6 +342,7 @@ func (s *server) linkedRepositoryHolds(ctx context.Context, link linkedRepositor
 		case open:
 			held, err = delivery.RepositoryHoldsCommit(ctx, s.deps.GitHub, link.repo, sha)
 			if linkCannotCount(err) {
+				reads.cannotRead(link, err)
 				return false, false, nil
 			}
 			return true, held, err

@@ -5,8 +5,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
@@ -81,6 +83,11 @@ func (r *Reconciler) resolve(ctx context.Context, row string, mapped bool, c *co
 	owner, name, ok := splitRepo(row)
 	if !ok {
 		c.mappingsSkipped++
+		if mapped {
+			r.Logger.Warn("ci reconcile skipped a repository whose name is not an owner/name GitHub allows",
+				"repository", row, "removed_by", mappingRemoval(row))
+			return reconciled{}, nil
+		}
 		r.Logger.Warn("ci reconcile skipped a repository whose name is not an owner/name GitHub allows", "repository", row)
 		return reconciled{}, nil
 	}
@@ -363,4 +370,27 @@ func (r *Reconciler) openPullRequests(ctx context.Context, id int64, owner, name
 func splitRepo(full string) (owner, name string, ok bool) {
 	owner, name, err := refs.SplitGitHubRepo(full)
 	return owner, name, err == nil
+}
+
+// mappingRemoval is the request that removes a mapping stored under row, a name splitRepo
+// refuses, which the pass names beside its skip so the person reading the WARN can mend it. The
+// settings route's DELETE reads its path as every mapping's was read before the route held it to
+// GitHub's names (api's storedRepoProjectPath), but a browser, and with it the dashboard's
+// delete, resolves a `.` or `..` segment away before the request is sent, as curl does without
+// --path-as-is, so such a segment is written percent-encoded: a mapping stored under `acme/..`
+// before the route held names to that rule is removed by
+// `DELETE /api/v1/settings/repo-projects/acme/%2E%2E`. A row that is a mapping's renamed_to
+// rather than its own name is mended by that mapping's PUT instead.
+func mappingRemoval(row string) string {
+	owner, name, _ := strings.Cut(row, "/")
+	return "DELETE /api/v1/settings/repo-projects/" + rawSegment(owner) + "/" + rawSegment(name)
+}
+
+// rawSegment is segment as a request path carries it: escaped, and `.` and `..` written as `%2E`
+// and `%2E%2E`, which no client resolves.
+func rawSegment(segment string) string {
+	if segment == "." || segment == ".." {
+		return strings.ReplaceAll(segment, ".", "%2E")
+	}
+	return url.PathEscape(segment)
 }

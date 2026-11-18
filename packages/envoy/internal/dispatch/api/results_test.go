@@ -865,10 +865,10 @@ func TestResultOfAnIssueUnderARepositorysOldNameIsRefusedAtTheCanonicalName(t *t
 // the read-through of a commit names the pull request heads says that commit is the head of,
 // each repository's compare read answers from the commits each of its branches carries, and
 // each read of a pull request's state, each ask of the read-through and each compare read is
-// counted by repository. Six lists take a repository out of the App's reach: one the App is not
-// installed on, one whose commit reads GitHub fails, one whose pull requests the App's token is
-// refused, one whose pull requests GitHub rate-limits, one whose pull request reads answer a 500,
-// and one whose own read GitHub hides.
+// counted by repository. Seven lists take a repository out of the App's reach: one the App is not
+// installed on, one whose installation token GitHub will not mint, one whose commit reads GitHub
+// fails, one whose pull requests the App's token is refused, one whose pull requests GitHub
+// rate-limits, one whose pull request reads answer a 500, and one whose own read GitHub hides.
 type linkedGitHub struct {
 	mu sync.Mutex
 	// held is the commits each repository holds: GET /repos/{owner}/{repo}/commits/{sha}
@@ -891,6 +891,12 @@ type linkedGitHub struct {
 	// uninstalled is the repositories the App is not installed on: their installation lookup
 	// answers GitHub's 404, so no token is minted for them and nothing else of theirs is read.
 	uninstalled []string
+	// unminted is the repositories whose installation token GitHub will not mint: their
+	// installation lookup answers installation 78, whose POST /app/installations/78/access_tokens
+	// answers mintStatus with mintBody, and nothing else of theirs is read.
+	unminted   []string
+	mintStatus int
+	mintBody   string
 	// failing is the repositories whose GET /repos/{owner}/{repo}/commits/{sha} answers a 503,
 	// a read of GitHub's that did not answer, for every commit.
 	failing []string
@@ -947,14 +953,24 @@ func linkedRepositoriesGitHub(t *testing.T, linked *linkedGitHub) (http.Handler,
 	linked.stateReads, linked.readThroughs, linked.compares = map[string]int{}, map[string]int{}, map[string]int{}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /repos/{owner}/{repo}/installation", func(w http.ResponseWriter, r *http.Request) {
-		if slices.Contains(linked.uninstalled, r.PathValue("owner")+"/"+r.PathValue("repo")) {
+		repo := r.PathValue("owner") + "/" + r.PathValue("repo")
+		if slices.Contains(linked.uninstalled, repo) {
 			w.WriteHeader(http.StatusNotFound)
 			fmt.Fprint(w, `{"message":"Not Found"}`)
 			return
 		}
-		fmt.Fprint(w, `{"id":77,"app_slug":"dispatch-test","permissions":{"contents":"read","pull_requests":"read"}}`)
+		id := 77
+		if slices.Contains(linked.unminted, repo) {
+			id = 78
+		}
+		fmt.Fprintf(w, `{"id":%d,"app_slug":"dispatch-test","permissions":{"contents":"read","pull_requests":"read"}}`, id)
 	})
-	mux.HandleFunc("POST /app/installations/{id}/access_tokens", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("POST /app/installations/{id}/access_tokens", func(w http.ResponseWriter, r *http.Request) {
+		if r.PathValue("id") == "78" {
+			w.WriteHeader(linked.mintStatus)
+			fmt.Fprint(w, linked.mintBody)
+			return
+		}
 		w.WriteHeader(http.StatusCreated)
 		fmt.Fprintf(w, `{"token":"ghs_fake_77","expires_at":%q}`, time.Now().Add(time.Hour).Format(time.RFC3339))
 	})
@@ -3925,10 +3941,13 @@ func resultRowsOn(t *testing.T, database *store.Store, key string) int {
 // A linked pull request Dispatch cannot read counts as no link, as one GitHub answers 404 for
 // does: GitHub refuses the App's token acme/tools' pull requests with the 403 that is no rate
 // limit, which no retry changes until someone gives the App the repository. So a commit only
-// acme/tools holds is refused RESULT_COMMIT_UNKNOWN, naming the issue's own repository and not
-// acme/tools, whose commits the record never asked about, and nothing is stored. Read as a read
-// that did not answer, the result would be stored under acme/tools, at a commit no readable
-// repository was shown to hold, or refused for a retry no retry can answer.
+// acme/tools holds is refused RESULT_COMMIT_UNKNOWN, naming the issue's own repository alone as
+// one that holds no such commit, since the record never asked acme/tools about its commits, and
+// nothing is stored. The refusal names acme/tools#7 as a linked pull request Dispatch could not
+// read, with its reason, and says to grant the App acme/tools or link a readable pull request:
+// the issue already links one, so telling the caller only to link one would leave it nothing to
+// do. Read as a read that did not answer, the result would be stored under acme/tools, at a
+// commit no readable repository was shown to hold, or refused for a retry no retry can answer.
 func TestALinkedPullRequestDispatchCannotReadCountsAsNoLink(t *testing.T) {
 	// linkedCommit is a commit acme/tools holds and acme/widgets does not.
 	const linkedCommit = "9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f"
@@ -3949,8 +3968,14 @@ func TestALinkedPullRequestDispatchCannotReadCountsAsNoLink(t *testing.T) {
 	if recorded.Code != http.StatusBadRequest || code != "RESULT_COMMIT_UNKNOWN" {
 		t.Fatalf("status=%d body=%s, want 400 RESULT_COMMIT_UNKNOWN", recorded.Code, recorded.Body.String())
 	}
-	if !strings.Contains(text, "acme/widgets") || strings.Contains(text, "acme/tools") {
-		t.Errorf("the refusal reads %q, want acme/widgets named and acme/tools, which it never asked about the commit, not", text)
+	for _, want := range []string{
+		"acme/widgets holds no commit " + linkedCommit,
+		"Dispatch could not read the linked pull request acme/tools#7 (repository_unreadable)",
+		"grant Dispatch's GitHub App acme/tools, or link a readable pull request",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the refusal reads %q, want it to say %q", text, want)
+		}
 	}
 	if stored := resultEventsOn(t, database, issue) - eventsBefore; stored != 0 {
 		t.Errorf("the refused result appended %d result.recorded events, want none", stored)
@@ -3969,18 +3994,23 @@ func TestALinkedPullRequestDispatchCannotReadCountsAsNoLink(t *testing.T) {
 // GITHUB_UNREADABLE, naming that repository, the commit and GitHub's own message, and telling
 // the caller to record the result again; a rate limit names GitHub's wait, in the sentence and in
 // Retry-After. Nothing is stored. Stored, the result would sit under a repository no read showed
-// to hold its commit.
+// to hold its commit. The installation token mint is such a read too, and a 403 on it — GitHub's
+// answer for a suspended installation — is refused the same way, the sentence naming the mint as
+// the read that failed. An error that carries GitHub's body whole, as the mint's does, half a
+// megabyte that is not JSON among them, is cut to about a kilobyte, and the refusal says so.
 func TestALinkedReadThatDidNotAnswerRefusesTheRecordForNow(t *testing.T) {
 	// linkedCommit is a commit acme/tools holds and acme/widgets does not.
 	const linkedCommit = "9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f"
 	for _, row := range []struct {
 		name string
-		// unanswered takes acme/tools' pull request reads out of GitHub's answers.
+		// unanswered takes a read of acme/tools out of GitHub's answers.
 		unanswered func(*linkedGitHub)
-		// says is what the refusal must say beside the repository and the commit, and
-		// retryAfter the Retry-After it carries, "" for none.
+		// says is what the refusal must say beside the repository and the commit,
+		// retryAfter the Retry-After it carries, "" for none, and longest the most bytes the
+		// refusal's text may run to, 0 for no bound.
 		says       []string
 		retryAfter string
+		longest    int
 	}{
 		{
 			name:       "a rate-limited read",
@@ -3993,6 +4023,24 @@ func TestALinkedReadThatDidNotAnswerRefusesTheRecordForNow(t *testing.T) {
 			name:       "a read GitHub answered 500",
 			unanswered: func(linked *linkedGitHub) { linked.erroring = []string{"acme/tools"} },
 			says:       []string{"status 500: Server Error", "Nothing was recorded: record the result again"},
+		},
+		{
+			name: "a read whose error carries half a megabyte that is not JSON",
+			unanswered: func(linked *linkedGitHub) {
+				linked.unminted = []string{"acme/tools"}
+				linked.mintStatus, linked.mintBody = http.StatusBadGateway, "<html>"+strings.Repeat("x", 1<<19)+"</html>"
+			},
+			says:    []string{"status 502: <html>xxxx", "(GitHub's error, cut to its first 1024 of", "Nothing was recorded: record the result again"},
+			longest: linkedReadReasonBytes + 512,
+		},
+		{
+			name: "an installation token mint GitHub refused 403",
+			unanswered: func(linked *linkedGitHub) {
+				linked.unminted = []string{"acme/tools"}
+				linked.mintStatus, linked.mintBody = http.StatusForbidden, `{"message":"This installation has been suspended"}`
+			},
+			says: []string{"Dispatch's GitHub App could not mint an installation token for acme/tools",
+				"status 403", "Nothing was recorded: record the result again"},
 		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
@@ -4020,6 +4068,9 @@ func TestALinkedReadThatDidNotAnswerRefusesTheRecordForNow(t *testing.T) {
 			}
 			if got := recorded.Header().Get("Retry-After"); got != row.retryAfter {
 				t.Errorf("the refusal carries Retry-After %q, want %q", got, row.retryAfter)
+			}
+			if row.longest > 0 && len(text) > row.longest {
+				t.Errorf("the refusal runs to %d bytes, want at most %d", len(text), row.longest)
 			}
 			if stored := resultEventsOn(t, database, issue) - eventsBefore; stored != 0 {
 				t.Errorf("the refused result appended %d result.recorded events, want none", stored)

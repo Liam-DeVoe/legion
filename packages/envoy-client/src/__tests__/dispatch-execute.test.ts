@@ -8248,7 +8248,11 @@ describe("executeDispatchTool", () => {
           pass_stands: { answer: "unknown" },
           results: [
             result("res-1", { answer: "other_commit", repo: "acme/tools" }),
-            result("res-2", { answer: "unknown", reason: "repository_unreadable", repo: "acme/tools" }),
+            result("res-2", {
+              answer: "unknown",
+              reason: "repository_unreadable",
+              repo: "acme/tools",
+            }),
             result("res-3", { answer: "unknown", reason: "read_failed", repo: "acme/tools" }),
             result("res-4", { answer: "unknown", reason: "repository_unreadable" }),
           ],

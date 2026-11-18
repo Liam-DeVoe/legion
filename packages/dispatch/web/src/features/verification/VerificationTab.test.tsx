@@ -387,9 +387,7 @@ test("a linked result's other_commit and unknown answers name that repository", 
 
   await screen.findByTestId("verification-checks");
   expect(
-    screen
-      .getAllByTestId("verification-result-commit-stands")
-      .map((field) => field.textContent)
+    screen.getAllByTestId("verification-result-commit-stands").map((field) => field.textContent)
   ).toEqual([
     "At another commit of acme/tools",
     "Not known. Dispatch cannot read acme/tools.",

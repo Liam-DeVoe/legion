@@ -468,12 +468,13 @@ func (c *comparisonReader) learn(ctx context.Context, checks []model.CheckBlock)
 // nothing to say about a commit of another repository: read through it, a result there would
 // stand unknown for good wherever the App cannot read the issue's own.
 //
-// An issue that resolves to no repository is never unknown, whatever the check's `when`.
-// Dispatch holds every head it will ever hold for such an issue, since there is no repository
-// to read one from, so a commit none of them names is another commit and not a question left
-// open. A check compared with branches names no branch of such an issue either, whatever
-// branch a merged row of it still carries (branchBases), so it is answered by the reason
-// above and never by a walk.
+// An issue that resolves to no repository is never unknown, whatever the check's `when`, but
+// for a `before_merge` result whose row names a linked repository, which that repository decides
+// as above, unknown where the App cannot read it or its read failed. Dispatch holds every head
+// it will ever hold for such an issue, since there is no repository to read one from, so a
+// commit none of them names is another commit and not a question left open. A check compared
+// with branches names no branch of such an issue either, whatever branch a merged row of it
+// still carries (branchBases), so it is answered by the reason above and never by a walk.
 //
 // An issue whose resolve did not answer is unknown everywhere instead, and for the opposite
 // reason: Dispatch cannot say whether there is a repository to read a head from, so a commit

@@ -586,8 +586,9 @@ func writeBranchCommit(ctx context.Context, db refs.Execer, repoFull, branch, sh
 // commit_held.go and in pull_request_heads.go's ReadThroughCommitPulls: it splits repoFull
 // into the owner and repo GitHub's paths take and mints that repository's installation token.
 // A name GitHub's names do not allow comes back as splitRepo's own error, before any GitHub
-// call, and a refused mint as that error wrapped, which cannotSeeRepository and
-// RepositoryUnreadable classify.
+// call, and a refused mint as that error wrapped under ErrTokenMint: cannotSeeRepository and
+// RepositoryUnreadable classify the mint's own error, and the results route reads ErrTokenMint
+// to name the mint as the read that failed (api/results_linked.go, linkedReadRefusal).
 func repositoryRead(ctx context.Context, client *githubapp.Client, repoFull string) (owner, repo, token string, err error) {
 	owner, repo, err = splitRepo(repoFull)
 	if err != nil {
@@ -595,10 +596,15 @@ func repositoryRead(ctx context.Context, client *githubapp.Client, repoFull stri
 	}
 	token, err = client.RepositoryToken(ctx, owner, repo)
 	if err != nil {
-		return "", "", "", fmt.Errorf("mint installation token for %s: %w", repoFull, err)
+		return "", "", "", fmt.Errorf("%w for %s: %w", ErrTokenMint, repoFull, err)
 	}
 	return owner, repo, token, nil
 }
+
+// ErrTokenMint is repositoryRead's failure to mint the installation token a read of a repository
+// is made with (githubapp.Client.RepositoryToken: its installation lookup and the mint), wrapped
+// around the mint's own error, so the read that failed is the mint and not the repository's.
+var ErrTokenMint = errors.New("mint installation token")
 
 // repositoryDefaultBranch is the name of repoFull's default branch, read through the App.
 func repositoryDefaultBranch(ctx context.Context, client *githubapp.Client, repoFull string) (string, error) {
