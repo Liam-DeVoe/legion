@@ -1225,6 +1225,9 @@ func (w *workflowRuntime) attachIdleRelease(supervision *supervision) {
 	}
 	w.idlePeriod, w.idleStore, w.idleRuntime = k.IdleRelease.Idle(), supervision.supervisor.store, podRuntime
 	w.outbox.backstop = k.IdleRelease.Backstop()
+	// Main's rule for a pod with no live claim runs, so it ends a start's wait for a pod built
+	// before the start's role (outbox.roleWaitsForItsPod tells the controller otherwise).
+	w.outbox.idleReleases = true
 }
 
 // replayTerminal applies the ready or failure fact of every stored claim in either state that no

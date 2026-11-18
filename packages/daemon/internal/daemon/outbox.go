@@ -97,6 +97,11 @@ type outbox struct {
 	// happens (config.IdleReleaseConfig.Backstop, `backstop_minutes`); zero where the deployment
 	// releases no pod, and then a release arms none.
 	backstop time.Duration
+	// idleReleases is whether the deployment's idle release runs (attachIdleRelease sets it), so
+	// main's rule for a pod with no live claim ends a start's wait for a pod built before its
+	// role. False is off (idle_minutes: 0, or a runtime with no issue pods), and then such a wait
+	// where no claim records a process in the pod is told to the controller (roleWaitsForItsPod).
+	idleReleases bool
 	// readPullRequest reads one pull request from GitHub (one GET /pulls/{number}), and
 	// mergeStateWait is how long a merge-queue read waits after a failed read before it reads
 	// again (mergeQueueRead, whose every read is bounded by issueRead). Both are the workflow
@@ -1908,7 +1913,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// A role the issue's live pod was built before waits on this row, before it creates,
 		// retrees or hands anything to a claim: a launch into that pod would replace it with the
 		// issue's disk, and only the pod's update round or its release may (ruling 18).
-		if err := r.roleWaitsForItsPod(issue, payload.Role); err != nil {
+		if err := r.roleWaitsForItsPod(ctx, row, issue, payload.Role); err != nil {
 			return err
 		}
 		// A child carried into a tree of its own — a finished root's hand-over, or a person's label
@@ -2882,7 +2887,19 @@ func (r *outbox) mergerWaitsForTheDesignGate(ctx context.Context, issue record.I
 // again on its own backoff; once the pod is gone — released, or replaced by its update round —
 // the start creates the claim, whose launch builds the new pod with every role. A runtime with no
 // pods answers nothing, and the start goes on as before.
-func (r *outbox) roleWaitsForItsPod(issue record.Issue, role claim.Role) error {
+//
+// Under a deployment with no idle release (idleReleases false) main's rule never ends the wait,
+// and where no claim of the issue records a process in the pod (podRecorded) no update round
+// opens over it either: nothing ends it until an operator acts. Such a wait is told to the
+// controller once, as one pod-wait-held notice in a transaction of its own, and the wait's text
+// then begins with startWaitToldPrefix, so the row's last error is the one record that the
+// notice was written and its next try writes none. Where a claim records a process there, the
+// round asks each role to push and replaces the pod, and nothing is told; a later try that finds
+// that process ended before its round opened tells it then. A try that fails for another cause
+// between two waits replaces the last error, and the next wait that finds no process tells it
+// again. Where the release is on, main's rule ends the wait, and its pass tells an operator's
+// suspension that holds the pod (releaseUnownedPod).
+func (r *outbox) roleWaitsForItsPod(ctx context.Context, row record.OutboxRow, issue record.Issue, role claim.Role) error {
 	podRoles, ok := r.supervisor.deps.Runtime.(runtime.IssuePodRoles)
 	if !ok {
 		return nil
@@ -2891,8 +2908,65 @@ func (r *outbox) roleWaitsForItsPod(issue record.Issue, role claim.Role) error {
 	if !lacks {
 		return nil
 	}
+	told := strings.HasPrefix(row.LastError, startWaitToldPrefix)
+	if !told && !r.idleReleases {
+		claims, err := r.supervisor.Claims(ctx)
+		if err != nil {
+			return fmt.Errorf("read the claims of %s for the wait of its %s: %w", issue.Key, role, err)
+		}
+		if !podRecorded(claims, issue.Key, pod) {
+			notice := record.ControllerNotice{Kind: record.PodWaitHeldNotice, Role: role, Reason: podWaitWithNoReleaseWords(issue.Key, pod, role)}
+			if err := r.enqueueNotice(ctx, issue.Key, notice); err != nil {
+				return err
+			}
+			told = true
+		}
+	}
+	prefix := pods.StartWaitsForPodPrefix
+	if told {
+		prefix = startWaitToldPrefix
+	}
 	return wait.Errorf("%s%s of %s: the pod %s was built before the deployment defined %s; its update round or its release replaces it: %w",
-		pods.StartWaitsForPodPrefix, role, issue.Key, pod, role, runtime.ErrAwaitsPodUpdate)
+		prefix, role, issue.Key, pod, role, runtime.ErrAwaitsPodUpdate)
+}
+
+// startWaitToldPrefix begins the last error of a start that waits for its pod once the controller
+// has been told of that wait (roleWaitsForItsPod). It begins with pods.StartWaitsForPodPrefix, so
+// the idle view, the release's boundary and the served state read the row as every other such wait.
+const startWaitToldPrefix = pods.StartWaitsForPodPrefix + "the controller is told: "
+
+// podRecorded is whether some claim of issue that is not retired records a process in pod: its
+// locator names that pod (podOf, the update round's own reading), which is what the round opens
+// over (groupPod).
+func podRecorded(claims []supervise.Claim, issue, pod string) bool {
+	return slices.ContainsFunc(claims, func(c supervise.Claim) bool {
+		return c.Issue == issue && c.State != supervise.StateRetired && podOf(c.Locator) == pod
+	})
+}
+
+// podWaitWithNoReleaseWords is what the controller is told of a start of role that waits for the
+// pod of issue under a deployment with no idle release (ruling 19): the pod, the waiting role, what
+// is true now, and that the pod's disk can hold work a role did not push. It tells nobody to take
+// the pod away.
+func podWaitWithNoReleaseWords(issue, pod string, role claim.Role) string {
+	return fmt.Sprintf("%s of %s cannot start. The pod %s of %s was made before the deployment defined %s, and no role runs in that pod now. "+
+		"The idle release of this deployment is off (idle_minutes: 0), so the daemon keeps that pod. The start of %s waits until an operator acts. "+
+		"The disk of that pod can hold work that a role did not push.", role, issue, pod, issue, role, role)
+}
+
+// enqueueNotice writes one controller notice of issue in a transaction of its own on the pool, as
+// designGateClosed reads its gates, waking its lane as it commits.
+func (r *outbox) enqueueNotice(ctx context.Context, issue string, notice record.ControllerNotice) error {
+	row, err := record.NewOutboxRow(issue, notice, time.Now().UTC())
+	if err != nil {
+		return fmt.Errorf("queue the %s notice of %s: %w", notice.Kind, issue, err)
+	}
+	scoped, committed := intake.WithCommitHooks(ctx)
+	if err := pgx.BeginFunc(scoped, r.pool, func(tx pgx.Tx) error { return r.records.Enqueue(scoped, tx, row) }); err != nil {
+		return fmt.Errorf("queue the %s notice of %s: %w", notice.Kind, issue, err)
+	}
+	committed()
+	return nil
 }
 
 // checkLookHolds is the production check a check start row still has a look to start in, nil for

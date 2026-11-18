@@ -501,6 +501,23 @@ operator's suspension, a refused pod replacement, no process in the pod, or two 
 `skill://legion-controller/references/escalation.md#an-update-round-that-is-not-finishing-update-stalled`
 says.
 
+## `pod-wait-held on <KEY>` (`{kind: "pod-wait-held", role, reason}`)
+
+The start of `role` on `<KEY>` waits, and nothing ends the wait until an operator acts. The pod
+of `<KEY>` was made before the deployment defined `role`, so the role cannot start in it. The
+daemon replaces such a pod only through its update round or its release, and neither comes:
+
+- **An operator's suspension holds the pod.** The daemon does not release a pod while an
+  operator holds a claim of it. `reason` names the claims the operator suspended. Ask the
+  operator who suspended the claim, with `dispatch ask`, whether to resume it or stop it.
+- **The idle release of the deployment is off (`idle_minutes: 0`) and no role runs in the pod.**
+  No update round opens over a pod in which no role runs, and the daemon keeps the pod. Ask the
+  operator, with `dispatch ask`, what to do. Give the facts of `reason`: the pod, the waiting
+  role, that the idle release is off and no role runs in the pod, and that the disk of the pod
+  can hold work that a role did not push.
+
+Do not propose that anyone delete the pod. The daemon tells you once for each such wait.
+
 ## `provider-errors on <KEY>` (`{kind: "provider-errors", role, reason}`)
 
 Six turns of `<KEY>`'s `role` in a row ended in an error the model's provider returned: a content
