@@ -435,12 +435,12 @@ test("a loss in a dialog that stays open hands the focus inside it, never to the
   });
 });
 
-/** A button labelled `label`, appended to `parent`. */
-function buttonIn(parent: Element, label: string): HTMLButtonElement {
+/** A button labelled `label`, put in `parent` before `before`, else at its end. */
+function buttonIn(parent: Element, label: string, before: Node | null = null): HTMLButtonElement {
   const button = document.createElement("button");
   button.type = "button";
   button.textContent = label;
-  parent.append(button);
+  parent.insertBefore(button, before);
   return button;
 }
 
@@ -990,4 +990,172 @@ test("a control focused below the fold, left there by a scroll the page made, is
   } finally {
     scrolls.mockRestore();
   }
+});
+
+/** What a press takes away and what the commit draws in its place, in `main` before `after`: the
+ *  pressed control, the element taken away with it, what is drawn where that stood, and the
+ *  control the focus belongs on there. */
+interface Replacement {
+  readonly drawn: HTMLElement;
+  readonly first: HTMLElement;
+  readonly pressed: HTMLButtonElement;
+  readonly taken: HTMLElement;
+}
+
+/** Change answer: the answered card goes, and the card drawn where it stood repeats the ask's
+ *  header, with controls of its own, above the answer form, whose first control is the first
+ *  choice. */
+function changeAnswer(main: HTMLElement, after: HTMLElement): Replacement {
+  const taken = document.createElement("article");
+  buttonIn(taken, "Copy");
+  const pressed = buttonIn(taken, "Change answer");
+  main.insertBefore(taken, after);
+  const drawn = document.createElement("article");
+  const header = document.createElement("header");
+  for (const label of ["Session", "Pin"]) buttonIn(header, label);
+  const form = document.createElement("form");
+  const first = document.createElement("input");
+  first.type = "radio";
+  first.name = "choice";
+  form.append(first);
+  buttonIn(form, "Send");
+  drawn.append(header, form);
+  return { drawn, first, pressed, taken };
+}
+
+/** Add a priority: the `+` goes, and the form drawn where it stood has the list's trigger first. */
+function addPriority(main: HTMLElement, after: HTMLElement): Replacement {
+  const pressed = buttonIn(main, "+", after);
+  const drawn = document.createElement("form");
+  const first = buttonIn(drawn, "Priority to advance");
+  buttonIn(drawn, "Add");
+  return { drawn, first, pressed, taken: pressed };
+}
+
+// (aj) A press that draws something else where its control stood lands the focus on what it drew:
+// on the first control of the form there, focused with no scroll. Change answer's card repeats
+// the ask's header above its form, and the header is not the place: the walk by count lands on a
+// header control, or past the card, and scrolls to it, where the reader asked for the form. Add
+// a priority's form stands where its `+` stood. The same with a `focusout` (Chromium) or none
+// (Firefox and WebKit).
+test("a control replaced by content holding a form hands the focus to the form's first control, scrolling nothing", async () => {
+  const scrolls = spyOn(Element.prototype, "scrollIntoView");
+  try {
+    for (const replacement of [changeAnswer, addPriority]) {
+      for (const withFocusout of [true, false]) {
+        await withRescue(async () => {
+          const { buttons, main } = mainOf("Before", "After");
+          const after = buttons[1] as HTMLButtonElement;
+          const { drawn, first, pressed, taken } = replacement(main, after);
+          const focus = spyOn(first, "focus");
+          pressed.focus();
+          pressed.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+          // React takes the pressed element away, then puts what it drew where that stood.
+          const replace = () => {
+            taken.remove();
+            main.insertBefore(drawn, after);
+          };
+          if (withFocusout) lose(pressed, replace);
+          else replace();
+          await settled();
+          expect(first).toHaveFocus();
+          expect(focus).toHaveBeenCalledWith({ preventScroll: true });
+        });
+      }
+    }
+    expect(scrolls).not.toHaveBeenCalled();
+  } finally {
+    scrolls.mockRestore();
+  }
+});
+
+// (ak) A press that takes its control away with nothing drawn in its place still walks back to
+// the nearest control before it, however many went together: Dismiss on a thread's last row,
+// whose row goes with the row before it. The reply form standing before them was there before the
+// press, though the row the pressed one stood after has gone too, so it is nothing new in the
+// place: the focus lands on the form's last control, the nearest before the place, and not on its
+// first. An Undo the same commit adds in a parent of its own stands at no place of the pressed
+// control's either.
+test("a control taken away with nothing new in its place walks back to the nearest control before it", async () => {
+  for (const withFocusout of [true, false]) {
+    await withRescue(async () => {
+      const { main } = mainOf();
+      const notices = document.createElement("div");
+      main.append(notices);
+      const reply = document.createElement("form");
+      const box = document.createElement("textarea");
+      reply.append(box);
+      const send = buttonIn(reply, "Send");
+      main.append(reply);
+      const rows = ["One", "Two"].map((label) => {
+        const row = document.createElement("div");
+        main.append(row);
+        return { dismiss: buttonIn(row, `Dismiss ${label}`), row };
+      });
+      const dismiss = rows[1]?.dismiss as HTMLButtonElement;
+      dismiss.focus();
+      dismiss.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
+      // The pressed row goes first, then the row it stood after, and the commit adds an Undo.
+      const leave = () => {
+        for (const { row } of [...rows].reverse()) row.remove();
+        buttonIn(notices, "Undo");
+      };
+      if (withFocusout) lose(dismiss, leave);
+      else leave();
+      await settled();
+      expect(send).toHaveFocus();
+    });
+  }
+});
+
+// (al) A sibling the same commit moves into the place of the control a press took away stood in
+// the page before the press, so it is nothing new there: the focus walks back by count, as for a
+// control taken away with nothing in its place, to the control now at the pressed one's place,
+// and not onto the moved sibling. React moves a keyed node with `insertBefore`, which the page
+// reports as its removal and then its addition in the batch that takes the pressed control away.
+test("a sibling moved into a pressed control's place is nothing new there, so the focus walks back", async () => {
+  for (const withFocusout of [true, false]) {
+    await withRescue(async () => {
+      const { buttons, main } = mainOf("Moved", "Before", "Pressed", "After");
+      const [moved, , pressed, after] = buttons as [
+        HTMLButtonElement,
+        HTMLButtonElement,
+        HTMLButtonElement,
+        HTMLButtonElement,
+      ];
+      pressed.focus();
+      pressed.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
+      // React takes the pressed control away, then moves the first sibling into its place.
+      const leave = () => {
+        pressed.remove();
+        main.insertBefore(moved, after);
+      };
+      if (withFocusout) lose(pressed, leave);
+      else leave();
+      await settled();
+      expect(after).toHaveFocus();
+    });
+  }
+});
+
+// (am) One batch of the page's records can hold a commit that moves the pressed control - a live
+// update reordering what it stands among - and the press's own commit that takes it away and
+// draws a form where it stood. With no `focusout` (Firefox and WebKit), the place is read off the
+// last record that took the control, where it was taken from, and not off the move's removal,
+// where it no longer stood: the focus lands on the first control of the form drawn there.
+test("a control moved and then taken away in one batch hands the focus to the form drawn where it was taken from", async () => {
+  await withRescue(async () => {
+    const { buttons, main } = mainOf("Before", "After");
+    const [before, after] = buttons as [HTMLButtonElement, HTMLButtonElement];
+    const { drawn, first, pressed } = addPriority(main, before);
+    pressed.focus();
+    pressed.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
+    // A live update moves the `+` after Before; the press's commit then takes it away and puts
+    // its form where it stood.
+    main.insertBefore(pressed, after);
+    pressed.remove();
+    main.insertBefore(drawn, after);
+    await settled();
+    expect(first).toHaveFocus();
+  });
 });
