@@ -39,8 +39,10 @@ as the fingerprint decides (*The reviewer*, below, and
   A `CHANGES` from either half of the pair, `thermonuclear-deep-review` or
   `thermonuclear-code-quality`, is answered in the review body — its findings carried into
   a `REQUEST_CHANGES`, or each one recorded with why it does not stand, and never passed
-  over in silence — and an `APPROVE` needs both halves run at the reviewed head, or the two
-  `not run` rows above.
+  over in silence — and an `APPROVE` needs both halves run at the reviewed head, or both pair
+  rows reading `not run` for the reason they state, that the diff the round reads touches no
+  runtime code: the whole change, or, in a later round, the difference from its last reviewed
+  commit to the head.
   The CI the reviewer reads is the head's own checks: no handoff is a
   commit, so every push to the branch is work whose head gets GitHub's workflow runs of its own.
   With `<o>/<r>`, `<n>`, `<base>` and `<headRefOid>` from

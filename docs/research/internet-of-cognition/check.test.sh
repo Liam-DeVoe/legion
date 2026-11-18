@@ -3053,6 +3053,48 @@ else
     printf 'SKIP the proof of the shortfall-rows step with its two rows taken out: bun is missing\n'
 fi
 
+# 114. A landed step's proof fails when the change it lands is taken out (test round 37). The
+# page 'The rule that combines the reviewer's two graders' says the step makes an `APPROVE`
+# need both halves of the reviewer's pair run at the reviewed head, or both pair rows reading
+# `not run`. At bbb41f1a merge-gate.md's clause ended "or the two `not run` rows above", and
+# the rows above are those of a diff that touches no runtime code, each reading
+# `not run (no runtime code)`. Main's #4328, merged in cbd24412, gives a later review round
+# whose difference from its last reviewed commit touches no runtime code, on a pull request
+# that does touch it, rows of another form,
+# `not run (<last-reviewed-sha>..<sha> touches no runtime code)`: that round met neither arm
+# of the clause, so its reviewer could give no honest approval. The clause now admits both
+# forms. The case takes the later-round half out of a fresh checkout of HEAD's merge-gate.md,
+# after `bun install --frozen-lockfile`, and runs that checkout's --landed, which must fail
+# landed-proof naming the page. It needs bun, git and Dispatch, and prints SKIP when bun is
+# missing.
+if command -v bun >/dev/null 2>&1; then
+    gate_checkout="$WORK/gate-checkout"
+    git clone --quiet --shared --no-checkout "$(git -C "$IOC_ROOT" rev-parse --path-format=absolute --git-common-dir)" "$gate_checkout" &&
+        git -C "$gate_checkout" checkout --quiet --detach "$(git -C "$IOC_ROOT" rev-parse HEAD)" || {
+        printf 'FAIL the fresh checkout of HEAD could not be made\n'
+        exit 1
+    }
+    (cd "$gate_checkout" && bun install --frozen-lockfile >/dev/null 2>&1)
+    gate_rule="$gate_checkout/skills/legion-worker/references/merge-gate.md"
+    gate_half='or, in a later round, the difference from its last reviewed commit to the head'
+    # The half spans wrapped lines, so it is matched with any run of whitespace between its
+    # words, and taken out with the comma before it: the sentence then ends "touches no
+    # runtime code: the whole change."
+    python3 -c 'import re, sys
+path, half = sys.argv[1], r"\s+".join(map(re.escape, (", " + sys.argv[2]).split()))
+text = open(path, encoding="utf-8").read()
+open(path, "w", encoding="utf-8").write(re.sub(half, "", text, count=1))' "$gate_rule" "$gate_half"
+    if tr -s '[:space:]' ' ' <"$gate_rule" | grep -qF "$gate_half"; then
+        printf 'FAIL the later-round half could not be taken out of the checkout'"'"'s merge-gate.md\n'
+        exit 1
+    fi
+    case_result "the proof of the combining rule fails with its later-round half taken out of merge-gate.md" \
+        'landed-proof: the committed proof of the page .The rule that combines the reviewer.s two graders., .* exits non-zero' \
+        "$(IOC_ROOT="$gate_checkout" IOC_EVIDENCE="$gate_checkout/docs/research/internet-of-cognition" gate_run "$gate_checkout/docs/research/internet-of-cognition/check.sh" --landed)"
+else
+    printf 'SKIP the proof of the combining rule with its later-round half taken out: bun is missing\n'
+fi
+
 # ==== the summary of check.test.sh begins below this line, where cases_copy cuts it ====
 # The summary, by the three endings and their precedence (check.sh's header): run_ending
 # reads every case this file counted, the ones that could not run among them, and this
