@@ -59,8 +59,9 @@ type workspaceSave struct {
 // workspace this shim runs in. A request the shim cannot act on is answered with the reason when
 // it names an id to answer, and a bundle over the request's bound is refused with its size in
 // SizeBytes, which only that refusal sets: the daemon reads the refusal from that number, not from
-// the error's words, and holds the pod until a turn, or a push that moves the head of the issue's
-// pull request (shimwire.BundleWorkspaceResult).
+// the error's words, and holds the pod until a claim of the pod is written after the refused
+// release was marked, or the head of the issue's pull request moves, a pull request opened
+// included (shimwire.BundleWorkspaceResult).
 // The result crosses the lane as an rpc_chunk sequence when it is larger than one line.
 func (s *shim) bundleWorkspace(request shimwire.BundleWorkspace) {
 	result := shimwire.BundleWorkspaceResult{ID: request.ID, OK: true, At: time.Now().UTC()}

@@ -73,8 +73,9 @@ const (
 	// IdleHoldBundleTooLarge: the workspace's unpushed work does not fit the bundle a release
 	// carries (runtime.MaxWorkspaceBundleBytes), so the pod is kept and the work with it. The
 	// save that finds it tells the issue's worker once, and the idle rule keeps the pod under it
-	// until a turn of a role of the pod, or a push that moves the head of the issue's pull request
-	// (pods.BundleRefusal).
+	// until a claim of the pod is written after the refused release was marked (a role's turn, any
+	// other change of its state, or its activity report), or the head of the issue's pull request
+	// moves, a pull request opened for an issue that had none included (pods.BundleRefusal).
 	IdleHoldBundleTooLarge
 	// IdleHoldBundleSave: the bundle could not be built or could not be saved, so the pod is kept.
 	// The next idle tick marks the release again: such a cause is no worker's to cure, so the
@@ -260,14 +261,15 @@ type IdleDecision struct {
 //
 //   - the save of the issue's last release did not find the work over the bound a release
 //     carries (IdleHoldBundleTooLarge) since anything changed what the next save would find
-//     (view.BundleRefusal). The next save finds the same work until a role of the pod does
-//     something, which writes its claim after the moment the refused release was marked, or a
-//     push moves the head of the issue's pull request. An issue with no pull request has no head
-//     to move (the refusal and the view each read it as ""), so only a role's act ends its hold.
-//     Until one of the two, the pod is held under IdleHoldBundleTooLarge, because each release
-//     marked on the clock alone cost a bundle of the workspace over the worker stream and a hold
-//     record, once a tick. A turn or a moved head ends the hold, and the release is then marked
-//     once the pod is quiet again for the idle period. A save that failed for a reason of its own
+//     (view.BundleRefusal). The next save finds the same work until a claim of the pod is written
+//     after the moment the refused release was marked (a role's turn, any other change of its
+//     state, or its activity report), or the head of the issue's pull request moves. A push moves
+//     it, and so does a pull request opened for an issue that had none, since the refusal and the
+//     view each read the head of an issue with no pull request as "". Until one of the two, the
+//     pod is held under IdleHoldBundleTooLarge, because each release marked on the clock alone
+//     cost a bundle of the workspace over the worker stream and a hold record, once a tick. A
+//     claim written or a moved head ends the hold, and the release is then marked once the pod is
+//     quiet again for the idle period. A save that failed for a reason of its own
 //     (IdleHoldBundleSave) is no such hold: no push or turn cures a database error or a runtime
 //     that answers nothing, so its release is marked again on the next tick, as it always was.
 //

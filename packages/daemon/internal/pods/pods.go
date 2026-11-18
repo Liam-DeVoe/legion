@@ -137,9 +137,9 @@ type IdleRoot struct {
 // the bound a release carries (outbox's bundleIssueWorkspace, workflow.IdleHoldBundleTooLarge):
 // the moment the release was marked, and the head of the issue's pull request when the save was
 // refused, "" with no pull request. The idle rule reads it against the claims and the head now
-// (workflow.IdleRelease): the next save finds the same work until a role of the pod does
-// something or a push moves the head of the issue's pull request, and with no pull request only
-// the role's act ends the hold.
+// (workflow.IdleRelease): the next save finds the same work until a claim of the pod is written
+// after the moment the release was marked or the head of the issue's pull request moves, which a
+// push does and so does a pull request opened for an issue that had none, its head no longer "".
 type BundleRefusal struct {
 	At   time.Time
 	Head string

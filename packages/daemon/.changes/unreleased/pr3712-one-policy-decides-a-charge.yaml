@@ -6,4 +6,7 @@ body: |-
   working or the agent's `get_state` says it is streaming; its words are never read. A refusal with
   no code is logged at warn, so an Oh My Pi that sends only the busy sentence is seen. When neither
   the record nor `get_state` shows a turn, such a refusal is charged as unrecognised, and a prompt
-  result that ran no turn as a prompt that ran no turn.
+  result that ran no turn as a prompt that ran no turn: an agent that does not answer `get_state`
+  within the RPC bound is charged so, and so is one whose turn ended between its refusal and the
+  `get_state` ask, such as one that refuses the task during the pre-turn work of a notice and has
+  ended its turn on that notice by the ask.

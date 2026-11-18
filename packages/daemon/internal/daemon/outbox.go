@@ -1467,7 +1467,7 @@ func (r *outbox) wakeRan(row record.OutboxRow, notice record.Notice) {
 // front of it the sentence of what the architect's last process ended that the row was queued
 // with (record.CatchUp.Relaunch), which stays the row's. Decided is written again in that read
 // from the decisions the row claimed, each asked of the gates as they stand then
-// (workflow.DecisionStands), so a decision the person's approval followed while the row waited is
+// (workflow.SupersedingApproval), so a decision the person's approval followed while the row waited is
 // not named. The order is the fence's: whether a newer catch-up supersedes this one
 // (catchUpSuperseded) is read on the payload as the row holds it, before anything is replaced,
 // because the fence compares the row's Generation and Launch with the row's issue and its
@@ -2765,12 +2765,14 @@ func (r *outbox) bundleIssueWorkspace(ctx context.Context, row record.OutboxRow,
 // refuseTooLarge ends a release whose save found the workspace's unpushed work over the bound a
 // release carries, refused names the size and the bound: it records the refusal
 // (store.RecordBundleRefusal) and then cancels the release (cancelRelease). The record is what
-// the idle rule reads to mark no release of the issue again until a role of the pod does
-// something or a push moves the head of the issue's pull request (workflow.IdleRelease): until
-// then the next save finds the same work, and each release marked on the clock alone cost a
-// bundle over the worker stream and a hold record, once a minute. With no pull request there is
-// no head to move, so only a role's act ends the hold. It is written before the cancel, so a
-// cancel that fails, which the lane runs again, finds it already there.
+// the idle rule reads to mark no release of the issue again until a claim of the pod is written
+// after the refused release was marked, which a role's turn, any other change of its state and
+// its activity report each do, or the head of the issue's pull request moves, which a push does
+// and so does a pull request opened for an issue that had none, since the refusal records that
+// head as "" (workflow.IdleRelease): until then the next save finds the same work, and each
+// release marked on the clock alone cost a bundle over the worker stream and a hold record, once
+// a minute. It is written before the cancel, so a cancel that fails, which the lane runs again,
+// finds it already there.
 //
 // It also tells the issue's worker, because only a push of that worker's brings the work under
 // the bound: the message names the size and the bound and what ends the hold, and the store
@@ -2825,9 +2827,9 @@ func (r *outbox) bundleTooLargeMessage(ctx context.Context, issue string, asked 
 		"A release can keep a maximum of %[3]d bytes. "+
 		"Push your work to the branch on the remote. "+
 		"If the work has files that must not go to the remote, remove them first. "+
-		"The daemon tries the release again only after a role in the pod takes a turn, "+
-		"or after a push moves the head of the pull request of %[1]s. "+
-		"If %[1]s has no pull request, only a turn makes the daemon try again.",
+		"The daemon tries the release again only after a role in this pod does something "+
+		"that the daemon records (a turn, another change of the role's state, or an activity report), "+
+		"or after the head of the pull request of %[1]s moves (a push, or a pull request opened for %[1]s).",
 		issue, refused.Size, refused.Max)
 	encoded, err := record.NewOutboxRow(issue, record.RoleMessage{Role: string(token), Body: body}, r.now())
 	if err != nil {

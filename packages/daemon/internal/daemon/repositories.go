@@ -1642,6 +1642,7 @@ func (w *workflowRuntime) refreshOnMappingChange(ctx context.Context) {
 	}
 	w.checkRecordedWebhookApps(ctx)
 	recheckIn := installReadRetry.Initial
+	var rest followLeft
 	for {
 		var recheck <-chan time.Time
 		waiting := append(append(w.repositories.awaitingRead(), w.recoveringReasons()...), w.followReasons()...)
@@ -1693,7 +1694,7 @@ func (w *workflowRuntime) refreshOnMappingChange(ctx context.Context) {
 			if err == nil {
 				w.mappingApplied.Store(covers)
 				w.recoverRepositories(ctx)
-				w.followMapping(ctx, follows)
+				rest = w.followMapping(ctx, follows, rest)
 				w.checkRecordedWebhookApps(ctx)
 				break
 			}
@@ -2159,34 +2160,44 @@ func (w *workflowRuntime) putBackSilenced(taken map[string]map[string]bool) {
 // the refresher reads the mapping again on its backoff and the next read's pass tries again. The
 // pass reads within one bound (appMintAttempt) whatever number of issues it moves, which is why it
 // reads GitHub once per repository (followListing). A pass that bound cuts short commits the
-// corrections it prepared before the bound ended and leaves every issue it did not prepare owed
-// (followLeft): the follow stays owed, and the next pass for the same follows reads those issues
-// alone, so each pass moves on from where the last stopped and no issue waits behind the ones a
-// pass reads every time (a change still refused waits on its record, and is read again at every
-// full pass). A follow asked for since is a new mapping, whose pass reads every issue again. A
-// mapping change made while this pass runs asks for a read of its own, whose pass covers it.
-func (w *workflowRuntime) followMapping(ctx context.Context, follows uint64) {
+// corrections it prepared before the bound ended and returns every issue it did not prepare
+// (followLeft), which its caller hands to the next pass as left: the follow stays owed, and the
+// next pass for the same follows reads those issues alone, so each pass moves on from where the
+// last stopped and no issue waits behind the ones a pass reads every time (a change still refused
+// waits on its record, and is read again at every full pass). A follow asked for since is a new
+// mapping, whose pass reads every issue again. A mapping change made while this pass runs asks for
+// a read of its own, whose pass covers it.
+func (w *workflowRuntime) followMapping(ctx context.Context, follows uint64, left followLeft) followLeft {
 	if follows <= w.followApplied.Load() {
-		return
+		return left
 	}
 	var only map[string]bool
-	if w.followLeftFor == follows {
-		only = w.followLeft
+	if left.follows == follows {
+		only = left.issues
 	}
-	left, err := w.followListing(ctx, only)
+	unread, err := w.followListing(ctx, only)
 	if err != nil {
 		w.log.Warn("workflow: the recorded issues did not follow the repository mapping's change; reading the mapping and Dispatch's listing again",
 			"error", err)
-		return
+		return left
 	}
-	if len(left) > 0 {
-		w.followLeft, w.followLeftFor = left, follows
+	if len(unread) > 0 {
 		w.log.Warn("workflow: the follow of the repository mapping's change reached its bound before it read every recorded issue; "+
-			"it wrote what it read, and its next pass reads the rest", "left", len(left), "bound", appMintAttempt.String())
-		return
+			"it wrote what it read, and its next pass reads the rest", "left", len(unread), "bound", appMintAttempt.String())
+		return followLeft{follows: follows, issues: unread}
 	}
-	w.followLeft, w.followLeftFor = nil, 0
 	w.followApplied.Store(follows)
+	return followLeft{}
+}
+
+// followLeft is what a follow pass its bound cut short left unread (followMapping): each recorded
+// issue, by key, it did not prepare, and the count of follows that pass was made for, which the
+// next pass for that same count reads alone. The refresher keeps it in a variable of its own loop
+// (refreshOnMappingChange) and hands it to each pass, so nothing but that loop can reach it and it
+// needs no lock.
+type followLeft struct {
+	follows uint64
+	issues  map[string]bool
 }
 
 // followReasons is the follow still owed, as the refresher logs what it waits on: one mapping
@@ -2225,11 +2236,11 @@ func (w *workflowRuntime) followReasons() []string {
 // reads GitHub answered, are written all the same, so a pass that cannot read every repository
 // still moves the issues it did read, those onto mapped repositories among them; the write is
 // bounded on its own (appMintAttempt), since the reads' bound has ended by then. With only set
-// (followMapping's followLeft), the pass prepares those issues alone; nil prepares every one. The
-// corrections are one transaction under the lock every fact applies under, as the boot's
-// reconcile is, and the records are read again inside it, in one read before the first
-// correction: a record a live event has carried past the listing's sequence is left to that
-// event, as the boot's listing leaves it (admit's applySummary). One read serves every issue
+// (the issues of the followLeft followMapping was handed), the pass prepares those issues alone;
+// nil prepares every one. The corrections are one transaction under the lock every fact applies
+// under, as the boot's reconcile is, and the records are read again inside it, in one read before
+// the first correction: a record a live event has carried past the listing's sequence is left to
+// that event, as the boot's listing leaves it (admit's applySummary). One read serves every issue
 // because each correction writes its own issue's row alone, and what a correction reads of a
 // record (its repository, the change waiting on it, its last Dispatch sequence) is written by
 // facts, which apply under that same lock. The pod an issue's correction leaves on the repository

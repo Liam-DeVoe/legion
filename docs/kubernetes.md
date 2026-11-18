@@ -2728,7 +2728,9 @@ The release's image also pins an Oh My Pi whose refusal of a prompt sent while t
 Such a prompt charges the claim nothing, and its task is sent again when the turn ends.
 A pod moves onto the new image only at its update round, and until then its Oh My Pi sends that refusal with no code.
 The daemon reads it as busy all the same, charging nothing, when its own record holds the claim working or when the agent answers `get_state` that it is streaming.
-An agent on the earlier image that does not answer `get_state` within the RPC bound, while the daemon's record does not hold the claim working, is charged as unrecognised for its refusal, and as a prompt that ran no turn for its prompt's result, until its pod's update round.
+Two cases of an agent on the earlier image are still charged until its pod's update round, while the daemon's record does not hold the claim working: as unrecognised for its refusal, and as a prompt that ran no turn for its prompt's result.
+The first is an agent that does not answer `get_state` within the RPC bound.
+The second is an agent whose turn ended between its refusal and the daemon's `get_state` ask, so it answers that it is not streaming: for example one that refuses the task with its busy sentence while it does the pre-turn work of a notice, and whose turn on that notice has ended by the ask.
 
 Store migration 20261112012123_issue_repository_correction adds the four `issues` columns the repository keys are read from — `repo_before`, `repo_corrected_at`, `repo_change_pending` and `repo_change_reason` — and `workspace_bundles.repo`, the repository a saved workspace bundle's work is of.
 Every row already there takes each column's default, and nothing is backfilled.
@@ -2741,8 +2743,8 @@ Store migration 20261118073048_phase_entry_awaiting adds `phases.entry_awaiting`
 Every row that mark was set on takes the empty wait, `{}`, since the release before kept the resume's text and no wait: a send of such an entry again names a person's act on the root, then how the gate and the asks stand.
 Every other row takes null.
 Store migration 20261118172458_bundle_size_refusals creates `workspace_bundle_refusals`, one row per issue whose last release's save found the work over 40 MiB: the moment that release was marked, and the head of the issue's pull request then, empty with no pull request.
-The idle rule marks no release of such an issue again until a role of its pod does something after that moment, or a push moves the head of the issue's pull request ([Idle release](#idle-release)).
-An issue with no pull request has no head to move, so only a role's act ends its hold.
+The idle rule marks no release of such an issue again until a role of its pod does something after that moment, or the head of the issue's pull request moves ([Idle release](#idle-release)).
+A push moves that head, and so does a pull request opened for an issue that had none, whose head the row records as empty.
 The refusal tells the issue's worker in a `role_message` row, whose payload carries only the `role` and `body` an earlier release's `record.RoleMessage` already names.
 A save that failed for another reason writes no row, and its release is marked again on the next idle tick, as before.
 
@@ -2752,7 +2754,7 @@ The earlier release names every column it reads and writes, so after the block i
 Its write of a later answer to a root's wait leaves `awaiting_answered_version` and `awaiting_answered_version_at` as they stood, and when this release is pinned again it reads that answer as one with no version, since the moment beside the version is no longer the answer's: the resume then asks whether the person's approval followed that changes request at the version the gate holds approved, as it asks of a kept decision.
 It never reads `workspace_bundles_refused` either, so a bundle this release refused for its repository stays in that table through the roll back, and no row of `workspace_bundles` is a refused one that its idle rule could hold a pod for.
 It never reads `workspace_bundle_refusals` either, so its idle rule marks the release of an issue whose save was refused again on each pass, as it did before this release: each pass asks the pod's shim for a bundle and records one more hold, for as long as the work stays over 40 MiB.
-A row this release wrote to that table holds no pod once this release is pinned again and a role of the pod has done something since.
+A row this release wrote to that table holds no pod once this release is pinned again and a role of the pod has done something since, or the head of the issue's pull request has moved since.
 
 ```sh
 psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
@@ -6197,8 +6199,8 @@ that refusal is the one every measured save over the bound met, and the daemon r
 Every shim that answers a save has sent its size this way since the save's first release, so this holds whichever worker image the deployment pins.
 A bundle a runtime answered whole over the bound is refused by the daemon's own check, the same way.
 A refusal that names no size is a `bundle_save_failed`, whatever its words say.
-The next save would find work over 40 MiB again until something changes it, so after a `bundle_too_large` the daemon marks no release of that issue again until a role of the pod does something after the refused release was marked, which a turn and an activity report each record on the role's claim, or a push moves the head of the issue's pull request.
-An issue with no pull request has no head to move, so a push alone does not end its hold, and only a role's act does.
+The next save would find work over 40 MiB again until something changes it, so after a `bundle_too_large` the daemon marks no release of that issue again until a role of the pod does something after the refused release was marked, which a turn, any other change of the role's state and an activity report each record on the role's claim, or the head of the issue's pull request moves.
+A push moves that head, and so does a pull request opened for an issue that had none, since the refusal records the head of an issue with no pull request as empty.
 Until then each idle pass holds the pod under `bundle_too_large`; after either, the release is marked once the pod is quiet again for the idle period.
 A daemon restart keeps this, since the refusal is a row of `workspace_bundle_refusals`, and a save that stores the work or finds none deletes that row, as the end of the issue's work does.
 The refusal also tells the issue's worker, once for each head of the issue's pull request it was refused at, in a role message that names the size and the bound, asks for a push, and says what ends the hold; the worker is the one whose phase is open when its claim is live, and otherwise the role the save was asked of.

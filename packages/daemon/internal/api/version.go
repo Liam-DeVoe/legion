@@ -2264,8 +2264,9 @@ package api
 // run on this schema until the block docs/kubernetes.md gives under this contract puts it back.
 // `20261118172458_bundle_size_refusals.up.sql` creates `workspace_bundle_refusals`, the last save
 // of an issue's release that found the work over the bound a release carries, so the idle rule
-// marks no release of that issue again until a role of the pod does something or a push moves the
-// head of the issue's pull request. An older daemon neither reads nor writes the table, and marks
+// marks no release of that issue again until a claim of the pod is written after the refused
+// release was marked or the head of the issue's pull request moves, a pull request opened for an
+// issue that had none included. An older daemon neither reads nor writes the table, and marks
 // such a release again on each idle pass, as before this release.
 //
 // This release's image pins Oh My Pi v18.18.6-sami.20261118-035823 (`.omp-pin`), the first fork
@@ -2273,9 +2274,11 @@ package api
 // is in a turn of its own (dispatch://INFRA-3538). The daemon reads that code and no words. A pod
 // still on the earlier image, until its update round, sends its busy refusal with no code, and the
 // daemon reads it as busy from its own record of the claim working or from the agent's get_state
-// (supervise's agentRefusalOutcome); one that does not answer get_state within the RPC bound while
-// the record does not hold the claim working is charged as unrecognised for its refusal, and as a
-// prompt that ran no turn for its prompt's result. Nothing of the daemon API changes with the pin.
+// (supervise's agentRefusalOutcome). While the record does not hold the claim working, two such
+// agents are charged as unrecognised for the refusal, and as a prompt that ran no turn for the
+// prompt's result: one that does not answer get_state within the RPC bound, and one whose turn
+// ended between its refusal and the ask, as a turn on a notice can whose pre-turn work the
+// refusal came during. Nothing of the daemon API changes with the pin.
 // (This entry takes 162, the lowest number above main's 152 that no open pull request declared,
 // as .github/scripts/check-daemon-api-contract.sh read every open head's own copy of this file at
 // 2026-11-18T07:20Z: 153 #4115, 154 #3659, 155 #4273, 156 #4065, 157 #2230 and #3993, 158 #4017,

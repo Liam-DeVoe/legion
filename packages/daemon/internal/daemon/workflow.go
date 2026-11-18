@@ -172,10 +172,7 @@ type workflowRuntime struct {
 	// read covers; followRequested counts the follows asked for (a mapping change Dispatch
 	// announced, mappingChange, or a read that served a repository the last did not), and followApplied is the last
 	// of them whose recorded issues followed the mapping read after it (followMapping);
-	// followLeft is each recorded issue, by key, that a follow pass its bound cut short left
-	// unread, for the count of follows that pass was made for (followLeftFor), which the next pass
-	// for that same count reads alone, and only the refresher's goroutine touches either; awaiting is
-	// each held admission event's request (awaitMappingRead), by issue key
+	// awaiting is each held admission event's request (awaitMappingRead), by issue key
 	// and then the sequence it was delivered at, under awaitingMu. recovering is each repository,
 	// lowercased, GitHub answered for again whose issues are still to recover from Dispatch's
 	// listing (recoverRepositories): one a read of the mapping stopped leaving out for a read
@@ -200,8 +197,6 @@ type workflowRuntime struct {
 	mappingApplied    atomic.Uint64
 	followRequested   atomic.Uint64
 	followApplied     atomic.Uint64
-	followLeft        map[string]bool
-	followLeftFor     uint64
 	awaitingMu        sync.Mutex
 	awaiting          map[string]map[int64]uint64
 	recoveringMu      sync.Mutex
@@ -868,7 +863,7 @@ func (w *workflowRuntime) rootHears(ctx context.Context, c supervise.Claim, _ su
 // release queued carries no such mark, and is sent as the text it holds.
 //
 // Every kept decision and kept approval the task still names is asked again at this send, against
-// the gates as the record holds them now (workflow.DecisionStands): a person who approved since
+// the gates as the record holds them now (workflow.SupersedingApproval): a person who approved since
 // has answered what the sentence would tell or ask them, so the sentence is dropped
 // (workflow.KeptDecisionsTask), and the row of a decision it superseded is deleted in the same
 // write (workflow.ForgetSuperseded).
@@ -992,7 +987,7 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 // resumeTaskNow is the resume task delivery d carries the wait of (supervise.Delivery.Resume),
 // written from the record as it stands now: the root's gates and its ask mirror rows, read in one
 // transaction, rendered by the one rule (workflow.ResumeTask), which asks of every review it names
-// whether the person's approval followed it (workflow.DecisionStands), and of every approval
+// whether the person's approval followed it (workflow.SupersedingApproval), and of every approval
 // request whether the gate's approval answered it. A read that fails returns its error, as the
 // kept-decisions answer above does: the machine sends nothing then, and the next trigger asks again.
 func (w *workflowRuntime) resumeTaskNow(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, error) {
