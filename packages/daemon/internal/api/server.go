@@ -168,8 +168,10 @@ type Options struct {
 	Decisions *RouteDecisions
 	// Log receives what the routes decide; nil is slog.Default().
 	Log *slog.Logger
-	// Tokens mints the GitHub App leases credential routes return after redeeming a grant.
-	Tokens appauth.Tokens
+	// Tokens mints the GitHub App leases credential routes return after redeeming a grant, and
+	// answers the owners each App is installed on, which the controller's gh bundle holds one
+	// directory per owner of (appauth.Source, appauth.ControllerCredential).
+	Tokens appauth.Source
 	// GitHubRepositories are the project's repositories as the daemon serves them
 	// (daemon's repositories.Accepted): the controller's gh bundle holds a read-only token per
 	// owner of them, each narrowed to that owner's repositories (appauth.ControllerCredential).
@@ -227,9 +229,14 @@ type Options struct {
 	RepositoryUnread func(resolved string) bool
 	// AwaitRecovery leaves a child release_children left unrecorded on an unread repository to that
 	// repository's recovery (the daemon's awaitRecovery), which tells the architect of each such
-	// child it did not record: the one that owns the child's parent when the record holds that
-	// parent in tree, else the tree's. Nil leaves none.
-	AwaitRecovery func(repo, tree, child, parent string)
+	// child it did not record — the one that owns the child's parent when the record holds that
+	// parent in tree, else the tree's — and answers whether it did. False means the daemon no longer
+	// holds that repository unread — its recovery stopped waiting on GitHub for it between the
+	// route's RepositoryUnread read and this call — so no recovery will come for the child and none
+	// will tell its architect: the route must then schedule the child-release retry
+	// (scheduleChildReleaseRetry), exactly as for a child on no unread repository, rather than
+	// answer it released and wait. Nil leaves none, and holds every child released as before.
+	AwaitRecovery func(repo, tree, child, parent string) bool
 	// RoleFor is the role that works a phase (phase.RoleFor). The operator's retry of a failed
 	// phase worker applies its issue's held phase only when that phase's role is the claim's
 	// (retryClaim); nil retries no held phase, leaving every one to its architect.
@@ -338,7 +345,7 @@ type server struct {
 	// controllerMu orders a capability mint against a registration and a controller grant, so a
 	// grant the replaced registration authorised is never recorded after the mint revoked them.
 	controllerMu       sync.Mutex
-	tokens             appauth.Tokens
+	tokens             appauth.Source
 	githubRepositories func() []ghrepo.Repository
 	// renames is the deployment's repository equivalence (Options.RepositoryRenames): the rule
 	// that says which owner's installation holds a repository recorded under the name a transfer
@@ -363,7 +370,7 @@ type server struct {
 	handlers    []intake.Handler
 	prepare     func(ctx context.Context, issue intake.DispatchIssue) (intake.DispatchIssue, error)
 	unread      func(resolved string) bool
-	await       func(repo, tree, child, parent string)
+	await       func(repo, tree, child, parent string) bool
 	roleFor     func(phase.Phase) claim.Role
 	records     record.Store
 	dispatch    dispatch.Client
@@ -1178,13 +1185,13 @@ const assignmentsContract = 141
 const entryTimesContract = 146
 
 // projectReleaseContract is the daemon contract that added `projectRelease`, the project's newest
-// project release and its result (version.go's 159, dispatch://INFRA-3583). A plugin before it is
+// project release and its result (version.go's 161, dispatch://INFRA-3583). A plugin before it is
 // served the state without it: one built before sjawhar/legion#2788 reads the state with a strict
 // schema and would refuse the whole body for a key it does not name, and one built after strips
 // the key instead, so the strip is what keeps the release from a caller that did not ask for it.
 // The roles a running release asks are such callers, and they are asked to push and end their
 // turn on that same body.
-const projectReleaseContract = 159
+const projectReleaseContract = 161
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
 func carriesUpdateRounds(state State) bool {

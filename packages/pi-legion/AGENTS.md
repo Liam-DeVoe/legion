@@ -71,10 +71,10 @@ shapes that client parses, and the pane's environment — the identity variables
 workspace, the pane's cwd; read by `claim-session.ts`, which resolves it and scopes the overlay's
 `Dispatch:` line to it), `LEGION_GENERATION` (set by the daemon, read by
 nothing here), `LEGION_BOOT_TOKEN_FILE`, `LEGION_DAEMON_URL`, the GitHub
-variables (`LEGION_GH_OWNERS_DIR`, the role's gh bundle of one directory per GitHub owner, one per
-owner a configured rename moved a repository away from while the project serves the name it moved
-to, and one per other repository served by its issue's recorded owner and by the owner whose
-installation serves its issue's repository;
+variables (`LEGION_GH_OWNERS_DIR`, the role's gh bundle of one directory per GitHub owner its App
+is installed on, one per owner a configured rename moved a repository away from while the project
+serves the name it moved to, and one for its issue's recorded owner, each token reaching every
+repository its own installation holds;
 `GH_CONFIG_DIR`, its issue's owner's directory;
 `LEGION_GH_PATH`, the real gh the pane's `gh` wrapper runs; with `GH_TOKEN`, `GITHUB_TOKEN` and
 `GH_HOST` set empty: read by the pane's `gh` and `git`, by nothing here), the Envoy
@@ -95,14 +95,21 @@ field from `legion.goDaemonApiVersion` when the plugin dropped its TypeScript-da
 (LEGION-223): a release before it declares the TypeScript daemon's 9 under this name and is
 refused naming that number. The split of the one plugin into this package and `@sjawhar/pi-envoy`
 (LEGION-247) moved no request, response or pane variable, so it bumped nothing of its own: the
-number is the one `DaemonAPIVersion` declares, last bumped by contract 159's project release
+number is the one `DaemonAPIVersion` declares, last bumped by contract 161's project release
 (dispatch://INFRA-3583: the shim answers a new `read-unpushed` frame with a count of the
 workspace's unpushed commits and no content, the operator's routes gain
 `POST`/`GET /legion/v1/operator/project/release`, the state gains an optional `projectRelease`
-that a caller from a pod whose claims record a contract under 159 is not served
+that a caller from a pod whose claims record a contract under 161 is not served
 (`api.stateFor`, `withoutProjectRelease`), a claim's `suspendedBy` gains `project_release`, and a
 `ready_for_update` whose round is `release:<id>` answers the release; no shape this plugin
-parses becomes required), after contract 151 (dispatch://INFRA-3729: issue pods in GKE Sandbox
+parses becomes required), after contract 152 (dispatch://INFRA-2543: the GitHub App
+installation, and no longer the project's Dispatch repository mapping, decides which repositories
+a project works in, so the state's `repositories.mapped` is every repository the daemon serves
+and each entry of it and of `refused` gains `apps`, which the reader this plugin parses the state
+through takes as optional; a pane's and a pod's gh bundle gains `renames.txt`, the controller's
+GitHub credential answer gains `renames` and `installed`, and its refusal of a default owner the
+review App is not installed on answers `DEFAULT_OWNER_NOT_INSTALLED`), after contract 151
+(dispatch://INFRA-3729: issue pods in GKE Sandbox
 microVMs, whose launcher flags, hello answer and kill report change, and the state's settings
 gain `runtime.kubernetes.sandbox`, which this plugin parses loosely, so no shape it parses
 changes), after contract 146 (dispatch://INFRA-2614:
@@ -359,10 +366,9 @@ Contract 5 added `LEGION_GRANT_FILE` to the pane's environment (LEGION-262), the
 hook minted a grant into before a bash command that invoked `legion`; contract 19 removes it with
 that hook. Nothing in a pane runs `legion` from bash: the `legion` tool mints each operation's grant
 in-process and posts it with the request, and `gh` and `git` read the role's GitHub App tokens from
-the gh bundle under the pane's `LEGION_GH_OWNERS_DIR` (one directory per owner, one per owner a
-configured rename moved a repository away from while the project serves the name it moved to, and
-one per other repository served by the issue's recorded owner and by the owner whose installation
-serves the issue's repository, each a
+the gh bundle under the pane's `LEGION_GH_OWNERS_DIR` (one directory per owner the role's App is
+installed on, one per owner a configured rename moved a repository away from while the project
+serves the name it moved to, and one for the issue's recorded owner, each a
 `hosts.yml` and `config.yml` rendered and refreshed by
 the daemon: `/var/run/legion/gh` in a pod,
 `<state_dir>/secrets/<claim>-gh` on tmux; `GH_CONFIG_DIR` names the issue owner's), with
