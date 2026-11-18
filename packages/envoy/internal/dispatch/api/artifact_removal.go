@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
@@ -43,13 +44,32 @@ import (
 // document's events are the issue's (events_one_owner, ownerForArtifact), so that row carries no
 // artifact id.
 //
+// The document's node is stated gone before its row goes, in the store's order (node, row, event,
+// facts), and the state tuple waits for the artifact.removed event (graphstore.Caused). The node
+// is addressed by the document's ref_key, which a later document of the same issue and slug takes
+// again: that document's create finds the node gone and states it live under its own event,
+// rather than finding a live node that states nothing and keeps this document's cause. A node
+// keeps its made_at and made_by over its life, as every node of the store does, so a document a
+// build before this one created, where the store holds no node at its address yet, first gets the
+// node its create would have written - live, made by its creator at its created_at, at the
+// sentinel, as the backfill writes it (graphcensus's backfillObjectNodes) - and only then is it
+// stated gone, by the person who removed it, at the time this transaction reads from the
+// database's clock under the owner row it holds (graphstore.StatementTime): later than every
+// statement about the address, so a document made there next is dated later still. Where the
+// store holds a node already, live or gone, no first node is written: a live one is stated gone,
+// and a gone one (an earlier document's, whose address a build before this one took again) is
+// left as it is, rather than moved live at a created_at that may predate its gone statement.
+//
 // The room is closed on every process that holds one, through the room-sync notification this
 // transaction sends before it commits (docs.AnnounceDocumentRemoved): a room left open on
 // another process is a room over a row that has gone, whose next append meets a foreign key that
 // no longer resolves. The removing process closes its own room after the commit, and only then
 // (docs.Service.Evict): a settlement that commits against a row that has gone would fail, and a
 // client that reconnects between the two reads the document as gone rather than loading a room
-// for a row that is no longer there.
+// for a row that is no longer there. A settlement of the document already under way at the
+// commit - queued behind this transaction for the owner's row, or started before the eviction
+// ended what the room had armed - reads the row gone and ends without a word
+// (docs.Service.settleRoomWithin).
 func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
@@ -93,6 +113,33 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// The document's node, stated gone before its row goes; its state tuple waits for the event.
+	var goneNode graphstore.Uncaused
+	if graphstore.AddressFits(artifact.RefKey) {
+		_, held, err := graphstore.ReadNode(r.Context(), tx, graphstore.KindArtifact, artifact.RefKey)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if !held {
+			made := graphstore.ArtifactNode(artifact.RefKey, artifact.Project, deref(artifact.SessionID), artifact.CreatedBy, artifact.CreatedAt)
+			if err := graphstore.Write(r.Context(), tx, []graphstore.Node{made}, nil); err != nil {
+				s.writeHandlerError(w, fmt.Errorf("write the node of the removed document %s: %w", artifact.ID, err))
+				return
+			}
+		}
+		removedAt, err := graphstore.StatementTime(r.Context(), tx, graphstore.KindArtifact, artifact.RefKey)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		gone := graphstore.ArtifactNode(artifact.RefKey, artifact.Project, deref(artifact.SessionID), actor, removedAt)
+		gone.State = graphstore.StateGone
+		if goneNode, err = graphstore.WriteUncaused(r.Context(), tx, []graphstore.Node{gone}, nil); err != nil {
+			s.writeHandlerError(w, fmt.Errorf("state the node of the removed document %s gone: %w", artifact.ID, err))
+			return
+		}
+	}
 	if _, err := tx.Exec(r.Context(), `delete from artifacts where id = $1`, artifact.ID); err != nil {
 		s.writeHandlerError(w, fmt.Errorf("remove the document %s: %w", artifact.ID, err))
 		return
@@ -108,6 +155,10 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 		"artifact.removed", actor, map[string]any{"artifact": artifact},
 	))
 	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := graphstore.Caused(r.Context(), tx, goneNode, event.ID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -300,7 +351,10 @@ type artifactClear struct {
 // 20261028195714_doc_compaction_owed.up.sql), and artifact_versions was 27.5 GB in production
 // against a census limit of one GiB. The keys that do cascade are left to the artifact row's own
 // delete, and the reference rows, which carry no key either, to package refs
-// (refs.ForgetDocument).
+// (refs.ForgetDocument). document_search_backfill's one row is not cleared, though it carries an
+// artifact_id: that id is the search fill's keyset cursor, a position in the fill and not a row of
+// the document, and the boot's fill reads that row every time, so deleting it when the cursor
+// named the removed document left no Dispatch process able to start (dispatch://INFRA-4018).
 //
 // Five more keys to artifacts(id) carry no cascade - asks.artifact_id, asks.block_artifact_id,
 // comments.artifact_id, events.artifact_id and artifact_reviews.artifact_id - and no statement
@@ -322,7 +376,6 @@ func artifactRemovalClears(artifact model.Artifact) []artifactClear {
 		{what: "snapshots", statement: `delete from doc_snapshots where artifact_id = $1`, args: id},
 		{what: "checkpoints", statement: `delete from doc_checkpoints where artifact_id = $1`, args: id},
 		{what: "search rows", statement: `delete from document_search where artifact_id = $1`, args: id},
-		{what: "search backfill rows", statement: `delete from document_search_backfill where artifact_id = $1`, args: id},
 		{what: "compaction owed", statement: `delete from doc_compaction_owed where artifact_id = $1`, args: id},
 		{what: "search terms owed", statement: `delete from search_term_queue where artifact_id = $1`, args: id},
 		{what: "inbox threads", statement: `delete from user_threads where artifact_id = $1`, args: id},

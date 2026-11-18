@@ -50,9 +50,9 @@ func (f failingSecretRead) Read(ctx context.Context, source string) (string, err
 // exactly the read the check and the release both make.
 func storeSourceOf(t *testing.T, f *narrowingFixture, name string) string {
 	t.Helper()
-	_, source, minted, err := policy.ParseKindSource(f.Policy.Get().Secrets[name].Source)
+	_, source, minted, err := policy.ParseTypeSource(f.Policy.Get().Secrets[name].Source)
 	if err != nil || !minted {
-		t.Fatalf("%s's source is %q, %v; want a minted kind's", name, source, err)
+		t.Fatalf("%s's source is %q, %v; want a minted type's", name, source, err)
 	}
 	return source
 }
@@ -256,7 +256,7 @@ func TestNarrowingCheckTroubleLetsTheRequestThroughAndTheReleaseRefuses(t *testi
 				defer cancel()
 				ctx = bounded
 			}
-			release, err := f.Values(ctx, decision.GrantID, f.enrollmentID, narrowing)
+			release, err := f.Values(ctx, decision.GrantID, f.enrollmentID, narrowing, requests.ReleaseCall{})
 			if release.Values != nil {
 				t.Fatalf("the release handed over %v; want no value: the narrowing it asked for was never served", release.Values)
 			}

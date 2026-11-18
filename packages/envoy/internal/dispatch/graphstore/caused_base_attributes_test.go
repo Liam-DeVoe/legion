@@ -12,7 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// TestASettlesNodeAndItsBaseTuplesNameOneEvent is dispatch://INFRA-1149's R1 and R8 for a node
+// TestASettlesNodeAndItsBaseTuplesNameOneEvent is this change's R1 and R8 for a node
 // whose cause comes after it. A delivery's settle writes the session's node before its receipt
 // exists, so the node goes in at the sentinel and Caused moves its row onto the receipt once
 // that is appended. No tuple may be updated to learn its cause, so a base attribute stated at
@@ -58,7 +58,7 @@ func runInOneTransaction(t *testing.T, database *store.Store, what string, write
 // requireOneCause holds a node and the base attributes it carries to naming the one event: the
 // node row's source_event is cause, and so is each base attribute tuple's, with exactly one of
 // each attribute the node carries - visibility and state always, and its project or its parties
-// where its row holds one (dispatch://INFRA-3862) - and none of an attribute it does not carry.
+// where its row holds one - and none of an attribute it does not carry.
 func requireOneCause(t *testing.T, database *store.Store, kind, id string, cause int64) {
 	t.Helper()
 	ctx := context.Background()

@@ -131,6 +131,23 @@ func blockHolds(alias, fromKind, table, column string) string {
 		and b.` + column + `::text = ` + alias + `.from_id))`
 }
 
+// blockRefListed is whether the block_refs row alias is listed: the types test of a typed
+// block's pointer, made the way the arm of graph_edges that answers the row makes it, so a read
+// of the rows themselves and a read of the view cannot answer one link differently.
+//
+// A row that names its node is the tuple arm's (migration 20261109215947): a mention is listed
+// whatever its target's type, and a pointer only while block_ref_listed holds of the targets the
+// attribute node declares now (block_pointer_targets), so a change of an attribute's targets
+// reaches every link of that attribute at its next read, with no pass over documents nobody
+// edits. A row that names no node, which a build before the store wrote, is the old block_refs
+// arm's, whose test reads the to_types the index copied into the row: such a row follows a
+// change of the targets only once a version is indexed again.
+func blockRefListed(alias string) string {
+	return `(case when ` + alias + `.node_kind is null
+		then ` + alias + `.to_types is null or block_ref_listed(` + alias + `.to_types, ` + alias + `.to_id)
+		else ` + alias + `.kind = 'mentions' or block_ref_listed(block_pointer_targets(` + alias + `.from_node, ` + alias + `.kind), ` + alias + `.to_id) end)`
+}
+
 // documentBlockIDs is the node id of every current block of the document whose ref_key is the
 // numbered parameter param, the set an "in" arm reads a document's blocks' edges by. A deleted
 // block has no row, so the edges at it drop out of every list until a version holds its id again.
@@ -257,9 +274,9 @@ func resolveEdges(ctx context.Context, q Queryer, who model.Actor, query Query) 
 		case node.BlockID != "":
 			// A block's stored excerpt is already cut to BlockExcerptRunes, the excerpt a
 			// document's mention shows.
-			edge.Excerpt = &model.GraphExcerpt{BlockID: node.BlockID, Text: node.text}
+			edge.Excerpt = &model.GraphExcerpt{BlockID: node.BlockID, Text: node.name()}
 		case node.text != "":
-			edge.Excerpt = &model.GraphExcerpt{Text: text.HeadRunes(node.text, excerptRunes)}
+			edge.Excerpt = &model.GraphExcerpt{Text: node.name()}
 		}
 		edges = append(edges, edge)
 	}
@@ -354,7 +371,7 @@ func readEdgeRows(ctx context.Context, q Queryer, who model.Actor, query Query) 
 			and ` + VisibleEnd("g.to_kind", "g.to_id", true, seen) + `
 			union all
 			select b.kind, b.to_kind, b.to_id, b.created_at, b.source_seq, b.from_node
-			from block_refs b where b.artifact_id = ` + blocks + `::uuid and (b.to_types is null or block_ref_listed(b.to_types, b.to_id))
+			from block_refs b where b.artifact_id = ` + blocks + `::uuid and ` + blockRefListed("b") + `
 			and ` + VisibleKind("block", "b.from_node", seen) + ` and ` + VisibleEnd("b.to_kind", "b.to_id", true, seen)
 	case query.Direction == "out" && itemBlocks:
 		tables, _ := item.tables()
@@ -446,12 +463,50 @@ func Node(ctx context.Context, q Queryer, who model.Actor, kind, id string, byRe
 	return node.GraphNode, found, nil
 }
 
+// TargetNames is the words each of targets is named by where who is shown a reference to it
+// rather than its own text: an issue's title, a document's name, an ask's question, a comment's
+// or a message's body, a component's title and a block's text, each cut to the bound an edge's
+// excerpt is cut to (resolvedNode.name), which is what GET /api/v1/references already shows
+// beside an edge at that node. The targets are addressed as the to side of an edge addresses
+// them (TargetOf), so an artifact's id is its ref_key.
+//
+// One entry per target that resolves for who: a target with no entry is one nothing addresses
+// now — its node was deleted, or its kind is one this build cannot address (resolveNodes) — or
+// one who may not see, which each kind's loader leaves out as it leaves out a node that does not
+// exist (visibility.go). A caller draws either as a reference whose target is gone. Each kind is
+// read in one statement whatever the number of targets, so a batch costs a statement per kind,
+// not per target.
+func TargetNames(ctx context.Context, q Queryer, who model.Actor, targets []Target) (map[Target]string, error) {
+	rows := make([]edgeRow, len(targets))
+	for index, target := range targets {
+		rows[index] = edgeRow{otherKind: target.Kind, otherID: target.ID}
+	}
+	nodes, err := resolveNodes(ctx, q, who, true, rows)
+	if err != nil {
+		return nil, err
+	}
+	names := make(map[Target]string, len(nodes))
+	for key, node := range nodes {
+		names[Target{Kind: key[0], ID: key[1]}] = node.name()
+	}
+	return names, nil
+}
+
 // resolvedNode is a graph node with the text an excerpt is cut from: a block's is its stored
 // excerpt, already cut.
 type resolvedNode struct {
 	model.GraphNode
 	text   string
 	refKey string
+}
+
+// name is the words shown for the node in place of its text: its own text cut to excerptRunes. A
+// block's text is its stored excerpt, already cut to BlockExcerptRunes.
+func (n resolvedNode) name() string {
+	if n.BlockID != "" {
+		return n.text
+	}
+	return text.HeadRunes(n.text, excerptRunes)
 }
 
 // resolveNodes loads every distinct other end by kind, each loader answering only what who may

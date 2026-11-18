@@ -183,9 +183,9 @@ func VisibilityKinds() []string {
 	return slices.Sorted(maps.Keys(nodeRegistry))
 }
 
-// VisibilityArg is the one argument every rendered predicate binds: the acting credential, as
-// graphstore's one author rule compares it. A read binds it once and names its placeholder in
-// each predicate it renders.
+// VisibilityArg is the one argument every rendered predicate binds: the author the acting
+// credential proved, as graphstore's one author rule compares it. A read binds it once and names
+// its placeholder in each predicate it renders.
 func VisibilityArg(who model.Actor) any {
 	return graphstore.ActingCredential(who)
 }

@@ -48,7 +48,11 @@ func FillScopes(ctx context.Context, tx pgx.Tx, scopes []Scope) (int64, error) {
 		if scope.Project != "" {
 			projects[index] = &scopes[index].Project
 		}
-		if value := PartiesValue(scope.Parties); value != "" {
+		value, err := PartiesValue(scope.Parties)
+		if err != nil {
+			return 0, fmt.Errorf("fill the scope of node %s/%s: %w", scope.Kind, scope.ID, err)
+		}
+		if value != "" {
 			parties[index] = &value
 		}
 	}

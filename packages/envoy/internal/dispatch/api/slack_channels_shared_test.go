@@ -204,7 +204,7 @@ func TestTheSharedChannelRefusalReadsTheCallersCredential(t *testing.T) {
 	caller := newBrokerCaller(t)
 	const brokerToken = "alice-broker-token-listing-no-project"
 	says := liveNamedToken(caller.jkt)
-	says.ProjectScope, says.Project = brokertoken.ProjectScopePerson, ""
+	says.ProjectScope, says.Projects = brokertoken.ProjectScopePerson, nil
 	rig.broker.Says(brokerToken, says)
 	for _, row := range []struct {
 		who  string

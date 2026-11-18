@@ -9,27 +9,31 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/testbaseline"
 )
 
 // TestNoRouteOrFieldTheForkPointServedIsGone is the half of c-no-regression that needs the build
 // before this child: every route the table held at the fork point, and every field of every shape
 // it declared, read against what this build's table answers.
 //
-// The fork point is `git merge-base origin/main HEAD`, and what it served is the OpenAPI document
-// it committed (OpenAPIDocumentPath), which is the render of its route table: a document that
-// differs from its render fails declaredShapesUnchanged at the commit that wrote it. This build's
-// side is the render of its own table, taken now, so nothing committed beside this test can stand
-// in for what the table answers. A route of the fork point that this table no longer serves fails
-// here, and so does a schema, a field or a query parameter it no longer declares, a field that is
-// no longer required, and any of them whose shape moved. A route, a schema or a field this child
-// added is no regression and is not read.
+// The fork point is the commit BASELINE_SHA names (testbaseline.Commit): `git merge-base
+// origin/main HEAD` for a branch that lands on main, the parent's head for a child stacked on it.
+// What it served is the OpenAPI document it committed (OpenAPIDocumentPath), which is the render
+// of its route table: a document that differs from its render fails declaredShapesUnchanged at
+// the commit that wrote it. This build's side is the render of its own table, taken now, so
+// nothing committed beside this test can stand in for what the table answers. A route of the
+// fork point that this table no longer serves fails here, and so does a schema, a field or a
+// query parameter it no longer declares, a field that is no longer required, and any of them
+// whose shape moved. A route, a schema or a field this child added is no regression and is not
+// read.
 //
 // It runs under the build tag `basebuild` because it reads the repository's history: a checkout
-// with no `origin/main` (a shallow clone, an archive) has no fork point to read, which is the
-// reason cmd/dispatch's older-build test reads its base the same way.
+// that does not hold the named commit (a shallow clone, an archive) has nothing to read, which is
+// the reason cmd/dispatch's older-build test reads its base the same way.
 func TestNoRouteOrFieldTheForkPointServedIsGone(t *testing.T) {
 	root := gitOutput(t, ".", "rev-parse", "--show-toplevel")
-	commit := gitOutput(t, root, "merge-base", "origin/main", "HEAD")
+	commit := testbaseline.Commit(t)
 	base := decodeServedDocument(t, "the fork point's document", []byte(gitOutput(t, root, "show", commit+":"+OpenAPIDocumentPath)))
 	var rendered bytes.Buffer
 	if err := WriteOpenAPI(&rendered); err != nil {

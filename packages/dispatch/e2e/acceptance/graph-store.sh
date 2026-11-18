@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 # Drives the people and the agents of the node and tuple store end to end against a running
-# server (dispatch://INFRA-1149's c-person-graph). It writes comments, a message and an ask
+# server (the check c-person-graph). It writes comments, a message and an ask
 # through the real HTTP API, has the server deliver them to sessions and to a role, adds one
 # comment that no session receives, one delivery attempt that fails and one the listener queues
 # for a session that is not running, and then reads the store back and checks each tuple: what
 # each person authored, what reached each session, that a failed or pending attempt earns no
 # tuple and that a queued one earns one. It checks the role, the session and the page, and it holds
-# every read against a table of identities a person wrote into this driver. A message earns no
-# tuple in this child - only a comment has a node on the near end of a delivery, and
-# dispatch://INFRA-1152 gives a message its own - so what the driver reads of the message is the
-# role it reaches and that role's page, and that nothing stands on the message itself (G10).
+# every read against a table of identities a person wrote into this driver. A message is a node
+# of its project, written with its own create and carrying that node's base attributes, and
+# earns no delivery or authorship tuple in this child - only a comment has a node on the near end
+# of a delivery, and a later change gives a message those tuples - so what the driver reads of
+# the message is its node, the role it reaches and that role's page, and that no other tuple
+# stands on the message itself (G10).
 #
 # Which clause is read which way, and why:
 #
@@ -71,6 +73,7 @@ require_env DISPATCH_URL PROJECT DATABASE_URL FAKE_ENVOY_PORT
 require_commands curl jq psql sleep
 read_bearer
 
+# shellcheck disable=SC2031 # the DISPATCH_URL lib.sh's `cli` exports is its own subshell's; this one is the caller's
 readonly base="${DISPATCH_URL%/}"
 # The dashboard's origin, the scheme and host of DISPATCH_URL: a write the person's cookie
 # authenticates must name it (enforceCookieOrigin).
@@ -78,12 +81,14 @@ base_host="${base#*://}"
 readonly origin="${base%%://*}://${base_host%%/*}"
 # shellcheck disable=SC2153 # these are the caller's inputs, checked by name above
 readonly project="$PROJECT"
+# shellcheck disable=SC2153 # DATABASE_URL is the caller's input, checked by name above
 readonly database_url="$DATABASE_URL"
 readonly envoy="http://127.0.0.1:$FAKE_ENVOY_PORT"
 readonly person="${DEV_SIGNIN_LOGIN:-alice}"
 # The second person of the two that must stay apart: the first person's login with one character
 # changed. A canonicalisation that folded the two would answer one person node for both.
-readonly twin="${person%?}$(printf '%s' "${person: -1}" | tr 'a-y' 'b-z')"
+twin="${person%?}$(printf '%s' "${person: -1}" | tr 'a-y' 'b-z')"
+readonly twin
 stamp="$(date +%s)-$$"
 readonly stamp
 session="graph-store-$stamp"
@@ -93,10 +98,11 @@ readonly session
 # and that the listener holds stopped, which a mention reaches through the message the listener
 # stores for it; and one holding a role of this run's own, so the role this driver routes a
 # comment to is nobody else's.
-readonly loose_session="019a1c09-0000-7000-8000-$(printf '%012d' "$$")"
-readonly holder_session="019a1c09-1111-7000-8000-$(printf '%012d' "$$")"
-readonly mentioned_session="019a1c09-6666-7000-8000-$(printf '%012d' "$$")"
-readonly stopped_session="019a1c09-7777-7000-8000-$(printf '%012d' "$$")"
+loose_session="019a1c09-0000-7000-8000-$(printf '%012d' "$$")"
+holder_session="019a1c09-1111-7000-8000-$(printf '%012d' "$$")"
+mentioned_session="019a1c09-6666-7000-8000-$(printf '%012d' "$$")"
+stopped_session="019a1c09-7777-7000-8000-$(printf '%012d' "$$")"
+readonly loose_session holder_session mentioned_session stopped_session
 readonly role="acceptance-$stamp"
 # The role the message of G10 is delivered to, the route of an issue of that section's own: no
 # other issue or write of this run names it, so its role and page nodes are that route's and the
@@ -140,7 +146,11 @@ request() {
   local -a auth data=()
   case "$1" in
     person:*) auth=(-b "$work/jar.${1#person:}" -H "Origin: $origin") ;;
-    token:*) auth=(-H "Authorization: Bearer ${1#token:}") ;;
+    token:*)
+      # From a file, as $work/auth is: a header on the command line is read by every process.
+      printf 'Authorization: Bearer %s\n' "${1#token:}" >"$work/auth.token"
+      auth=(-H "@$work/auth.token")
+      ;;
     *) auth=(-H "@$work/auth") ;;
   esac
   [[ $# -lt 4 ]] || data=(-H 'Content-Type: application/json' --data-binary "$4")
@@ -158,6 +168,27 @@ want_value() {
   query "$1" "$2" "$4"
   [[ "$answer" == "$3" ]] || fail "$1" "$2" "read '$answer', want '$3' (from: $4)"
   pass "$1" "$2"
+}
+
+# tuples_carry SECTION WHAT ROWS: every tuple ROWS selects carries the actor and the event of the
+# write that appended it, and a time its record allows. ROWS is a select of one row per tuple:
+# `tuple`, the tuple as a failure names it; `who`, `source_event` and `at`, what it carries;
+# `want_who`, the actor of the write that appended it; `caused`, whether its event is that write's,
+# which `cause` describes; and `timely`, whether its time is one its record allows, which
+# `when_want` describes. A failure names each tuple that breaks any of the three, with what it
+# carries and what it should. A pass says how many tuples it held, so a kind this run wrote none
+# of reads as none held and not as held and right.
+tuples_carry() {
+  query "$1" "$2" "select count(*) || '|' || coalesce(string_agg(tuple || ': ' || concat_ws('; ',
+             case when who is distinct from want_who then format('actor %s, want %s', who, want_who) end,
+             case when not coalesce(caused, false) then format('event %s, want %s', source_event, cause) end,
+             case when not coalesce(timely, false) then format('time %s, want %s', at, when_want) end),
+           ' | ' order by tuple)
+           filter (where who is distinct from want_who or not coalesce(caused, false)
+                         or not coalesce(timely, false)), '')
+     from ($3) tuples"
+  [[ -z "${answer#*|}" ]] || fail "$1" "$2" "${answer#*|}"
+  pass "$1" "$2 (${answer%%|*} tuple(s))"
 }
 
 # settles SECTION WHAT WANT SQL [HINT]: polls SQL until it reads WANT, for up to 30 s. The server
@@ -231,20 +262,16 @@ token_comment() {
 #     and each resolving to that person.
 identities=(
   "$person|$person"
-  "$(printf '%s' "$person" | tr 'a-z' 'A-Z')|$person"
+  "$(printf '%s' "$person" | tr '[:lower:]' '[:upper:]')|$person"
   "  $person  |$person"
   "$twin|$twin"
 )
 readonly identities
 
 # S: the inputs, the people, the listener's sessions and the issue.
-host="${database_url#*://}"
-host="${host#*@}"
-host="${host%%[:/]*}"
-case "$host" in
-  127.0.0.1 | ::1 | localhost) pass setup "DATABASE_URL names this machine ($host)" ;;
-  *) fail setup "DATABASE_URL names this machine" "host $host is not loopback; this driver reads this pod's own test database and never a deployment's" ;;
-esac
+loopback_database_url "$database_url" ||
+  fail setup "DATABASE_URL names this machine" "the URL must name one loopback host with no connection override; this driver reads this pod's own test database, never a deployment's"
+pass setup "DATABASE_URL names this machine"
 [[ "$twin" != "$person" ]] ||
   fail setup "two logins differing by one character" "$person and $twin are one login"
 sign_in "$person"
@@ -501,7 +528,8 @@ request "person:$person" POST "/api/v1/me/agent-tokens" \
   "$(jq -cn --arg n "graph-store $stamp" '{name: $n}')"
 want_status 201 G6 "mint a personal token for $person"
 person_token="$(jq -er '.token' "$work/body")" || fail G6 "mint a personal token" "no token: $(body)"
-readonly claimed_session="019a1c09-2222-7000-8000-$(printf '%012d' "$$")"
+claimed_session="019a1c09-2222-7000-8000-$(printf '%012d' "$$")"
+readonly claimed_session
 token_comment G6 "a personal token writes, naming a session it claims" \
   "$person_token" "$claimed_session" "A note a personal token wrote for $person."
 readonly claimed_comment="$comment"
@@ -521,7 +549,8 @@ request "person:$twin" POST "/api/v1/me/agent-tokens" \
   "$(jq -cn --arg n "graph-store twin $stamp" '{name: $n}')"
 want_status 201 G7 "mint a personal token for $twin"
 twin_token="$(jq -er '.token' "$work/body")" || fail G7 "mint a personal token" "no token: $(body)"
-readonly twin_session="019a1c09-3333-7000-8000-$(printf '%012d' "$$")"
+twin_session="019a1c09-3333-7000-8000-$(printf '%012d' "$$")"
+readonly twin_session
 token_comment G7 "$twin's token writes" "$twin_token" "$twin_session" \
   "A note $twin's own token wrote."
 readonly twin_comment="$comment"
@@ -564,7 +593,8 @@ want_value G7 "the two tokens answer two people, and each is a person node" "2|2
 # G8: an attempt that fails earns no tuple. The mention names a session the listener does not
 # hold, so its attempt settles failed; the issue's own route still reaches its session, which is
 # why this reads the tuples of the mentioned session alone.
-readonly dead_session="019a1c09-4444-7000-8000-$(printf '%012d' "$$")"
+dead_session="019a1c09-4444-7000-8000-$(printf '%012d' "$$")"
+readonly dead_session
 comment G8 "a comment mentioning a session the listener does not hold" agent \
   "A mention nobody can take." "session:$dead_session"
 readonly failed_comment="$comment"
@@ -617,12 +647,15 @@ want_status 200 G9 "read $person's page after the role delivery"
 expect G9 "a delivery to a role is on no person's page as received" '["authored_by"]' \
   --arg id "$role_comment" '.rows[] | select(.id == $id) | .relations'
 
-# G10: a message earns no tuple in this child. Only a comment has a node on the near end of a
-# delivery today (outbox.deliveredItem), so the record of what a batch delivered appends no
-# delivered_to tuple for a message, and no writer appends its authored_by. What a message on a
-# role-routed issue does have in the store is that role, its page and the page's part_of: the
-# outbox writes a role and its page for every role an event names, and the first event to name
-# this one is the write that routed the issue to it, so that write is the cause the store records.
+# G10: a message is a node of its project and earns no delivery or authorship tuple in this child.
+# Its create writes its node before its row, in the issue's project, and the message.created event
+# causes that node and its three base attributes: its visibility, its state and its project. Only
+# a comment has a node on the near end of a delivery today (outbox.deliveredItem), so the record
+# of what a batch delivered appends no delivered_to tuple for a message, and no writer appends its
+# authored_by. What else a message on a role-routed issue has in the store is that role, its page
+# and the page's part_of: the outbox writes a role and its page for every role an event names, and
+# the first event to name this one is the write that routed the issue to it, so that write is the
+# cause the store records.
 #
 # The message is on an issue of its own, routed to a role of this run's own, so the role it
 # reaches is named by that route and that message alone. It names no target: a targeted message
@@ -664,26 +697,33 @@ want_value G10 "the role's page hangs under the role" 1 \
   "select count(*) from graph_tuples where from_kind = 'page' and from_id = 'role/$message_role'
      and kind = 'part_of' and to_kind = 'role' and to_id = '$message_role' and asserted
      and source_event = $route_event"
-# The two reads of nothing, each beside the same read of something: the route's event caused the
-# role's and the page's tuples, and the comment G9 delivered to a role stands in tuples, so a zero
-# for the message is the message earning nothing and not a read that matched nothing.
+# The reads of the message, each beside a read of something: the route's event caused the role's
+# and the page's tuples, and the comment G9 delivered to a role stands in tuples, so the message's
+# own node and base attributes, and nothing more, are what its event caused, and a zero for any
+# other tuple on the message is the message earning nothing more and not a read that matched
+# nothing.
 query G10 "count the tuples the route's event caused" \
   "select count(*) from graph_tuples where source_event = $route_event"
 [[ "$answer" -gt 0 ]] ||
   fail G10 "the route's event caused the role's tuples" "no tuple names event $route_event as its cause"
 route_caused="$answer"
-want_value G10 "the message's event caused no node and no tuple (the route's caused $route_caused tuple(s))" "0|0" \
+want_value G10 "the message is a node of $project, live, made by its own write" 1 \
+  "select count(*) from graph_nodes where kind = 'message' and id = '$message'
+     and project_key = '$project' and parties is null and state = 'live' and source_event = $message_event"
+want_value G10 "the message's event caused its node and the node's visibility, state and project (the route's caused $route_caused tuple(s))" "1|3|3" \
   "select (select count(*) from graph_nodes where source_event = $message_event) || '|'
-          || (select count(*) from graph_tuples where source_event = $message_event)"
+          || (select count(*) from graph_tuples where source_event = $message_event) || '|'
+          || (select count(*) from graph_tuples where source_event = $message_event
+                and from_kind = 'message' and from_id = '$message' and to_kind = 'value' and asserted
+                and kind in ('visibility', 'state', 'project'))"
 query G10 "count the tuples that stand on the comment G9 delivered" \
   "select count(*) from graph_tuples where from_id = '$role_comment' or to_id = '$role_comment'"
 [[ "$answer" -gt 0 ]] ||
   fail G10 "the comment G9 delivered stands in tuples" "no tuple names $role_comment"
 comment_tuples="$answer"
-want_value G10 "no tuple stands on the message (the comment G9 delivered stands in $comment_tuples)" 0 \
-  "select count(*) from graph_tuples where from_id = '$message' or to_id = '$message'"
-want_value G10 "the message is no node of this child" 0 \
-  "select count(*) from graph_nodes where id = '$message'"
+want_value G10 "no delivered_to, authored_by or other tuple but its base attributes stands on the message (the comment G9 delivered stands in $comment_tuples)" 0 \
+  "select count(*) from graph_tuples where (from_id = '$message' or to_id = '$message')
+     and kind not in ('visibility', 'state', 'project', 'parties')"
 
 # G11: an ask a session follows records that session, and a session the store never recorded
 # answers no node at all, read through the server's own node reader. An ask's followers are the
@@ -695,8 +735,9 @@ send POST "/api/v1/issues/$key/asks" "$(jq -cn --arg s "$session" \
   '{question: "Which sessions does the store hold?", actor: {kind: "session", id: $s}}')"
 want_status 201 G11 "open an ask"
 ask="$(jq -er '.id' "$work/body")" || fail G11 "open an ask" "no ask id: $(body)"
-readonly followed_session="019a1c09-8888-7000-8000-$(printf '%012d' "$$")"
-readonly unseen_session="019a1c09-5555-7000-8000-$(printf '%012d' "$$")"
+followed_session="019a1c09-8888-7000-8000-$(printf '%012d' "$$")"
+unseen_session="019a1c09-5555-7000-8000-$(printf '%012d' "$$")"
+readonly followed_session unseen_session
 for follower in "$session" "$followed_session"; do
   request "person:$person" PUT "/api/v1/asks/$ask/followers/$follower"
   [[ "$status" == 200 || "$status" == 201 || "$status" == 204 ]] ||
@@ -730,19 +771,140 @@ query G11 "remove the row written as the release before the store writes one" \
 want_value G11 "the row the release before the store wrote is gone" 0 \
   "select count(*) from ask_followers where ask_id = '$ask' and session_id = '$unseen_session'"
 
-# G12: every tuple this run wrote carries a time, an actor and a causing write the records hold.
-want_value G12 "every authored_by tuple of this run matches its record" 0 \
-  "select count(*) from graph_tuples t
+# G12: every tuple this run wrote carries a time, an actor and a causing write the records hold:
+# the actor and the event of the write that appended it, and a time no earlier than the record it
+# states. Each kind is held to the write that appends it, which this driver states here rather than
+# reads from the store, so a writer that records a tuple under another actor, another event or an
+# earlier time than its write fails here even where every read of the store agrees with it.
+#
+#   - authored_by is the comment's own write (graphstore.Authored): the comment's author, its
+#     comment.created event by that author, and the comment's own time, each equal to the record's.
+#   - alias_of is appended by that same write beside it (graphstore's aliases): the actor of the
+#     event that stored the comment, that event, and a time no earlier than the comment.
+#   - delivered_to, a page's part_of, a session's part_of the role it claimed and a role's held_by
+#     are the outbox's record of what a batch delivered (outbox.deliveredGraph), which the store
+#     records as written by the outbox itself (outbox's graphWriter): that a thing reached a
+#     session is the server's fact and not an act of whoever wrote the thing. So the actor each
+#     carries is that writer, $outbox_writer below, and never its causing event's. The event is
+#     the one the record states: for a delivery, any comment.* event whose payload names the
+#     comment and which was published to the session or the role the tuple names, as the outbox
+#     records a delivery of every such event (outbox's deliveredItem), or the comment.delivery
+#     receipt of an attempt the listener took against that session; for a session's page, the
+#     receipt that recorded the session; for a role's page, an event published to the role or one
+#     whose route, target or mention names it; and for a claim, an event published to the role.
+#   - delivered_to has one other writer: the answer to an attempt the listener had not taken (api's
+#     recordAnsweredDelivery), which states the delivery its answer makes. That tuple carries the
+#     answering session, the actor of the answer's comment.answered event, and that event, which
+#     stored the reply the attempt of that session to that comment records. An attempt whose
+#     receipt says the listener took it before the answer earns its tuple from the outbox, so an
+#     answer to it states none. A delivered_to under any other actor, or under one of these two
+#     actors with the other's event, fails.
+#
+# This run answers no attempt, so no delivered_to tuple here is an answer's own: that pair is held
+# wherever a run writes one. It presents no broker token and resolves no holder (G9), so no
+# alias_of or held_by tuple and no session's part_of a role stands on its nodes: those checks hold
+# none, and their lines say so.
+readonly outbox_writer='{"kind": "system", "id": "dispatch-outbox"}'
+# The nodes of this run that the tuples standing on no comment start from: its sessions, its two
+# roles and their pages, as SQL lists.
+run_sessions=("$session" "$loose_session" "$holder_session" "$mentioned_session" "$stopped_session"
+  "$claimed_session" "$twin_session" "$dead_session" "$followed_session" "$unseen_session")
+sessions_sql="$(printf "'%s'," "${run_sessions[@]}")"
+readonly sessions_sql="${sessions_sql%,}"
+roles_sql="$(printf "'%s'," "$role" "$message_role")"
+readonly roles_sql="${roles_sql%,}"
+pages_sql="$(printf "'session/%s'," "${run_sessions[@]}")$(printf "'role/%s'," "$role" "$message_role")"
+readonly pages_sql="${pages_sql%,}"
+tuples_carry G12 "every authored_by tuple of this run carries its comment's author, event and time" \
+  "select format('comment:%s authored_by %s:%s', t.from_id, t.to_kind, t.to_id) as tuple,
+          t.who, t.source_event, t.at, c.author as want_who,
+          e.id is not null as caused, 'the comment.created event of the comment, by its author' as cause,
+          t.at = c.created_at as timely, c.created_at::text || ', the time of the comment' as when_want
+   from graph_tuples t
    join comments c on c.id::text = t.from_id
-   where t.from_kind = 'comment' and t.kind = 'authored_by' and c.issue_key = '$key'
-     and (t.at <> c.created_at or t.who <> c.author
-          or t.source_event <> (select e.id from events e
-                                where e.type = 'comment.created' and e.payload->>'id' = c.id::text))"
-want_value G12 "every delivered_to tuple of this run names an event that exists" 0 \
-  "select count(*) from graph_tuples t
+   left join events e on e.id = t.source_event and e.type = 'comment.created'
+     and e.payload->>'id' = t.from_id and e.actor = c.author
+   where t.from_kind = 'comment' and t.kind = 'authored_by' and c.issue_key = '$key'"
+tuples_carry G12 "every delivered_to tuple of this run carries the outbox's writer or the answering session, and the event that delivered it" \
+  "select format('comment:%s delivered_to %s:%s', t.from_id, t.to_kind, t.to_id) as tuple,
+          t.who, t.source_event, t.at,
+          case when pair.answer then e.actor else '$outbox_writer'::jsonb end as want_who,
+          coalesce(pair.outbox or pair.answer, false) as caused,
+          'a comment.* event of the comment published to that ' || t.to_kind
+            || ', the receipt of an attempt the listener took against that session, or the'
+            || ' comment.answered event of an answer to an attempt of that session it had not taken' as cause,
+          t.at >= greatest(c.created_at, e.created_at) as timely,
+          'no earlier than ' || greatest(c.created_at, e.created_at)::text as when_want
+   from graph_tuples t
    join comments c on c.id::text = t.from_id
-   where t.from_kind = 'comment' and t.kind = 'delivered_to' and c.issue_key = '$key'
-     and (t.at < c.created_at or not exists (select 1 from events e where e.id = t.source_event))"
+   left join events e on e.id = t.source_event
+   cross join lateral (select
+     (e.type like 'comment.%' and e.payload->>'id' = t.from_id
+      and case t.to_kind when 'session' then 'notifications.agent.' when 'role' then 'notifications.role.' end
+          || t.to_id = any(e.published_destinations))
+     or (e.type = 'comment.delivery' and t.to_kind = 'session' and e.payload->>'comment_id' = t.from_id
+         and btrim(e.payload->>'session_id') = t.to_id and e.payload->>'state' in ('sent', 'queued'))
+       as outbox,
+     e.type = 'comment.answered' and t.to_kind = 'session' and e.actor->>'kind' = 'session'
+       and exists (select 1 from comment_deliveries d
+                   where d.comment_id::text = t.from_id and d.reply_id::text = e.payload->>'id'
+                     and d.session_id = e.actor->>'id' and btrim(d.session_id) = t.to_id
+                     and not exists (select 1 from events r
+                                     where r.type = 'comment.delivery' and r.id < e.id
+                                       and r.payload->>'comment_id' = t.from_id
+                                       and r.payload->>'target' = d.target
+                                       and r.payload->>'attempt' = d.attempt::text
+                                       and r.payload->>'state' in ('sent', 'queued')))
+       as answer) pair
+   where t.from_kind = 'comment' and t.kind = 'delivered_to' and c.issue_key = '$key'"
+tuples_carry G12 "every part_of tuple of this run's sessions and pages carries the outbox's writer and the event that recorded it" \
+  "select format('%s:%s part_of %s:%s', t.from_kind, t.from_id, t.to_kind, t.to_id) as tuple,
+          t.who, t.source_event, t.at, '$outbox_writer'::jsonb as want_who,
+          e.id is not null as caused,
+          case when t.to_kind = 'session' then 'the receipt of an attempt the listener took against the session'
+               when t.from_kind = 'page' then 'an event published to the role or naming it'
+               else 'an event published to the role' end as cause,
+          t.at >= e.created_at as timely,
+          'no earlier than ' || coalesce(e.created_at::text, 'its event') as when_want
+   from graph_tuples t
+   left join events e on e.id = t.source_event and (
+     (t.from_kind = 'page' and t.to_kind = 'session' and t.from_id = 'session/' || t.to_id
+      and e.type = 'comment.delivery' and btrim(e.payload->>'session_id') = t.to_id
+      and e.payload->>'state' in ('sent', 'queued'))
+     or (t.to_kind = 'role' and (t.from_kind = 'session' or t.from_id = 'role/' || t.to_id)
+         and 'notifications.role.' || t.to_id = any(e.published_destinations))
+     or (t.from_kind = 'page' and t.to_kind = 'role' and t.from_id = 'role/' || t.to_id and (
+           (e.type in ('issue.created', 'issue.updated', 'issue.closed')
+            and e.payload->>'route' = 'role:' || t.to_id)
+           or (e.type in ('message.created', 'message.answered')
+               and e.payload->>'target' = 'role:' || t.to_id)
+           or (e.type = 'comment.created'
+               and e.payload->'mentions' @> jsonb_build_array(jsonb_build_object('target', 'role:' || t.to_id))))))
+   where t.kind = 'part_of'
+     and ((t.from_kind = 'page' and t.from_id in ($pages_sql))
+          or (t.from_kind = 'session' and t.from_id in ($sessions_sql)))"
+tuples_carry G12 "every held_by tuple of this run's roles carries the outbox's writer and the event that resolved it" \
+  "select format('role:%s held_by %s:%s', t.from_id, t.to_kind, t.to_id) as tuple,
+          t.who, t.source_event, t.at, '$outbox_writer'::jsonb as want_who,
+          e.id is not null as caused, 'an event published to the role' as cause,
+          t.at >= e.created_at as timely,
+          'no earlier than ' || coalesce(e.created_at::text, 'its event') as when_want
+   from graph_tuples t
+   left join events e on e.id = t.source_event
+     and 'notifications.role.' || t.from_id = any(e.published_destinations)
+   where t.kind = 'held_by' and t.from_kind = 'role' and t.from_id in ($roles_sql)"
+tuples_carry G12 "every alias_of tuple of this run's sessions carries the actor and the event of the write that proved it" \
+  "select format('session:%s alias_of %s:%s', t.from_id, t.to_kind, t.to_id) as tuple,
+          t.who, t.source_event, t.at, e.actor as want_who,
+          c.id is not null as caused,
+          'the event that stored a comment whose credential proved the session' as cause,
+          t.at >= c.created_at as timely,
+          'no earlier than ' || coalesce(c.created_at::text, 'the comment') as when_want
+   from graph_tuples t
+   left join events e on e.id = t.source_event and e.type in ('comment.created', 'comment.answered')
+   left join comments c on c.id::text = e.payload->>'id' and c.author = e.actor
+     and t.from_id in (c.author->>'id', c.author->'act'->>'session')
+   where t.kind = 'alias_of' and t.from_kind = 'session' and t.from_id in ($sessions_sql)"
 want_value G12 "no tuple of this run was written by nobody" 0 \
   "select count(*) from graph_tuples t
    join comments c on c.id::text = t.from_id

@@ -46,8 +46,8 @@ func (r *seedRun) writeDocument(ctx context.Context, tx pgx.Tx, index int) error
 	projectKey := r.plan.projects[document.Project].Key
 	created := timeAt(index, len(r.plan.documents))
 	// The document's node goes in before its row, in its project, as the server's upload writes
-	// it (api's writeObjectNodes); the seed records no event of a document, so what the node
-	// write states carries the sentinel.
+	// it (api's storeArtifact); the seed records no event of a document, so what the node write
+	// states carries the sentinel.
 	node := graphstore.ArtifactNode(graphstore.ArtifactRefKey(owner, projectKey, "", document.Slug), projectKey, "", seedAuthor, created)
 	if err := graphstore.Write(ctx, tx, []graphstore.Node{node}, nil); err != nil {
 		return fmt.Errorf("artifact node: %w", err)

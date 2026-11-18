@@ -19,7 +19,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -32,6 +31,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
+	"github.com/sjawhar/envoy/internal/fold"
 )
 
 const (
@@ -142,9 +142,10 @@ const issueUploadRoute = http.MethodPost + " /api/v1/issues/{key}/artifacts"
 // (drainBeforeAnswer), so a client that sends it whole before it reads the answer gets the
 // answer. register mounts it ahead of the keyed layer, so the refusal claims no key. The handler's
 // locked check still decides an issue that closes meanwhile; this one only spares the spool. A
-// caller that resolves to nobody is left to the route's own 401, and a malformed Idempotency-Key
-// to the keyed layer's 400, which spools no body either and refuses the request's form before
-// anything is looked up.
+// caller that resolves to nobody is left to the 401 written further in (the keyed layer's for a
+// keyed upload, the handler's for an unkeyed one), and a malformed Idempotency-Key to the keyed
+// layer's 400, which spools no body either and refuses the request's form before anything is
+// looked up.
 //
 // The refusal stands in for the handler, so it answers only a request whose handler would run. A
 // repeat under a key the keyed layer answers itself (requestKeyAnswersItself) - its first upload's
@@ -527,19 +528,52 @@ func (s *server) storeArtifact(
 			s.writeHandlerError(w, err)
 			return
 		}
-		if refKey := graphstore.ArtifactRefKey(deref(target.IssueKey), deref(project), deref(session), slug); graphstore.AddressFits(refKey) {
-			documentNode, err = graphstore.WriteUncaused(r.Context(), tx, []graphstore.Node{graphstore.ArtifactNode(
-				refKey, deref(project), deref(session), actor, time.Now().UTC())}, nil)
+		// The create's one time, read once now that this transaction holds the owner row the
+		// switch above took: its row's created_at and its node's statements are both dated with it
+		// (graphstore.StatementTime), past every statement about the address, so a read as of a
+		// time reads them in the order the store appends them. Which row the node's live statement
+		// names is read from its cause, this upload's artifact.created (graphcensus's
+		// ownLiveStatement), not from this time.
+		refKey := graphstore.ArtifactRefKey(deref(target.IssueKey), deref(project), deref(session), slug)
+		createdAt, err := graphstore.StatementTime(r.Context(), tx, graphstore.KindArtifact, refKey)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if graphstore.AddressFits(refKey) {
+			// No row stands at the address: the slug is free under the owner row this
+			// transaction holds. So a node there that is not gone stands behind no row - a
+			// document a build before this one removed, stating nothing, live or at a state a
+			// later release marked it with (graphstore.Node's Restates) - and it is stated gone
+			// before it is stated live, both under this upload's event, so the new document's
+			// node carries no statement of the removed one's as its own.
+			node := graphstore.ArtifactNode(refKey, deref(project), deref(session), actor, createdAt)
+			held, found, err := graphstore.ReadNode(r.Context(), tx, graphstore.KindArtifact, refKey)
 			if err != nil {
 				s.writeHandlerError(w, err)
 				return
 			}
+			var removed graphstore.Uncaused
+			if found && held.State != graphstore.StateGone {
+				gone := node
+				gone.State = graphstore.StateGone
+				if removed, err = graphstore.WriteUncaused(r.Context(), tx, []graphstore.Node{gone}, nil); err != nil {
+					s.writeHandlerError(w, err)
+					return
+				}
+			}
+			documentNode, err = graphstore.WriteUncaused(r.Context(), tx, []graphstore.Node{node}, nil)
+			if err != nil {
+				s.writeHandlerError(w, err)
+				return
+			}
+			documentNode.Tuples = append(removed.Tuples, documentNode.Tuples...)
 		}
 		artifact, err = scanArtifact(tx.QueryRow(r.Context(), `
-			insert into artifacts (issue_key, project_key, session_id, slug, name, kind, is_primary, role, created_by)
-			values ($1, $2, $3, $4, $5, $6, false, $7, $8)
+			insert into artifacts (issue_key, project_key, session_id, slug, name, kind, is_primary, role, created_by, created_at)
+			values ($1, $2, $3, $4, $5, $6, false, $7, $8, $9)
 			returning `+artifactColumns,
-			target.IssueKey, project, session, slug, input.name, kind, role, actorJSON))
+			target.IssueKey, project, session, slug, input.name, kind, role, actorJSON, createdAt))
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -1734,11 +1768,11 @@ func documentsNearest(reference string, documents []model.Artifact) []model.Arti
 // letters are folded because Go and JavaScript lowercase other letters differently, and
 // envoy-client's documentCloseness must rank alike.
 func documentCloseness(reference, slug, name string) (int, bool) {
-	wanted := []rune(asciiLower(reference))
+	wanted := []rune(fold.ASCII(reference))
 	limit := max(2, len(wanted)/3)
 	distance := -1
 	for _, candidate := range []string{slug, name} {
-		label := []rune(asciiLower(candidate))
+		label := []rune(fold.ASCII(candidate))
 		edits := boundedEditDistance(wanted, label, limit)
 		if (len(wanted) >= 4 && strings.Contains(string(label), string(wanted))) ||
 			(len(label) >= 4 && strings.Contains(string(wanted), string(label))) {
@@ -1754,16 +1788,6 @@ func documentCloseness(reference, slug, name string) (int, bool) {
 		return limit + 1, false
 	}
 	return distance, true
-}
-
-// asciiLower lowercases the ASCII letters of text and leaves every other character as it is.
-func asciiLower(text string) string {
-	return strings.Map(func(r rune) rune {
-		if 'A' <= r && r <= 'Z' {
-			return r + ('a' - 'A')
-		}
-		return r
-	}, text)
 }
 
 // boundedEditDistance is the Levenshtein distance between a and b in characters, or limit+1 once

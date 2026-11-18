@@ -2,9 +2,9 @@ import { createHash } from "node:crypto";
 import { createReadStream, type Dirent } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
 import { basename, isAbsolute, join, resolve } from "node:path";
-import type { CaseRow } from "./build-corpus";
+import type { CaseSeed } from "./build-corpus";
 import { RESERVE_ENDED, RESERVE_READS, type ReserveRead } from "./claim";
-import type { DispatchEvent } from "./dispatch-read";
+import type { CommentReply, DispatchEvent } from "./dispatch-read";
 
 /**
  * The reserve of INFRA-2897's next final test: the cases no command of this directory reads
@@ -25,13 +25,33 @@ import type { DispatchEvent } from "./dispatch-read";
  * released by the owner of the next round in writing (that document's "Version 1 released"):
  * version 2's item 6 takes no case that version 1 alone held, so those cases are development data.
  *
+ * Version 3 holds only the trees the final test can take. From `RESERVE_LIST_CUT` an ask is held
+ * when its tree's root, at its first opening or at the build, is not in a list registered with it:
+ * every issue of each tree that held an ask through event `RESERVE_LIST_THROUGH`, except the trees
+ * version 2 held whole (`TreeLog.reserveListOf`). The build takes that list from the log and
+ * refuses one whose sha256 is not `RESERVE_LIST_SHA256`, and records for each case whether each
+ * root is in it (`askRootListed`, `issueRootListed`). Version 2's hash picks nothing from that cut,
+ * and its cases whose root at their ask's opening is in the list are released: such a tree had an
+ * ask before version 2's cut or an ask whose root version 2 did not pick, so item 6 takes none of
+ * them.
+ *
  * A reserved tree, by its root's key, that a read has already spent is in `MOVED_TO_DEVELOPMENT`,
  * with the record of that read, and is held no more.
  *
- * `readCorpus` (`corpus-io.ts`) holds the reserved cases out of every corpus it reads, so every
- * command here skips them, unless `APPROVAL_EVAL_RESERVE` is `read:<reference>` and `claim.ts`
- * registers that reference for this run's digest (`reserveAccessOf`). Once `claim.ts` records
- * that the reserve ended, no case is held.
+ * `build-corpus.ts` writes no reserved case to the `corpus.jsonl` it builds, only their count to
+ * its `snapshot.json`, so the file itself holds none for any reader to meet, and `readCorpus`
+ * (`corpus-io.ts`) refuses every file that holds one, an older build's or the claim run's
+ * included, so no command here reads them; each does so unless `APPROVAL_EVAL_RESERVE` is
+ * `read:<reference>`, `claim.ts` registers that reference for this run's digest, and the run is
+ * the one claim run: its build is the run that the first start reply to that reference names
+ * (`claimRunOf`), and every later command names the same reply (`reserveAccessOf`, and `readCorpus`
+ * against the build's `snapshot.json`). Once `claim.ts` records that the reserve ended, no case is
+ * held.
+ *
+ * The rule itself is written once, in `reserveRuleOf`: a build reads it over the two roots it
+ * records for each case (`reserveOf`), and a scorer that meets an ask live reads it over the root
+ * Dispatch gives now (`reserve-ask.ts`), which refuses while the registration names a rule
+ * version above `RESERVE_RULE_VERSION`.
  */
 
 /** The cut: an ask that opened at or after it can be reserved by its tree. */
@@ -40,16 +60,50 @@ export const RESERVE_TREE_CUT = "2026-11-16T00:00:00Z";
 /** The text the rule appends the key of a tree's root to before it hashes it, as registered. */
 export const RESERVE_TREE_TEXT = "superfan-experiments INFRA-2897 reserve v2 2026-11-16:";
 
+/** Version 3's cut: from it, an ask is held when its tree's root is not in version 3's list. */
+export const RESERVE_LIST_CUT = "2026-11-18T00:00:00Z";
+
+/** The last event of the log whose trees and asks version 3's list is taken from. */
+export const RESERVE_LIST_THROUGH = 640951;
+
+/** The sha256 of version 3's list as registered: its keys in order, each line ending in `\n`. */
+export const RESERVE_LIST_SHA256 =
+  "5f2b4e13fa8e8fc1f20ede4eab62f770504d292564eb8bffaf855472d8ff0a79";
+
+/**
+ * The highest rule version of the registration this code implements. A rule version is a
+ * `## Version N` heading of the registration document (`RESERVE_DOCUMENT`). A live decision
+ * (`reserve-ask.ts`) refuses while that document names a higher one, so a scorer running older
+ * code holds the ask rather than applies a rule that no longer stands.
+ */
+export const RESERVE_RULE_VERSION = 3;
+
+/** The registration document, as a project document of Dispatch: its project and its slug. */
+export const RESERVE_DOCUMENT = { project: "INFRA", slug: "infra-2897-final-test-reserve-md" };
+
+/** Version 3's list as registered: a project file at one version, whose sha256 is fixed above. */
+export const RESERVE_LIST_FILE = {
+  project: "INFRA",
+  slug: "infra-2897-reserve-v3-list-txt",
+  version: 1,
+};
+
 /** The environment variable that lets a command read the reserved cases. */
 export const RESERVE_VARIABLE = "APPROVAL_EVAL_RESERVE";
 
 /**
  * The reserved trees, by their root's key, that a read has already spent, each with the record
- * that says so. The rule's fifth item moves each into the development data, whole. None yet.
+ * that says so. The rule's fifth item moves each into the development data, whole.
  */
-export const MOVED_TO_DEVELOPMENT: Readonly<Record<string, string>> = {};
+export const MOVED_TO_DEVELOPMENT: Readonly<Record<string, string>> = {
+  "INFRA-228":
+    "the answer to one question of this tree, printed by the next round's owner while counting " +
+    "the held cases between 2026-11-16T02:56:54Z and 02:58:13Z; the registration records it " +
+    "under version 2, item 5",
+};
 
 const TREE_CUT_TIME = Date.parse(RESERVE_TREE_CUT);
+const LIST_CUT_TIME = Date.parse(RESERVE_LIST_CUT);
 
 /** The hexadecimal digits that pick a key: half of the sixteen. */
 const PICKING_DIGITS = "01234567";
@@ -63,27 +117,83 @@ export function pickedRoot(rootKey: string): boolean {
 }
 
 /**
- * Whether a case is held by the reserve. An ask on no issue, or one that opened before the cut,
- * is kept; one whose opening time is missing or does not parse is placed by its answer, which
- * comes after the opening, so it may be held. On or after the cut, `unknown` is a case from a
- * corpus built before `build-corpus.ts` recorded its tree's roots, which a caller refuses;
- * otherwise the case is held when the rule picks its root at the opening or at the build (a root
- * the build could not follow is null and picks nothing), unless a read spent that tree. Once
- * `ended` names the record that ended the reserve (`claim.ts`), every case is kept.
+ * An ask's time, which every cut is read against: its first opening, or, where that is missing or
+ * does not parse, its answer, which comes after the opening.
+ */
+export function askTimeOf(row: Pick<CaseSeed, "askCreatedAt" | "answeredAt">): number {
+  const opened = Date.parse(row.askCreatedAt ?? "");
+  return Number.isNaN(opened) ? Date.parse(row.answeredAt) : opened;
+}
+
+/** The rule versions a registration document names: the N of each `## Version N` heading. */
+export function ruleVersionsOf(markdown: string): number[] {
+  return [...markdown.matchAll(/^## Version (\d+)\b/gm)].map((match) => Number(match[1]));
+}
+
+/** What the rule reads of one ask. A build reads it from the log, a live decision from Dispatch. */
+export interface ReserveFacts {
+  /** The ask's first opening, as `askTimeOf` reads it. */
+  askTime: number;
+  /** Whether the ask opened on an issue. */
+  onIssue: boolean;
+  /** Each root of the ask's tree the case is read under; null where a walk could not name one. */
+  roots: readonly (string | null)[];
+  /** Whether the root at the ask's first opening is in version 3's list. */
+  openingRootListed: boolean;
+  /** Whether every root in `roots` is in version 3's list. */
+  everyRootListed: boolean;
+}
+
+/**
+ * The registered rule over the facts of one ask, the one place it is written for every reader of
+ * this directory. An ask on no issue, or one that opened before version 2's cut, is kept, and a
+ * case is kept when a read spent its tree. Before version 3's cut a case is held when version 2's
+ * rule picks one of its roots (a root no walk could name picks nothing), unless its root at the
+ * opening is in version 3's list, which released it. From version 3's cut a case is held unless
+ * every root is in that list. Once `ended` names the record that ended the reserve (`claim.ts`),
+ * every case is kept.
+ */
+export function reserveRuleOf(
+  facts: ReserveFacts,
+  ended: string | null = RESERVE_ENDED
+): "held" | "kept" {
+  if (ended !== null || !facts.onIssue || facts.askTime < TREE_CUT_TIME) return "kept";
+  const roots = facts.roots.filter((root): root is string => root !== null);
+  if (roots.some((root) => Object.hasOwn(MOVED_TO_DEVELOPMENT, root))) return "kept";
+  if (facts.askTime >= LIST_CUT_TIME) return facts.everyRootListed ? "kept" : "held";
+  if (facts.openingRootListed) return "kept";
+  return roots.some(pickedRoot) ? "held" : "kept";
+}
+
+/**
+ * Whether a built case is held by the reserve (`reserveRuleOf`). The case is read under two
+ * roots, its tree's root at its ask's first opening and at the build's pinned event: an issue
+ * moves between trees, and a case a scorer may have skipped under either root stays out of every
+ * development read. The root at the build releases nothing: it moves with each parent change, so
+ * a tree moved under a listed issue for one build would put its cases in a development corpus and
+ * could then move back. From version 2's cut, `unknown` is a case from a corpus built before
+ * `build-corpus.ts` recorded its tree's roots, which a caller refuses. A root the build did not
+ * look up in version 3's list (an older build, or one pinned before the list's event) counts as
+ * not in it, so such a build releases nothing and holds every case from version 3's cut.
  */
 export function reserveOf(
-  row: CaseRow,
+  row: CaseSeed,
   ended: string | null = RESERVE_ENDED
 ): "held" | "kept" | "unknown" {
   if (ended !== null || row.issueKey === null) return "kept";
-  const opened = Date.parse(row.askCreatedAt ?? "");
-  if ((Number.isNaN(opened) ? Date.parse(row.answeredAt) : opened) < TREE_CUT_TIME) return "kept";
+  const askTime = askTimeOf(row);
+  if (askTime < TREE_CUT_TIME) return "kept";
   if (row.askTreeRoot === undefined || row.issueTreeRoot === undefined) return "unknown";
-  const roots = [row.askTreeRoot, row.issueTreeRoot].filter(
-    (root): root is string => root !== null
+  return reserveRuleOf(
+    {
+      askTime,
+      onIssue: true,
+      roots: [row.askTreeRoot, row.issueTreeRoot],
+      openingRootListed: row.askRootListed === true,
+      everyRootListed: row.askRootListed === true && row.issueRootListed === true,
+    },
+    ended
   );
-  if (roots.some((root) => Object.hasOwn(MOVED_TO_DEVELOPMENT, root))) return "kept";
-  return roots.some(pickedRoot) ? "held" : "kept";
 }
 
 /**
@@ -186,9 +296,10 @@ export async function bytesDigestOf(path: string): Promise<string> {
  * next argument whatever it starts with, as `parseArgs` reads it. A link in the bundle, or a file
  * option that names something other than a regular file, is refused (`DigestError`).
  *
- * What it leaves open: a registered run can be made again until the reserve ends; the files inside
- * a directory an argument names (a corpus, a draw, an `--out` that holds an earlier run's evidence
- * or answers) are not in the digest; and what the model and Dispatch servers answer is live.
+ * What it leaves open: the files inside a directory an argument names (a corpus, a draw, an `--out`
+ * that holds an earlier run's evidence or answers) are not in the digest; and what the model and
+ * Dispatch servers answer is live. A registered digest admits only the one claim run, the run its
+ * registration comment's first start reply names (`claimRunOf`), not every run made with it.
  */
 export async function runDigestOf(run: Run, root: string): Promise<string> {
   const command = basename(run.argv[1] ?? "");
@@ -299,11 +410,141 @@ export type ReserveAccess =
   | { kind: "refused"; reason: string };
 
 /**
+ * The environment variable that names the claim run: the id of the reply to the registration
+ * comment that started it (`claimRunOf`). It is outside the run digest, which is registered before
+ * the run starts.
+ */
+export const CLAIM_RUN_VARIABLE = "APPROVAL_EVAL_CLAIM_RUN";
+
+/** The words a reply to the claim's registration comment starts with to start the claim run. */
+export const CLAIM_RUN_START = "approval-eval claim run starts";
+
+/** Reads the replies to one Dispatch comment, by the comment's id (`dispatchRepliesOf`). */
+export type RepliesOf = (commentId: string) => Promise<readonly CommentReply[]>;
+
+/** The id of the comment a reference names, `dispatch://<item>/comment/<id>`, or null. */
+export function registrationCommentOf(reference: string): string | null {
+  return /^dispatch:\/\/\S+\/comment\/([^/#?\s]+)$/.exec(reference)?.[1] ?? null;
+}
+
+/**
+ * A time Dispatch recorded, in microseconds since the epoch, or null when it does not parse.
+ * Dispatch writes up to six digits of a second's fraction and drops trailing zeros, and
+ * `Date.parse` keeps three, so the digits after the third are added here.
+ */
+export function microsecondsOf(time: string): number | null {
+  const milliseconds = Date.parse(time);
+  if (Number.isNaN(milliseconds)) return null;
+  const fraction = /\.(\d+)Z$/.exec(time)?.[1] ?? "";
+  return milliseconds * 1000 + Number(`${fraction}000000`.slice(3, 6));
+}
+
+/**
+ * Whether this run is the one claim run the registered rule lets read the reserve (its item 7,
+ * "the one claim run"), when `claim.ts` registers `reference` for this run's digest. The reference
+ * names the claim's registration, a Dispatch comment. The claim run starts with a reply to that
+ * comment whose body starts with `CLAIM_RUN_START`, and the first such reply, by the time Dispatch
+ * recorded it, is the claim run: a run reads only when `APPROVAL_EVAL_CLAIM_RUN` names that reply's
+ * id. A second claim run starts with a later reply, so it is refused, and the refusal names the
+ * first, whose read spent the final test. Dispatch's API has no route that deletes a comment; a
+ * reply edited after it was written is refused whole, since an edit can change which start came
+ * first. A run that resumes the claim run names the same reply, so the code cannot tell a resume
+ * from a second run made under that id: the start reply is the record of which run read the
+ * final test. A thread Dispatch does not serve is refused too, and so are two starts at the
+ * earliest time Dispatch recorded: no order of theirs is on record.
+ *
+ * The claim run's build asks it (`build-corpus.ts`) and records the reply in `snapshot.json`;
+ * every later command of the run reads only that build's corpus, and only while
+ * `APPROVAL_EVAL_CLAIM_RUN` names the same reply (`readCorpus` in `corpus-io.ts`).
+ */
+export async function claimRunOf(
+  reference: string,
+  named: string | undefined,
+  repliesOf: RepliesOf
+): Promise<{ kind: "claim"; id: string } | { kind: "refused"; reason: string }> {
+  const comment = registrationCommentOf(reference);
+  if (comment === null) {
+    return {
+      kind: "refused",
+      reason:
+        `claim.ts registers ${reference}, which names no Dispatch comment. The claim run starts ` +
+        "with a reply to its registration comment, so a registered read names that comment " +
+        "(dispatch://<item>/comment/<id>)",
+    };
+  }
+  let replies: readonly CommentReply[];
+  try {
+    replies = await repliesOf(comment);
+  } catch (error) {
+    const why = error instanceof Error ? error.message : String(error);
+    return {
+      kind: "refused",
+      reason: `the replies to ${reference} could not be read, so no run can show it is the claim run: ${why}`,
+    };
+  }
+  const edited = replies.find((reply) => reply.edited_at !== null);
+  if (edited !== undefined) {
+    return {
+      kind: "refused",
+      reason:
+        `reply ${edited.id} to ${reference} was edited at ${edited.edited_at}, and an edit can ` +
+        "change which reply started the claim run, so no run reads the reserve under this " +
+        "registration: claim.ts registers the read anew",
+    };
+  }
+  const starts = replies
+    .filter((reply) => reply.body.trimStart().startsWith(CLAIM_RUN_START))
+    .map((reply) => ({ reply, at: microsecondsOf(reply.created_at) }));
+  const untimed = starts.find((start) => start.at === null);
+  if (untimed !== undefined) {
+    return {
+      kind: "refused",
+      reason: `start reply ${untimed.reply.id} to ${reference} has no time Dispatch recorded, so no start can be shown first`,
+    };
+  }
+  starts.sort((a, b) => (a.at ?? 0) - (b.at ?? 0));
+  const [first, next] = starts;
+  if (first === undefined) {
+    return {
+      kind: "refused",
+      reason:
+        `no claim run has started under ${reference}: reply to it with a body that starts ` +
+        `"${CLAIM_RUN_START}", then set ${CLAIM_RUN_VARIABLE} to that reply's id`,
+    };
+  }
+  if (next !== undefined && next.at === first.at) {
+    return {
+      kind: "refused",
+      reason:
+        `start replies ${first.reply.id} and ${next.reply.id} to ${reference} have the same ` +
+        `time, ${first.reply.created_at}, so no start can be shown first: claim.ts registers the ` +
+        "read anew",
+    };
+  }
+  const id = named?.trim() ?? "";
+  if (id === first.reply.id) return { kind: "claim", id };
+  const second = starts.find((start) => start.reply.id === id);
+  return {
+    kind: "refused",
+    reason:
+      `the claim run under ${reference} is reply ${first.reply.id}, started at ` +
+      `${first.reply.created_at}, and its read spent the final test: a second claim run makes it ` +
+      'development data (dispatch://INFRA-3189, "Data sets"). ' +
+      (id === ""
+        ? `${CLAIM_RUN_VARIABLE} is not set`
+        : second === undefined
+          ? `${CLAIM_RUN_VARIABLE} names ${id}, which is no start reply to it`
+          : `${CLAIM_RUN_VARIABLE} names ${id}, a later start, at ${second.reply.created_at}`),
+  };
+}
+
+/**
  * What a run may do with the reserve, from `APPROVAL_EVAL_RESERVE`'s value, the registration, the
  * run, and the repository root. A reserve that ended holds nothing, whatever the variable says.
  * With the variable unset, the reserve is held. `read:<reference>` reads it only when the
- * registration lists that reference with this run's digest. Any other value is refused, and a
- * refusal of a reference names the run's digest, which is what a registration copies.
+ * registration lists that reference with this run's digest; the build then asks whether the run
+ * is the one claim run (`claimRunOf`). Any other value is refused, and a refusal of a reference
+ * names the run's digest, which is what a registration copies.
  */
 export async function reserveAccessOf(
   value: string | undefined,
