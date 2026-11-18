@@ -39,6 +39,15 @@ type LeakCheckReader interface {
 type launchers struct {
 	mu       sync.Mutex
 	sessions map[claim.Token]*launcherSession
+	// held is, per issue, the last send of a saved copy of the issue's workspace that the pod's
+	// launcher answered Held (heldCopy), so a later role start of a launcher process that holds
+	// the copy neither takes nor sends it again (restoreWorkspace). Guarded by mu, as sessions is.
+	held map[string]heldCopy
+	// hops is, per issue, the turn of the one restore hop of that issue that may run at a time
+	// (restoreWorkspace): a channel of one slot, so a start waiting for its turn gives up within a
+	// bound rather than for ever. Guarded by mu; one per issue, so it grows only with the issues,
+	// as held does.
+	hops map[string]chan struct{}
 
 	// leakCheck reads the shared public leak check a launcher's hello names (Options.LeakCheck);
 	// nil is a daemon that runs with no GitHub App to read it with. leakCheckHop bounds one push
@@ -84,10 +93,77 @@ type launcherSession struct {
 	leakCheckInstalled bool
 }
 
+// heldCopy is one send of an issue's saved workspace copy that the pod's launcher answered Held:
+// the pod it was sent to, the restore id it carried, and the LauncherID of each launcher session
+// of that pod connected when the answer came.
+//
+// A pod's `roles` container runs one launcher process, which holds a connection of its own to
+// the daemon per role, each with a LauncherID of its own that the process mints at its start and
+// keeps across its reconnects (internal/launcher's newManagers), and which holds one restore for
+// all of its roles (internal/launcher's bundleRestore): what one role's connection was sent whole,
+// the process applies at its first start of any role. So the sessions of the pod connected when
+// the launcher answered Held are the process that holds the copy, or an earlier process of the
+// pod that has ended, whose ids no connection says again. A role start whose session's LauncherID
+// is in the set is one of that process, and the copy is in its hands: the start takes nothing of
+// the issue's copies and sends nothing, where before every role start of the pod took the copy
+// again under the issue's copy lock and streamed every slice to a launcher that answered each
+// from its own record. A session not in the set takes again as it always did: a restarted
+// container, whose new process brings new ids for every role; a session that connected after the
+// answer, which its process answers from its own record without a second restore; and every
+// session after a daemon restart, which held this record in memory alone. What the store answers
+// such a take decides whether anything is sent, as it always has
+// (store.TakeWorkspaceCopyForRestore).
+//
+// It is recorded only on Held, so a send that failed records nothing, and each issue keeps one,
+// replaced by the next send its launcher held, so the record grows only with the issues the
+// daemon has sent a copy for.
+type heldCopy struct {
+	podUID    string
+	restore   int64
+	launchers map[string]bool
+}
+
 func newLaunchers(leakCheck LeakCheckReader, saved runtime.SavedWorkspaceBundle, restored runtime.WorkspaceBundleRestored,
 	guardKilled runtime.MemoryGuardKilled, log *slog.Logger) *launchers {
-	return &launchers{sessions: map[claim.Token]*launcherSession{}, leakCheck: leakCheck, leakCheckHop: leakCheckHopBound,
-		saved: saved, restored: restored, guardKilled: guardKilled, log: log}
+	return &launchers{sessions: map[claim.Token]*launcherSession{}, held: map[string]heldCopy{}, hops: map[string]chan struct{}{},
+		leakCheck: leakCheck, leakCheckHop: leakCheckHopBound, saved: saved, restored: restored, guardKilled: guardKilled, log: log}
+}
+
+// holdsCopy is the send of issue's copy that the launcher process of session already holds, and
+// whether it holds one: the issue's heldCopy is of session's pod and names session's LauncherID.
+func (d *launchers) holdsCopy(issue string, session *launcherSession) (heldCopy, bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	held, ok := d.held[issue]
+	return held, ok && held.podUID == session.podUID && held.launchers[session.id]
+}
+
+// heldBy records that the launcher of podUID answered Held to the send of issue's copy under
+// restore: the LauncherID of every session of that pod the daemon holds now, replacing whatever
+// the issue held before (heldCopy).
+func (d *launchers) heldBy(issue, podUID string, restore int64) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	launchers := map[string]bool{}
+	for _, s := range d.sessions {
+		if s.issue == issue && s.podUID == podUID {
+			launchers[s.id] = true
+		}
+	}
+	d.held[issue] = heldCopy{podUID: podUID, restore: restore, launchers: launchers}
+}
+
+// hopOf is issue's restore hop turn (launchers.hops), made the first time a start of the issue
+// asks for it.
+func (d *launchers) hopOf(issue string) chan struct{} {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	hop, ok := d.hops[issue]
+	if !ok {
+		hop = make(chan struct{}, 1)
+		d.hops[issue] = hop
+	}
+	return hop
 }
 
 // accept registers a launcher connection of the pod of issue. The newest authenticated connection
@@ -481,6 +557,18 @@ const withheldBranchLine = "launcher bundle: the saved workspace copy's own valu
 // applies it.
 const reachedLine = "launcher bundle: the issue's saved workspace work reached the pod that restores it"
 
+// alreadyHeldLine is the line a role start whose launcher process already holds the copy its pod
+// was sent is logged with (heldCopy): the start takes nothing of the issue's copies and sends
+// nothing, and the process applies the copy it holds at its first start of any role. It names the
+// restore id of the copy that process holds.
+const alreadyHeldLine = "launcher bundle: this role's launcher process already holds the saved workspace copy its pod was sent, so this role start neither takes the issue's copies nor sends the copy again"
+
+// hopTurnLine is the warning a role start is logged with when another start's restore hop of the
+// same issue held the issue's one turn (hopOf) past the bound this start waits for it
+// (bundleRestoreBound): this start takes and sends nothing and goes on with its start, and the
+// launcher holds whatever the hop before it sent.
+const hopTurnLine = "launcher bundle: another role start's restore of this issue held its turn past the hop's bound, so this role start takes and sends nothing"
+
 // restoreFailedLine is the warning a launcher's report of a restore that failed is logged with.
 // The copy stays in the daemon's database, but a running copy only until the next copy of the
 // issue's workspace replaces it, which the line says so that an operator who wants its bytes reads
@@ -533,6 +621,22 @@ const restoreFailedLine = "launcher bundle: the pod's launcher could not restore
 // pod of the issue is sent the copy. That line is Info, since no work is lost; the refusal of a
 // running copy older than a recorded push is this hop's warning an operator must read — the work
 // is in the database and no pod will put it back on its own.
+//
+// A start whose launcher process already holds the copy, because a role of the same process was
+// sent it and that process answered Held, takes and sends nothing (heldCopy, holdsCopy): its pod
+// starts up to six roles, and the copy is the process's, not the role's. Every other start takes
+// as above, a restarted container's and every start after a daemon restart among them, and a Held
+// answer records the sessions of the pod connected then (heldBy).
+//
+// The hops of one issue run one at a time (hopOf), the take, the send and the record of a Held
+// answer all inside one turn: a replacement pod starts its roles together, and without the turn
+// each start would take and send the copy before any of them was answered Held. A start that
+// waited reads the record of who holds the copy once the turn is its own, so it sees what the hop
+// before it recorded and skips where its launcher process holds the copy now. The wait for the
+// turn is bounded as the hop is (bundleRestoreBound), and a start that outwaits it takes and sends
+// nothing and goes on with its start. Nothing a hop waits on waits on another start: the take is
+// the store's, the slices are answered by the launcher's frame loop, and the report of a restore
+// is read there too (restoreReported), outside any turn.
 func (d *launchers) restoreWorkspace(ctx context.Context, token claim.Token, podUID string) {
 	if d.saved == nil || d.restored == nil {
 		return
@@ -544,6 +648,20 @@ func (d *launchers) restoreWorkspace(ctx context.Context, token claim.Token, pod
 		return
 	}
 	issue := session.issue
+	waiting, stopWaiting := context.WithTimeout(ctx, bundleRestoreBound)
+	defer stopWaiting()
+	hop := d.hopOf(issue)
+	select {
+	case hop <- struct{}{}:
+	case <-waiting.Done():
+		d.log.Warn(hopTurnLine, "issue", issue, "launcher", token, "pod", podUID, "error", waiting.Err())
+		return
+	}
+	defer func() { <-hop }()
+	if held, ok := d.holdsCopy(issue, session); ok {
+		d.log.Info(alreadyHeldLine, "issue", issue, "launcher", token, "pod", podUID, "restore", held.restore)
+		return
+	}
 	restoring, cancel := context.WithTimeout(ctx, bundleRestoreBound)
 	defer cancel()
 	restore, err := d.saved(restoring, issue, podUID)
@@ -615,7 +733,10 @@ func (d *launchers) restoreWorkspace(ctx context.Context, token claim.Token, pod
 		// is then in the daemon's database alone, which is where the launcher's notice says it is.
 		// The copy is spent once a role of this pod registers, and no pod is sent it after that;
 		// a release bundle stays until the issue's work is over, and a running copy until the
-		// next copy of the issue's workspace replaces its row.
+		// next copy of the issue's workspace replaces its row. The launcher process holds it for
+		// every role it serves, so the sessions of this pod connected now are recorded as holding
+		// it, and a later start on one of them sends it nothing (heldCopy).
+		d.heldBy(issue, podUID, bundle.Release)
 		d.log.Info(reachedLine,
 			"issue", issue, "launcher", token, "copy", kind, "taken", bundle.At,
 			"bytes", len(bundle.Bundle), "slices", len(frames), "restore", bundle.Release)

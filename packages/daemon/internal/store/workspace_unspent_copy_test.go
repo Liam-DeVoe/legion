@@ -319,3 +319,45 @@ func TestAnUnspentCopyRestoredIsKeptAsItsPodsOwnAndAMissingAskReadsAsSpent(t *te
 		})
 	}
 }
+
+// rollbackStatements are what docs/kubernetes.md's "Rolling back the running copy" has an
+// operator run against the database, with this release's daemon stopped, before the earlier
+// daemon runs: the running copies deleted, and every pod that asked for a restore marked as one
+// where a role registered, since a role that registers under the earlier daemon is recorded by
+// none (migrations' 20261114090103_workspace_restore_asks).
+const rollbackStatements = `delete from workspace_running_copies;
+update workspace_restore_asks set registered_at = first_asked_at where registered_at is null;`
+
+// A copy sent to a pod before the rollback, before any role of that pod registered, is spent once
+// the rollback's statements have run, as the earlier daemon's rule has every sent copy spent. The
+// pod's roles register under the earlier daemon, which records nothing, so without the statement a
+// release bundle the rollback keeps would read as unspent after the roll forward and be sent again
+// to that pod's restarted roles container, over the work its roles did, and to the pod after it.
+// The running copy is gone with its table's rows. A pod that first asks after the roll forward is
+// held to this release's rule from its first ask: a copy sent to it stays unspent for its
+// restarted container until a role of it registers.
+func TestAnUnspentCopySentBeforeARollbackIsSpentByTheRollback(t *testing.T) {
+	ctx := context.Background()
+	s := migratedStore(t)
+	for i, kind := range unspentCopyKinds {
+		t.Run(kind.name, func(t *testing.T) {
+			issue := []string{"INFRA-3151", "INFRA-3152"}[i]
+			saved := unspentCopyWork("PACK the work sent before the rollback")
+			saveUnspentCopy(t, s, kind, issue, saved)
+			requireSent(t, "pod-a before the rollback", askFor(t, s, issue, "pod-a").Of(kind.copies.kind), saved)
+
+			if _, err := s.Pool().Exec(ctx, rollbackStatements); err != nil {
+				t.Fatalf("run the rollback's statements: %v", err)
+			}
+			// The earlier daemon runs, pod-a's roles register under it, and the roll forward
+			// follows; then pod-a's roles container restarts and pod-b replaces pod-a.
+			requireNothing(t, "pod-a's restarted container after the roll forward", askFor(t, s, issue, "pod-a").Of(kind.copies.kind))
+			requireNothing(t, "pod-b after the roll forward", askFor(t, s, issue, "pod-b").Of(kind.copies.kind))
+
+			later := unspentCopyWork("PACK the work saved after the roll forward")
+			saveUnspentCopy(t, s, kind, issue, later)
+			requireSent(t, "pod-c, which first asks after the roll forward", askFor(t, s, issue, "pod-c").Of(kind.copies.kind), later)
+			requireSent(t, "pod-c's restarted container", askFor(t, s, issue, "pod-c").Of(kind.copies.kind), later)
+		})
+	}
+}

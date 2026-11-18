@@ -119,6 +119,10 @@ func TestKubernetesDocStatesWhatEachKindOfPodEndLosesAndKeeps(t *testing.T) {
 			{Fact: "that the disk goes with the pod", Phrase: "The disk goes with the pod"},
 			{Fact: "that the newer saved copy comes back", Phrase: "the newer of the issue's two saved copies"},
 			{Fact: "that the roles keep their sessions and are charged nothing", Phrase: "charged no death"},
+			{Fact: "that the kubelet's evictions for the pod's own use are still counted",
+				Phrase: "except for the kubelet's evictions for the pod's own use, which are counted as a stop of each role's process"},
+			{Fact: "which those are: the pod's own disk, and its own memory or ephemeral storage over its request",
+				Phrase: "one for the pod's own disk, and one for its own memory or ephemeral storage over its request"},
 			{Fact: "what no copy holds", Phrase: "What no copy holds goes with the disk"},
 		}},
 		{"an idle release", []testdoc.Fact{

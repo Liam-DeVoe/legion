@@ -1313,25 +1313,22 @@ type Machine struct {
 	// death is the claim's own and durable, because a restart must not charge it again
 	// (Claim.DeathCharged).
 	processGone bool
-	// goneOutOfMemory is whether the report that set processGone found that process's pod ended
-	// for running out of memory (runtime.Observation.OutOfMemory), and false wherever processGone
-	// is: written and cleared with it (reportedProcess, letGo). It is kept for the one path that
-	// takes the dead turn's task back after the report rather than at it — a suspension that
-	// reaches the claim over that process (suspendOverADeadProcess) — so the task goes back with
-	// the note the death would have given it (interrupted, outOfMemoryTask). It is memory only,
-	// as processGone is, and for the same reason.
-	goneOutOfMemory bool
 	// goneDeath is the runtime's observation of the death the report that set processGone found,
-	// and the zero value wherever processGone is false: written and cleared with it. It is kept
-	// for the same suspension, which records the dead process's end as the death it is under
-	// that observation's account (recordEnd, endDied) once the dead turn's task is taken back,
-	// unless a death died judged already recorded it, so the task is sent again saying why its
-	// process died rather than that a suspension ended it: the sentence in front of it reads that
-	// record, its own while the record is untold (relaunchSentence) and the record's cause once it
-	// is told (interruptedTask, EndedWork.Cause). Before the take-back the suspension also puts
-	// the death's cause on the claim as died would have (deathCause, Claim.LastDeathCause), which
-	// the operator's listing and a failed claim's notices read, and it puts back the cause the
-	// claim held when the take-back's write fails (suspendOverADeadProcess).
+	// and the zero value wherever processGone is false: written and cleared with it
+	// (reportedProcess, letGo). It is kept for the one path that takes the dead turn's task back
+	// after the report rather than at it — a suspension that reaches the claim over that process
+	// (suspendOverADeadProcess) — so the task goes back with the note the death would have given
+	// it where its pod ran out of memory (runtime.Observation.OutOfMemory: interrupted,
+	// outOfMemoryTask), and the suspension records the dead process's end as the death it is
+	// under that observation's account (recordEnd, endDied) once the dead turn's task is taken
+	// back, unless a death died judged already recorded it, so the task is sent again saying why
+	// its process died rather than that a suspension ended it: the sentence in front of it reads
+	// that record, its own while the record is untold (relaunchSentence) and the record's cause
+	// once it is told (interruptedTask, EndedWork.Cause). Before the take-back the suspension also
+	// puts the death's cause on the claim as died would have (deathCause, Claim.LastDeathCause),
+	// which the operator's listing and a failed claim's notices read, and it puts back the cause
+	// the claim held when the take-back's write fails. It is memory only, as processGone is, and
+	// for the same reason.
 	goneDeath runtime.Observation
 	// previous is the incarnation the claim last ran and no longer records — stopped by a
 	// suspension, retired, failed on, or found dead — which every launch of the same session hands
@@ -2894,7 +2891,7 @@ func (m *Machine) died(ctx context.Context, observation runtime.Observation) err
 		"detail", observation.Detail, "chargedBefore", m.claim.DeathCharged)
 	m.claim.LastDeathCause = deathCause(observation)
 	ended := endDied(observation)
-	m.recordGoneEnd(ctx, ended, m.keepsDeathRecord(observation))
+	m.recordGoneEnd(ctx, ended, observation.Cause.Kind)
 	m.sessionGone()
 	if err := m.interrupted(ctx, "the process died in the task's turn", observation.OutOfMemory); err != nil {
 		return err
@@ -3182,7 +3179,7 @@ func (m *Machine) retire(ctx context.Context, cause string) error {
 // with the process too (cutTurnOf), and so do the marks of the sentences a prompt to it carried
 // (carried): the next process has been sent nothing yet.
 func (m *Machine) letGo(ctx context.Context, cause string) {
-	m.recordEnd(ctx, cause, false)
+	m.recordEnd(ctx, cause, "")
 	m.disarmAll()
 	m.relaunch = nil
 	m.wake = nil
@@ -3193,7 +3190,7 @@ func (m *Machine) letGo(ctx context.Context, cause string) {
 	m.busyTurn = false
 	m.turnsDelivery, m.cutTurnOf, m.carried = "", "", sentences{}
 	m.compacting, m.lostCompaction = nil, nil
-	m.processGone, m.goneOutOfMemory, m.goneDeath, m.claim.DeathCharged = false, false, runtime.Observation{}, false
+	m.processGone, m.goneDeath, m.claim.DeathCharged = false, runtime.Observation{}, false
 	if enrollment := ClearEnrollment(&m.claim); enrollment != nil {
 		m.revoke(*enrollment)
 	}
@@ -3311,11 +3308,11 @@ func (m *Machine) judge(ctx context.Context, observation runtime.Observation, al
 // claim's process reads it (processReadOf), so the machine and its callers group the kinds
 // one way.
 //
-// A verdict that found the process gone records, beside that, whether its pod ran out of memory
-// (goneOutOfMemory) and the runtime's observation of the death (goneDeath), for the suspension
-// that takes the dead turn's task back later (suspendOverADeadProcess). A verdict that found the
-// process running clears both, the stale address among them: that process is alive, holding an
-// address a process launched now is not handed (repoint), and the relaunch it raises can be
+// A verdict that found the process gone records, beside that, the runtime's observation of the
+// death (goneDeath), whether its pod ran out of memory included, for the suspension that takes the
+// dead turn's task back later (suspendOverADeadProcess). A verdict that found the process running
+// clears both, the stale address among them: that process is alive, holding an address a process
+// launched now is not handed (repoint), and the relaunch it raises can be
 // refused at its turn exactly as a death's can — read as gone, such a claim would be refused "its
 // process is gone" while its live process ran a turn of its own. A runtime that could not answer
 // says nothing either way, so an uncertain verdict leaves what the last answer found standing
@@ -3328,10 +3325,10 @@ func (m *Machine) judge(ctx context.Context, observation runtime.Observation, al
 func (m *Machine) reportedProcess(observation runtime.Observation) (clearedCharge bool) {
 	switch processReadOf(observation.Kind) {
 	case ProcessGone:
-		m.processGone, m.goneOutOfMemory, m.goneDeath = true, observation.OutOfMemory, observation
+		m.processGone, m.goneDeath = true, observation
 	case ProcessRuns:
 		clearedCharge = m.claim.DeathCharged
-		m.processGone, m.goneOutOfMemory, m.goneDeath, m.claim.DeathCharged = false, false, runtime.Observation{}, false
+		m.processGone, m.goneDeath, m.claim.DeathCharged = false, runtime.Observation{}, false
 	}
 	return clearedCharge
 }

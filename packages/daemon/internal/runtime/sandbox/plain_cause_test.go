@@ -3,9 +3,9 @@ package sandbox
 // What the runtime reads of the cause of a death the daemon tells in plain words
 // (runtime.Observation.Cause, dispatch://INFRA-1117 R9): the memory limit of a `roles` container
 // the kubelet ended OOMKilled, the container, use and request a node-pressure eviction's message
-// names over its request, and the disk limit of an eviction for the pod's own disk. Each number is
-// read where the end is, so the claims of the pod carry it whether or not the pod is still in the
-// store when they are checked.
+// names over its memory or its ephemeral-storage request, and the disk limit of an eviction for
+// the pod's own disk. Each number is read where the end is, so the claims of the pod carry it
+// whether or not the pod is still in the store when they are checked.
 
 import (
 	"reflect"
@@ -62,9 +62,12 @@ func (g *rig) leaveTheStore() {
 // an emptyDir's sizeLimit (upstream's podEphemeralStorageMessageFmt,
 // containerEphemeralStorageMessageFmt and emptyDirMessageFmt). The death is marked as disk with that
 // limit, and still is when the pod has left the store before the claim is checked, since the
-// message leaves with the pod. A message that names no limit falls back to the limit the pod's
-// spec holds it to; a node's refusal at admission, which carries the same reason and no condition,
-// passed no limit and is marked with none. Each end is read neither way, so it is still charged.
+// message leaves with the pod. A message that names ephemeral storage and no limit falls back to
+// the limit the pod's spec holds it to. A message that shows no disk end is marked with no cause:
+// a node's refusal at admission, which carries the same reason and no condition and passed no
+// limit, and a node-pressure eviction for memory whose kubelet wrote no DisruptionTarget
+// condition, which is no end of the pod's disk and must not be told as one with the spec's limit.
+// Each end is read neither way, so it is still charged.
 func TestPlainCauseADiskEvictionIsMarkedWithTheLimitThePodPassed(t *testing.T) {
 	for _, tc := range []struct {
 		name, message string
@@ -76,9 +79,11 @@ func TestPlainCauseADiskEvictionIsMarkedWithTheLimitThePodPassed(t *testing.T) {
 			want: runtime.DeathCause{Kind: runtime.DeathDiskLimit, Limit: bytesOf("40Gi")}},
 		{name: "an emptyDir's sizeLimit", message: `Usage of EmptyDir volume "role-homes" exceeds the limit "4Gi". `,
 			want: runtime.DeathCause{Kind: runtime.DeathDiskLimit, Limit: bytesOf("4Gi")}},
-		{name: "a message naming no limit, read from the spec",
+		{name: "a message naming ephemeral storage and no limit, read from the spec", message: lowOnDisk,
 			want: runtime.DeathCause{Kind: runtime.DeathDiskLimit, Limit: bytesOf("80Gi")}},
 		{name: "a node's refusal at admission", message: "The node had condition: [DiskPressure]. "},
+		{name: "a node-pressure memory message with no disruption target",
+			message: lowOnMemory + "Container roles was using 9437188Ki, request is 8Gi, has larger consumption of memory. "},
 	} {
 		for _, gone := range []bool{false, true} {
 			name := tc.name
@@ -211,6 +216,59 @@ func TestPlainCauseANodePressureEvictionNamingThisPodsContainerIsItsOwnMemoryUse
 			if tc.intended {
 				g.r.meanToEndPod(recorded, act)
 			}
+			status := endedPodStatus(evictedReason, disruptionTarget("TerminationByKubelet"))
+			status.Message = tc.message
+			g.update(g.pod(SandboxName(workerToken)), func(p *corev1.Pod) { p.Status = status })
+			if end := g.podEndHeld(recorded); end.reading != tc.reading {
+				t.Fatalf("read %+v of the evicted pod, want the reading %q", end, tc.reading)
+			}
+			if tc.gone {
+				g.leaveTheStore()
+			}
+
+			obs := g.observed(rolesLocator(workerToken, recorded))
+
+			if obs.Kind != runtime.Gone || obs.PodEnd != tc.reading || obs.Cause != tc.want {
+				t.Fatalf("observed %s PodEnd=%q Cause=%+v (%s), want Gone PodEnd=%q with the cause %+v",
+					obs.Kind, obs.PodEnd, obs.Cause, obs.Detail, tc.reading, tc.want)
+			}
+		})
+	}
+}
+
+// lowOnDisk is the start of the message the kubelet's eviction manager writes on a pod it evicts
+// for node disk pressure, built as lowOnMemory is: upstream's nodeLowMessageFmt for
+// ephemeral-storage and thresholdMetMessageFmt, each sentence ending in a space.
+const lowOnDisk = "The node was low on resource: ephemeral-storage. Threshold quantity: 10Gi, available: 3Gi. "
+
+// An eviction for node disk pressure carries the DisruptionTarget condition whoever's disk filled
+// the node, and its message names each container of the evicted pod using more ephemeral storage
+// than it requested, the container's own writable layer and logs (upstream's containerMessageFmt
+// with ephemeral-storage). One that names a container of this pod is the pod's own disk use: it is
+// read neither way, so it is charged, and the death carries that container, its use and its
+// request as the message gives them, the pod gone from the store or not. One whose message names
+// no container of this pod is a neighbour's, read as an end from outside the pod and continued
+// with no cause, and so is one whose pod filled an emptyDir volume, whose use the message names
+// no container for.
+func TestPlainCauseADiskPressureEvictionNamingThisPodsContainerIsItsOwnDiskUse(t *testing.T) {
+	const overRequest = "Container roles was using 7Gi, request is 6Gi, has larger consumption of ephemeral-storage. "
+	ownUse := runtime.DeathCause{Kind: runtime.DeathDiskRequest, Container: runtime.IssuePodContainer,
+		Use: bytesOf("7Gi"), Request: bytesOf("6Gi")}
+	for _, tc := range []struct {
+		name, message string
+		gone          bool
+		reading       runtime.PodEndReading
+		want          runtime.DeathCause
+	}{
+		{name: "the message names this pod's container over its request", message: lowOnDisk + overRequest, want: ownUse},
+		{name: "the same, the pod gone from the store", gone: true, message: lowOnDisk + overRequest, want: ownUse},
+		{name: "the message names a container that is not this pod's",
+			message: lowOnDisk + "Container planner was using 12Gi, request is 1Gi, has larger consumption of ephemeral-storage. ",
+			reading: runtime.PodEndNotOurs},
+		{name: "the pod's disk use was in an emptyDir, which names no container", message: lowOnDisk, reading: runtime.PodEndNotOurs},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := reservedIssuePod(t, rolesReservation())
 			status := endedPodStatus(evictedReason, disruptionTarget("TerminationByKubelet"))
 			status.Message = tc.message
 			g.update(g.pod(SandboxName(workerToken)), func(p *corev1.Pod) { p.Status = status })

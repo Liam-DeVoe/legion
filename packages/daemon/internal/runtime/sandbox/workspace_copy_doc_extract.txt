@@ -1,12 +1,13 @@
-# A copy of the seven regions of docs/kubernetes.md that this package's workspace_copy_doc_test.go
-# holds to the runtime's annotations and pod-end reasons, each in the guide's own bytes and none of
-# the prose around it, in the guide's order: the stop-eviction annotations of a microVM issue pod
-# in "Issue pods in microVMs", the extended-run-time annotation's bullet of "Anatomy of a Sandbox
-# pod", the annotation's sentences of the burst paragraph in "Issue sizing: one reservation per
-# pod", the paragraphs under **An end from outside the pod.** in "The disk dies with its pod", the
-# two-kinds paragraphs and the AWS paragraph of "The copy of a running pod's workspace", and the
-# controller pod's annotations in "Daemon-launched controller". A region is every line of the guide
-# from the one holding its start marker through the one its end marker finishes on.
+# A copy of the eight regions of docs/kubernetes.md that this package's workspace_copy_doc_test.go
+# holds to the runtime's annotations, pod-end reasons and restore record, each in the guide's own
+# bytes and none of the prose around it, in the guide's order: the stop-eviction annotations of a
+# microVM issue pod in "Issue pods in microVMs", the extended-run-time annotation's bullet of
+# "Anatomy of a Sandbox pod", the annotation's sentences of the burst paragraph in "Issue sizing:
+# one reservation per pod", the paragraphs under **An end from outside the pod.** in "The disk dies
+# with its pod", the two-kinds paragraphs and the AWS paragraph of "The copy of a running pod's
+# workspace", the database step of "Rolling back the running copy", and the controller pod's
+# annotations in "Daemon-launched controller". A region is every line of the guide from the one
+# holding its start marker through the one its end marker finishes on.
 #
 # The guide still answers for the runtime, in two halves. This package's
 # workspace_copy_doc_test.go reads each region out of this copy through internal/testdoc and holds
@@ -41,7 +42,7 @@ to: with no death charged
     An issue pod given a lower `cpu_request` or `memory_request` is `Burstable` and carries the annotation not at all:
     it asks GKE Autopilot for no extended run time, so Autopilot gives it no node of its own, and the pod shares a node and bursts ([Issue sizing](#issue-sizing-one-reservation-per-pod), "Guaranteed or Burstable").
     What such a pod gives up is the seven-day protection, since the cluster may end it to repack a node;
-    what it keeps is its work and its roles, because the daemon holds a copy of each issue workspace outside the pod and continues every role of a pod the cluster ended in that role's own session, with no death charged and no launch failure, however often the cluster ends it, except for an `Evicted` end with no `DisruptionTarget` condition, which is not read as an end from outside the pod and is counted as a stop of each role's process ([The copy of a running pod's workspace](#the-copy-of-a-running-pods-workspace), [The disk dies with its pod](#the-disk-dies-with-its-pod), "An end from outside the pod");
+    what it keeps is its work and its roles, because the daemon holds a copy of each issue workspace outside the pod and continues every role of a pod the cluster ended in that role's own session, with no death charged and no launch failure, however often the cluster ends it, except for the pod's own ends, an `Evicted` end with no `DisruptionTarget` condition and a node-pressure eviction whose kubelet message names a container of the pod using more memory, or more ephemeral storage, than it requested, which are not read as ends from outside the pod and are counted as a stop of each role's process ([The copy of a running pod's workspace](#the-copy-of-a-running-pods-workspace), [The disk dies with its pod](#the-disk-dies-with-its-pod), "An end from outside the pod", which also says what becomes of disk use in the pod's `emptyDir` volumes);
 
 from: An issue pod carries `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"` only while
 to: rather than into a node of its own.
@@ -64,7 +65,7 @@ Two readings say something outside the pod ended it:
 - the pod ended carrying a `DisruptionTarget` condition, which the control plane and the kubelet set on a pod they are ending, or with one of three reasons on its own status:
   `Terminated`, `NodeShutdown` or `Preempted` (`clusterEndedReasons`, `pod_end.go`).
   A pod whose status reason is `Evicted` is such an end only with the condition, which the kubelet sets when it evicts a pod because its node is under pressure.
-  An eviction for node memory pressure whose kubelet message names a container of the pod using more memory than it requested is not such an end, though it carries the condition (below).
+  An eviction for node memory or disk pressure whose kubelet message names a container of the pod using more memory, or more ephemeral storage, than it requested is not such an end, though it carries the condition (below).
 
 A pod already terminal, in the phase the kubelet sets on a pod it has ended, is read from its status alone, and a deletion timestamp counts only on a pod not yet terminal.
 So a failed pod the cluster did not end is counted as a stop of each role's process whether the controller's delete of it reaches the daemon in the same event as the failure or in a later one, and a deletion the daemon saw first on the running pod stays an end from outside it when the pod then turns terminal.
@@ -76,7 +77,7 @@ An end of either reading costs its roles nothing, however often it comes.
 The daemon continues each role of that pod in that role's own session, charges no death and no launch failure, and sends each role the task it owed again.
 The turn each role was in is lost with the pod, and the task goes back to waiting until that session resumes.
 The daemon keeps no count of these ends, so the tenth in a row costs a role what the first did, whether its agent was ready or still starting and whatever work it held.
-So a pod evicted because a neighbour's memory use drove its node into pressure restarts free each time, since that eviction carries `DisruptionTarget` and its message names no container of the pod over its request.
+So a pod evicted because a neighbour's memory or disk use drove its node into pressure restarts free each time, since that eviction carries `DisruptionTarget` and its message names no container of the pod over its request.
 That is chosen: the role cannot fix a cause outside its pod, and charging such ends at a limit would only turn a loop of restarts into a claim that runs nothing.
 Such an end ends the turn it interrupted, as a charged death does, since the agent that turn belonged to is gone and never ends it, so a later death of the relaunched agent is not charged against that turn.
 Each claim writes its own line for what it got, at info:
@@ -88,8 +89,13 @@ After a ready, a stop of a role that held neither is restarted with no limit, wh
 `Evicted` with no `DisruptionTarget` condition is such an end:
 the kubelet gives that reason, and no condition, to a pod that went over its own ephemeral-storage limit, a container's ephemeral-storage limit or an `emptyDir`'s `sizeLimit`, and the pod that replaces it runs the same task into the same limit.
 An eviction for node memory pressure whose kubelet message names a container of the pod using more memory than it requested is such an end too, though it carries the condition:
-the kubelet evicts the pods using more than their request before any pod within its own, so that pressure was the pod's own memory use, and the pod that replaces it runs the same task into the same pressure (`memoryOverRequest`, `pod_end.go`).
+the kubelet evicts the pods using more than their request before any pod within its own, so that pressure was the pod's own memory use, and the pod that replaces it runs the same task into the same pressure (`overRequest`, `pod_end.go`).
 The message names each such container in the words `Container roles was using 9437188Ki, request is 8Gi, has larger consumption of memory.`, and an eviction whose message names no container of the pod's own spec is a neighbour's, read as an end from outside the pod and continued.
+An eviction for node disk pressure whose kubelet message names a container of the pod using more ephemeral storage than it requested is such an end too, for the same reason:
+its message names each such container in the words `Container roles was using 7Gi, request is 6Gi, has larger consumption of ephemeral-storage.`, counting as the container's use its own disk, its writable layer and its logs, and never `$TMPDIR`, which is on the issue's volume.
+Disk use in the pod's `emptyDir` volumes on the node's disk — each role's home, `/tmp` and `/var/tmp`, all on the role homes volume, and, where the deployment runs them, the test database and the skills clone — names no container in that message.
+So on a pod whose ephemeral-storage request is below its limit, as at the daemon's defaults of a 6Gi request under an 80Gi limit, a node disk-pressure eviction of such use is read as a neighbour's and continued with no limit, each time on a new pod whose `emptyDir` volumes start empty.
+A pod whose ephemeral-storage request equals its limit is evicted by that limit first, since the pod's limit counts its `emptyDir` volumes too, and that end, `Evicted` with no `DisruptionTarget` condition, is charged as above.
 An end the daemon itself started is its own whatever the pod's status says, so a pod the daemon is releasing that the kubelet then evicts continues no role.
 A reason outside the cluster's three is such an end too, `UnexpectedAdmissionError` among them:
 a node refused that pod before it ran, the pod that replaces it would meet the same refusal, and an end the daemon waived would be relaunched for ever.
@@ -202,6 +208,35 @@ to: and no repacking of its pods.
 `karpenter.sh/do-not-disrupt` is the AWS scheduler's annotation, and every Legion pod carries it whatever its reservation.
 Karpenter therefore consolidates and drifts no node a Legion pod runs on, as before this release.
 So an AWS deployment gains the copy and the uncharged resume from this change, and no repacking of its pods.
+
+from: Stop this release's daemon, and before the earlier daemon runs
+to: so this release's rule holds for it from that ask.
+Stop this release's daemon, and before the earlier daemon runs, delete the rows of `workspace_running_copies` and mark every pod that asked for a restore as one where a role registered.
+A rollback past idle release also runs the `delete from workspace_bundles;` of [Rolling back idle release](#rolling-back-idle-release); a rollback to a release that has idle release keeps the release bundles, which this step is for as well.
+
+```sh
+psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+begin;
+delete from workspace_running_copies;
+update workspace_restore_asks set registered_at = first_asked_at where registered_at is null;
+commit;
+SQL
+```
+
+It prints `DELETE <n>` and `UPDATE <n>`; a rerun prints `DELETE 0` and `UPDATE 0`.
+Both statements are required, and the reason for each is the roll forward rather than the rollback.
+No earlier daemon reads `workspace_running_copies`, so while it runs the rows hold no pod and stop no release, but no earlier daemon records a push in `issue_pushes` either.
+A roll forward then finds running copies taken before the rollback and no record of the pushes made while the earlier daemon ran, so the time rule above has nothing to refuse them by, and the first pod replaced after the roll forward would be sent a copy older than the branch on GitHub.
+That copy cannot move `legion/<KEY>`, which no restore sets, but it would put that pod's workspace back on work behind the branch, which its roles would then have to bring forward over everything pushed while the earlier daemon ran.
+Deleting the running copies costs no work: a running copy's work is on the disk it was taken off, and no earlier daemon restores a running copy at all.
+What the rollback does cost is the copy of a pod the cluster ends while the earlier daemon runs, which no earlier daemon has.
+The rows of `issue_pushes` and `issue_push_heads` need no act: they hold only times older than any push the earlier daemon saw and the commits of the pushes before it, and a running copy the new daemon takes after the roll forward is newer than all of them.
+The rows of `workspace_restore_asks` are kept rather than deleted, and the `update` marks each as a pod where a role registered.
+No earlier daemon reads or writes that table, so while it runs the rows change nothing and no registration is recorded: a role that first registers while the earlier daemon runs leaves its pod's row with no `registered_at`.
+Without the `update`, a release bundle this release sent to a pod before any role of that pod registered would read as unspent after the roll forward, though that pod's roles registered and worked under the earlier daemon, and the pod's restarted `roles` container would be sent the bundle again over that work.
+With it, every copy this release sent before the rollback is spent, which is the earlier daemon's own rule for a sent copy.
+The statement must run with this release's daemon stopped: a pod whose first ask that daemon recorded after the `update` would be left with no registration that the earlier daemon's roles could ever mark.
+Each row still says when its pod first asked for a restore, which stays true; a pod created while the earlier daemon runs has no row, and its first ask after the roll forward records one then, with no registration, so this release's rule holds for it from that ask.
 
 from: Legion sets no affinity on it, so under Karpenter
 to: where an issue pod carries the second only while its reservation is `Guaranteed`

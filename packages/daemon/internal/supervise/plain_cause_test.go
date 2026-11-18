@@ -17,13 +17,14 @@ import (
 // interruption, which says why the process ended. Where the runtime read a cause the daemon tells
 // in plain words, that sentence opens with it and its numbers: the memory limit of a `roles`
 // container killed for memory, the use and the request of the container a node-pressure eviction
-// named over its request, and the disk limit of an eviction for the pod's own disk, whose task
-// also says to keep large files under $TMPDIR. The runtime's own detail follows, quoted. The
-// memory limit's sentence is the task's one statement that the pod ran out of memory: the
-// out-of-memory note behind it keeps its guidance and drops its own statement, which an
-// out-of-memory end the daemon names no limit of still carries whole. The claim's record of the
-// death, which the operator's listing and a failed claim's notices read, opens with the same
-// sentence. A death the daemon names no cause of reads as it always did.
+// named over its memory or its ephemeral-storage request, and the disk limit of an eviction for
+// the pod's own disk. The task of either disk eviction also says to keep large files under
+// $TMPDIR. The runtime's own detail follows, quoted. The memory limit's sentence is the task's one
+// statement that the pod ran out of memory: the out-of-memory note behind it keeps its guidance
+// and drops its own statement, which an out-of-memory end the daemon names no limit of still
+// carries whole. The claim's record of the death, which the operator's listing and a failed
+// claim's notices read, opens with the same sentence. A death the daemon names no cause of reads
+// as it always did.
 func TestPlainCauseADeathForMemoryOrDiskIsToldInTheRolesNextTaskBeforeTheRuntimesDetail(t *testing.T) {
 	const detail = "pod legion-legion-legion-208 (uid uid-pod-1) Failed: container roles terminated (Error, exit code 137)"
 	quoted := strconv.Quote("gone: " + detail)
@@ -53,6 +54,16 @@ func TestPlainCauseADeathForMemoryOrDiskIsToldInTheRolesNextTaskBeforeTheRuntime
 				"more than its 8 GiB memory request. The runtime's detail: " + quoted + ".",
 			recorded: "the kubelet evicted the pod for node memory pressure because its roles container was using 9 GiB, more than its 8 GiB " +
 				"memory request. The runtime's detail: gone: " + detail,
+		},
+		{
+			name: "a node-pressure eviction of the pod's own disk use over its request",
+			cause: runtime.DeathCause{Kind: runtime.DeathDiskRequest, Container: runtime.IssuePodContainer,
+				Use: 7 << 30, Request: 6 << 30},
+			told: "Your process ended because the kubelet evicted the pod for node disk pressure because its roles container was using 7 GiB " +
+				"of its own disk, outside $TMPDIR, more than its 6 GiB ephemeral storage request. " +
+				"Keep large files under $TMPDIR, on the issue's volume. The runtime's detail: " + quoted + ".",
+			recorded: "the kubelet evicted the pod for node disk pressure because its roles container was using 7 GiB of its own disk, " +
+				"outside $TMPDIR, more than its 6 GiB ephemeral storage request. The runtime's detail: gone: " + detail,
 		},
 		{
 			name:  "an eviction for the pod's own disk",
@@ -112,8 +123,9 @@ func TestPlainCauseADeathForMemoryOrDiskIsToldInTheRolesNextTaskBeforeTheRuntime
 // no turn: the claim was ready, its task sent and not yet confirmed by a turn, so the death took
 // nothing back and found no turn running, which leaves no record of a let-go by the rule every
 // other end keeps (recordEnd). The death is charged all the same, since the claim holds a task,
-// so the record is kept (keepsDeathRecord), and the task the relaunched agent is sent next opens
-// with it: that no turn ran, why the process ended, and, for a disk eviction, where large files go.
+// so the record is kept (recordEnd, EndedWork.Death), and the task the relaunched agent is sent
+// next opens with it: that no turn ran, why the process ended, and, for a disk eviction, where
+// large files go.
 func TestPlainCauseADeathWithATaskNoTurnConfirmedIsToldInTheNextTask(t *testing.T) {
 	const detail = "no pod of sandbox legion-legion-legion-208 (operatingMode Running)"
 	h := newHarness(t)

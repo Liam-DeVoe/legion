@@ -375,13 +375,13 @@ func (m *Machine) endHeld(ctx context.Context) error {
 // The task of the dead turn goes back to waiting first, unconfirmed and under a new id, exactly
 // as a death in a turn takes it back (interrupted): the turn ran, the agent read the task, and
 // no process finished it. It carries the note of a pod that ran out of memory where the report
-// that found the process gone said so (goneOutOfMemory), and the claim keeps that report's cause
-// of the death for the operator's listing and a failed claim's notices (goneDeath, deathCause,
-// Claim.LastDeathCause), as died keeps the death it judges. A take-back the store will not write
-// stops everything — nothing is stopped, nothing is sent and the claim is left as it stands, its
-// last death's cause put back, as died leaves it — so the caller's next request takes it back
-// then, rather than this leaving a suspended claim holding a task settle would retire as a
-// finished turn.
+// that found the process gone said so (goneDeath's OutOfMemory), and the claim keeps that report's
+// cause of the death for the operator's listing and a failed claim's notices (goneDeath,
+// deathCause, Claim.LastDeathCause), as died keeps the death it judges. A take-back the store
+// will not write stops everything — nothing is stopped, nothing is sent and the claim is left as
+// it stands, its last death's cause put back, as died leaves it — so the caller's next request
+// takes it back then, rather than this leaving a suspended claim holding a task settle would
+// retire as a finished turn.
 //
 // The clean stop of the dead process's Envoy session is sent once that write has landed, and
 // before the process is let go (sessionGone, letProcessGoFor). Sent before the write, a write
@@ -411,11 +411,11 @@ func (m *Machine) endHeld(ctx context.Context) error {
 func (m *Machine) suspendOverADeadProcess(ctx context.Context, request RequestSuspend) error {
 	cause := m.claim.LastDeathCause
 	m.claim.LastDeathCause = deathCause(m.goneDeath)
-	if err := m.interrupted(ctx, "the process the task's turn ran on is gone", m.goneOutOfMemory); err != nil {
+	if err := m.interrupted(ctx, "the process the task's turn ran on is gone", m.goneDeath.OutOfMemory); err != nil {
 		m.claim.LastDeathCause = cause
 		return err
 	}
-	m.recordEnd(ctx, endDied(m.goneDeath), m.keepsDeathRecord(m.goneDeath))
+	m.recordEnd(ctx, endDied(m.goneDeath), m.goneDeath.Cause.Kind)
 	m.sessionGone()
 	return m.letProcessGoFor(ctx, request)
 }

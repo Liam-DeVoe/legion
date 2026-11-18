@@ -58,15 +58,21 @@
 -- container's, so a restarted roles container of a pod where a role registered is sent nothing.
 -- A copy sent to a pod whose row is gone is spent, as every sent copy was before.
 --
--- Nothing of an earlier release reads or writes this table, so a rollback to one needs no act on
--- it, and its rows stay: deleted, every pod that lives through the rollback would be recorded at
--- its first ask after the roll forward, and a copy written in between could then reach a pod that
--- has been working since before it (docs/kubernetes.md, "Rolling back the running copy"). A role
--- that first registers while the earlier release runs is recorded by none, which costs nothing:
--- the rollback deletes every copy this release sent, and every copy written after it was written
--- after the first ask of each pod that lived through it, so the late-copy rule leaves it for the
--- pod after (runtime.DecideWorkspaceRestore). The rows are a pod uid and two times each, at most
--- 16 per issue, and they outlive the issue's close.
+-- Nothing of an earlier release reads or writes this table, and its rows stay through a rollback
+-- to one: deleted, every pod that lives through the rollback would be recorded at its first ask
+-- after the roll forward, and a copy written in between could then reach a pod that has been
+-- working since before it (docs/kubernetes.md, "Rolling back the running copy"). A role that
+-- first registers while the earlier release runs is recorded by none, so the rollback marks every
+-- pod that asked as one where a role registered, with
+-- `update workspace_restore_asks set registered_at = first_asked_at where registered_at is null;`
+-- beside its `delete from workspace_running_copies;`, which gives the earlier release's rule back:
+-- a copy sent to a pod is spent. Without it a release bundle, which the rollback keeps, sent to a
+-- pod before any role of that pod registered and whose roles then registered under the earlier
+-- release, would read as unspent after the roll forward, and that pod's restarted roles container
+-- would be sent it over the roles' work. Every copy written after the rollback was written after
+-- the first ask of each pod that lived through it, so the late-copy rule leaves it for the pod
+-- after (runtime.DecideWorkspaceRestore). The rows are a pod uid and two times each, at most 16
+-- per issue, and they outlive the issue's close.
 create table workspace_restore_asks (
     issue          text        not null,
     pod_uid        text        not null,

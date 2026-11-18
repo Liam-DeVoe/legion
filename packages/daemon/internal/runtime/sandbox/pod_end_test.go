@@ -439,9 +439,9 @@ func TestAnIntendedEndThatNeverCameExpiresSoTheNextDeathIsCharged(t *testing.T) 
 // One line per pod end, not one per role: it names the pod, which of the two readings was made,
 // the reason the cluster gave, and, as ended, every role of that pod the runtime watches, each of
 // which the end ended. The field names what ended and nothing of what any role got for it, which
-// each claim's own supervise line says: named roles, it read as the roles continued, where at the
-// run limit a role on it is charged. Both roles of this issue pod run in the one container, so
-// both are named by the one line their shared pod's end gets.
+// each claim's own supervise line says: named roles, it read as the roles continued. Both roles of
+// this issue pod run in the one container, so both are named by the one line their shared pod's
+// end gets.
 func TestOneLineNamesThePodTheReadingTheReasonAndEachRoleObserved(t *testing.T) {
 	logs := &lockedLog{}
 	g := newRig(t, nil, withLog(logs))

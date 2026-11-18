@@ -15,7 +15,7 @@ import (
 // that no longer exists, or to wait for work that no copy holds.
 //
 // These checks do not read the guide. They read workspace_copy_doc_extract.txt, this package's
-// own copy of the seven regions in the guide's bytes, which internal/textcheck's
+// own copy of the eight regions in the guide's bytes, which internal/textcheck's
 // TestTheWorkspaceCopyDocExtractsAreTheGuidesOwnLines holds to the guide's lines between the same
 // markers. The split is what keeps docs/kubernetes.md out of this job's filter: a declared read
 // applies to every compiled source file of a run, so a test that reads the guide starts the whole
@@ -72,6 +72,9 @@ const (
 	karpenterStart = "`" + doNotDisruptAnnotation + "` is the AWS scheduler's annotation"
 	karpenterEnd   = "and no repacking of its pods."
 
+	rollbackStart = "Stop this release's daemon, and before the earlier daemon runs"
+	rollbackEnd   = "so this release's rule holds for it from that ask."
+
 	controllerAnnotationsStart = "Legion sets no affinity on it, so under Karpenter"
 	controllerAnnotationsEnd   = "where an issue pod carries the second only while its reservation is `Guaranteed`"
 )
@@ -105,8 +108,8 @@ func TestKubernetesDocStatesWhichPodsCarryTheExtendedRunTimeAnnotation(t *testin
 // that the pod no longer asks for.
 //
 // "Rolling back the running copy" also names the annotation on every issue pod whatever its
-// reservation, and is no region here: that sentence says what an earlier daemon release does, so
-// this release's code is not what it answers to.
+// reservation, in a paragraph that is no region here: that sentence says what an earlier daemon
+// release does, so this release's code is not what it answers to.
 func TestKubernetesDocStatesTheSafeToEvictRuleWhereverElseItNamesIt(t *testing.T) {
 	const rule = "only while its reservation is `Guaranteed`"
 	safeToEvict := "`" + safeToEvictAnnotation + `: "false"` + "`"
@@ -176,9 +179,10 @@ func TestKubernetesDocStatesTheTwoKindsOfWorkspaceCopy(t *testing.T) {
 
 // The two readings that earn an uncharged continue, the end reasons the second covers, the reason
 // that needs the condition, that no count of such ends is kept however often they come, and the
-// ends that are still counted as any stop of a role's process is — the pod's own memory use under
-// node pressure among them though it carries the condition — and the daemon's own end whatever the
-// kubelet wrote.
+// ends that are still counted as any stop of a role's process is — the pod's own memory or
+// ephemeral-storage use over its request under node pressure among them though it carries the
+// condition — what becomes of disk use in the pod's emptyDir volumes, which names no container,
+// and the daemon's own end whatever the kubelet wrote.
 func TestKubernetesDocStatesWhichPodEndsAreContinuedUnchargedAndWhichIsCharged(t *testing.T) {
 	const what = `docs/kubernetes.md's "An end from outside the pod" paragraph`
 	lines, region := testdoc.Region(t, workspaceCopyDocExtract, what, podEndReadingsStart, podEndReadingsEnd)
@@ -205,6 +209,15 @@ func TestKubernetesDocStatesWhichPodEndsAreContinuedUnchargedAndWhichIsCharged(t
 		{Fact: "the sentence of the kubelet's message that names such a container", Phrase: "has larger consumption of memory."},
 		{Fact: "that a message naming no container of the pod is a neighbour's, which is continued",
 			Phrase: "names no container of the pod's own spec is a neighbour's"},
+		{Fact: "that an eviction naming a container of the pod over its ephemeral-storage request is charged",
+			Phrase: "An eviction for node disk pressure whose kubelet message names a container of the pod using more ephemeral storage than it requested is such an end too"},
+		{Fact: "the sentence of the kubelet's message that names a container over its ephemeral-storage request",
+			Phrase: "has larger consumption of ephemeral-storage."},
+		{Fact: "that disk use in the pod's emptyDir volumes names no container", Phrase: "names no container in that message"},
+		{Fact: "that a node disk-pressure eviction of that use is continued however often it comes",
+			Phrase: "a node disk-pressure eviction of such use is read as a neighbour's and continued with no limit"},
+		{Fact: "that a pod whose ephemeral-storage request equals its limit is evicted by that limit first, which is charged",
+			Phrase: "A pod whose ephemeral-storage request equals its limit is evicted by that limit first"},
 		{Fact: "that an end the daemon itself started stays its own", Phrase: "An end the daemon itself started is its own whatever the pod's status says"},
 	})
 
@@ -233,8 +246,31 @@ func TestKubernetesDocStatesWhichPodEndsAreContinuedUnchargedAndWhichIsCharged(t
 	testdoc.RequireDocFacts(t, what+", its DisruptionTarget bullet", cluster, []testdoc.Fact{
 		{Fact: "that the kubelet's eviction reason earns the continue only with the condition",
 			Phrase: "`" + evictedReason + "` is such an end only with the condition"},
-		{Fact: "that the pod's own memory use earns no continue, with the condition or without",
-			Phrase: "is not such an end, though it carries the condition"},
+		{Fact: "that the pod's own memory or ephemeral-storage use over its request earns no continue, with the condition or without",
+			Phrase: "using more memory, or more ephemeral storage, than it requested is not such an end, though it carries the condition"},
+	})
+}
+
+// The rollback's database step marks every pod that asked for a restore as one where a role
+// registered, beside the delete of the running copies, because an earlier daemon records no
+// registration: without it a release bundle sent to a pod before any role of it registered reads
+// as unspent after the roll forward and is sent again over the work that pod's roles did under the
+// earlier daemon (store.TakeWorkspaceCopyForRestore, which reads a sent copy as spent only once its
+// pod's row records a registration). An operator who runs only the delete gets that resend, so
+// the step must give the statement whole, say what it prints, that it is required, what it is
+// for, and that it runs with this release's daemon stopped.
+func TestKubernetesDocStatesTheRollbackSpendsEveryCopySentBeforeIt(t *testing.T) {
+	const what = `docs/kubernetes.md's database step of "Rolling back the running copy"`
+	_, region := testdoc.Region(t, workspaceCopyDocExtract, what, rollbackStart, rollbackEnd)
+	testdoc.RequireDocFacts(t, what, region, []testdoc.Fact{
+		{Fact: "the delete of the running copies", Phrase: "delete from workspace_running_copies;"},
+		{Fact: "the statement that marks every pod that asked as registered",
+			Phrase: "update workspace_restore_asks set registered_at = first_asked_at where registered_at is null;"},
+		{Fact: "what the step prints", Phrase: "It prints `DELETE <n>` and `UPDATE <n>`"},
+		{Fact: "that both statements are required", Phrase: "Both statements are required"},
+		{Fact: "that every copy sent before the rollback is spent", Phrase: "every copy this release sent before the rollback is spent"},
+		{Fact: "the resend the statement prevents", Phrase: "would be sent the bundle again over that work"},
+		{Fact: "that it runs with this release's daemon stopped", Phrase: "The statement must run with this release's daemon stopped"},
 	})
 }
 
