@@ -840,6 +840,93 @@ test("what a reader types into a priority survives a reload made before the typi
   }
 });
 
+// SLOW(>=2s): the seed, a write held until another person's lands, and a reload that resumes one.
+test("a priority write another person's change refused leaves no 'Not saved' line and no Retry of the refused text", async ({
+  browser,
+}) => {
+  const seed = await seedPriorities();
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    await priorityPage(page);
+    // Every write of P1 the page sends, with its answer: a body the server refused 409
+    // PRIORITY_CHANGED names a text it went over, and sending that same body again is refused
+    // the same way, whoever presses it.
+    const refused: string[] = [];
+    page.on("response", (answer) => {
+      const sent = answer.request();
+      if (sent.method() === "PATCH" && sent.url().endsWith(`/api/v1/priorities/${seed.ids[0]}`)) {
+        if (answer.status() === 409) refused.push(sent.postData() ?? "");
+      }
+    });
+    const title = page.getByRole("textbox", { name: "Title" });
+    const notice = page.getByRole("alert", { name: "Title, changed by another person" });
+
+    // Bob's rename lands after alice's edit began and before her write reaches the server.
+    let first = true;
+    await page.route(`**/api/v1/priorities/${seed.ids[0]}`, async (route) => {
+      if (route.request().method() === "PATCH" && first) {
+        first = false;
+        await patchPriority(seed.ids[0], { title: "Bob's rename" }, { login: "bob" });
+      }
+      await route.continue();
+    });
+    await page.goto(`/priorities/${seed.ids[0]}`);
+    await expect(title).toHaveValue(seed.titles[0]);
+    await title.click();
+    await page.keyboard.press("End");
+    await page.keyboard.type(" first");
+    await title.blur();
+    await expect(notice).toBeVisible();
+    expect(refused).toHaveLength(1);
+    // She uses her text, and it lands over Bob's.
+    await notice.getByRole("button", { name: "Use my text" }).click();
+    await expect
+      .poll(
+        async () =>
+          (await listPriorities()).priorities?.find((one) => one.id === seed.ids[0])?.title
+      )
+      .toBe(`${seed.titles[0]} first`);
+    // Her text is written, so nothing on the page says it was not, and no control on it sends
+    // the refused body again.
+    await expect(page.getByText(/^Not saved:/)).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Retry" })).toHaveCount(0);
+    await page.unroute(`**/api/v1/priorities/${seed.ids[0]}`);
+
+    // A write a reload cut off, resumed after Bob wrote again: refused 409. Whatever the page
+    // offers then, it does not send that refused body a second time.
+    let hold = true;
+    await page.route(`**/api/v1/priorities/${seed.ids[0]}`, async (route) => {
+      if (route.request().method() === "PATCH" && hold) {
+        hold = false;
+        return;
+      }
+      await route.continue();
+    });
+    await title.click();
+    await page.keyboard.press("End");
+    await page.keyboard.type(" second");
+    await title.blur();
+    await patchPriority(seed.ids[0], { title: "Bob's second rename" }, { login: "bob" });
+    await page.reload();
+    await expect(title).toHaveValue("Bob's second rename");
+    await expect.poll(() => refused.length).toBe(2);
+    const retry = page.getByRole("button", { name: "Retry" });
+    if ((await retry.count()) > 0) {
+      const answered = page.waitForResponse(
+        (answer) =>
+          answer.request().method() === "PATCH" &&
+          answer.url().endsWith(`/api/v1/priorities/${seed.ids[0]}`)
+      );
+      await retry.first().click();
+      await answered;
+    }
+    expect(new Set(refused).size).toBe(refused.length);
+  } finally {
+    await context.close();
+  }
+});
+
 // SLOW(>=2s): the seed and three issue pages.
 test("an issue's header names the priorities it advances and links to each", async ({
   browser,
