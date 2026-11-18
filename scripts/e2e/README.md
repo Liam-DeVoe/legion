@@ -6214,7 +6214,7 @@ docker run -d --name "$pg_container" --label "$pg_mark" …
 `remove_leftover_postgres` removes each Postgres whose mark names a process that is gone, leaves one whose process runs, and names on stderr, one line per kind, each one it leaves, such as a mark of another boot or pid namespace, which it cannot judge.
 Both run `bun packages/dispatch/e2e/postgres-mark.ts`, which imports Node's built-in modules alone, so they need Bun and no `bun install`; with no `bun` on `PATH` they fail with a line that names it.
 `refuse_leftovers` leaves a marked container to that removal.
-`scripts/e2e/lib/sweep-order.ts` finds, by each driver's own order of calls, every start that runs a refusal or marks its own Postgres before that removal (`bun scripts/e2e/lib/sweep-order.ts`; it says UNKNOWN where it read no driver).
+`scripts/e2e/lib/sweep-order.ts` finds, by each driver's own order of calls, every start that runs a refusal or marks its own Postgres before that removal (`bun scripts/e2e/lib/sweep-order.ts`; it says UNKNOWN where it read no driver, or where it cannot parse a driver's script).
 `scripts/e2e/lib/sweep-order.test.ts` runs each such driver's own file, with the commands that would reach outside the machine cut, and holds it to the removal before each refusal, before each create of its Postgres, and before any container where `LEGION_E2E_PG_DSN` names a Postgres.
 
 ## lib/operator-dispatch.sh
