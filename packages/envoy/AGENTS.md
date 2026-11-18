@@ -5594,7 +5594,7 @@ The row holds a SHA-256 of the method, the route pattern, its path values, the q
   a mint refused with a 4xx commits nothing, so its key is released and a repeat runs it again.
   A route whose answer holds a credential is the one exception to "a 2xx or a 4xx is stored and replayed", and the mint is the one such route.
   An answer past 1 MiB is answered in full but kept as its status alone, and its replay is that status with the body `ANSWER_NOT_KEPT` (`IDEMPOTENCY_ANSWER_NOT_KEPT`), as is the replay of an answer a delete ended (above, `answerEndedByDelete`):
-  the write ran, and the client reads what it wrote again.
+  where the first request wrote (its `committed_at`, below), the write ran and the client reads what it wrote again, and where it wrote nothing, the replay says so and the client may send it again under a new key (`replayStoredAnswer`).
 
 - Every transaction a keyed request commits that wrote - one holding the `ROW EXCLUSIVE` lock an `INSERT`, `UPDATE`, `DELETE` or `MERGE` takes on a table other than `request_keys` - sets the row's `committed_at` in that same transaction (`markRequestKeyCommitted`, through `store.WithBeforeCommit`, the pool's hook), so the key knows the write landed even when its answer never made it into the row;
   a lock-only `SELECT … FOR UPDATE` marks nothing, and a COMMIT refused after the mark leaves none.
