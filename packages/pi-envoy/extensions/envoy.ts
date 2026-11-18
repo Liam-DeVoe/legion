@@ -114,9 +114,9 @@ import { createTmuxPlaceCache } from "@legion/envoy-client/tmux-place-cache";
 import {
   EnvoyToolOperation,
   envoyToolSpecs,
-  type MessageMetadataArguments,
   keyTakenDetails,
   keyTakenText,
+  type MessageMetadataArguments,
   parseEnvoyToolArguments,
   publishConfirmationText,
   publishResultDetails,
