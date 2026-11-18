@@ -4309,7 +4309,7 @@ Each item below names a path with its method and identity, then its purpose.
     Two results recorded in transactions that overlapped can come back in either order.
 
   - `?at=<40-hex commit>` compares every check of the issue with that one commit and nothing else.
-    The only read of GitHub it leaves is the check runs of a check CI proves, read at the issue's newest pull request head as on every read, so a derived result stands at the named commit only where that commit is that head.
+    The only read of GitHub it leaves is the check runs of a check CI proves, read at the issue's open pull request heads, or its newest merged one, as on every read, so a derived result stands at the named commit only where that commit is one of those heads.
 
   Each check carries `compared_with`, every commit and branch its results are compared with in the order they are asked about, `compared_nothing` where it has none, and `pass_stands`.
   Each result carries `commit_stands`, where its own commit stands against those, `check_words_moved`, and `retracted` where a retraction stands against it.
@@ -4342,10 +4342,11 @@ Each item below names a path with its method and identity, then its purpose.
     It is a second fact and a second field: a result at a compared commit whose check has been reworded since is both, and one word for both would hide which.
 
   - `pass_stands` is `{answer, roles, reason, subjects, results}` for the check as a whole: `yes`, with the roles of the passes that stand, while a result of it passed, stands at one of the compared commits, kept the check's words and carries no retraction;
-    `unknown` where the repository is unreadable, for a check CI proves whose check runs GitHub could not be read (`ci.state` `unread`), or where such a pass is held up only by a commit Dispatch could not place;
+    `unknown` where the repository is unreadable, for a check CI proves with no subjects whose check runs GitHub could not be read (`ci.state` `unread`), or where such a pass is held up only by a commit Dispatch could not place;
     `no` otherwise, which a check compared with nothing for `no_pull_request_or_branch` answers, since there is nothing for a pass to stand at.
     A `before_merge` check compared with heads asks that of each of its `subjects`, and reads `yes` only where each subject reads `yes`.
-    Each subject is `{basis, answer, reason, roles, results}`: `roles` names each role whose pass counts at that head, for `yes` alone, and `results` holds the ids of the results that decide its state, the newest pass of each of those roles for `yes`, the newest fail for `no` with the reason `fail`, and none for `no_result`.
+    Each subject is `{basis, answer, reason, roles, results, ci}`: `roles` names each role whose pass counts at that head, for `yes` alone, and `results` holds the ids of the results that decide its state, the newest pass of each of those roles for `yes`, the newest fail for `no` with the reason `fail`, and none for `no_result`.
+    A subject of a check CI proves carries `ci`, the read of the named run at that head, and reads `unknown` with the reason `read_failed` where GitHub's check runs at that head could not be read, whatever the other heads read.
     The check's own `roles` then name a role only where each subject names it, in the order of the first subject.
     A pass and a fail that count at one commit of a `before_merge` check make that commit `unknown` with the reason `pass_and_fail`, from any role and in either order, with `results` naming the newest pass and the newest fail there, and no pass stands there; a read with `?at=` gives the same answer.
     A later pass at that commit does not end it. A retraction of the wrong one ends it, and so does a change of the check's words.
@@ -4374,22 +4375,23 @@ Each item below names a path with its method and identity, then its purpose.
 
   A check CI proves is one whose `ci_check` names a GitHub check run, with `when` `before_merge`, no `run` and a `negative_control` (`validCICheck`, `docs.CICheckRule`): its block's attributes, read at each read.
   No role records its result (POST below refuses one), and nothing is stored of the run that `ci_check` names:
-  each read takes the head of the issue's `open` pull request of the highest number, else the final head of its `merged` one of the highest number (`delivery.NewestPullRequestHead`), and reads that commit's check runs once, every page, under one 10-second deadline (`api/results_ci.go`, `deriveCIResults`).
-  Of the runs named exactly as `ci_check` says, the one of the highest id decides.
+  each read takes the head of each of the issue's `open` pull requests (`delivery.HeadsAttributedTo`), else the final head of its `merged` one of the highest number (`delivery.NewestPullRequestHead`), and reads each such commit's check runs once, every page, in the repository of that pull request's own row, never in the issue's where they differ (`api/results_ci.go`, `deriveCIResults`).
+  At most 8 heads are read at one time, and one 10-second deadline bounds the reads of every head together; a head whose read did not end by then is `unread` there alone.
+  Of the runs named exactly as `ci_check` says, the one of the highest id decides at each head.
   An issue holding no such check makes no read of check runs at all.
 
-  - Such a check carries `ci`, `{run, state, case, detail, line}`.
+  - Such a check carries `ci`, `{run, state, case, detail, line}`, the read of the head of its `open` pull request of the highest number, or of the merged head where none is open; each of its `pass_stands.subjects` carries the read at its own head.
     `state` is `pass`, `fail`, `no_result` or `unread`.
     `case` is the conclusion that decided it — `success` passes, and `failure`, `timed_out`, `action_required`, `startup_failure`, `stale` and a conclusion this list does not name, as GitHub wrote it, fail — or one of the cases of no result:
     `neutral`, `skipped`, `cancelled`, `not_completed`, `absent` (no run of that name at the head) and `no_head` (Dispatch holds no open or merged pull request head of the issue), each `no_result`, and `github_unreadable` (`unread`: no App key, a token GitHub would not mint, an HTTP error, a rate limit or the deadline).
     `detail` is one sentence naming the case, at most 2,000 runes; for `github_unreadable` it names GitHub's own answer, a refusal by its status and the `message` of its JSON body, never the body itself and never a token.
     `line` is the pull-request body line for the check: `- Check <id> (before_merge): <verdict> at <sha>, from CI run <name>. <the check's words>` for a pass or a fail, and `- Check <id> (before_merge): CI run <name> has no result (<case>)` for every other state; the check's words are cut as a recorded line's reading is, at a word, to at most 80 runes, with `…` where they were cut.
 
-  - For a pass or a fail its `results` hold the result derived from that run:
+  - For a pass or a fail at a head its `results` hold the result derived from that head's run:
     `id` `ci-run:<check run id>`, `role` `ci`, `actor` `{kind: "github_app", id: <the slug of the App that made the run>}`, `session` `""`, `run` the run's name, `surface` and `negative_control` the check's, `commit_sha` the head read, `created_at` the run's `completed_at`, `observed` the conclusion, then the run's output title and summary cut together to 2,000 runes, then its URL, one a line, `check_sha256` the check's own digest, the counts 0, `screenshots` `[]`, no `branch` and no `event_seq`.
     It is judged as a recorded result is (`comparisonReader`), so its `commit_stands` and the check's `pass_stands` read as a recorded result's would.
 
-  - Its `results` hold the derived result alone, and `recorded_results` the results that runs of the check's CI job recorded through POST below, each with `role` `ci`, `run` the check run's name and `branch` the branch whose push the job ran on, newest first by `created_at`.
+  - Its `results` hold the derived results alone, one for each head read whose run passed or failed, and `recorded_results` the results that runs of the check's CI job recorded through POST below, each with `role` `ci`, `run` the check run's name and `branch` the branch whose push the job ran on, newest first by `created_at`.
     A branch head a check compares with is in `branch_heads`, not `compared_with`, and a result of `results` at one names it in `at_branch_head`: each field an older `dispatch` reads keeps its meaning.
     `branch` is set on a result that a CI job recorded, and on no other result.
     Such a result also carries `attestation`, the in-toto Statement v1 of its run, built by the builder of the project's results route (`attestedResult.statement`).

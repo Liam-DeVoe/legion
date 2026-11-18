@@ -45,14 +45,15 @@ func standingCommit(result model.CheckResult) string {
 // without subjects, so a read at one commit (`?at=`) gives the same answer.
 //
 // A check whose repository Dispatch could not read answers unknown, since it could compare
-// nothing at all. So does a check CI proves whose check runs GitHub could not be read for: it
-// holds no result, and the read that would have made one failed. So does a check whose standing
-// pass is held up only by a commit Dispatch could not place. A check that compared with nothing
-// because there is no pull request and no branch answers no: there is nothing for a pass to
-// stand at, and that is a fact about the work rather than a failed read.
+// nothing at all. So does a check CI proves with no subjects whose check runs GitHub could not be
+// read for: it holds no result, and the read that would have made one failed. A check CI proves
+// with subjects asks that of each subject alone, at its own head (subjectState). So does a check
+// whose standing pass is held up only by a commit Dispatch could not place. A check that compared
+// with nothing because there is no pull request and no branch answers no: there is nothing for a
+// pass to stand at, and that is a fact about the work rather than a failed read.
 func passStandsOf(check model.CheckBlock, compared comparison) model.CheckPassStands {
 	if compared.reason == model.ReasonRepositoryUnreadable ||
-		(check.CI != nil && check.CI.State == model.CIStateUnread) {
+		(len(compared.subjects) == 0 && check.CI != nil && check.CI.State == model.CIStateUnread) {
 		return model.CheckPassStands{Answer: model.PassStandsUnknown}
 	}
 	if check.When == checkWhenAfterMerge || check.When == checkWhenDefaultBranch {
@@ -133,17 +134,22 @@ func newestResultStands(check model.CheckBlock) model.CheckPassStands {
 // where none is no and one is unknown (R7), or where a branch head could not be read, or where a
 // pass is held up only by a commit Dispatch could not place. Every answer names each subject's
 // state. A yes names a role only where each subject names it (R6), in the order of the first
-// subject: two roles that passed at two heads are no role that passed at each.
+// subject: two roles that passed at two heads are no role that passed at each. The answer takes
+// the reason of an unknown subject only for a pass and a fail at one commit: a subject's
+// read_failed is the subject's alone.
 func eachSubjectStands(check model.CheckBlock, compared comparison, conflicted map[string]bool) model.CheckPassStands {
 	stands := model.CheckPassStands{Answer: model.PassStandsYes, Subjects: make([]model.PassStandsSubject, 0, len(compared.subjects))}
 	for _, basis := range compared.subjects {
-		subject := subjectState(check, basis, conflicted)
+		subject := subjectState(check, basis, conflicted, compared.ci[basis.Commit])
 		stands.Subjects = append(stands.Subjects, subject)
 		switch {
 		case subject.Answer == model.PassStandsNo:
 			stands.Answer = model.PassStandsNo
 		case subject.Answer == model.PassStandsUnknown && stands.Answer == model.PassStandsYes:
-			stands.Answer, stands.Reason = model.PassStandsUnknown, subject.Reason
+			stands.Answer = model.PassStandsUnknown
+			if subject.Reason == model.PassStandsReasonPassAndFail {
+				stands.Reason = subject.Reason
+			}
 		}
 	}
 	placedNowhere := slices.ContainsFunc(check.Results, func(result model.CheckResult) bool {
@@ -176,9 +182,12 @@ func eachSubjectStands(check model.CheckBlock, compared comparison, conflicted m
 // (R4, passAndFailCommits), with the newest pass and the newest fail there as its results. It
 // walks every result that counts at the commit, newest first, so a yes names each role whose pass
 // counts there and the newest pass of each, and a no for a fail names the newest fail
-// (model.PassStandsSubject).
-func subjectState(check model.CheckBlock, basis model.CheckBasis, conflicted map[string]bool) model.PassStandsSubject {
-	state := model.PassStandsSubject{Basis: basis, Answer: model.PassStandsNo, Reason: model.PassSubjectReasonNoResult}
+// (model.PassStandsSubject). ci is the read of a check CI proves at the subject's head
+// (deriveCIResults), nil for every other check and for a head it was not read at: the subject
+// carries it, and where GitHub could not be read there, the subject's state is unknown
+// (model.PassSubjectReasonReadFailed), since the run it would have read may decide either way.
+func subjectState(check model.CheckBlock, basis model.CheckBasis, conflicted map[string]bool, ci *model.CheckCI) model.PassStandsSubject {
+	state := model.PassStandsSubject{Basis: basis, Answer: model.PassStandsNo, Reason: model.PassSubjectReasonNoResult, CI: ci}
 	if conflicted[basis.Commit] {
 		state.Answer, state.Reason = model.PassStandsUnknown, model.PassStandsReasonPassAndFail
 		var pass, fail *model.CheckResult
@@ -196,6 +205,10 @@ func subjectState(check model.CheckBlock, basis model.CheckBasis, conflicted map
 			}
 		}
 		state.Results = []string{pass.ID, fail.ID}
+		return state
+	}
+	if ci != nil && ci.State == model.CIStateUnread {
+		state.Answer, state.Reason = model.PassStandsUnknown, model.PassSubjectReasonReadFailed
 		return state
 	}
 	newestFail := ""

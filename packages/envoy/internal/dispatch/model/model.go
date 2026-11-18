@@ -1413,25 +1413,32 @@ type CheckPassStands struct {
 // PassStandsYes where a pass stands there; PassStandsNo with PassSubjectReasonFail where only a
 // fail stands there, or PassSubjectReasonNoResult where nothing does; PassStandsUnknown with
 // PassStandsReasonPassAndFail where a pass and a fail that count at one commit of a `before_merge`
-// check, from any role, make that commit's state unknown. Roles names each role whose pass counts
-// there, for PassStandsYes alone. Results holds the ids of the results that decide the state: for
-// PassStandsYes the newest pass of each role in Roles, for PassStandsNo with PassSubjectReasonFail
-// the newest fail, for PassStandsReasonPassAndFail the newest pass and the newest fail, and for
-// PassSubjectReasonNoResult none.
+// check, from any role, make that commit's state unknown, or with PassSubjectReasonReadFailed
+// where the check is one CI proves and GitHub's check runs at that head could not be read. Roles
+// names each role whose pass counts there, for PassStandsYes alone. Results holds the ids of the
+// results that decide the state: for PassStandsYes the newest pass of each role in Roles, for
+// PassStandsNo with PassSubjectReasonFail the newest fail, for PassStandsReasonPassAndFail the
+// newest pass and the newest fail, and for PassSubjectReasonNoResult and
+// PassSubjectReasonReadFailed none. CI is the read of a check CI proves at that head, in the
+// repository of that head's pull request, and is absent for every other check.
 type PassStandsSubject struct {
 	Basis   CheckBasis `json:"basis"`
 	Answer  string     `json:"answer" enum:"yes,no,unknown"`
-	Reason  string     `json:"reason,omitempty" enum:"fail,no_result,pass_and_fail"`
+	Reason  string     `json:"reason,omitempty" enum:"fail,no_result,pass_and_fail,read_failed"`
 	Roles   []string   `json:"roles,omitempty"`
 	Results []string   `json:"results,omitempty"`
+	CI      *CheckCI   `json:"ci,omitempty"`
 }
 
 // The reasons a pass_stands answer and its subjects give. PassStandsReasonPassAndFail is a pass
 // and a fail that count at one commit of a `before_merge` check, from any role.
+// PassSubjectReasonReadFailed is a subject alone: the check runs at that head, of a check CI
+// proves, could not be read.
 const (
 	PassStandsReasonPassAndFail = "pass_and_fail"
 	PassSubjectReasonFail       = "fail"
 	PassSubjectReasonNoResult   = "no_result"
+	PassSubjectReasonReadFailed = "read_failed"
 )
 
 // ResultNotCountedRoleOnCICheck is why a role's result of a check CI proves counts for nothing
@@ -1682,10 +1689,13 @@ const (
 	CIStateUnread   = "unread"
 )
 
-// CheckCI is what Dispatch read of the GitHub check run a check CI proves names, at the newest
-// pull request head of the check's issue: the run's name, the state of the check, the case that
-// decided it (a conclusion GitHub wrote, or one of the cases of no conclusion), one sentence
-// naming that case, and the line the pull-request body carries for the check.
+// CheckCI is what Dispatch read of the GitHub check run a check CI proves names, at one head of
+// the check's issue, in the repository of that head's pull request: the run's name, the state of
+// the check, the case that decided it (a conclusion GitHub wrote, or one of the cases of no
+// conclusion), one sentence naming that case, and the line the pull-request body carries for the
+// check. Dispatch reads it at the head of each open pull request of the issue, or, where none is
+// open, at the final head of the newest merged one. A check's own `ci` is the read of the open
+// pull request of the highest number; each subject of the check carries the read at its head.
 type CheckCI struct {
 	Run    string `json:"run"`
 	State  string `json:"state" enum:"pass,fail,no_result,unread"`

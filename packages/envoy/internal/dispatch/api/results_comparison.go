@@ -111,6 +111,9 @@ type comparisonReader struct {
 	// branchIssues is, by issue and branch, whether the branch belongs to the issue
 	// (delivery.BranchOfIssue), and whether that read answered (branchOfIssue).
 	branchIssues map[[2]string][2]bool
+	// headCI is the read of each check CI proves at each head it was read at, by the check's block
+	// id and then by the head's commit (deriveCIResults), which answer gives each subject of it.
+	headCI map[string]map[string]*model.CheckCI
 }
 
 // noCommitNamed is the `at` of a read that named no commit, which is every read but the one a
@@ -128,11 +131,15 @@ const noCommitNamed = ""
 // must stand at, each of them, for the gate's answer to be yes (passStandsOf). Every subject is a
 // basis; a merged pull request's head beside an open pull request, and a merged one older than
 // the newest, is a basis and no subject.
+//
+// ci is set on one check's copy alone (answer), for a check CI proves: its read at each head, by
+// the head's commit, which each subject at that commit carries (subjectState).
 type comparison struct {
 	bases    []model.CheckBasis
 	reason   string
 	unread   string
 	subjects []model.CheckBasis
+	ci       map[string]*model.CheckCI
 }
 
 // noBases is a check comparing with nothing, for the one reason given: the empty list is the
@@ -231,6 +238,7 @@ const noDefaultBranchNamed = ""
 // which of the two a reader is looking at.
 func (c *comparisonReader) answer(ctx context.Context, check *model.CheckBlock) {
 	compared := c.comparedWith(ctx, *check)
+	compared.ci = c.headCI[check.BlockID]
 	check.ComparedWith = compared.bases
 	check.ComparedNothing = compared.reason
 	for index := range check.Results {

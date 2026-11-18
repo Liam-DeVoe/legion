@@ -413,7 +413,8 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 		}
 		checks[index].Results = results
 	}
-	if err := s.deriveCIResults(r.Context(), issueKey, checks); err != nil {
+	headCI, err := s.deriveCIResults(r.Context(), issueKey, checks)
+	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -421,6 +422,7 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 	// two `before_merge` checks of one issue name one list of bases and not two
 	// (comparisonReader.learn).
 	reader := newComparisonReader(s, at)
+	reader.headCI = headCI
 	reader.learn(r.Context(), checks)
 	for index := range checks {
 		reader.answer(r.Context(), &checks[index])

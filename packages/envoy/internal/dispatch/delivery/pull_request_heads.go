@@ -452,13 +452,16 @@ func HeadAttributedTo(ctx context.Context, pool *store.Pool, issueKey, sha strin
 }
 
 // AttributedHead is one pull request Dispatch holds for an issue, as the results read names it
-// among the heads a `before_merge` check compares its results with: the pull request's number,
-// the commit its head is, and the two times Dispatch may have learned that head by. CheckedAt
-// is when Dispatch last read the pull request from GitHub and EventAt is the pull request's
-// own update time as its newest webhook event carried it; each is nil where no writer has
-// carried it. The reader shows the later of the two and names which it is
+// among the heads a `before_merge` check compares its results with: the repository its row is
+// stored under, the pull request's number, the commit its head is, and the two times Dispatch may
+// have learned that head by. Repo is the row's own, as NewestHead.Repo is: the repository to read
+// the head's check runs from, which for a pull request an issue links may be another than the
+// issue's. CheckedAt is when Dispatch last read the pull request from GitHub and EventAt is the
+// pull request's own update time as its newest webhook event carried it; each is nil where no
+// writer has carried it. The reader shows the later of the two and names which it is
 // (model.BasisLearnedReadAt, model.BasisLearnedUpdatedAt).
 type AttributedHead struct {
+	Repo    string
 	Number  int
 	HeadSHA string
 	// Open is whether the pull request is open; a merged one's head is its final head.
@@ -480,7 +483,7 @@ type AttributedHead struct {
 // the rows one issue's key holds are the handful of pull requests attributed to that issue.
 func HeadsAttributedTo(ctx context.Context, pool *store.Pool, issueKey string) ([]AttributedHead, error) {
 	rows, err := pool.Query(ctx, `
-		select number, head_sha, state = 'open', checked_at, event_at from pull_request_heads
+		select repo, number, head_sha, state = 'open', checked_at, event_at from pull_request_heads
 		where issue_key = $1 and state in ('open', 'merged')
 		order by greatest(checked_at, event_at) desc nulls last, number desc
 	`, issueKey)
@@ -491,7 +494,7 @@ func HeadsAttributedTo(ctx context.Context, pool *store.Pool, issueKey string) (
 	var heads []AttributedHead
 	for rows.Next() {
 		var head AttributedHead
-		if err := rows.Scan(&head.Number, &head.HeadSHA, &head.Open, &head.CheckedAt, &head.EventAt); err != nil {
+		if err := rows.Scan(&head.Repo, &head.Number, &head.HeadSHA, &head.Open, &head.CheckedAt, &head.EventAt); err != nil {
 			return nil, fmt.Errorf("read the pull request heads of %s: %w", issueKey, err)
 		}
 		heads = append(heads, head)
