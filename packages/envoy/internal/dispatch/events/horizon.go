@@ -17,9 +17,11 @@
 //
 // An event writer is a transaction that holds RowExclusiveLock on events in this database. An
 // insert into events takes that lock on the table when it is parsed (setTargetTable in
-// parse_clause.c), before nextval hands its row an id, and keeps it until its transaction ends,
-// even when the transaction also holds a stronger lock on events: pg_locks lists one row for each
-// mode a transaction holds. A lock of another mode alone (VACUUM's, ANALYZE's or CREATE INDEX
+// parse_clause.c) or, for a prepared statement, when its cached plan is locked before it runs
+// (AcquireExecutorLocks and AcquirePlannerLocks in plancache.c): before its column default calls
+// nextval for its row's id. It keeps the lock until its transaction ends, even when the
+// transaction also holds a stronger lock on events: pg_locks lists one row for each mode a
+// transaction holds. A lock of another mode alone (VACUUM's, ANALYZE's or CREATE INDEX
 // CONCURRENTLY's ShareUpdateExclusiveLock, ALTER TABLE's AccessExclusiveLock) draws no event id
 // and makes no writer. Every transaction also holds an ExclusiveLock on its own transaction id, and
 // one on each id its subtransactions took, until it ends. Postgres releases a transaction's locks
@@ -28,14 +30,18 @@
 //
 // A is final once no event writer that holds a transaction id below X is still running. Take any
 // transaction T that owns an id g <= A and had not committed when S was taken. T is an event
-// writer of this database: it inserted g into this database's events, so it took its write lock
-// before nextval handed it g and holds it until it ends. T held its transaction id before nextval
-// handed it g: that is the writer invariant, which Broker.Append must keep by taking its
-// transaction id before it inserts. nextval handed out g before it handed out A, because
-// events_id_seq has CACHE 1, so every backend draws from the one shared counter in time order.
-// A's row had committed before S was taken, and X was assigned after S. So xid(T) < X, and once
-// no event writer holding an id below X is running, T has ended: its row is visible to every
-// later statement, or it rolled back and g is a gap for good.
+// writer of this database: it inserted g into this database's events, and the insert's column
+// default drew g, so T took its write lock before nextval handed it g and holds it until it ends.
+// No id is drawn any other way: no statement of the module names events_id_seq (but the offline
+// seed tool's setval) and no insert lists an explicit id, which
+// TestOnlyAnEventInsertsDefaultDrawsAnEventID holds beside TestOnlyTheBrokerInsertsEvents
+// (internal/dispatch/api). T held its transaction id before nextval handed it g: that is the
+// writer invariant, which Broker.Append must keep by taking its transaction id before it inserts.
+// nextval handed out g before it handed out A, because events_id_seq has CACHE 1, so every
+// backend draws from the one shared counter in time order. A's row had committed before S was
+// taken, and X was assigned after S. So xid(T) < X, and once no event writer holding an id below X
+// is running, T has ended: its row is visible to every later statement, or it rolled back and g is
+// a gap for good.
 //
 // No other transaction can hold such a g. A transaction of another database on the instance
 // cannot write this database's events, and a transaction of this database that holds no write
@@ -67,14 +73,15 @@
 //
 // A write lock whose transaction id the read does not list makes the lock table's bound 0, which
 // proves nothing beyond the xmin. A transaction takes its RowExclusiveLock when its statement is
-// parsed (parse_clause.c, setTargetTable) and its transaction id only when it first writes a tuple
-// (heapam.c, heap_insert and heap_update call GetCurrentTransactionId), so a writer whose
-// transaction had no id yet holds the lock undated in between, and an UPDATE that matched no row
-// holds it undated until its transaction ends. Broker.Append takes its id before it inserts and is
-// never seen undated; the read cannot place any other such holder, so it proves nothing while one
-// stands. A prepared transaction is always dated: MarkAsPreparingGuts gives its dummy proc the
-// preparing backend's virtualtransaction (twophase.c), so its write lock and the lock on its id
-// carry one virtualtransaction while PostPrepare_Locks moves them and after.
+// parsed (parse_clause.c, setTargetTable) or its cached plan locked (plancache.c), and its
+// transaction id only when it first writes a tuple (heapam.c, heap_insert and heap_update call
+// GetCurrentTransactionId), so a writer whose transaction had no id yet holds the lock undated in
+// between, and an UPDATE that matched no row holds it undated until its transaction ends.
+// Broker.Append takes its id before it inserts and is never seen undated; the read cannot place
+// any other such holder, so it proves nothing while one stands. A prepared transaction is always
+// dated: MarkAsPreparingGuts gives its dummy proc the preparing backend's virtualtransaction
+// (twophase.c), so its write lock and the lock on its id carry one virtualtransaction while
+// PostPrepare_Locks moves them and after.
 //
 // One observation never proves its own A: its F is at most its own X. Say T2 takes transaction id
 // 100, T takes 101 and inserts event 7, then T2 inserts event 8 and commits. An observation now

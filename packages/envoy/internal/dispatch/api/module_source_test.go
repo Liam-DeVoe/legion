@@ -10,7 +10,7 @@
 // race build and the package's test binary stops compiling.
 //
 // No test, because a test declared here would run wherever this file compiles - the race job
-// included - and the fifteen tests of those eight files are the text-check job's to run, once
+// included - and the sixteen tests of those eight files are the text-check job's to run, once
 // each. What an untagged file of declarations costs the race build is this one compile:
 // nothing here walks or parses anything until a test calls it, and under `-race` that one
 // read of sqlWhitespace is the only call any of it gets.
