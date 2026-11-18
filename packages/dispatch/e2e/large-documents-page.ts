@@ -740,6 +740,8 @@ export interface TheLongTasks {
  * Fails, naming the miss, where the recorder never ran.
  */
 export async function readTheLongTasks(page: Page): Promise<TheLongTasks> {
+  // The recorders are installed by an init script before any script of the page runs, so an
+  // absent one is the failure named below and not a page that has yet to settle.
   const read = await page.evaluate(() => {
     const take = window.__largeDocumentTakeLongTasks;
     if (take === undefined) return undefined;

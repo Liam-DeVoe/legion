@@ -140,6 +140,7 @@ test("the shell's parts and the page's chrome are drawn after the editor's first
       .toEqual(Object.keys(parts).sort());
 
     const afterReads = await readTheReads(page);
+    // The poll above waited until every part was drawn, so this reading holds them all.
     const afterChrome = await readTheChrome(page);
     printTheChrome("the chrome after the first batch", afterReads.firstBatchMs, afterChrome);
     const firstBatchMs = afterReads.firstBatchMs ?? 0;
@@ -307,6 +308,8 @@ test("the chrome arriving moves the document's own first block by no pixels @pho
       })
       .toBe(true);
 
+    // Read once, after the poll above saw the chrome land: `moved` is the most the page's
+    // sampler saw the first block move up to now, which is what the row holds to a pixel.
     const place = await page.evaluate(() => window.__firstBlockPlace);
     test.info().annotations.push({
       description: `the first block started at ${Math.round(place?.started ?? Number.NaN)} px and moved ${place?.moved ?? Number.NaN} px`,

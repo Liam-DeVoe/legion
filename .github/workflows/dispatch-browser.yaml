@@ -48,11 +48,12 @@ name: Dispatch browser suite
 # review read the two together. Two more stood beside them, the Playwright install and the key
 # its apt archive cache was restored under: those two jobs run in the image this repository
 # builds now, which carries the three browsers and every host package they need, so both of
-# those scripts are gone with the steps that called them (dispatch://INFRA-1443). One shared body
-# is an action instead, .github/actions/dispatch-e2e-binaries, which the shard, alone and visual
-# jobs call to take what the binaries job built: one of its two steps is
-# actions/download-artifact, which no script can call, and neither carries a budget, so the
-# timeout-minutes its steps cannot carry costs it nothing.
+# those scripts are gone with the steps that called them (dispatch://INFRA-1443). The download
+# of what the binaries job built is no shared body of either kind: each attempt at it carries a
+# budget of its own, which a composite action's steps cannot, and it is
+# actions/download-artifact, which no script can call. So the shard, alone and visual jobs each
+# write out the same four steps for it - two attempts, the step that places the one that
+# completed, and the chmod - and the shard job's comments on them say why each.
 #
 # The budget rule every job and step below follows, this file being where it is written down now
 # that ci.yaml's dispatch job is gone: a step's budget is its measured maximum plus 15 per cent,
@@ -170,8 +171,8 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-test-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: ${{ format('go-envoy-test-{0}-', runner.os) }}
+          key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) }}
       # One `go build -o <directory>/` writes one binary per package, each named after it:
       # dispatch, broker, dev-oidc-issuer and requestseed. CGO_ENABLED=0 is pinned on the build
       # rather than left to the runner's default, so each binary is static by construction: the
@@ -364,9 +365,7 @@ jobs:
     #   Complete job                                           0
     #
     # The three uploads are three steps of this job and not one, so the sum below counts each
-    # of them: 3 + 2 + 4, not 4. The download and the chmod were two steps when those legs ran
-    # and are one now, the call of ./.github/actions/dispatch-e2e-binaries, which runs the same
-    # two; the sum counts both, 5 + 1.
+    # of them: 3 + 2 + 4, not 4.
     #
     # The browser step's own 9 minutes above held at the merged head, where #2958's
     # accessibility rows joined the shards: its maxima there are 381 s (run 42521581875, job
@@ -378,26 +377,46 @@ jobs:
     # this step, which raised it to 10 minutes there, is in neither sample: it was taken on the
     # bare runner with the Playwright install this change removes still in the job.
     #
-    # The browser step is the one step of this job that carries a budget, so the job's budget is
-    # that budget plus the maxima above of every step without one, which sum to 219 s:
-    # 540 + 219 = 759 s, 12 min 39 s, rounded up to the 13 minutes below. That is a backstop
-    # above the sum of the step budgets, as this file's head says a job budget is.
+    # The browser step was the one step of this job that carried a budget, so the job's budget was
+    # that budget plus the maxima above of every step without one, which summed to 219 s:
+    # 540 + 219 = 759 s, 12 min 39 s, rounded up to 13 minutes.
+    #
+    # THE TWO NETWORK READS, AT A BUSY HOUR. That sum read the binaries download at 5 s and the
+    # image pull, `Initialize containers`, at 45 s, from quiet runs, and on 2026-11-18 a leg of
+    # each job stalled on one of them while its siblings did not: in run 44228250420 shard (4)'s
+    # download of dispatch-e2e-binaries (106 MB, 101 MiB) took 428 s where the run's six other
+    # legs took 2 to 6 s, and the job budget cancelled the leg at about 13 minutes; in run
+    # 44213916667 alone (chromium-alone) spent 355 s pulling this image (1,161 MB) where the two
+    # other alone legs took 38 and 39 s, and its budget cancelled it 3 s into its checkout. The
+    # pull's time was one layer: the other nine arrived in 6 s and the 122 MB Firefox layer in
+    # 346 s, and shard (4) of that run, pulling in the same minute, took 200 s on two layers. A
+    # merge group drops its entry for a cancelled leg as for a failed one, and every group behind
+    # it is built again. So the download now carries a budget of its own and a second attempt
+    # (the step's comment), and the pull is counted at that 355 s: no step holds it, so no step
+    # budget can cut it and no step can read it again, and Docker's own retry ("Retrying in 5
+    # seconds" in that log) answers a failed read, not a slow one. The job's budget is the
+    # browser step's 540 s, the two download attempts' 120 s each, and the steps without a
+    # budget at 219 - 5 - 45 + 355 = 524 s: 1,304 s, 21 min 44 s, rounded up to the 22 minutes
+    # below. The browser step's own budget is unchanged, and it still fires before the job's.
     #
     # The rows behind those seconds were the suite of the head those runs measured. Listed
-    # again at this branch's head, the suite holds 1,627 rows in 221 files, which is two
+    # again at this branch's head, the suite holds 1,628 rows in 222 files, which is two
     # listings rather than one: the six `-alone` projects are out of the default selection
-    # since dispatch://INFRA-1280, so a command that names no project lists 1,568 rows in 214
+    # since dispatch://INFRA-1280, so a command that names no project lists 1,569 rows in 215
     # files and one that names those six lists 59 more, in 8 files. One file is in both:
     # large-documents-long-build.e2e.ts, whose desktop half `chromium` runs and whose phone half
     # is `iphone-long-build-alone`'s; every other file of the second listing is a wall-clock
     # file that project selects whole since sjawhar/legion#2697. The ten projects this job's
-    # shard command names below hold 1,546 rows in 213 files; the four of those the
-    # pull-request lane names hold 1,433 in 211, of which that lane's `@pr` grep selects 286
+    # shard command names below hold 1,547 rows in 214 files; the four of those the
+    # pull-request lane names hold 1,434 in 212, of which that lane's `@pr` grep selects 287
     # in 147 files, 150 of them on the real stack - exactly the 150 of `realStackBudget`
-    # (e2e/__tests__/pull-request-lane.test.ts), and the same 286 and 150 as at 1aaa9135:
-    # neither the reconnect row this round added to large-documents-reader.e2e.ts nor the three
-    # phone rows it moved to `iphone-long-build-alone` carries the tag, nor do the two rows of
-    # main's issue-page-look.e2e.ts, and no row of a `large-documents-*` file is in that grep.
+    # (e2e/__tests__/pull-request-lane.test.ts). That is one row more than the 286 at 1aaa9135
+    # and the same 150: main's #3730 moved the typed-block family's one tagged row out of
+    # text-typed-blocks.e2e.ts into the stubbed text-typed-blocks.stub.e2e.ts and tagged a new
+    # row of issue.e2e.ts, on the real stack. Neither the reconnect row this round added to
+    # large-documents-reader.e2e.ts nor the three phone rows it moved to
+    # `iphone-long-build-alone` carries the tag, nor do the two rows of main's
+    # issue-page-look.e2e.ts, and no row of a `large-documents-*` file is in that grep.
     # The two `visual` projects hold 22, which the
     # visual job runs one row at a time, and the 59 rows of the alone job are 23, 13, 16, 2, 2
     # and 3. The 23 is `chromium-alone`'s 16 heavy-bodies rows, its two nested-directive rows,
@@ -410,11 +429,11 @@ jobs:
     # the 3 is large-documents-long-build.e2e.ts on `iphone-long-build-alone`
     # (dispatch://INFRA-341).
     #
-    # Those 1,546 cut five ways, each leg listed at this head with the ten projects named below
-    # and this job's own denominator (`--shard=<i>/5 --list`): 310, 309, 309, 309 and 309 rows,
-    # which sum to the 1,546. Equal row counts are all Playwright's cut promises, and the
+    # Those 1,547 cut five ways, each leg listed at this head with the ten projects named below
+    # and this job's own denominator (`--shard=<i>/5 --list`): 310, 310, 309, 309 and 309 rows,
+    # which sum to the 1,547. Equal row counts are all Playwright's cut promises, and the
     # seconds above are where what a leg costs is read instead.
-    timeout-minutes: 13
+    timeout-minutes: 22
     strategy:
       fail-fast: false
       # Five legs. The count is written here and in the `--shard` denominator of the browser step
@@ -431,10 +450,55 @@ jobs:
       # What the binaries job above built, in place of this job's own actions/setup-go
       # and go-envoy cache restore, which are gone: with no go command left here they bought
       # nothing, and the restore was there only for the build run-server.sh no longer does.
-      # The action downloads the four into the one directory run-broker.sh serves and makes them
-      # executable, and says why both; the browser step below names the server by its path
-      # there and the broker's three by the directory.
-      - uses: ./.github/actions/dispatch-e2e-binaries
+      # The directory is the one run-broker.sh built the broker's three binaries in, which is
+      # where packages/dispatch/e2e/real-broker.ts:30-31 runs requestseed from; the server
+      # binary rides along in it and is named by path below.
+      #
+      # A BOUND OF ITS OWN AND A SECOND ATTEMPT. A read of this artifact took 2 to 6 s on every
+      # leg but one, which took 428 s (the budget note above), so a slow read is answered by
+      # reading again rather than by waiting. Each attempt carries this file's floor of 2
+      # minutes, twenty times the longest of the other reads. That is not this file's rule of
+      # the measured maximum plus 15 per cent, which the 428 s read would put at 9 minutes: those
+      # 9 minutes are the wait this bound is here to cut, since the same bytes took seconds on
+      # every other leg. The second attempt runs only when the first did not end in success, and
+      # a second failure fails the job there, by name.
+      #
+      # EACH ATTEMPT INTO A DIRECTORY OF ITS OWN. A step that runs past its budget in a
+      # `container:` job ends the `docker exec` that started it, and the action's process inside
+      # the container can outlive it (moby/moby#9098) and go on writing the files it was
+      # extracting. Into a directory of its own, those writes reach nothing a later step reads:
+      # the step after the two copies the attempt that succeeded into the directory
+      # run-broker.sh serves from.
+      - id: binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        timeout-minutes: 2
+        continue-on-error: true
+        with:
+          name: dispatch-e2e-binaries
+          path: packages/envoy/out/dispatch-e2e-binaries-1
+      - name: Download the binaries again, after a first attempt that did not complete
+        if: steps.binaries.outcome != 'success'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        timeout-minutes: 2
+        with:
+          name: dispatch-e2e-binaries
+          path: packages/envoy/out/dispatch-e2e-binaries-2
+      # The step budget note above does not count this step, which is new here. It copies one
+      # 106 MB artifact on the runner's disk (141 ms for those bytes on a pod), and the 16 s
+      # that rounding up to 22 minutes leaves hold it.
+      - name: Place the binaries of the attempt that completed
+        env:
+          FIRST: ${{ steps.binaries.outcome }}
+        run: |
+          attempt=1
+          [ "$FIRST" = success ] || attempt=2
+          mkdir -p packages/envoy/out/dispatch-e2e-broker
+          cp -R "packages/envoy/out/dispatch-e2e-binaries-$attempt/." packages/envoy/out/dispatch-e2e-broker/
+      # actions/upload-artifact keeps no executable bit, so all four arrive at mode 0644.
+      # run-server.sh:201-203 and run-broker.sh refuse a path that is not executable, and that
+      # refusal would otherwise surface in a stack's own log, far from this cause.
+      - name: Make the downloaded binaries executable
+        run: chmod +x packages/envoy/out/dispatch-e2e-broker/*
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
       # WHY EVERY JOB THAT RUNS THE SUITE CARRIES THIS STEP. Playwright loads
@@ -581,7 +645,7 @@ jobs:
         # main's run 43421089840 also holds, which took 51.2 there; the 24th is new on this
         # branch. And the three phone builds of
         # large-documents-long-build.e2e.ts, 1.8 min, 51.8 s and 39.3 s, are
-        # `iphone-long-build-alone`'s leg now. Re-listed at this head, `shard (5)` holds 295
+        # `iphone-long-build-alone`'s leg now. Re-listed at this head, `shard (5)` holds 309
         # rows, and the next full-lane run measured that leg: at head 41eed1ec (run
         # 43506575017, job 132166911588) this step took 402 s of its 540.
         timeout-minutes: 9
@@ -957,8 +1021,7 @@ jobs:
     #   Complete job                                           1
     #
     # The three uploads are three steps here too, and the sum below counts each of them:
-    # 2 + 2 + 1, not 2. The download and the chmod are one step now, as in the shard job, and
-    # the sum counts both, 5 + 0.
+    # 2 + 2 + 1, not 2.
     #
     # The browser step's own 4 minutes above still holds: 69 s is the most it took over these
     # nine legs, webkit-alone's again, well under the 194 s that budget was derived from - none
@@ -967,18 +1030,31 @@ jobs:
     # None of those nine is an `iphone-measure-alone` leg either, which is why that leg's
     # budget is derived above from its own rows rather than from this pool.
     #
-    # The browser step is the one step of this job that carries a budget, so the job's budget is
-    # that budget plus the maxima above of every step without one, which sum to 137 s. That is
-    # two sums, because the browser step's budget is two numbers: 240 + 137 = 377 s,
+    # The browser step was the one step of this job that carried a budget, so the job's budget was
+    # that budget plus the maxima above of every step without one, which summed to 137 s. That
+    # was two sums, because the browser step's budget is two numbers: 240 + 137 = 377 s,
     # 6 min 17 s, rounded up to 7 minutes for the five legs whose browser step has 4 minutes,
     # `iphone-long-build-alone`'s derived 4 among them, and 180 + 137 = 317 s, 5 min 17 s,
     # rounded up to 6 minutes for `iphone-measure-alone`.
+    #
+    # The shard job's note "THE TWO NETWORK READS, AT A BUSY HOUR" holds here too, and one of its
+    # two legs is this job's: in run 44213916667 alone (chromium-alone) spent 355 s pulling the
+    # image, and the 6-minute budget cancelled it 3 s into its checkout. The download carries the
+    # same budget and second attempt as there, and the pull is counted at that 355 s. The job's
+    # budget is the browser step's budget, the two download attempts' 120 s each, and the steps
+    # without a budget at 137 - 5 - 45 + 355 = 442 s, so it is two sums still: 240 + 240 + 442 =
+    # 922 s, 15 min 22 s, rounded up to 16 minutes for the five legs whose browser step has 4
+    # minutes, and 180 + 240 + 442 = 862 s, 14 min 22 s, rounded up to 15 minutes for
+    # `iphone-measure-alone`. Each leaves 38 s over, which hold the new step that places the
+    # binaries (the shard job's comment above that step). The browser step's own budget is
+    # unchanged, and it still fires first.
+    #
     # Each is a backstop above the sum of that leg's step budgets, as this file's head says a
     # job budget is. The two steps that carry a budget read `matrix.project` for it rather than
     # taking a matrix column of their own, which would put the number into each leg's name
-    # (`alone (chromium-alone, 4, 7)`) and so into the leg capture the merge job's row
+    # (`alone (chromium-alone, 4, 16)`) and so into the leg capture the merge job's row
     # accounting reads.
-    timeout-minutes: ${{ matrix.project == 'iphone-measure-alone' && 6 || 7 }}
+    timeout-minutes: ${{ matrix.project == 'iphone-measure-alone' && 15 || 16 }}
     strategy:
       fail-fast: false
       matrix:
@@ -994,9 +1070,37 @@ jobs:
         with:
           persist-credentials: false
       # What the binaries job above built, in place of this job's own actions/setup-go
-      # and go-envoy cache restore, which are gone: the shard job's call of this action says
-      # why, and this job runs the same two scripts from the same directory.
-      - uses: ./.github/actions/dispatch-e2e-binaries
+      # and go-envoy cache restore, which are gone: the shard job's step of this name says why,
+      # and this job runs the same two scripts from the same directory.
+      # The shard job's steps of these names say why each attempt carries its own budget and
+      # directory and why there is a second; the four steps are the same here.
+      - id: binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        timeout-minutes: 2
+        continue-on-error: true
+        with:
+          name: dispatch-e2e-binaries
+          path: packages/envoy/out/dispatch-e2e-binaries-1
+      - name: Download the binaries again, after a first attempt that did not complete
+        if: steps.binaries.outcome != 'success'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        timeout-minutes: 2
+        with:
+          name: dispatch-e2e-binaries
+          path: packages/envoy/out/dispatch-e2e-binaries-2
+      - name: Place the binaries of the attempt that completed
+        env:
+          FIRST: ${{ steps.binaries.outcome }}
+        run: |
+          attempt=1
+          [ "$FIRST" = success ] || attempt=2
+          mkdir -p packages/envoy/out/dispatch-e2e-broker
+          cp -R "packages/envoy/out/dispatch-e2e-binaries-$attempt/." packages/envoy/out/dispatch-e2e-broker/
+      # actions/upload-artifact keeps no executable bit, so all four arrive at mode 0644.
+      # run-server.sh:201-203 and run-broker.sh refuse a path that is not executable, and that
+      # refusal would otherwise surface in a stack's own log, far from this cause.
+      - name: Make the downloaded binaries executable
+        run: chmod +x packages/envoy/out/dispatch-e2e-broker/*
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
       # The shard job's step of this name, for the reason it gives: Playwright's Node runner
@@ -1247,7 +1351,11 @@ jobs:
     #
     # The move into this workflow changed none of that: the job runs the same steps on the same
     # machine, and full-lane run 42316487530 falls inside every figure above - 9 s install,
-    # 191 s dashboard, 12 s sign-in, 96 s in the steps without a budget, 313 s whole.
+    # 191 s dashboard, 12 s sign-in, 96 s in the steps without a budget, 313 s whole. The first
+    # full-lane run after this job's Go cache restore moved from go-envoy to go-envoy-test,
+    # 42614920253 (job 129152410448), is inside them too - 9 s install, 106 s dashboard, 8 s
+    # sign-in, 96 s in the steps without a budget, 219 s whole - and that restore reads
+    # go-envoy-test-Linux-go1.27.3, 677,668,128 bytes, 22 s of those 96.
     timeout-minutes: 13
     services:
       postgres:
@@ -1281,8 +1389,8 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-test-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-test-{0}-', runner.os) || '' }}
+          key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) || '' }}
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
       # The shard job's step of this name, for the reason it gives: Playwright's Node runner
@@ -1414,8 +1522,8 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-{0}-', runner.os) || '' }}
+          key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-{0}-{1}-', runner.os, runner.arch) || '' }}
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
       - name: Build contracts for dispatch e2e
@@ -1485,28 +1593,34 @@ jobs:
   # make this list stale: it names what the numbers were derived from, and a run that outran a
   # budget fails the step by name, which is the signal to derive them again.
   #
-  #   step                              job 128655164325  128661965627  128664453706  128713801668  128720753224
-  #   checkout                                         8             7             -             7             7
-  #   setup-go                                         7             9             -             6             9
-  #   the go cache restore                             1             2             -             2             2
-  #   setup-bun                                        2             1             -           218           131
-  #   bun install                                      5             7             -             3             -
-  #   the contracts build                              0             0             -             0             -
-  #   the dashboard build                             33            37             -            23             -
-  #   the image pull                                  33            26            32            32             -
-  #   the browser step                                90           106            78             -             -
-  #   the upload                                       1             1             -             2             1
-  #   the whole job                                  180           201           163           318           272
+  #   step                              job 128655164325  128661965627  128664453706  128713801668  128720753224  129152410516
+  #   checkout                                         8             7             -             7             7             8
+  #   setup-go                                         7             9             -             6             9             9
+  #   the go cache restore                             1             2             -             2             2            17
+  #   setup-bun                                        2             1             -           218           131             2
+  #   bun install                                      5             7             -             3             -             7
+  #   the contracts build                              0             0             -             0             -             0
+  #   the dashboard build                             33            37             -            23             -            30
+  #   the image pull                                  33            26            32            32             -            35
+  #   the browser step                                90           106            78             -             -            62
+  #   the upload                                       1             1             -             2             1             1
+  #   the whole job                                  180           201           163           318           272           172
   #
   # The rule is in this file's head. The browser step's maximum was 106 s, so 106 x 1.15 = 122 s
   # -> 3 min, and the job budget was that step's 180 s plus the measured maximum of every step
-  # without one, which is 314 s of the five columns together: 494 s -> 9 min.
+  # without one, which is 333 s of the six columns together: 513 s -> 9 min.
+  #
+  # The sixth column is the first full-lane run after this job's Go cache restore moved from
+  # go-envoy to go-envoy-test, run 42614920253 (job 129152410516). That restore reads
+  # go-envoy-test-Linux-go1.27.3, 677,668,128 bytes, where the five columns before it read
+  # go-envoy: 17 s rather than the 1 to 2 s above, which is why that row's maximum moved and the
+  # job budget still held.
   #
   # The browser step then outran its budget, which is this rule's signal to derive it again. Over
   # the 17 merge-group runs of this job from 2026-11-14T08:40Z to 2026-11-15T06:25Z that passed,
   # it read 111-179 s, and two runs that day timed out on it at 183 s and 182 s (run 43687635217,
   # a merge group, and run 43691184536, a pull request). So 183 x 1.15 = 211 s -> 4 min, and the
-  # job budget is that step's 240 s plus the same 314 s: 554 s -> 10 min.
+  # job budget is that step's 240 s plus the same 333 s: 573 s -> 10 min.
   #
   # The first of those runs was the only one this job had when these budgets were first written,
   # and one run proved too thin a sample: 90 s gave a 2-minute bound by the rule's own floor, and
@@ -1522,18 +1636,28 @@ jobs:
   # is the backstop that never fires first, so it is re-derived above from the maximum those
   # runs measured. A download this job does not control may not decide a required check.
   #
+  # The step "Pull the stack's Postgres image" was added later, for the reason its comment gives,
+  # and its pull is counted at the 120 s the browser step spent before the stack's first output
+  # on the run that found it: 240 + 314 + 120 = 674 s, 11 min 14 s, rounded up to 12 minutes.
+  #
   # The table's setup-go and go cache restore rows are gone from this job, and its connections
-  # step with them: the job runs no go command now (the download step below says why), so the
-  # call of ./.github/actions/dispatch-e2e-binaries - the binaries job's artifact download and
-  # its chmod - stands where those three stood. The download took 5 s in the shard job of run
-  # 43691891752 (job 132744755413), under the 8 + 10 + 3 s the three removed steps took in this
-  # job of that run (job 132744152651), so the job budget above, derived with them, still
-  # bounds it.
+  # step with them: the job runs no go command now (its first download step says why), so the
+  # binaries job's artifact stands where those three stood, taken by the four steps the shard
+  # and alone jobs take it by - two attempts at the download, each with a budget of 2 minutes and
+  # the second only after a first that did not complete, the step that places the attempt that
+  # completed, and the chmod. The shard job's comments on those steps say why each, and its note
+  # "THE TWO NETWORK READS, AT A BUSY HOUR" why a read of this artifact carries a bound of its
+  # own: one leg's read of it took 428 s where its siblings' took seconds. So the job's budget is
+  # the browser step's 240 s, the two download attempts' 120 s each, the Postgres pull's 120 s
+  # and the steps without a budget in the six columns less setup-go's 9 s and the cache
+  # restore's 17 s, 333 - 9 - 17 = 307 s: 907 s, 15 min 7 s, rounded up to the 16 minutes below,
+  # whose 53 s left over hold the place step and the chmod, a second at most in the shard job's
+  # reading.
   visual:
     needs: binaries
     if: inputs.lane == 'full'
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 16
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1548,10 +1672,35 @@ jobs:
       # 07:56:53, and the step timed out on its phone shots with every shot it reached passing.
       # Built in the binaries job, they cost a build the shard and alone jobs already wait for,
       # and the step's budget measures the shots again, as the image pull and the connections
-      # read were moved out of it before. The action says which directory they land in and why
-      # it makes them executable, and the browser step below names them there. They run on the
-      # host here, not in a container: the binaries job builds them static (CGO_ENABLED=0).
-      - uses: ./.github/actions/dispatch-e2e-binaries
+      # read were moved out of it before. The shard job's steps of these names say which
+      # directory they land in, why each attempt carries its own budget and directory, why there
+      # is a second and why the four are made executable, and the browser step below names them
+      # there. They run on the host here, not in a container: the binaries job builds them static
+      # (CGO_ENABLED=0).
+      - id: binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        timeout-minutes: 2
+        continue-on-error: true
+        with:
+          name: dispatch-e2e-binaries
+          path: packages/envoy/out/dispatch-e2e-binaries-1
+      - name: Download the binaries again, after a first attempt that did not complete
+        if: steps.binaries.outcome != 'success'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        timeout-minutes: 2
+        with:
+          name: dispatch-e2e-binaries
+          path: packages/envoy/out/dispatch-e2e-binaries-2
+      - name: Place the binaries of the attempt that completed
+        env:
+          FIRST: ${{ steps.binaries.outcome }}
+        run: |
+          attempt=1
+          [ "$FIRST" = success ] || attempt=2
+          mkdir -p packages/envoy/out/dispatch-e2e-broker
+          cp -R "packages/envoy/out/dispatch-e2e-binaries-$attempt/." packages/envoy/out/dispatch-e2e-broker/
+      - name: Make the downloaded binaries executable
+        run: chmod +x packages/envoy/out/dispatch-e2e-broker/*
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
       - name: Build contracts for dispatch e2e
@@ -1576,6 +1725,18 @@ jobs:
         # pay for it inside the browser step's own budget. A failed pull is a fault of this
         # repository's own package, so it fails here and says so.
         run: docker pull ghcr.io/cybermonklabs/legion/ci@sha256:2f05f8a734509a7b3f26a912639488ee08f58a7b292d14d62271bcff9038768f
+      # THE STACK'S POSTGRES IMAGE, PULLED HERE FOR THE SAME REASON. e2e/harness-pool.ts's
+      # startStack starts the stack's PostgreSQL with a `docker run` of DISPATCH_E2E_PG_IMAGE, the
+      # digest the browser step below exports, and a pull the runner had not made yet counts
+      # inside that step's 4 minutes. On #4129 (run 44215262087, job 134503540243) the step spent
+      # 120 s before the stack's first output, where five green visual jobs (134499880849,
+      # 134479592234, 134451447710, 134451520100, 134547177192) spent 7 to 15 s, and the step ran
+      # past its budget at 250 s. Its log does not time the pull apart from the rest of that
+      # start, so the 120 s is the bound this pull is given, not a measure of the pull alone. The
+      # digest is the browser step's, written twice, and the two must stay the same: a pull of
+      # another digest here leaves that step to pull its own inside its budget again.
+      - name: Pull the stack's Postgres image
+        run: docker pull ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
       - name: Browser-test dispatch dashboard against its baselines
         timeout-minutes: 4
         run: |

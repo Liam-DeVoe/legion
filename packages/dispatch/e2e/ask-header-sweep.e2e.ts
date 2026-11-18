@@ -260,7 +260,7 @@ function readHeader(
   const drawnAtAll = (rect: Box) => rect.right - rect.left > 0.5 && rect.bottom - rect.top > 0.5;
   // What of `rect` is drawn: every box between it and the header that clips its overflow
   // cuts it to its own edges, as `truncate` does a name.
-  const clipped = (rect: Box, from: Element | null): Box => {
+  const clippedBox = (rect: Box, from: Element | null): Box => {
     const kept = boxOf(rect);
     for (let at = from; at !== null && at !== root; at = at.parentElement) {
       const style = getComputedStyle(at);
@@ -280,12 +280,12 @@ function readHeader(
     const range = document.createRange();
     range.selectNodeContents(text);
     return [...range.getClientRects()]
-      .map((rect) => clipped(rect, text.parentElement))
+      .map((rect) => clippedBox(rect, text.parentElement))
       .filter(drawnAtAll);
   };
   const boxRects = (element: Element): Box[] =>
     [...element.getClientRects()]
-      .map((rect) => clipped(rect, element.parentElement))
+      .map((rect) => clippedBox(rect, element.parentElement))
       .filter(drawnAtAll);
   const placed = (element: Element) => {
     for (let at: Element | null = element; at !== null && at !== root; at = at.parentElement) {
@@ -310,6 +310,7 @@ function readHeader(
     return painted || bordered;
   };
   const say = (element: Element) => {
+    // Run in the page by `evaluate`, this is the DOM's own read of the label it names.
     const words = (element.getAttribute("aria-label") ?? element.textContent ?? "")
       .trim()
       .replace(/\s+/g, " ");
@@ -388,12 +389,12 @@ function readHeader(
       range.selectNodeContents(text);
       for (const rect of range.getClientRects()) {
         whole += rect.width;
-        const kept = clipped(rect, parent);
+        const kept = clippedBox(rect, parent);
         if (drawnAtAll(kept)) drawnWidth += kept.right - kept.left;
       }
     }
     if (whole > 0) return { drawn: drawnWidth, whole };
-    const box = clipped(field.getBoundingClientRect(), field.parentElement);
+    const box = clippedBox(field.getBoundingClientRect(), field.parentElement);
     return {
       drawn: drawnAtAll(box) ? box.right - box.left : 0,
       whole: Number.POSITIVE_INFINITY,
@@ -517,6 +518,7 @@ function readHeader(
     swept.push(width);
   }
   swept.push(Math.max(widths.widest, Math.round(own)));
+  // Run in the page by `evaluate`: the root's own style, kept so the sweep can put it back.
   const style = root.getAttribute("style");
   try {
     return swept.map((width) => measure(width));
@@ -528,6 +530,8 @@ function readHeader(
 
 /** Reads `header` at the width its host draws it: the one reading of a host-width row. */
 async function readAtHostWidth(header: Locator, drawn: Drawn): Promise<Reading> {
+  // With no widths `readHeader` returns the one reading at the host's width, so this is never
+  // undefined and the check below only narrows the type.
   const [reading] = await header.evaluate(readHeader, { drawn, widths: null });
   if (reading === undefined) throw new Error("the header was read at no width");
   return reading;
@@ -1078,6 +1082,8 @@ test("a closed issue's answered block in the narrowest reading pane draws its ti
     // The reader drags the line between the list and the pane as far right as it goes, where
     // the pane keeps 30% of the two columns (`PaneDivider`): about 266 px.
     const divider = page.getByTestId("inbox-pane-divider");
+    await expect(divider).toBeVisible();
+    // The wait above drew the divider, and a drawn element has a box.
     const line = await divider.boundingBox();
     if (line === null) throw new Error("the Inbox draws no pane divider");
     const y = line.y + line.height / 2;

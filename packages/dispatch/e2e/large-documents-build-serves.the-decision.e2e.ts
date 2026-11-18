@@ -294,6 +294,8 @@ test(`a decision answered while ${documentNames.large}'s editor is built goes ou
       )
       .toBe("answered");
 
+    // The page records the press before it sends the answer, and the poll above saw the server
+    // hold that answer, so the press is recorded by now.
     const pressed = await page.evaluate(() => window.__answerPressed);
     const sentMs = (await page.evaluate(() => window.__answerSentMs)) ?? Number.NaN;
     const leftAfterMs = sentMs - (pressed?.at ?? Number.NaN);

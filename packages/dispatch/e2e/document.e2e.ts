@@ -194,6 +194,8 @@ test("comment, suggest, and ask anchor marks on a project document; accept edits
     await askComposer.locator('button[type="submit"]').click();
     const askCard = alicePage.locator("[data-margin-item]", { hasText: "Should we publish this?" });
     await expect(askCard).toBeVisible();
+    // The card's locator requires `data-margin-item`, so the card the wait above saw holds it:
+    // this read is never null and the check below only narrows the type.
     const askId = await askCard.getAttribute("data-margin-item");
     if (askId === null) {
       throw new Error("Document ask did not receive a margin id.");
@@ -251,8 +253,15 @@ async function expectDotBeside(page: Page, neighbour: string): Promise<void> {
   const dot = connectedDot(header);
   await expect(dot).toHaveText("connected");
   await expect(page.locator("[data-margin-pending]")).toHaveCount(0);
-  const besideHandle = await header.getByRole("button", { name: neighbour }).elementHandle();
+  const button = header.getByRole("button", { name: neighbour });
+  await expect(button).toBeVisible();
+  await expect(dot).toBeVisible();
+  await expect(header).toBeVisible();
+  // The waits above drew the button, the dot and the card, and a drawn element has a handle.
+  const besideHandle = await button.elementHandle();
+  // The dot was waited for above, so its handle is there as the button's is.
   const dotHandle = await dot.elementHandle();
+  // The card was waited for above, so its handle is there as the button's is.
   const headerHandle = await header.elementHandle();
   if (besideHandle === null || dotHandle === null || headerHandle === null) {
     throw new Error("the version actions are not visible");
@@ -378,6 +387,7 @@ test("the blocks the server drew into the page are laid out at the width the doc
     // than the box held open for it.
     await expect(page.getByTestId("artifact-header")).toBeVisible();
     await expect(page.locator("[data-margin-pending]")).toHaveCount(0);
+    // The wait above drew the header card, and a drawn element has a box.
     const card = await page.getByTestId("artifact-header").boundingBox();
     if (card === null) {
       throw new Error("the document's header card is not visible");

@@ -90,6 +90,8 @@ for (const route of ["the issue's Conversation tab", "a project document"] as co
       // The page settled: the margin is in the column rather than the box held open for it.
       await expect(page.getByRole("complementary", { name: "Review margin" })).toBeVisible();
       await expect(page.locator("[data-margin-pending]")).toHaveCount(0);
+      await expect(page.locator('[data-testid="main-content"]')).toBeVisible();
+      // The wait above drew the shell's main content, and a drawn element has a box.
       const settled = await page.locator('[data-testid="main-content"]').boundingBox();
       if (settled === null) {
         throw new Error("the shell's main content is not visible");

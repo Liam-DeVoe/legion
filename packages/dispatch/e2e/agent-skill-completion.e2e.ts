@@ -246,7 +246,9 @@ test("the menu offers the same list at the start of a message and inside a sente
 
     await input.fill("please read /");
     await expect(commandMenu(page).getByRole("option")).toHaveText(MENU_ROWS);
-    expect(await commandMenu(page).getByRole("option").allInnerTexts()).toEqual(atStart);
+    // Rows that match MENU_ROWS say nothing yet of the whole of what each row says - each
+    // pattern reads the start of its row alone - so their text is read until it matches too.
+    await expect.poll(() => commandMenu(page).getByRole("option").allInnerTexts()).toEqual(atStart);
   } finally {
     await context.close();
   }
