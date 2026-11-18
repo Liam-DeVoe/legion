@@ -211,6 +211,9 @@ YAML
   cat > "$root/scripts/e2e/lib/nats-stream.test.ts" <<YAML
 docker("run", "--rm", "$REGISTRY@$NATS", "-js");
 YAML
+  cat > "$root/scripts/e2e/lib/containers.test.ts" <<YAML
+const natsImage = "$REGISTRY@$NATS";
+YAML
   cat > "$root/packages/dispatch/e2e/visual-run.sh" <<YAML
 #!/bin/sh
 docker run --rm --network host --cpus 2 --memory 4g $REGISTRY@$NATS \\
@@ -221,8 +224,8 @@ YAML
 judge_image=$REGISTRY@$NATS
 docker run --rm --init "\$judge_image" bash -c 'echo judged'
 # The shape IMAGE_FROM covers in the real rig.sh: its NATS server's image, which
-# scripts/e2e/lib/nats-image.sh sets.
-docker run -d --name rig-nats "\$nats_image" -js >/dev/null
+# scripts/e2e/lib/nats-image.sh sets, started through lib/containers.sh's helper.
+start_nats_container rig-nats --cpus 1 --memory 512m -- "\$nats_image" -js
 YAML
   cat > "$root/scripts/e2e/stage1-skeleton.sh" <<YAML
 #!/usr/bin/env bash
@@ -757,6 +760,41 @@ YAML
 run_check tree "$root"
 check "a variable from nowhere fails" "$(is "$status" 1)"
 check "says what to do with it" "$(contains "$out" 'add the variable that holds it to IMAGE_FROM')"
+
+echo "case: a lib/containers.sh start whose image this check cannot read"
+# start_postgres_container and start_nats_container run \`docker run\` on the image after their
+# \`--\`, so a call of either is a docker command that fetches that image.
+root=$(fixture opaque-container-start)
+cat > "$root/scripts/e2e/stage1-skeleton.sh" <<'YAML'
+#!/usr/bin/env bash
+start_postgres_container pg pg_sockets --cpus 2 --memory 2g -- "$PG_IMAGE"
+YAML
+run_check tree "$root"
+check "a variable from nowhere fails" "$(is "$status" 1)"
+check "says what to do with it" "$(contains "$out" 'add the variable that holds it to IMAGE_FROM')"
+
+echo "case: a lib/containers.sh start of an image no row holds"
+# A helper start is held to the rows as any docker command is: its image names a digest one of
+# them carries.
+root=$(fixture container-start-digest-unknown)
+cat > "$root/scripts/e2e/stage1-skeleton.sh" <<YAML
+#!/usr/bin/env bash
+start_postgres_container pg pg_sockets --cpus 2 --memory 2g -- $REGISTRY@$UNKNOWN
+YAML
+run_check tree "$root"
+check "a start on a digest outside the file fails" "$(is "$status" 1)"
+check "names the file to add it to" "$(contains "$out" 'names a digest no row of .github/ci-images.yaml holds')"
+check "and the line to edit" "$(contains "$out" 'stage1-skeleton.sh:2:')"
+
+echo "case: the rig's IMAGE_FROM entry once its helper start is gone"
+# The fixture's rig.sh starts its NATS server through start_nats_container, which is the one use
+# of the rig's IMAGE_FROM entry: with that start gone the entry names nothing.
+root=$(fixture rig-start-gone)
+sed -i '/^start_nats_container /d' "$root/packages/pi-legion/scripts/skill-scenarios/rig.sh"
+run_check tree "$root"
+check "fails" "$(is "$status" 1)"
+check "names the rig's variable" "$(contains "$out" 'rig.sh:1: IMAGE_FROM names $nats_image here')"
+check "says what to delete" "$(contains "$out" 'Delete the entry')"
 
 echo "case: an IMAGE_FROM entry no docker command uses"
 root=$(fixture image-from-stale)
