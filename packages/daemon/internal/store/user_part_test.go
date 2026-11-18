@@ -43,4 +43,19 @@ func TestOpenRefusesAMisreadDSNByItsLength(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "connect to Postgres at 127.0.0.1:1") || strings.Contains(err.Error(), token) {
 		t.Errorf("a token as the user: %v, want the connect's refusal naming the address and not the token", err)
 	}
+	// A ? or # before the @, which pgx keeps in the user part and net/url reads otherwise, reaches
+	// the connect, and its refusal names the address and no part of the user part.
+	for _, userPart := range []string{user + ":" + password + "?w", user + ":" + password + "#w", token + "?w", token + "#w"} {
+		dsn := "postgres://" + userPart + "@127.0.0.1:1/legion?connect_timeout=3"
+		_, err := Open(ctx, dsn)
+		if err == nil || !strings.Contains(err.Error(), "connect to Postgres at 127.0.0.1:1") {
+			t.Errorf("%d characters: %v, want the connect's refusal naming the address", len(dsn), err)
+			continue
+		}
+		for _, part := range []string{user, password, token} {
+			if strings.Contains(err.Error(), part) {
+				t.Errorf("%d characters: the refusal holds a part of the user part: %q", len(dsn), err)
+			}
+		}
+	}
 }

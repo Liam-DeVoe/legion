@@ -1296,6 +1296,12 @@ const rdsHostSuffix = ".rds.amazonaws.com"
 // system trust store, which holds no RDS CA, so every sign-in would fail. Every other URL
 // connects as given.
 func databaseIAM(databaseURL string) (bool, error) {
+	// net/url ends the host at a ?, # or \ in the user part, which pgx keeps in it, so the host
+	// net/url reads from such a value is a piece of the user part: the check decides nothing of
+	// it and names no host, and pgx connects as given, as it did when net/url could not parse it.
+	if pgsetting.URLParserReadsApart(databaseURL) {
+		return false, nil
+	}
 	parsed, err := url.Parse(databaseURL)
 	if err != nil || (parsed.Scheme != "postgres" && parsed.Scheme != "postgresql") {
 		return false, nil

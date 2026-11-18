@@ -168,6 +168,18 @@ func TestAForeignRunsMetaHoldsNoTokenOrPassword(t *testing.T) {
 			secrets: []string{"74120596338", "vr4-mq7"},
 		},
 		{
+			// A token written as the whole user part, with a ? or # in it: pgx reads it as the
+			// user, where net/url would read a piece of it as the host.
+			args:    foreignPG("postgres://tok-3qv9k?mw8-tz4@h/db"),
+			want:    recordedPG("postgres://h:5432/db"),
+			secrets: []string{"tok-3qv9k", "mw8-tz4"},
+		},
+		{
+			args:    foreignPG("postgres://tok-7hd2x#qp5-rn6@h/db"),
+			want:    recordedPG("postgres://h:5432/db"),
+			secrets: []string{"tok-7hd2x", "qp5-rn6"},
+		},
+		{
 			// pgx splits the query at & alone and reads no fragment, so ; and # stay in the
 			// password parameter; sslpassword is a secret too.
 			args:    foreignPG("postgres://h/db?sslmode=disable&password=ws4-kd9;jt6-pb"),

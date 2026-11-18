@@ -80,3 +80,44 @@ func TestRequestErrorKeepsAnHonestURLsError(t *testing.T) {
 		t.Errorf("a base with a user part: %v does not unwrap to the deadline", got)
 	}
 }
+
+// A URL with a ?, # or \ before the @ that ends its user part, which pgx keeps in the user part and
+// net/url reads otherwise (net/url ends the host there, or fails), is printed by URL, Error,
+// RequestError and Refusal with no part of its user part, as a Postgres URL and as an http one.
+// URL prints no Postgres URL at all, so the control is an honest http URL, which URL prints whole.
+// The user, the password and the token are made for this test.
+func TestAUserPartWithARawQuestionMarkOrHashIsPrintedByNoFunction(t *testing.T) {
+	const (
+		user   = "made-up-user-9f4b"
+		first  = "not-a-secret-8a3c"
+		second = "not-a-secret-7b2d"
+		token  = "not-a-secret-tok6c1"
+	)
+	if got := URL("http://127.0.0.1:5432/db"); got != "http://127.0.0.1:5432/db" {
+		t.Fatalf("UNKNOWN: URL does not print an honest URL whole (%q), so this row saw nothing", got)
+	}
+	for _, scheme := range []string{"postgres://", "http://"} {
+		for _, userPart := range []string{
+			user + ":" + first + "?" + second,
+			user + ":" + first + "#" + second,
+			user + ":" + first + `\` + second,
+			token + "?" + second,
+			token + "#" + second,
+		} {
+			raw := scheme + userPart + "@127.0.0.1:5432/db"
+			failed := errors.New("dial " + raw + ": connection refused")
+			for name, text := range map[string]string{
+				"URL":          URL(raw),
+				"Error":        Error(failed, raw).Error(),
+				"RequestError": RequestError(failed, raw).Error(),
+				"Refusal":      Refusal("DATABASE_URL", raw, Unparsed).Error(),
+			} {
+				for _, part := range []string{user, first, second, token} {
+					if strings.Contains(text, part) {
+						t.Errorf("%d characters, %s: %q holds a part of the user part", len(raw), name, text)
+					}
+				}
+			}
+		}
+	}
+}

@@ -158,7 +158,7 @@ const RESTS = {
     'if err := pgsetting.Refuse("DATABASE_URL", boot.DatabaseURL); err != nil {',
     "cba966fcef60"
   ),
-  misread: basis("packages/envoy/pgsetting/pgsetting.go", "func misread(", "e6cb69107669"),
+  misread: basis("packages/envoy/pgsetting/pgsetting.go", "func misread(", "92bbcafbee31"),
   misreadNet: basis("packages/envoy/internal/redact/url.go", "func Misread(", "4a94bc07e988"),
   loopback: basis(`${DISPATCH}main.go`, "func loopbackDatabase(", "654bd6fbf695"),
   mounted: basis(`${DISPATCH}main.go`, "func logDevSignInMounted(", "98a15d292b9a"),
@@ -848,7 +848,7 @@ export const JUDGED: readonly Judged[] = [
   {
     file: `${DISPATCH}main.go`,
     text: "serves a loopback database only: DATABASE_URL names host %q",
-    why: "a host pgx read from DATABASE_URL, named only after resolveBootConfig refused a value whose user part pgx and net/url read apart (pgsetting.Refuse: more than one @ before the first /, a ?, # or \\ in the user part, or an @ after the first / with none before it), so both readers end the user part at the same @, before that host; a password that holds an @ and, after it, a / is read alike by both with a piece of it as the host, a limit the pull request states",
+    why: "a host pgx read from DATABASE_URL, named only after resolveBootConfig refused a value whose user part pgx reads apart (pgsetting.Refuse: more than one @ before the first /, or an @ after the first / with none before it), so pgx ends the user part at its one @ before the first /, before that host, and keeps a ?, # or \\ before that @ in the user part; a password that holds an @ and, after it, a / is read by pgx with a piece of it as the host, a limit the pull request states",
     rests: [RESTS.bootMisread, RESTS.misread, RESTS.loopback],
   },
   {

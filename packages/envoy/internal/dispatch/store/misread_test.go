@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/pgsetting"
 )
@@ -32,7 +34,6 @@ func TestOpenRefusesAMisreadURLByItsLength(t *testing.T) {
 		{"a / in the password", "postgres://" + user + ":" + first + "/" + second + "@127.0.0.1:1/x?connect_timeout=3", "postgres://" + user + ":" + first + "%2F" + second + "@127.0.0.1:1/x?connect_timeout=3", pgsetting.AtAfterPath},
 		{"a token and a / as the user part", "postgres://" + token + "/" + first + "@127.0.0.1:1/x?connect_timeout=3", "postgres://" + token + "%2F" + first + "@127.0.0.1:1/x?connect_timeout=3", pgsetting.AtAfterPath},
 		{"an @ in the password", "postgresql://" + user + ":" + first + "@" + second + "@127.0.0.1:1/x?connect_timeout=3", "postgresql://" + user + ":" + first + "%40" + second + "@127.0.0.1:1/x?connect_timeout=3", pgsetting.AtsBeforePath},
-		{"a ? in the password", "postgres://" + user + ":" + first + "?" + second + "@127.0.0.1:1/x?connect_timeout=3", "postgres://" + user + ":" + first + "%3F" + second + "@127.0.0.1:1/x?connect_timeout=3", pgsetting.EndBeforeAt},
 		{"an @ in a query with no / before it", "postgres://" + user + ":" + first + "@127.0.0.1:1?application_name=a@b", "postgres://" + user + ":" + first + "@127.0.0.1:1/?application_name=a@b&connect_timeout=3", pgsetting.AtsBeforePath},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -54,6 +55,48 @@ func TestOpenRefusesAMisreadURLByItsLength(t *testing.T) {
 				t.Errorf("the control: pgx's error holds the password: %q", err)
 			}
 		})
+	}
+}
+
+// A ?, # or \ before the @ that ends the user part is read right by pgx, which keeps it in the user
+// part, so Open takes such a value to pgx; net/url would end the host there. Each error Open gives
+// it, a connect to a port nothing listens on and a mistyped option, names no part of the user
+// part: not the password, not a token written as the whole user part, not the user. The control is
+// pgx's own connect error for the token form, which names the token as the user. The user, the
+// passwords and the token are made for this test.
+func TestOpenNamesNoPartOfAUserPartWithARawQuestionMarkOrHash(t *testing.T) {
+	const (
+		user   = "made-up-user-5b19"
+		first  = "not-a-secret-6c2a"
+		second = "not-a-secret-7d3b"
+		token  = "not-a-secret-tok8e4"
+	)
+	for _, tail := range []string{"@127.0.0.1:1/x?connect_timeout=3", "@127.0.0.1:1/x?connect_timeout=3&sslmode=bogus"} {
+		for _, userPart := range []string{
+			user + ":" + first + "?" + second,
+			user + ":" + first + "#" + second,
+			token + "?" + second,
+			token + "#" + second,
+		} {
+			value := "postgres://" + userPart + tail
+			_, err := Open(context.Background(), value)
+			if err == nil {
+				t.Fatalf("%d characters: Open succeeded, want a failure", len(value))
+			}
+			for _, part := range []string{user, first, second, token} {
+				if strings.Contains(err.Error(), part) {
+					t.Errorf("%d characters: the error holds a part of the user part: %q", len(value), err)
+				}
+			}
+		}
+	}
+	config, err := pgx.ParseConfig("postgres://" + token + "?" + second + "@127.0.0.1:1/x?connect_timeout=3")
+	if err != nil {
+		t.Fatalf("UNKNOWN: pgx does not parse the token form, so this row saw nothing: %v", err)
+	}
+	_, err = pgx.ConnectConfig(context.Background(), config)
+	if err == nil || !strings.Contains(err.Error(), token) {
+		t.Fatalf("UNKNOWN: pgx's own connect error does not name the token, so this row saw nothing: %v", err)
 	}
 }
 
