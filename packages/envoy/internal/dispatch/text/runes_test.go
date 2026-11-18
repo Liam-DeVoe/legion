@@ -6,7 +6,8 @@ import (
 )
 
 // HeadRunes counts a rune of any script as one, and the cut is a slice of the value it was
-// given, so a cut copies nothing: a document edit's read-back cuts its last block with it.
+// given, so a cut copies nothing, also after a U+FFFD the value holds: a document edit's
+// read-back cuts its last block with it.
 func TestHeadRunesCutsAtARuneAndCopiesNothing(t *testing.T) {
 	for _, row := range []struct {
 		name, value string
@@ -32,12 +33,21 @@ func TestHeadRunesCutsAtARuneAndCopiesNothing(t *testing.T) {
 			}
 		})
 	}
-	value := strings.Repeat("界", 2001)
-	var cut string
-	if allocations := testing.AllocsPerRun(100, func() { cut = HeadRunes(value, 1967) }); allocations != 0 {
-		t.Fatalf("HeadRunes of 2,001 Chinese characters to 1,967 made %v allocations, want a slice of the value and none", allocations)
-	}
-	if cut != value[:len("界")*1967] {
-		t.Fatalf("HeadRunes kept %d bytes, want the first 1,967 characters", len(cut))
+	// A U+FFFD the value holds is three bytes of UTF-8, not a byte that is not UTF-8, so a cut
+	// after one is a slice of the value too.
+	for _, row := range []struct {
+		name, value string
+		limit, kept int
+	}{
+		{name: "2,001 Chinese characters", value: strings.Repeat("界", 2001), limit: 1967, kept: len("界") * 1967},
+		{name: "100 pairs of a letter and U+FFFD", value: strings.Repeat("a\uFFFD", 100), limit: 50, kept: len("a\uFFFD") * 25},
+	} {
+		var cut string
+		if allocations := testing.AllocsPerRun(100, func() { cut = HeadRunes(row.value, row.limit) }); allocations != 0 {
+			t.Fatalf("HeadRunes of %s to %d made %v allocations, want a slice of the value and none", row.name, row.limit, allocations)
+		}
+		if cut != row.value[:row.kept] {
+			t.Fatalf("HeadRunes of %s kept %d bytes, want the first %d characters", row.name, len(cut), row.limit)
+		}
 	}
 }

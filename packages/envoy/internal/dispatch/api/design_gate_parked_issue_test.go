@@ -21,7 +21,7 @@ func TestAGateIsLiveWhileItsIssueIsNotDone(t *testing.T) {
 		live   bool
 	}{
 		{status: "in_progress", live: true}, // control: the clause names a live gate
-		{status: "done", live: false},       // control: the one status R5 leaves out
+		{status: "done", live: false},       // control: the one status the approved sentence leaves out
 		{status: "triage", live: true},
 		{status: "icebox", live: true},
 		{status: "backlog", live: true},
