@@ -247,11 +247,62 @@ func (r *outbox) noticeAnswered(ctx context.Context, row record.OutboxRow, paylo
 		if err := r.parkDecision(ctx, row.Issue, tree.root.Key, payload, key, row.ID); err != nil {
 			return err
 		}
+		if err := r.relayUpdateStalled(ctx, row, payload, tree, key); err != nil {
+			return err
+		}
 		r.log.Info("outbox notice finished undelivered: its architect will not hold its role again",
 			"row", row.ID, "kind", payload.Kind, "issue", row.Issue, "architect", architect, "because", ended)
 		return nil
 	}
 	return fmt.Errorf("%w: %s holds no role for %s: %w", errNoticeWaits, architect, row.Issue, published)
+}
+
+// updateStalledRelaySource is the processed-event source of the controller rows
+// relayUpdateStalled writes. Its event id is the dedupe key the undelivered notice went under
+// (record.Notice.Published: a re-held copy's is its original row's), so one architect's notice of
+// a round reaches the controller once, however many rows carry it and however often a row whose
+// finish did not commit runs again.
+const updateStalledRelaySource = "update-stalled-relay"
+
+// relayUpdateStalled tells the project's controller of an update round held past its bound whose
+// notice to an architect finishes undelivered because that architect's claim has ended since the
+// sweep queued the row (architectEnded): it failed, it retired, or this daemon no longer
+// supervises it. The sweep marked the round told when it queued the row (the supervision's
+// tellUpdateStalled), so no later sweep tells it, and without this the pod would wait on the hold
+// past its bound with nobody told. The controller is the reader the sweep names for an
+// architect's hold no architect can act on (architectHears), and its resume lifts an architect's
+// suspension too, so it is told in a controller row of the same kind that carries the architect
+// row's reason and the round's account unchanged. A tree that lingers or has closed is told
+// nothing: it runs nothing until its re-admission starts its claims again from the tree's record.
+// Any other kind writes nothing. The write marks key processed in a transaction of its own, as
+// parkDecision's does, and owns the commit hook it registers (projectRecords, intake.OnCommit), so
+// the controller's lane wakes as it commits.
+func (r *outbox) relayUpdateStalled(ctx context.Context, row record.OutboxRow, notice record.Notice, tree treeSnapshot, key string) error {
+	if notice.Kind != record.UpdateStalledNotice || tree.root.Lingers() {
+		return nil
+	}
+	relay, err := record.NewOutboxRow(row.Issue, record.ControllerNotice{Kind: notice.Kind, Reason: notice.Reason, Update: notice.Update}, r.now().UTC())
+	if err != nil {
+		return fmt.Errorf("the controller's notice of the update round of %s is a row the outbox refuses: %w", row.Issue, err)
+	}
+	relayed := false
+	scoped, committed := intake.WithCommitHooks(ctx)
+	if err := pgx.BeginFunc(scoped, r.pool, func(tx pgx.Tx) error {
+		fresh, err := r.records.MarkProcessed(scoped, tx, updateStalledRelaySource, key)
+		if err != nil || !fresh {
+			return err
+		}
+		relayed = true
+		return r.records.Enqueue(scoped, tx, relay)
+	}); err != nil {
+		return fmt.Errorf("tell the controller of the update round of %s that its architect was not told: %w", row.Issue, err)
+	}
+	committed()
+	if relayed {
+		r.log.Info("outbox update-stalled notice relayed to the controller: its architect's claim has ended",
+			"row", row.ID, "issue", row.Issue, "key", key)
+	}
+	return nil
 }
 
 // noticePublished is the one line a notice the listener took writes: its kind, its issue, its row

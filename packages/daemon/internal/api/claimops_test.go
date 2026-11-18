@@ -654,7 +654,8 @@ func TestAnArchitectsClaimOperationsNeedARecordedIssueAndAClaim(t *testing.T) {
 
 // An architect's own claim is refused in a code of its own: stopping, suspending, compacting or
 // restarting the session that makes the call ends or cuts off the turn that would report it, so
-// its recovery stays the controller's and the operator's. The claim is left in its turn.
+// its recovery stays the controller's, the operator's and any architect's above it in the tree.
+// The claim is left in its turn.
 func TestAnArchitectsClaimOperationsRefuseItsOwnClaim(t *testing.T) {
 	for _, op := range claimDoorOperations {
 		t.Run(op.name, func(t *testing.T) {
@@ -665,7 +666,7 @@ func TestAnArchitectsClaimOperationsRefuseItsOwnClaim(t *testing.T) {
 				http.StatusForbidden, ownClaim,
 				string(architect.token)+" is the claim of the architect that asks, and "+op.as.name+
 					" of it would end or cut off the very turn that asks for it, so it is refused and nothing of the claim changed. "+
-					"An architect's own claim is the controller's and the operator's to recover")
+					"An architect's own claim is the controller's, the operator's and any architect's above it in the tree to recover")
 			m, _ := h.supervisor.Machine(architect.token)
 			if view := m.View(); view.State != supervise.StateWorking || view.SuspensionHeld || view.Session != architect.session {
 				t.Fatalf("the architect's claim is %s with a suspension held %t on session %q, want it working on %q with none",

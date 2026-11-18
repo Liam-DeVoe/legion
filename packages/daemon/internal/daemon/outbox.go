@@ -1371,7 +1371,9 @@ func (r *outbox) messageArtifact(ctx context.Context, row record.OutboxRow, arti
 // the child is out of the workflow by its status or its phase (record.InWorkflow), whose next
 // launch writes a fresh one. A person's spec decision in either of the two cases a notice finishes
 // undelivered because nobody will hold the role (its architect stopped with its finished tree, or
-// will not hold its role again) goes to the controller instead (parkDecision).
+// will not hold its role again) goes to the controller instead (parkDecision), and so does an
+// update round held past its bound whose architect's claim has ended in a tree that does not
+// linger (relayUpdateStalled).
 // What the listener's answer to the publish then decides — a delivery the architect's session did
 // not confirm, a holder that cannot take the payload, a forward the listener's own NATS grant
 // denies, a holder only unresponsive, a role nobody holds — is the re-hold policy's

@@ -2265,7 +2265,8 @@ A role whose running plugin predates the contract that added the op is asked all
 its message tells it to push its work and end its turn, and its round ends at the bound whatever it does, so its pod is replaced like every other and the role resumes in its own session on the new image.
 A role on Claude Code, whose plugin is its pod image's own and which no install can move, is carried by that same path and needs no operator step either ("Contract discipline" below).
 What holds a round past its bound is a claim under a suspension that holds (the operator's, the controller's or an architect's, which the notice names with its holder), a pod replacement the cluster refuses, no process in the round's pod, or two pods at once,
-and the daemon reports such a round to the project's controller as `update-stalled`, once, after the bound has passed.
+and the daemon reports such a round as `update-stalled`, once, after the bound has passed:
+to the architect that owns the held claim for a hold an architect placed, and to the project's controller for the rest.
 After this release deploys, move the project's controller onto this release's `skills/legion-controller`.
 The earlier playbook reads an `update-stalled` notice by its `waiting` entries, and for a role that did not answer and is not suspended it opens no ask: it sends that role the round's steps instead.
 This release sends the notice once the bound has passed whatever the roles answered, so the usual notice names roles that did not answer, and on the earlier playbook such a notice reaches no operator.
@@ -5972,7 +5973,7 @@ a replacement waits its pod out and a sweep interval at worst, so one made where
 What the last sweep decided under the two limits is one line of `legion claims list` ("Contract discipline" above).
 
 A round that outlives its bound is told once, as an `update-stalled` notice, when the bound has passed and something still holds the round (`tellLateRound`):
-to the project's controller, but for a hold an architect placed, which goes to the architect that owns the held claim, and to the controller only where that architect's claim has failed or been retired, where there is none, or where the hold is over the tree root's own architect (`tellUpdateStalled`, `architectHears`).
+to the project's controller, but for a hold an architect placed, which goes to the architect that owns the held claim, and to the controller only where that architect's claim has failed or been retired, before its notice is queued or before it is delivered (`relayUpdateStalled`), where there is none, or where the hold is over the tree root's own architect (`tellUpdateStalled`, `architectHears`).
 What holds it is a suspension that holds over a claim the round asks — the operator's, the controller's or an architect's, each named with its holder and with who can resume it (`holdSentences`) — a `ReplacePod` the cluster refuses, no claim recording a process in the round's pod or in any pod (`roundWithNoProcessInItsPod`, `tellPodlessRound`), or claims recording two pods at once.
 Its `reason` names that hold, and the notice names the issue, the round, the pod, the drift and every claim the round asked, with that claim's state and whether it answered (`skill://legion-controller/references/escalation.md`).
 One round is told once, however many sweeps find it open.

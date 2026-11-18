@@ -52,10 +52,12 @@ func heldRoundRig(t *testing.T, suspendedBy supervise.SuspendSource, architect s
 // stallDelivery runs every notice and controller-notice row the sweep wrote through the outbox's
 // own executors, each row leased as the outbox leases it: a notice is routed by the owner walk
 // over the rig's machines (deliverNotice), and a controller notice is published to the project's
-// controller topic (controllerNotice). It answers the update-stalled notices published, by topic.
-func (r *podUpdateRig) stallDelivery() map[string][]record.Notice {
+// controller topic (controllerNotice). A role topic in absent has no live holder, as the listener
+// refuses it (notify.ErrNoHolder). It answers the update-stalled notices published, by topic.
+func (r *podUpdateRig) stallDelivery(absent ...string) map[string][]record.Notice {
 	r.t.Helper()
 	publisher := &holderPublisher{}
+	publisher.setAbsent(absent...)
 	runner := &outbox{log: quietLogger(), pool: r.pool, records: r.records, notices: publisher, supervisor: r.sup,
 		project: podUpdateProject, dispatchProject: "LEGION", now: time.Now}
 	for _, kind := range []record.OutboxKind{record.OutboxKindNotice, record.OutboxKindControllerNotice} {
@@ -170,4 +172,42 @@ func TestPodUpdateTellsTheControllerOfAnArchitectsHoldWhenTheOwningArchitectFail
 		t.Errorf("the controller's notice says %q, want it to say %q", notice.Reason, want)
 	}
 	wantWaiting(t, record.ControllerNotice(notice), map[claim.Role]bool{claim.RoleImplementer: false, claim.RoleTester: true})
+}
+
+// A round held past its bound by an architect's suspension is told to the architect that owns the
+// held claim, and where that architect's claim fails after the sweep queued its notice and before
+// the outbox runs it, the row finishes undelivered (noticeAnswered's architectEnded) and the
+// controller is told the round in its place, with the architect's hold named: the sweep marked the
+// round told when it queued the row, so no later sweep would tell anyone.
+//
+// The negative control is the relay undone (relayUpdateStalled), which publishes no update-stalled
+// notice at all.
+func TestPodUpdateTellsTheControllerOfAnArchitectsHoldWhoseArchitectFailedBeforeItsNotice(t *testing.T) {
+	rig := heldRoundRig(t, supervise.SuspendedByArchitect, supervise.StateReady)
+	if rows, notices := rig.rows(record.OutboxKindNotice), rig.notices(); len(rows) != 1 || len(notices) != 0 {
+		t.Fatalf("the sweep wrote %d architect notices and %d controller notices, want the one architect notice", len(rows), len(notices))
+	}
+
+	// The architect's turn ends in a provider error that cannot clear, which fails its claim.
+	const task = "outbox:7"
+	architect := rig.tokens[claim.RoleArchitect]
+	rig.handle(claim.RoleArchitect, supervise.RequestDeliver{Claim: architect, Task: "Carry the tree on.", ID: task})
+	rig.awaitClaim(claim.RoleArchitect, "its task to be acknowledged", func(c supervise.Claim) bool {
+		return c.Pending != nil && !c.Pending.DeliveredAt.IsZero()
+	})
+	rig.handle(claim.RoleArchitect, supervise.StreamTurnStart{Claim: architect})
+	rig.handle(claim.RoleArchitect, supervise.StreamTurnEnd{Claim: architect})
+	rig.handle(claim.RoleArchitect, supervise.StreamPromptResult{Claim: architect, DeliveryID: task, AgentInvoked: true,
+		Error: "invalid_request_error", HTTPStatus: 400})
+	rig.awaitClaim(claim.RoleArchitect, "its claim to fail", func(c supervise.Claim) bool { return c.State == supervise.StateFailed })
+
+	notice := toldOn(t, rig.stallDelivery(rig.roleTopic(claim.RoleArchitect)), notify.ControllerTopic(podUpdateProject))
+	if notice.Update == nil || notice.Update.Round != podUpdateRound || notice.Update.Pod != podUpdatePod {
+		t.Fatalf("the controller's notice carries %+v, want round %q of pod %q", notice.Update, podUpdateRound, podUpdatePod)
+	}
+	if want := "An architect suspended implementer (suspended). An architect that owns the issue, or the controller, can resume it."; !strings.Contains(notice.Reason, want) {
+		t.Errorf("the controller's notice says %q, want it to say %q", notice.Reason, want)
+	}
+	wantWaiting(t, record.ControllerNotice(notice),
+		map[claim.Role]bool{claim.RoleArchitect: false, claim.RoleImplementer: false, claim.RoleTester: true})
 }

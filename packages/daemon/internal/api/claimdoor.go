@@ -97,7 +97,8 @@ type claimTarget struct {
 
 // ownClaim is the refusal of an architect's operation on its own claim: stopping, suspending,
 // compacting or restarting the session that makes the call ends or cuts off the turn that would
-// report it, so the architect's own recovery stays the controller's and the operator's.
+// report it, so the architect's own recovery stays the controller's, the operator's and that of
+// any architect above it in the tree, which owns its issue (owns).
 const ownClaim = "OWN_CLAIM"
 
 // claimDoor is the door all six claim operations come through — the two recoveries
@@ -187,7 +188,7 @@ func (s *server) claimDoor(w http.ResponseWriter, r *http.Request, op claimOp) (
 	}
 	if by == supervise.SuspendedByArchitect && token == grant.Claim {
 		writeFailure(w, http.StatusForbidden, ownClaim, fmt.Sprintf(
-			"%s is the claim of the architect that asks, and %s of it would end or cut off the very turn that asks for it, so it is refused and nothing of the claim changed. An architect's own claim is the controller's and the operator's to recover",
+			"%s is the claim of the architect that asks, and %s of it would end or cut off the very turn that asks for it, so it is refused and nothing of the claim changed. An architect's own claim is the controller's, the operator's and any architect's above it in the tree to recover",
 			token, op.name))
 		return claimTarget{}, false
 	}
