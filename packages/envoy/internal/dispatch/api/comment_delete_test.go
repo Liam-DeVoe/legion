@@ -538,3 +538,79 @@ func TestAKeyedReplayAfterTheDeleteGivesNoPartOfTheBody(t *testing.T) {
 			again.Code, phrase, again.Body.String())
 	}
 }
+
+// R3 of dispatch://INFRA-1523 and the keyed-repeat rule: a related-item check kept under a key
+// keeps its snippet of each post it found, and a repeat of that key replays the stored bytes.
+// After the post's author deletes it, that replay gives part of the deleted body, where the
+// same check under a new key no longer finds the post. The tester found it at 286089e7 (POST
+// /api/v1/projects/{key}/related; the issue and ask creates and the decision-block edits carry
+// the same check in their advice). The red row of that round.
+func TestAKeyedRelatedCheckRepeatedAfterTheDeleteGivesNoSnippetOfThePost(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	issue := createInteractionIssue(t, handler, "TEST", "A related check of a deleted comment", "before")
+	const phrase = "zarquonquokkatelemetry"
+	comment := createThreadComment(t, handler, issue.Key, map[string]any{"body": phrase + " calibration drifted overnight."}, "alice")
+	refreshTermStats(t, database, "TEST")
+	check := map[string]any{"title": phrase + " calibration", "keywords_only": true}
+	first := keyedRequest(t, handler, http.MethodPost, "/api/v1/projects/TEST/related", check, "alice", "related-then-delete")
+	if first.Code != http.StatusOK || !strings.Contains(first.Body.String(), phrase) {
+		t.Fatalf("the first check: status=%d body=%s, want 200 with a snippet of the comment, so this row can fail", first.Code, first.Body.String())
+	}
+
+	deleteThreadComment(t, handler, comment.ID, "alice")
+
+	again := keyedRequest(t, handler, http.MethodPost, "/api/v1/projects/TEST/related", check, "alice", "related-then-delete")
+	if strings.Contains(again.Body.String(), phrase) {
+		t.Fatalf("the repeat of the check's key after the delete (status %d) gives the deleted comment's text %q: %s",
+			again.Code, phrase, again.Body.String())
+	}
+}
+
+// R3 of dispatch://INFRA-1523 again: a document write kept under a key keeps the document as it
+// answered it, every version's name included, and an accept named one version after the
+// suggestion's body. After the author deletes the suggestion, the delete renames that version for
+// every fresh read, but a repeat of the rename's key replays the name the key kept. The tester
+// found it at 286089e7 for PATCH /api/v1/artifacts/{id} and for an upload to an existing
+// document. The red row of that round.
+func TestAKeyedDocumentRenameRepeatedAfterTheDeleteGivesNoVersionNamedAfterTheBody(t *testing.T) {
+	_, handler, _ := browserDocumentService(t)
+	issue := createInteractionIssue(t, handler, "TEST", "Rename a document an accepted suggestion named", "The quick brown fox")
+	const phrase = "zarquonrenamedversion"
+	// The issue's spec keeps its name (ARTIFACT_PRIMARY), so the suggestion is made on a second
+	// document of the issue, which a rename reaches.
+	uploaded := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts",
+		map[string]any{"name": "notes.md", "content": "alpha bravo charlie"}, "alice")
+	if uploaded.Code != http.StatusCreated {
+		t.Fatalf("upload notes.md: status=%d body=%s", uploaded.Code, uploaded.Body.String())
+	}
+	var notes struct {
+		Artifact struct {
+			ID   string `json:"id"`
+			Slug string `json:"slug"`
+		} `json:"artifact"`
+	}
+	if err := json.Unmarshal(uploaded.Body.Bytes(), &notes); err != nil || notes.Artifact.ID == "" {
+		t.Fatalf("decode the upload's answer (%v): %s", err, uploaded.Body.String())
+	}
+	comment := createThreadComment(t, handler, issue.Key, map[string]any{
+		"body": "Say this instead, " + phrase + ".", "anchor": map[string]any{"artifact": notes.Artifact.Slug, "quote": "alpha"},
+		"suggestion": map[string]string{"replace_with": "omega"},
+	}, "alice")
+	if accepted := dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+comment.ID+"/accept", map[string]any{}, "alice"); accepted.Code != http.StatusOK {
+		t.Fatalf("accept: status=%d body=%s", accepted.Code, accepted.Body.String())
+	}
+	target := "/api/v1/artifacts/" + notes.Artifact.ID
+	rename := map[string]any{"name": "renamed-notes.md"}
+	first := keyedRequest(t, handler, http.MethodPatch, target, rename, "alice", "rename-then-delete")
+	if first.Code != http.StatusOK || !strings.Contains(first.Body.String(), phrase) {
+		t.Fatalf("the first rename: status=%d body=%s, want 200 with the version the accept named, so this row can fail", first.Code, first.Body.String())
+	}
+
+	deleteThreadComment(t, handler, comment.ID, "alice")
+
+	again := keyedRequest(t, handler, http.MethodPatch, target, rename, "alice", "rename-then-delete")
+	if strings.Contains(again.Body.String(), phrase) {
+		t.Fatalf("the repeat of the rename's key after the delete (status %d) gives the deleted suggestion's text %q: %s",
+			again.Code, phrase, again.Body.String())
+	}
+}
