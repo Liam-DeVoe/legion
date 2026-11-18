@@ -5,10 +5,13 @@ The derivations and the history of two files that point into this one:
 selects jobs by, whose sections come first, and `.github/workflows/ci.yaml` itself, the router,
 whose sections follow them. Each `# why:` line of either file names the section that holds the
 derivation or the record its filter, its pattern, its step, its job or its key rests on, and
-within each of the two the sections stand in the order their comment blocks stood. A comment
-block of at most two lines stays where it is, beside the pattern or the step it is about; so
-does a value's own arithmetic, and a comment inside a `run:` body, which is shell and stays with
-its command.
+within each of the two the sections stand in the order their comment blocks stood. In ci.yaml a
+comment block of at most two lines stays where it is, beside the pattern or the step it is
+about; so does a value's own arithmetic, and a comment inside a `run:` body, which is shell and
+stays with its command. `.github/ci-filters.yaml` holds patterns and names: beside its `# why:`
+lines, its only comments are the lines of the blocks .github/scripts/check-ci-filters.sh and
+.github/scripts/check-ts-filters.sh write. A comment of it that said which files a job reads
+was deleted, since the filter beneath it is that record.
 
 ## How a filter of this file is written
 
@@ -64,7 +67,40 @@ that gate an image build (worker_image, envoy_smoke) under this quantifier, and 
 flat lists of globs, so those two name no anchor standing for a list. The one anchor
 they do name, ci_router, is on the glob itself, which leaves their lists flat.
 
+The first keys are no job's gate: each is a group many filters share, written once and named by
+every filter that needs it through its anchor, which dorny/paths-filter flattens into the list
+that names it. The gate filters follow, one per `changes` output. ci_router carries two
+anchors, one on each scalar, because the image check reads the two filters that gate an image
+build as flat lists of globs: every filter that names ci.yaml names this file beside it.
+
+A comment block of three lines or more that stood beside a filter is in
+.github/ci-notes/ci.md, under the heading the `# why:` line in its place names.
+A block that only listed which files a job reads was deleted, since the filter beneath it is
+that record.
+
 ## Why the filters are one file, and the steps they stood in
+
+Every path filter .github/workflows/ci.yaml's `changes` job selects jobs by, in one file.
+
+That job's one dorny/paths-filter step hands this file's path over as its `filters` input, and
+the action reads the file off the disk against GITHUB_WORKSPACE. It takes the input as a path
+only when the text holds no newline and no colon (the action's `isPathInput`), so the value
+there stays a plain scalar: a block scalar or a quoted path with a colon in it would be read as
+inline YAML and the step would fail. On a pull request that job checks out this file and no
+other, paths-filter reading the changed-file list from the API and the filters from the
+tree; on a merge group it has the whole clone, which the git diff of base_sha..head_sha needs.
+
+Why the data is a file and not the workflow's own text. Actions hands a step's input to the
+action as one environment variable, INPUT_FILTERS, and Linux caps one such string at 131,072
+bytes (MAX_ARG_STRLEN). The whole block in one step came to 137,498 bytes once rule 17's
+generated `!` patterns were written into it, and the job then failed to start at all ("An
+error occurred trying to start process ... Argument list too long", dispatch://INFRA-1413).
+The filters were declared in three steps for that, each string its own YAML document, and a
+rule of .github/scripts/check-ci-filters.sh refused a string that came near the cap again.
+That rule is retired now that the steps are one: the path handed over is about thirty bytes,
+and no such cap reaches a path. One document also means one set of anchors, so a group the steps' filters
+shared is written once here, where each was written out again in every step that named it - a
+YAML anchor reaches no further than the string it is in.
 
 The text below is what the changes job's steps carried until the filters became one file, kept
 as it stood, so its present tense describes that layout.
@@ -168,11 +204,19 @@ naming this anchor already named the package through a second pattern of its
 own (docs' own broker list, listener_command's, which go_notices takes), so the
 line adds the package to no other filter's meaning.
 
+## legion_command: packages/envoy/migrationid is the identifier rule the daemon's embedded
+
+packages/envoy/migrationid is the identifier rule the daemon's embedded
+migrations are held to, in the envoy module so both sets keep one rule.
+
 ## legion_command: The one public door onto the generated Envoy session
 
 The one public door onto the generated Envoy session timings the daemon's
 liveness and notice rules read: it sits in the envoy module because the
 daemon, a module of its own, cannot reach internal/contracts, where they are.
+
+The doors onto the readers of a message name's two forms and onto the
+nats-server versions the daemon refuses, for the same reason.
 
 ## daemon_go_tests: The daemon-go job: what its two Go steps read together
 
@@ -299,6 +343,11 @@ Before these the job's filter carried one pattern, '.github/scripts/*', for all 
 them: a change to any one script ran every harness, and 28 of the 66 commits that
 touched that directory since 2026-10-01 changed no Go file (dispatch://INFRA-1413).
 
+## priorities_seed_check_test: The one harness of the job outside .github/scripts
+
+The one harness of the job outside .github/scripts: it carries its own helpers
+and sources no test-lib.sh.
+
 ## test: The test job: the Claude Code plugin build, the changelog
 
 The test job: the Claude Code plugin build, the changelog fold, the script
@@ -325,6 +374,9 @@ Each harness step's own gate, named here so the job runs for the change that
 makes one of those gates true. Each of those lists names this file and
 ci-job-test.yaml, as every gate filter does, so the flattened list repeats the
 two patterns already above; a repeated pattern selects what it selected.
+
+The guide-layout step's own files, for that same reason: its gate is
+guide_layout below, and a guide-only change has to select this job for it.
 
 ## guide_layout: The guides' layout step of the test job (ci-job-test.yaml's
 
@@ -521,6 +573,9 @@ The three jobs whose tag steps lean on this job's untagged run of ./cmd/dispatch
 and ./cmd/broker: each runs only what its tag adds, so a change that starts one
 must start this job too (check-ci-filters.sh's rule 15).
 
+The two-build Go step's reads rule 15 holds this job to: its file, and the CLI twobuild_cli_test.go runs.
+Rule 15 holds it to that step's listed block too, which packages/contracts/src/** above takes in.
+
 ## envoy_go_checks: envoy-go's fast half (envoy-go-checks): the format, generated-contract and pmdoc
 
 envoy-go's fast half (envoy-go-checks): the format, generated-contract and pmdoc
@@ -563,6 +618,9 @@ hold to the texts they copy; and its credential-argument check reads every text 
 of the repository, so `**` below selects the job for every change but one under
 docs/plans or docs/superpowers. The patterns after it name what the other checks
 read, which `**` covers too, so that each read keeps its reason here.
+
+credential_argument_test.go:143,174 lists every file git tracks or would track and
+reads each of them, but docs/plans and docs/superpowers, which are dated history.
 
 ## text_checks: The seven copies of shipped texts that readExtract (waiting_line_texts_test.go:380)
 
