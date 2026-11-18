@@ -38,12 +38,37 @@ func ghDescription(req Request) string {
 }
 
 // ghSchema is the JSON schema of the gh tool's input for req: gh's arguments as an array of
-// strings, whose description gives the description's example (ghtool.Usage.Example).
+// strings, whose description gives the description's example (ghtool.Usage.Example). The schema
+// is one Go value marshalled once, so no text is joined into JSON by hand; its fields are structs
+// rather than maps so the keys keep the order the model has always been offered.
 func ghSchema(req Request) json.RawMessage {
 	example, _ := json.Marshal(req.Agent.GHUsage.Example())
-	description, _ := json.Marshal("gh's arguments without the leading gh, one per element; no shell reads them. For example " + string(example) + ".")
-	return json.RawMessage(`{"type":"object","properties":{"args":{"type":"array","items":{"type":"string"},"description":` +
-		string(description) + `}},"required":["args"],"additionalProperties":false}`)
+	var schema ghArgsSchema
+	schema.Type = "object"
+	schema.Properties.Args.Type = "array"
+	schema.Properties.Args.Items.Type = "string"
+	schema.Properties.Args.Description = "gh's arguments without the leading gh, one per element; no shell reads them. For example " +
+		string(example) + "."
+	schema.Required = []string{"args"}
+	encoded, _ := json.Marshal(schema)
+	return encoded
+}
+
+// ghArgsSchema is the shape of the gh tool's input schema (ghSchema): one property, args, an array
+// of strings, required, and no other property.
+type ghArgsSchema struct {
+	Type       string `json:"type"`
+	Properties struct {
+		Args struct {
+			Type  string `json:"type"`
+			Items struct {
+				Type string `json:"type"`
+			} `json:"items"`
+			Description string `json:"description"`
+		} `json:"args"`
+	} `json:"properties"`
+	Required             []string `json:"required"`
+	AdditionalProperties bool     `json:"additionalProperties"`
 }
 
 // toolSet is the loop's tools as agentloop offers and runs them for req.
