@@ -451,29 +451,50 @@ func (k *reachKeeper) forgetGone(claims []supervise.Claim) {
 	maps.DeleteFunc(k.dirty, func(token claim.Token, _ bool) bool { return !held[token] })
 }
 
+// reachVerdict is what one minute's reading says of a claim's reach (reading), the same for every
+// role; what follows from it is the role's (judge).
+type reachVerdict int
+
+const (
+	// reachOver: the claim no longer records a session a process runs on — suspended, failed,
+	// retired, or between launches with no session yet.
+	reachOver reachVerdict = iota
+	// reachRegistered: its session has registered with Envoy in the last 20 minutes.
+	reachRegistered
+	// reachNotDue: no mark is made yet: the session has not said ready, the 20 minutes have not
+	// passed since what the count reads, or the agent has not settled.
+	reachNotDue
+	// reachMarked: the claim is marked out of reach.
+	reachMarked
+)
+
 // judge is one claim's record after this minute's read, and whether the claim is newly out of
-// reach and not yet reported, which the caller lists in one notice. The caller holds mu.
+// reach and not yet reported, which the caller lists in one notice: the reading, then what the
+// claim's role makes of it. The caller holds mu.
 func (k *reachKeeper) judge(ctx context.Context, c supervise.Claim, now time.Time) (supervise.Reach, bool) {
-	rec := relaunchTakenIn(c, k.recordOf(c))
-	controller := c.Role == claim.RoleController
-	if controller && rec.Relaunched && c.Session != "" && c.Session == rec.Session && c.State == supervise.StateFailed {
-		// The daemon's relaunch of its own controller has not brought it back: a controller
-		// whose path to Envoy stays blocked fails each boot's Envoy claim and exits, and its
-		// claim fails once its launch failures run out, on the same session. The episode lasts
-		// until the controller is back (controllerBack), so R6's line says, 20 minutes after the
-		// relaunch, that the relaunch did not bring it back.
-		return k.judgeController(ctx, c, rec, now), false
+	rec, verdict := k.reading(c, now)
+	if c.Role == claim.RoleController {
+		return k.judgeController(ctx, c, rec, verdict, now), false
 	}
+	switch verdict {
+	case reachOver, reachRegistered:
+		return k.episodeOver(c, rec, verdict), false
+	case reachMarked:
+		// Every marked claim not yet reported is listed, so one whose list the outbox did not take
+		// is listed again at this sweep.
+		return k.tellOfMarked(ctx, c, rec, now), !rec.Reported
+	}
+	return rec, false
+}
+
+// reading is c's record after this minute's read and what it says (reachVerdict): it takes in
+// c's last relaunch (relaunchTakenIn), begins a record anew for a session c records afresh, counts
+// from the session's first ready, and makes the mark, which it logs; it tells nobody, and it ends
+// no episode, which is the role's to decide (judge). The caller holds mu.
+func (k *reachKeeper) reading(c supervise.Claim, now time.Time) (supervise.Reach, reachVerdict) {
+	rec := relaunchTakenIn(c, k.recordOf(c))
 	if c.Session == "" || !holdsEpisode(c.State) {
-		// The claim no longer records a session a process runs on: suspended, failed, retired,
-		// or between launches with no session yet. Its episode is over.
-		if rec.Session != "" && rec != rec.EndEpisode() {
-			k.log.Info("reach: the claim no longer runs on the session it was judged on; its mark is over", "claim", c.Token, "state", c.State)
-		}
-		if controller {
-			k.controllerReachable(c)
-		}
-		return rec.EndEpisode(), false
+		return rec, reachOver
 	}
 	if rec.Session != c.Session {
 		rec = supervise.Reach{Session: c.Session, RelaunchedAt: rec.RelaunchedAt}
@@ -481,50 +502,45 @@ func (k *reachKeeper) judge(ctx context.Context, c supervise.Claim, now time.Tim
 	if rec.FirstReady.IsZero() {
 		if !supervise.SaidReady(c.State) || c.LastReady.IsZero() {
 			// This session has not said ready yet: nothing is counted for it.
-			return rec, false
+			return rec, reachNotDue
 		}
 		rec.FirstReady = c.LastReady
 	}
 	lastSeen := k.seen[c.Session]
 	if !lastSeen.IsZero() && now.Sub(lastSeen) <= supervise.UnreachableAfter {
-		if controller && rec.Relaunched && !k.controllerBack(c, rec) {
-			// A registration alone does not bring back the controller the daemon relaunched:
-			// a process that registers and goes no further, or says ready and never takes the
-			// controller's Envoy role, hears nothing as the controller (R6). The episode lasts,
-			// so R6's line says, 20 minutes after the relaunch, that it did not bring it back.
-			return k.judgeController(ctx, c, rec, now), false
-		}
-		if rec.Unreachable() || rec.Reported || rec.Relaunched {
-			k.log.Info("reach: the claim's session registered with Envoy again; it is reachable", "claim", c.Token, "lastSeen", lastSeen)
-		}
-		if controller {
-			k.controllerReachable(c)
-		}
-		return rec.EndEpisode(), false
+		return rec, reachRegistered
 	}
 	// The boot, the session's first ready, a failed read's end and a read of a list with no live
 	// session each hold back a mark not made yet; a mark already made stays as it is, since none of
 	// them is a registration of the claim's session (a read that fails changes no mark).
 	countedFrom := latest(lastSeen, k.boot, rec.FirstReady, k.failedAt, k.noLiveAt)
 	if !rec.Unreachable() && now.Sub(countedFrom) <= supervise.UnreachableAfter {
-		return rec, false
+		return rec, reachNotDue
 	}
 	if !rec.Unreachable() {
 		if !supervise.SaidReady(c.State) {
 			// A mark is made of a settled agent; once made it holds in every launch state of the
 			// session (holdsEpisode).
-			return rec, false
+			return rec, reachNotDue
 		}
 		rec.Since, rec.LastSeen, rec.Generation = countedFrom, lastSeen, c.Generation
 		k.log.Warn("reach: the claim's session has not registered with Envoy for "+timewords.Words(supervise.UnreachableAfter)+"; it is out of reach, and keeps its state",
 			"claim", c.Token, "state", c.State, "since", countedFrom, "lastSeen", lastSeen)
 	}
-	if controller {
-		return k.judgeController(ctx, c, rec, now), false
+	return rec, reachMarked
+}
+
+// episodeOver is rec once its episode is over, read as verdict, with the line that says so where
+// the record marked one. The caller holds mu.
+func (k *reachKeeper) episodeOver(c supervise.Claim, rec supervise.Reach, verdict reachVerdict) supervise.Reach {
+	ended := rec.EndEpisode()
+	switch {
+	case verdict == reachOver && rec.Session != "" && rec != ended:
+		k.log.Info("reach: the claim no longer runs on the session it was judged on; its mark is over", "claim", c.Token, "state", c.State)
+	case verdict == reachRegistered && (rec.Unreachable() || rec.Reported || rec.Relaunched):
+		k.log.Info("reach: the claim's session registered with Envoy again; it is reachable", "claim", c.Token, "lastSeen", k.seen[c.Session])
 	}
-	// Every marked claim not yet reported is listed, so one whose list the outbox did not take is
-	// listed again at this sweep.
-	return k.tellOfMarked(ctx, c, rec, now), !rec.Reported
+	return ended
 }
 
 // tellOfMarked sends the per-claim notices of a marked claim that are due (each once): the guard
@@ -589,19 +605,39 @@ func (k *reachKeeper) tellOf(ctx context.Context, c supervise.Claim, rec supervi
 // where the launch needs it or its launcher is not connected (supervise.RequestRelaunch's
 // MayReplacePod). The controller hears nothing of itself, since it is the one out of reach, so
 // each case nobody else can act on writes R6's line instead, once until the controller is
-// reachable again: the relaunch did not bring it back within 20 minutes, it is out of reach a
-// second time within the 6 hours, or the guard refused the relaunch or its process outlived the
-// stop. A refused relaunch uses no part of the 6 hours. The relaunch it made is the one the
-// controller's claim records (supervise.Reach.LastRelaunch), which the record has taken in by
-// now (relaunchTakenIn), so a daemon that ended before its own write of the record does not
-// relaunch the controller a second time within the 6 hours. The caller holds mu.
-func (k *reachKeeper) judgeController(ctx context.Context, c supervise.Claim, rec supervise.Reach, now time.Time) supervise.Reach {
+// reachable again (fleetalert.Writer.Open, whose store keeps which lines are open): the relaunch
+// did not bring it back within 20 minutes, it is out of reach a second time within the 6 hours,
+// or the guard refused the relaunch or its process outlived the stop. A refused relaunch uses no
+// part of the 6 hours. The relaunch it made is the one the controller's claim records
+// (supervise.Reach.LastRelaunch), which the record has taken in by now (relaunchTakenIn), so a
+// daemon that ended before its own write of the record does not relaunch the controller a second
+// time within the 6 hours.
+//
+// A relaunched controller's episode lasts past two readings that end any other claim's: its claim
+// failed on the same session, as a controller whose path to Envoy stays blocked does once each
+// boot fails its Envoy claim and exits; and its session registered, until the controller is back
+// (controllerBack), since a process that registers and goes no further, or says ready and never
+// takes the controller's Envoy role, hears nothing as the controller (R6). The caller holds mu.
+func (k *reachKeeper) judgeController(ctx context.Context, c supervise.Claim, rec supervise.Reach, verdict reachVerdict, now time.Time) supervise.Reach {
+	switch verdict {
+	case reachNotDue:
+		return rec
+	case reachOver:
+		if !rec.Relaunched || c.Session == "" || c.Session != rec.Session || c.State != supervise.StateFailed {
+			k.controllerReachable(c)
+			return k.episodeOver(c, rec, verdict)
+		}
+	case reachRegistered:
+		if !rec.Relaunched || k.controllerBack(c, rec) {
+			k.controllerReachable(c)
+			return k.episodeOver(c, rec, verdict)
+		}
+	}
 	switch {
 	case rec.Relaunched:
-		if now.Sub(rec.RelaunchedAt) >= notBackAfter && !rec.NotBackTold {
+		if now.Sub(rec.RelaunchedAt) >= notBackAfter {
 			k.alerts.Open(fleetalert.ControllerUnreachable, string(c.Token), "relaunchedAt", rec.RelaunchedAt,
 				"reason", "the daemon's relaunch did not bring it back: it has not registered with Envoy in the "+timewords.Words(notBackAfter)+" since")
-			rec.NotBackTold = true
 		}
 	case !rec.RelaunchedAt.IsZero() && now.Sub(rec.RelaunchedAt) < supervise.RelaunchAgainAfter:
 		k.alerts.Open(fleetalert.ControllerUnreachable, string(c.Token), "relaunchedAt", rec.RelaunchedAt,
