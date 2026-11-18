@@ -1278,7 +1278,10 @@ func DocumentsOwedWindows(ctx context.Context, q Queryer, after string, limit in
 //   - a document owed a block index (version null) that holds the blocks of an earlier
 //     version. Its stored version's windows are this arm's to write while the owed arm
 //     cannot index it, which is what a document whose live text stays ahead of its latest
-//     version needs (docs.windowDocument).
+//     version needs (docs.windowDocument). Its blocks are the rows of the room it is edited
+//     in whose block it holds (DocumentRoomBlocksSQL): an issue born converted keys its
+//     documents' rows under its tree artifact, and a document of such a room is owed its
+//     index while another fragment holds an edit no version holds yet.
 //
 // A marked row with neither - a document an older build wrote, owed a block index and holding
 // no block yet - is not this arm's, as the items' is not: windows under no block are not its
@@ -1287,11 +1290,22 @@ func DocumentsOwedWindows(ctx context.Context, q Queryer, after string, limit in
 // The blocks are read through a lateral join rather than as `v.version is not null or exists
 // (…)`: an EXISTS under an OR is a correlated subplan the planner runs per marked row, which
 // the plan test refuses, while the join is one probe for each marked row read, as the
-// semi-join before it was, and the inner limit stops it at the first block row.
+// semi-join before it was, and the inner limit stops it at the first block row. For the same
+// reason the room and each row's document are read as joins on document_rooms and
+// issue_room_blocks, the rows DocumentRoomSQL and BlockDocumentSQL read, rather than through
+// those scalar probes, as storedBlocks reads the room's rows: a scalar probe is a subplan. The
+// join runs only for a row owed its block index, the one row it decides: a document the index
+// has reached is listed whatever it holds, and an empty document of a room of thousands of
+// blocks is no scan of that room each time it is listed.
 const documentsOwedWindowsQuery = `
 	select v.artifact_id::text from document_block_versions v
+	left join document_rooms moved on moved.artifact_id = v.artifact_id
 	left join lateral (
-		select 1 from document_blocks b where b.artifact_id = v.artifact_id limit 1
+		select 1 from document_blocks b
+		left join issue_room_blocks room_block on room_block.tree_artifact_id = b.artifact_id and room_block.block_id = b.block_id
+		where v.version is null and b.artifact_id = coalesce(moved.room, v.artifact_id)
+		  and coalesce(room_block.document_id, b.artifact_id) = v.artifact_id
+		limit 1
 	) held (block) on true
 	where v.windows_owed_at is not null
 	  and v.artifact_id > $1::uuid

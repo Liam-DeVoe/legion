@@ -590,33 +590,56 @@ func ReferencedBy(ctx context.Context, q Queryer, who model.Actor, refKey string
 	return references, nil
 }
 
-// Outgoing lists Dispatch mentions written by an artifact, resolving artifact targets. A block
-// target keeps its own kind and id and carries its document as the artifact, while a current
-// version holds the block; a block none holds is omitted, as is a target of a node kind this
-// build does not know. A block of an ask, a comment or a message, which this shape has no field
-// for, is listed by the graph read (Edges) alone. Any other unresolved target is listed.
+// Outgoing lists Dispatch mentions written by an artifact, resolving artifact targets. A
+// document's mentions are its own references; the references of an issue room's text are its
+// tree's (docs' indexRenderedVersion writes them under the room), which belong to no one document
+// of the room, so a document converted into its issue's room writes those of them a block of its
+// own holds, read where the block index keeps its blocks (DocumentRoomBlocksSQL), each at the
+// address it was written at, a block's link at the target or at the node the target resolves to,
+// as heldByABlock reads a mention held by a block. A block target keeps its own kind and id and
+// carries its document as the artifact, while a current version holds the block; a block none
+// holds is omitted, as is a target of a node kind this build does not know. A block of an ask, a
+// comment or a message, which this shape has no field for, is listed by the graph read (Edges)
+// alone. Any other unresolved target is listed. A block target is the
+// node its address resolves to (ResolvedBlockSQL), so a mention of a block of a document
+// converted into its issue's room, written at the document's own address, reaches the room's row
+// of the block, and the document it carries is the one holding the block (BlockDocumentSQL),
+// never the room's tree.
 //
 // It answers for who. A document who may not see writes no mention here, so its mentions say
 // nothing of it, and a target who may not see is no mention at all - for a block, neither the
-// block nor the document it carries (VisibleKind, VisibleEnd). The document is read by its uuid
-// through artifacts' primary key, since the store keys it by ref_key and the registry's own
-// rewrite compares the uuid as text, which no index serves.
+// block nor the document it carries (VisibleKind, VisibleEnd), the block read at the node its
+// address resolves to. The document is read by its uuid through artifacts' primary key, since
+// the store keys it by ref_key and the registry's own rewrite compares the uuid as text, which no
+// index serves.
 func Outgoing(ctx context.Context, q Queryer, who model.Actor, artifactID string) ([]model.OutgoingReference, error) {
 	rows, err := q.Query(ctx, `
 		select e.to_kind, e.to_id,
 		       a.id::text, a.issue_key, coalesce(a.project_key, ''), a.session_id, coalesce(a.ref_key, ''), coalesce(a.slug, ''), coalesce(a.name, ''), coalesce(a.kind, ''), coalesce(a.is_primary, false),
 		       coalesce(a.created_by, '{}'::jsonb), coalesce(a.created_at, timestamptz 'epoch'),
 		       coalesce(v.number, 0), coalesce(v.named, false), v.summary, coalesce(v.authors, '[]'::jsonb), coalesce(v.created_at, timestamptz 'epoch'), `+model.VersionSize+`, v.mime, v.sha256
-		from graph_edges e
-		left join document_blocks d on e.to_kind = 'block' and d.node_id = e.to_id
-		left join artifacts a on a.ref_key = case e.to_kind when 'artifact' then e.to_id when 'block' then split_part(d.node_id, '#', 1) end
+		from (
+			select g.to_kind, g.to_id from graph_edges g
+			where g.from_kind = 'artifact' and g.from_id = $1 and g.kind = 'mentions'
+			union
+			select g.to_kind, g.to_id from graph_edges g
+			cross join (select `+DocumentRoomSQL("$1::text::uuid")+` as id) room
+			where room.id <> $1::text::uuid and g.from_kind = 'artifact' and g.from_id = room.id::text and g.kind = 'mentions'
+			  and exists (select 1 from block_refs b
+			              where `+DocumentRoomBlocksSQL("b", "$1::text::uuid")+` and b.to_kind = g.to_kind
+			                and (b.to_id = g.to_id or (g.to_kind = '`+BlockNodeKind+`' and b.to_id = `+ResolvedBlockSQL("g.to_id")+`)))
+		) e
+		left join lateral (select `+ResolvedBlockSQL("e.to_id")+` as node_id) resolved on e.to_kind = 'block'
+		left join document_blocks d on d.node_id = resolved.node_id
+		left join artifacts a on a.ref_key = case e.to_kind when 'artifact' then e.to_id
+		  when 'block' then (select owner.ref_key from artifacts owner where owner.id = `+BlockDocumentSQL("d")+`) end
 		left join artifact_versions v on v.artifact_id = a.id
-		where e.from_kind = 'artifact' and e.from_id = $1 and e.kind = 'mentions' and e.to_kind = any($2)
+		where e.to_kind = any($2)
 		  and e.to_kind not in `+itemBlockKinds+`
 		  and (e.to_kind <> 'block' or d.node_id is not null)
 		  and `+VisibleKind("artifact", `(select s.ref_key from artifacts s where s.id = $1::text::uuid)`, "$3")+`
 		  and `+VisibleEnd("e.to_kind", "e.to_id", true, "$3")+`
-		  and (e.to_kind <> 'block' or `+VisibleKind("artifact", "a.ref_key", "$3")+`)
+		  and (e.to_kind <> 'block' or (`+VisibleKind("block", "d.node_id", "$3")+` and `+VisibleKind("artifact", "a.ref_key", "$3")+`))
 		order by e.to_kind, e.to_id, v.number
 	`, artifactID, nodeKinds, VisibilityArg(who))
 	if err != nil {

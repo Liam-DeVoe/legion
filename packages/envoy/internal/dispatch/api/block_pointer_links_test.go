@@ -91,7 +91,9 @@ func TestASavedBlockPointerIsALinkNamedByItsAttribute(t *testing.T) {
 	specRef := "dispatch://" + issue.Key + "/spec"
 	r1 := specRef + "#b-r1"
 	checksRef := "dispatch://" + issue.Key + "/artifact/checks-md"
-	c1 := issue.Key + "/checks-md#c1"
+	// The issue's documents are fragments of its room, whose tree keys every block's node.
+	nodes := readDecisionDocument(t, database, issue.Key, "spec").nodeKey
+	c1 := nodes + "#c1"
 	if response := uploadChecks(t, handler, issue.Key, claimMarkdown("c1", r1)); response.Code != http.StatusCreated {
 		t.Fatalf("upload the claim: status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -113,7 +115,7 @@ func TestASavedBlockPointerIsALinkNamedByItsAttribute(t *testing.T) {
 		if edge.Node.Kind == "artifact" && edge.Node.ID == checks {
 			t.Fatalf("the spec's links list checks.md's own %s edge beside its claim's: %#v", edge.Kind, edge)
 		}
-		if edge.Block != nil && edge.Block.ID == issue.Key+"/spec#r1" && edge.Node.ID == c1 && edge.Kind == "serves" {
+		if edge.Block != nil && edge.Block.ID == nodes+"#r1" && edge.Node.ID == c1 && edge.Kind == "serves" {
 			atR1++
 		}
 	}
@@ -146,7 +148,9 @@ func TestAPointerAndAProseCitationOfOneTargetAreTwoEdges(t *testing.T) {
 	handler, database := blockIndexHandler(t)
 	issue, _ := pointerSpec(t, handler)
 	r1 := "dispatch://" + issue.Key + "/spec#b-r1"
-	c1 := issue.Key + "/checks-md#c1"
+	// The issue's documents are fragments of its room, whose tree keys every block's node.
+	nodes := readDecisionDocument(t, database, issue.Key, "spec").nodeKey
+	c1 := nodes + "#c1"
 	claim := func(body string) string {
 		return ":::claim{#c1 supports=\"" + r1 + "\" serves=\"" + r1 + "\"}\n" + body + "\n:::\n"
 	}
@@ -160,7 +164,7 @@ func TestAPointerAndAProseCitationOfOneTargetAreTwoEdges(t *testing.T) {
 		t.Fatalf("GET …/blocks of checks.md lists no block for %q", prose)
 	}
 	requireEdgeSources(t, "links to r1", graphEdges(t, handler, url.Values{"to": {r1}}).Edges,
-		"serves block "+c1, "supports block "+c1, "mentions block "+issue.Key+"/checks-md#"+paragraph)
+		"serves block "+c1, "supports block "+c1, "mentions block "+nodes+"#"+paragraph)
 	servesVersion := func() int {
 		t.Helper()
 		for _, row := range readBlockRefs(t, database, checks) {
@@ -199,8 +203,11 @@ func TestABlockPointerAttributeLinksEachDistinctTargetOnce(t *testing.T) {
 	issue := createSpecIssue(t, handler, "ACME", ":::requirement{#r1}\nA requirement.\n:::\n\n:::requirement{#r2}\nAnother requirement.\n:::\n")
 	specRef := "dispatch://" + issue.Key + "/spec"
 	r1, r2 := specRef+"#b-r1", specRef+"#b-r2"
-	r1Node, r2Node := issue.Key+"/spec#r1", issue.Key+"/spec#r2"
-	c1 := issue.Key + "/checks-md#c1"
+	// The issue's documents are fragments of its room, whose tree keys every block's node, and a
+	// pointer is stored at the node its address resolves to (refs.ResolvedBlockSQL).
+	nodes := readDecisionDocument(t, database, issue.Key, "spec").nodeKey
+	r1Node, r2Node := nodes+"#r1", nodes+"#r2"
+	c1 := nodes + "#c1"
 
 	requireRows := func(stage string, want ...string) {
 		t.Helper()
@@ -242,9 +249,12 @@ func TestABlockPointerIsListedOnlyWhileItsTargetHasAnAllowedType(t *testing.T) {
 	issue, _ := pointerSpec(t, handler)
 	specRef := "dispatch://" + issue.Key + "/spec"
 	r1 := specRef + "#b-r1"
-	r1Node := issue.Key + "/spec#r1"
+	// The issue's documents are fragments of its room, whose tree keys every block's node; a
+	// reference keeps the address written, which resolves to that node (refs.ResolvedBlockSQL).
+	nodes := readDecisionDocument(t, database, issue.Key, "spec").nodeKey
+	r1Node, r1Written := nodes+"#r1", issue.Key+"/spec#r1"
 	checksRef := "dispatch://" + issue.Key + "/artifact/checks-md"
-	c1 := issue.Key + "/checks-md#c1"
+	c1 := nodes + "#c1"
 	if response := uploadChecks(t, handler, issue.Key, claimMarkdown("c1", r1)); response.Code != http.StatusCreated {
 		t.Fatalf("upload the claim: status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -298,7 +308,7 @@ func TestABlockPointerIsListedOnlyWhileItsTargetHasAnAllowedType(t *testing.T) {
 		}
 		if target != "" {
 			outgoing := decodeBody[model.ArtifactReferences](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+checks+"/references", nil, "alice")).Outgoing
-			if len(outgoing) != 1 || outgoing[0].Kind != "block" || outgoing[0].ToID != r1Node {
+			if len(outgoing) != 1 || outgoing[0].Kind != "block" || outgoing[0].ToID != r1Written {
 				t.Fatalf("%s: checks.md's outgoing references = %#v, want r1", stage, outgoing)
 			}
 		}

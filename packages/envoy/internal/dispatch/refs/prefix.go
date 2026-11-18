@@ -381,7 +381,7 @@ func artifactCandidate(document documentParent, name string) Candidate {
 // reference pins, whose blocks are the ids document_block_texts records a text of at or before
 // it, the latest of those texts each, and none at all unless a block-aware build indexed that
 // version (BlockTextAt reads one block the same way). Both are read where the block index keeps
-// them, in the room the document is edited in (DocumentRoomBlocksSQL, documentRoomTextsSQL). A
+// them, in the room the document is edited in (DocumentRoomBlocksSQL, DocumentRoomTextsSQL). A
 // block id is text, not a uuid, so the prefix is matched on it, which is a read of the one
 // document's blocks and not a scan. A block who may not see is none of them, at its node's id,
 // the room's ref_key, '#' and the block id, whichever version names it.
@@ -404,7 +404,7 @@ func blockPrefixCandidates(ctx context.Context, q Queryer, who *model.Actor, sco
 			cross join lateral (
 				select distinct on (b.block_id) b.block_id, b.text
 				from document_block_texts b
-				where ` + documentRoomTextsSQL("b", "a.id") + ` and b.version <= ` + version + ` and starts_with(lower(b.block_id), ` + written + `)
+				where ` + DocumentRoomTextsSQL("b", "a.id") + ` and b.version <= ` + version + ` and starts_with(lower(b.block_id), ` + written + `)
 				order by b.block_id, b.version desc
 			) t
 			where a.ref_key = ` + document + ` and t.text is not null
@@ -429,13 +429,15 @@ func blockPrefixCandidates(ctx context.Context, q Queryer, who *model.Actor, sco
 	return found, rows.Err()
 }
 
-// documentRoomTextsSQL is true of the document_block_texts row aliased alias while it records a
+// DocumentRoomTextsSQL is true of the document_block_texts row aliased alias while it records a
 // text of a block of the document document names: a row under that document or under the room it
 // is edited in (blockTextOwners, the keys BlockTextAt reads one block's texts under), of a block
 // that stands in no other document of the room now (BlockDocumentOrSQL), so a block of another
 // fragment of the room is none of its blocks, and one the room's index no longer holds is read as
-// the document's own.
-func documentRoomTextsSQL(alias, document string) string {
+// the document's own. Every reader that takes a document's id and reads its blocks' texts reads
+// them through it, never by the document's own id alone: an issue born converted keeps its
+// documents' text rows under its tree artifact.
+func DocumentRoomTextsSQL(alias, document string) string {
 	return alias + `.artifact_id = any(` + blockTextOwners(document) + `) and ` + BlockDocumentOrSQL(alias, document) + ` = ` + document
 }
 

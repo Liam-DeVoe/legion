@@ -234,7 +234,7 @@ func artifactShortIDCandidates(ctx context.Context, q Queryer, who model.Actor, 
 // blockShortIDCandidates reads into found, under each of ids, the blocks of its document that
 // its prefix names, in block id order, as blockPrefixCandidates reads them for one id: where the
 // block index keeps them, in the room the document is edited in (DocumentRoomBlocksSQL,
-// documentRoomTextsSQL). Without pinned, every id is of the latest indexed version of its
+// DocumentRoomTextsSQL). Without pinned, every id is of the latest indexed version of its
 // document, whose blocks document_blocks holds. With pinned, every id is of the version that its
 // reference pins, whose blocks are the ids that document_block_texts records a text of at or
 // before that version, the latest of those texts each, and none at all unless a block-aware build
@@ -274,7 +274,7 @@ func blockShortIDCandidates(ctx context.Context, q Queryer, who model.Actor, ids
 				from (
 					select distinct on (b.block_id) b.block_id, b.text
 					from document_block_texts b
-					where ` + documentRoomTextsSQL("b", "a.id") + ` and b.version <= p.pin and starts_with(lower(b.block_id), p.prefix)
+					where ` + DocumentRoomTextsSQL("b", "a.id") + ` and b.version <= p.pin and starts_with(lower(b.block_id), p.prefix)
 					order by b.block_id, b.version desc
 				) t
 				where t.text is not null

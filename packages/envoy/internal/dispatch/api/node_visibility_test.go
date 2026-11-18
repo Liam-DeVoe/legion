@@ -789,3 +789,72 @@ func seedPrivateNode(t *testing.T, private bool) privateNodeFixture {
 	}
 	return fixture
 }
+
+// A meaning hit on a window of a document of an issue room names no block the reader may not
+// see: the covered block is held to the predicate of the node its address resolves to
+// (refs.ResolvedBlockSQL), the room's node `<tree ref_key>#<block>`, where the room keeps the
+// block. The spec, its three paragraphs and their nodes are written by the issue's create and
+// indexed in its room. The store's writers take no block reserved for its author
+// (graphstore.ErrVisibilityNotAdmitted), so the node of the paragraph holding the query's words
+// is reserved for its author, alice, as such a write would store it (graphstoretest.SeedAuthorOnly).
+// Alice's hit names that paragraph; bob's names another of the window.
+//
+// The control is the predicate read at the spec's own address, which names no node of the store:
+// the paragraph reads as visible to bob, and his hit names it.
+func TestMeaningSearchNamesNoBlockOfAnIssueRoomItsReaderMayNotSee(t *testing.T) {
+	const query = "theodolite recalibration"
+	const best = "The theodolite needs recalibration before the survey."
+	ctx := context.Background()
+	embedder := &fakeEmbedder{vectors: map[string][]float32{query: queryVector()}}
+	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder})
+	issue := createInteractionIssue(t, handler, "RPRIV", "Survey gear",
+		"Alpha notes on the mounting bracket.\n\nBeta notes on the tripod legs.\n\n"+best+"\n")
+	spec := readDecisionDocument(t, database, issue.Key, "spec")
+	if spec.room == spec.id {
+		t.Fatalf("the spec of %s is its own room, want it converted into its issue's room", issue.Key)
+	}
+	private := blockIDsByText(t, handler, issue.PrimaryArtifactID)[best]
+	if private == "" {
+		t.Fatalf("the spec of %s lists no block holding %q", issue.Key, best)
+	}
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the reservation of the paragraph's node: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	if err := graphstoretest.SeedAuthorOnly(ctx, tx, graphstore.Node{
+		Kind: refs.BlockNodeKind, ID: spec.address(private), Supertag: refs.BlockNodeKind, State: graphstore.StateLive,
+		MadeAt: time.Now().UTC(), MadeBy: privateNodeAuthor(), SourceEvent: graphstore.NoEvent,
+	}); err != nil {
+		t.Fatalf("reserve the paragraph's node for its author: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the reservation of the paragraph's node: %v", err)
+	}
+	windowOwedOwners(t, deps)
+	if windows := windowTexts(t, database, "document_block", issue.PrimaryArtifactID); len(windows) != 1 {
+		t.Fatalf("the spec's windows = %v, want one window over its three paragraphs", windows)
+	}
+	embedWindowsAs(t, database, embedder, "document_block", issue.PrimaryArtifactID, angledVector(0.9, 2))
+	processAllPending(t, database, embedder)
+
+	hitOf := func(login string) string {
+		t.Helper()
+		response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/search?q="+url.QueryEscape(query), nil, login)
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s's search: status=%d body=%s", login, response.Code, response.Body.String())
+		}
+		hit := searchHit(t, decodeBody[model.SearchResponse](t, response), "document", issue.PrimaryArtifactID)
+		if hit.BlockID == nil {
+			return ""
+		}
+		return *hit.BlockID
+	}
+	if named := hitOf(privateNodeAuthor().ID); named != private {
+		t.Fatalf("the author's hit names block %q, want %q, her paragraph holding the query's words", named, private)
+	}
+	if named := hitOf(privateNodeReader().ID); named == "" || named == private {
+		t.Fatalf("the second person's hit names block %q, want another paragraph of the window than %q, which he may not see",
+			named, private)
+	}
+}
