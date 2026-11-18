@@ -12,15 +12,15 @@
 # below. The three functions it gives the caller:
 #
 #   baseline_start
-#       Inputs. Each of these four is optional; the database and the bearer follow them.
+#       Inputs. BASELINE_SHA or BASELINE_BINARY must be set; LEGION_WORKSPACE and
+#       BASELINE_EXTRA_ENV are optional. The database and the bearer follow them.
 #
 #       BASELINE_SHA, the commit the baseline server is built from (any revision this repository
-#       resolves to a commit). Unset or empty, it is `git merge-base origin/main HEAD` in the
-#       checkout: the commit of main this branch was built on. The upgrade a check reads is then
-#       the one this branch's own commits make, and every check of one branch starts from the
-#       same commit without any of them naming it. A checkout with no origin/main, or one whose
-#       origin/main shares no history with HEAD, has no default, and the run is refused:
-#       BASELINE_SHA names the commit then.
+#       resolves to a commit): the release this branch lands after. It has no default. Unset or
+#       empty, with BASELINE_BINARY unset too, the run is refused by name before anything is read
+#       out of the checkout or made. A default of the merge base with main would be older than any
+#       sibling branch this one is stacked on, so a check built on it could pass without being
+#       able to fail; only the caller knows which release the branch lands after.
 #
 #       LEGION_WORKSPACE names the checkout the commit is read from, whose
 #       scripts/e2e/lib/held-port.py also holds each server's port; unset, the checkout this file
@@ -89,12 +89,13 @@
 #           baseline_url            the baseline server's address, http://127.0.0.1:<port>
 #           baseline_token          the agent bearer both servers accept, for a driver that writes
 #                                   the old release's rows through its API. It is printed nowhere.
-#           baseline_commit         the commit the baseline was built from and stamped with, in
-#                                   full, whether BASELINE_SHA named it or its default found it;
-#                                   empty when BASELINE_BINARY was booted
+#           baseline_commit         the commit the baseline was built from and stamped with, the
+#                                   one BASELINE_SHA named, in full; empty when BASELINE_BINARY
+#                                   was booted
 #           baseline_binary         the absolute path of the binary booted as the baseline
 #       It prints, one per line on stdout, `baseline commit <commit>` (or `baseline binary <path>`)
-#       and then the first two, so that a run's log names its baseline even when no input named it.
+#       and then the first two, so that a run's log names its baseline in full even when
+#       BASELINE_SHA named it by a branch or a short hash.
 #
 #   baseline_stop_server
 #       Stops the baseline server and KEEPS the database. This is the one a caller calls before it
@@ -120,19 +121,23 @@
 # --selftest
 #
 #   `bash e2e/acceptance/lib-baseline.sh --selftest`, from packages/dispatch, takes
-#   baseline_start's inputs above, of which only a database is required (LEGION_TEST_PG_DSN, or
-#   the run's DATABASE_URL), and proves the harness end to end: it starts the baseline server,
-#   reads the version of every migration that server applied out of the `schema_migrations`
-#   table, stops that server while keeping the database, builds and boots this branch's own server
-#   over the same database, and reads the versions again. A baseline that applied none fails: it
-#   did not migrate its own database. Then the two sets of versions are compared. A version the
-#   baseline's set holds and the branch's lacks fails the run, which names every such version:
-#   this branch would be missing a migration the previous release already has, and since both sets
-#   are read from one database, whose schema_migrations a migration only adds to, a server deleted
-#   it. Otherwise the run passes and names each version the branch's set adds, on a line of its
-#   own, and how many there are: the migrations this branch applied over the old schema, so that a
-#   reader sees the upgrade once a child's migration lands. A branch that added none says so and
-#   passes: that is where a branch no migration has landed on yet stands.
+#   baseline_start's inputs above, of which BASELINE_SHA (or BASELINE_BINARY) and a database
+#   (LEGION_TEST_PG_DSN, or the run's DATABASE_URL) are required. With neither BASELINE_SHA nor
+#   BASELINE_BINARY set it is refused at once, with status 2, and starts nothing. Before it starts
+#   any server it proves that refusal: baseline_start, run in a subshell with neither set, must
+#   exit 2, and the first line it prints on stderr must name BASELINE_SHA. Then it proves the
+#   harness end to end: it starts the baseline server, reads the version of every migration that
+#   server applied out of the `schema_migrations` table, stops that server while keeping the
+#   database, builds and boots this branch's own server over the same database, and reads the
+#   versions again. A baseline that applied none fails: it did not migrate its own database. Then
+#   the two sets of versions are compared. A version the baseline's set holds and the branch's
+#   lacks fails the run, which names every such version: this branch would be missing a migration
+#   the previous release already has, and since both sets are read from one database, whose
+#   schema_migrations a migration only adds to, a server deleted it. Otherwise the run passes and
+#   names each version the branch's set adds, on a line of its own, and how many there are: the
+#   migrations this branch applied over the old schema, so that a reader sees the upgrade once a
+#   child's migration lands. A branch that added none says so and passes: that is where a branch
+#   no migration has landed on yet stands.
 #
 #   The sets are compared, never their high-water marks, the highest version in each. Dispatch
 #   applies each migration by its own version alone (applyMigration, in
@@ -163,13 +168,14 @@ set -euo pipefail
 if ! declare -F usage >/dev/null; then
   usage() {
     cat >&2 <<'USAGE'
-Usage: [BASELINE_SHA=<commit> | BASELINE_BINARY=<path>] [BASELINE_EXTRA_ENV=$'NAME=value\n...'] \
+Usage: {BASELINE_SHA=<commit> | BASELINE_BINARY=<path>} [BASELINE_EXTRA_ENV=$'NAME=value\n...'] \
          LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<db>?sslmode=disable \
          bash e2e/acceptance/lib-baseline.sh --selftest
-       (BASELINE_SHA unset is git merge-base origin/main HEAD; BASELINE_BINARY boots that prebuilt
-       server and builds none; BASELINE_EXTRA_ENV is one NAME=value per line, given to every
-       server. LEGION_WORKSPACE names the checkout the commit is read from; unset, this file's own.
-       Sourced instead, it gives baseline_start, baseline_stop_server and baseline_stop)
+       (BASELINE_SHA is the commit of the release this branch lands after, and has no default:
+       only the caller knows which release that is. BASELINE_BINARY, set instead, boots that
+       prebuilt server and builds none. BASELINE_EXTRA_ENV is one NAME=value per line, given to
+       every server. LEGION_WORKSPACE names the checkout the commit is read from; unset, this
+       file's own. Sourced instead, it gives baseline_start, baseline_stop_server and baseline_stop)
 USAGE
   }
 fi
@@ -311,6 +317,17 @@ baseline_compare_versions() {
   mapfile -t versions < <(printf '%s' "$added")
   printf 'versions this branch added over the baseline: %d\n' "${#versions[@]}"
   printf '  %s\n' "${versions[@]}"
+}
+
+# baseline_require_sha_or_binary: refuses a run that names no baseline, with BASELINE_SHA and
+# BASELINE_BINARY both unset or empty. Nothing stands in for them, for the reason the head comment
+# gives under BASELINE_SHA. baseline_start calls it first, before it reads the checkout or makes
+# anything, and the --selftest run below calls it before anything else too.
+baseline_require_sha_or_binary() {
+  [[ -n "${BASELINE_SHA:-}" || -n "${BASELINE_BINARY:-}" ]] ||
+    baseline_refuse "BASELINE_SHA is unset: set it to the commit of the release this branch" \
+      "lands after (any revision this repository resolves to one), or set BASELINE_BINARY to a" \
+      "server already built from it. It has no default: only the caller knows that release"
 }
 
 # baseline_read_extra_env: checks BASELINE_EXTRA_ENV line by line and keeps its pairs in
@@ -484,14 +501,17 @@ baseline_stop() {
   baseline_signin_key=""
 }
 
-# baseline_start: the baseline server of BASELINE_SHA, of its default, or of BASELINE_BINARY,
-# serving the run's database or one of its own. The head comment above is its contract.
+# baseline_start: the baseline server of BASELINE_SHA or of BASELINE_BINARY, serving the run's
+# database or one of its own. The head comment above is its contract.
 baseline_start() {
   # Read before anything else: a driver that calls lib.sh's read_bearer after this unsets
   # DISPATCH_TOKEN, and the run's DATABASE_URL must be the one every server here is booted on.
   # shellcheck disable=SC2031 # the run's own DATABASE_URL, which no server's subshell changes
   local given_database_url="${DATABASE_URL:-}" given_token="${DISPATCH_TOKEN:-}"
   local given_binary="${BASELINE_BINARY:-}" sha="${BASELINE_SHA:-}"
+  # Refused before anything is read out of the checkout or made: a run that names no baseline has
+  # nothing to build or boot, and none is guessed for it.
+  baseline_require_sha_or_binary
   [[ -n "$given_database_url" ]] || require_env LEGION_TEST_PG_DSN
   # A binary given is booted as it is, with whatever stamp its caller's build gave it: nothing
   # reads the repository and nothing is built.
@@ -501,7 +521,7 @@ baseline_start() {
     require_commands env git go openssl psql python3 sleep tar
   fi
   baseline_read_extra_env
-  # The checkout comes before the commit: BASELINE_SHA's default is read out of it.
+  # The checkout comes before the commit: BASELINE_SHA is resolved in it.
   baseline_workspace="${LEGION_WORKSPACE:-}"
   if [[ -z "$baseline_workspace" ]]; then
     baseline_workspace="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../../.." && pwd)" ||
@@ -520,12 +540,6 @@ baseline_start() {
   else
     git -C "$baseline_workspace" rev-parse --git-dir >/dev/null 2>&1 ||
       baseline_refuse "$baseline_workspace holds no git repository to read the commit out of"
-    if [[ -z "$sha" ]]; then
-      sha="$(git -C "$baseline_workspace" merge-base origin/main HEAD)" ||
-        baseline_refuse "BASELINE_SHA is unset, and its default, git merge-base origin/main HEAD," \
-          "found no commit in $baseline_workspace:" \
-          "set BASELINE_SHA to the commit the baseline server is built from"
-    fi
     baseline_commit="$(git -C "$baseline_workspace" rev-parse --verify --quiet "${sha}^{commit}")" ||
       baseline_refuse "BASELINE_SHA '$sha' names no commit of $baseline_workspace"
   fi
@@ -593,6 +607,9 @@ fi
   usage
   exit 2
 }
+# A run that names no baseline is refused at once, as baseline_start refuses it, before the
+# refusal is proved below and before anything else is checked or made.
+baseline_require_sha_or_binary
 # Every input is baseline_start's own, which refuses a missing or bad one by name. This run builds
 # this branch's server itself whatever baseline_start boots, and stamps it with the commit HEAD
 # names, so it needs git and go even when BASELINE_BINARY spares baseline_start its own build. It
@@ -604,6 +621,28 @@ fail() {
   printf 'FAIL: %s %s: %s\n' "$1" "$2" "$3" >&2
   exit 1
 }
+
+# The refusal of a run that names no baseline, proved before any server starts: baseline_start, in
+# a subshell with BASELINE_SHA and BASELINE_BINARY unset, must exit 2, and the first line it prints
+# on stderr must name BASELINE_SHA. Only that line is read: the usage text after it names
+# BASELINE_SHA whatever was refused. The subshell drops DATABASE_URL and LEGION_TEST_PG_DSN as well,
+# so that it could make nothing even if the refusal ever moved below baseline_start's first check:
+# lib.sh's require_env would then refuse first, naming LEGION_TEST_PG_DSN, and this step would fail
+# naming that line.
+refusal_status=0
+refusal="$(
+  unset BASELINE_SHA BASELINE_BINARY DATABASE_URL LEGION_TEST_PG_DSN
+  baseline_start 2>&1 >/dev/null
+)" || refusal_status=$?
+refusal_line="${refusal%%$'\n'*}"
+[[ "$refusal_status" -eq 2 ]] ||
+  fail refusal "baseline_start with neither BASELINE_SHA nor BASELINE_BINARY exits 2" \
+    "it exited $refusal_status, saying first: $refusal_line"
+[[ "$refusal_line" == *BASELINE_SHA* ]] ||
+  fail refusal "baseline_start with neither BASELINE_SHA nor BASELINE_BINARY names BASELINE_SHA" \
+    "the first line it printed on stderr was: $refusal_line"
+pass refusal \
+  "baseline_start with neither BASELINE_SHA nor BASELINE_BINARY exits 2 and names BASELINE_SHA"
 
 branch_pid=""
 cleanup() {
@@ -630,9 +669,8 @@ baseline_count="${#baseline_version_list[@]}"
 printf 'baseline schema_migrations holds %d versions\n' "$baseline_count"
 [[ "$baseline_count" -gt 0 ]] ||
   fail baseline "the baseline server migrated its own database" "schema_migrations is empty"
-# The baseline is named by what was booted: the commit it was built from, whether BASELINE_SHA
-# named it or its default found it, or the binary BASELINE_BINARY gave, whose commit nothing here
-# can vouch for.
+# The baseline is named by what was booted: the commit it was built from, which BASELINE_SHA named,
+# or the binary BASELINE_BINARY gave, whose commit nothing here can vouch for.
 if [[ -n "$baseline_commit" ]]; then
   baseline_booted="the server built from $baseline_commit"
 else
