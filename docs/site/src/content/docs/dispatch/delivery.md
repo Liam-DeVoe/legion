@@ -134,14 +134,16 @@ beside it is of: "< 45m for every change" for the longest change, "median < 60m"
 longest change and its median, and every change under the target puts the median under it, so
 the label names the longest change alone and the verdict is the same. A card whose target
 judges its own headline figure alone (deploys a day, the failure rate per deploy, run success,
-the count of unowned P0 issues) names no statistic. On the two lead-time cards, and for the change
-failure rate's upper bound, a figure takes a verdict's colour only when it is one of the statistics
-the label names, and reads plain otherwise: merge to production's median reads plain under the
-catalogue's target, whose longest change implies it, and the upper bound reads plain unless the
-target judges it. A day's bar on a card's chart
-is green where that day's value of each judged statistic meets the target, red where one misses
-it, and neutral where the day has no value of one; the dashed target line is drawn only when the
-target judges the figure the bars draw.
+the count of unowned P0 issues) names no statistic. Every figure on a card takes a verdict's colour
+only when the card's target judges the statistic the figure shows, and reads plain otherwise; a
+statistic another judged one implies, which the label leaves out, reads plain too, and the card's
+met or missed badge stays the verdict of all the target judges. So merge to production's median
+reads plain under the catalogue's target, whose longest change implies it, the failure rate's upper
+bound reads plain unless the target judges it, and a target someone set to judge the failure rate
+per pull request, or the deploys with a pull request a day, leaves the card's headline figure plain.
+A day's bar on a card's chart is green where that day's value of each judged statistic meets the
+target, red where one misses it, and neutral where the day has no value of one; the dashed target
+line is drawn only when the target judges the figure the bars draw.
 
 ## For agents
 
