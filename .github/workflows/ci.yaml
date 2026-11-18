@@ -605,6 +605,8 @@ jobs:
               - 'packages/envoy/brokeraddr/*'
               - 'packages/envoy/brokerclient/*'
               - 'packages/envoy/brokertest/*'
+              # The cobra conformance harness cmd/legion's tests drive the built legion with.
+              - 'packages/envoy/clitest/*'
               - 'packages/envoy/daemonpermissions/*'
               # dispatchbody is the one public door onto the Dispatch server's own block
               # splitter, which the daemon refuses a close reason or a READY packet the server
@@ -743,6 +745,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/graphstore/*'
               - 'packages/envoy/internal/dispatch/identity/*'
               - 'packages/envoy/internal/dispatch/itemblocks/*'
+              - 'packages/envoy/internal/dispatch/legion/*'
               - 'packages/envoy/internal/dispatch/model/*'
               - 'packages/envoy/internal/dispatch/outbox/*'
               - 'packages/envoy/internal/dispatch/pmdoc/**'
@@ -2048,6 +2051,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/graphstore/*'
               - 'packages/envoy/internal/dispatch/identity/*'
               - 'packages/envoy/internal/dispatch/itemblocks/*'
+              - 'packages/envoy/internal/dispatch/legion/*'
               - 'packages/envoy/internal/dispatch/model/*'
               - 'packages/envoy/internal/dispatch/outbox/*'
               - 'packages/envoy/internal/dispatch/pmdoc/**'
@@ -2763,11 +2767,15 @@ jobs:
               - 'docs/site/src/content/docs/dispatch/running-dispatch.md'
               # Fixtures its Go tests read: internal/contracts/dedupe_test.go:14, golden_test.go:72,
               # internal/dispatch/docs/approval_carry_test.go:26,
-              # internal/cistore/settlement_fixture_test.go:57.
+              # internal/cistore/settlement_fixture_test.go:57,
+              # internal/dispatch/legion/golden_state_test.go:29 (the daemon's state golden, which
+              # packages/daemon/internal/api/state_golden_test.go writes, so a change to the
+              # daemon's state shape must start this job as well as the daemon's).
               - 'packages/contracts/fixtures/dedupe-keys.json'
               - 'packages/contracts/fixtures/github-envelopes/**'
               - 'packages/contracts/fixtures/decision-blocks/**'
               - 'packages/contracts/fixtures/checks-settlement/**'
+              - 'packages/contracts/fixtures/daemon-api/state.json'
               # The daemon's own fixture, the server.started envelope its intake decodes:
               # internal/dispatch/startup/started_test.go:379 reads it and
               # TestTheBuiltEnvelopeIsTheSharedFixture holds this package's build to it, so a
@@ -3314,6 +3322,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/graphstore/*'
               - 'packages/envoy/internal/dispatch/identity/*'
               - 'packages/envoy/internal/dispatch/itemblocks/*'
+              - 'packages/envoy/internal/dispatch/legion/*'
               - 'packages/envoy/internal/dispatch/model/*'
               # cmd/listener/dispatch_kept_role_test.go drives Dispatch's outbox end to end, so the
               # serverchange soak compiles this package: a change to it must re-run that soak.
@@ -3691,6 +3700,7 @@ jobs:
               - '!packages/envoy/internal/dispatch/horizontest/**/*_test.go'
               - '!packages/envoy/internal/dispatch/identity/**/*_test.go'
               - '!packages/envoy/internal/dispatch/itemblocks/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/legion/**/*_test.go'
               - '!packages/envoy/internal/dispatch/model/**/*_test.go'
               - '!packages/envoy/internal/dispatch/outbox/**/*_test.go'
               - '!packages/envoy/internal/dispatch/pmdoc/**/*_test.go'
@@ -3837,6 +3847,8 @@ jobs:
               - 'packages/envoy/internal/dispatch/horizontest/*'
               - 'packages/envoy/internal/dispatch/identity/*'
               - 'packages/envoy/internal/dispatch/itemblocks/*'
+              - 'packages/envoy/internal/dispatch/legion/*'
+              - 'packages/envoy/internal/dispatch/legion/metrics/*'
               - 'packages/envoy/internal/dispatch/model/*'
               - 'packages/envoy/internal/dispatch/outbox/*'
               - 'packages/envoy/internal/dispatch/pmdoc/*'
@@ -3944,6 +3956,7 @@ jobs:
               - '!packages/envoy/internal/dispatch/horizontest/**/*_test.go'
               - '!packages/envoy/internal/dispatch/identity/**/*_test.go'
               - '!packages/envoy/internal/dispatch/itemblocks/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/legion/**/*_test.go'
               - '!packages/envoy/internal/dispatch/model/**/*_test.go'
               - '!packages/envoy/internal/dispatch/outbox/**/*_test.go'
               - '!packages/envoy/internal/dispatch/pmdoc/**/*_test.go'
