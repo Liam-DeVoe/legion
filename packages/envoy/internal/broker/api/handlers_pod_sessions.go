@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/enroll"
 	"github.com/sjawhar/envoy/internal/broker/exchange"
 	"github.com/sjawhar/envoy/internal/broker/machine"
+	"github.com/sjawhar/envoy/internal/broker/oauthstore"
 	"github.com/sjawhar/envoy/internal/oidc"
 )
 
@@ -74,7 +75,8 @@ type podSessionResponse struct {
 //
 // The refusals come in this order: the body; the pod token; the list (403
 // POD_REGISTRAR_NOT_LISTED); the caller's own pod (403 POD_CALLER_IS_THE_POD); the thumbprint
-// (400 THUMBPRINT_INVALID); the generation (400 GENERATION_INVALID); and then the policy's.
+// (400 THUMBPRINT_INVALID); the generation (400 GENERATION_INVALID); the policy's; and then the
+// store's (409 SESSION_HELD_BY_ANOTHER_REGISTRAR).
 //
 // The body's token is verified at two audiences (podSessionToken): the broker's own, with the
 // verifier an enrolling pod's token is verified with (Deps.Enroll.Pod), which the serviceAuth
@@ -112,6 +114,16 @@ type podSessionResponse struct {
 // says), and a session name no request could name back (400 SESSION_INVALID). Each refusal names
 // the account or the name it refused and repeats no token.
 //
+// A session name belongs to the registrar that registered it: the row records the caller's login
+// account (registrar.Subject, never its service, which every Legion daemon shares, nor its pod,
+// which a restart changes), and while a live registration of the name, of any pod and released
+// or not, names another registrar, the write is 409 SESSION_HELD_BY_ANOTHER_REGISTRAR, naming the
+// session and the registrar that holds it, and writes nothing (oauthstore.Store.RegisterPodSession).
+// Two daemons listed for one pod account are two registrars, so neither registers a pod, its own
+// or the other's, under a name the other holds, and the exchange admits a pod under a name only
+// when the registrar holding it registered that pod. The refusal is answered to the registrar
+// alone and logged at Warn, naming the registrar, the holder, the pod and the session.
+//
 // The body may name the thumbprint of the key the session's own role proves, which binds the
 // registration to that key (oauthstore.Store.RegisterPodSession), and a thumbprint that is not
 // 43 base64url characters is 400 THUMBPRINT_INVALID. It may name the write's generation, the
@@ -122,11 +134,12 @@ type podSessionResponse struct {
 //
 // Each write is logged with what it did, since the registrar is the authority here and these
 // lines are the one record of who may write under which name. A write applied is logged at Info
-// as registered, naming the thumbprint and generation the registrar sent beside the ones stored,
-// and the thumbprint it replaced when it bound the row to another key; one that names no key and
-// no generation, of a row that names neither, logs the line it logged before either existed (R9).
-// A write the generation rule refused changed nothing, so it is not logged as registered: it logs
-// a line of its own at Warn, naming what it sent beside the row it left as it was.
+// as registered, naming the registrar and the thumbprint and generation it sent beside the ones
+// stored, and the thumbprint it replaced when it bound the row to another key; one that names no
+// key and no generation, of a row that names neither, logs the line it logged before either
+// existed (R9), the registrar included in neither. A write the generation rule refused changed
+// nothing, so it is not logged as registered: it logs a line of its own at Warn, naming the
+// registrar and what it sent beside the row it left as it was.
 func (s *server) registerPodSession(w http.ResponseWriter, r *http.Request, registrar machine.ServiceAccount) {
 	var body podSessionBody
 	if !readJSON(w, r, &body, "INVALID_REQUEST") {
@@ -161,7 +174,8 @@ func (s *server) registerPodSession(w http.ResponseWriter, r *http.Request, regi
 			fmt.Sprintf("the generation must be 0 or more, not %d", body.Generation))
 		return
 	}
-	stored, err := s.deps.OAuth.RegisterPodSession(r.Context(), claims.Subject, claims.PodUID, body.Session, body.Thumbprint, body.Generation)
+	stored, err := s.deps.OAuth.RegisterPodSession(r.Context(), registrar.Subject, claims.Subject, claims.PodUID, body.Session, body.Thumbprint, body.Generation)
+	var held *oauthstore.PodSessionHeldError
 	switch {
 	case errors.Is(err, exchange.ErrNoPodBinding):
 		writeError(w, http.StatusBadRequest, "POD_NOT_BOUND", err.Error())
@@ -171,12 +185,18 @@ func (s *server) registerPodSession(w http.ResponseWriter, r *http.Request, regi
 		writeError(w, http.StatusConflict, "SESSION_FIXED", err.Error())
 	case errors.Is(err, exchange.ErrSessionInvalid):
 		writeError(w, http.StatusBadRequest, "SESSION_INVALID", err.Error())
+	case errors.As(err, &held):
+		slog.Warn("broker: a pod's session registration was refused: another registrar holds the session name",
+			"service", registrar.Service, "registrar", registrar.Subject, "holder", held.Holder,
+			"account", claims.Subject, "pod", claims.PodUID, "session", body.Session)
+		writeError(w, http.StatusConflict, "SESSION_HELD_BY_ANOTHER_REGISTRAR",
+			fmt.Sprintf("the session name %s is held by another registrar, %s, until its registrations of the name lapse or it releases them", held.Session, held.Holder))
 	case err != nil:
 		writeInternal(w, "register the pod's session name", err)
 	default:
 		attrs := []any{"service", registrar.Service, "account", claims.Subject, "pod", claims.PodUID, "session", body.Session}
 		if body.Thumbprint != "" || body.Generation != 0 || stored.JKT != "" || stored.Generation != 0 {
-			attrs = append(attrs, "sent_thumbprint", body.Thumbprint, "sent_generation", body.Generation,
+			attrs = append(attrs, "registrar", registrar.Subject, "sent_thumbprint", body.Thumbprint, "sent_generation", body.Generation,
 				"thumbprint", stored.JKT, "generation", stored.Generation)
 		}
 		switch {
