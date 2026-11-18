@@ -334,12 +334,15 @@ func TestTheReadsAnswerEachNodeStateAndCountNoProposedNodeAsSettled(t *testing.T
 // is refused a node already settled, and the shared bearer its own proposal. The first agent's
 // settle of alice's hidden lens answers, byte for byte, what a lens nobody wrote answers. The
 // second agent writes a third proposal of its own and settles it, and a broker session acting for
-// alice settles a proposal another session of hers wrote, both sessions proving her. Through the
-// state route the shared bearer is refused 403 STATE_NOT_PERMITTED, naming the node, its move of
-// the requirement alice settled to live and its move of the live requirement to proposed, and the
-// second agent the same refusal for its move of the first agent's settled proposal to overtaken,
-// each node reading as before and holding no new state tuple; the first agent then moves its own
-// settled proposal to live.
+// alice settles a proposal another session of hers wrote, both sessions proving her. alice writes
+// a Verification document whose one check serves the live requirement, and marks the check
+// proposed. Through the state route the shared bearer is refused 403 STATE_NOT_PERMITTED, naming
+// the node, its move of the requirement alice settled to live, its move of the live requirement to
+// proposed and its move of alice's proposed check to live, and the second agent the same refusal
+// for its move of the first agent's settled proposal to overtaken, each node reading as before and
+// holding no new state tuple. After the refused move of the check the coverage read still counts
+// no check serving the live requirement, and once alice, a person, moves the check to live it
+// counts that one; the first agent then moves its own settled proposal to live.
 func TestSettlingAProposedNodeIsOneWriteByAPersonOrItsAuthor(t *testing.T) {
 	issuer := newServiceTokenIssuer(t)
 	rig := newBrokerTokenRigOn(t, testServerOptions{oidc: issuer.verifier(t)})
@@ -573,37 +576,89 @@ func TestSettlingAProposedNodeIsOneWriteByAPersonOrItsAuthor(t *testing.T) {
 	requireSettled("alice's second broker session", "r-alice",
 		asAliceSecond(http.MethodPost, settlePath(requirement("r-alice")), map[string]any{}), model.Actor{Kind: "session", ID: aliceSecondSession})
 
-	// Through the state route a move out of settled, and a move into proposed, take the settle's
-	// caller rule: the shared bearer, which proves no author, makes neither, and an agent moves
-	// another agent's settled proposal nowhere. Each refusal names the node, which reads the state
-	// it held and holds no new state tuple. The second agent's move runs while the first agent's
-	// proposal is still settled, before the first agent's own move of it.
-	stateTuples := func(blockID string) int {
+	// alice writes a Verification document whose one check serves r-live, and marks the check
+	// proposed: a question still open, which serves no requirement yet. The check's address names
+	// its document under /artifact/; its store id is the document's ref_key, `<issue>/<slug>`, and
+	// its block id.
+	verification := uploadDocument(t, rig.handler, "/api/v1/issues/"+issue.Key, "verification.md", checkServing("k-live", requirement("r-live")))
+	check := refs.BlockRef("dispatch://"+issue.Key+"/artifact/"+verification.Artifact.Slug, "k-live")
+	checkNode := issue.Key + "/" + verification.Artifact.Slug + "#k-live"
+	if response := writeStateAs(t, rig.handler, issue.Key, check, graphstore.StateProposed, "alice"); response.Code != http.StatusOK {
+		t.Fatalf("alice marks her check %s proposed: status=%d body=%s", check, response.Code, response.Body.String())
+	}
+	checksServingLive := func() int {
 		t.Helper()
-		history, err := graphstore.History(ctx, rig.database.Pool, refs.BlockNodeKind, refKey+"#"+blockID, graphstore.AttributeState)
+		return requirementOf(t, readCoverage(t, rig.handler, issue.Key), "r-live").Checks
+	}
+
+	// Through the state route a move into or out of proposed or settled takes the settle's caller
+	// rule: the shared bearer, which proves no author, makes none, and an agent moves another
+	// agent's settled proposal nowhere. Each refusal names the node, which reads the state it held
+	// and holds no new state tuple. The second agent's move runs while the first agent's proposal
+	// is still settled, before the first agent's own move of it. A move the route takes is an
+	// error and not the end of the test, so a run where the route takes them all names each node.
+	stateTuples := func(storeID string) int {
+		t.Helper()
+		history, err := graphstore.History(ctx, rig.database.Pool, refs.BlockNodeKind, storeID, graphstore.AttributeState)
 		if err != nil {
-			t.Fatalf("read the state history of %s: %v", blockID, err)
+			t.Fatalf("read the state history of %s: %v", storeID, err)
 		}
 		return len(history)
 	}
-	requireRefusedMove := func(name, blockID, held string, move func() *httptest.ResponseRecorder) {
+	// requireRefusedMove holds move, a write of the state of the block at address, whose store id
+	// is storeID, to its refusal naming the block, and the block to held and to its state tuples.
+	requireRefusedMove := func(name, address, storeID, held string, move func() *httptest.ResponseRecorder) {
 		t.Helper()
-		before := stateTuples(blockID)
-		requireRefused(t, name, move(), http.StatusForbidden, codeStateNotPermitted, requirement(blockID))
-		requireNodeState(t, rig.handler, requirement(blockID), "alice", held)
-		if after := stateTuples(blockID); after != before {
-			t.Fatalf("%s left %s with %d state tuples, want the %d it held", name, requirement(blockID), after, before)
+		before := stateTuples(storeID)
+		if before == 0 {
+			t.Fatalf("the store holds no state tuple of %s at the store id %s: the test's premise is the id its tuples are keyed by", address, storeID)
+		}
+		response := move()
+		t.Logf("%s: status=%d body=%s", name, response.Code, response.Body.String())
+		refused := response.Code == http.StatusForbidden
+		if refused {
+			refusal := decodeBody[refusalAnswer](t, response)
+			refused = refusal.Code == codeStateNotPermitted && strings.Contains(refusal.Error, address)
+		}
+		if !refused {
+			t.Errorf("%s answers %d %s, want 403 %s naming the node %s", name, response.Code, response.Body.String(), codeStateNotPermitted, address)
+		}
+		if state := nodeStateRead(t, rig.handler, address, "alice"); state != held {
+			t.Errorf("%s left the node %s at %s, want the %s it held", name, address, state, held)
+		}
+		if after := stateTuples(storeID); after != before {
+			t.Errorf("%s left the node %s with %d state tuples, want the %d it held", name, address, after, before)
 		}
 	}
-	requireRefusedMove("the shared bearer's move of "+requirement("r-second-a")+", which alice settled, to live", "r-second-a", graphstore.StateSettled,
+	requireRefusedMove("the shared bearer's move of "+requirement("r-second-a")+", which alice settled, to live",
+		requirement("r-second-a"), refKey+"#r-second-a", graphstore.StateSettled,
 		func() *httptest.ResponseRecorder {
 			return asBearer(http.MethodPost, stateRoute("r-second-a"), toState(graphstore.StateLive))
 		})
-	requireRefusedMove("the shared bearer's move of the live "+requirement("r-live")+" to proposed", "r-live", graphstore.StateLive,
+	requireRefusedMove("the shared bearer's move of the live "+requirement("r-live")+" to proposed",
+		requirement("r-live"), refKey+"#r-live", graphstore.StateLive,
 		func() *httptest.ResponseRecorder {
 			return asBearer(http.MethodPost, stateRoute("r-live"), toState(graphstore.StateProposed))
 		})
-	requireRefusedMove("the second agent's move of the first agent's settled "+requirement("r-first")+" to overtaken", "r-first", graphstore.StateSettled,
+	requireRefusedMove("the shared bearer's move of alice's proposed check "+check+" to live",
+		check, checkNode, graphstore.StateProposed,
+		func() *httptest.ResponseRecorder {
+			return asBearer(http.MethodPost, statePath(issue.Key, check, "state"), toState(graphstore.StateLive))
+		})
+	if checks := checksServingLive(); checks != 0 {
+		t.Errorf("after the shared bearer's move of the proposed check %s the coverage read counts %d checks serving %s, want 0",
+			check, checks, requirement("r-live"))
+	}
+	// alice, a person, ends her own proposal, and the check then serves r-live: the count of 0
+	// above is of this check, which a move out of proposed would count.
+	if response := writeStateAs(t, rig.handler, issue.Key, check, graphstore.StateLive, "alice"); response.Code != http.StatusOK {
+		t.Fatalf("alice moves her proposed check %s to live: status=%d body=%s", check, response.Code, response.Body.String())
+	}
+	if checks := checksServingLive(); checks != 1 {
+		t.Fatalf("with alice's check %s live the coverage read counts %d checks serving %s, want 1", check, checks, requirement("r-live"))
+	}
+	requireRefusedMove("the second agent's move of the first agent's settled "+requirement("r-first")+" to overtaken",
+		requirement("r-first"), refKey+"#r-first", graphstore.StateSettled,
 		func() *httptest.ResponseRecorder {
 			return asSecond(http.MethodPost, stateRoute("r-first"), toState(graphstore.StateOvertaken))
 		})
