@@ -84,7 +84,7 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 		script := `: >"$1"; trap 'rm -f "$1"; exit 0' TERM; : >"$2"; ` + commandLives
 
 		ran := inFlight(func() error {
-			_, err := runCommandOn(ctx, clock, nil, budget, clock.Now(), environment, dir, nil, []string{"sh", "-c", script, "sh", lock, ready})
+			_, err := runCommandOn(ctx, clock, procgroup.NoReaper, budget, clock.Now(), environment, dir, nil, []string{"sh", "-c", script, "sh", lock, ready})
 			return err
 		})
 		exists(t, "the command to report that it is running", ready)
@@ -129,7 +129,7 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 		script := `sh -c "$2" sh "$3" "$4" & trap '' TERM; until [ -e "$4" ]; do sleep 0.01; done; : >"$1"; ` + commandLives
 
 		ran := inFlight(func() error {
-			_, err := runCommandOn(ctx, clock, nil, budget, clock.Now(), environment, dir, nil, []string{"sh", "-c", script, "sh", ready, helper, marker, trapped})
+			_, err := runCommandOn(ctx, clock, procgroup.NoReaper, budget, clock.Now(), environment, dir, nil, []string{"sh", "-c", script, "sh", ready, helper, marker, trapped})
 			return err
 		})
 		exists(t, "the command to report that it is running", ready)

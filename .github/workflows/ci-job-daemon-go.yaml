@@ -75,9 +75,11 @@ jobs:
     # 2026-11-16T05:39Z: at most 504 s for the steps that run no guarded command (that job's, an
     # upper bound for this one's setup, which is a part of them), 6 s the job's clock holds over
     # its steps, and each guarded step's longest green duration plus its guard - the plain Go step
-    # 597 s + 900 s, the race step 997 s + 1800 s and the Stage 1 proof 6 s + 240 s - which is
-    # 5050 s, or 85 minutes.
-    timeout-minutes: 85
+    # 597 s + 900 s, the race step 997 s + 1800 s and the Stage 1 proof 6 s + 240 s - and the step
+    # of what the race build cannot run, which #4289 added after those runs, at most 28 s over its
+    # two green merge-group runs to 2026-11-18T09:14Z (run 44267329843) + 600 s: 5678 s, or 95
+    # minutes.
+    timeout-minutes: 95
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -238,6 +240,19 @@ jobs:
       # come to name different tests.
       - name: Test the concurrent packages under the race detector
         run: go test -count=1 -race -timeout 30m -skip '^(TestTheAgentModelCheckOnTheRealOhMyPi|TestTheImageProbeResolvesTheAgentsTheDaemonsPromptsName|TestTheRealPluginsOnTheRealOhMyPi)$' ./internal/daemon/ ./internal/sessionproxy/ ./internal/launcher/
+        working-directory: packages/daemon
+
+      # What the race step's packages hold that the race build cannot run, run plain by name, one
+      # go test per package (ci_job_reads.py's DAEMON_RACE_IMPOSSIBLE_*, built from the race step's
+      # package list and the source, so the two cannot drift). The first is internal/launcher's
+      # call-graph walk, under `//go:build !race`: it loads the launcher's whole program from source
+      # and builds its call graph twice, which without the detector took about a minute at a 2.3 GB
+      # peak, and the detector multiplies both. Its -timeout 10m is 27.8 times its package over the
+      # two green merge-group runs of ci.yaml that ran it, both since #4289 added it, to
+      # 2026-11-18T09:14Z: internal/launcher, 21.604 s (run 44267329843).
+      - name: Test what the race build cannot run
+        run: |
+          go test -count=1 -timeout 10m -run '^(TestEveryChildTheLaunchersProcessWaitsForStartsWhereNoReapTakesIt)$' ./internal/launcher
         working-directory: packages/daemon
 
       # The proof builds the daemon's ./cmd/legion and boots it against the Postgres above, so it

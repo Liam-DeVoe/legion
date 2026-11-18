@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -148,7 +149,7 @@ func TestRunCommandReportsTheCommandsOwnExitWhenAChildHoldsItsPipesPastIt(t *tes
 			script := `echo answered; echo refused >&2; sleep 30 & echo $! >"$1"; echo $$ >"$2.part" && mv "$2.part" "$2"; exit ` + strconv.Itoa(testCase.exit)
 
 			ran := inFlight(func() commandAnswer {
-				out, err := runCommandOn(ctx, clock, nil, budget, clock.Now(), []string{"PATH=" + os.Getenv("PATH")}, dir, nil, []string{"sh", "-c", script, "sh", pidFile, leaderFile})
+				out, err := runCommandOn(ctx, clock, procgroup.NoReaper, budget, clock.Now(), []string{"PATH=" + os.Getenv("PATH")}, dir, nil, []string{"sh", "-c", script, "sh", pidFile, leaderFile})
 				return commandAnswer{out, err}
 			})
 			reaped(t, "the command", leaderFile)
@@ -182,7 +183,7 @@ func TestRunCommandReportsABudgetSpentBeforeItStartedAsATimeout(t *testing.T) {
 	ctx, cancel := clock.WithDeadline(context.Background(), stopMoment.Add(-time.Second))
 	defer cancel()
 
-	_, err := runCommandOn(ctx, clock, nil, time.Second, clock.Now(), []string{"PATH=" + os.Getenv("PATH")}, t.TempDir(), nil, []string{"sh", "-c", "exit 0"})
+	_, err := runCommandOn(ctx, clock, procgroup.NoReaper, time.Second, clock.Now(), []string{"PATH=" + os.Getenv("PATH")}, t.TempDir(), nil, []string{"sh", "-c", "exit 0"})
 
 	if err == nil || !strings.HasPrefix(err.Error(), "Command timed out after 1 s") {
 		t.Errorf("RunCommand under a spent budget = %v, want \"Command timed out after 1 s …\"", err)
@@ -200,7 +201,7 @@ func TestRunCommandDoesNotReportACommandItsCallerStoppedAsATimeout(t *testing.T)
 	defer cancel()
 
 	ran := inFlight(func() error {
-		_, err := RunCommand(ctx, nil, time.Minute, time.Now(), []string{"PATH=" + os.Getenv("PATH")}, dir, nil, []string{"sh", "-c", `: >"$1"; exec sleep 30`, "sh", marker})
+		_, err := RunCommand(ctx, procgroup.NoReaper, time.Minute, time.Now(), []string{"PATH=" + os.Getenv("PATH")}, dir, nil, []string{"sh", "-c", `: >"$1"; exec sleep 30`, "sh", marker})
 		return err
 	})
 	exists(t, "the command to report that it is running", marker)

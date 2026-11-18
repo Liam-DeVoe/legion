@@ -171,7 +171,7 @@ func (s *shim) runAdoption(request shimwire.AdoptWorkingCopy) error {
 	defer cancel()
 	env := append(slices.Clone(s.cfg.Env), "JJ_USER="+request.JJUser, "JJ_EMAIL="+request.JJEmail)
 	started := time.Now()
-	described, err := workspace.RunCommand(ctx, nil, budget, started, env, dir, nil, describedArgs(jj, dir))
+	described, err := workspace.RunCommand(ctx, procgroup.NoReaper, budget, started, env, dir, nil, describedArgs(jj, dir))
 	if err != nil {
 		return err
 	}
@@ -179,6 +179,6 @@ func (s *shim) runAdoption(request shimwire.AdoptWorkingCopy) error {
 	if described != "" {
 		change = []string{jj, "new", "-R", dir}
 	}
-	_, err = workspace.RunCommand(ctx, nil, budget, started, env, dir, nil, change)
+	_, err = workspace.RunCommand(ctx, procgroup.NoReaper, budget, started, env, dir, nil, change)
 	return err
 }

@@ -653,7 +653,7 @@ func unpackCache(ctx context.Context, run Runner, request FetchRequest, staging 
 	bounded, cancel := context.WithCancel(ctx)
 	defer cancel()
 	stream := &countingReader{window: time.After}
-	go stream.watchStall(bounded, cancel)
+	stream.watchStall(bounded, cancel)
 	response, err := askCache(bounded, request, "/tar", true)
 	if response != nil {
 		defer response.Body.Close()
@@ -915,16 +915,25 @@ func (r *countingReader) Read(p []byte) (int, error) {
 // its body run under, once a whole CacheStreamLowSpeedTime has passed in which fewer than
 // CacheStreamLowSpeedBytes arrived. It reads the count the Reads keep rather than checking inside
 // one, so a stream whose Read has blocked on a cache that sends nothing is ended at the same
-// bound as one that dribbles. Its first window counts from the stream's start, nothing read,
-// rather than from whatever the count is when its goroutine first runs: the Reads begin beside
-// it, and bytes they took before then belong to the first window, not to none. It returns when
-// ctx ends, which unpackCache's own cancel does as soon as the answer has been read to its end.
+// bound as one that dribbles. It opens the first window and reads the count that window starts
+// from before it returns, and only then starts the goroutine that judges the windows, so the first
+// window and its baseline are set before the ask and every Read: taken when the scheduler first
+// ran that goroutine, after Reads had begun, they would leave those bytes out of the window and
+// could end a stream that delivered them. The goroutine returns when ctx ends, which
+// unpackCache's own cancel does as soon as the answer has been read to its end.
 func (r *countingReader) watchStall(ctx context.Context, stop context.CancelFunc) {
-	for at := int64(0); ; {
+	window, at := r.window(CacheStreamLowSpeedTime), r.read.Load()
+	go r.judgeWindows(ctx, stop, window, at)
+}
+
+// judgeWindows is watchStall's goroutine: it waits out window, whose count started at at, and each
+// window after it, and ends the stream at the first window that fell below the bound.
+func (r *countingReader) judgeWindows(ctx context.Context, stop context.CancelFunc, window <-chan time.Time, at int64) {
+	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-r.window(CacheStreamLowSpeedTime):
+		case <-window:
 		}
 		read := r.read.Load()
 		if read-at < CacheStreamLowSpeedBytes {
@@ -933,6 +942,7 @@ func (r *countingReader) watchStall(ctx context.Context, stop context.CancelFunc
 			return
 		}
 		at = read
+		window = r.window(CacheStreamLowSpeedTime)
 	}
 }
 

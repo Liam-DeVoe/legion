@@ -75,7 +75,7 @@ func TestTheCachesStreamRunsPastFetchTimeoutWhileItKeepsReceiving(t *testing.T) 
 	defer cancel()
 	windowsOf := newFakeWindows()
 	stream := &countingReader{reader: bytes.NewReader(bytes.Repeat([]byte{'p'}, windows*chunk)), window: windowsOf.window}
-	go stream.watchStall(ctx, cancel)
+	stream.watchStall(ctx, cancel)
 
 	buffer := make([]byte, chunk)
 	for window := range windows {
@@ -95,26 +95,34 @@ func TestTheCachesStreamRunsPastFetchTimeoutWhileItKeepsReceiving(t *testing.T) 
 	}
 }
 
-// The watch's first window counts from the stream's start. unpackCache starts the watch with go and
-// the Reads begin beside it, so a Read can land before the watch's goroutine first runs; that
-// Read's bytes are the first window's. Here the whole first window's bytes are read before the
-// watch starts, and the window then closes with nothing more: a watch that took its baseline when
-// its goroutine ran counted those bytes in no window and ended a stream that had delivered them.
-// The second window, in which nothing arrives, is a stall, so the watch is still judging.
-func TestTheCachesStreamCountsTheBytesReadBeforeItsWatchStarted(t *testing.T) {
+// The watch's first window, and the count it starts from, are set before watchStall returns:
+// unpackCache calls it before the ask and every Read, and only the windows after the first are
+// judged on a goroutine, so a Read that lands before that goroutine first runs is the first
+// window's. Here the first window is open when watchStall returns, the whole first window's bytes
+// are read before the window closes, and the window then closes with nothing more: a watch that
+// took its window or its count when its goroutine ran would have counted those bytes in no window
+// and ended a stream that delivered them. The second window, in which nothing arrives, is a stall,
+// so the watch is still judging.
+func TestTheCachesStreamsFirstWindowIsSetBeforeItsWatchReturns(t *testing.T) {
 	const chunk = CacheStreamLowSpeedBytes + 1
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	windowsOf := newFakeWindows()
 	stream := &countingReader{reader: &stoppedSender{ctx: ctx, left: chunk}, window: windowsOf.window}
+	stream.watchStall(ctx, cancel)
+	select {
+	case opened := <-windowsOf.asked:
+		windowsOf.pending = opened
+	default:
+		t.Fatal("watchStall returned before it opened the stream's first window")
+	}
 	if _, err := io.ReadFull(stream, make([]byte, chunk)); err != nil {
 		t.Fatalf("the stream's first %d bytes: %v", chunk, err)
 	}
-	go stream.watchStall(ctx, cancel)
 
 	windowsOf.pass(t, ctx)
 	if ctx.Err() != nil || stream.stalled.Load() {
-		t.Fatalf("a stream that delivered %d bytes in its first %s, read before its watch started, was ended", chunk, CacheStreamLowSpeedTime)
+		t.Fatalf("a stream that delivered %d bytes in its first %s, read before the watch judged a window, was ended", chunk, CacheStreamLowSpeedTime)
 	}
 	windowsOf.pass(t, ctx)
 	if _, err := stream.Read(make([]byte, 1)); !errors.Is(err, errStreamStalled) {
@@ -136,7 +144,7 @@ func TestTheCachesStreamEndsWhenItFallsBelowTheLowSpeedBound(t *testing.T) {
 	defer cancel()
 	windowsOf := newFakeWindows()
 	stream := &countingReader{reader: &stoppedSender{ctx: ctx, left: sent}, window: windowsOf.window}
-	go stream.watchStall(ctx, cancel)
+	stream.watchStall(ctx, cancel)
 
 	if _, err := io.ReadFull(stream, make([]byte, sent)); err != nil {
 		t.Fatalf("the stream's first %d bytes: %v", sent, err)
