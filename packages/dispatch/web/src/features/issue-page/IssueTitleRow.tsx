@@ -124,10 +124,11 @@ export function IssueTitleRow({
   // Sends a changed draft while the reader is away, and leaves the edit open with their text and
   // caret (decision 295): today's page sends the draft as the window loses the focus, and a tab
   // the browser discards, a tab closed while away or a close of the issue elsewhere would lose it.
-  // A draft is changed when it is not empty once trimmed, is not the issue's title (`titleDirty`;
-  // `requestTitleSubmit` sends nothing for one that differs from it only by spaces at its ends)
-  // and is not the draft this edit already sent. An empty draft sends nothing and says nothing
-  // while the reader is away: its "Title is required." waits for the end of the edit.
+  // A draft is changed when it is not empty once trimmed, is not the issue's title, or the title of
+  // a write still out while one is (`titleDirty`; `requestTitleSubmit` sends nothing for one that
+  // differs from it only by spaces at its ends), and is not the draft this edit already sent. An
+  // empty draft sends nothing and says nothing while the reader is away: its "Title is required."
+  // waits for the end of the edit.
   const sendAway = () => {
     const draft = drafts.title.trim();
     if (isClosed || !drafts.titleDirty || draft === "" || draft === sent.current) return;

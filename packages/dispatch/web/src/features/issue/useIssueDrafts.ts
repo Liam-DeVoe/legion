@@ -56,6 +56,12 @@ export function useIssueDrafts(issue: Issue, updateIssue: IssueUpdateMutation): 
   const titlePendingRef = useRef<string | null>(null);
   const routePendingRef = useRef<string | null>(null);
   const parentPendingRef = useRef<string | null>(null);
+  // The value each field's write still out carries, or null. Until that write lands the issue
+  // still holds the old value, so a draft is changed, and has something to send, against the
+  // value out: a reader who types the old value back is undoing the write.
+  const titleOutRef = useRef<string | null>(null);
+  const routeOutRef = useRef<string | null>(null);
+  const parentOutRef = useRef<string | null>(null);
   const updateIssueGuard = useSubmitGuard();
 
   const setPendingTitle = (value: string | null) => {
@@ -86,7 +92,7 @@ export function useIssueDrafts(issue: Issue, updateIssue: IssueUpdateMutation): 
     (next: string) => {
       titleRef.current = next;
       setTitle(next);
-      const dirty = next !== issue.title;
+      const dirty = next !== (titleOutRef.current ?? issue.title);
       titleDirtyRef.current = dirty;
       setTitleDirty(dirty);
       setTitleError(null);
@@ -97,7 +103,7 @@ export function useIssueDrafts(issue: Issue, updateIssue: IssueUpdateMutation): 
     (next: string) => {
       routeRef.current = next;
       setRoute(next);
-      const dirty = next !== (issue.route ?? "");
+      const dirty = next !== (routeOutRef.current ?? issue.route ?? "");
       routeDirtyRef.current = dirty;
       setRouteDirty(dirty);
     },
@@ -107,7 +113,7 @@ export function useIssueDrafts(issue: Issue, updateIssue: IssueUpdateMutation): 
     (next: string) => {
       parentRef.current = next;
       setParent(next);
-      const dirty = next !== (issue.parent ?? "");
+      const dirty = next !== (parentOutRef.current ?? issue.parent ?? "");
       parentDirtyRef.current = dirty;
       setParentDirty(dirty);
     },
@@ -126,23 +132,32 @@ export function useIssueDrafts(issue: Issue, updateIssue: IssueUpdateMutation): 
     setParent(next);
   }, []);
 
+  // Each value is marked out inside the guard, as its write goes: a write the guard holds back
+  // is not out, and stays a draft to send.
   function drainPendingSubmits(): void {
     const pendingTitle = titlePendingRef.current;
     if (pendingTitle !== null) {
-      updateIssueGuard.guard(() => updateIssue.mutate({ title: pendingTitle }));
+      updateIssueGuard.guard(() => {
+        titleOutRef.current = pendingTitle;
+        updateIssue.mutate({ title: pendingTitle });
+      });
       return;
     }
     const pendingRoute = routePendingRef.current;
     if (pendingRoute !== null) {
-      updateIssueGuard.guard(() => updateIssue.mutate({ route: pendingRoute }));
+      updateIssueGuard.guard(() => {
+        routeOutRef.current = pendingRoute;
+        updateIssue.mutate({ route: pendingRoute });
+      });
       return;
     }
     const pendingParent = parentPendingRef.current;
     if (pendingParent !== null) {
       // An empty draft clears the parent: the wire form is null, never "".
-      updateIssueGuard.guard(() =>
-        updateIssue.mutate({ parent: pendingParent === "" ? null : pendingParent })
-      );
+      updateIssueGuard.guard(() => {
+        parentOutRef.current = pendingParent;
+        updateIssue.mutate({ parent: pendingParent === "" ? null : pendingParent });
+      });
     }
   }
 
@@ -154,7 +169,7 @@ export function useIssueDrafts(issue: Issue, updateIssue: IssueUpdateMutation): 
       return false;
     }
     setTitleError(null);
-    if (submitted === issue.title) {
+    if (submitted === (titleOutRef.current ?? issue.title)) {
       applyServerTitle(submitted);
       setTitleDraftDirty(false);
       setPendingTitle(null);
@@ -171,7 +186,7 @@ export function useIssueDrafts(issue: Issue, updateIssue: IssueUpdateMutation): 
       setPendingRoute(null);
       return false;
     }
-    if (submitted === (issue.route ?? "")) {
+    if (submitted === (routeOutRef.current ?? issue.route ?? "")) {
       setRouteDraftDirty(false);
       setPendingRoute(null);
       return false;
@@ -187,7 +202,7 @@ export function useIssueDrafts(issue: Issue, updateIssue: IssueUpdateMutation): 
       setPendingParent(null);
       return false;
     }
-    if (submitted === (issue.parent ?? "")) {
+    if (submitted === (parentOutRef.current ?? issue.parent ?? "")) {
       applyServerParent(submitted);
       setParentDraftDirty(false);
       setPendingParent(null);
@@ -208,17 +223,27 @@ export function useIssueDrafts(issue: Issue, updateIssue: IssueUpdateMutation): 
     if (input.parent !== undefined && parentPendingRef.current === (input.parent ?? "")) {
       setPendingParent(null);
     }
-    // A draft that is not changed takes the title the write lands with, a draft a discard put back
-    // while the write was out too: it is the issue's title, and marked changed it would send the
-    // old title over the new one.
+    // A draft that is not changed takes the value the write lands with, a draft a discard put
+    // back while the write was out too: it is the issue's value, and marked changed it would send
+    // the old value over the new one.
     if (!titleDirtyRef.current || titleRef.current.trim() === next.title) {
       applyServerTitle(next.title);
+    }
+    if (!routeDirtyRef.current) {
+      applyServerRoute(next.route ?? "");
+    }
+    if (!parentDirtyRef.current) {
+      applyServerParent(next.parent ?? "");
     }
     setTitleDraftDirty(titleRef.current.trim() !== next.title);
     setRouteDraftDirty(routeRef.current !== (next.route ?? ""));
     setParentDraftDirty(parentRef.current.trim() !== (next.parent ?? ""));
   };
   const onIssueSettled = (error: unknown) => {
+    // The write is over, landed or not: a draft is changed against the issue's value again.
+    titleOutRef.current = null;
+    routeOutRef.current = null;
+    parentOutRef.current = null;
     updateIssueGuard.release();
     if (error === null) {
       drainPendingSubmits();

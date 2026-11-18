@@ -1677,6 +1677,92 @@ test("a title typed back to the issue's title while a write of another is out st
   }
 });
 
+// The same undo, ended before the write lands: the reader saves a new title, opens the edit again
+// while its write is out, types the issue's title back and presses Enter. The issue still has
+// that title, but the write out is about to replace it, so the title typed back is a change to
+// send. It waits for the write out, goes once that write lands, and the heading ends on it.
+test("a title typed back to the issue's title and ended while a write of another is out is sent once that write lands", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const landing = Promise.withResolvers<IssueDetails>();
+  const patchIssue = answerIssuePatches()
+    .mockImplementationOnce(() => landing.promise)
+    .mockImplementationOnce(async () => ({ ...issue, title: issue.title }));
+  const queryClient = headerClient();
+  const view = renderHeader("/issues/CORE-1", queryClient);
+
+  try {
+    const { heading } = await editTitle(user, "Review the plan");
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    expect(patchIssue).toHaveBeenCalledWith("CORE-1", { title: "Review the plan" }, keyedAttempt);
+    await waitFor(() => expect(heading).toHaveFocus());
+
+    // The write is out. The reader opens the edit again, types the issue's title back and ends
+    // the edit.
+    await user.click(heading);
+    const reopened = await screen.findByRole("textbox", { name: "Issue title" });
+    await waitFor(() => expect(reopened).toHaveFocus());
+    await user.clear(reopened);
+    await user.keyboard(issue.title);
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(heading).toHaveFocus());
+    // One write of the issue's fields at a time: the title typed back waits for the first.
+    expect(patchIssue).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      landing.resolve({ ...issue, title: "Review the plan" });
+      await landing.promise;
+    });
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(2));
+    expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { title: issue.title }, keyedAttempt);
+    await titleLanded(queryClient, issue.title);
+    expect(heading).toHaveTextContent(/^Review the spec$/);
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
+// Another reader can change the title while a write of another field is out, and that write
+// lands with the issue as Dispatch then holds it. A title draft the reader never touched takes
+// the title it lands with: left on the old title it would read as changed, and the end of the
+// next edit would send the old title over the other reader's.
+test("a title draft the reader never touched takes the title a status pick's write lands with, and an edit ended with nothing typed sends no title", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const patchIssue = answerIssuePatches().mockResolvedValue({
+    ...issue,
+    status: "in_progress",
+    title: "Plan the review",
+  });
+  const queryClient = headerClient();
+  const view = renderHeader("/issues/CORE-1", queryClient);
+
+  try {
+    const heading = await screen.findByRole("heading", { level: 1, name: issue.title });
+    await user.selectOptions(await screen.findByLabelText("Status"), "in_progress");
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { status: "in_progress" }, keyedAttempt)
+    );
+    await titleLanded(queryClient, "Plan the review");
+    expect(heading).toHaveTextContent(/^Plan the review$/);
+
+    await user.click(heading);
+    const editor = await screen.findByRole("textbox", { name: "Issue title" });
+    await waitFor(() => expect(editor).toHaveFocus());
+    expect(editor).toHaveValue("Plan the review");
+    await endTitleEditByPress(user);
+    expect(heading).toHaveTextContent(/^Plan the review$/);
+    expect(patchIssue).toHaveBeenCalledTimes(1);
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
 // A phone that hides the page may send the editor no blur, so a page hidden with the edit open
 // sends a changed draft as a switch does (decision 295), and keeps the edit open. Dispatch refuses
 // that write here, so the draft is still not the issue's title, and only its having gone once
