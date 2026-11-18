@@ -2598,8 +2598,8 @@ test("a view replaces the outline, and the outline comes back", async ({ browser
 // row is a guard that passes at the commit before the outline as well. The outline's own reading
 // is the one before it: a thread the outline folds is not read, however long the page stays
 // open, until the reader opens it.
-// SLOW(>=2s): a seeded thread and a reply, the Inbox polled, a load left folded for a fixed two
-// seconds, then the thread opened and waited on for the dwell that marks it read.
+// SLOW(>=2s): a seeded thread and a reply, the Inbox polled, a load settled and left folded for a
+// fixed two seconds, then the thread opened and waited on for the dwell that marks it read.
 test("a thread read on the outline is read in the Inbox", async ({ browser }) => {
   await phase(browser, seedReplyNesting, async (page, seeded) => {
     // An agent replies in alice's thread, which makes the thread unread in her Inbox.
@@ -2616,8 +2616,12 @@ test("a thread read on the outline is read in the Inbox", async ({ browser }) =>
     await expect.poll(unread, { message: "the agent's reply left the thread read" }).toBe(true);
 
     // The page opens at 1440 by 900 with the thread folded, since it holds no open question.
+    // The load is let settle first, so the tree the span reads and the one opened after it hold
+    // every node the reads draw, and no branch drawn late is left shut by the opening.
+    const settling = watchApiRequests(page);
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
+    await expectLoadSettled(settling);
     await expect(nodeRow(page, seeded.head), "the thread's head draws no row").toHaveCount(1);
     // A mark's absence is the claim, so the wait is a span: two seconds, twice the dwell that
     // marks a thread read, after which the folded thread is still unread.

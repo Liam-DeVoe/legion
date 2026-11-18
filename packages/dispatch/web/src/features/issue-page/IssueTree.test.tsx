@@ -46,8 +46,10 @@ import {
 import { KEY_REPORTS } from "./page-structure";
 import { CONTROL_LABELS, EMPTY_STATE_LINES, NODE_TYPE_NAMES, type NodeType } from "./page-words";
 import { EditorBox } from "./StagedDocument";
+import type { SlotProps } from "./slot-props";
 import { BodySlot } from "./slots/body";
 import { ProvidersSlot } from "./slots/providers";
+import { SLOT_FILLED, StageSlot } from "./slots/stage";
 import { addressesAsShortForms } from "./tree-drafts";
 import type { OnEditing, OnEditor } from "./useNodeEditing";
 
@@ -6785,13 +6787,16 @@ const TWO_THREADS: readonly Comment[] = [
 
 /** The page's body at the address the router holds, as the page's root draws it
  *  (`IssueOutlinePage.tsx`): the route read from the address at every render. `held.navigate`
- *  is what a link followed calls. */
+ *  is what a link followed calls. `Slot` is what draws the address: the body, or the stage that
+ *  chooses between the body and a view. */
 function AddressedBody({
   held,
   issue,
+  Slot,
 }: {
   held: { navigate?: NavigateFunction };
   issue: IssueDetails;
+  Slot: (props: SlotProps) => ReactNode;
 }): ReactNode {
   const { pathname, search } = useLocation();
   held.navigate = useNavigate();
@@ -6799,15 +6804,20 @@ function AddressedBody({
   return (
     <ProvidersSlot issue={issue} route={route}>
       <IssueScope />
-      <BodySlot issue={issue} route={route} />
+      <Slot issue={issue} route={route} />
     </ProvidersSlot>
   );
 }
 
 /** The page's body opened at `path`, every read the tree is built from answered: the issue
  *  holds `comments` and nothing else. `follow` follows a link to an address, as a row's link or
- *  the router's does; `redraw` draws the same location again, as a read answering does. */
-function renderAddressedBody(path: string, comments: readonly Comment[]) {
+ *  the router's does; `redraw` draws the same location again, as a read answering does. `Slot`
+ *  draws the address, the body where none is given. */
+function renderAddressedBody(
+  path: string,
+  comments: readonly Comment[],
+  Slot: (props: SlotProps) => ReactNode = BodySlot
+) {
   const issue: IssueDetails = { ...issueDetails(), artifacts: [] };
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
@@ -6825,7 +6835,7 @@ function renderAddressedBody(path: string, comments: readonly Comment[]) {
       <QueryClientProvider client={client}>
         <KeymapProvider>
           <MarginProvider>
-            <AddressedBody held={held} issue={issue} />
+            <AddressedBody held={held} issue={issue} Slot={Slot} />
           </MarginProvider>
         </KeymapProvider>
       </QueryClientProvider>
@@ -6979,5 +6989,221 @@ test("an address naming a turn only agents wrote in lands on its nearest drawn a
   } finally {
     names.mockRestore();
     read.mockRestore();
+  }
+});
+
+/** An id that names no comment of the issue, which the item's own read answers 404 for. */
+const GONE_COMMENT = "0b6e3f51-9c55-4d9e-8a3e-5b8cfa2c7d10";
+
+// The fallback's line took the focus the moment it drew, whatever the reader had done since they
+// followed the address: a reader who put the focus on a control and pressed a key there while the
+// item's read was still out lost it to the line. The line takes the focus only while the reader
+// has not acted since the address was followed, as the landing on a row does, and the same
+// address followed again, with no act since, gives it the focus again.
+test("an item's failure drawn after the reader pressed a key leaves the focus where they put it", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const address = buildIssuePath({ id: GONE_COMMENT, key: KEY, kind: "comment" });
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const answer = Promise.withResolvers<never>();
+  const read = spyOn(api, "getComment").mockReturnValue(answer.promise);
+  const outside = controlOutside();
+  try {
+    const body = renderAddressedBody(address, TWO_THREADS);
+    await waitFor(() => expect(read).toHaveBeenCalledWith(GONE_COMMENT));
+    await act(async () => outside.control.focus());
+    await user.keyboard("{Shift}");
+    await act(async () =>
+      answer.reject(new ApiError(404, { code: "NOT_FOUND", error: "no such comment" }))
+    );
+    await waitFor(() => body.view.getByRole("heading", { name: "Comment not found" }));
+    await nextFrame();
+    expect(
+      document.activeElement,
+      "the failure's line took the focus from the control the reader pressed a key on"
+    ).toBe(outside.control);
+
+    await body.follow(address);
+    await waitFor(() =>
+      expect(
+        document.activeElement,
+        "the same address followed again, with no act since, left the focus off the failure's line"
+      ).toBe(body.view.getByRole("heading", { name: "Comment not found" }))
+    );
+  } finally {
+    names.mockRestore();
+    read.mockRestore();
+  }
+});
+
+// The fallback's Retry was today's page's, which reads nothing of the read it asks again: it drew
+// no busy state while the read ran, and a second failure left the first alert standing, so a
+// screen reader said nothing. It is the new page's failed read's line (`FailedReadLine`): busy
+// while the read runs again and never disabled, and each failure draws its alert afresh.
+test("an item whose read failed draws a Retry that is busy while it reads again, and says a second failure again", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const down = () => new ApiError(500, { code: "INTERNAL", error: "the server is down" });
+  const read = spyOn(api, "getComment").mockRejectedValueOnce(down());
+  try {
+    const body = renderAddressedBody(
+      buildIssuePath({ id: GONE_COMMENT, key: KEY, kind: "comment" }),
+      TWO_THREADS
+    );
+    const retry = await waitFor(() =>
+      body.view.getByRole("button", { name: CONTROL_LABELS.retry })
+    );
+    const first = body.view.getByRole("alert");
+    const again = Promise.withResolvers<never>();
+    read.mockReturnValueOnce(again.promise);
+    await user.click(retry);
+    await waitFor(() =>
+      expect(retry, "the Retry is not busy while its read runs again").toHaveAttribute(
+        "aria-busy",
+        "true"
+      )
+    );
+    expect(retry, "the Retry is disabled while its read runs again").not.toBeDisabled();
+    await act(async () => again.reject(down()));
+    await waitFor(() =>
+      expect(retry, "the Retry is still busy once its read failed again").not.toHaveAttribute(
+        "aria-busy"
+      )
+    );
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(
+      body.view.getByRole("alert"),
+      "the second failure left the first failure's alert standing, which says nothing again"
+    ).not.toBe(first);
+  } finally {
+    names.mockRestore();
+    read.mockRestore();
+  }
+});
+
+// `documentItemPath` writes the address of an item of the spec as the Spec view's address with
+// the item beside it (`/spec?comment=<id>`), which keeps the Spec preset (`issueAddress`). The
+// Spec view's own part has not filled its slot, which draws nothing, so the address drew no
+// outline and landed nowhere, with the focus on the page's body. While the view's slot is not
+// filled, an address naming a node of the outline draws the outline, which lands on the node,
+// or says in the outline's place that the issue holds no such item.
+test("with the Spec view's slot not filled, an item's address beside the view's draws the outline: it lands on the item's row, or says the issue holds none", async () => {
+  setViewport(1440);
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const read = spyOn(api, "getComment").mockRejectedValue(
+    new ApiError(404, { code: "NOT_FOUND", error: "no such comment" })
+  );
+  try {
+    (document.activeElement as HTMLElement | null)?.blur();
+    const held = renderAddressedBody(`/issues/${KEY}/spec?comment=reply-b`, TWO_THREADS, StageSlot);
+    await waitFor(() =>
+      expect(
+        focusedRow(held.view.container),
+        `the spec item's address drew ${held.view.queryByRole("tree") === null ? "no" : "an"} outline and left the focus on ${document.activeElement?.tagName}`
+      ).toBe("reply-b")
+    );
+    held.view.unmount();
+
+    (document.activeElement as HTMLElement | null)?.blur();
+    const gone = renderAddressedBody(
+      `/issues/${KEY}/spec?comment=${GONE_COMMENT}`,
+      TWO_THREADS,
+      StageSlot
+    );
+    const heading = await waitFor(
+      () => gone.view.getByRole("heading", { name: "Comment not found" }),
+      {
+        onTimeout: () =>
+          new Error(
+            `the spec address of an item the issue holds none of drew no line saying so; ${gone.view.queryByRole("tree") === null ? "no" : "an"} outline, with the focus on ${document.activeElement?.tagName}`
+          ),
+      }
+    );
+    await waitFor(() =>
+      expect(document.activeElement, "the line that names no item does not hold the focus").toBe(
+        heading
+      )
+    );
+  } finally {
+    names.mockRestore();
+    read.mockRestore();
+  }
+});
+
+// Once the Spec view's part fills its slot, the same address is that view's to draw, which lands
+// on the item in its own tree: the stage draws the Spec view - its box, empty while the stand-in
+// slot draws nothing - and no outline in its place, though the outline holds the item's node.
+test("with the Spec view's slot filled, an item's address beside the view's draws the view and no outline", async () => {
+  setViewport(1440);
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  try {
+    const body = renderAddressedBody(
+      `/issues/${KEY}/spec?comment=reply-b`,
+      TWO_THREADS,
+      (props) => <StageSlot {...props} filled={{ ...SLOT_FILLED, spec: true }} />
+    );
+    await nextFrame();
+    await nextFrame();
+    const { container } = body.view;
+    expect(
+      body.view.queryByRole("tree"),
+      "the stage drew the outline in place of the filled Spec view"
+    ).toBeNull();
+    expect(focusedRow(container), "the outline's landing ran under the filled Spec view").toBe(
+      undefined
+    );
+    const boxes = [...container.querySelectorAll("div.contents")];
+    expect(
+      boxes.map((box) => box.childElementCount),
+      "the stage drew no view's box, or a box holding more than the stand-in view draws"
+    ).toEqual([0]);
+  } finally {
+    names.mockRestore();
+  }
+});
+
+// The architect's rule for an address of a node: it never leaves the reader on the page's body.
+// A `#b-` fragment on the issue's own address naming no block the tree holds, and `/children` on
+// an issue with none, landed nowhere and said nothing. Once the reads are held, each draws a
+// line in the outline's place that says what the link names is not on this issue's page, with
+// the focus on it, as an item the issue holds none of does.
+test("a block or the children an address names that the tree holds none of draw a line saying so, with the focus on it", async () => {
+  setViewport(1440);
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  try {
+    for (const [path, heading, line] of [
+      [
+        `/issues/${KEY}#b-no-such-block`,
+        "Block not found",
+        `That link doesn't name a block on ${KEY}'s page.`,
+      ],
+      [
+        buildIssuePath({ key: KEY, kind: "children" }),
+        "No child issues",
+        `That link names the child issues of ${KEY}, which has none.`,
+      ],
+    ] as const) {
+      (document.activeElement as HTMLElement | null)?.blur();
+      const body = renderAddressedBody(path, TWO_THREADS);
+      const title = await waitFor(
+        () => body.view.getByRole("heading", { name: heading }),
+        // The message names what the page drew instead.
+        {
+          onTimeout: () =>
+            new Error(
+              `${path} drew no "${heading}" line; ${body.view.queryByRole("tree") === null ? "no" : "an"} outline, with the focus on ${document.activeElement?.tagName}`
+            ),
+        }
+      );
+      await waitFor(() =>
+        expect(document.activeElement, `${path}'s line does not hold the focus`).toBe(title)
+      );
+      expect(title.parentElement?.textContent).toContain(line);
+      expect(body.view.queryByRole("tree"), `${path} drew the outline beside its line`).toBeNull();
+      body.view.unmount();
+    }
+  } finally {
+    names.mockRestore();
   }
 });

@@ -1,14 +1,21 @@
+import { isIdPrefix, itemFromSearch } from "@legion/contracts";
+import {
+  type QueryFilters,
+  type QueryKey,
+  useIsFetching,
+  useQueryClient,
+} from "@tanstack/react-query";
 import { useMemo } from "react";
 
 import type { Ask, Comment, IssueDetails, MessageRead } from "../../api/types";
 import { type ItemLanding, type ItemRoute, useItemLanding } from "../issue/useItemLanding";
-import type { IssueRoute } from "../refs/routes";
+import { askQuery, commentQuery, messageQuery, referencesQuery } from "../refs/reference-target";
+import { type IssueRoute, parseIssuePath } from "../refs/routes";
+import { prefixReference } from "../refs/text-references";
 import {
   type AddressTarget,
-  agentsOnlyAncestor,
   agentsOnlyItem,
   type IssueAddress,
-  outlineItemRoute,
   pathToTarget,
 } from "./issue-address";
 import type { TreeNode } from "./issue-tree";
@@ -58,8 +65,82 @@ export function useAddressTarget(
   return { named, reveal, target };
 }
 
-/** Where an address naming an ask, a comment or a message lands while the tree holds no node of
- *  it, once every read the tree is built from has answered (`useAddressFallback`). */
+/**
+ * The ask, comment or message `address` names as a node of the outline, by its route, which is
+ * how the old page's landing reads an item (`issue/useItemLanding.ts`): an item's own route
+ * (`/asks/<id>`, `/comments/<id>`, `/messages/<id>`), or the item a preset's address names
+ * beside it (`?ask=`, `?comment=`) under the issue's key. Undefined for every other address,
+ * and for an item the address names beside the document it opens (`documentItem`: `?mark=`, or
+ * an item at a pinned version), whose page is that document's and not the outline.
+ */
+export function outlineItemRoute(
+  route: IssueRoute,
+  search: string,
+  address: Pick<IssueAddress, "documentItem" | "target">
+): ItemRoute | undefined {
+  if (address.target?.kind !== "item" || address.documentItem !== undefined) return undefined;
+  if (route.kind === "ask" || route.kind === "comment" || route.kind === "message") return route;
+  const item = itemFromSearch(search);
+  return item === null || item === undefined
+    ? undefined
+    : { id: item.id, key: route.key, kind: item.kind };
+}
+
+/**
+ * Where this page goes for the old page's landing `to` (`useItemLanding`'s `redirect` and
+ * `rewrite`): `to` itself, unless it is an address of the issue page naming the item beside the
+ * document it is the address of - `?ask=` or `?comment=`, as `documentItemPath` writes it -
+ * which this page reads as the item's node of the outline again (`issueAddress`): the node the
+ * tree does not hold, so the landing sent the reader there again and again. That one is the
+ * document's address with the item marked (`?mark=`), the address "View in document" builds,
+ * which opens the document with the item beside it (`documentItem`) and asks for no node.
+ */
+export function landingPath(to: string): string {
+  const url = new URL(to, "http://dispatch.invalid");
+  const item = itemFromSearch(url.search);
+  if (item === null || item === undefined || parseIssuePath(url.pathname) === undefined) return to;
+  url.searchParams.delete(item.kind);
+  url.searchParams.set("mark", item.id);
+  return `${url.pathname}${url.search}${url.hash}`;
+}
+
+/**
+ * The chain from the issue down to the nearest node the tree `root` holds above `id`, a turn of
+ * a thread only agents wrote in (`agentsOnlyItem`), which the outline draws no node for: the
+ * entry the turn was written under - the comment its write answered (`answers`, else the head of
+ * its thread, `reply_to`), the ask it replies under (`ask_id`), the message it answers
+ * (`in_reply_to`) - where the tree holds it, else that entry's own, as `tree-drafts.ts`'s
+ * `addTurns` places each turn. Where the tree holds none of them - the head of such a thread
+ * sits under the issue, and an approval request is no node (`addAsks`) - it is the issue alone.
+ */
+export function agentsOnlyAncestor(
+  root: TreeNode,
+  id: string,
+  comments: readonly Pick<Comment, "answers" | "ask_id" | "id" | "reply_to">[] | undefined,
+  messages: readonly MessageRead[] | undefined
+): readonly TreeNode[] {
+  const under = new Map<string, string | null>();
+  for (const comment of comments ?? []) {
+    under.set(comment.id, comment.answers ?? comment.reply_to ?? comment.ask_id);
+  }
+  for (const thread of messages ?? []) {
+    for (const message of [thread.message, ...(thread.replies ?? [])]) {
+      under.set(message.id, message.in_reply_to);
+    }
+  }
+  // Each entry is walked once, so reads whose entries answer each other end at the issue.
+  const walked = new Set([id]);
+  for (let above = under.get(id); typeof above === "string"; above = under.get(above)) {
+    if (walked.has(above)) break;
+    walked.add(above);
+    const chain = pathToTarget(root, { id: above, kind: "item" });
+    if (chain !== undefined) return chain;
+  }
+  return [root];
+}
+
+/** Where an address naming a node lands while the tree holds no node of it, once every read
+ *  the tree is built from has answered (`useAddressFallback`). */
 export type AddressFallback =
   /**
    * A turn of a thread only agents wrote in, which the outline leaves out on purpose
@@ -81,12 +162,27 @@ export type AddressFallback =
    * answered: an item of another issue, or one that stands beside a document (`redirect`); an id
    * written short, which names one item (`rewrite`) or several (`ambiguous`); or none this issue
    * holds (`missing`), or a read that failed (`unavailable`). `route` is the item's route, which
-   * the match list and the failure name the item by.
+   * the match list and the failure name the item by. `retrying` is whether the read the landing
+   * answers from runs again, as a Retry of a failed one asks, and `failure` how many times that
+   * read has failed (its `errorUpdateCount`), which tells one failure's line from the next.
    */
   | {
+      readonly failure: number;
       readonly kind: "landing";
       readonly landing: Exclude<ItemLanding, { kind: "pending" | "turn" }>;
+      readonly retrying: boolean;
       readonly route: ItemRoute;
+    }
+  /**
+   * A block or the issue's children, named by an address that opens no document - a `#b-`
+   * fragment on the issue's own address or on a view's, and `/children` - where the tree holds
+   * no node of it: a block id no node carries, or an issue with no children. No read is left
+   * that would draw it, so the page says in the outline's place that the link names nothing on
+   * it, rather than leave the reader on the page's body.
+   */
+  | {
+      readonly kind: "absent";
+      readonly target: Extract<AddressTarget, { kind: "block" | "children" }>;
     };
 
 /** The reads of the issue's conversation the tree's turns come from, as the page holds them:
@@ -99,19 +195,38 @@ export interface ConversationReads {
   readonly messages: readonly MessageRead[] | undefined;
 }
 
+/** What `useIsFetching` counts where the landing reads nothing: no query. */
+const NO_READ: QueryFilters = { predicate: () => false };
+
 /**
- * Where `address` lands where it names an ask, a comment or a message of the outline
- * (`outlineItemRoute`) and the tree holds no node of it (`reveal` undefined), once every read the
- * tree is built from has answered (`readsHeld`): before that the node may not have arrived yet.
- * Undefined while the tree holds the node, while the reads are out, for an address naming no
- * such item, and while the old page's landing is still reading the item (`pending`).
+ * The key of the one read the old page's landing answers `route` from (`useItemLanding`), and
+ * which its `unavailable` landing's `retry` asks again: the graph read that resolves an id
+ * written short (`useWholeRouteRead`), else the item's own read under its whole id.
+ */
+function landingReadKey(route: ItemRoute): QueryKey {
+  if (isIdPrefix(route.id)) return referencesQuery(prefixReference(route)).queryKey;
+  if (route.kind === "ask") return askQuery(route.id).queryKey;
+  if (route.kind === "comment") return commentQuery(route.id).queryKey;
+  return messageQuery(route.key, route.id).queryKey;
+}
+
+/**
+ * Where `address` lands where it names a node the tree holds none of (`reveal` undefined), once
+ * every read the tree is built from has answered (`readsHeld`): before that the node may not
+ * have arrived yet. Undefined while the tree holds the node, while the reads are out, for an
+ * address naming no node or opening a document, and while the old page's landing is still
+ * reading the item (`pending`) for the first time.
  *
- * A turn of a thread only agents wrote in is told from the conversation's reads, as the tree
- * leaves it out (`agentsOnlyItem`, with the asks the tree draws its nodes from: the issue's open
- * asks and the asks read), and lands on its nearest drawn ancestor (`agents-only`). Every other
- * item is read as the old page reads one (`useItemLanding`), and nothing is read for an item the
- * tree holds. Its `turn` - an item of this issue beside no document, whose page is the outline -
- * draws the outline as it stands, which lands on the node once a read draws it.
+ * An ask, a comment or a message of the outline (`outlineItemRoute`) is told from the
+ * conversation's reads where it is a turn of a thread only agents wrote in, as the tree leaves
+ * it out (`agentsOnlyItem`, with the asks the tree draws its nodes from: the issue's open asks
+ * and the asks read), and lands on its nearest drawn ancestor (`agents-only`). Every other item
+ * is read as the old page reads one (`useItemLanding`), and nothing is read for an item the tree
+ * holds. Its `turn` - an item of this issue beside no document, whose page is the outline -
+ * draws the outline as it stands, which lands on the node once a read draws it. A read that
+ * failed is pending again while it runs again, since it holds no answer, and stays the failure
+ * it was until that run ends, so its line stays drawn, busy, with its Retry and the focus. A
+ * block or the children is `absent`, as no read is left to draw it.
  */
 export function useAddressFallback({
   address,
@@ -123,7 +238,7 @@ export function useAddressFallback({
   route,
   search,
 }: {
-  readonly address: Pick<IssueAddress, "documentItem" | "target">;
+  readonly address: Pick<IssueAddress, "document" | "documentItem" | "target">;
   readonly issue: IssueDetails;
   readonly reads: ConversationReads;
   readonly readsHeld: boolean;
@@ -156,14 +271,34 @@ export function useAddressFallback({
     [agentsOnly, comments, messages, root]
   );
   // The issue's own route reads nothing: the landing reads an item only where it falls back.
-  const landing = useItemLanding(
-    unheld === undefined || agentsOnly !== undefined ? { key: route.key, kind: "issue" } : unheld,
-    issue
-  );
+  const read = unheld === undefined || agentsOnly !== undefined ? undefined : unheld;
+  const landing = useItemLanding(read ?? { key: route.key, kind: "issue" }, issue);
+  const client = useQueryClient();
+  const readKey = read === undefined ? undefined : landingReadKey(read);
+  const retrying =
+    useIsFetching(readKey === undefined ? NO_READ : { exact: true, queryKey: readKey }) > 0;
+  // How many times the read has failed, by the cache's own count: the read's observer
+  // (`useItemLanding`) and `useIsFetching` draw the page again as the read's state changes.
+  const failure =
+    readKey === undefined ? 0 : (client.getQueryState(readKey)?.errorUpdateCount ?? 0);
   if (agentsOnly !== undefined && ancestor !== undefined) {
     return { ancestor, id: agentsOnly, kind: "agents-only" };
   }
-  if (unheld === undefined || landing === undefined) return undefined;
-  if (landing.kind === "pending" || landing.kind === "turn") return undefined;
-  return { kind: "landing", landing, route: unheld };
+  const target = address.target;
+  if (
+    readsHeld &&
+    reveal === undefined &&
+    address.document === undefined &&
+    (target?.kind === "block" || target?.kind === "children")
+  ) {
+    return { kind: "absent", target };
+  }
+  if (unheld === undefined || landing === undefined || landing.kind === "turn") return undefined;
+  if (landing.kind === "pending") {
+    if (readKey === undefined || !retrying || failure === 0) return undefined;
+    const again = { exact: true, queryKey: readKey };
+    const failed = { kind: "unavailable", retry: () => void client.refetchQueries(again) } as const;
+    return { failure, kind: "landing", landing: failed, retrying, route: unheld };
+  }
+  return { failure, kind: "landing", landing, retrying, route: unheld };
 }
