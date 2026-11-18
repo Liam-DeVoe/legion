@@ -5152,6 +5152,72 @@ function marginResolve(latency: number): RuleWay {
   };
 }
 
+/** The reader's Retry: the outline's failed line's for the tree, a new observer's `refetch` for a
+ *  view (`WAYS.retry`). */
+function pressRetry(rig: Rig): void {
+  act(() => {
+    if (rig.read === "tree") void stageOf(rig).result.current.refetch();
+    else void new QueryObserver(rig.client, viewQuery(KEY, rig.read)).refetch();
+  });
+}
+
+/** A write held while the row's way runs, begun as `start` begins it, and a step `during` it:
+ *  `during` reads the row's query `whileOut` times before the write settles, and the write then
+ *  settles. */
+function duringWrite(
+  words: string,
+  start: (rig: Rig) => () => void,
+  during: (rig: Rig) => Promise<void>,
+  whileOut: number
+): RuleWay {
+  return {
+    words,
+    does: async (rig) => {
+      const settleWrite = start(rig);
+      await tick(10, 10);
+      const before = ruleReads(rig);
+      await during(rig);
+      await tick(300, 10);
+      expect(ruleReads(rig) - before, "the reads while the write is out").toBe(whileOut);
+      act(() => settleWrite());
+      await tick(50, 10);
+    },
+  };
+}
+
+/** A write of another issue (`writeKeyOf(OTHER_KEY)`) pressed while the reader is on another
+ *  page, the reader then coming back to the read while it is out (the tree's stage drawn as a
+ *  slot), and `then` 1.5 s on, past the second after the reads the return began. */
+function backDuringOtherWrite(
+  words: string,
+  then: (rig: Rig) => Promise<void>,
+  whileOut: number
+): RuleWay {
+  return {
+    words,
+    does: async (rig) => {
+      const settleWrite = holdWrite(rig, { of: OTHER_KEY });
+      await tick(10, 10);
+      const before = ruleReads(rig);
+      stageSlot(rig);
+      await tick(1_500, 10);
+      await then(rig);
+      await tick(300, 10);
+      expect(ruleReads(rig) - before, "the reads while the write is out").toBe(whileOut);
+      act(() => settleWrite());
+      await tick(50, 10);
+    },
+  };
+}
+
+/** The tree's Retry on a stage drawn as a slot (`backDuringOtherWrite`). */
+async function slotRetry(rig: Rig): Promise<void> {
+  const slot = rig.slots.at(-1) as RuleStage | undefined;
+  act(() => {
+    void slot?.result.current.refetch();
+  });
+}
+
 const WAYS = {
   mount: {
     words: "a new surface mounting",
@@ -5291,6 +5357,46 @@ const WAYS = {
   landedBlankQuietDown: answerlessLanding("down", { resolves: false }),
   comeBackDuringWrite: COME_BACK_DURING_WRITE,
   retryRetriedDuringWrite: RETRY_RETRIED_DURING_WRITE,
+  retryDuringOwnWrite: duringWrite(
+    "the reader's Retry while a write of the issue is out, the write then settling",
+    (rig) => holdWrite(rig),
+    async (rig) => pressRetry(rig),
+    1
+  ),
+  retryDuringOtherWriteOnPage: duringWrite(
+    "the reader's Retry while a write naming another issue, pressed on the page, is out, the write then settling",
+    (rig) => holdWrite(rig, { of: OTHER_KEY }),
+    async (rig) => pressRetry(rig),
+    1
+  ),
+  firstPressDuringOtherWriteOnPage: duringWrite(
+    "its filter's first press while a write naming another issue, pressed on the page, is out, the write then settling",
+    (rig) => holdWrite(rig, { of: OTHER_KEY }),
+    async (rig) => comeBack(rig),
+    1
+  ),
+  eventAwayDuringOtherWrite: {
+    words:
+      "an event of the issue while the reader is away and a write of another issue, pressed on another page, is out, the write then settling",
+    does: async (rig) => {
+      const settleWrite = holdWrite(rig, { of: OTHER_KEY });
+      await tick(10, 10);
+      await commentsEvent(rig);
+      await tick(300, 10);
+      act(() => settleWrite());
+      await tick(50, 10);
+    },
+  },
+  eventBackDuringOtherWrite: backDuringOtherWrite(
+    "the reader coming back while a write of another issue, pressed on another page, is out, an event of the issue 1.5 s on, the write then settling",
+    commentsEvent,
+    1
+  ),
+  retryBackDuringOtherWrite: backDuringOtherWrite(
+    "the reader coming back while a write of another issue, pressed on another page, is out, the reader's Retry 1.5 s on, the write then settling",
+    slotRetry,
+    1
+  ),
 } satisfies Record<string, RuleWay>;
 
 /** How many reads of a query a way starts: a count, or the least and the most. */
@@ -5983,6 +6089,66 @@ const READ_RULES: readonly ReadRule[] = [
   // TanStack's own retry is part of the one read out: what asks during it reads once more after it
   // lands, the Retry, its retry and that one read in all.
   { read: "tree", state: "refused", observed: true, way: "retryRetriedDuringWrite", now: 3 },
+  // The reader's Retry while a write of the issue is out, staying: sent at once, and read once
+  // more as the write settles.
+  { read: "tree", state: "refused", observed: true, way: "retryDuringOwnWrite", now: 2 },
+  { read: "tree", state: "refusedHeld", observed: true, way: "retryDuringOwnWrite", now: 2 },
+  { read: "spec", state: "refused", observed: true, way: "retryDuringOwnWrite", now: 2 },
+  { read: "spec", state: "refusedHeld", observed: true, way: "retryDuringOwnWrite", now: 2 },
+  // A write that names another issue, or none, pressed while the page draws the tree, is a write
+  // of this issue: a Retry or a first press is read once more as it settles.
+  { read: "tree", state: "refused", observed: true, way: "retryDuringOtherWriteOnPage", now: 2 },
+  { read: "spec", state: "refused", observed: true, way: "retryDuringOtherWriteOnPage", now: 2 },
+  {
+    read: "spec",
+    state: "never",
+    observed: false,
+    way: "firstPressDuringOtherWriteOnPage",
+    now: 2,
+    back: 0,
+  },
+  // A write of another issue pressed on another page holds nothing: an event or a Retry is read
+  // at once, and nothing more as it settles.
+  {
+    read: "tree",
+    state: "answered",
+    observed: false,
+    way: "eventAwayDuringOtherWrite",
+    now: 0,
+    back: 1,
+  },
+  {
+    read: "tree",
+    state: "refused",
+    observed: false,
+    way: "eventAwayDuringOtherWrite",
+    now: 0,
+    back: 1,
+  },
+  {
+    read: "tree",
+    state: "answered",
+    observed: false,
+    way: "eventBackDuringOtherWrite",
+    now: 1,
+    back: 0,
+  },
+  {
+    read: "tree",
+    state: "refused",
+    observed: false,
+    way: "eventBackDuringOtherWrite",
+    now: 1,
+    back: 0,
+  },
+  {
+    read: "tree",
+    state: "refused",
+    observed: false,
+    way: "retryBackDuringOtherWrite",
+    now: 1,
+    back: 0,
+  },
 ];
 
 describe("the rule for when a read of the tree or of a view starts", () => {
