@@ -118,17 +118,15 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 	// token (ghVisibilityRead says why). So it does not go through ghTargetOf, which refuses
 	// every call under either. Its argv is exact, so the resolver has nothing of it to read.
 	callerTokenRead := isVisibilityRead && ghCallerToken(env) != ""
-	// The guard of every call but the rate-limit read and the guard's own visibility reads (runGh's
-	// ghReadCall and ghGuardedCall), made before the command is read: where the call reads one
-	// repository of an owner the bundle holds no directory for (ghTarget.read), that repository's
-	// visibility is read through it with no credential (liftForPublicRead) before its check clears
-	// the call below.
-	var guard *leakguard.Guard
-	if !rateLimitRead && !isVisibilityRead {
-		guard = leakguard.New(leakguard.Options{
-			OnVisibility: func(source leakguard.VisibilitySource) { visibilitySource = string(source) },
-		})
-	}
+	// The guard of the call, made before the command is read. The rate-limit read and the guard's
+	// own visibility reads never use it (ghCallModeOf, and the !isVisibilityRead below), but it is
+	// made for every call, so no mode meets a nil guard; New resolves one program on PATH and runs
+	// nothing. Where the call reads one repository of an owner the bundle holds no directory for
+	// (ghTarget.read), that repository's visibility is read through it with no credential
+	// (liftForPublicRead) before its check clears the call below.
+	guard := leakguard.New(leakguard.Options{
+		OnVisibility: func(source leakguard.VisibilitySource) { visibilitySource = string(source) },
+	})
 	var target ghTarget
 	// public is whether the call's one repository was read public with no credential, which is
 	// what lifts ghTargetOf's refusal of its owner (liftForPublicRead); the guard is told so
@@ -143,9 +141,9 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 		ownersDir := env["LEGION_GH_OWNERS_DIR"]
 		target, err = ghTargetOf(args, env, func(path []string) (string, error) { return readGhHelp(gh, path) }, readGitRemotes,
 			func(owner, name string) (string, error) { return ghConfigDirFor(ownersDir, owner, name) })
-		// !isVisibilityRead keeps the guard, which is nil for the guard's own visibility reads, out
-		// of liftForPublicRead: such a read keeps its refusal, and its own arm below makes the
-		// refusal of an owner the bundle holds no directory for again from the read's repository.
+		// The guard's own visibility reads keep their refusal, which liftForPublicRead would lift,
+		// and their own arm below makes the refusal of an owner the bundle holds no directory for
+		// again from the read's repository.
 		if err != nil && !isVisibilityRead {
 			err = liftForPublicRead(ctx, guard, target, err)
 			public = err == nil
@@ -334,16 +332,16 @@ func ghCallModeOf(rateLimitRead, visibilityRead, writesNothing bool) ghCallMode 
 // the bundle's. The issue owner's token goes with the read itself alone, once that answer is in.
 //
 // The refusal it lifts is ownerGHConfigDir's of the one owner the command names, an
-// *ownerNotInstalledError naming target.owner, as ghTargetOf answered it itself and wrapped in
-// nothing. A bundle whose renames cannot be read, a pair that moved the repository to an owner
-// the bundle holds no directory for, whose refusal wraps that owner's (ghConfigDirFor), a pair
-// within such an owner among them, and every refusal of a command that is no such read — a write,
-// `repo clone`, which writes the working directory, a read typed outside the read grammar, a
-// command naming the owner alone or two of its repositories — stand before anything is asked, so
-// a write is refused with nothing sent. guard is the guard runGh then checks the call with.
+// *ownerNotInstalledError as ghTargetOf answered it itself and wrapped in nothing: a read's
+// selectors name its one repository and nothing else (ghTarget.read), so that refusal is of
+// target.owner. A bundle whose renames cannot be read, a pair that moved the repository to an
+// owner the bundle holds no directory for, whose refusal wraps that owner's (ghConfigDirFor), a
+// pair within such an owner among them, and every refusal of a command that is no such read — a
+// write, `repo clone`, which writes the working directory, a read typed outside the read grammar,
+// a command naming the owner alone or two of its repositories — stand before anything is asked,
+// so a write is refused with nothing sent. guard is the guard runGh then checks the call with.
 func liftForPublicRead(ctx context.Context, guard *leakguard.Guard, target ghTarget, refused error) error {
-	unheld, ok := refused.(*ownerNotInstalledError)
-	if !target.read || !ok || unheld.owner != target.owner {
+	if _, ok := refused.(*ownerNotInstalledError); !target.read || !ok {
 		return refused
 	}
 	if _, err := guard.VisibilityWithoutCredential(ctx, target.repository()); err != nil {

@@ -1,7 +1,9 @@
 package leakguard
 
 import (
+	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -90,10 +92,7 @@ func TestAMergesFileAboveTheBoundRefusesThePush(t *testing.T) {
 			guard.blobBound = 64
 			err := guard.Push(bound(t), mainPush(repo, base, head, "origin", destination))
 			if tc.failure != nil {
-				setupFailure(t, err)
-				if want := tc.failure(head); err.Error() != want {
-					t.Errorf("the failure is\n  %s\nwant\n  %s", err, want)
-				}
+				wantSetupFailure(t, err, tc.failure(head))
 				return
 			}
 			wantRefused(t, err, tc.want)
@@ -136,4 +135,78 @@ func TestAnOctopusMergeIsReadFromItsFiles(t *testing.T) {
 			wantRefused(t, err, tc.want)
 		})
 	}
+}
+
+// octopusParents is how many parents the merges octopusRepo writes have: as many as
+// cybermonklabs/oh-my-pi's release merges have, which run from 51 to 53.
+const octopusParents = 52
+
+// octopusRepo is the fixture of the octopus merge tests: a repository whose base, which the
+// destination holds, has one file, shared.md, and octopusParents parents on that base, each of
+// which adds a line of its own to shared.md, parent 17's being line17. The destination, which a
+// push is made to by its path, holds every parent at a branch of its own, so a merge of them is
+// the whole of what a push of it adds. It answers the repository, the base, every, shared.md as
+// it holds every parent's line, which is what each merge's shared file starts from, the
+// destination's path, and octopus, which writes a merge of every parent whose shared.md is as
+// shared has it, and whose resolution.md is as added has it, where added is not empty: a file no
+// parent has. A merge's commit is written with commit-tree over a tree of the fixture's own, so no
+// octopus strategy resolves 52 heads.
+func octopusRepo(t *testing.T, line17 string) (repo, base, every, destination string, octopus func(shared, added string) string) {
+	t.Helper()
+	home, root := t.TempDir(), t.TempDir()
+	remote := filepath.Join(root, "remote.git")
+	repo = filepath.Join(root, "repo")
+	fixture := fixturegit.Isolated(t, home)
+	fixture.Run(root, fixturegit.InitBare(remote, "main")...)
+	fixture.Run(root, fixturegit.InitWorkTree(repo, "main")...)
+	write := func(name, content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(repo, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// tree is the tree of the working tree as it stands, which a commit-tree is made over.
+	tree := func() string {
+		t.Helper()
+		fixture.Run(repo, "git", "add", "-A")
+		return fixture.Run(repo, "git", "write-tree")
+	}
+	const first = "the shared file\n"
+	base = commitFiles(t, fixture, repo, map[string]string{"shared.md": first}, "the commit the destination holds")
+	every = first
+	var merged []string
+	push := []string{"git", "push", "--quiet", "origin", "main"}
+	for i := range octopusParents {
+		n := strconv.Itoa(i + 1)
+		line := "a line of parent " + n
+		if i == 16 {
+			line = line17
+		}
+		write("shared.md", first+line+"\n")
+		parent := fixture.Run(repo, "git", "commit-tree", tree(), "-p", base, "-m", "parent "+n)
+		every += line + "\n"
+		merged = append(merged, "-p", parent)
+		push = append(push, parent+":refs/heads/parent-"+n)
+	}
+	fixture.Run(repo, "git", "remote", "add", "origin", remote)
+	fixture.Run(repo, push...)
+	octopus = func(shared, added string) string {
+		t.Helper()
+		write("shared.md", shared)
+		if err := os.RemoveAll(filepath.Join(repo, "resolution.md")); err != nil {
+			t.Fatal(err)
+		}
+		if added != "" {
+			write("resolution.md", added)
+		}
+		head := fixture.Run(repo, append([]string{"git", "commit-tree", tree(), "-m", "the merge"}, merged...)...)
+		if listed := fixture.Run(repo, "git", "rev-list", "--parents", "-n", "1", head); len(strings.Fields(listed)) != octopusParents+1 {
+			t.Fatalf("the fixture's merge is %q, want a commit of %d parents", listed, octopusParents)
+		}
+		if adds := fixture.Run(repo, "git", "rev-list", head, "--not", "--remotes=origin"); adds != head {
+			t.Fatalf("a push of the fixture's merge adds %q, want the merge alone", adds)
+		}
+		return head
+	}
+	return repo, base, every, remote, octopus
 }

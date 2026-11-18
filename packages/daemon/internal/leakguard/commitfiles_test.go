@@ -255,10 +255,7 @@ func TestACommitsFileAboveTheBoundRefusesThePush(t *testing.T) {
 				t.Errorf("the guard asked cat-file for %q, want no blob", read)
 			}
 			if tc.failure != nil {
-				setupFailure(t, err)
-				if want := tc.failure(head); err.Error() != want {
-					t.Errorf("the failure is\n  %s\nwant\n  %s", err, want)
-				}
+				wantSetupFailure(t, err, tc.failure(head))
 				return
 			}
 			wantRefused(t, err, tc.want)

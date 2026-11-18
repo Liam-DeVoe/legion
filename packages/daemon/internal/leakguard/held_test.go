@@ -200,10 +200,7 @@ func TestTheReadOfWhatTheDestinationHoldsIsMadeOutsideTheClone(t *testing.T) {
 				Updates: []Update{{LocalRef: "refs/heads/main", LocalSHA: head, RemoteRef: "refs/heads/main", RemoteSHA: noSHA}},
 			})
 			if tc.failure != "" {
-				setupFailure(t, err)
-				if err.Error() != tc.failure {
-					t.Errorf("the failure is\n  %s\nwant\n  %s", err, tc.failure)
-				}
+				wantSetupFailure(t, err, tc.failure)
 				return
 			}
 			wantRefused(t, err, tc.want)
@@ -395,6 +392,24 @@ exec `+shQuote(fixturegit.CompiledGit(t))+` "$@"
 	}
 }
 
+// credentialedURL is theURL carrying credentialUser and credentialToken as its userinfo, a URL of
+// the shape git can hand a pre-push hook. The userinfo is built apart from the scheme, so no line
+// of this file is a URL that carries one, which the shared check would refuse at the push.
+const (
+	credentialUser, credentialToken = "invented-user", "invented-token"
+	credentialUserinfo              = credentialUser + ":" + credentialToken + "@"
+)
+
+var credentialedURL = strings.Replace(theURL, "https://", "https://"+credentialUserinfo, 1)
+
+// wantNoCredential fails the test where err names credentialedURL's user or token.
+func wantNoCredential(t *testing.T, err error) {
+	t.Helper()
+	if strings.Contains(err.Error(), credentialUser) || strings.Contains(err.Error(), credentialToken) {
+		t.Errorf("the failure carries the URL's credential: %v", err)
+	}
+}
+
 // A read of what the destination holds that fails refuses the push as a setup failure, never a
 // push read as one whose destination holds nothing, and the failure names the remote and the URL
 // without its credential. The URL git hands a pre-push hook can hold a user and a token
@@ -406,11 +421,6 @@ exec `+shQuote(fixturegit.CompiledGit(t))+` "$@"
 // here fails every call with a URL that holds a user, as a git that cannot reach the host does,
 // and runs the real git for every other call.
 func TestAFailedReadNamesItsURLWithoutItsCredential(t *testing.T) {
-	// The userinfo is built apart from the scheme, so no line of this file is a URL that carries
-	// one, which the shared check would refuse at the push.
-	const user, token = "invented-user", "invented-token"
-	userinfo := user + ":" + token + "@"
-	credentialed := strings.Replace(theURL, "https://", "https://"+userinfo, 1)
 	bin := t.TempDir()
 	writeProgram(t, bin, "git", `for arg; do
   case "$arg" in
@@ -433,21 +443,16 @@ exec `+shQuote(fixturegit.CompiledGit(t))+` "$@"
 		},
 		{
 			name:   "a push to a URL",
-			remote: credentialed,
+			remote: credentialedURL,
 			want:   "LEAK CHECK SETUP ERROR: the push to " + theURL + ": the destination's refs could not be read: git ls-remote " + theURL + unreachable,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			repo, base, head, _ := pushOf(t, nil, nil, map[string]string{"notes.md": "the runner answers at " + theHost + "\n"}, nil)
 			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, pathWith(bin))
-			err := guard.Push(bound(t), mainPush(repo, base, head, tc.remote, credentialed))
-			setupFailure(t, err)
-			if err.Error() != tc.want {
-				t.Errorf("the failure is\n  %s\nwant\n  %s", err, tc.want)
-			}
-			if strings.Contains(err.Error(), user) || strings.Contains(err.Error(), token) {
-				t.Errorf("the failure carries the URL's credential: %v", err)
-			}
+			err := guard.Push(bound(t), mainPush(repo, base, head, tc.remote, credentialedURL))
+			wantSetupFailure(t, err, tc.want)
+			wantNoCredential(t, err)
 		})
 	}
 }
@@ -458,11 +463,6 @@ exec `+shQuote(fixturegit.CompiledGit(t))+` "$@"
 // as a setup failure that names the URL, without its credential, and the bound. The stand-in git
 // here never answers an ls-remote, and runs the real git for every other call; the bound is 2 s.
 func TestAReadOfWhatTheDestinationHoldsThatDoesNotAnswerEndsAtItsBound(t *testing.T) {
-	// The userinfo is built apart from the scheme, so no line of this file is a URL that carries
-	// one, which the shared check would refuse at the push.
-	const user, token = "invented-user", "invented-token"
-	userinfo := user + ":" + token + "@"
-	credentialed := strings.Replace(theURL, "https://", "https://"+userinfo, 1)
 	bin := t.TempDir()
 	writeProgram(t, bin, "git", `case " $* " in
 *" ls-remote "*) exec sleep 30 ;;
@@ -475,15 +475,10 @@ exec `+shQuote(fixturegit.CompiledGit(t))+` "$@"
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	started := time.Now()
-	err := guard.Push(ctx, mainPush(repo, base, head, "origin", credentialed))
+	err := guard.Push(ctx, mainPush(repo, base, head, "origin", credentialedURL))
 	answeredWithin10s(t, started)
-	setupFailure(t, err)
-	if want := "LEAK CHECK SETUP ERROR: the push to origin: the destination's refs could not be read: git ls-remote " + theURL + ": git ran 2 s and was stopped by its bound of 2 s"; err.Error() != want {
-		t.Errorf("the failure is\n  %s\nwant\n  %s", err, want)
-	}
-	if strings.Contains(err.Error(), user) || strings.Contains(err.Error(), token) {
-		t.Errorf("the failure carries the URL's credential: %v", err)
-	}
+	wantSetupFailure(t, err, "LEAK CHECK SETUP ERROR: the push to origin: the destination's refs could not be read: git ls-remote "+theURL+": git ran 2 s and was stopped by its bound of 2 s")
+	wantNoCredential(t, err)
 }
 
 // A failed read of a pushed commit quotes git's own account of it without the user and password
@@ -494,11 +489,6 @@ exec `+shQuote(fixturegit.CompiledGit(t))+` "$@"
 // (blobBatch) each quote it. The stand-in git here fails the one call each case names as such a
 // fetch fails, and runs the real git for every other call.
 func TestAFailedReadOfACommitQuotesGitWithoutACredential(t *testing.T) {
-	// The userinfo is built apart from the scheme, so no line of this file is a URL that carries
-	// one, which the shared check would refuse at the push.
-	const user, token = "invented-user", "invented-token"
-	userinfo := user + ":" + token + "@"
-	credentialed := strings.Replace(theURL, "https://", "https://"+userinfo, 1)
 	const failed = "LEAK CHECK SETUP ERROR: the push to origin: the push's commits could not be read: "
 	unreachable := " exited 128: fatal: unable to access '" + theURL + "/': Could not resolve host: github.com"
 	for _, tc := range []struct {
@@ -513,20 +503,15 @@ func TestAFailedReadOfACommitQuotesGitWithoutACredential(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			bin := t.TempDir()
 			writeProgram(t, bin, "git", `case " $* " in
-*`+shQuote(" "+tc.call+" ")+`*) echo `+shQuote("fatal: unable to access '"+credentialed+"/': Could not resolve host: github.com")+` >&2; exit 128 ;;
+*`+shQuote(" "+tc.call+" ")+`*) echo `+shQuote("fatal: unable to access '"+credentialedURL+"/': Could not resolve host: github.com")+` >&2; exit 128 ;;
 esac
 exec `+shQuote(fixturegit.CompiledGit(t))+` "$@"
 `)
 			repo, base, head, destination := pushOf(t, map[string]string{"notes.md": "one\n"}, nil, map[string]string{"notes.md": "one\ntwo\n"}, nil)
 			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, pathWith(bin))
 			err := guard.Push(bound(t), mainPush(repo, base, head, "origin", destination))
-			setupFailure(t, err)
-			if err.Error() != tc.want {
-				t.Errorf("the failure is\n  %s\nwant\n  %s", err, tc.want)
-			}
-			if strings.Contains(err.Error(), user) || strings.Contains(err.Error(), token) {
-				t.Errorf("the failure carries the URL's credential: %v", err)
-			}
+			wantSetupFailure(t, err, tc.want)
+			wantNoCredential(t, err)
 		})
 	}
 }

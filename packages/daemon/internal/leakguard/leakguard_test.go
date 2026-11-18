@@ -110,6 +110,16 @@ func setupFailure(t *testing.T, err error) *SetupFailure {
 	return failed
 }
 
+// wantSetupFailure fails the test unless err is a setup failure (setupFailure) whose message is
+// want.
+func wantSetupFailure(t *testing.T, err error, want string) {
+	t.Helper()
+	setupFailure(t, err)
+	if err.Error() != want {
+		t.Errorf("the failure is\n  %s\nwant\n  %s", err, want)
+	}
+}
+
 // Every entry point runs its own shape of the shared check and refuses what that check refuses,
 // and every one of them refuses a record of its own that names something private. Rules is the
 // one that runs no check at all: it refuses and passes under a stand-in that refuses everything,
