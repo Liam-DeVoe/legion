@@ -116,10 +116,13 @@ Dispatch message (step 5) is for a finished retro only.
    The plan is the issue's steps and the role that worked each, not the planner's `plan.md`.
    `plan_rating` is a whole number from 1 (the plan cost the work) to 5 (the plan fit the work), and
    `plan_reason` is one sentence of why, from the evidence step 1 read.
-   Send the two together: the daemon refuses this completion without them (`PLAN_RATING_REQUIRED`)
-   and records nothing, so complete again with both.
+   Send the two together: the daemon refuses this completion without them from a tool that takes
+   them (`PLAN_RATING_REQUIRED`) and records nothing, so complete again with both.
    The daemon also refuses a rating outside 1 to 5, one of the two without the other, or a reason
    that is blank or longer than 2,000 characters (`PLAN_RATING_INPUT`), again recording nothing.
+   A `legion` tool whose `handoff_complete` takes neither `plan_rating` nor `plan_reason` is a
+   plugin of the release before the rating: send neither, complete the retro with the summary
+   alone, and the daemon takes that retro with no rating.
 
 ## Before you complete
 
@@ -129,4 +132,5 @@ Dispatch message (step 5) is for a finished retro only.
 - Each body line you added or changed that says work was done names work this pull request did.
 - The Dispatch comment and the Dispatch message are posted, and the pull request's head is the
   head you found.
-- Your `handoff_complete` carries `plan_rating` and `plan_reason` (step 6).
+- Your `handoff_complete` carries `plan_rating` and `plan_reason` (step 6), or neither where your
+  `legion` tool's `handoff_complete` takes neither.

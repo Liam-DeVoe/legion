@@ -674,20 +674,33 @@ test("a retro learning cites a symbol or quoted text at the committed head, neve
 });
 
 // The completion that ends the retro rates the plan, and the daemon refuses each rating it cannot
-// take (planRatingOf in packages/daemon/internal/api/handoff_rating.go): none at all
-// (PLAN_RATING_REQUIRED), and a rating outside the scale, one of the two without the other, or a
-// reason that is blank or too long (PLAN_RATING_INPUT), recording nothing either way. The step that
-// gives the two fields says both refusals, so an agent that sends one field alone knows what the
-// daemon does with it; prompts_test.go pins the implementer prompt's copy. The scale and the bound
-// the text states are the contract's, so a new one fails here until the skill states it. This
-// shows the text ships, never that a role follows it.
+// take (planRatingOf in packages/daemon/internal/api/handoff_rating.go): none at all from a plugin
+// whose tool takes the two (PLAN_RATING_REQUIRED, at PlanRatingContract or later), and a rating
+// outside the scale, one of the two without the other, or a reason that is blank or too long
+// (PLAN_RATING_INPUT), recording nothing either way. The step that gives the two fields says both
+// refusals, so an agent that sends one field alone knows what the daemon does with it;
+// prompts_test.go pins the implementer prompt's copy. This skill can reach a tool that takes
+// neither field: a pod's roles also install the deployment's skills marketplace as of the pod's
+// start (docs/kubernetes.md, `skills_repository`), whose copy of this skill follows that
+// repository's default branch and not the `legion` tool the role runs, and a claim the daemon
+// serves on a plugin below PlanRatingContract completes its retro with no rating. So the step
+// names the refusal as a tool's that takes the two, and tells an agent whose tool takes neither to
+// complete with the summary alone. The scale and the bound the text states are the contract's, so
+// a new one fails here until the skill states it. This shows the text ships, never that a role
+// follows it.
 test("the retro skill says which ratings of the plan the daemon refuses", () => {
   const retro = collapsed(path.join(staged, "legion-retro", "SKILL.md"));
   expect(retro).toContain(
-    "Send the two together: the daemon refuses this completion without them (`PLAN_RATING_REQUIRED`) and records nothing, so complete again with both."
+    "Send the two together: the daemon refuses this completion without them from a tool that takes them (`PLAN_RATING_REQUIRED`) and records nothing, so complete again with both."
   );
   expect(retro).toContain(
     `The daemon also refuses a rating outside ${LEGION_PLAN_RATING_LEAST} to ${LEGION_PLAN_RATING_MOST}, one of the two without the other, or a reason that is blank or longer than ${LEGION_PLAN_REASON_MAX.toLocaleString("en-US")} characters (\`PLAN_RATING_INPUT\`), again recording nothing.`
+  );
+  expect(retro).toContain(
+    "A `legion` tool whose `handoff_complete` takes neither `plan_rating` nor `plan_reason` is a plugin of the release before the rating: send neither, complete the retro with the summary alone, and the daemon takes that retro with no rating."
+  );
+  expect(retro).toContain(
+    "Your `handoff_complete` carries `plan_rating` and `plan_reason` (step 6), or neither where your `legion` tool's `handoff_complete` takes neither."
   );
 });
 
