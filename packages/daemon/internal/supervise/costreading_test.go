@@ -1112,3 +1112,87 @@ func TestTaskCostLogWithNoTaskValueAndNoTakePrintsNoPass(t *testing.T) {
 			cost.Lines, cost.ChargesByWait, cost.Retirements, text)
 	}
 }
+
+// A window is judged once it holds one task value written or one take answered, of the claim
+// asked for, and holds no evidence of the take model otherwise, however many daemon lines it holds
+// (TaskCost.NoEvidence). No evidence: the log of a daemon from before the task value, a turn of no
+// cause and a charge of the push path; a window whose value write and take of the claim fell
+// before it, with only that take's turn in it; and, under --claim, a claim whose lines hold no
+// write and no take while another claim's do. Each prints its daemon lines as it read them, then
+// the line that says why it judges nothing, and each verdict as "no evidence". Judged: a window
+// whose one write or take of the claim is a take answered accepted, refused or dropped, of a
+// number written before the window, or a value write, and the claim whose lines hold a write and a
+// take; each prints no such line, and its verdicts pass.
+//
+// The negative controls: with NoEvidence back to a window that holds no daemon line, the three
+// windows with no evidence print their verdicts as passes; with a NoEvidence that reads the value
+// writes alone, the three windows judged by one take answer print "no evidence".
+func TestTaskCostLogJudgesAWindowThatHoldsAValueWriteOrATakeAnswer(t *testing.T) {
+	const claim, other = "legion-infra-infra-2811-tester", "legion-infra-infra-2811-implementer"
+	const why = "task values written and takes answered in the window: 0, so no verdict is judged\n"
+	b := costLines{t: t, at: time.Date(2026, 11, 14, 9, 0, 0, 0, time.UTC)}
+	verdicts := func(word string) string {
+		return "verdict: no charge of a worker whose turn began within the second bound after its take: " + word + "\n" +
+			"verdict: no write of origin resume to a claim that finished its last task in its session: " + word + "\n" +
+			"verdict: each number taken once for each time the record owed it: " + word + "\n"
+	}
+	answered := func(outcome TakeOutcome) []string {
+		return []string{
+			b.written(-2*time.Minute, claim, 1, 1, TaskValueQueued),
+			b.seen(-time.Minute, claim, 1, 1),
+			b.answered(time.Minute, claim, 1, outcome, ""),
+		}
+	}
+	twoClaims := []string{
+		b.written(time.Minute, claim, 1, 1, TaskValueQueued),
+		b.seen(2*time.Minute, claim, 1, 1),
+		b.answered(3*time.Minute, claim, 1, TakeOutcomeAccepted, ""),
+		b.turn(4*time.Minute, turnStartedLine, other),
+		b.turn(5*time.Minute, turnEndedLine, other),
+	}
+	for _, tc := range []struct {
+		name  string
+		lines []string
+		claim string
+		// counted is the count of the daemon lines a window with no evidence prints, "" for a
+		// window that is judged.
+		counted string
+	}{
+		{name: "a daemon from before the task value", lines: []string{
+			b.line(time.Second, DaemonStartedLine, ""),
+			b.turn(time.Minute, turnStartedLine, claim),
+			b.line(time.Minute+5*time.Second, promptFailureLine, claim, "why", "acknowledged, and no turn started within 5s", "promptFailures", 1, "limit", 3),
+			b.turn(time.Minute+35*time.Second, turnEndedLine, claim),
+		}, counted: "daemon lines in the window: 4, the first at 2026-11-14T09:00:01.000Z, the last at 2026-11-14T09:01:35.000Z\n"},
+		{name: "a write and a take before the window", lines: []string{
+			b.written(-3*time.Minute, claim, 1, 1, TaskValueQueued),
+			b.seen(-2*time.Minute, claim, 1, 1),
+			b.answered(-time.Minute, claim, 1, TakeOutcomeAccepted, ""),
+			b.line(time.Minute, turnStartedLine, claim, "generation", 1, "task", 1),
+		}, counted: "daemon lines in the window: 1, the first at 2026-11-14T09:01:00.000Z, the last at 2026-11-14T09:01:00.000Z\n"},
+		{name: "a claim with no write and no take", lines: twoClaims, claim: other,
+			counted: "daemon lines in the window: 2, the first at 2026-11-14T09:04:00.000Z, the last at 2026-11-14T09:05:00.000Z\n"},
+		{name: "a take answered accepted", lines: answered(TakeOutcomeAccepted)},
+		{name: "a take answered refused", lines: answered(TakeOutcomeRefused)},
+		{name: "a take answered dropped", lines: answered(TakeOutcomeDropped)},
+		{name: "a value write", lines: []string{b.written(time.Minute, claim, 1, 1, TaskValueQueued)}},
+		{name: "a claim with a write and a take", lines: twoClaims, claim: claim},
+	} {
+		cost, err := ReadTaskCost(strings.NewReader(strings.Join(tc.lines, "\n")+"\n"),
+			TaskCostArgs{From: b.at, To: b.at.Add(time.Hour), Claim: tc.claim, Take: takeBound})
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := cost.Text()
+		if tc.counted != "" {
+			if !cost.NoEvidence() || !strings.Contains(text, tc.counted+why) || !strings.HasSuffix(text, verdicts("no evidence")) {
+				t.Errorf("%s: the reading has no evidence %v and prints\n%s\nwant no evidence, %q followed by %q, and each verdict %q",
+					tc.name, cost.NoEvidence(), text, tc.counted, why, "no evidence")
+			}
+			continue
+		}
+		if cost.NoEvidence() || strings.Contains(text, why) || !strings.HasSuffix(text, verdicts("pass")) {
+			t.Errorf("%s: the reading has no evidence %v and prints\n%s\nwant its verdicts judged, each a pass", tc.name, cost.NoEvidence(), text)
+		}
+	}
+}

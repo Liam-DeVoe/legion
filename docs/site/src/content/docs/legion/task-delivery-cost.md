@@ -52,7 +52,8 @@ It ignores each line at `<to>` or after it.
 It writes the figures on its standard output.
 
 The command exits with status 0 when it gives a reading.
-It exits with status 1 when the window holds no line of the daemon, or no line of the claim that `--claim` names, and when it cannot read its standard input.
+It exits with status 1 when the window holds no evidence of the delivery by task values, and when it cannot read its standard input.
+That is a window with no line of the daemon, or with no line of the claim that `--claim` names, and a window whose lines hold no task value written and no take answered.
 It exits with status 2 when it cannot use its arguments.
 It then names the argument that it cannot use, and `legion task-cost --help`, which writes its usage.
 
@@ -94,6 +95,7 @@ So each figure that names a task names its claim too.
 
 - `daemon lines in the window` is the number of the daemon's log lines in the window, with the times of the first and the last.
   With `--claim`, only the lines of that claim count.
+  When these lines hold no task value written and no take answered, the next line is `task values written and takes answered in the window: 0, so no verdict is judged`, and each verdict gives `no evidence`.
 
 - `turns started` and `turns ended` are the workers' turns, by cause.
 
@@ -231,9 +233,21 @@ So each figure that names a task names its claim too.
 - The three `verdict` lines each give `pass`, `fail` or `no evidence`.
   A verdict that fails lists each task that fails it, below it.
 
-  - Each verdict gives `no evidence` when the window holds no line of the daemon, or no line of the claim that `--claim` names.
-    A wrong selector in the `kubectl` command, or a window that the node no longer keeps, gives this result.
-    A reading with no evidence passes no verdict, and the command exits with status 1.
+  - Each verdict gives `no evidence` when the window holds no evidence of the delivery by task values.
+    Each verdict reads the task values that the daemon wrote and the takes that it answered.
+    With `--claim`, only the lines of that claim count.
+
+    - The window holds no line of the daemon, or no line of the claim that `--claim` names.
+      A wrong selector in the `kubectl` command, or a window that the node no longer keeps, gives this result.
+
+    - The window holds lines of the daemon, but no line `supervise: a task value was written` and no line `supervise: a take was answered`, with the outcome `accepted`, `refused` or `dropped`.
+      The log of a daemon from before the delivery by task values gives this result: its turns have no cause, and its charges are for prompts that the daemon sent.
+      The log of a daemon that is not rolled out yet gives this result, and so does the log of an older container that `--previous` reads.
+      Such a log does not show how the daemon delivers a task by its value, so check c9 must not read it as three passes.
+      The output then says so below `daemon lines in the window`.
+
+    A reading with no evidence passes no verdict and fails no verdict, and the command exits with status 1.
+    The output still gives every other figure as the command read it.
 
   1. `no charge of a worker whose turn began within the second bound after its take`.
      It fails for a charge made while an accepted take stood, if a turn of that claim started no earlier than the start of the second wait of that take, and no later than the charge's limit.

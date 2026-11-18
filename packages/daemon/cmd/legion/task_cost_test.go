@@ -17,6 +17,15 @@ const taskCostLog = `{"time":"2026-11-14T09:00:05.000Z","level":"INFO","msg":"su
 {"time":"2026-11-14T09:00:40.000Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-infra-infra-2811-tester","generation":1,"task":1}
 `
 
+// taskCostPushPathLog is four lines of a daemon from before the task value, as its JSON handler
+// wrote them: its start, a turn of no cause, a charge of the push path, which names no wait, and
+// that turn's end. It holds no task value written and no take answered.
+const taskCostPushPathLog = `{"time":"2026-11-14T09:00:01.000Z","level":"INFO","msg":"legion daemon started","project":"INFRA"}
+{"time":"2026-11-14T09:01:00.000Z","level":"INFO","msg":"supervise: a turn started","claim":"legion-infra-infra-2811-tester","generation":1}
+{"time":"2026-11-14T09:01:05.000Z","level":"WARN","msg":"supervise: prompt failure","claim":"legion-infra-infra-2811-tester","why":"acknowledged, and no turn started within 5s","promptFailures":1,"limit":3}
+{"time":"2026-11-14T09:01:35.000Z","level":"INFO","msg":"supervise: a turn ended","claim":"legion-infra-infra-2811-tester","generation":1}
+`
+
 // taskCost runs `legion task-cost` with stdin piped in, as the documentation site's command
 // pipes the daemon's log to it.
 func taskCost(t *testing.T, stdin string, args ...string) (int, string, string) {
@@ -60,30 +69,39 @@ func TestTaskCostPrintsTheDaemonsOwnReading(t *testing.T) {
 	}
 }
 
-// A window that holds no daemon line, of the claim asked for — an empty standard input, as a
-// wrong kubectl selector pipes, a window the log does not reach, a claim no line names — is
-// evidence of nothing: `legion task-cost` prints the reading with each of its three verdicts as
-// "no evidence", none as a pass, and exits 1, so a check reading the command cannot take a reading
-// of nothing for three passes. Exit 2 stays the usage error's, for arguments the command cannot
-// take.
+// A window that holds no evidence of the take model, of the claim asked for, is judged by nothing:
+// one that holds no daemon line — an empty standard input, as a wrong kubectl selector pipes, a
+// window the log does not reach, a claim no line names — and one whose daemon lines hold no task
+// value written and no take answered, as the log of a daemon from before the task value does.
+// `legion task-cost` prints the reading, with the line that says why it judges nothing and each of
+// its three verdicts as "no evidence", none as a pass, and exits 1, so a check reading the command
+// cannot take a reading of nothing, or of a daemon the change has not reached, for three passes.
+// Exit 2 stays the usage error's, for arguments the command cannot take.
 //
 // The negative control is the window that holds the three lines: the command exits 0, and its
 // verdicts are judged, each a pass.
 func TestTaskCostExitsOneWhenTheWindowHoldsNoDaemonLine(t *testing.T) {
+	const window = "daemon lines in the window: 0\n"
 	for _, tc := range []struct {
 		name, stdin string
 		args        []string
+		// says is what the output says of the window's lines.
+		says string
 	}{
-		{"an empty standard input", "", []string{"--from", "2026-11-14T09:00:00Z", "--to", "2026-11-14T10:00:00Z"}},
-		{"a window the log does not reach", taskCostLog, []string{"--from", "2026-11-13T09:00:00Z", "--to", "2026-11-13T10:00:00Z"}},
+		{"an empty standard input", "", []string{"--from", "2026-11-14T09:00:00Z", "--to", "2026-11-14T10:00:00Z"}, window},
+		{"a window the log does not reach", taskCostLog, []string{"--from", "2026-11-13T09:00:00Z", "--to", "2026-11-13T10:00:00Z"}, window},
 		{"a claim no line names", taskCostLog, []string{"--from", "2026-11-14T09:00:00Z", "--to", "2026-11-14T10:00:00Z",
-			"--claim", "legion-infra-infra-2811-implementer"}},
+			"--claim", "legion-infra-infra-2811-implementer"}, window},
+		{"daemon lines with no task value written and no take answered", taskCostPushPathLog,
+			[]string{"--from", "2026-11-14T09:00:00Z", "--to", "2026-11-14T10:00:00Z"},
+			"daemon lines in the window: 4, the first at 2026-11-14T09:00:01.000Z, the last at 2026-11-14T09:01:35.000Z\n" +
+				"task values written and takes answered in the window: 0, so no verdict is judged\n"},
 	} {
 		code, stdout, stderr := taskCost(t, tc.stdin, tc.args...)
-		if code != 1 || stderr != "" || !strings.Contains(stdout, "daemon lines in the window: 0\n") ||
+		if code != 1 || stderr != "" || !strings.Contains(stdout, tc.says) ||
 			strings.Count(stdout, ": no evidence\n") != 3 || strings.Contains(stdout, ": pass\n") {
-			t.Errorf("%s: legion task-cost %q = %d, stdout %q, stderr %q; want 1 and each of the three verdicts %q, none a pass",
-				tc.name, tc.args, code, stdout, stderr, "no evidence")
+			t.Errorf("%s: legion task-cost %q = %d, stdout %q, stderr %q; want 1, %q, and each of the three verdicts %q, none a pass",
+				tc.name, tc.args, code, stdout, stderr, tc.says, "no evidence")
 		}
 	}
 	code, stdout, stderr := taskCost(t, taskCostLog, "--from", "2026-11-14T09:00:00Z", "--to", "2026-11-14T10:00:00Z")

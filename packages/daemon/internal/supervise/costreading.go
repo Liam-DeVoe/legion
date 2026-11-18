@@ -142,9 +142,14 @@ import (
 //     first bound (the figure above, which reads a time owed that no take reached as taken zero
 //     times).
 //
-// A window that holds no daemon line, of the claim asked for, is evidence of nothing — a wrong
-// selector, a window the node no longer keeps — so each verdict reads "no evidence" rather than a
-// pass (TaskCost.NoEvidence), and `legion task-cost` exits non-zero for it.
+// A window that holds no evidence of the take model judges nothing: one that holds no daemon
+// line, of the claim asked for — a wrong selector, a window the node no longer keeps — and one
+// that holds daemon lines but no value write (valueWrittenLine) and no answer to a take
+// (takeAnsweredLine) of that claim — the log of a daemon from before the task value, of one not
+// yet rolled out, or of an older container that `kubectl logs --previous` reads, whose turns name
+// no task and whose charges are the push path's. Each verdict reads "no evidence" rather than a
+// pass or a fail for either (TaskCost.NoEvidence), every other figure is printed as it is read,
+// and `legion task-cost` exits non-zero for it.
 //
 // Every figure is a lower bound but two, which can also count too many: the numbers no take
 // reached (above), and the turns each number took, since a run the daemon gave a take inside the
@@ -253,6 +258,10 @@ type TaskCost struct {
 	// by what finished each.
 	Taken, Finished int
 	FinishedBy      map[string]int
+	// TakesAnswered is how many answers to a take the window held, accepted, refused or dropped,
+	// an answer that repeats one from the record included: with the value writes (WrittenByOrigin),
+	// what NoEvidence reads.
+	TakesAnswered int
 	// Unreached is each time a number was owed and its first-wait clock passed the first bound
 	// (Args.Take) with no take, by claim, number and when the bound passed: when the clock last
 	// started, when the bound passed, and how the time owed ended.
@@ -635,6 +644,9 @@ func (c *costReading) costed(l costLine, claim string) {
 		if l.Task == nil {
 			return
 		}
+		if c.counting {
+			c.cost.TakesAnswered++
+		}
 		switch l.Outcome {
 		case TakeOutcomeRefused:
 			c.stop(k, key.number)
@@ -986,14 +998,19 @@ func cmpKey(a, b costKey) int {
 // lineTime is a line's time as the daemon's log writes it, to the millisecond.
 func lineTime(t time.Time) string { return t.UTC().Format("2006-01-02T15:04:05.000Z") }
 
-// NoEvidence is whether the window held no daemon line, of the claim asked for: a reading of
-// nothing — a wrong selector, a window the node no longer keeps — which judges nothing, so no
-// verdict of it passes (Text), and `legion task-cost` exits 1 for it.
-func (c TaskCost) NoEvidence() bool { return c.Lines == 0 }
+// NoEvidence is whether the window holds no evidence of the take model, of the claim asked for:
+// no value write and no answer to a take, accepted, refused or dropped. That is a window with no
+// daemon line — a wrong selector, a window the node no longer keeps — and a window whose daemon
+// lines hold neither — the log of a daemon from before the task value, of one not yet rolled out,
+// or of an older container that `kubectl logs --previous` reads. Each verdict reads the takes and
+// the value writes, so such a reading judges nothing: no verdict of it passes or fails (Text), and
+// `legion task-cost` exits 1 for it. A window that holds one write or one take answer is judged.
+func (c TaskCost) NoEvidence() bool { return len(c.WrittenByOrigin) == 0 && c.TakesAnswered == 0 }
 
 // Text is the reading as `legion task-cost` prints it: one figure to a line, each named as the
 // documentation site's page defines it, and each verdict with what fails it, or "no evidence"
-// where the window held no line (NoEvidence).
+// where the window holds no evidence of the take model (NoEvidence): no daemon line, or daemon
+// lines but no value write and no take answered, which a line under the count of the lines says.
 func (c TaskCost) Text() string {
 	var b strings.Builder
 	whose := "every claim"
@@ -1002,11 +1019,14 @@ func (c TaskCost) Text() string {
 	}
 	fmt.Fprintf(&b, "window: %s to %s, %s, first bound %s\n", c.Args.From.UTC().Format(time.RFC3339),
 		c.Args.To.UTC().Format(time.RFC3339), whose, c.Args.Take)
-	if c.NoEvidence() {
+	if c.Lines == 0 {
 		fmt.Fprintln(&b, "daemon lines in the window: 0")
 	} else {
 		fmt.Fprintf(&b, "daemon lines in the window: %d, the first at %s, the last at %s\n",
 			c.Lines, lineTime(c.FirstLine), lineTime(c.LastLine))
+		if c.NoEvidence() {
+			fmt.Fprintln(&b, "task values written and takes answered in the window: 0, so no verdict is judged")
+		}
 	}
 	for _, turns := range []struct {
 		name   string
