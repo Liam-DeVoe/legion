@@ -606,18 +606,23 @@ func requireApprovalCarriedAcrossBuilds(t *testing.T, writer, reader documentSid
 	reader.process.call(t, http.MethodPost, "/api/v1/asks/"+askID+"/answer",
 		`{"selected":["First"],"expected_edited_at":null}`, http.StatusOK)
 
-	testwait.Until(t, fmt.Sprintf("the answer on the %s to the decision block of a version the %s wrote and %s approved (version %d) to carry the approval to the next version",
+	carried := testwait.Until(t, fmt.Sprintf("the answer on the %s to the decision block of a version the %s wrote and %s approved (version %d) to carry the approval to the next version",
 		reader.name, writer.name, dispatchTestLogin, approval.Version), func() ([]servedReview, bool) {
 		var reviews []servedReview
 		getJSON(t, writer.process, "/api/v1/artifacts/"+artifactID+"/reviews", &reviews)
-		// The carried approval is the person's: its actor's kind and login. Whether the actor also
-		// reads proven depends on which of the two builds wrote the carry and which one lists it (a
-		// build that predates the field neither stores nor answers it), so that flag is no part of
-		// what crosses the builds.
+		// The carried approval is the person's, and its whole actor crosses the builds but one
+		// field: whether the actor reads proven depends on which of the two builds wrote the carry
+		// and which one lists it (a build that predates the field neither stores nor answers it),
+		// so the comparison leaves that flag out and holds every other field of the actor.
+		var actor model.Actor
+		if len(reviews) > 0 {
+			actor = reviews[0].Actor
+			actor.Proven = false
+		}
 		return reviews, len(reviews) > 1 && reviews[0].State == "approved" && reviews[0].Version > approval.Version &&
-			reviews[0].Actor.Kind == "user" && reviews[0].Actor.ID == dispatchTestLogin
+			actor == (model.Actor{Kind: "user", ID: dispatchTestLogin})
 	})
-	t.Logf("the %s carried the approval of version %d to a later version", reader.name, approval.Version)
+	t.Logf("the %s carried the approval of version %d to version %d", reader.name, approval.Version, carried[0].Version)
 }
 
 // waitForBlockAsk waits for the ask settlement indexed from the decision block blockID of the
