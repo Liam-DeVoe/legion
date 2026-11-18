@@ -206,7 +206,7 @@
     },
     {
       "script": "plan-ratings-read.sh",
-      "needs": "a deployed Dispatch and the operator's own credential: the dispatch command on PATH, run in the operator's own shell with its session (DISPATCH_HOST and DISPATCH_SESSION_ID) and the deployed Dispatch and token its envoy.json or DISPATCH_URL and DISPATCH_TOKEN name, a project key, and the key of one issue of that project a deployed Legion ran to done after the release that rates each plan; it reads the project's finished issues and starts nothing"
+      "needs": "a deployed Dispatch and the operator's own credential: the dispatch command on PATH, run in the operator's own shell with its session (DISPATCH_HOST and DISPATCH_SESSION_ID) and the deployed Dispatch and token its envoy.json or DISPATCH_URL and DISPATCH_TOKEN name, a project key, and the key of one issue of that project a deployed Legion ran to done after the release that rates each plan, run from a checkout of this repository, whose packages/contracts/fixtures/daemon-api/plan-rating.json it reads for the daemon's scale of a rating; it reads the project's finished issues and starts nothing"
     },
     {
       "script": "provider-error-retry.sh",
