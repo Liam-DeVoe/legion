@@ -871,6 +871,80 @@ test("an unsubscribe whose release fails answers its error, and a restart does n
   }
 })
 
+// The first read of the interests that succeeds adopts the entry's topics, because before it the
+// followed set holds only the direct subject. A topic the session unfollowed while no read had
+// succeeded - the startup read failed with anything but a 404 - is still in the entry when its
+// release failed too, and that adopt must not follow it again: the person unsubscribed.
+// pi-envoy adopts nothing from the entry (it follows only from the tool, its ledger and a held
+// role), so its unfollowed topic stays unfollowed already.
+test("a topic unfollowed before the first good read of the interests is not adopted back by that read", async () => {
+  const stateDirectory = scratchState()
+  const topic = "notifications.dispatch.issue.DSP-9"
+  // The listener's entry: a registration merges its topics in, and only a release takes one out.
+  const entry = new Set<string>([directSubject])
+  let listenerUp = false
+  let releasing = true
+  let reads = 0
+  const registered: Array<readonly string[]> = []
+  const client = recordingClient([], {
+    getInterest: async (sessionID) => {
+      reads++
+      if (!listenerUp) throw new Error("listener degraded")
+      return { ...noInterest(sessionID), topics: [...entry] }
+    },
+    subscribe: async (input) => {
+      registered.push([...input.topics])
+      for (const subscribed of input.topics) entry.add(subscribed)
+      return noInterest(input.sessionID)
+    },
+    unsubscribe: async (input) => {
+      if (!releasing) throw new Error("the listener is down")
+      for (const released of input.topics) entry.delete(released)
+    },
+  })
+  const identity = new SessionIdentity("ses_claude", "/tmp")
+  // The reconciliation's one extra call after a failed read, fired by hand.
+  const scheduled: Array<() => void> = []
+  const session = await startChannelSession(
+    sessionOptions(identity, stateDirectory, {
+      client,
+      heartbeatMs: 10_000,
+      handoffPid: 991,
+      scheduleRetry: (run) => {
+        scheduled.push(run)
+        return () => undefined
+      },
+    }),
+  )
+
+  try {
+    // The startup read and the read of the heartbeat the handoff pid requests both fail: no read
+    // of the interests has succeeded yet.
+    await waitFor(async () => reads >= 2 && scheduled.length === 1, "two failed reads of the interests")
+    await session.follow([topic])
+    expect(entry.has(topic)).toBe(true)
+    releasing = false
+    const answer = await executeEnvoyTool(toolRuntime(identity, client, session), "envoy_unsubscribe", {
+      topics: [topic],
+    })
+    expect(answer).toEqual({ removed: [topic], kept: [], registrationError: "the listener is down" })
+    expect(session.topics()).not.toContain(topic)
+    // The release failed, so the entry still holds the topic when the listener answers again.
+    expect(entry.has(topic)).toBe(true)
+    const registrationsBefore = registered.length
+
+    listenerUp = true
+    scheduled[0]?.()
+    await waitFor(async () => reads >= 3, "the first read of the interests that succeeds")
+    await settled()
+
+    expect(session.topics()).not.toContain(topic)
+    expect(registered.slice(registrationsBefore).flat()).not.toContain(topic)
+  } finally {
+    await session.shutdown()
+  }
+})
+
 // pi-envoy's `envoy_unsubscribe` reads an explicit empty `topics` as no topic named, so it removes
 // nothing, and an absent `topics` as every topic the session follows (`topicsFor`).
 test("an unsubscribe of an explicit empty topic list removes nothing, and one with no list removes every followed topic", async () => {
