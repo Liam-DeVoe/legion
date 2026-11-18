@@ -46,6 +46,15 @@ var storedTaskSenders = map[string]string{
 	"(*" + senderModule + "workflow.Engine).sendOwedEntry": "a phase worker's entry, whose task its transition composed from the " +
 		"phase (workflow's task and ResumePhaseTask) and which names no person's review; a root architect's entry is sent by " +
 		"workflow.Engine.SendArchitectStart, which sends none of it",
+	"(*" + senderModule + "workflow.Engine).enter": "the raise of an entry, which writes the task its caller composed and reads it " +
+		"back only to add a reviewer's round sentences (workflow.namingTheReviewRound) and hand that text to its caller; for a root " +
+		"architect's entry the caller (workflow.Engine.EnterArchitect) keeps the entry's number alone, and a resume's entry is " +
+		"rendered again from its wait at each send (workflow.Engine.SendArchitectStart)",
+	senderModule + "workflow.reviewedCommitStays": "it reads only whether the reviewer's row holds an entry's task, to decide " +
+		"whether a review moves the commit the reviewer read, and sends no text",
+	senderModule + "workflow.namingTheReviewRound": "it reads only whether the reviewer's row holds an entry's task, to name that " +
+		"entry's number in a reviewer's round sentences; it sends no stored text, and a reviewer's task names no person's review " +
+		"of a design document",
 }
 
 // senderPackages are the three packages that hold senders of a person's design decision: the
