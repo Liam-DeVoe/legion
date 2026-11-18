@@ -1,7 +1,7 @@
 /** The command through which a shell test stack marks its Postgres container and removes, at its
- *  start, the Postgres of each stack that is gone: the one mark and the one removal of
- *  `e2e/harness-postgres-marks.ts`, which each start of the browser pool runs too
- *  (`e2e/harness-pool.ts`). `scripts/e2e/lib/leftovers.sh` calls it.
+ *  start, the Postgres of each stack that is gone: the one mark of `e2e/harness-postgres-marks.ts`
+ *  and the one removal of `e2e/harness-postgres-removal.ts`, which each start of the browser pool
+ *  runs too (`e2e/harness-pool.ts`). `scripts/e2e/lib/leftovers.sh` calls it.
  *
  *    bun packages/dispatch/e2e/postgres-mark.ts label OWNER RUN CONTAINER
  *      prints the `--label` value that marks the container CONTAINER of the run whose work
@@ -21,8 +21,8 @@ import {
   labelOf,
   plainPath,
   processOwner,
-  removeLeftoverPostgres,
 } from "./harness-postgres-marks";
+import { removeLeftoverPostgres } from "./harness-postgres-removal";
 
 /** What this command's own refusals are prefixed with, as every starter in `e2e/` names itself. */
 const named = "e2e/postgres-mark.ts";

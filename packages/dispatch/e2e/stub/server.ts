@@ -14,17 +14,22 @@
  *  to the workers in `stubOriginVariable` (e2e/stub/origin.ts). */
 import { fileURLToPath } from "node:url";
 
-import { listenerBootMs, type ReportingListener } from "../harness-listeners";
+import type { ReportingListener } from "../harness-listeners";
 import { startReporting } from "../harness-start";
 import { Supervisor } from "../local-instance-support";
 import { stubListeningLine, stubOriginVariable } from "./origin";
 import type { StubSelection } from "./selection";
 
+/** How long the server may take to print its line: the 60 s Playwright's `webServer` gave it on
+ *  main (`timeout: 60_000`), which this start keeps. A start of `bun` under a load of about 1,200
+ *  on a shared machine took more than 30 s. */
+const staticServerBootMs = 60_000;
+
 // No health path: `Bun.serve` returns once the server listens, and the server prints its line
 // after that, so a server that has printed its line answers.
 const staticServer: ReportingListener = {
   argv: ["bun", fileURLToPath(new URL("./static-server.ts", import.meta.url))],
-  bootMs: listenerBootMs,
+  bootMs: staticServerBootMs,
   id: "stub-static-server",
   name: "the stubbed layer's static file server",
   report: new RegExp(`^${stubListeningLine}`),

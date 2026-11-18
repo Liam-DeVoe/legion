@@ -59,7 +59,8 @@ describe("refuse_leftovers", () => {
   const walkBound = 120_000;
 
   // refuse_leftovers PREFIX run with the fake docker, which dates every container `created`; the
-  // prefix is this row's, so no process of the machine carries its work directory.
+  // prefix is this row's, so no process of the machine carries its work directory. Answers the
+  // shell's exit status on its first line, then what it printed.
   function refuse(prefix: string, lines: string[], created = new Date()) {
     const run = Bun.spawnSync(
       [
@@ -76,7 +77,7 @@ describe("refuse_leftovers", () => {
         },
       }
     );
-    return run.stdout.toString();
+    return `exit ${run.exitCode}\n${run.stdout.toString()}`;
   }
 
   test(
@@ -92,7 +93,7 @@ describe("refuse_leftovers", () => {
         `${prefix}-nats-${live}-fedcba9876543210|`,
       ]);
       expect(out).toStartWith(
-        `FAIL: an earlier ${prefix} run whose driver is gone left these running:`
+        `exit 1\nFAIL: an earlier ${prefix} run whose driver is gone left these running:`
       );
       expect(out).toContain(
         `container ${prefix}-nats-${dead} (docker rm -f -v ${prefix}-nats-${dead})`
@@ -112,7 +113,7 @@ describe("refuse_leftovers", () => {
         `${prefix}-nats-${process.pid}-fedcba9876543210|`,
         `${prefix}-pg-${deadPid()}|{"owner":null}`,
       ]);
-      expect(out).toBe("passed\n");
+      expect(out).toBe("exit 0\npassed\n");
     },
     walkBound
   );
@@ -158,7 +159,7 @@ describe("refuse_leftovers", () => {
         try {
           const prefix = `legion-e2eyoung${process.pid}`;
           const out = refuse(prefix, [`${prefix}-nats-${child.pid}${suffix}|`], new Date(after));
-          expect(out).toBe("passed\n");
+          expect(out).toBe("exit 0\npassed\n");
         } finally {
           child.kill();
         }
@@ -175,6 +176,7 @@ describe("refuse_leftovers", () => {
         const prefix = `legion-e2elater${process.pid}`;
         const name = `${prefix}-nats-${child.pid}-0123456789abcdef`;
         const out = refuse(prefix, [`${name}|`], new Date(before - 50));
+        expect(out).toStartWith("exit 1\nFAIL: ");
         expect(out).toContain(`container ${name} (docker rm -f -v ${name})`);
       } finally {
         child.kill();

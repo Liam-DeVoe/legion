@@ -14,7 +14,7 @@
  *  `stopStacks` removes. A run of one stack with `DATABASE_URL` set uses that database and starts
  *  no Postgres, as this harness always has. A run killed hard (SIGKILL) stops nothing, so each
  *  start first removes every Postgres whose mark names a process that is gone, and leaves every
- *  other one (`e2e/harness-postgres-marks.ts`).
+ *  other one (`e2e/harness-postgres-removal.ts`).
  *
  *  WHY NO CHECK COMPARES THE STACKS' PORTS WITH EACH OTHER. The wrapper this replaced held every
  *  lane itself and started the Playwright command afterwards, so it could compare every lane's
@@ -36,12 +36,8 @@ import {
   type StackDatabase,
   stackPostgres,
 } from "./harness-postgres";
-import {
-  marksDirectory,
-  removeLeftoverPostgres,
-  runDirectoryPrefix,
-  servingPostmasters,
-} from "./harness-postgres-marks";
+import { marksDirectory, runDirectoryPrefix } from "./harness-postgres-marks";
+import { removeLeftoverPostgres, servingPostmasters } from "./harness-postgres-removal";
 import { type Harness, startHarness } from "./harness-start";
 import { Interrupted } from "./local-instance-support";
 

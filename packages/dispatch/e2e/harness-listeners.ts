@@ -50,9 +50,9 @@ const script = (name: string) => fileURLToPath(new URL(`./${name}`, import.meta.
 /** run-server.sh builds the server before it listens, and a cold `go build` on a busy machine is
  *  the long pole, so the server gets ten minutes. */
 const serverBootMs = 600_000;
-/** How long a bun listener may take to report: every fake, the proxies, and the stubbed layer's
- *  static file server (e2e/stub/server.ts). */
-export const listenerBootMs = 30_000;
+/** How long a bun listener of the harness may take to report: every fake and the proxies. The
+ *  stubbed layer's static file server has a bound of its own (e2e/stub/server.ts). */
+const listenerBootMs = 30_000;
 
 /** A run-server.sh row: the server's slog line, written with the address it serves on (a held
  *  socket's, or the one it bound), is `msg="dispatch: listening" addr=127.0.0.1:<port>`. */

@@ -2136,7 +2136,8 @@ GATES = [
         ("scripts/e2e/lib/leftovers.sh", "scripts/e2e/stage1-skeleton.sh:141 sources it, and :179 runs its "
                                          "remove_leftover_postgres"),
         ("packages/dispatch/e2e/postgres-mark.ts", "scripts/e2e/lib/leftovers.sh:24,32 runs it with bun"),
-        ("packages/dispatch/e2e/harness-postgres-marks.ts", "packages/dispatch/e2e/postgres-mark.ts:18-25 imports it"),
+        ("packages/dispatch/e2e/harness-postgres-marks.ts", "packages/dispatch/e2e/postgres-mark.ts:18-24 imports it"),
+        ("packages/dispatch/e2e/harness-postgres-removal.ts", "packages/dispatch/e2e/postgres-mark.ts:25 imports it"),
         ("packages/pi-legion/package.json", "scripts/e2e/stage1-skeleton.sh:229 copies its name, version and legion "
                                             "block with jq into the pi-legion plugin the proof's home holds"),
         ("packages/pi-envoy/package.json", "scripts/e2e/stage1-skeleton.sh:230 copies its name and version with jq "
@@ -2228,10 +2229,11 @@ GATES = [
         # and scripts/dispatch/ask-census.ts:10-18 import @legion/envoy-client/*, and the
         # scripts/dispatch typecheck holds seven broker-client sources in its own program.
         ("packages/envoy-client/test/fake-dispatch.ts", "scripts/e2e/lib/agent-replay.test.ts:4-7 imports it by path"),
-        ("packages/dispatch/e2e/postgres-mark.ts", f"{at('test', 'bun test scripts/e2e/lib')}: scripts/e2e/lib/leftovers.test.ts:83-84 "
-                                                   "runs lib/leftovers.sh's mark and removal, which run it with bun (leftovers.sh:24,32)"),
-        ("packages/dispatch/e2e/harness-postgres-marks.ts", "packages/dispatch/e2e/postgres-mark.ts:18-25 imports it"),
-        ("packages/pi-legion/scripts/skill-scenarios/rig.sh", "scripts/e2e/lib/leftovers.test.ts:35,60 reads it, a shell stack's start"),
+        ("packages/dispatch/e2e/postgres-mark.ts", f"{at('test', 'bun test scripts/e2e/lib')}: scripts/e2e/lib/sweep-order.test.ts:175,333 "
+                                                   "runs it with bun for each driver's mark, as lib/leftovers.sh does (leftovers.sh:24,32)"),
+        ("packages/dispatch/e2e/harness-postgres-marks.ts", "packages/dispatch/e2e/postgres-mark.ts:18-24 imports it"),
+        ("packages/dispatch/e2e/harness-postgres-removal.ts", "packages/dispatch/e2e/postgres-mark.ts:25 imports it"),
+        ("packages/pi-legion/scripts/skill-scenarios/rig.sh", "scripts/e2e/lib/sweep-order.test.ts:38,63,282 reads and runs it, a shell stack's start"),
         ("scripts/dispatch/**", f"{at('test', 'Lint the Dispatch census script')}, typecheck and test; "
                                 "scripts/priorities-seed.test.ts:3 imports __tests__/held-deadlines.ts"),
         ("scripts/github-apps/**", f"{at('test', 'Lint the GitHub App registration script')} and typecheck"),

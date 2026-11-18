@@ -8,7 +8,7 @@
  *  A stack killed with SIGKILL runs no stop, so its Postgres serves on: the image provider's
  *  container and the binaries provider's postmaster, each with its data and socket directories.
  *  Each start of a stack (`startStacks`) now first removes every Postgres whose mark names a
- *  process that is gone, and leaves every other one (e2e/harness-postgres-marks.ts). Many stacks
+ *  process that is gone, and leaves every other one (e2e/harness-postgres-removal.ts). Many stacks
  *  run at once on a shared machine, so the removal of a running stack's Postgres is the worst
  *  fault this code can have: every row holds the Postgres or the mark of a running stack beside
  *  what it expects removed, and requires that it stays.
@@ -101,13 +101,13 @@ const runTag = randomBytes(4).toString("hex");
 /** A stack that starts its Postgres as the pool starts each stack's, prints where it serves,
  *  and stops it once its stdin closes. A SIGKILL stops nothing. */
 const stackScript = `
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readlinkSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stackPostgres } from ${JSON.stringify(harnessPostgres)};
 const dir = mkdtempSync(join(tmpdir(), ${JSON.stringify(runDirectoryPrefix)}));
 const database = await stackPostgres({ dir, run: process.env.LEFTOVER_RUN }).start(0);
-console.log(JSON.stringify({ dir, url: database.url, address: database.address }));
+console.log(JSON.stringify({ dir, url: database.url, address: database.address, pidNamespace: readlinkSync("/proc/self/ns/pid") }));
 for await (const _ of Bun.stdin.stream()) {}
 await database.stop();
 rmSync(dir, { recursive: true, force: true });
@@ -182,8 +182,9 @@ async function collect(stream: ReadableStream<Uint8Array>, into: (text: string) 
   }
 }
 
-function spawn(script: string, env: Record<string, string | undefined>): Child {
-  const child = Bun.spawn(["bun", "--eval", script], {
+/** Starts `argv` with `env` in `dispatchPackage`, and collects what it prints. */
+function launch(argv: readonly string[], env: Record<string, string | undefined>): Child {
+  const child = Bun.spawn([...argv], {
     cwd: dispatchPackage,
     env,
     stdin: "pipe",
@@ -202,6 +203,11 @@ function spawn(script: string, env: Record<string, string | undefined>): Child {
   return { process: child, pid: child.pid, start: startTimeOf(child.pid), output, drained };
 }
 
+/** Starts `script` in a `bun` child with `env`. */
+function spawn(script: string, env: Record<string, string | undefined>): Child {
+  return launch(["bun", "--eval", script], env);
+}
+
 /** SIGKILL to `child`, a process this file started, only while `/proc` still names it: the pid
  *  with the start read as it spawned. */
 function kill(child: Child): void {
@@ -215,6 +221,25 @@ async function exited(child: Child, ms: number, what: string): Promise<number> {
   if (code !== undefined) return code;
   kill(child);
   throw new Error(`${what} did not end within ${ms / 1000} s: ${child.output.stderr}`);
+}
+
+/** Waits for the first line `child` prints on its stdout, and answers it. Throws, naming `what`
+ *  and what the child wrote on stderr, where the child exits before it printed one, and kills the
+ *  child and throws where it has printed none within `ms`. */
+async function firstLine(child: Child, ms: number, what: string): Promise<string> {
+  const deadline = Date.now() + ms;
+  while (!child.output.stdout.includes("\n")) {
+    const code = await Promise.race([child.process.exited, sleep(200).then(() => undefined)]);
+    if (code !== undefined && !child.output.stdout.includes("\n")) {
+      await Promise.race([child.drained, sleep(10_000)]);
+      throw new Error(`${what} exited ${code} before it served: ${child.output.stderr}`);
+    }
+    if (Date.now() > deadline) {
+      kill(child);
+      throw new Error(`${what} did not serve within ${ms / 1000} s: ${child.output.stderr}`);
+    }
+  }
+  return child.output.stdout.split("\n")[0] ?? "";
 }
 
 /** The environment of a child of a row: this one's, with the row's own `TMPDIR` and the one
@@ -234,29 +259,16 @@ interface Stack {
   readonly dir: string;
   readonly url: string;
   readonly address: string;
+  /** The PID namespace the stack runs in, as `/proc/self/ns/pid` names it. */
+  readonly pidNamespace: string;
 }
 
 async function startStack(env: Record<string, string | undefined>, run: string): Promise<Stack> {
   const child = spawn(stackScript, { ...env, LEFTOVER_RUN: run });
-  const deadline = Date.now() + stackMs;
-  while (!child.output.stdout.includes("\n")) {
-    const code = await Promise.race([child.process.exited, sleep(200).then(() => undefined)]);
-    if (code !== undefined && !child.output.stdout.includes("\n")) {
-      await Promise.race([child.drained, sleep(10_000)]);
-      throw new Error(`stack ${run} exited ${code} before it served: ${child.output.stderr}`);
-    }
-    if (Date.now() > deadline) {
-      kill(child);
-      throw new Error(
-        `stack ${run} did not serve within ${stackMs / 1000} s: ${child.output.stderr}`
-      );
-    }
-  }
-  const printed = JSON.parse(child.output.stdout.split("\n")[0] ?? "") as {
-    dir: string;
-    url: string;
-    address: string;
-  };
+  const printed = JSON.parse(await firstLine(child, stackMs, `stack ${run}`)) as Omit<
+    Stack,
+    "child"
+  >;
   return { child, ...printed };
 }
 
@@ -286,25 +298,9 @@ async function startServingPool(env: Record<string, string | undefined>): Promis
   // A run of one stack against a database the caller named starts no Postgres.
   delete own.DATABASE_URL;
   const child = spawn(poolScript, own);
-  const deadline = Date.now() + childMs;
-  while (!child.output.stdout.includes("\n")) {
-    const code = await Promise.race([child.process.exited, sleep(200).then(() => undefined)]);
-    if (code !== undefined && !child.output.stdout.includes("\n")) {
-      await Promise.race([child.drained, sleep(10_000)]);
-      throw new Error(
-        `a start of the pool exited ${code} before it served: ${child.output.stderr}`
-      );
-    }
-    if (Date.now() > deadline) {
-      kill(child);
-      throw new Error(
-        `a start of the pool did not serve within ${childMs / 1000} s: ${child.output.stderr}`
-      );
-    }
-  }
-  const { url } = JSON.parse(child.output.stdout.split("\n")[0] ?? "") as { url?: string };
-  if (url === undefined)
-    throw new Error(`a start of the pool named no database: ${child.output.stdout}`);
+  const line = await firstLine(child, childMs, "a start of the pool");
+  const { url } = JSON.parse(line) as { url?: string };
+  if (url === undefined) throw new Error(`a start of the pool named no database: ${line}`);
   return { child, url };
 }
 
@@ -320,6 +316,22 @@ async function stopPool(start: PoolStart | undefined): Promise<void> {
 function answers(url: string): boolean {
   const psql = spawnSync("psql", [url, "-XAtc", "select 1"], { encoding: "utf8", timeout: 30_000 });
   return psql.status === 0 && psql.stdout.trim() === "1";
+}
+
+/** Each postmaster that serves a data directory of the binaries provider's run directory `dir`,
+ *  by the pid its `postmaster.pid` names and the start `/proc` gives that pid now. */
+function postmastersOf(dir: string): { pid: number; start: string }[] {
+  return ["worker-0", "template"].flatMap((stack) => {
+    let text: string;
+    try {
+      text = readFileSync(join(dir, stack, "pgdata", "postmaster.pid"), "utf8");
+    } catch {
+      return [];
+    }
+    const pid = Number.parseInt(text, 10);
+    const start = startTimeOf(pid);
+    return start === "" ? [] : [{ pid, start }];
+  });
 }
 
 /** `docker` with `args`, which throws where it fails. */
@@ -390,7 +402,7 @@ function containersOf(run: string): string[] {
 
 /** How long a row's removal waits for a removal of the same container that another start of the
  *  machine has in progress, the bound a start itself waits it out with (`dockerMs` of
- *  e2e/harness-postgres-marks.ts): a daemon that answers removes a container in well under a
+ *  e2e/harness-postgres-removal.ts): a daemon that answers removes a container in well under a
  *  second. */
 const removalInProgressMs = 60_000;
 
@@ -427,7 +439,7 @@ function removeContainersOf(run: string): void {
 /** The lines of a start's stderr that name the container `container`, by name or id. Each says
  *  that this start removed it, or that another start removed it first, or, for a container that
  *  another start removed, that this start removed the socket directory it served in, which is the
- *  run directory sweep's once Docker lists no such container (e2e/harness-postgres-marks.ts). At
+ *  run directory sweep's once Docker lists no such container (e2e/harness-postgres-removal.ts). At
  *  most one says that this start removed the container. A start names no container another start
  *  removed before it listed them. */
 function removalLines(stderr: string, container: string): string[] {
@@ -524,6 +536,12 @@ for (const provider of [
         const killedVolumes =
           provider.variable === pgImageVariable ? volumesOf(containers.killed) : [];
         if (provider.variable === pgImageVariable) expect(killedVolumes.length).toBeGreaterThan(0);
+        // The binaries provider's postmasters of the killed stack, by pid and start: a failed
+        // connection reads the same whether the postmaster ended or only its socket directory went.
+        const killedPostmasters =
+          provider.variable === pgImageVariable ? [] : postmastersOf(killed.dir);
+        if (provider.variable !== pgImageVariable)
+          expect(killedPostmasters.length).toBeGreaterThan(0);
 
         kill(killed.child);
         expect(await exited(killed.child, childMs, "the killed stack")).toBe(137);
@@ -543,6 +561,9 @@ for (const provider of [
           // start of the machine may have removed the container first.
           removalLines(lines, containers.killed);
         } else {
+          expect(killedPostmasters.filter(({ pid, start }) => startTimeOf(pid) === start)).toEqual(
+            []
+          );
           expect(existsSync(join(killed.dir, "worker-0", "pgdata"))).toBe(false);
           expect(existsSync(join(killed.dir, "template", "pgdata"))).toBe(false);
           expect(existsSync(killed.address)).toBe(false);
@@ -1102,7 +1123,7 @@ test.skipIf(skipBinaries)(
 // runs on from the new name, and the marks there name the old one, so no start can trust them: the
 // next start leaves that Postgres and names it on a line, whether the new name is one the pool
 // gives (its listing of TMPDIR reads it) or not (the kernel shows the postmaster serving from it,
-// `servedElsewhere` of e2e/harness-postgres-marks.ts).
+// `servedElsewhere` of e2e/harness-postgres-removal.ts).
 for (const renamed of ["kept-run", `${runDirectoryPrefix}kept`] as const) {
   test.skipIf(skipBinaries)(
     `binaries provider: the next start leaves and names the Postgres of a stack killed hard whose run directory was renamed to ${renamed}`,
@@ -1146,6 +1167,119 @@ for (const renamed of ["kept-run", `${runDirectoryPrefix}kept`] as const) {
     // `stackMs`, its kill, one start of the pool, waited for at most `childMs`, and the stop of
     // the postmaster it left; 1,500 s holds both waits at their bounds.
     1_500_000
+  );
+}
+
+/** Why this machine refuses a stack a PID namespace of its own, or undefined where it gives one:
+ *  that takes a privilege this file borrows with `sudo -n` (`unshare --pid`), since an
+ *  unprivileged user namespace is not allowed everywhere. Read only where the binaries rows run. */
+const pidNamespaceRefused = skipBinaries
+  ? undefined
+  : (() => {
+      const probe = spawnSync(
+        "sudo",
+        ["-n", "unshare", "--pid", "--fork", "--mount-proc", "true"],
+        {
+          encoding: "utf8",
+          timeout: 30_000,
+        }
+      );
+      if (probe.status === 0) return undefined;
+      const why = (probe.stderr || probe.error?.message || `exit ${probe.status}`)
+        .trim()
+        .split("\n")[0];
+      console.error(
+        `${file}: skips the two rows of a stack in a PID namespace of its own: this machine refuses \`sudo -n unshare --pid\` (${why}), the permission a PID namespace of a stack's own takes here`
+      );
+      return why;
+    })();
+
+// A stack in a PID namespace of its own (a sandbox, `unshare --pid`) writes a mark whose owner a
+// start cannot judge, and its postmaster's `postmaster.pid` holds the pid that namespace gives it,
+// while the start's `/proc` shows the same process under another pid. The start finds a run
+// directory of another TMPDIR only through `servedElsewhere` (e2e/harness-postgres-removal.ts),
+// which compares `postmaster.pid` with the last pid of the process's `NSpid` line, the pid of its
+// own namespace. The first row, the stack under the start's TMPDIR, is the control: the start
+// reads that run directory by its listing.
+for (const where of ["the start's TMPDIR", "a TMPDIR of its own"] as const) {
+  test.skipIf(skipBinaries || pidNamespaceRefused !== undefined)(
+    `binaries provider: a start leaves the Postgres of a stack that runs in another PID namespace under ${where}, and names it in one line`,
+    async () => {
+      const named = requirePostgres([pgBinVariable]);
+      const startTmp = mkdtempSync(join(shortBase, "pn-start-"));
+      const stackTmp =
+        where === "a TMPDIR of its own" ? mkdtempSync(join(shortBase, "pn-stack-")) : startTmp;
+      let stack: Stack | undefined;
+      try {
+        // `sudo` resets the environment, so the stack's goes through `env -i`.
+        const env = Object.entries(childEnv(stackTmp, named))
+          .filter((pair): pair is [string, string] => pair[1] !== undefined)
+          .map(([key, value]) => `${key}=${value}`);
+        const child = launch(
+          [
+            "sudo",
+            "-n",
+            "unshare",
+            "--pid",
+            "--fork",
+            "--mount-proc",
+            "setpriv",
+            `--reuid=${process.getuid?.() ?? -1}`,
+            `--regid=${process.getgid?.() ?? -1}`,
+            "--init-groups",
+            "--",
+            "env",
+            "-i",
+            ...env,
+            `LEFTOVER_RUN=pidns-${runTag}`,
+            process.execPath,
+            "--eval",
+            stackScript,
+          ],
+          process.env
+        );
+        // The child is `sudo`'s, so the row stops it by closing its stdin, never by a signal.
+        const started: Stack = {
+          child,
+          ...(JSON.parse(await firstLine(child, stackMs, `stack pidns-${runTag}`)) as Omit<
+            Stack,
+            "child"
+          >),
+        };
+        stack = started;
+        expect(started.pidNamespace).not.toBe(readlinkSync("/proc/self/ns/pid"));
+        expect(answers(started.url)).toBe(true);
+
+        const start = await startPool(childEnv(startTmp, named));
+        expect(start.stdout).toContain(refused);
+
+        // The stack still runs, so its Postgres stays and answers, and exactly one line names it:
+        // the line of what the start cannot judge, by its PID namespace.
+        expect(answers(started.url)).toBe(true);
+        const naming = linesWith(start.stderr, identityOf(started.dir));
+        expect({ naming, stderr: start.stderr }).toEqual({
+          naming: [
+            expect.stringContaining(
+              "e2e/harness-postgres-removal.ts: left the Postgres of stacks whose process it cannot see:"
+            ),
+          ],
+          stderr: start.stderr,
+        });
+        expect(naming[0]).toContain(`(PID namespace ${started.pidNamespace})`);
+      } finally {
+        if (stack !== undefined) {
+          stack.child.process.stdin.end();
+          await exited(stack.child, childMs, "the stack in a PID namespace of its own").catch(
+            () => {}
+          );
+        }
+        rmSync(startTmp, { recursive: true, force: true });
+        if (stackTmp !== startTmp) rmSync(stackTmp, { recursive: true, force: true });
+      }
+    },
+    // One stack's start and readiness wait of at most `stackMs`, one start of the pool waited for
+    // at most `childMs`, and the stack's stop, at most `childMs`.
+    stackMs + 2 * childMs
   );
 }
 
@@ -1318,7 +1452,7 @@ test.skipIf(skipImage)(
 // Docker's own removal is the claim of a container: of two `docker rm`s of one container, Docker
 // answers one with the removal and the other with a refusal while it is in progress or with no id
 // once it is gone, and the start reads that answer (`removeContainer` of
-// e2e/harness-postgres-marks.ts).
+// e2e/harness-postgres-removal.ts).
 test.skipIf(skipImage)(
   "image provider: of two starts at once on one dead container, one says it removed it and the other that another start removed it first",
   async () => {
@@ -1384,39 +1518,13 @@ async function startShellStack(
   image: string,
   name: string
 ): Promise<ShellStack> {
-  const child = Bun.spawn(["bash", "-c", shellStackScript], {
-    env: { ...env, LEFTOVERS_LIB: leftoversLib, SHELL_PG: name, SHELL_IMAGE: image },
-    stdin: "pipe",
-    stdout: "pipe",
-    stderr: "pipe",
+  const child = launch(["bash", "-c", shellStackScript], {
+    ...env,
+    LEFTOVERS_LIB: leftoversLib,
+    SHELL_PG: name,
+    SHELL_IMAGE: image,
   });
-  const output = { stdout: "", stderr: "" };
-  const drained = Promise.all([
-    collect(child.stdout, (text) => {
-      output.stdout += text;
-    }),
-    collect(child.stderr, (text) => {
-      output.stderr += text;
-    }),
-  ]);
-  const shell: Child = {
-    process: child,
-    pid: child.pid,
-    start: startTimeOf(child.pid),
-    output,
-    drained,
-  };
-  const deadline = Date.now() + stackMs;
-  while (!output.stdout.includes("\n")) {
-    const code = await Promise.race([child.exited, sleep(200).then(() => undefined)]);
-    if (code !== undefined)
-      throw new Error(`the shell stack ${name} exited ${code}: ${output.stderr}`);
-    if (Date.now() > deadline) {
-      kill(shell);
-      throw new Error(`the shell stack ${name} started no container within ${stackMs / 1000} s`);
-    }
-  }
-  return { child: shell, id: output.stdout.trim() };
+  return { child, id: (await firstLine(child, stackMs, `the shell stack ${name}`)).trim() };
 }
 
 test.skipIf(skipImage)(
@@ -1451,6 +1559,11 @@ test.skipIf(skipImage)(
       if (shells.length < results.length || !shellGone || !poolGone || !runs) {
         throw results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []))[0];
       }
+      // The precondition: each shell stack's container exists under the id its `docker run`
+      // printed, so its absence after a start is that start's removal.
+      expect(
+        shells.map((each) => /^[0-9a-f]{64}$/.test(each.id) && exists("container", each.id))
+      ).toEqual([true, true, true]);
       // A shell stack's mark of another boot, which no start can judge.
       const work = mkdtempSync(join(tmp, "shell-work-"));
       const mark = {
@@ -1568,3 +1681,50 @@ for (const spelt of ["through a link", "plain"] as const) {
     1_500_000
   );
 }
+
+// A container's mark is what names its socket directory to the next start once the container is
+// gone, so a start that removed the container keeps the mark while it could not remove that
+// directory (`sweepRun` of e2e/harness-postgres-removal.ts). Here the directory holds a directory
+// of mode 0500 with a file in it, which no removal of this user's can empty.
+test.skipIf(skipImage)(
+  "image provider: a start that removes a dead stack's container and cannot remove its socket directory keeps the mark that names that directory, and says so in one line",
+  async () => {
+    const named = requirePostgres([pgImageVariable]);
+    const tmp = mkdtempSync(join(shortBase, "lk-"));
+    const env = childEnv(tmp, named);
+    let stack: Stack | undefined;
+    let stuck: string | undefined;
+    try {
+      stack = await startStack(env, `keep-${runTag}`);
+      const sockets = dirname(stack.address);
+      const mark = join(stack.dir, marksDirectory, "worker-0.json");
+      expect([existsSync(mark), containersOf(stack.dir).length]).toEqual([true, 1]);
+      stuck = join(sockets, "stuck");
+      mkdirSync(stuck);
+      writeFileSync(join(stuck, "file"), "");
+      chmodSync(stuck, 0o500);
+
+      kill(stack.child);
+      expect(await exited(stack.child, childMs, "the killed stack")).toBe(137);
+
+      const third = await startPool(env);
+      expect(third.stdout).toContain(refused);
+      expect({
+        containers: containersOf(stack.dir),
+        sockets: existsSync(sockets),
+        mark: existsSync(mark),
+        named: linesWith(third.stderr, sockets).length,
+      }).toEqual({ containers: [], sockets: true, mark: true, named: 1 });
+    } finally {
+      if (stack !== undefined) kill(stack.child);
+      if (stuck !== undefined && existsSync(stuck)) chmodSync(stuck, 0o700);
+      await removeAll(
+        () => removeLeft(stack, named),
+        () => rmSync(tmp, { recursive: true, force: true })
+      );
+    }
+  },
+  // As the rows above: one stack's start and readiness wait of at most `stackMs`, its kill, and
+  // one start of the pool, waited for at most `childMs`.
+  1_500_000
+);
