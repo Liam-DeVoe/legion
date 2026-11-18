@@ -23,9 +23,19 @@ const defaultSteps = ["planner", "implementer", "tester", "reviewer", "acceptanc
 const plan = `plan default (1 tasks: ${defaultSteps.join(" ")})`;
 const owner = "plan owner (2 tasks: implementer reviewer)";
 
+/**
+ * The id of a thing of issue in the form Dispatch takes for a plan, a plan's document and a step
+ * record, a uuid (here of version 5): the issue's number and which thing it is (1 the plan, 2 its
+ * document, 10 and up its retros) in the last group, so no two things of the answer share one.
+ */
+function uuidOf(issue: string, which: number): string {
+  const number = Number(issue.split("-")[1]);
+  return `00000000-0000-5000-8000-${String(number * 100 + which).padStart(12, "0")}`;
+}
+
 /** The plan of issue's first run: its owner's, of these tasks' steps, or the default one. */
 function planOf(issue: string, tasks?: string[][]): PlanRecord {
-  const id = `${issue}-plan`;
+  const id = uuidOf(issue, 1);
   return tasks === undefined
     ? {
         id,
@@ -41,7 +51,7 @@ function planOf(issue: string, tasks?: string[][]): PlanRecord {
         issue,
         generation: 1,
         source: "owner",
-        artifact_id: `${issue}-plan-document`,
+        artifact_id: uuidOf(issue, 2),
         version: 2,
         tasks: tasks.map((steps, place) => ({ id: `task-${place + 1}`, steps })),
       };
@@ -73,7 +83,7 @@ function finished(
     ratings: ratings.map(([rating, reason], place) => ({
       rating,
       reason,
-      step_id: `${issue}-retro-${place + 1}`,
+      step_id: uuidOf(issue, 10 + place),
       ended_at: start === null ? null : at(start + (place + 1) * 60_000),
     })),
     started_at: start === null ? null : at(start),
