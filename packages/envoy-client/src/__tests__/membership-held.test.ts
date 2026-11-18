@@ -7,10 +7,13 @@
 // a final refusal of their sign-in, and Dispatch's `401 MEMBERSHIP_HELD` to a broker token marks
 // nothing stale.
 
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { afterEach, expect, jest, spyOn, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import * as path from "node:path";
 import { signedIn, stubIssuer, writeSignIn } from "@legion/broker-client/test/sign-ins";
+import { RETRY_FIRST_WAIT_MS } from "@legion/broker-client/token-client";
+import { isFinalRefusal, TradeRetryingError } from "@legion/broker-client/token-errors";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { brokerCredential, forgetBrokerClients } from "../broker-credential";
 import { type DispatchEnvironment, dispatchSettings } from "../dispatch-config";
@@ -18,6 +21,11 @@ import { DispatchClient } from "../dispatch-http";
 import { readEnvoyConfig } from "../envoy-config";
 
 afterEach(forgetBrokerClients);
+
+// A fake clock left behind stops the timers of every file the same worker runs after this one.
+afterEach(() => {
+  jest.useRealTimers();
+});
 
 const servers: { stop: (closeActive?: boolean) => void }[] = [];
 afterEach(() => {
@@ -33,9 +41,14 @@ const CLIENT_ID = "example-device-client";
 const HELD = `${PERSON}'s credentials are held by Dispatch; they work again when ${PERSON} signs in to Dispatch, or when Dispatch can confirm ${PERSON} with Google again`;
 
 /** A broker that refuses every trade `membership_held` while `held.now` is set, and otherwise
- *  mints a token good for ten minutes, numbering each. */
-function holdingBroker(held: { now: boolean }): { url: string; trades: URLSearchParams[] } {
+ *  mints a token good for ten minutes, keeping each in `minted`. */
+function holdingBroker(held: { now: boolean }): {
+  url: string;
+  trades: URLSearchParams[];
+  minted: string[];
+} {
   const trades: URLSearchParams[] = [];
+  const minted: string[] = [];
   const server = Bun.serve({
     port: 0,
     hostname: "127.0.0.1",
@@ -47,8 +60,10 @@ function holdingBroker(held: { now: boolean }): { url: string; trades: URLSearch
           { status: 400 }
         );
       }
+      const token = fixtureSecret("access");
+      minted.push(token);
       return Response.json({
-        access_token: `broker-token-${trades.length}`,
+        access_token: token,
         issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
         token_type: "DPoP",
         expires_in: 600,
@@ -56,7 +71,14 @@ function holdingBroker(held: { now: boolean }): { url: string; trades: URLSearch
     },
   });
   servers.push(server);
-  return { url: `http://127.0.0.1:${server.port}`, trades };
+  return { url: `http://127.0.0.1:${server.port}`, trades, minted };
+}
+
+/** One turn of the real event loop: every promise the code has chained settles inside it. */
+function turn(): Promise<void> {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  setImmediate(resolve);
+  return promise;
 }
 
 /** A Dispatch that answers every request `answer`, keeping the Authorization each carried. */
@@ -78,7 +100,7 @@ function stubDispatch(answer: () => Response): { url: string; asked: string[] } 
  *  bearer at all. */
 function podEnvironment(brokerUrl: string, dispatchUrl: string): DispatchEnvironment {
   const tokenFile = path.join(tempDir(), "token");
-  writeFileSync(tokenFile, "projected.service.account.token\n");
+  writeFileSync(tokenFile, `${fixtureSecret("proj")}\n`);
   return {
     HOME: tempDir(),
     DISPATCH_URL: dispatchUrl,
@@ -106,6 +128,9 @@ async function failureOf(call: Promise<unknown>): Promise<unknown> {
 }
 
 test("membership_held keeps a sign-in broker credential", async () => {
+  // The token client's retry loop waits on this clock, so the row moves it to the loop's next
+  // trade rather than wait it out.
+  jest.useFakeTimers();
   const held = { now: true };
   const broker = holdingBroker(held);
   const dispatch = stubDispatch(() => Response.json([]));
@@ -115,7 +140,7 @@ test("membership_held keeps a sign-in broker credential", async () => {
   const signins = path.join(tempDir(), "signins");
   await writeSignIn(signins, await signedIn(PERSON, { client_id: CLIENT_ID }));
   const secret = path.join(tempDir(), "client-secret");
-  writeFileSync(secret, "example-device-client-secret\n", { mode: 0o600 });
+  writeFileSync(secret, `${fixtureSecret("client")}\n`, { mode: 0o600 });
   const env: DispatchEnvironment = {
     ...podEnvironment(broker.url, dispatch.url),
     AGENT_SECRETS_SIGNIN_DIR: signins,
@@ -124,12 +149,26 @@ test("membership_held keeps a sign-in broker credential", async () => {
     AGENT_SECRETS_SIGNIN_CLIENT_SECRET_FILE: secret,
   };
 
+  // A call that fails fast is told the hold while the retry loop trades on, never as final.
   const during = await failureOf(dispatchOf(env, "ses_01a9").listAllIssues({}));
+  expect(during).toBeInstanceOf(TradeRetryingError);
   expect(String(during)).toContain(`HTTP 400 membership_held: ${HELD}`);
+  expect(
+    isFinalRefusal(during),
+    "membership_held read as a final refusal of the sign-in (isFinalRefusal)"
+  ).toBe(false);
   expect(dispatch.asked).toHaveLength(0);
 
   held.now = false;
-  const after = await failureOf(dispatchOf(env, "ses_01a9").listAllIssues({}));
+  // The loop's first wait is at most RETRY_FIRST_WAIT_MS; its trade then goes under the same
+  // sign-in, and a call presents the token it got.
+  jest.advanceTimersByTime(RETRY_FIRST_WAIT_MS);
+  let after: unknown = during;
+  for (let tries = 0; tries < 2_000 && after !== null; tries += 1) {
+    await turn();
+    if (broker.minted.length === 0) continue;
+    after = await failureOf(dispatchOf(env, "ses_01a9").listAllIssues({}));
+  }
   expect(
     after,
     "after the release the call failed with no new trade: broker-credential.ts remembered membership_held as a final refusal of the sign-in (isFinalRefusal)"
@@ -139,7 +178,7 @@ test("membership_held keeps a sign-in broker credential", async () => {
     "urn:envoy:params:oauth:token-type:person-google-identity",
     "urn:envoy:params:oauth:token-type:person-google-identity",
   ]);
-  expect(dispatch.asked).toEqual(["DPoP broker-token-2"]);
+  expect(dispatch.asked).toEqual([`DPoP ${broker.minted[0]}`]);
 });
 
 test("membership_held marks no credential stale", async () => {
@@ -166,6 +205,6 @@ test("membership_held marks no credential stale", async () => {
   expect(stale, "401 MEMBERSHIP_HELD marked the broker credential stale").not.toHaveBeenCalled();
   // Each call went once, presenting the token in hand: nothing dropped it, and nothing traded
   // again at the broker.
-  expect(dispatch.asked).toEqual(["DPoP broker-token-1", "DPoP broker-token-1"]);
+  expect(dispatch.asked).toEqual([`DPoP ${broker.minted[0]}`, `DPoP ${broker.minted[0]}`]);
   expect(broker.trades).toHaveLength(1);
 });

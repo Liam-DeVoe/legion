@@ -123,12 +123,22 @@ export function noAuthService(source: string): string {
   return `${source} is broker, but the NATS server sent no nonce to sign: it runs no auth service, so ${remedy} for this hub`;
 }
 
+/** What {@link noSessionNamed} says after the setting it names. */
+const NO_SESSION_NAMED =
+  " is broker, but this process names no session for its NATS connection's token";
+
 /** Why a session's NATS connection takes no broker token where its process names no session: a
  *  trade under no session is answered the machine's token, under `AGENT_SECRETS_SESSION`, or the
  *  signed-in person's, under their sign-in's own name, neither of which is the session the
  *  connection delivers to. */
 export function noSessionNamed(source: string): string {
-  return `${source} is broker, but this process names no session for its NATS connection's token`;
+  return `${source}${NO_SESSION_NAMED}`;
+}
+
+/** Whether `off`, the reason an `inbound` is off, is {@link noSessionNamed}'s: the settings name
+ *  a broker token for a process that names no session, such as an operator's script. */
+export function isNoSessionNamed(off: string): boolean {
+  return off.endsWith(NO_SESSION_NAMED);
 }
 
 /** A wait for a NATS connection's token where its process names no session ({@link
