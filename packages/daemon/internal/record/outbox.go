@@ -1426,6 +1426,13 @@ func (p MergeQueueRemoval) Message(issue, repo string) string {
 		issue, repo, p.Number, p.Head, unread)
 }
 
+// RetryBackoff is how long a row waits to run again after a failed run, given its attempts before
+// that run (the count RetryOutbox raises): one second, doubled at each attempt, at most 64 seconds.
+// The daemon's outbox sets a retried row's next run by it.
+func RetryBackoff(attempts int) time.Duration {
+	return time.Second << min(max(attempts, 0), 6)
+}
+
 // NewOutboxRow encodes one validated payload for durable delivery at nextAt.
 func NewOutboxRow(issue string, payload OutboxPayload, nextAt time.Time) (OutboxRow, error) {
 	if err := validateOutboxPayload(payload); err != nil {

@@ -719,7 +719,7 @@ func TestTheLaneWritesOneIssuesStatusesInOrderWhenTheOlderFailsFirst(t *testing.
 	runner := &outbox{pool: pool, dispatchProject: "LEGION", records: records, dispatch: board, log: quietLogger()}
 	runLanes(t, runner, clock)
 
-	backoff := retryBackoff(0)
+	backoff := record.RetryBackoff(0)
 	testwait.Eventually(t, "the older row failed and its lane armed its backoff", func() bool {
 		live, _ := clock.armed(backoff)
 		return live == 1
@@ -757,7 +757,7 @@ func TestANewerNoticeOnAnotherLaneWaitsBehindTheOlderAndFollowsItAfterOneBackoff
 	commitRows(t, pool, runner.records, "older", mustOutboxRow(t, "LEGION-2", notice, clock.Now()))
 	testwait.Eventually(t, "the older notice reached the publisher", func() bool { return publisher.gate.entries() == 1 })
 	commitRows(t, pool, runner.records, "newer", mustOutboxRow(t, "LEGION-3", notice, clock.Now()))
-	backoff := retryBackoff(0)
+	backoff := record.RetryBackoff(0)
 	testwait.Eventually(t, "the newer notice waited and its lane armed the backoff", func() bool {
 		live, _ := clock.armed(backoff)
 		return live == 1
@@ -950,9 +950,9 @@ func TestRunReturnsOnlyAfterItsLanesAndSettlesTheRowAStopInterrupted(t *testing.
 	released.Do(func() { close(release) })
 	<-done
 	retried := rowStateOf(t, pool, id)
-	if retried.leaseToken != "" || retried.attempts != 1 || !retried.nextAt.Equal(clock.Now().Add(retryBackoff(0))) {
+	if retried.leaseToken != "" || retried.attempts != 1 || !retried.nextAt.Equal(clock.Now().Add(record.RetryBackoff(0))) {
 		t.Fatalf("after Run returned the row is leased %q with %d attempts, due %v; want it retried unleased on its first backoff, due %v",
-			retried.leaseToken, retried.attempts, retried.nextAt, clock.Now().Add(retryBackoff(0)))
+			retried.leaseToken, retried.attempts, retried.nextAt, clock.Now().Add(record.RetryBackoff(0)))
 	}
 	if got := client.count(); got != 1 {
 		t.Fatalf("status writes = %d, want the one the stop interrupted", got)

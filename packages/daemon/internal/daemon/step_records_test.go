@@ -139,9 +139,10 @@ func TestAPhaseNeverWaitsForDispatch(t *testing.T) {
 
 	r.dispatch.start()
 	want := stepRecordsSeven
-	// A row Dispatch refused while it was stopped waits out its backoff, at most retryBackoff's
-	// cap, before it runs again, and the sweep finds a lease that lapsed within one more lease.
-	within := retryBackoff(6) + outboxLease
+	// A row Dispatch refused while it was stopped waits out its backoff, at most the cap of
+	// record.RetryBackoff, before it runs again, and the sweep finds a lease that lapsed within one
+	// more lease.
+	within := record.RetryBackoff(6) + outboxLease
 	started := time.Now()
 	if !testwait.Holds(within, time.Second, func() bool { got, err := r.readSteps(); return err == nil && stepsHold(got, want) == nil }) {
 		got, err := r.readSteps()

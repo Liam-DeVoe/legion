@@ -164,7 +164,7 @@ func (r *stepRecordRig) run() {
 	if err := r.runner.RunOnce(context.Background()); err != nil {
 		r.t.Fatalf("drain the outbox: %v", err)
 	}
-	r.clock.advance(2 * retryBackoff(6))
+	r.clock.advance(2 * record.RetryBackoff(6))
 }
 
 // left is how many rows the issue has left.

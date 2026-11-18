@@ -85,11 +85,11 @@ func writeOf(payload record.OutboxPayload) (what, route string) {
 // end and its rating, whose record id is the end's. Of a second issue, whose run starts at that
 // moment: its plan and a status write. Each row queued before the stop waits to retry, as that
 // Dispatch's NOT_FOUND leaves a row (the daemon's RetryOutbox): attempts counted, the last error
-// kept and the retry time its backoff set, at most 64 seconds after the stop. The rows of the
-// stop's own moment have not run. The block runs as the migration's header carries it, as one exec
-// (the simple protocol a psql run uses). Then the plans and the ratings are gone, waiting or not,
-// and every other row is still there with its payload and its retry state: none of them is a
-// write the earlier image is owed less than this one.
+// kept and the retry time its backoff (record.RetryBackoff) set, at most 64 seconds after the
+// stop. The rows of the stop's own moment have not run. The block runs as the migration's header
+// carries it, as one exec (the simple protocol a psql run uses). Then the plans and the ratings
+// are gone, waiting or not, and every other row is still there with its payload and its retry
+// state: none of them is a write the earlier image is owed less than this one.
 //
 // The control comes first, on the same rows: the strict decode of the release before refuses the
 // rating rows and takes the ordinary step records. After the block every step record left takes
@@ -129,11 +129,11 @@ func TestThePlanRatingsWayBackLeavesWhatTheReleaseBeforeReads(t *testing.T) {
 	defaultSteps := []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}
 	// retried is the attempts and the next due time the daemon's outbox leaves a row queued at
 	// queued with, once the daemon stops at stopped: the row ran each time it came due before then,
-	// each run met the wait and added its backoff (internal/daemon's retryBackoff: one second,
-	// doubled at each attempt up to 64 seconds), and a row queued as the daemon stops has not run.
+	// each run met the wait and added its backoff (record.RetryBackoff, which the daemon's outbox
+	// reads), and a row queued as the daemon stops has not run.
 	retried := func(queued time.Time) (attempts int, nextAt time.Time) {
 		for nextAt = queued; nextAt.Before(stopped); attempts++ {
-			nextAt = nextAt.Add(time.Second << min(attempts, 6))
+			nextAt = nextAt.Add(record.RetryBackoff(attempts))
 		}
 		return attempts, nextAt
 	}

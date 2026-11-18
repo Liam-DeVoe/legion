@@ -562,7 +562,7 @@ func statusRefusalTold(ctx context.Context, r *outbox, row record.OutboxRow, pay
 // again then rather than climbing its backoff for days. A named moment already past is the backoff's.
 func (r *outbox) retry(ctx context.Context, row record.OutboxRow, cause error) error {
 	now := r.now().UTC()
-	delay := retryBackoff(row.Attempts)
+	delay := record.RetryBackoff(row.Attempts)
 	if after, _ := githubrest.RetryAfter(cause); after > delay {
 		delay = after
 	}
@@ -613,16 +613,6 @@ func standingLimit(limits map[githubrest.Budget]rateLimit, kind record.OutboxKin
 		}
 	}
 	return latest, !latest.until.IsZero()
-}
-
-func retryBackoff(attempts int) time.Duration {
-	if attempts < 0 {
-		attempts = 0
-	}
-	if attempts > 6 {
-		attempts = 6
-	}
-	return time.Second << attempts
 }
 
 // permanentRefusal is a row's failure no retry repairs, so the row is finished with its follow-up

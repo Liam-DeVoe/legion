@@ -1302,3 +1302,17 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 		})
 	}
 }
+
+// A row's backoff after a failed run is one second, doubled at each attempt before it, and stops
+// doubling at 64 seconds; a count below zero, which RetryOutbox never writes, waits as no attempt
+// does. The daemon's outbox and the store's tests read this one rule.
+func TestARowsBackoffDoublesFromOneSecondUpToSixtyFourSeconds(t *testing.T) {
+	for attempts, want := range map[int]time.Duration{
+		-1: time.Second, 0: time.Second, 1: 2 * time.Second, 2: 4 * time.Second, 5: 32 * time.Second,
+		6: 64 * time.Second, 7: 64 * time.Second, 40: 64 * time.Second,
+	} {
+		if got := RetryBackoff(attempts); got != want {
+			t.Errorf("RetryBackoff(%d) = %s, want %s", attempts, got, want)
+		}
+	}
+}
