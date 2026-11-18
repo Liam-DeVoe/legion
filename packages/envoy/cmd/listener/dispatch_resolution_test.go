@@ -10,7 +10,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cmdtest"
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dedupe"
 	dispatchapi "github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
@@ -21,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
+	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testpg"
 )
@@ -50,6 +53,9 @@ const (
 	// rigDeliveryMode is the targeted delivery mode every mention and broadcast here asks for,
 	// and one every session in this file advertises: resolution, not capability, is under test.
 	rigDeliveryMode = "steer"
+	// dispatchRigAgentWait is the delivery listener's agent wait (ENVOY_UNPLACEABLE_RETRY_WINDOW):
+	// a copy for a session with no record waits this long before its wake is reported.
+	dispatchRigAgentWait = 2 * time.Second
 )
 
 // dispatchRig is the pair of services one test here drives.
@@ -64,26 +70,31 @@ type dispatchRig struct {
 	// the moment after another listener registered a session. Asking it is therefore asking with
 	// a cold cache while the record is in the bucket.
 	cold *listenerDeps
-	// dispatch is the real Dispatch /api/v1 mux, its EnvoyURL the cold listener's.
+	// dispatch is the real Dispatch /api/v1 mux, its EnvoyURL the cold listener's and its
+	// publisher the rig's bus, on which it queues a targeted message for a session no store of
+	// the listener's holds.
 	dispatch http.Handler
 	database *dispatchstore.Store
+	// deliveryLog is the warm listener's delivery log, which a test reads for the lines its
+	// delivery of a copy writes.
+	deliveryLog *cmdtest.LockedBuffer
 }
 
 // newDispatchRig builds both services: one NATS, two listeners over it, the cold one served over
 // HTTP, one migrated Postgres with the person who writes, and Dispatch pointed at the cold
-// listener.
+// listener, publishing on the rig's NATS.
 func newDispatchRig(t *testing.T) *dispatchRig {
 	t.Helper()
 	warm, cold := trailingListeners(t)
-	startListenerDelivery(t, warm)
+	deliveryLog := startListenerDelivery(t, warm)
 
 	mux := http.NewServeMux()
 	registerV1Routes(mux, cold, rigMachineID, listenerRigLogger(t, "cold listener"))
 	listener := httptest.NewServer(mux)
 	t.Cleanup(listener.Close)
 
-	rig := &dispatchRig{warm: warm, cold: cold, database: migratedDispatchDatabase(t)}
-	rig.dispatch = dispatchMux(t, rig.database, listener.URL)
+	rig := &dispatchRig{warm: warm, cold: cold, database: migratedDispatchDatabase(t), deliveryLog: deliveryLog}
+	rig.dispatch = queueingDispatchMux(t, rig.database, listener.URL, warm.client)
 	return rig
 }
 
@@ -91,27 +102,35 @@ func newDispatchRig(t *testing.T) *dispatchRig {
 // test fails: a passing cross-service test would otherwise print a delivery log nobody reads.
 func listenerRigLogger(t *testing.T, name string) *logging.Logger {
 	t.Helper()
+	logger, _ := listenerRigLog(t, name)
+	return logger
+}
+
+// listenerRigLog is listenerRigLogger answering also the lines written, for a test that reads them.
+func listenerRigLog(t *testing.T, name string) (*logging.Logger, *cmdtest.LockedBuffer) {
+	t.Helper()
 	lines := &cmdtest.LockedBuffer{}
 	t.Cleanup(func() {
 		if t.Failed() {
 			t.Logf("%s log:\n%s", name, lines.String())
 		}
 	})
-	return logging.NewWithWriter("test", lines)
+	return logging.NewWithWriter("test", lines), lines
 }
 
 // startListenerDelivery runs the listener's own delivery loop over d: the durable JetStream
 // subscription main binds, and the relay of the session consumers main starts beside it. A frame
 // Dispatch publishes through /v1/messages/send is then relayed to the session's own consumer
 // exactly as the listener relays it, so a delivery is observed where the agent would receive it
-// rather than in a log line.
-func startListenerDelivery(t *testing.T, d *listenerDeps) {
+// rather than in a log line. It answers the delivery log, for a test that reads its lines.
+func startListenerDelivery(t *testing.T, d *listenerDeps) *cmdtest.LockedBuffer {
 	t.Helper()
 	dedupeCache := dedupe.New(10 * time.Minute)
 	attemptCache := dedupe.New(5 * time.Minute)
 	t.Cleanup(dedupeCache.Stop)
 	t.Cleanup(attemptCache.Stop)
 	met := metrics.New()
+	logger, logs := listenerRigLog(t, "delivery listener")
 	config := listenerDeliveryHandlerConfig{
 		client:      d.client,
 		forwardRole: startRoleForward(d.client),
@@ -122,22 +141,23 @@ func startListenerDelivery(t *testing.T, d *listenerDeps) {
 		// session.Resolve, which holds no registry of its own (INFRA-141).
 		dedupeCache:       dedupeCache,
 		attemptCache:      attemptCache,
-		logger:            listenerRigLogger(t, "delivery listener"),
+		logger:            logger,
 		messagesReceived:  met.NewCounter("rig_messages_received", "test"),
 		messagesDelivered: met.NewCounter("rig_messages_delivered", "test"),
 		messagesNAKed:     met.NewCounter("rig_messages_naked", "test"),
 		deliveryDuration:  met.NewHistogram("rig_delivery_duration", "test", metrics.DefaultBuckets),
+		// A copy for a session with no record - the copy Dispatch queues for a session no store
+		// holds - waits once for the rig's agent wait, as main.go's waits for its minute, and then
+		// its agent wake is reported here. Every other copy in these tests is for a session with
+		// a record, which no wait touches.
+		unplaceableRetryWindow: dispatchRigAgentWait,
 		// The set every handler built from one config shares; main.go builds one for the whole
 		// process and passes it through deliveryConfig, so a durable rebound after a flap draws on
-		// the budget its predecessor held rather than opening a second one. This rig needs one only
-		// because listenerDeliveryHandler refuses a config without it: its unplaceableRetryWindow
-		// is zero, so a message to a session with no record reports its wake at once and nothing
-		// here waits, and these tests cover Dispatch resolution and delivery rather than that wait
-		// (INFRA-141).
-		deferredUnplaceable: newUnplaceableDeferrals(0),
+		// the budget its predecessor held rather than opening a second one.
+		deferredUnplaceable: newUnplaceableDeferrals(dispatchRigAgentWait),
 		// The guards two drains of one role take inside one listener, which main.go keeps one set
-		// of for the process. This rig needs one for the same reason as the set above: the handler
-		// refuses a config without it, and nothing here keeps a role message.
+		// of for the process. This rig needs one because the handler refuses a config without
+		// it; nothing here keeps a role message.
 		roleKeepDrains: newRoleKeepGuards(),
 		// The listener's clock, and its dead letter's publish, as main.go sets them.
 		now:               time.Now,
@@ -173,6 +193,7 @@ func startListenerDelivery(t *testing.T, d *listenerDeps) {
 		t.Fatalf("bind the listener's durable consumer: %v", err)
 	}
 	t.Cleanup(func() { _ = subscription.Unsubscribe() })
+	return logs
 }
 
 // migratedDispatchDatabase opens an empty Postgres database of this test's own, carries every
@@ -196,8 +217,18 @@ func migratedDispatchDatabase(t *testing.T) *dispatchstore.Store {
 }
 
 // dispatchMux is the real Dispatch API, built the way cmd/dispatch builds it, with the listener
-// under test as its ENVOY_URL.
+// under test as its ENVOY_URL and no bus to queue a targeted message on.
 func dispatchMux(t *testing.T, database *dispatchstore.Store, envoyURL string) http.Handler {
+	t.Helper()
+	return queueingDispatchMux(t, database, envoyURL, nil)
+}
+
+// queueingDispatchMux is dispatchMux queueing a person's targeted message for a session no store
+// of the listener's holds through publisher, as cmd/dispatch queues it through its NATS client.
+// A nil publisher is the deployment with no NATS, which queues none.
+func queueingDispatchMux(
+	t *testing.T, database *dispatchstore.Store, envoyURL string, publisher *bus.Client,
+) http.Handler {
 	t.Helper()
 	tokens, err := auth.ParseSharedAgentTokens(rigAgentToken)
 	if err != nil {
@@ -221,7 +252,7 @@ func dispatchMux(t *testing.T, database *dispatchstore.Store, envoyURL string) h
 			t.Errorf("shut the document service down: %v", err)
 		}
 	})
-	deps, err := dispatchapi.NewDeps(dispatchapi.DepsInput{
+	input := dispatchapi.DepsInput{
 		Store:       database,
 		Identity:    caller,
 		AgentTokens: tokens,
@@ -229,7 +260,13 @@ func dispatchMux(t *testing.T, database *dispatchstore.Store, envoyURL string) h
 		EnvoyURL:    envoyURL,
 		Docs:        documents,
 		Events:      broker,
-	})
+	}
+	// Only a client that is there goes in the interface: a nil *bus.Client in it would read as a
+	// publisher.
+	if publisher != nil {
+		input.AgentPublisher = publisher
+	}
+	deps, err := dispatchapi.NewDeps(input)
 	if err != nil {
 		t.Fatalf("new Dispatch API dependencies: %v", err)
 	}
@@ -680,4 +717,115 @@ func (rig *dispatchRig) claim(
 			"origin": map[string]any{"session_title": live.title},
 		},
 	})
+}
+
+// recordsFor is the records among records that name sessionID.
+func recordsFor(records []deliveryRecord, sessionID string) []deliveryRecord {
+	var found []deliveryRecord
+	for _, record := range records {
+		if record.SessionID == sessionID {
+			found = append(found, record)
+		}
+	}
+	return found
+}
+
+// A person's targeted message to a session that neither the listener's registry nor its
+// known-session store holds is queued, not failed: Dispatch stores on the session's own subject
+// the envelope the listener's send route would have stored. That makes Dispatch a writer of the
+// session's agent subject, and the listener decides that copy as it decides any other there
+// (session.HandleAgentMessage): it finds no record, waits once for its agent wait, and then
+// reports one agent wake, which brings a released pod back. It never acknowledges the copy in
+// silence, and it logs no deferral, give-up or failure. The session that registers again under
+// that id is then handed the copy by its consumer. Two sessions take that path here: a released
+// Legion role's, whose interest row still names the listener it registered through until the
+// reaper's pass, and one that no interest row names. Before #4088 the attempt failed "no live
+// session", nothing was stored or woken, and the person had to send the message again once the
+// pod was back.
+func TestDispatchQueuesATargetedMessageForASessionNoStoreHolds(t *testing.T) {
+	rig := newDispatchRig(t)
+	wakes, err := rig.warm.client.Conn.SubscribeSync(bus.LegionWakeTopic)
+	if err != nil {
+		t.Fatalf("subscribe to %s: %v", bus.LegionWakeTopic, err)
+	}
+	t.Cleanup(func() { _ = wakes.Unsubscribe() })
+	if err := rig.warm.client.Conn.Flush(); err != nil {
+		t.Fatalf("flush the wake subscription: %v", err)
+	}
+
+	// Both cases run in the rig's own test, not in subtests: a subtest's connections get a NATS
+	// account of their own (testnats.URL), so the stand-in registerSession starts there would hear
+	// nothing the rig's listener relays.
+	for _, tc := range []struct {
+		session string
+		row     bool
+	}{
+		// A session that no interest row names: each listener decides the copy from its own durable.
+		{session: "ses_unknown", row: false},
+		// A released Legion role's session, whose interest row names this listener.
+		{session: "ses_released", row: true},
+	} {
+		subject := contracts.LegacyAgentSubject(tc.session)
+		if tc.row {
+			if _, err := rig.warm.registry.Upsert(store.Interest{SessionID: tc.session, MachineID: rigMachineID}, []string{subject}); err != nil {
+				t.Fatalf("register %s's interest naming this listener: %v", tc.session, err)
+			}
+		}
+
+		response := rig.asHuman(t, http.MethodPost, "/api/v1/agents/"+tc.session+"/messages", map[string]any{
+			"body": "Pick the release back up.", "delivery": rigDeliveryMode,
+		})
+		if response.Code != http.StatusCreated {
+			t.Fatalf("message %s: status=%d body=%s", tc.session, response.Code, response.Body.String())
+		}
+		message := decodeRigBody[struct {
+			ID         string        `json:"id"`
+			Deliveries []rigDelivery `json:"deliveries"`
+		}](t, response)
+		if len(message.Deliveries) != 1 || message.Deliveries[0].State != "queued" || message.Deliveries[0].Error != nil ||
+			message.Deliveries[0].SessionID == nil || *message.Deliveries[0].SessionID != tc.session {
+			t.Fatalf("the message's attempt = %#v, want it queued for %s with no failure", message.Deliveries, tc.session)
+		}
+
+		stored, err := rig.warm.client.JS().GetLastMsg(bus.Stream, subject)
+		if err != nil {
+			t.Fatalf("read the copy stored on %s: %v", subject, err)
+		}
+		var queued contracts.Envelope
+		if err := json.Unmarshal(stored.Data, &queued); err != nil {
+			t.Fatalf("decode the stored copy %s: %v", stored.Data, err)
+		}
+		if queued.Topic != subject || queued.Source != "dispatch" ||
+			queued.DedupeKey != contracts.AgentSendDedupeKey(tc.session, message.ID+":"+rigDeliveryMode) ||
+			queued.PayloadSummary != "Pick the release back up." || !strings.Contains(queued.Payload, message.ID) {
+			t.Fatalf("the stored copy = %#v, want message %s from dispatch under its send's key, its frame as payload", queued, message.ID)
+		}
+
+		waitFor(t, 20*time.Second, "the listener to report the wake of "+tc.session, func() bool {
+			return len(recordsFor(deliveryRecords(t, rig.deliveryLog.String(), "listener agent wake reported"), tc.session)) > 0
+		})
+		if waited := time.Since(stored.Time); waited < dispatchRigAgentWait {
+			t.Errorf("the wake of %s was reported %s after the copy was stored, want at least the agent wait of %s: the copy waits once first",
+				tc.session, waited, dispatchRigAgentWait)
+		}
+		logs := rig.deliveryLog.String()
+		if reports := recordsFor(deliveryRecords(t, logs, "listener agent wake reported"), tc.session); len(reports) != 1 ||
+			reports[0].Level != "INFO" || reports[0].EventID != queued.EventID || reports[0].Topic != subject {
+			t.Fatalf("want one INFO wake line for the queued copy %s on %s, got %#v:\n%s", queued.EventID, subject, reports, logs)
+		}
+		for _, line := range aloneRemovedLines {
+			if got := len(recordsFor(deliveryRecords(t, logs, line), tc.session)); got != 0 {
+				t.Errorf("%d %q lines for the queued copy of %s, want none:\n%s", got, line, tc.session, logs)
+			}
+		}
+		if got := agentWakesFor(t, wakes, tc.session, 5*time.Second, time.Second); got != 1 {
+			t.Fatalf("%d agent wake reports for %s, want one:\n%s", got, tc.session, logs)
+		}
+
+		returned := rig.registerSession(t, tc.session, "Released planner")
+		var handed contracts.Envelope
+		if frame := returned.awaitFrame(t); json.Unmarshal([]byte(frame), &handed) != nil || handed.EventID != queued.EventID {
+			t.Fatalf("the session %s that came back was handed %q, want the queued copy %s", tc.session, frame, queued.EventID)
+		}
+	}
 }

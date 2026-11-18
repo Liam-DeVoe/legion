@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/internal/store"
 )
 
 // The delivery harness names its counters test_messages_*; they are the listener's
@@ -272,6 +274,143 @@ func startEnvelopeDeliveryThrough(t *testing.T, harness listenerDeliveryHarness,
 	}
 	t.Cleanup(func() { _ = harness.client.JS().DeleteConsumer(bus.Stream, consumer) })
 	return unplaceableDeliveryRun{harness: harness, item: item, exceptions: exceptions, consumer: consumer}
+}
+
+// agentWakesFor counts the agent wake reports for sessionID that reach subscription, a core
+// subscription to bus.LegionWakeTopic: it waits up to first for a report, and after each one for
+// quiet more, so a second report of one message is counted too.
+func agentWakesFor(t *testing.T, subscription *natsgo.Subscription, sessionID string, first, quiet time.Duration) int {
+	t.Helper()
+	count := 0
+	wait := first
+	for {
+		message, err := subscription.NextMsg(wait)
+		if errors.Is(err, natsgo.ErrTimeout) {
+			return count
+		}
+		if err != nil {
+			t.Fatalf("read %s: %v", bus.LegionWakeTopic, err)
+		}
+		if wakeNamed(wakeReportIn(t, message), wakeKindAgent, sessionID) {
+			count++
+			wait = quiet
+		}
+	}
+}
+
+// A released Legion role's session loses its record when it stops, while its interest row, which
+// names the listener it registered through, stays until the reaper deletes it 10 to 20 minutes
+// later. A copy on its agent subject - a person's answer Dispatch routes to it, say - then takes
+// the path of a session with no record: it waits once for the agent wait, and then this listener
+// reports one wake, which brings the pod back. It is never acknowledged in silence, as a copy
+// whose row names another listener is, and it is never NAKed as a failed delivery. Before #4088
+// the interest path failed such a copy as delivery_failed on every redelivery and reported no
+// wake, so the pod stayed released and the message never reached it.
+//
+// The negative control is the second subtest: the same interest row over a record, one that names
+// no way of receiving, is acknowledged as a skip, with no wait and no wake. So the rig takes the
+// row that names this listener, and the first subtest's wake is the missing record's doing.
+func TestACopyForASessionWithNoRecordWaitsOnceAndWakesEvenWhenItsInterestNamesThisListener(t *testing.T) {
+	const window = 2 * time.Second
+	// start registers target's interest row naming the harness's own listener and, when entry is
+	// not nil, its record, then drives one envelope on target's agent subject through the
+	// listener's durable handler at an agent wait of window. It returns the run and a
+	// subscription to the wake reports, made before anything is delivered.
+	start := func(t *testing.T, target string, entry *session.SessionEntry) (unplaceableDeliveryRun, *natsgo.Subscription) {
+		t.Helper()
+		harness := newListenerDeliveryHarness(t)
+		interest := store.Interest{SessionID: target, MachineID: harness.config.machineID}
+		if _, err := harness.registry.Upsert(interest, []string{contracts.LegacyAgentSubject(target)}); err != nil {
+			t.Fatalf("register %s's interest naming this listener: %v", target, err)
+		}
+		if entry != nil {
+			if err := harness.sessions.Put(target, *entry); err != nil {
+				t.Fatalf("register %s's record: %v", target, err)
+			}
+		}
+		wakes := agentWakeProbe(t, harness)
+		cfg := harness.config
+		cfg.unplaceableRetryWindow = window
+		cfg.deferredUnplaceable = newUnplaceableDeferrals(window)
+		return startUnplaceableDelivery(t, harness, cfg, target, 0), wakes
+	}
+	// settled fails the test unless the run's message was acknowledged with no line of the
+	// removed path, no delivery exception and no failed delivery.
+	settled := func(t *testing.T, run unplaceableDeliveryRun) {
+		t.Helper()
+		logs := run.harness.logs.String()
+		for _, line := range aloneRemovedLines {
+			if got := len(deliveryRecords(t, logs, line)); got != 0 {
+				t.Errorf("%d %q lines, want none - no listener retries, gives up or fails an agent message:\n%s", got, line, logs)
+			}
+		}
+		if got := counterValue(t, metricsBody(t, run.harness), deliveredSeries("failed")); got != -1 {
+			t.Errorf("%s = %d, want no series at all - the message was never failed", deliveredSeries("failed"), got)
+		}
+		if message, err := run.exceptions.NextMsg(500 * time.Millisecond); err == nil {
+			t.Errorf("a message on an agent subject published a delivery exception: %s", string(message.Data))
+		}
+		stored, err := run.harness.client.JS().GetLastMsg(bus.Stream, run.item.Topic)
+		if err != nil {
+			t.Fatalf("read the stored message on %s: %v", run.item.Topic, err)
+		}
+		awaitDurableState(t, run.harness.client, run.consumer, 0, stored.Sequence)
+	}
+
+	t.Run("a session with no record waits once, then reports one wake", func(t *testing.T) {
+		const target = "ses_interest_no_record"
+		run, wakes := start(t, target, nil)
+		harness := run.harness
+
+		// The first delivery waits: it is sent back for the agent wait, with no line logged.
+		waitFor(t, 15*time.Second, "the first delivery to wait", func() bool {
+			return counterValue(t, metricsBody(t, harness), nakedCounter) == 1
+		})
+		if got := len(deliveryRecords(t, harness.logs.String(), "listener agent wake reported")); got != 0 {
+			t.Fatalf("%d wake lines at the first delivery, want none - the message waits first, whatever its interest row names:\n%s", got, harness.logs.String())
+		}
+		// The redelivery finds no record still, and reports the wake.
+		waitFor(t, 15*time.Second, "the redelivered message to report the wake", func() bool {
+			return len(deliveryRecords(t, harness.logs.String(), "listener agent wake reported")) > 0
+		})
+		logs := harness.logs.String()
+		reports := deliveryRecords(t, logs, "listener agent wake reported")
+		if len(reports) != 1 || reports[0].Level != "INFO" || reports[0].SessionID != target || reports[0].EventID != run.item.EventID || reports[0].Topic != run.item.Topic {
+			t.Fatalf("want one INFO wake line naming %s, event %s and topic %s, got %+v:\n%s", target, run.item.EventID, run.item.Topic, reports, logs)
+		}
+		body := metricsBody(t, harness)
+		if got := counterValue(t, body, deliveredSeries("wake_reported")); got != 1 {
+			t.Fatalf("%s = %d, want 1:\n%s", deliveredSeries("wake_reported"), got, body)
+		}
+		if got := counterValue(t, body, nakedCounter); got != 1 {
+			t.Fatalf("%s = %d, want 1 - the one wait's NAK and no other:\n%s", nakedCounter, got, body)
+		}
+		if got := agentWakesFor(t, wakes, target, 5*time.Second, time.Second); got != 1 {
+			t.Fatalf("%d agent wake reports for %s, want exactly one:\n%s", got, target, logs)
+		}
+		settled(t, run)
+	})
+
+	t.Run("a record that names no way of receiving is acknowledged, with no wait and no wake", func(t *testing.T) {
+		const target = "ses_interest_no_way_to_receive"
+		run, wakes := start(t, target, &session.SessionEntry{MachineID: "test-machine"})
+		harness := run.harness
+
+		waitFor(t, 15*time.Second, "the delivery to be acknowledged as a skip", func() bool {
+			return counterValue(t, metricsBody(t, harness), deliveredSeries("skipped")) == 1
+		})
+		// A wake would come no sooner than the agent wait, so the probe is read past it.
+		if got := agentWakesFor(t, wakes, target, window+2*time.Second, time.Second); got != 0 {
+			t.Fatalf("%d agent wake reports for %s, want none - a session with a record is its consumer's:\n%s", got, target, harness.logs.String())
+		}
+		if got := len(deliveryRecords(t, harness.logs.String(), "listener agent wake reported")); got != 0 {
+			t.Fatalf("%d wake lines, want none:\n%s", got, harness.logs.String())
+		}
+		if got := counterValue(t, metricsBody(t, harness), nakedCounter); got != -1 {
+			t.Fatalf("%s = %d, want no series at all - a session with a record is not waited for", nakedCounter, got)
+		}
+		settled(t, run)
+	})
 }
 
 // preloadDeferrals takes n slots of set for messages no test stream will ever number: sequences

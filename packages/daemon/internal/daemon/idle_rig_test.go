@@ -137,11 +137,17 @@ type idleRigIssue struct {
 	role claim.Role
 }
 
-// newIdleWakeRig readies every part and boots the daemon, with one issue per name given. Each
-// issue is its own tree root, in the workflow at `implementing` with its implementer's claim
-// suspended, which the rig then resumes: that launch is what makes the pod, its launcher and its
-// role process.
-func newIdleWakeRig(t *testing.T, issues ...string) *idleWakeRig {
+// newIdleWakeRig readies every part, boots the daemon, and waits until every seeded issue's pod
+// runs its role, in order, with one issue per name given. Each issue is its own tree root, in the
+// workflow at `implementing` with its implementer's claim suspended by the daemon, a source the
+// boot's resume by rule acts on (supervise.SuspendSource.ByRule): the boot itself resumes each
+// claim, and that launch is what makes the pod, its launcher and its role process, which can all
+// start before the boot returns.
+//
+// plans is what the role process of each issue it names does, by the name the test calls the
+// issue; an issue it does not name, and every issue when plans is nil, runs the default plan. They
+// are set before the boot (idleRigPlan says why).
+func newIdleWakeRig(t *testing.T, plans map[string]idleRigPlan, issues ...string) *idleWakeRig {
 	t.Helper()
 	pool := isolatedOutboxPool(t)
 	if _, err := pool.Exec(context.Background(), idleRigSessionTable()); err != nil {
@@ -201,8 +207,15 @@ func newIdleWakeRig(t *testing.T, issues ...string) *idleWakeRig {
 	for i, name := range issues {
 		rig.issues = append(rig.issues, rig.seed(name, cfg.Project+"-"+strconv.Itoa(i+1), i))
 	}
+	for name, plan := range plans {
+		issue := rig.issue(name)
+		rig.agents.setPlan(issue.key, string(issue.role), plan)
+	}
 	rig.boot()
 	rig.awaitListenerReady()
+	for _, issue := range rig.issues {
+		rig.launch(issue)
+	}
 	return rig
 }
 
@@ -273,16 +286,6 @@ func (r *idleWakeRig) issue(name string) idleRigIssue {
 	}
 	r.t.Fatalf("the rig seeded no issue called %s", name)
 	return idleRigIssue{}
-}
-
-// launchAll launches every seeded issue's pod, in order. It is apart from the rig's construction
-// so a test can tell a role process what to do — the topics it takes with envoy_subscribe, whether
-// it takes a turn — before the process starts.
-func (r *idleWakeRig) launchAll() {
-	r.t.Helper()
-	for _, issue := range r.issues {
-		r.launch(issue)
-	}
 }
 
 // idleRigDatabase and idleRigUser are the rig's own database and login, which its launchers'
@@ -775,6 +778,20 @@ func (r *idleWakeRig) quiet() {
 	}
 }
 
+// quietIssues is quiet for the claims of the given issues alone.
+func (r *idleWakeRig) quietIssues(issues ...idleRigIssue) {
+	r.t.Helper()
+	keys := make([]string, 0, len(issues))
+	for _, issue := range issues {
+		keys = append(keys, issue.key)
+	}
+	if _, err := r.pool.Exec(context.Background(),
+		`update claims set updated_at = now() - interval '30 minutes'
+		 where project = $1 and issue = any($2) and activity_at is not null`, r.project, keys); err != nil {
+		r.t.Fatalf("back-date the claims of %v: %v", keys, err)
+	}
+}
+
 // idleRigGateAgeing is how often the gate is shut again while a test keeps it shut: a tenth of
 // the rig's tick, so the daemon reads a report this test has aged on every pass it makes.
 const idleRigGateAgeing = idleRigTick / 10
@@ -864,15 +881,18 @@ func (r *idleWakeRig) awaitReleased(issues ...idleRigIssue) {
 	// The span is the rig's longest (idleRigReleaseWait): this is every launch undone at once.
 	idleRigEventually(r.t, idleRigReleaseWait, "every pod of the rig released", func() bool {
 		// The pods are back-dated rather than waited out: the idle rule reads the claim rows and
-		// nothing else (pods.IdleView), so those rows are the clock it is measured against.
+		// nothing else (pods.IdleView), so those rows are the clock it is measured against. Only
+		// the claims of the issues this waits for are back-dated, so a pod that a wake brings
+		// back while this waits is not made idle and released again.
 		if time.Since(quieted) > 2*time.Second {
 			quieted = time.Now()
-			r.quiet()
+			r.quietIssues(issues...)
 		}
-		// One listing for the twelve pods, not one each: the operator's route answers every claim
-		// at once (daemon.claims, which daemon.claim reads to find one), and the pass this waits
-		// for reads the same rows through the same pool, so a wait that asked twelve times a poll
-		// would be taking the daemon's own Postgres away from the release it is waiting for.
+		// One listing for every pod of the rig, not one each: the operator's route answers every
+		// claim at once (daemon.claims, which daemon.claim reads to find one), and the pass this
+		// waits for reads the same rows through the same pool, so a wait that asked once for each
+		// pod every poll would be taking the daemon's own Postgres away from the release it is
+		// waiting for.
 		claims := r.api.claims()
 		released := true
 		for i, issue := range issues {
@@ -1070,6 +1090,18 @@ func (r *idleWakeRig) logged(msg string, attributes map[string]string) int {
 // text.
 func (r *idleWakeRig) loggedWhere(msg string, match func(entry map[string]any) bool) int {
 	count := 0
+	for _, entry := range r.loggedEntries(msg) {
+		if match(entry) {
+			count++
+		}
+	}
+	return count
+}
+
+// loggedEntries is every line of the daemon's log that says msg, decoded, read in one pass over
+// the log. A line that does not decode as JSON is skipped.
+func (r *idleWakeRig) loggedEntries(msg string) []map[string]any {
+	var entries []map[string]any
 	for _, line := range strings.Split(r.logs.String(), "\n") {
 		if line == "" {
 			continue
@@ -1078,11 +1110,11 @@ func (r *idleWakeRig) loggedWhere(msg string, match func(entry map[string]any) b
 		if json.Unmarshal([]byte(line), &entry) != nil {
 			continue
 		}
-		if entry["msg"] == msg && match(entry) {
-			count++
+		if entry["msg"] == msg {
+			entries = append(entries, entry)
 		}
 	}
-	return count
+	return entries
 }
 
 // idleRigDeadlineMargin is how long before the test binary's own deadline a wait of the rig
@@ -1093,10 +1125,10 @@ const idleRigDeadlineMargin = 5 * time.Second
 
 // Every wait of this rig carries a span of its own, one of those below, and idleRigWaiting
 // clamps it by the run's own deadline. The spans are what the work behind each wait takes on a
-// loaded runner with twelve pods, twelve launchers, a nats-server, a Postgres and an Envoy
-// listener on it; they are the bound a fault is reported at, so a release that never happens is a
-// failure naming the pods minutes into the run and not at the binary's timeout panic, which
-// would take the rest of internal/daemon with it.
+// loaded runner with every pod of the rig and a launcher for each, a nats-server, a Postgres and
+// an Envoy listener on it; they are the bound a fault is reported at, so a release that never
+// happens is a failure naming the pods minutes into the run and not at the binary's timeout
+// panic, which would take the rest of internal/daemon with it.
 const (
 	// idleRigListenerStartWait bounds the Envoy listener's own process coming up far enough to
 	// answer /healthz: one binary started and one port bound, with nothing of the daemon behind
@@ -1113,8 +1145,8 @@ const (
 	// it, which waits on that same pod.
 	idleRigPodWait = 150 * time.Second
 	// idleRigReleaseWait bounds the release of every pod of the rig by one pass of the idle
-	// tick: twelve launches undone at once, one of whose stops a test holds for most of a minute
-	// (idleRigPlan.StopDelaySeconds), and so the longest span here.
+	// tick: a launch undone for every pod of the rig at once, one of whose stops a test holds
+	// for most of a minute (idleRigPlan.StopDelaySeconds), and so the longest span here.
 	idleRigReleaseWait = 240 * time.Second
 	// idleRigRecordWait bounds a row the daemon writes, a task it gives or a message it
 	// delivers once the pod behind it is already up: a tick or two of the rig and the write
@@ -1122,7 +1154,7 @@ const (
 	idleRigRecordWait = 60 * time.Second
 	// idleRigWarningWait bounds the warning the daemon logs about a resume with no first turn,
 	// which its wake pass decides on the tick after the rig back-dates the resume, behind
-	// whatever else that pass is deciding for the other eleven pods.
+	// whatever else that pass is deciding for every other pod of the rig.
 	idleRigWarningWait = 90 * time.Second
 	// idleRigStuckWait bounds the stuck flag reaching the resume's record once that warning is
 	// out: the same pass writes both, so this is the write alone.

@@ -13,12 +13,12 @@ import (
 // a caller sends. That request is a send or a publish (POST /v1/messages/send and
 // /v1/messages/publish). Its envelope must fit the NATS max payload, the server's default of
 // 1 MiB, which no deployment changes. The envelope carries the request's payload and only a
-// one-line summary of its message (messageEnvelope), so a body whose message and payload each come
-// near 1 MiB, about 2 MiB in all, is served. The bodies of the other routes are smaller. The
-// largest registration (POST /v1/interests/subscribe) that the live listener held on 2026-11-16
-// named 802 topics in about 35 KB, and a registration's topics and its entry's fields each go into
-// one KV value under the same 1 MiB. A role claim is a few hundred bytes. A Legion agent batch is at
-// most legionagents.MaxBatch entries of bounded fields, under 2 MiB.
+// one-line summary of its message (contracts.MessageEnvelope), so a body whose message and
+// payload each come near 1 MiB, about 2 MiB in all, is served. The bodies of the other routes are
+// smaller. The largest registration (POST /v1/interests/subscribe) that the live listener held on
+// 2026-11-16 named 802 topics in about 35 KB, and a registration's topics and its entry's fields
+// each go into one KV value under the same 1 MiB. A role claim is a few hundred bytes. A Legion
+// agent batch is at most legionagents.MaxBatch entries of bounded fields, under 2 MiB.
 const apiBodyLimit = 4 << 20
 
 // apiBodyTooLarge is the error a /v1 route answers, with 413, to a body past apiBodyLimit: the

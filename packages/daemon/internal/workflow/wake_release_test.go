@@ -321,8 +321,8 @@ func TestAWokenRoleReadsATrueWakeText(t *testing.T) {
 		task := wokenTask(t, intake.ListenerWake{Kind: intake.ListenerWakeAgent, Session: "session-implementer", At: wakeAt, Report: "report-agent"})
 		holds(t, task,
 			"The wake is a message somebody sent to your session (session-implementer) while your pod was gone.",
-			"A message that Envoy stored for your session reaches this session, for 72 hours after Envoy stored it.",
-			"A message that Envoy did not store, such as a direct send that Envoy refused, does not reach you, and its sender must send it again.")
+			"A message that Envoy or Dispatch stored for your session reaches this session, for 72 hours after it was stored.",
+			"A message that neither stored, such as a direct send that Envoy refused, does not reach you, and its sender must send it again.")
 	})
 
 	t.Run("(g) a role message wake", func(t *testing.T) {

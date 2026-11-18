@@ -39,13 +39,13 @@ type idleRigListener struct {
 }
 
 // idleRigAgentWait is the rig listener's ENVOY_UNPLACEABLE_RETRY_WINDOW: how long the listener
-// waits before it reports the wake of a message stored for a session with no record. The
-// listener's default is 60 seconds. The daemon's retry takes the held-stop row's wake about 60
-// seconds after the send (idleRigStopDelay), so at the default the listener's own report of the
-// stored copy races that retry, and either can bring the pod back. At this wait the listener's
-// report comes after the retry took the wake, so the resume the held-stop row reads is the send
-// route's. By then the role is coming back, so the listener's report takes nothing.
-const idleRigAgentWait = 3 * time.Minute
+// waits before it reports the wake of a message stored for a session with no record
+// (cmd/listener's noRecordAgentDelivery). The listener's default is 60 seconds. At ten seconds, a
+// pod woken only by that report, as a message routed straight onto the stream wakes one, comes
+// back well inside the rig's pod wait (idleRigPodWait). The held-stop pod's stop lasts longer than
+// this wait (idleRigStopDelay), so the listener's report of its stored copy comes during the
+// release, as the send route's report does.
+const idleRigAgentWait = 10 * time.Second
 
 // startIdleRigListener runs a listener of machine id against natsURL until t ends, and returns it
 // once /healthz answers healthy.

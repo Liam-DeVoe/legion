@@ -30,8 +30,10 @@ func publishes(r core.Rules, subject string) bool {
 // other set built on the listener grant still publishes the rest of notifications.>, a role lane
 // among them. Dispatch's user may not publish the listener's resume lane, which only a listener
 // holding the session consumers' calls writes; it still publishes the kept lane and the wake
-// topic, as the outbox and the listener beside envoy-dispatch do. The listener sets keep the
-// resume and kept lanes.
+// topic, as the outbox and the listener beside envoy-dispatch do, and a session's agent subject,
+// on which Dispatch queues a person's message for a session no store of the listener's holds
+// (internal/dispatch/api/message_queue_publish.go). The listener sets keep the resume and kept
+// lanes.
 func TestOnlyDispatchMayPublishItsLane(t *testing.T) {
 	const (
 		machine  = "example-host-a"
@@ -41,6 +43,7 @@ func TestOnlyDispatchMayPublishItsLane(t *testing.T) {
 		resume   = "notifications.envoy.resume.X"
 		kept     = "notifications.envoy.kept.role.X"
 		wake     = "notifications.legion.wake"
+		agent    = "notifications.agent.ses_X"
 	)
 	for _, row := range []struct {
 		name    string
@@ -64,6 +67,7 @@ func TestOnlyDispatchMayPublishItsLane(t *testing.T) {
 		{"DispatchPermissions may not publish the resume lane", core.DispatchPermissions, resume, false},
 		{"DispatchPermissions may publish the kept lane, which Dispatch publishes", core.DispatchPermissions, kept, true},
 		{"DispatchPermissions may publish the wake topic, which Dispatch publishes", core.DispatchPermissions, wake, true},
+		{"DispatchPermissions may publish a session's agent subject, on which Dispatch queues a person's message", core.DispatchPermissions, agent, true},
 		{"ListenerPermissions may publish the resume lane", core.ListenerPermissions, resume, true},
 		{"ListenerPermissions may publish the kept lane", core.ListenerPermissions, kept, true},
 		{"ListenerHostPermissions may publish the resume lane", core.ListenerHostPermissions, resume, true},

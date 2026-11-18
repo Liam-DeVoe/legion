@@ -24,7 +24,9 @@ const (
 	AgentOwnedElsewhere
 	// AgentNoRecord is a session with no record, or with a record past the gone horizon. The
 	// listener waits once, and then it reports one wake, so that a released Legion pod comes
-	// back.
+	// back. A row that names this listener does not change that: a released role's plugin
+	// deletes its record, and its row stands until the reaper deletes it, 10 to 20 minutes
+	// later.
 	AgentNoRecord
 	// AgentRecordUnread is a record read that did not answer: an error or a timeout. It is not a
 	// record, and it is not the lack of one. The listener sends the message back for the wait and

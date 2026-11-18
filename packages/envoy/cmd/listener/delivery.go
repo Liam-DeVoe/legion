@@ -713,8 +713,10 @@ const deliverySessionReadTimeout = 2 * time.Second
 // interest row and record, and it acts on what session.HandleAgentMessage answers. A session
 // another listener's row names is that listener's to decide, so this one acknowledges the message
 // silently. A session with a record is acknowledged as a skip. A session with no record waits
-// once and then gets one wake report (noRecordAgentDelivery). A read of the record that did not
-// answer sends the message back for the wait (unreadAgentDelivery).
+// once and then gets one wake report (noRecordAgentDelivery). That holds also when the session's
+// row names this listener, as a released Legion role's row does until the reaper deletes it. A
+// read of the record that did not answer sends the message back for the wait
+// (unreadAgentDelivery).
 func agentSubjectDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessage, item contracts.Envelope) {
 	sessionID := agentSubjectSession(item.Topic)
 	if cfg.dedupeCache.Seen(item.DedupeKey, sessionID) {

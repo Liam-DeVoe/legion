@@ -79,3 +79,22 @@ func TestHandleAgentMessageDecidesOnTheRowAndTheRecord(t *testing.T) {
 		t.Fatalf("the read of a session the bucket holds no record of answered %v, want %v", err, nats.ErrKeyNotFound)
 	}
 }
+
+// TestHandleAgentMessage_StoredInterestHereWithAnUnansweredRead tests that a session whose stored
+// interest row names this listener, and whose record read did not answer, is an unread record:
+// the caller sends the message back for its wait and decides again. That read leaves the listener
+// with no record, as a record that is gone does, but it says nothing of the session. So the
+// message is neither acknowledged as one for a session with a record, nor left to another
+// listener, nor taken as one for a session with no record, which reports a wake.
+func TestHandleAgentMessage_StoredInterestHereWithAnUnansweredRead(t *testing.T) {
+	interest := &store.Interest{
+		SessionID: "ses_target",
+		Dir:       "/test",
+		MachineID: "test-machine",
+	}
+	unanswered := fmt.Errorf("read session ses_target from the bucket: %w", context.DeadlineExceeded)
+
+	if got := session.HandleAgentMessage("test-machine", interest, unanswered); got != session.AgentRecordUnread {
+		t.Fatalf("HandleAgentMessage(row here, unanswered read) = %d, want AgentRecordUnread (%d)", got, session.AgentRecordUnread)
+	}
+}

@@ -246,7 +246,9 @@ func DispatchDurables() []string {
 // on the kept lane (internal/dispatch/outbox/role.go). The listener beside envoy-dispatch keeps a
 // role message with no holder there and moves the kept lane's drain cursors
 // (cmd/listener/role_keep.go). It also reports role and agent wakes and its listener_ready on the
-// wake topic (cmd/listener/wake.go).
+// wake topic (cmd/listener/wake.go). It keeps every session's agent subject too
+// (contracts.LegacyAgentSubject): Dispatch queues a person's targeted message there for a session
+// no store of the listener's holds (internal/dispatch/api/message_queue_publish.go).
 func DispatchPermissions(machineID string) Permissions {
 	listener := publishing(listenerGrant(machineID), dispatchLane)
 	publish := listener.Publish.Allow
