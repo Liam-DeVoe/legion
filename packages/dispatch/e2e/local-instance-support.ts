@@ -6,7 +6,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import type { Readable } from "node:stream";
 import { setTimeout as sleep } from "node:timers/promises";
-import { shownSettingUrl } from "@legion/contracts/setting-url";
+import { shownSettingUrl, unshownSettingUrl } from "@legion/contracts/setting-url";
 import type { InboxRow } from "../web/src/api/types";
 
 export class Interrupted extends Error {}
@@ -189,10 +189,15 @@ export function databaseUrlRefusal(raw: string): string | undefined {
     .filter((host) => host !== "" && !host.startsWith("/"))
     .filter((host) => !loopbackHosts.includes(host.toLowerCase()));
   if (remote.length === 0) return undefined;
-  return (
-    "DATABASE_URL must name a loopback Postgres (127.0.0.1, localhost or [::1]) or a Unix " +
-    `socket, not ${remote.join(", ")}: this command truncates it`
-  );
+  // A user part that holds a `/` leaves a raw `@` once the user part the URL parser found is taken
+  // out, and the host it read is then a part of the user part: such a value is named by its
+  // length (`shownSettingUrl`, of the Postgres schemes), not by its hosts.
+  const misread = raw.includes("@") && shownSettingUrl(raw, ["postgres:", "postgresql:"]) === undefined;
+  return misread
+    ? "DATABASE_URL must name a loopback Postgres (127.0.0.1, localhost or [::1]) or a Unix " +
+        `socket: ${unshownSettingUrl(raw)}; this command truncates it`
+    : "DATABASE_URL must name a loopback Postgres (127.0.0.1, localhost or [::1]) or a Unix " +
+        `socket, not ${remote.join(", ")}: this command truncates it`;
 }
 
 /** `value` as one shell word, safe to paste whatever it holds. The same rule as `quote` in

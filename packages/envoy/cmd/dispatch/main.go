@@ -287,7 +287,7 @@ func main() {
 		if boot.DevSignInSharedKey != "" {
 			cookies = "cookies are valid on every process given this DISPATCH_DEV_SIGNIN_SHARED_KEY"
 		}
-		slog.Warn("dispatch: dev sign-in mounted: any email signs in at /auth/_dev/signin without the sign-in issuer; "+cookies, "origin", serverURL)
+		slog.Warn("dispatch: dev sign-in mounted: any email signs in at /auth/_dev/signin without the sign-in issuer; "+cookies, "origin", redact.URL(serverURL))
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
