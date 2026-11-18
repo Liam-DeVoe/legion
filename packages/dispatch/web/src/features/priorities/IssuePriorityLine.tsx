@@ -7,16 +7,21 @@ import { apiErrorMessage, issuePatchRequest } from "../../api/client";
 import { prioritiesQuery } from "../../api/queries";
 import type { Issue, PriorityRow } from "../../api/types";
 import { MultiSelect } from "../../components/MultiSelect";
+import { usePageWords, useTooltips } from "../../components/tooltips";
 import {
   dangerText,
   linkHoverText,
   linkText,
+  pageFailedText,
+  pageInkText,
+  pageMutedText,
+  pagePaneBg,
+  pageQuietText,
   surfaceMutedStrongBg,
   textMutedOnSurface,
   textSecondaryHoverToPrimary,
   textSecondaryOnSurface,
 } from "../../theme/classes";
-import { CONTROL_LABELS } from "../issue-page/page-words";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { orderLabel } from "./priorities-model";
 import { priorityPath } from "./priority-routes";
@@ -62,14 +67,26 @@ interface Draft {
  * carries the revision it holds now. The list of priorities to choose from is read only once the
  * line has an entry to name or the picker is open, as the components line reads the
  * architecture tree only while its picker is open.
+ *
+ * Inside `NoTooltips` (`components/tooltips.tsx`) it says the new issue page's words with their
+ * marks and carries no `title`; there `inRow` draws it as the value of a row of Details, which
+ * draws the label: no `Advances` of its own, a line that wraps and cuts no word, and "Add a
+ * priority" on the picker's trigger while the issue advances none.
  */
 export function IssuePriorityLine({
   disabled,
+  inRow = false,
   issue,
 }: {
   disabled: boolean;
+  /** Whether the line is the value of a row of the new issue page's Details. It acts inside
+   *  `NoTooltips` alone. */
+  inRow?: boolean;
   issue: Pick<Issue, "advances" | "advances_revision" | "key">;
 }): ReactNode {
+  const tooltips = useTooltips();
+  const page = usePageWords();
+  const inDetails = page !== null && inRow;
   const advances = issue.advances ?? [];
   const own = advances.filter((entry) => !entry.inherited).map((entry) => entry.id);
   const [draft, setDraft] = useState<Draft | null>(null);
@@ -97,8 +114,16 @@ export function IssuePriorityLine({
       // its own, and a refused write leaves this issue's read stale, so the next write must
       // carry the revision it holds now. The priorities body and the rail's two counts move with
       // the relation as well.
-      void queryClient.invalidateQueries({ queryKey: ["issue"] });
-      void queryClient.invalidateQueries({ queryKey: ["priorities"] });
+      const rereads = [
+        queryClient.invalidateQueries({ queryKey: ["issue"] }),
+        queryClient.invalidateQueries({ queryKey: ["priorities"] }),
+      ];
+      // Outside `NoTooltips` the write stops pending as it lands and these reads go on after it,
+      // as on `main`. Inside, `onSettled` returns them, which TanStack Query awaits before the
+      // write stops pending: the trigger stays `aria-disabled`, and refuses to open, until the
+      // issue it draws is the one read after the write.
+      if (page === null) return;
+      return Promise.all(rereads);
     },
   });
   const saving = write.isPending;
@@ -132,32 +157,81 @@ export function IssuePriorityLine({
   };
   const changeDraft = (next: string[]) => {
     if (next.length > MAX_ISSUE_ADVANCES) {
-      setInputError(`An issue advances at most ${MAX_ISSUE_ADVANCES} priorities.`);
+      setInputError(
+        page?.STATE_LINES.advances_at_cap ??
+          `An issue advances at most ${MAX_ISSUE_ADVANCES} priorities.`
+      );
       return;
     }
     setDraft((current) => (current === null ? current : { ...current, ids: next }));
     setInputError(null);
   };
 
+  // Inside `NoTooltips` each colour is one of the new issue page's: the line is the ink in a row
+  // of Details (the prototype's `.frow .fv`) and the muted grey elsewhere (its `#hdr-props`); a
+  // priority is a link in the ink; what qualifies it is quiet words, a refusal the failed red;
+  // the trigger is muted words on the page's pane that turn ink under the pointer.
+  const quiet = page === null ? textMutedOnSurface : pageQuietText;
+  const failed = page === null ? dangerText : pageFailedText;
+  // A failed save shows the server's reason, else the page's own line; each carries the mark of
+  // whose words it is.
+  const notSaved =
+    page?.ANSWER_LINES.priorities_not_saved ?? "Could not save what this issue advances.";
+  const saveFailure = apiErrorMessage(write.error, notSaved);
+  // Inside `NoTooltips` nothing of the line keeps its width, in a row of Details and in the
+  // header alike: a priority's title and a refusal's reason are values, which break anywhere and
+  // stay within their line - the title with `min-w-0`, a flex item that shrinks beside the mark
+  // after it, the reason with `max-w-full` - rather than push the line past its row. Outside,
+  // each part stays whole, as on `main`.
+  const wraps = page !== null;
+  // In a row of Details, with no priority to stand beside, the trigger says what it does, as the
+  // labels' says "Add a label", because that panel raises no tooltip that could say it instead.
+  // Its name then begins with the words it draws and ends with the joining word and the issue's
+  // key ("Add a priority to CORE-1"), so a voice user says what they read (WCAG 2.5.3 Label in
+  // Name). Everywhere else it draws "+" and is named "Edit priorities", as the labels' trigger is
+  // named "Edit labels": inside `NoTooltips` by the page's word (`edit_priorities`), and outside
+  // in the same words as a literal, since no control imports the page's word list
+  // (`components/tooltips.tsx`).
+  const addWords =
+    page !== null && inRow && advances.length === 0 ? page.CONTROL_LABELS.add_priority : null;
+  const triggerName =
+    page === null
+      ? "Edit priorities"
+      : addWords === null
+        ? page.CONTROL_LABELS.edit_priorities
+        : `${addWords} ${page.CONTROL_LABELS.control_name_to} ${issue.key}`;
+
   return (
     <div
-      className={`flex shrink-0 items-center gap-2 text-sm ${textSecondaryOnSurface}`}
-      data-testid="issue-advances"
+      className={`flex ${wraps ? "min-w-0 flex-wrap" : "shrink-0"} items-center gap-2 text-sm ${page === null ? textSecondaryOnSurface : inDetails ? pageInkText : pageMutedText}`}
+      data-testid={inDetails ? undefined : "issue-advances"}
     >
-      {advances.length === 0 ? null : <span className="font-medium">Advances</span>}
+      {advances.length === 0 || inDetails ? null : (
+        <span className="font-medium" {...page?.pageChrome}>
+          {page?.PROPERTY_LABELS.advances ?? "Advances"}
+        </span>
+      )}
       {advances.map((entry) => {
         const label = labels.get(entry.id) ?? entry.id;
         return (
-          <span className="flex shrink-0 items-center gap-1" key={entry.id}>
+          <span
+            className={`flex ${wraps ? "min-w-0" : "shrink-0"} items-center gap-1`}
+            key={entry.id}
+          >
+            {/* Inside `NoTooltips` the priority's title wraps inside its line rather than
+                widening it; its words are the person's who wrote it. */}
             <Link
-              className={`dispatch-inline-link shrink-0 whitespace-nowrap underline ${linkText} ${linkHoverText}`}
-              title={label}
+              className={`dispatch-inline-link ${wraps ? "min-w-0 [overflow-wrap:anywhere]" : "shrink-0 whitespace-nowrap"} underline ${page === null ? `${linkText} ${linkHoverText}` : pageInkText}`}
+              title={tooltips ? label : undefined}
               to={priorityPath(entry.id)}
+              {...page?.authorText}
             >
               {label}
             </Link>
             {entry.inherited ? (
-              <span className={`shrink-0 text-xs ${textMutedOnSurface}`}>inherited</span>
+              <span className={`shrink-0 text-xs ${quiet}`} {...page?.pageChrome}>
+                {page?.CONTROL_LABELS.advances_inherited ?? "inherited"}
+              </span>
             ) : null}
           </span>
         );
@@ -169,7 +243,11 @@ export function IssuePriorityLine({
         // how the reader is told it is busy without focus being taken away.
         ariaDisabled={saving}
         disabled={disabled}
-        emptyMessage={priorities.isPending ? "Loading priorities…" : "No priority to choose."}
+        emptyMessage={
+          priorities.isPending
+            ? (page?.ANSWER_LINES.loading_priorities ?? "Loading priorities…")
+            : "No priority to choose."
+        }
         error={inputError}
         label="Priorities"
         onChange={changeDraft}
@@ -177,7 +255,7 @@ export function IssuePriorityLine({
         open={open}
         optionLabel={(id) => labels.get(id) ?? id}
         options={options}
-        searchLabel="Priority to advance"
+        searchLabel={page?.CONTROL_LABELS.priority_to_advance ?? "Priority to advance"}
         selected={draft?.ids ?? own}
         // One character and its name, as the labels' trigger beside it is: an issue that
         // advances nothing still carries this control, and a word here puts the issue header's
@@ -187,19 +265,31 @@ export function IssuePriorityLine({
         // visible text for WCAG 2.5.3 to match. The character is a plain "+" (U+002B): the
         // fullwidth "＋" this line held draws as an empty box where no CJK font is installed,
         // which is this pod's Chromium and some readers' browsers.
-        triggerAriaLabel={CONTROL_LABELS.edit_priorities}
-        triggerClassName={`inline-flex min-h-11 shrink-0 items-center rounded-full px-2 py-2 text-sm whitespace-nowrap outline-none ${surfaceMutedStrongBg} ${textSecondaryOnSurface} ${textSecondaryHoverToPrimary}`}
+        triggerAriaLabel={triggerName}
+        // Inside `NoTooltips` it is 28 px tall from `md`, as the controls beside it in Details
+        // are (the repository's box, `main`'s input in `RepoControl.tsx`, with its `md:min-h-7`;
+        // the labels' and the components' triggers' `sm:min-h-7`); below 1280 px `styles.css`
+        // gives each of them a 44 px floor all the same. Outside it the class is `main`'s.
+        triggerClassName={`inline-flex min-h-11 shrink-0 items-center rounded-full px-2 py-2 text-sm whitespace-nowrap outline-none ${page === null ? `${surfaceMutedStrongBg} ${textSecondaryOnSurface} ${textSecondaryHoverToPrimary}` : `${pagePaneBg} ${pageMutedText} hover:text-page-ink md:min-h-7 md:py-1`}`}
       >
-        +
+        {page === null ? "+" : <span {...page.pageChrome}>{addWords ?? "+"}</span>}
       </MultiSelect>
       {priorities.isError ? (
-        <span className={`shrink-0 text-xs ${dangerText}`} role="alert">
-          Could not load the priorities.
+        <span
+          className={`${wraps ? "" : "shrink-0 "}text-xs ${failed}`}
+          role="alert"
+          {...page?.pageChrome}
+        >
+          {page?.ANSWER_LINES.priorities_unreadable ?? "Could not load the priorities."}
         </span>
       ) : null}
       {write.error === null ? null : (
-        <span className={`shrink-0 text-xs ${dangerText}`} role="alert">
-          {apiErrorMessage(write.error, "Could not save what this issue advances.")}
+        <span
+          className={`${wraps ? "max-w-full [overflow-wrap:anywhere] " : "shrink-0 "}text-xs ${failed}`}
+          role="alert"
+          {...(saveFailure === notSaved ? page?.pageChrome : page?.authorText)}
+        >
+          {saveFailure}
         </span>
       )}
     </div>
