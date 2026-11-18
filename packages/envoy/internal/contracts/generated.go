@@ -265,13 +265,15 @@ const GoingEventEnd = "end"
 const GoingEventError = "error"
 
 // The codes an error frame carries: the run reached its window without an answer, the deployment
-// has no text model configured, and the model service refused or failed. Generated from
-// GOING_ERROR_ANSWER_DID_NOT_ARRIVE, GOING_ERROR_NO_MODEL_CONFIGURED and
-// GOING_ERROR_ANSWER_FAILED in packages/contracts so the code the server writes and the wording
-// the page keys on it cannot drift apart.
+// has no text model configured, the model service refused or failed, and a post the run was
+// given was deleted after it. Generated from GOING_ERROR_ANSWER_DID_NOT_ARRIVE,
+// GOING_ERROR_NO_MODEL_CONFIGURED, GOING_ERROR_ANSWER_FAILED and GOING_ERROR_ANSWER_WITHDRAWN in
+// packages/contracts so the code the server writes and the wording the page keys on it cannot
+// drift apart.
 const GoingErrorAnswerDidNotArrive = "ANSWER_DID_NOT_ARRIVE"
 const GoingErrorNoModelConfigured = "NO_MODEL_CONFIGURED"
 const GoingErrorAnswerFailed = "ANSWER_FAILED"
+const GoingErrorAnswerWithdrawn = "ANSWER_WITHDRAWN"
 
 // GoingSearchTool is the name of the one tool the model is given, another search of Dispatch.
 // Generated from GOING_SEARCH_TOOL in packages/contracts so the name the server declares and the

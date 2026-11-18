@@ -10,7 +10,10 @@ body: |-
   route's own description, which GET /api/v1 serves, states its rules. A repeat under an
   Idempotency-Key whose first answer holds text a delete withdrew answers ANSWER_NOT_KEPT instead of
   that answer (IDEMPOTENCY_KEY_HEADER in @legion/contracts states when), and GET
-  /api/v1/issues/{key}/references takes its ETag from a hash of its answer.
+  /api/v1/issues/{key}/references takes its ETag from a hash of its answer. After the delete of a
+  comment or an issue message whose text an answer run gave its model, every read of that run's
+  stream (GET /api/v1/going/requests/{id}/stream) gives none of its frames and ends on the error
+  ANSWER_WITHDRAWN.
 time: 2026-11-11T07:23:15.742008842Z
 custom:
     Issue: pr3512
