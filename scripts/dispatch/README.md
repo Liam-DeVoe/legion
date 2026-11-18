@@ -531,10 +531,21 @@ The steps print one line each, in this order:
   is not reported, and costs the issue its closing words alone.
 
 A step that could not be carried out prints `<step> unavailable: <category>`
-(`auth|refused|transport|malformed|not-found`) instead of its verdict and is never a pass; the
-close, the one step that names a value before `unavailable:`, prints
+(`auth|refused|transport|malformed|not-found|landed`) instead of its verdict and is never a pass;
+the close, the one step that names a value before `unavailable:`, prints
 `close issue=<KEY> unavailable: <category>`. A failed scratch or request stops the steps after
 it, and the close still runs for an issue the run made.
+
+A write that landed with no answer to give (`409 KEY_COMMITTED`, or a replayed 2xx reading
+`ANSWER_NOT_KEPT`) made what it was sent to make, so the step reads it back and goes on from it,
+printing `scratch|status|upload|request|close landed: read back` first: the scratch issue is the
+newest open issue of the project holding the scratch title (`GET /api/v1/issues?project=`), an
+upload the issue's document of that name (`GET /api/v1/issues/{key}/artifacts`), the request the
+issue's open approval ask on the spec (`GET /api/v1/issues/{key}/asks?state=open`), and a status
+write or the close the issue as it stands (`GET /api/v1/issues/{key}`). Where the read finds
+nothing, the step prints `unavailable: landed`. An edit that landed is `moved unavailable:
+landed` or `control unavailable: landed`: the report it is judged by was in the answer Dispatch
+no longer has.
 
 The last two lines are `result pass|fail|unavailable exit=<code>` and the count of the
 assertions, `all 3 assertions passed` or `assertions passed <n> of 3`, so a reader can tell a
