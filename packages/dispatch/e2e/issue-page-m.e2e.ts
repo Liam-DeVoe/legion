@@ -158,7 +158,11 @@ test("the conversation is the outline and the history is in the panel", async ({
     if (created === undefined) throw new Error(`${seeded.key} recorded no issue.created`);
     await setEventCreatedAt(created.id, new Date(Date.now() - 86_400_000).toISOString());
 
+    // The asks, comments and messages arrive by reads of their own after the tree, so the load
+    // is waited out until its reads settle before the branches they draw are opened.
+    const settling = watchApiRequests(page);
     await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectLoadSettled(settling);
     await expectIssuePageDrawn(page);
     await unfoldEveryBranch(page);
     await openEveryDeeperBranch(page);
@@ -362,7 +366,11 @@ test("the history lists the events and the agents' threads the outline does not 
   const alice = await reader(browser, "alice");
   try {
     const page = await alice.newPage();
+    // The asks arrive by a read of their own after the tree, so the load is waited out until its
+    // reads settle before the branches they draw are opened.
+    const settling = watchApiRequests(page);
     await gotoIssue(page, `/issues/${issue.key}/activity`);
+    await expectLoadSettled(settling);
     const history = historyPanel(page);
     await expect(history).toBeVisible();
     const rows = historyEntries(page);
@@ -1571,6 +1579,10 @@ test("a control at the foot of a long turn keeps the focus in view when the turn
       }),
       "the cut of the turn the focus is in left the focus on the page, or outside Details"
     ).toBe(true);
+    expect(
+      await reply.evaluate((button) => button === document.activeElement),
+      "the focus left the turn's Reply"
+    ).toBe(true);
     // The reader goes back up to the control the focus is on by the keyboard, a page at a time.
     await page.keyboard.press("PageUp");
     // Half a second lets the scroll of Page Up end before the focused control is read against the
@@ -2301,10 +2313,14 @@ test("a person hands an ask to another person and it moves between the two Inbox
       handOnControl(aliceCard, moved.id),
       "the hand-on control stayed on an answered question"
     ).toHaveCount(0);
-    await unfoldEveryBranch(aliceIssue);
-    await expect(nodeRow(aliceIssue, moved.id).first()).toContainText(
-      "Read DISPATCH_ROLLOUT_FLAG."
-    );
+    // The replies of step 6 and the answer reach this page by reads of their own after the
+    // writes, so a branch drawn after one opening is opened on the poll's next pass.
+    await expect
+      .poll(async () => {
+        await unfoldEveryBranch(aliceIssue);
+        return (await nodeRow(aliceIssue, moved.id).first().textContent()) ?? "";
+      }, "the ask's row never drew its answer with its branch open")
+      .toContain("Read DISPATCH_ROLLOUT_FLAG.");
     await expect(nodeRow(aliceIssue, moved.id).first()).toContainText("bob");
     await expect(inboxRow(bobPage, moved.id)).toHaveCount(0);
     await expect(inboxRow(alicePage, moved.id)).toHaveCount(0);
@@ -2538,6 +2554,9 @@ test("the focused node's facts follow the focus, and Details reads nothing more 
       const settling = watchApiRequests(page);
       await gotoIssue(page, `/issues/${seeded.key}`);
       await expect(tree(page)).toBeVisible();
+      // The comments arrive by a read of their own after the tree, so the load's reads settle
+      // before the branches they draw are opened.
+      await expectLoadSettled(settling);
       await unfoldEveryBranch(page);
       await focusRow(page, seeded.first);
       await expect(marginShell(page)).toBeHidden();
