@@ -19,8 +19,8 @@ import (
 )
 
 // seededLensSources is the source and the reference each kind c-lens-catalogue names the source of
-// holds on its constraint, as INFRA-1950's research task read each in the source itself. For the
-// ten kinds dispatch://INFRA-1297 records, six are the sources INFRA-1297 cites, with second-order
+// holds on its constraint, as this change's research task read each in the source itself. For the
+// ten kinds the lens design records, six are the sources it cites, with second-order
 // taking Bastiat (1850) where it cited Chesterton's fence, and best-practice, first-principles,
 // conway and botec take the four the research task found and checked. The eleventh is
 // chestertons-fence, the further kind R7 gives Chesterton (1929). Written here, character for
@@ -73,16 +73,16 @@ var seededLensSources = map[string]struct{ source, reference string }{
 	},
 }
 
-// seededLensKinds is the ten ids dispatch://INFRA-1297 records, in its order.
+// seededLensKinds is the ten ids the lens design records, in its order.
 var seededLensKinds = []string{
 	"pre-mortem", "boring-solution", "best-practice", "first-principles", "inversion",
 	"trade-off", "reversibility", "second-order", "conway", "botec",
 }
 
 // TestLensKindCatalogueIsSeededWithItsSources is c-lens-catalogue
-// (dispatch://INFRA-1950/spec#b-r-lens-catalogue). The store a test opens is migrated, so it holds
+// (spec requirement r-lens-catalogue). The store a test opens is migrated, so it holds
 // the seed; the catalogue is read back through GET /api/v1/schema/blocks. At least ten lens kinds
-// exist, the ten INFRA-1297 records among them; every kind carries one constrained_by tuple to a
+// exist, the ten the lens design records among them; every kind carries one constrained_by tuple to a
 // constraint node, and a kind with none fails naming the kind and its missing source; every
 // constraint the seed holds is the far end of exactly one constrained_by tuple from a lens_kind
 // node, and one that is not fails naming it; and each of the ten, and chestertons-fence, holds the
@@ -103,7 +103,7 @@ func TestLensKindCatalogueIsSeededWithItsSources(t *testing.T) {
 
 	read, _ := readBlockSchemaRoute(t, handler)
 	if len(read.LensKinds) < len(seededLensKinds) {
-		t.Errorf("the catalogue holds %d lens kinds, want at least the %d dispatch://INFRA-1297 records", len(read.LensKinds), len(seededLensKinds))
+		t.Errorf("the catalogue holds %d lens kinds, want at least the %d the lens design records", len(read.LensKinds), len(seededLensKinds))
 	}
 	kinds := map[string]lensKindRead{}
 	for _, kind := range read.LensKinds {
@@ -244,7 +244,7 @@ func TestLensKindCatalogueIsSeededWithItsSources(t *testing.T) {
 // requireEverySeededConstraintIsOneKindsSource holds every constraint node the migrated store
 // holds - each one the seed's, since nothing else has written one - to being the far end of exactly
 // one current constrained_by tuple from a lens_kind node, so the seed holds no constraint outside
-// the catalogue's shape (dispatch://INFRA-3862's project clause reads it as the catalogue).
+// the catalogue's shape (the closed-project work's project clause reads it as the catalogue).
 func requireEverySeededConstraintIsOneKindsSource(t *testing.T, ctx context.Context, database *store.Store) {
 	t.Helper()
 	constraints, err := graphstore.NodesOfKind(ctx, database.Pool, graphstore.KindConstraint)

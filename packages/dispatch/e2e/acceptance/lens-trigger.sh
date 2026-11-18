@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Drives the chain of triggered lenses end to end against a running server (dispatch://INFRA-1950's
-# c-lens-trigger, dispatch://INFRA-1950/spec#b-r-lens-trigger). As the person DEV_SIGNIN_LOGIN
+# Drives the chain of triggered lenses end to end against a running server (check c-lens-trigger,
+# spec requirement r-lens-trigger). As the person DEV_SIGNIN_LOGIN
 # signs in, it invokes a trade-off analysis on a spec and then a pre-mortem the trade-off analysis
 # asked for, with a triggered_by tuple to it, and reads both ends in one GET /api/v1/lenses?on= the
 # spec: the pre-mortem answers the trade-off analysis as the lens that triggered it, the trade-off
@@ -60,7 +60,7 @@ readonly login="$DEV_SIGNIN_LOGIN"
 stamp="$(date +%s)-$$"
 readonly stamp
 readonly session="lens-trigger-$stamp"
-# The bound of one chain that R8 states (dispatch://INFRA-1950/spec#b-r-lens-trigger), and the
+# The bound of one chain that R8 of the spec states (spec requirement r-lens-trigger), and the
 # length of the chain read past it, ten more.
 readonly bound=50
 readonly past_bound=60

@@ -13,8 +13,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
-// The nodes a piece of work is reasoned about with (dispatch://INFRA-1950/spec#b-r-lens,
-// #b-r-constraint-risk): a lens, invoked on a node and logged under it, `dispatch://lens/<uuid>`;
+// The nodes a piece of work is reasoned about with (spec requirements r-lens and
+// r-constraint-risk): a lens, invoked on a node and logged under it, `dispatch://lens/<uuid>`;
 // a finding of a lens, a block node whose id names its lens, `dispatch://lens/<uuid>#b-<id>`; and
 // a risk under a pre-mortem, `dispatch://risk/<uuid>`. Each is a node of the store alone, with no
 // projection row, so each is read from graph_nodes, through the predicate of its kind, which

@@ -2,7 +2,7 @@
 -- 20261116172615_graph_nodes_proposed_index.up.sql — the index the read of an issue's proposed
 -- nodes takes.
 --
--- dispatch://INFRA-1950 gives the node state the value `proposed`, which a node holds while it is
+-- This release gives the node state the value `proposed`, which a node holds while it is
 -- a question still open, and GET /api/v1/issues/{key}/proposed answers the nodes under one issue
 -- at that value (api/node_state.go, issueProposedQuery). A node of any kind may be proposed, and
 -- graph_nodes holds a row for every block of every document, so without this index that read is a

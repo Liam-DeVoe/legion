@@ -11,7 +11,7 @@ import (
 )
 
 // A run of the command bar (api/going.go) is an interaction node of this store
-// (dispatch://INFRA-1950/spec#b-r-interaction), addressed `dispatch://interaction/<uuid>` by the
+// (spec requirement r-interaction), addressed `dispatch://interaction/<uuid>` by the
 // run's own uuid, and `going_requests` and `going_events` are its projections: the row of the
 // first projects the node and its made_by, and each row of the second one frame value of it.
 // These are the facts of one run in the one shape every writer of a run states them in: the

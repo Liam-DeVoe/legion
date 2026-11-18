@@ -11,10 +11,10 @@ package api
 // as the list grows is unmeasured. The three the catalogue leaves out are left out on purpose.
 // Two record a person's decision: dispatch_review records an approval or a changes request in a
 // person's name, and dispatch_settle, written by a person's credential, records that the person
-// settled a proposal, which is the person's own call (dispatch://INFRA-1950/spec#b-r-proposed).
+// settled a proposal, which is the person's own call (spec requirement r-proposed).
 // The third, dispatch_premortem_convert, retires a document once, through docs.RetireDocument,
 // and moves its address to the lens it writes in its place
-// (dispatch://INFRA-1950/spec#b-r-premortem-nodes). The loop that proposes operations on
+// (spec requirement r-premortem-nodes). The loop that proposes operations on
 // Dispatch's graph must never propose any of them, so goingToolRoutes names no row for them.
 //
 // Which tools write is not a field a tool spec carries. goingToolRoutes names the rows of the

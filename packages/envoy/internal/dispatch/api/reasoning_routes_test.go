@@ -446,7 +446,7 @@ func TestAFarEndTheCallerMayNotSeeAnswersAsNoNode(t *testing.T) {
 // check of another issue of the risk's project, as the pre-mortem conversion writes one, and the
 // risk route and the pointer route's append and retarget each refuse one at a check of another
 // project with the store's 400 INVALID_POINTER, naming the check by its address, and store nothing
-// (dispatch://INFRA-1950/spec#b-r-constraint-risk). Visibility comes first: a check of another
+// (spec requirement r-constraint-risk). Visibility comes first: a check of another
 // project that the caller may not see, and an address there nobody holds, each answer the one 404
 // an address nobody holds answers, through either route.
 func TestARisksPreventedByIsACheckOfAnyIssueOfItsProject(t *testing.T) {
@@ -530,7 +530,7 @@ func TestARisksPreventedByIsACheckOfAnyIssueOfItsProject(t *testing.T) {
 }
 
 // TestARetiredDocumentsChecksPreventNoRisk: nobody runs a retired document's checks
-// (dispatch://INFRA-1950/spec#b-r-constraint-risk). A risk prevented by the check of the second
+// (spec requirement r-constraint-risk). A risk prevented by the check of the second
 // issue's Verification document, and a second risk prevented by the issue's own second check, read
 // prevented by them, and the first check's backlinks hold the first risk. The second issue's
 // document is then retired (docs.RetireDocument): the first risk reads prevented by nothing,

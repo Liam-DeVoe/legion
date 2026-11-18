@@ -56,7 +56,7 @@ func TextSum(text string) string {
 // and NodeID, which no wire shape carries, so a caller that asked for several finds each one.
 //
 // A node is read as a decision when it is a block node of the `decision` supertag the store holds
-// present, at any state but gone (dispatch://INFRA-1950's R12), or an ask node with an `asks` row.
+// present, at any state but gone (the spec's R12), or an ask node with an `asks` row.
 // A caller lists as decisions the asks a person answered; an ask in any other answer state reads
 // the same way, and the Decisions read takes the links of an open and a declined ask from here
 // too. Any other node, and a node the store does not hold, is left out.

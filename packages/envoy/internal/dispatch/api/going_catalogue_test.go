@@ -67,7 +67,7 @@ var goingMutatingRoutesWithNoTool = []string{
 	"POST /api/v1/delivery/session-groups",
 	"POST /api/v1/going/requests",
 	// The pre-mortem conversion dispatch_premortem_convert performs: it retires a document once,
-	// turning it into a lens and its risks (dispatch://INFRA-1950/spec#b-r-premortem-nodes), so the
+	// turning it into a lens and its risks (spec requirement r-premortem-nodes), so the
 	// loop that proposes operations on the graph must never propose it, and goingToolRoutes gives
 	// it no row for that reason, as it gives dispatch_review's routes none. Keep it here; never
 	// give it a row.
@@ -75,7 +75,7 @@ var goingMutatingRoutesWithNoTool = []string{
 	"POST /api/v1/issues/{key}/artifacts/{slug}/versions",
 	// The settle dispatch_settle performs: a settle written by a person's credential records that
 	// the person settled a proposal, which is the person's own call
-	// (dispatch://INFRA-1950/spec#b-r-proposed), so goingToolRoutes gives it no row for the reason
+	// (spec requirement r-proposed), so goingToolRoutes gives it no row for the reason
 	// it gives the review routes none. Keep it here; never give it a row.
 	"POST /api/v1/issues/{key}/nodes/{id}/settle",
 	"POST /api/v1/machine-logins/{id}/revoke",
@@ -393,8 +393,8 @@ func TestAGoingCallerNamesItsRunOnEveryWriteItMakes(t *testing.T) {
 		action    string
 		arguments map[string]any
 	}{
-		{"dispatch_issue", map[string]any{"project": "INFRA", "title": "A new issue"}},
-		{"dispatch_claim", map[string]any{"issue": "INFRA-1042", "release": true}},
+		{"dispatch_issue", map[string]any{"project": "ACME", "title": "A new issue"}},
+		{"dispatch_claim", map[string]any{"issue": "ACME-1042", "release": true}},
 		{"dispatch_follow", map[string]any{"ask": "01234567-0000-4000-8000-000000000001", "action": "follow"}},
 	} {
 		if _, err := caller.Do(context.Background(), call.action, call.arguments); err != nil {
@@ -412,7 +412,7 @@ func TestAGoingCallerNamesItsRunOnEveryWriteItMakes(t *testing.T) {
 
 	doer = &countingDoer{}
 	caller = GoingCaller{Catalogue: catalogue, BaseURL: "https://dispatch.invalid", Doer: doer}
-	if _, err := caller.Do(context.Background(), "dispatch_issue", map[string]any{"project": "INFRA", "title": "A new issue"}); err != nil {
+	if _, err := caller.Do(context.Background(), "dispatch_issue", map[string]any{"project": "ACME", "title": "A new issue"}); err != nil {
 		t.Fatalf("perform dispatch_issue for no run: %v", err)
 	}
 	if named := doer.requests[0].Header.Values(contracts.GoingRunHeader); len(named) != 0 {

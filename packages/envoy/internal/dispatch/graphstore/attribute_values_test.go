@@ -15,7 +15,7 @@ import (
 )
 
 // TestTheStoreRefusesAStateOrVisibilityOutsideItsValues holds every write of the store to the
-// values the node state and the node visibility take (dispatch://INFRA-1950/spec#b-r-state-closed).
+// values the node state and the node visibility take (spec requirement r-state-closed).
 // A node, a value tuple its writer states and a claim at any other value are refused with
 // ErrInvalidAttributeValue, as an InvalidAttributeValueError naming the attribute and the value,
 // before the write's first statement: the transaction the refused write ran in still commits, and

@@ -68,7 +68,7 @@ take, no DATABASE_URL, a database it could not reach, a write that failed).
 `
 
 // premortemConvert is `envoy-dispatch premortem-convert`, the command that runs the pre-mortem
-// conversion (api.ConvertPremortem, dispatch://INFRA-1950/spec#b-r-premortem-nodes), which the
+// conversion (api.ConvertPremortem, spec requirement r-premortem-nodes), which the
 // route POST /api/v1/issues/{key}/artifacts/{slug}/premortem-convert runs too. It reads its map
 // from the file --prevented-by names (parsePreventedBy), runs the conversion in one transaction of
 // its own against DATABASE_URL as api.PremortemConverter, the server's own credential, and prints

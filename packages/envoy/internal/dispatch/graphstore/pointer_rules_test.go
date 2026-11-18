@@ -153,7 +153,7 @@ func pointerBlockRow(t *testing.T, ctx context.Context, database *store.Store, a
 }
 
 // TestTheStoreHoldsEachPointerToItsTypeRule holds every write of the store to the type rules of
-// the pointer tuples and of a risk's place (dispatch://INFRA-1950/spec#b-r-constraint-risk,
+// the pointer tuples and of a risk's place (spec requirement r-constraint-risk,
 // pointerRules): each rule takes the kinds it allows, and refuses every other far end and near
 // end with ErrInvalidPointer, as an InvalidPointerError naming the tuple kind, its far end's kind
 // and the kinds the rule allows, before the write appends anything - the transaction of a refused
@@ -435,7 +435,7 @@ func TestTheStoreHoldsEachPointerToItsTypeRule(t *testing.T) {
 }
 
 // TestTheStoreHoldsARisksCheckToTheRisksProject holds a risk's prevented_by to a check of the
-// risk's own project (dispatch://INFRA-1950/spec#b-r-constraint-risk, pointerRules' ownProject): a
+// risk's own project (spec requirement r-constraint-risk, pointerRules' ownProject): a
 // check of another issue of that project is taken, as the pre-mortem conversion writes one, and a
 // check of another project is refused, before anything is appended, with an InvalidPointerError
 // naming both projects and the check - through Write, through a write that makes its risk, and
@@ -532,7 +532,7 @@ func TestTheStoreHoldsARisksCheckToTheRisksProject(t *testing.T) {
 }
 
 // TestTheStoreHoldsATriggerToALensInvokedBefore holds a lens's triggered_by to a lens invoked
-// before it (dispatch://INFRA-1950/spec#b-r-lens-trigger, pointerRules' earlier), in the order the
+// before it (spec requirement r-lens-trigger, pointerRules' earlier), in the order the
 // lens read answers: the seq of each lens's first part_of (InvokedSeqSQL). The fixture invokes its
 // lenses in one write, the pre-mortem, the bare pre-mortem, the inversion, the trade-off analysis
 // and the kindless lens, in that order. A trigger of an earlier lens is taken, through Write and
@@ -650,7 +650,7 @@ func TestTheStoreHoldsATriggerToALensInvokedBefore(t *testing.T) {
 }
 
 // TestTheStoreHoldsARisksCheckToADocumentThatIsNotRetired holds a risk's prevented_by to a check
-// of a document that is not retired (dispatch://INFRA-1950/spec#b-r-constraint-risk, pointerRules'
+// of a document that is not retired (spec requirement r-constraint-risk, pointerRules'
 // unretired): a check of a retired document, whose checks nobody runs, is refused before anything
 // is appended, with an InvalidPointerError naming the check, through Write, through a write that
 // makes its risk, and through Retarget, which leaves the pointer where it was. The document_blocks

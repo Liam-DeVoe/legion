@@ -13,7 +13,7 @@ import (
 )
 
 // TestTheIndexPassRetractsThePointersOfABlockItMarksGone holds the block index to what a block
-// the version drops takes with it (dispatch://INFRA-1950/spec#b-r-constraint-risk): a risk's
+// the version drops takes with it (spec requirement r-constraint-risk): a risk's
 // prevented_by at a check block and a requirement block's constrained_by to a constraint are each
 // retracted, in the pass's own transaction and under the version's event, once a version drops
 // the block, so the store holds neither now. The same risk's prevented_by at a check the version

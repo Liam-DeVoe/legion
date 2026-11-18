@@ -150,7 +150,7 @@ var personPageShownQuery = personNodeTies + `
 // The items arm resolves each held node into the row a reader opens. A node of a kind this build
 // cannot open is skipped rather than refused, exactly as refs.resolveNodes skips an end a newer
 // build wrote: today the page opens comments, and the lenses, findings, risks, constraints and
-// runs of dispatch://INFRA-1950, and a kind joins here when this build learns to open it, its
+// runs of the command bar, and a kind joins here when this build learns to open it, its
 // predicate already bound by the arm above. A lens, a finding, a risk or a constraint is a row of
 // the store alone: its title is its text (refs.StandingTextSQL), its time its row's made_at, and it
 // opens the page of the issue it stands under (refs.StandingIssueSQL), so one that stands under no

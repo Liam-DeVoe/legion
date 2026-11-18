@@ -15,7 +15,7 @@ import (
 )
 
 // The census holds the author of each reasoning node to a node of the store (D12a of
-// dispatch://INFRA-1950's plan): the person and session row sides take, beside the authors the
+// the plan): the person and session row sides take, beside the authors the
 // projected tables name, the author graphstore.AuthorOf names of the made_by of each lens, finding,
 // risk and constraint that holds an asserted authored_by tuple (reasoningAuthored), so an author
 // who wrote no comment is no difference, and a session a body named, on the shared bearer or

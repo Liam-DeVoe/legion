@@ -1,18 +1,19 @@
 #!/usr/bin/env bash
 # Drives the one truth of a run of the command bar and of this child's reasoning nodes across an
-# upgrade and a rollback (dispatch://INFRA-1950's c-census, dispatch://INFRA-1950/spec#b-r-one-truth,
-# dispatch://INFRA-1950/spec#b-r-interaction). Two products of one transformation agree after both
+# upgrade and a rollback (check c-census, spec requirements r-one-truth and r-interaction). Two
+# products of one transformation agree after both
 # lose the same row, so the driver starts before the migration and holds both products to an
 # inventory of its own:
 #
 #   B1  The base build, booted through lib-baseline.sh, which builds it from BASELINE_SHA and
 #       stamps it with that commit, over the run's empty database, which it migrates; the driver
 #       keeps the versions schema_migrations holds then as a file. BASELINE_SHA is the release this
-#       child lands after: c-census's run sets it, unless its caller did, to
-#       `git merge-base origin/legion/INFRA-1150 HEAD`, as this driver does when it is unset, and
-#       once legion/INFRA-1150 merges the implementer sets it to the first parent of its merge
-#       commit on main. Before anything is built, the driver refuses a base whose tree lacks the
-#       migration 20261109013400_graph_store, which creates the store, naming the base: over a
+#       child lands after: c-census's run sets it, unless its caller did, to the merge base with
+#       the branch of cybermonklabs/legion#4173, and once that pull request merges the implementer
+#       sets it to the first parent of its merge commit on main. It has no default, as
+#       lib-baseline.sh's has none: unset, the run is refused, exit 2. Before anything is built,
+#       the driver refuses a base whose tree lacks the migration 20261109013400_graph_store, which
+#       creates the store, naming the base: over a
 #       build that holds no store no two-build sentence of c-census can pass. Its /healthz names
 #       that commit as its own and as its fleet_commit, the build processes.Live reads every live
 #       process as serving. Through its own API three people each ask the command bar, and the
@@ -53,11 +54,11 @@
 #       proposes the requirement r3 through this head's state route, the base build's own edit
 #       route writes a version of the spec that changes the words of r3's second paragraph, a block
 #       of its own whose text r3's holds, so that build's index pass writes r3's node again, and
-#       this head reads r3 still proposed (dispatch://INFRA-1149's keep-state rule). dave, a login
+#       this head reads r3 still proposed (cybermonklabs/legion#3178's keep-state rule). dave, a login
 #       no other row names, writes through this head a lens reserved for him, his only node, and
 #       reads his own page through this head with that lens on it; bob reads dave's page through
 #       the base build and is answered, status and body byte for byte, what that build answers him
-#       for a login nobody holds (dispatch://INFRA-1149's person-page rule). Then this head's
+#       for a login nobody holds (cybermonklabs/legion#3178's person-page rule). Then this head's
 #       server stops and the base build serves alone: one new run, whose frames it writes with no
 #       frame value; with psql the hand-written run's ends_at moves into the past, standing for time
 #       passing, on both sides in one transaction (its row, and its node's attribute and value
@@ -75,7 +76,7 @@
 #       apart from the inventory's: a run the migration lost shows in the first and never in the
 #       second. Run whole, it exits 0, every kind of the store checked and none read apart, and it
 #       reads zero differences for the interaction and frame kinds, for both block projections of
-#       dispatch://INFRA-1149, for comment, person, session, role and page, and for the visibility
+#       cybermonklabs/legion#3178, for comment, person, session, role and page, and for the visibility
 #       and state of every node of this child's kinds, each kind having checked more than zero
 #       rows, the moved nodes counted as live ones are, and every interaction at `author`. Then,
 #       with psql, one interaction node no going_requests row projects, a copy of bob's run's node
@@ -96,7 +97,7 @@
 #   M   Each .census.sql of the migrations this head applied over the base, the select the
 #       repository runs before a deploy, reading 0.
 #   E   With no server running, `envoy-dispatch erase --node interaction:<uuid>` of the run the edit
-#       was made under, as dispatch://INFRA-1149's erase runs: a listing, then --confirm with its
+#       was made under, as cybermonklabs/legion#3178's erase runs: a listing, then --confirm with its
 #       digest. The block's changed_by_run tuple blocks nothing and goes with the node; no row and no
 #       node of the run is left, the backfill writes none back, and the census, run whole, exits 0
 #       and reads zero again.
@@ -107,10 +108,10 @@
 # bar and writes no comment; karol is one character from her and must stay a person of his own.
 #
 # Inputs: DATABASE_URL (an empty database on this machine that the run created and drops; every
-# server here migrates and serves it, and this driver reads and writes its rows), and optionally
-# BASELINE_SHA (the base commit, read in LEGION_WORKSPACE's checkout or else this one and handed to
-# lib-baseline.sh in full; unset, `git merge-base origin/legion/INFRA-1150 HEAD`; a base whose tree
-# lacks the migration 20261109013400_graph_store is refused, exit 2, naming it),
+# server here migrates and serves it, and this driver reads and writes its rows), BASELINE_SHA
+# (the base commit, read in LEGION_WORKSPACE's checkout or else this one and handed to
+# lib-baseline.sh in full; it has no default; a base whose tree
+# lacks the migration 20261109013400_graph_store is refused, exit 2, naming it), and optionally
 # DISPATCH_E2E_SERVER_BIN (this head's envoy-dispatch, which serves and runs backfill-graph-store,
 # census, lens-kind-add and erase, default $TMPDIR/bin/envoy-dispatch) and LEGION_WORKSPACE
 # (lib-baseline.sh's checkout). It starts the two fakes run-server.sh needs, the fake Envoy and the
@@ -136,18 +137,18 @@ set +x
 
 usage() {
   cat >&2 <<'USAGE'
-Usage: DATABASE_URL=postgres://user@127.0.0.1:5433/infra_1950_census?sslmode=disable \
-         [BASELINE_SHA=<commit>] [DISPATCH_E2E_SERVER_BIN=$TMPDIR/bin/envoy-dispatch] \
+Usage: DATABASE_URL=postgres://user@127.0.0.1:5433/census?sslmode=disable \
+         BASELINE_SHA=<commit> [DISPATCH_E2E_SERVER_BIN=$TMPDIR/bin/envoy-dispatch] \
          node-visibility-census.sh
        (DATABASE_URL names an empty database on this machine, which the run created and drops;
-       BASELINE_SHA unset is git merge-base origin/legion/INFRA-1150 HEAD, and a base whose tree
-       lacks the migration 20261109013400_graph_store is refused)
+       BASELINE_SHA is the commit of the release this branch lands after and has no default, and
+       a base whose tree lacks the migration 20261109013400_graph_store is refused)
 USAGE
 }
 
 # shellcheck source-path=SCRIPTDIR source=lib-processes.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib-processes.sh"
-require_env DATABASE_URL
+require_env DATABASE_URL BASELINE_SHA
 require_commands bun curl git go jq openssl psql python3 tar
 
 readonly driver=node-visibility-census.sh
@@ -170,25 +171,16 @@ DISPATCH_TOKEN="$token"
 tree="$(cd -- "$e2e_dir/../../.." && pwd)"
 readonly tree
 # The base, read before anything is built. BASELINE_SHA names it, the release this child lands
-# after; c-census's run sets it, when its caller has not, to the merge base with
-# legion/INFRA-1150, and so does this driver when it is unset: lib-baseline.sh's own default, the
-# merge base with origin/main, is a commit that holds no store. It is read in the checkout
-# lib-baseline.sh builds it from, LEGION_WORKSPACE or else this tree, and handed to
+# after; c-census's run sets it, when its caller has not, to the merge base with the branch of
+# cybermonklabs/legion#4173. It has no default, as lib-baseline.sh's has none: only the caller
+# knows that release, and require_env above refuses a run that names none. It is read in the
+# checkout lib-baseline.sh builds it from, LEGION_WORKSPACE or else this tree, and handed to
 # lib-baseline.sh in full, so the commit built is the commit read here. A base whose tree lacks
 # the migration that creates the store is refused, named: over a build that holds no store, no
 # sentence of c-census that reads two builds can pass.
 readonly base_repo="${LEGION_WORKSPACE:-$tree}"
 readonly store_migration=packages/envoy/internal/dispatch/store/migrations/20261109013400_graph_store.up.sql
-base_named="${BASELINE_SHA:-}"
-if [[ -z "$base_named" ]]; then
-  base_named="$(git -C "$base_repo" merge-base origin/legion/INFRA-1150 HEAD 2>/dev/null)" || {
-    printf 'BASELINE_SHA is unset, and its default, git merge-base origin/legion/INFRA-1150 HEAD, found no commit in %s: set BASELINE_SHA to the base commit\n' \
-      "$base_repo" >&2
-    usage
-    exit 2
-  }
-fi
-readonly base_named
+readonly base_named="$BASELINE_SHA"
 BASELINE_SHA="$(git -C "$base_repo" rev-parse --verify --quiet "${base_named}^{commit}")" || {
   printf "BASELINE_SHA '%s' names no commit of %s\n" "$base_named" "$base_repo" >&2
   usage
@@ -896,9 +888,9 @@ jq -r 'to_entries[] | "  inventory of writes: \(.key) \(.value | length)"' "$wor
 pass H2 "kept the inventory of this build's writes in $work/writes.json"
 
 # The one message addressed to a role (Verification v55): the census refuses a kind it checked no
-# row of (dispatch://INFRA-1149), and no row of this run addressed a role, so without it the census
+# row of (cybermonklabs/legion#3178), and no row of this run addressed a role, so without it the census
 # refuses the role and the page kinds. alice routes $key to the role $role through this head and
-# writes a comment on it, as dispatch://INFRA-1149's census test addresses its role
+# writes a comment on it, as cybermonklabs/legion#3178's census test addresses its role
 # (addressTheRole, packages/envoy/cmd/dispatch/store_census_test.go): the route is the role's row,
 # which issues.route holds now and the issue.updated event names (graphcensus's addressedRoles),
 # and the comment is a message that route addresses to the role, which the events outbox's
@@ -963,7 +955,7 @@ pass B2 "the base build serves $older_url beside this head at $head_url, stamped
 # writes a version of the spec that changes the words of r3's second paragraph, a block of its own.
 # The index pass writes again only the node of a block whose text a version changed
 # (refs.IndexBlocks), and r3's text holds its paragraphs, so that version's pass, the base build's,
-# writes r3's node again: the write dispatch://INFRA-1149's keep-state rule (its R8) keeps r3's
+# writes r3's node again: the write cybermonklabs/legion#3178's keep-state rule (its R8) keeps r3's
 # state through. A version that changed only a block outside r3 would leave r3's node unwritten,
 # and r3 proposed whatever the base build's rule, so the driver first reads that the version moved
 # r3's text.
@@ -1009,7 +1001,7 @@ pass B2 "this head reads the requirement $requirement3 still proposed after the 
 # on it. bob then reads dave's page through the base build, which registers no lens kind, so no
 # node dave holds is one bob may see there, and it answers him what it answers for a login nobody
 # holds: the status and the body, byte for byte once the login is substituted
-# (dispatch://INFRA-1149's person-page rule, its R15).
+# (cybermonklabs/legion#3178's person-page rule, its R15).
 at "$head_url" sign_in B2 "$third" " at this head, $head_url"
 at "$head_url" request "cookie:$third" POST "/api/v1/issues/$key/lenses" \
   "$(jq -cn --arg on "$spec" '{on: $on, kind: "boring-solution", visibility: "author"}')"

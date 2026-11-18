@@ -1,9 +1,9 @@
 //go:build basebuild
 
-// Three tests of this tag are dispatch://INFRA-1149's acceptance runs:
+// Three tests of this tag are cybermonklabs/legion#3178's acceptance runs:
 // TestTheStoreCensusReadsZeroDifferences in this file, and TestNoWritePathThisChildChangesGetsSlower
 // (write_cost_test.go) and TestNoReadThisChildChangesGetsSlowerAndNoEventOutrunsItsNode
-// (read_cost_test.go), which share graph_cost_test.go. The fourth is dispatch://INFRA-1950's
+// (read_cost_test.go), which share graph_cost_test.go. The fourth is cybermonklabs/legion#4193's
 // TestThePredicateAndTheLensReadsGetNoSlower (predicate_lens_read_cost_test.go), which shares it
 // too and runs only where LEGION_SCALE_TEST=1 is set. Each builds the server at the commit
 // BASELINE_SHA names (baseBuild, testbaseline.Commit) and compares it with this build, so each

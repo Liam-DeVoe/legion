@@ -92,7 +92,7 @@ func newestStateTuple(t *testing.T, database *store.Store, kind, id string) grap
 
 // TestTheStateRouteTakesTheFiveValuesWhereTheyApplyAndRefusesTheRest drives
 // POST /api/v1/issues/{key}/nodes/{id}/state as a person's cookie, the Go twin of c-state-closed
-// (dispatch://INFRA-1950/verification#c-state-closed). A lens moves through proposed, overtaken,
+// of the verification document. A lens moves through proposed, overtaken,
 // live and gone, each read back from the node and from its newest state tuple, written by her;
 // after gone it takes no value, live or proposed, and answers 409 NODE_STATE_NOT_WRITABLE naming
 // its kind, its state and the value. A requirement moves through proposed, overtaken and back to
@@ -168,7 +168,7 @@ const threeRequirements = ":::requirement{#r1}\nThe cache holds every read for a
 	":::requirement{#r3}\nThe cache is shared by every pod.\n:::\n"
 
 // TestTheReadsAnswerEachNodeStateAndCountNoProposedNodeAsSettled is c-proposed-page
-// (dispatch://INFRA-1950/verification#c-proposed-page): a spec of three requirements and a plan,
+// of the verification document: a spec of three requirements and a plan,
 // nothing serving any of them. With her cookie a person writes r1 proposed, r2 proposed and then
 // settles it, and r3 overtaken. Each node reads the state she wrote; the proposed read answers r1
 // alone; the coverage read and the approval request's answer raise no gap for r1 and both for r2.
@@ -317,7 +317,7 @@ func TestTheReadsAnswerEachNodeStateAndCountNoProposedNodeAsSettled(t *testing.T
 }
 
 // TestSettlingAProposedNodeIsOneWriteByAPersonOrItsAuthor is c-settle
-// (dispatch://INFRA-1950/verification#c-settle, plan V18). alice signs in with her cookie and
+// of the verification document (plan V18). alice signs in with her cookie and
 // holds a personal token with the person scope and two without it; two agents each hold a
 // broker-issued token bound to a session of its own, one for bob and one for carol, so each
 // proves an author - the person a broker session that names one proves - and holds no person

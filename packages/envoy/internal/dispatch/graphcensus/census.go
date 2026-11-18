@@ -242,7 +242,7 @@ func (r *StoreReport) Unpopulated() []string {
 // far end of a kind no table projects resolves. A total over the kinds is no such proof: two
 // empty sides of one kind agree, and one kind's rows say nothing about another's, so a census
 // whose comments carried every row would pass while it proved nothing of the blocks, the roles or
-// the sessions. A kind of dispatch://INFRA-1150 is one exception: no row, no node and no
+// the sessions. A kind of cybermonklabs/legion#4173 is one exception: no row, no node and no
 // unmarked row of it is a store nothing of that kind was written to yet, and is no refusal
 // (projection.emptyAgrees). A table of the earlier release whose rows no backfill has marked yet
 // is not that store: its kind checked no row while rows stand, and it refuses. A kind a
@@ -267,7 +267,7 @@ func (r *StoreReport) Refused() bool {
 // The kinds the census holds the store to. The first three are the kinds a table projects, each
 // with that table; the two after them are the runs of the command bar and their frames, which
 // going_requests and going_events project; the four after those are the people and the agents,
-// which no table projects; the eight after those are dispatch://INFRA-1150's, the ties of
+// which no table projects; the eight after those are cybermonklabs/legion#4173's, the ties of
 // decisions, readings and asks that block_refs, document_blocks, asks and ask_followers project;
 // and the last six are the visibility and the state of each run, lens, finding, risk, constraint
 // and lens kind, held to the store's own record of them (baseAttributeCensus).
@@ -298,7 +298,7 @@ func (r *StoreReport) Refused() bool {
 //
 // A run of the command bar is an interaction node, which going_requests projects, and each of
 // its frames a frame value of that node, which a going_events row projects
-// (dispatch://INFRA-1950/spec#b-r-interaction): the interaction kind holds a row to its node and
+// (spec requirement r-interaction): the interaction kind holds a row to its node and
 // its authored_by, and the frame kind every frame a run's rows hold to every frame value its node
 // holds. A run whose row a process of the release before deleted is a node the backfill states
 // gone (backfillGoneRuns), which no row may project and which presentNodes reads past, so it is no
@@ -724,7 +724,7 @@ func DigestedTuple(t string) string {
 // run, a lens, a finding, a risk, a constraint or a lens kind - carries, name the kind as the
 // report names it and nodeKind the kind the store keys its nodes by, narrowed by narrow over a
 // node id where it is not nil (a finding is a block node whose id names its lens). A node's row is
-// the projection of its own base-attribute tuples (dispatch://INFRA-1149's R8), and no table
+// the projection of its own base-attribute tuples (cybermonklabs/legion#3178's R8), and no table
 // projects these kinds, so the store's own record stands on the row side: for each node that
 // states either attribute, the newest tuple of each, read as graphstore.CurrentValue reads one,
 // against the node row's visibility and state columns. A column with no tuple behind it is a node
@@ -1816,7 +1816,7 @@ func sidesOf(held projection) kindSides {
 }
 
 // presentNodes is the kind's node side bound to the nodes the store holds present, which is every
-// node not at state gone (R12 of dispatch://INFRA-1950), as (kind, id, digest, state): a node at
+// node not at state gone (R12 of the spec), as (kind, id, digest, state): a node at
 // proposed, settled or overtaken is a node a row projects as one at live is, so a move between
 // those states is no lost node. It answers each node's state beside its digest, which the report
 // names a node with. A node the store holds gone is no node a row may project, and the row side

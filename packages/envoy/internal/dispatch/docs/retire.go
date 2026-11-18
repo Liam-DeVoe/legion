@@ -63,7 +63,7 @@ var retirementEvents = events.NewBroker()
 // block of the document, as actor at the retirement's own time (retiredPreventions), and the store
 // refuses any later one (graphstore's pointerRules): a risk such a check covered reads prevented
 // by nothing from then on, and the check reads preventing no risk
-// (dispatch://INFRA-1950/spec#b-r-constraint-risk).
+// (spec requirement r-constraint-risk).
 //
 // It takes the document's owner row first (lockArtifactOwner), then writes the store's lock order
 // as a create writes it: the node, its projection row, the event, and the node's facts under that
@@ -130,7 +130,7 @@ func RetireDocument(ctx context.Context, tx pgx.Tx, artifactID string, actor mod
 }
 
 // retiredPreventions is the retraction of every prevented_by tuple the store asserts at a block of
-// the document artifactID, stored at refKey (dispatch://INFRA-1950/spec#b-r-constraint-risk): nobody
+// the document artifactID, stored at refKey (spec requirement r-constraint-risk): nobody
 // runs a retired document's checks, so no risk stays prevented by one, as the index pass retracts
 // each prevented_by at a block a version drops (refs' retractGonePointers). The blocks are those
 // the document's document_blocks rows name, which a retirement keeps; a block a version dropped

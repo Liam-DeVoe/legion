@@ -284,7 +284,7 @@ func blockRefCarries(fromKind, alias string) string {
 // the kinds the view answers from the tuples alone, with no projection row behind them (its store
 // class, migration 20261117020856): changed_by_run, has_kind, triggered_by, constrained_by and
 // prevented_by out of any node, and part_of and authored_by out of a node of the kinds
-// dispatch://INFRA-1950 adds (graphstore.KindInteraction and the three beside it). It is the list
+// cybermonklabs/legion#4193 adds (graphstore.KindInteraction and the three beside it). It is the list
 // the view's tuple arm renders (migrations 20261109215947, 20261116094101 and 20261117020856) and
 // the list the announcer writes into server_build_announcements.tuple_kinds (startup.Deps), which
 // is how the release that deletes an old arm of the view reads whether the release a rollback
@@ -486,7 +486,7 @@ func (a backlinkArm) storedSQL(target backlinkTarget) string {
 }
 
 // authoredByReasoning is the arm that counts, on a person's or a session's node, the authored_by
-// tuples from a node of the kinds dispatch://INFRA-1950 adds, which the view answers from the
+// tuples from a node of the kinds cybermonklabs/legion#4193 adds, which the view answers from the
 // tuples alone (TupleKinds), a finding's as the lens_block its own arm writes. The same tuple out
 // of a comment is no edge of the view, so it is none of these, and a source kind reaches the count
 // in the commit that registers it.
@@ -505,7 +505,7 @@ var authoredByReasoning = backlinkArm{kind: graphstore.TupleAuthoredBy, storedFr
 var lensStandsOn = backlinkArm{kind: graphstore.TuplePartOf, storedFrom: []string{graphstore.KindLens}}
 
 // changedByRun is the arm that counts, on a run's interaction node, the changed_by_run tuple of
-// each node a write made for that run created or changed (dispatch://INFRA-1950/spec#b-r-interaction),
+// each node a write made for that run created or changed (spec requirement r-interaction),
 // which the view answers from the tuples alone, out of any node. A node of each kind the store
 // holds and a write made for a run can mark is a source here: an issue, a document, an ask, a
 // comment or a message, a document's block, and a lens, a finding of one, a risk or a constraint.

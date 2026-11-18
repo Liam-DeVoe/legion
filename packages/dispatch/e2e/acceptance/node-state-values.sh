@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Drives the node state's five values end to end against a running server (dispatch://INFRA-1950's
-# c-state-closed, dispatch://INFRA-1950/spec#b-r-state-closed). As the person DEV_SIGNIN_LOGIN signs
+# Drives the node state's five values end to end against a running server (check c-state-closed,
+# spec requirement r-state-closed). As the person DEV_SIGNIN_LOGIN signs
 # in, it writes the state of two nodes through POST /api/v1/issues/{key}/nodes/{id}/state, `{id}`
 # the node's store address as one percent-encoded path segment: one lens through proposed,
 # overtaken, live and gone, after which live is refused; and one requirement of the spec through
@@ -37,7 +37,7 @@ set +x
 usage() {
   cat >&2 <<'USAGE'
 Usage: DISPATCH_URL=http://127.0.0.1:8777 DISPATCH_TOKEN=e2e-token PROJECT=CORE \
-         DEV_SIGNIN_LOGIN=alice STORE_DSN=postgres://…/infra_1950?sslmode=disable node-state-values.sh
+         DEV_SIGNIN_LOGIN=alice STORE_DSN=postgres://…/node_states?sslmode=disable node-state-values.sh
        (DISPATCH_TOKEN_FILE=<file holding the bearer> in place of DISPATCH_TOKEN; the server must
        mount its dev sign-in route, as `bun run dispatch:local` does, and STORE_DSN must name the
        database that server serves)

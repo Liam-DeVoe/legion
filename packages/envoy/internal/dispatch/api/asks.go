@@ -610,7 +610,7 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 	}
 	// An edit of an ask's words made for a run (graphstore.WithRun, which withinGoingRun puts on
 	// a request naming its run) names the ask as changed by that run where it changed them
-	// (dispatch://INFRA-1950/spec#b-r-interaction): its question, or the words of an option
+	// (spec requirement r-interaction): its question, or the words of an option
 	// (askWordsChanged); an edit of its urgency or of multiple alone changes no fact the store
 	// holds of the ask and no words of it, and names no change. Nothing else this route writes
 	// reaches the ask's node, so under a run it writes that node as the create and the backfill

@@ -1,6 +1,6 @@
 package api
 
-// node_state.go serves the node state of dispatch://INFRA-1950 (spec r-proposed, r-state-closed):
+// node_state.go serves the node state (spec requirements r-proposed and r-state-closed):
 // one write of a node's state (POST /api/v1/issues/{key}/nodes/{id}/state), the settle of a
 // proposed node (POST /api/v1/issues/{key}/nodes/{id}/settle), and the proposed nodes of an issue
 // (GET /api/v1/issues/{key}/proposed).
@@ -266,7 +266,7 @@ func takesTheSettleRule(held, asked string) bool {
 // --- POST /api/v1/issues/{key}/nodes/{id}/settle ------------------------------------------------
 
 // maySettle is whether the caller whose credential is proving settles a proposal whose made_by is
-// author (dispatch://INFRA-1950/spec#b-r-proposed): a person settles any proposal - a browser's
+// author (spec requirement r-proposed): a person settles any proposal - a browser's
 // cookie, or a token holding the person scope, the credential actingPerson acts for a person on -
 // and any other caller only a proposal whose recorded author is the author its credential proves,
 // by the root's one author rule (graphstore.SameAuthor, the Go half of graphstore.AuthorIsSQL,

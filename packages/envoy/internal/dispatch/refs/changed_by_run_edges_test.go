@@ -14,7 +14,7 @@ import (
 )
 
 // A document a write made for a run created is listed by the run's references in both directions,
-// and the run's count is the list behind it (dispatch://INFRA-1950/spec#b-r-interaction, R4).
+// and the run's count is the list behind it (spec requirement r-interaction, R4).
 //
 // A run of alice's creates an issue and its spec, so the write marks the issue's node and the
 // document's node changed by the run: one changed_by_run out of each, to the run's interaction.

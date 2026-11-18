@@ -781,7 +781,7 @@ func IndexDecisionNodes(ctx context.Context, tx pgx.Tx, artifactID string, versi
 }
 
 // unheldTypedNodes is the node of each decision and reading the store holds present in document
-// artifactID, at any state but gone (dispatch://INFRA-1950's R12: a proposed, settled or overtaken
+// artifactID, at any state but gone (the spec's R12: a proposed, settled or overtaken
 // node is as present as a live one), that the version's blocks no longer hold as one, written at
 // versionAt: stated gone, with the supertag it holds, where the version holds no block of its id,
 // and restated with the supertag block where it holds the block under another type, as

@@ -12,7 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// Nobody runs a retired document's checks (dispatch://INFRA-1950/spec#b-r-constraint-risk), so
+// Nobody runs a retired document's checks (spec requirement r-constraint-risk), so
 // RetireDocument retracts, in its own transaction, each prevented_by the store asserts at a block
 // of the document it retires. One risk is prevented by the retired document's check alone, and a
 // second by that check and by a check of a document that stands. After the retirement the first

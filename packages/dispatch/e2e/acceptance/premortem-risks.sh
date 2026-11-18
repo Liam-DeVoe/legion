@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Drives the risks and the constraints of an issue end to end against a running server
-# (dispatch://INFRA-1950's c-risk-prevention, dispatch://INFRA-1950/spec#b-r-constraint-risk). It
+# (check c-risk-prevention, spec requirement r-constraint-risk). It
 # writes an issue whose spec holds a requirement and a paragraph and whose verification document
 # holds three checks, the second serving the requirement; then, through this child's routes, a lens
 # of kind pre-mortem holding two risks, the first prevented by the first check, a constraint

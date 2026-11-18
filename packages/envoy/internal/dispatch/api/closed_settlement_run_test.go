@@ -99,7 +99,7 @@ func storedBlockNodes(t *testing.T, database *store.Store, refKey string) map[st
 // An issue's close made for a run settles the issue's documents first (settleIssueBeforeClose),
 // on the request's own context, which carries the run (withinGoingRun), and that settlement is
 // made for no run: it saves what the room's writers left in it, whoever they were, in a
-// transaction of its own, so nothing it writes is the run's (dispatch://INFRA-1950/spec#b-r-interaction:
+// transaction of its own, so nothing it writes is the run's (spec requirement r-interaction:
 // a write appends the tuple from each node it created or changed, in its own transaction), as the
 // same settlement on the room's timer writes none. alice's browser, in one update, deletes the
 // block of an open decision, rewords the spec's first paragraph and adds a paragraph; the room

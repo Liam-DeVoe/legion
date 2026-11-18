@@ -460,7 +460,7 @@ func IndexBlocks(
 }
 
 // retractGonePointers is the retraction of every pointer tuple a block the version no longer holds
-// leaves behind (dispatch://INFRA-1950/spec#b-r-constraint-risk): each asserted prevented_by whose
+// leaves behind (spec requirement r-constraint-risk): each asserted prevented_by whose
 // far end is one of the blocks at addresses, a check that covered a risk, and each asserted
 // constrained_by whose near end is one of them, a requirement held to a constraint. A constrained_by
 // points at a constraint, never at a block, so the one a gone block takes with it starts there.

@@ -177,7 +177,7 @@ func documentBlockIDs(param string) string {
 // The set itself, tested with `in`, is a semi-join Postgres puts above the union, so every arm
 // first answers every edge into every block of the store - in the tuple arm a sort of them all,
 // and both predicates of each - and only then keeps the few into this document's blocks: 3.5 s
-// for a spec of 40 blocks over the read-cost corpus (dispatch://INFRA-1950's c-read-cost). A
+// for a spec of 40 blocks over the read-cost corpus (check c-read-cost). A
 // ref_key names one document (artifacts_ref_key_key), so its id is read as a value.
 func documentBlockIDArray(param string) string {
 	return `array(select d.node_id from document_blocks d where d.artifact_id = (select a.id from artifacts a where a.ref_key = ` + param + `))`
@@ -361,7 +361,7 @@ func excerptOf(node resolvedNode) *model.GraphExcerpt {
 // for a node with 7 edges into it). With the id read as a value, the custom plan is the generic
 // plan, every connection keeps the generic plan from its sixth execution on, and that plan walks
 // graph_tuples_inbound and the arms' own indexes keyed on the far end, as the custom plan did
-// (dispatch://INFRA-1950's c-read-cost).
+// (check c-read-cost).
 func readEdgeRows(ctx context.Context, q Queryer, who model.Actor, query Query) ([]edgeRow, error) {
 	if !slices.Contains(nodeKinds, query.Kind) {
 		// A kind no loader resolves is the address of no node this build knows, and the
@@ -595,7 +595,7 @@ func resolveTargets(ctx context.Context, q Queryer, who model.Actor, byRefKey bo
 // resolvedNode is a graph node with the text an excerpt is cut from: a block's is its stored
 // excerpt, already cut. wholeText says a read of the node's own address answers that text whole
 // as the node's Text (Node), which an interaction's loader says of a run's words
-// (dispatch://INFRA-1950/spec#b-r-interaction): an edge at the run cuts them at excerptRunes, and
+// (spec requirement r-interaction): an edge at the run cuts them at excerptRunes, and
 // the run's own address answers every word of them.
 type resolvedNode struct {
 	model.GraphNode
@@ -896,7 +896,7 @@ func loadBlockNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _
 // a few documents, and keep the node_id index where they are few. Held to node_id alone, the
 // 5,001 blocks of a list of links were read by scanning the whole table rather than its index,
 // once the block predicate no longer sat on that scan to deter it (visibleStoredKind): 98 ms
-// against 75 ms over the read-cost corpus (dispatch://INFRA-1950's c-read-cost).
+// against 75 ms over the read-cost corpus (check c-read-cost).
 func blockNodesAddressed(ids []string, who model.Actor) (string, []any) {
 	if len(ids) == 1 {
 		return `d.node_id = $1`, []any{ids[0], VisibilityArg(who)}

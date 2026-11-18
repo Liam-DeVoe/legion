@@ -16,9 +16,9 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
-// premortemCapturePath is the capture of dispatch://INFRA-1098/artifact/graph-premortem-md, taken
-// as it is from the branch legion/INFRA-1098, from the repository root.
-const premortemCapturePath = "packages/dispatch/e2e/fixtures/infra-1098-premortem.json"
+// premortemCapturePath is the capture of the graph pre-mortem of cybermonklabs/legion#3142, copied
+// unchanged from that pull request's branch, from the repository root.
+const premortemCapturePath = "packages/dispatch/e2e/fixtures/acme-1098-premortem.json"
 
 // premortemCapture is what the capture records: the document's markdown, and the verdict and each
 // risk's heading and section as its own capture read them.
@@ -505,7 +505,7 @@ func TestThePremortemRouteRefusesAnEntryNamingItsPosition(t *testing.T) {
 }
 
 // TestAConversionMapNamingACheckOfAnotherProjectWritesNothing maps risk 5 to a check of another
-// project than the issue's (dispatch://INFRA-1950/spec#b-r-premortem-nodes): the conversion is
+// project than the issue's (spec requirement r-premortem-nodes): the conversion is
 // refused, in a dry run as in a real one, through the function and through its route, with 400
 // INVALID_POINTER naming the entry, risk 5 and the check by its address, and the store holds no
 // node or tuple of it - no lens, no risk, no prevented_by, no moved_to - and the document stays

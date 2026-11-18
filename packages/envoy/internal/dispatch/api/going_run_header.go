@@ -13,7 +13,7 @@ import (
 )
 
 // withinGoingRun runs a write route's handler for the run of the command bar its request names in
-// contracts.GoingRunHeader, where it names one (dispatch://INFRA-1950/spec#b-r-interaction). It is
+// contracts.GoingRunHeader, where it names one (spec requirement r-interaction). It is
 // the one reader of that header, once per request: register wraps every POST, PATCH, PUT and
 // DELETE route in it, and the run it admits rides on the request's context (graphstore.WithRun),
 // where graphstore.Write and graphstore.Caused read it and append a changed_by_run tuple from each

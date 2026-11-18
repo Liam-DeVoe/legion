@@ -212,7 +212,7 @@ run() {
 # mint_token writes, so no bearer reaches an argument list. A driver that defines one of these
 # names itself keeps its own.
 
-# The ten lens kinds dispatch://INFRA-1297 records, which the catalogue's migration seeds.
+# The ten lens kinds the lens design records, which the catalogue's migration seeds.
 seeded_kinds='["best-practice","boring-solution","botec","conway","first-principles","inversion","pre-mortem","reversibility","second-order","trade-off"]'
 
 # The id of the personal token mint_token minted for each person, by login, which revoke_tokens

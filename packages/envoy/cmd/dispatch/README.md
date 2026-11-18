@@ -2965,7 +2965,7 @@ It reads `DATABASE_URL` like every other subcommand, migrates nothing, writes no
 It is one `repeatable read, read only` transaction on a connection of its own, so everything it reports is one snapshot.
 
 For each projected kind it counts every node whose `state` is not `gone` against the projection rows, in both directions, and reports each difference by its cause and by the row it was found at.
-A node at `proposed`, `settled` or `overtaken` is a node a row projects as one at `live` is (dispatch://INFRA-1950), so a move between those values reads as no lost node.
+A node at `proposed`, `settled` or `overtaken` is a node a row projects as one at `live` is (cybermonklabs/legion#4193), so a move between those values reads as no lost node.
 The differences are a row naming no node, a row naming a node the store does not hold, a row naming one the store holds `gone` — which is the separate assertion that no gone node holds a projection row — a row whose shared fields disagree with its node's, and a node no row projects, named with its state (`a live node no row projects`, `a proposed node no row projects`).
 The shared fields are digested rather than printed, and for the three projected kinds they include the tuples that answer the row, read as the store reads a current relation (the newest tuple per kind and far end, kept while it asserts), and not the node row alone:
 a row that names its node is answered from the tuples by `graph_edges`, `refs.Edges` and `refs.BacklinkCounts`, so a missing or retracted tuple takes a link out of every read while each node row still stands.
@@ -2981,7 +2981,7 @@ The kinds are:
   A tuple of any other kind out of a block — its `in_document` and `part_of`, or one another writer states of it, such as a requirement's `constrained_by` — is in neither side of `block_ref`.
   A block whose address is past the store's address bound (`graphstore.MaxAddressBytes`, which `refs.MaxBlockNodeBytes` is), and a `block_refs` row whose far end is past it, are no node and no tuple of the store by design, and both sides leave those rows out.
 
-- `interaction` against `going_requests` and `frame` against `going_events`, a run of the command bar and its frames (dispatch://INFRA-1950).
+- `interaction` against `going_requests` and `frame` against `going_events`, a run of the command bar and its frames (cybermonklabs/legion#4193).
   A run's digest is the row's `author`, `project`, `words`, `created_at` and `ends_at` and the author `graphstore.AuthorOf` reads off `author`, against the node's `made_by`, project, `words`, `made_at` and `ends_at` and its current `authored_by`.
   A `going_events` row is one frame and its node is its run's, so several rows share one node, as with `block_ref`: each row of a run is held, as every frame its run's rows hold - each its sequence, name and data as `graphstore.FrameValueSQL` writes it - against every `frame` value the node holds; the node side is every interaction that holds a frame value.
   A run whose row a process of the release before deleted an hour old is a node the backfill states `gone`, which no row projects and which is no difference.
@@ -3039,7 +3039,7 @@ The kinds are:
   Neither line refuses the census: the returning set counts before the restore by design, and a citation of the moved set is a finding the driver that watches it holds to zero, since a decisions document may hold a citation of a section an edit deleted before this release.
 
 It passes only when it checked more than zero rows of every kind it covers and found zero differences in both directions, and every store-only far end resolves.
-A total over the kinds is no such proof: two empty sides of one kind agree, so a kind that checked no row prints `census: store kind=<kind> checked no row` and the verdict refuses naming it, but for a kind of dispatch://INFRA-1150 that holds no row, no node and no unmarked row, and for a kind a deployment can hold none of (a run, its frames, and each `<kind>_visibility_state`), whose line adds that it refuses nothing.
+A total over the kinds is no such proof: two empty sides of one kind agree, so a kind that checked no row prints `census: store kind=<kind> checked no row` and the verdict refuses naming it, but for a kind of cybermonklabs/legion#4173 that holds no row, no node and no unmarked row, and for a kind a deployment can hold none of (a run, its frames, and each `<kind>_visibility_state`), whose line adds that it refuses nothing.
 A database the store does not exist in yet holds no kind to read: the census prints `census: store absent` and refuses, since it read nothing.
 
 Two writes can state one fact twice by design and nothing reads wrong for it — a tuple at the `source_event` sentinel is outside both repeat keys, and the backfill writes every fact it cannot date from a row's own event at that sentinel — so the census counts nodes and projection rows, and of a kind held triple by triple each relation the store states now once, never tuple rows.
@@ -3260,8 +3260,8 @@ It renders a block's `in_document` as the `part_of` to its document the view has
 the tuple's `at` is the row's `created_at` and its `legacy_source_seq` the row's `source_seq`.
 No other kind the store writes is an edge of this view — `authored_by`, `delivered_to`, `held_by`, the alias tuples, `attribute_of`, and a session's or a page's `part_of` — and a `part_of` whose source is a block is left out too, since the view has no block-to-block row and a top-level block would otherwise be rendered twice.
 
-Migration `20261117020856_graph_edges_asks_and_store_class` (dispatch://INFRA-1950) is that child's one statement of the view.
-It re-states the arm list of `20261116094101_graph_edges_asks` (dispatch://INFRA-1150) with one class more in the tuple arm, `store`, which joins no projection row: `changed_by_run`, `has_kind`, `triggered_by`, `constrained_by` and `prevented_by` out of any node, and `part_of` and `authored_by` out of an `interaction`, a `lens`, a `risk` or a `constraint`, the relations the store holds with no table behind them.
+Migration `20261117020856_graph_edges_asks_and_store_class` (cybermonklabs/legion#4193) is that child's one statement of the view.
+It re-states the arm list of `20261116094101_graph_edges_asks` (cybermonklabs/legion#4173) with one class more in the tuple arm, `store`, which joins no projection row: `changed_by_run`, `has_kind`, `triggered_by`, `constrained_by` and `prevented_by` out of any node, and `part_of` and `authored_by` out of an `interaction`, a `lens`, a `risk` or a `constraint`, the relations the store holds with no table behind them.
 The class is tested before the block-reference class, so a requirement block's `constrained_by` is not looked for in `block_refs`; every other row keeps its class, a comment's `authored_by` and a session's, a page's or a block's `part_of` stay out of the view, and `refs.TupleKinds`, which the announcer writes, lists the seven kinds beside the earlier ones.
 
 It also adds one arm over the current tuples: every relation of the class `store` out of a finding of a lens — a block node whose id names its lens, `lens/<uuid>#<block id>` — answered with the literal from_kind `lens_block`, the kind the read registry and every reference know a finding by, at the finding's own id, by the tuple arm's own rules.
@@ -3669,7 +3669,7 @@ At that moment the running answer, a reader, the sweep and the boot pass may eac
 `going_events` carries a partial unique index over the run for a terminal frame name, every terminal write is an insert that does nothing on a conflict, and the writer that loses reads the stored frame and reports that one.
 So a reader sees exactly one ending, never two and never none.
 
-A run is a node of the store (dispatch://INFRA-1950), and its two tables are that node's projections.
+A run is a node of the store (cybermonklabs/legion#4193), and its two tables are that node's projections.
 The `POST` writes, in its one transaction, an `interaction` node at the run's own uuid, addressed `dispatch://interaction/<uuid>`, reserved for its author, made by the whole credential that asked and carrying the run's `words`, its `ends_at` and its project, with its `authored_by` tuple and the author's own `person` or `session` node where that credential names one, and only then the `going_requests` row, whose `author` column is the node's `made_by`.
 Each frame is a transaction of its own:
 it takes the run's interaction node row `for no key update` first, so two frames of one run take sequences one after the other with no gap, and reads the next sequence in a statement of its own once it holds that row, one probe of the `(request_id, sequence)` key and one of the terminal index (`goingNextFrame`);

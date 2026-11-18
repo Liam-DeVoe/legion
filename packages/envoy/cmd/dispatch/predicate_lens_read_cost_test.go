@@ -4,7 +4,7 @@
 
 package main
 
-// dispatch://INFRA-1950's c-read-cost: the reads this child touches get no slower over four
+// Check c-read-cost: the reads this child touches get no slower over four
 // shapes, read at this head and at the base build in one run.
 //
 // The test is TestThePredicateAndTheLensReadsGetNoSlower at the end of this file; everything above
@@ -809,9 +809,10 @@ func predicateCostShapePhrase(shape string) string { return predicateCostPhrase 
 // children, each shape's issue holding predicateCostChildren), GET /api/v1/lenses with its chains,
 // the coverage read and the references panel read, each named with its route. The base build is the
 // commit BASELINE_SHA names, which c-read-cost's run string sets, where it is unset, to the merge
-// base with legion/INFRA-1150, the release this child lands after; a base whose tree holds no
-// migration 20261109013400 (graph_store) is refused before anything is built, naming the base
-// (predicateCostBaseHoldsTheStore), since a base with no store measures nothing this child changed.
+// base with the branch of cybermonklabs/legion#4173, the release this child lands after; a base
+// whose tree holds no migration 20261109013400 (graph_store) is refused before anything is
+// built, naming the base (predicateCostBaseHoldsTheStore), since a base with no store measures
+// nothing this child changed.
 // The base serves a database of its own (startCostArms). Both builds are read in one loop, one reading on
 // each in each turn, the build that goes first alternating, after one warm-up reading on each that
 // is not counted (costInterleaved). The corpus is vacuumed and analysed after the seed and the
@@ -976,7 +977,7 @@ const predicateCostStoreMigration = "packages/envoy/internal/dispatch/store/migr
 // branch that lands on main names in BASELINE_SHA, is such a base while the branches this child
 // stacks on are unmerged, and over it every reading of a read this child changed would compare the
 // store with no store. It reads the base baseBuild builds (testbaseline.Commit), and it is not
-// in baseBuild, whose other callers (dispatch://INFRA-1149's census and cost tests) measure the
+// in baseBuild, whose other callers (cybermonklabs/legion#3178's census and cost tests) measure the
 // store against a base from before it.
 func predicateCostBaseHoldsTheStore(t *testing.T) {
 	t.Helper()
@@ -984,7 +985,7 @@ func predicateCostBaseHoldsTheStore(t *testing.T) {
 	commit := testbaseline.Commit(t)
 	named := fmt.Sprintf("the commit %s=%s names", testbaseline.Variable, strings.TrimSpace(os.Getenv(testbaseline.Variable)))
 	if err := exec.Command("git", "-C", root, "cat-file", "-e", commit+":"+predicateCostStoreMigration).Run(); err != nil {
-		t.Fatalf("the base %s (%s) holds no migration %s (graph_store), so it is a build with no store and c-read-cost would measure nothing this child changed: set %s to the release this branch lands after, the merge base with legion/INFRA-1150",
+		t.Fatalf("the base %s (%s) holds no migration %s (graph_store), so it is a build with no store and c-read-cost would measure nothing this child changed: set %s to the release this branch lands after, the merge base with the branch of cybermonklabs/legion#4173",
 			commit, named, predicateCostStoreMigration, testbaseline.Variable)
 	}
 	t.Logf("the base %s (%s) holds the migration that made the store, %s", commit, named, predicateCostStoreMigration)

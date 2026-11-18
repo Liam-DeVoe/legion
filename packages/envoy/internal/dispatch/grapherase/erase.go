@@ -64,7 +64,7 @@ var projectedTables = []struct{ Table, Issue, Through, Key string }{
 }
 
 // runTables are the rows a run of the command bar is projected onto
-// (dispatch://INFRA-1950/spec#b-r-interaction), which carry no node_kind and node_address, so
+// (spec requirement r-interaction), which carry no node_kind and node_address, so
 // projectedTables never reaches them: going_requests projects the interaction node and its
 // made_by, and each going_events row one frame value of it. Column names the run in each, and Key
 // is the order the erase takes a run's rows of it in (lockProjectionRows) and how the listing

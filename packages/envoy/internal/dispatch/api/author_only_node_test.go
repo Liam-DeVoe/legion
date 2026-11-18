@@ -266,7 +266,7 @@ func requireOnlyTheFiveKindsTakeAuthor(t *testing.T) {
 }
 
 // TestAnAuthorOnlyNodeIsAnsweredToItsAuthorAndToNobodyElse is c-visibility-page
-// (dispatch://INFRA-1950/verification#c-visibility-page): one node of each of the five registry
+// of the verification document: one node of each of the five registry
 // kinds that take author - a lens, a block of a lens's finding, a risk, a constraint and an
 // interaction - is answered to its author and to nobody else, and no other kind takes author.
 //

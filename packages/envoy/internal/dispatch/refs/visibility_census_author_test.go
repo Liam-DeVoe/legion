@@ -15,14 +15,14 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// censusAuthorKinds is every node kind dispatch://INFRA-1950 lets a writer reserve for its author:
+// censusAuthorKinds is every node kind cybermonklabs/legion#4193 lets a writer reserve for its author:
 // the kinds whose registry entry carries the author flag (nodeKind.authorOnly), and no other.
 var censusAuthorKinds = []string{
 	graphstore.KindConstraint, graphstore.KindInteraction, graphstore.KindLens, graphstore.KindLensBlock, graphstore.KindRisk,
 }
 
 // requireEachAuthorKindAnswersItsAuthorAlone is the assertion c-visibility-kinds adds to the census
-// of the registry (dispatch://INFRA-1950/spec#b-r-visibility-complete). It runs once the census has
+// of the registry (spec requirement r-visibility-complete). It runs once the census has
 // held the registry to the kinds the store resolves, on the store seedStoreThroughItsWriters
 // wrote, so a kind the registry does not hold fails there, named, before anything here is written.
 //

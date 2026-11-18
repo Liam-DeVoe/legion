@@ -180,7 +180,7 @@ func (s *server) specOpenQuestions(
 // itself. kind says whose it is: `person` for an ask, which a person decides, `agent` for a
 // decision, and `declined` for an ask the person declined to answer, which records no decision.
 // state is the node state of its node, which is any state but gone (decisionEntriesRead), so a
-// proposed, settled or overtaken entry is told from a live one (dispatch://INFRA-1950's R5).
+// proposed, settled or overtaken entry is told from a live one (the spec's R5).
 //
 // An ask carries its wording from its row (question, options, urgency, multiple) and its answer
 // from its node (answer_state, answer, selected, answered_by, answered_at, resolution), each null
@@ -297,7 +297,7 @@ var entryFactKinds = []string{
 // nodes its block_refs rows name (a decision's decided_by, shaped and from_ask), keyed by the
 // document. Each candidate is then read by its own key, the present nodes of the `decision`
 // supertag kept: a node at any state but gone, so a proposed, settled or overtaken decision, ask
-// or reading is drawn wherever its node is (dispatch://INFRA-1950's R5 and R12).
+// or reading is drawn wherever its node is (the spec's R5 and R12).
 func decisionEntriesRead() string {
 	return `
 		with documents as (

@@ -24,9 +24,9 @@ import (
 // read with refs.IssueDescendants, the server's one recursive `child_of` subtree walk. The
 // missing-plan-task gap is named only once the issue has a plan document, since the plan comes
 // after the spec's approval. A requirement whose block's node state is proposed is a question
-// still open (dispatch://INFRA-1950/spec#b-r-proposed), so it raises neither gap here and the
+// still open (spec requirement r-proposed), so it raises neither gap here and the
 // approval request's answer names none for it; one at settled or live is counted as every
-// requirement is, and dispatch://INFRA-1253 gives overtaken its meaning. A check or a plan task
+// requirement is, and cybermonklabs/legion#4180 gives overtaken its meaning. A check or a plan task
 // whose block is proposed is a question still open too, so it serves nothing yet and its
 // requirement is counted without it (queueServingBlockCounts). Nothing is ever refused
 // for a gap: three readers show it — the route below for the Spec tab, `dispatch read --issue`,
@@ -222,7 +222,7 @@ type servingCounts struct {
 // once the batch is read. Both ends are current blocks of their documents: deleting the check
 // deletes its row, so its requirement is uncovered again. A check or a plan task whose block's
 // node state is proposed is a question still open and serves nothing yet
-// (dispatch://INFRA-1950/spec#b-r-proposed), so it is not counted; one at any other state is, and
+// (spec requirement r-proposed), so it is not counted; one at any other state is, and
 // one the store holds no row of reads live, as every read of a node answers one. Its state is read
 // for who in the same statement, as requirementStatesQuery reads a requirement's: from the store's
 // row of the block (kind block, keyed by the row's node_id), through the block kind's predicate
@@ -234,7 +234,7 @@ type servingCounts struct {
 // serving block, as the registry's own predicates are (refs.VisibleKind), rather than an anti-join
 // the planner weighs against every other join of the statement: Postgres plans this statement
 // again on every execution, since its issues are an array, and the anti-join cost that planning
-// half a millisecond more a read (dispatch://INFRA-1950's c-read-cost).
+// half a millisecond more a read (check c-read-cost).
 func queueServingBlockCounts(b *pgx.Batch, who model.Actor, specArtifactID string, issues []string, served map[string]servingCounts) {
 	b.Queue(`
 		select t.block_id, s.type, count(*)

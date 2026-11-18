@@ -260,7 +260,7 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 	}
 	// An edit of a comment's words made for a run (graphstore.WithRun, which withinGoingRun puts
 	// on a request naming its run) names the comment as changed by that run where it changed them
-	// (dispatch://INFRA-1950/spec#b-r-interaction) and the comment is a node of the store. Nothing
+	// (spec requirement r-interaction) and the comment is a node of the store. Nothing
 	// else this route writes reaches the comment's node, so under a run it writes that node as the
 	// create and the backfill write it (graphstore.CommentFacts' node): in the project, or between
 	// the parties, of what it belongs to (graphstore.ScopeOf), made by its author at its

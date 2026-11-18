@@ -100,7 +100,7 @@ var writeClasses = map[string]writeScope{
 	"POST /api/v1/issues/{key}/artifacts":                  scopeProject,
 	"POST /api/v1/issues/{key}/artifacts/{slug}/versions":  scopeProject,
 	"POST /api/v1/issues/{key}/artifacts/{slug}/edits":     scopeProject,
-	// The pre-mortem conversion of dispatch://INFRA-1950: the lens and the risks it writes under
+	// The pre-mortem conversion: the lens and the risks it writes under
 	// the issue, and the document of the issue it retires, belong to the issue's project.
 	"POST /api/v1/issues/{key}/artifacts/{slug}/premortem-convert": scopeProject,
 	"POST /api/v1/issues/{key}/messages":                           scopeProject,
@@ -111,7 +111,7 @@ var writeClasses = map[string]writeScope{
 	"PUT /api/v1/issues/{key}/design-gates":                        scopeProject,
 	"PUT /api/v1/issues/{key}/role-holders":                        scopeProject,
 
-	// The reasoning nodes of dispatch://INFRA-1950 a request writes under an issue - a lens, a
+	// The reasoning nodes a request writes under an issue - a lens, a
 	// finding of one, a risk, a constraint - one pointer tuple out of a node of the issue, and the
 	// state of a node of the issue, written or settled: each belongs to the project of the issue
 	// its path names.

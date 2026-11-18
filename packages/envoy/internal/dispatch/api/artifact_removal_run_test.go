@@ -170,7 +170,7 @@ func (r runDocumentRig) madeForRun(t *testing.T, name string) model.Artifact {
 }
 
 // A document a write made for a run created, and that a person then removed, is no longer the
-// run's (dispatch://INFRA-1950/spec#b-r-interaction, R4). Alice's run makes a blank document on
+// run's (spec requirement r-interaction, R4). Alice's run makes a blank document on
 // her issue, which marks the document's node changed by the run: the run's ?to= lists the
 // document, its count is that list, and the document's ?from= lists the run. Alice removes the
 // document; its node is stated gone and the changed_by_run out of it retracted, so the run counts
@@ -214,7 +214,7 @@ func TestARunListsAndCountsNoDocumentItMadeOnceThatDocumentIsRemoved(t *testing.
 }
 
 // A document a write made for a run created, and that was then retired (docs.RetireDocument,
-// dispatch://INFRA-1150 R11), is counted and listed alike by the run, in both directions. Alice's
+// R11 of cybermonklabs/legion#4173), is counted and listed alike by the run, in both directions. Alice's
 // run makes a blank document on her issue, which the run's ?to= lists and its count counts, and
 // whose ?from= lists the run. The document is retired: its node is stated gone, and its row, its
 // slug and its ref_key stay, so no later document takes its node. The retirement retracts no

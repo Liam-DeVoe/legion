@@ -920,7 +920,7 @@ func requireWriteCostReachesTheStore(t *testing.T, head *costArm, corpus *writeC
 // costStoreCounts is the node and tuple store's own row counts on the arm's database, as the
 // corpus line prints them, or the words saying the arm holds no such store. Whether it does is
 // read off the database, never off which arm it is: the base build holds the store wherever
-// BASELINE_SHA names a commit holding dispatch://INFRA-1149's graph_nodes and graph_tuples.
+// BASELINE_SHA names a commit holding cybermonklabs/legion#3178's graph_nodes and graph_tuples.
 func costStoreCounts(t *testing.T, arm *costArm) string {
 	t.Helper()
 	if held := arm.count(t, `

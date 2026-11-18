@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Drives the pre-mortem conversion end to end against a running server (dispatch://INFRA-1950's
-# c-premortem-conversion, dispatch://INFRA-1950/spec#b-r-premortem-nodes and
-# dispatch://INFRA-1098/spec#b-r-reasoning-tree). It seeds an issue to stand for
-# dispatch://INFRA-1098, with a verification document of two checks and a markdown document holding
-# the markdown of the capture e2e/fixtures/infra-1098-premortem.json, and writes its own map file,
+# Drives the pre-mortem conversion end to end against a running server (check
+# c-premortem-conversion, spec requirement r-premortem-nodes and requirement r-reasoning-tree of
+# cybermonklabs/legion#3142). It seeds an issue to stand for ACME-1098, the capture's issue, with
+# a verification document of two checks and a markdown document holding
+# the markdown of the capture e2e/fixtures/acme-1098-premortem.json, and writes its own map file,
 # which names one check of that issue for risk 8 and no check for any other risk, risk 3 among them.
 # It runs `envoy-dispatch premortem-convert --dry-run` on that document with DATABASE_URL=$STORE_DSN
 # as a prefix of that one command, reads what it would write and the issue's documents and lenses
@@ -51,7 +51,7 @@ set +x
 usage() {
   cat >&2 <<'USAGE'
 Usage: DISPATCH_URL=http://127.0.0.1:8777 DISPATCH_TOKEN=e2e-token PROJECT=CORE \
-         STORE_DSN=postgres://…/infra_1950?sslmode=disable \
+         STORE_DSN=postgres://…/premortem?sslmode=disable \
          [DISPATCH_E2E_SERVER_BIN=$TMPDIR/bin/envoy-dispatch] premortem-conversion.sh
        (DISPATCH_TOKEN_FILE=<file holding the bearer> in place of DISPATCH_TOKEN; STORE_DSN names
        the database the server at DISPATCH_URL serves, which the command writes and psql reads)
@@ -79,7 +79,7 @@ readonly server_bin
   usage
   exit 2
 }
-fixture="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../fixtures" && pwd)/infra-1098-premortem.json"
+fixture="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../fixtures" && pwd)/acme-1098-premortem.json"
 readonly fixture
 [[ -r "$fixture" ]] || {
   printf 'the capture %s cannot be read\n' "$fixture" >&2
@@ -88,7 +88,7 @@ readonly fixture
 stamp="$(date +%s)-$$"
 readonly stamp
 readonly session="premortem-conversion-$stamp"
-# The ten kinds dispatch://INFRA-1297 records, which the catalogue's migration seeds.
+# The ten kinds the lens design records, which the catalogue's migration seeds.
 readonly seeded_kinds='["best-practice","boring-solution","botec","conway","first-principles","inversion","pre-mortem","reversibility","second-order","trade-off"]'
 readonly lens_kind=dispatch://lens_kind/pre-mortem
 
@@ -321,7 +321,7 @@ held="$(jq -cS --argjson want "$seeded_kinds" '[.lens_kinds[].id] as $ids | [$wa
   fail "$driver" "the catalogue holds its ten kinds" "it holds $held of $seeded_kinds"
 pass "$driver" "the catalogue holds its ten kinds"
 
-# --- setup: the capture, the issue standing for INFRA-1098, its documents and the map ------------
+# --- setup: the capture, the issue standing for ACME-1098, its documents and the map -------------
 
 # What the capture records of each risk's section and of the document's closing sections, read out
 # of its markdown: a section runs from its heading to the next heading of its level or above, and an
@@ -376,15 +376,15 @@ expect setup "the document ends with its two closing sections, each under its he
   true '.closing != null and .whole == .verdict + "\n\n" + .closing'
 
 cat >"$work/spec.md" <<'SPEC'
-The issue standing for dispatch://INFRA-1098 in this run, whose pre-mortem is converted into nodes.
+The issue standing for the capture's ACME-1098 in this run, whose pre-mortem is converted into nodes.
 
 :::requirement{#r-node-visibility}
 Every node kind answers through one visibility predicate.
 :::
 SPEC
-create_issue setup "create the issue standing for INFRA-1098" "Pre-mortem conversion check: the issue standing for INFRA-1098" "$work/spec.md"
+create_issue setup "create the issue standing for ACME-1098" "Pre-mortem conversion check: the issue standing for ACME-1098" "$work/spec.md"
 readonly key1="$key"
-pass setup "created $key1 in $project to stand for dispatch://INFRA-1098"
+pass setup "created $key1 in $project to stand for ACME-1098"
 
 cat >"$work/verification.md" <<VERIFICATION
 How $key1 is proved.
@@ -692,7 +692,7 @@ for converted in 1 2; do
   expect D "the document list of $key holds its spec, and not $document, which is retired" \
     "$(jq -cn --arg k "$key" '{retired: [], spec: ["\($k)/spec"]}')" --arg k "$key" --arg r "$ref_key" \
     '{spec: [.[] | select(.ref_key == "\($k)/spec") | .ref_key], retired: [.[] | select(.ref_key == $r) | .ref_key]}'
-  # The redirect is the shape a moved block's old address answers (dispatch://INFRA-1150's
+  # The redirect is the shape a moved block's old address answers (cybermonklabs/legion#4173's
   # movedBlockNode): the node the move reaches, named by its own address, as `.node`. A retired
   # document's address with no move answers its issue instead (refs' loadArtifactNodes), so the
   # lens here is the conversion's moved_to and nothing else.

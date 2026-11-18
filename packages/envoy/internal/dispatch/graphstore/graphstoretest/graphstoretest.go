@@ -22,7 +22,7 @@ import (
 // nothing.
 //
 // The store's writers take a node reserved for its author only of a kind the read registry
-// flags (graphstore.AdmitAuthorOnly), and no kind dispatch://INFRA-1149 registers is flagged,
+// flags (graphstore.AdmitAuthorOnly), and no kind cybermonklabs/legion#3178 registers is flagged,
 // since not every read of those kinds binds the visibility predicate. The reads that do bind it
 // are still held to answering such a node to its author alone, and a test of them seeds the node
 // here, as the rows a writer would have stored, rather than through a writer that refuses it.

@@ -30,7 +30,7 @@ func seedSupertags(t *testing.T, ctx context.Context, database *store.Store, nam
 }
 
 // TestAWriteTakesANodeOnlyOfATypeTheStoreHolds holds every node write to the types the store
-// holds (dispatch://INFRA-1950/spec#b-r-lens-catalogue): a node whose supertag has no `supertag`
+// holds (spec requirement r-lens-catalogue): a node whose supertag has no `supertag`
 // row, or one that is gone, refuses the whole write with ErrSupertagNotHeld, a
 // SupertagNotHeldError naming each such type, and stores nothing of it, the node of a held type
 // written beside it included, through Write and WriteUncaused alike. Once the type's row is

@@ -30,7 +30,7 @@ const (
 	AttributeTakenWhere  = "taken_where"
 )
 
-// LensKind is one kind of lens as the catalogue holds it (dispatch://INFRA-1950/spec#b-r-lens-catalogue):
+// LensKind is one kind of lens as the catalogue holds it (spec requirement r-lens-catalogue):
 // a lens_kind node addressed `dispatch://lens_kind/<ID>`, carrying Words, and one constrained_by
 // tuple from it to a constraint node holding Source, the kind's primary source, as its standard,
 // and that source's Reference.
@@ -69,7 +69,7 @@ var ErrLensKindMalformed = errors.New("the lens kind is not one the catalogue ca
 // constraint's id, a fresh uuid.
 //
 // The seed of migrations 20261116123354 and 20261116123355 writes the same shape, and the shape is
-// a contract with dispatch://INFRA-3862's project clause: every catalogue constraint is the far end
+// a contract with the closed-project work's project clause: every catalogue constraint is the far end
 // of exactly one constrained_by tuple from a lens_kind node, and the catalogue writes no other
 // constraint node. So adding a kind is one node, its source and one tuple, and no code changes.
 //

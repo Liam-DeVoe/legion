@@ -1,6 +1,6 @@
 package api
 
-// premortem_convert.go is the pre-mortem conversion of dispatch://INFRA-1950 (spec
+// premortem_convert.go is the pre-mortem conversion (spec requirement
 // r-premortem-nodes): one function, ConvertPremortem, which turns a pre-mortem document of an
 // issue into one lens of kind pre-mortem under the issue and one risk under that lens for each
 // risk the document holds, retires the document and moves its address to the lens; and its route,
@@ -140,9 +140,9 @@ type PremortemDocumentError struct {
 
 func (e *PremortemDocumentError) Error() string { return e.Problem }
 
-// The sections a pre-mortem holds, by the words of their headings (the capture of
-// dispatch://INFRA-1098/artifact/graph-premortem-md, packages/dispatch/e2e/fixtures/
-// infra-1098-premortem.json): a verdict, risk 0, the numbered risks under one heading, and the two
+// The sections a pre-mortem holds, by the words of their headings (the capture of the graph
+// pre-mortem of cybermonklabs/legion#3142, packages/dispatch/e2e/fixtures/
+// acme-1098-premortem.json): a verdict, risk 0, the numbered risks under one heading, and the two
 // closing sections that go into the lens's verdict after the document's own. Each risk carries an
 // early warning and a prevention, each a list item that opens with its label in bold.
 const (

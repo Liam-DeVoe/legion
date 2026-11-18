@@ -147,16 +147,16 @@ type pointerRule struct {
 }
 
 // pointerRules are the type rules of the four pointer tuples and of a risk's place, the one table
-// of them (dispatch://INFRA-1950/spec#b-r-constraint-risk). Every write of this store holds each
+// of them (spec requirement r-constraint-risk). Every write of this store holds each
 // relation it appends whose kind is here to its rule, in the write's own transaction, before it
 // appends anything (checkPointers, from Write and Caused), so no route keeps a rule of its own
-// and a move through dispatch://INFRA-1253's `/parent` meets the same one. A kind that is not here
+// and a move through cybermonklabs/legion#4180's `/parent` meets the same one. A kind that is not here
 // is let through to any node.
 //
 // The table rules the types, the place of a triggered_by's far end in the order lenses were
 // invoked, and the project and the document of a risk's prevented_by: a check of any issue of the
 // risk's own project, as the pre-mortem conversion writes one
-// (dispatch://INFRA-1950/spec#b-r-premortem-nodes), in a document that is not retired, so the
+// (spec requirement r-premortem-nodes), in a document that is not retired, so the
 // pointer route, the risk route and the conversion are held to one rule. That the far end exists,
 // is not gone and may be seen by the caller is its route's to check, through the read registry's
 // loader for the far end's kind (an issue or a document is read off its own row), so that a far
@@ -849,7 +849,7 @@ func lensKindWords(kinds []pointerTarget) string {
 // one, both through Write, so the type rule of the pointer's kind holds the move as it holds any
 // other write: a lens's has_kind moves from one kind to another and stays one, and a pre-mortem's
 // is refused with ErrLensKindKept whatever hangs under it. It touches no part_of tuple, and
-// refuses to move one: a node moves to another parent through dispatch://INFRA-1253's `/parent`.
+// refuses to move one: a node moves to another parent through cybermonklabs/legion#4180's `/parent`.
 //
 // It first takes the node's graph_nodes row `for no key update`, the one node row it takes, so two
 // retargets of one node's pointers queue there and the second reads what the first moved. A node

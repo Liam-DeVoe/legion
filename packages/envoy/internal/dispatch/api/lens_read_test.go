@@ -98,7 +98,7 @@ func lensKindWords(t *testing.T, rig reasoningRig, id string) string {
 }
 
 // TestTheLensReadAnswersEveryLensInInvocationOrder is c-lens-page
-// (dispatch://INFRA-1950/verification#c-lens-page): two people, alice's trade-off analysis on the
+// of the verification document: two people, alice's trade-off analysis on the
 // spec and bob's pre-mortem on it triggered by hers, and then alice's trade-off analysis written
 // proposed and back to live through POST /api/v1/issues/{key}/nodes/{id}/state, so the lens
 // invoked first is the lens whose row was written last. One read of the spec holds both, in the
@@ -362,7 +362,7 @@ func TestALensReadSkipsALensTheReaderMayNotSee(t *testing.T) {
 }
 
 // TestATriggerPointsOnlyAtALensInvokedBefore: a lens is triggered only by a lens invoked before it
-// (R8, dispatch://INFRA-1950/spec#b-r-lens-trigger), in the order the lens read answers, the seq
+// (R8, spec requirement r-lens-trigger), in the order the lens read answers, the seq
 // of each lens's first part_of. A, then B triggered by A, then C, on the spec. Through the pointer
 // route, a triggered_by from A to B, a retarget of B's trigger from A to C and a trigger of B by
 // itself are each 400 INVALID_POINTER naming both lenses by address, the one lens twice, and store

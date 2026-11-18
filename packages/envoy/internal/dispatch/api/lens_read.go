@@ -1,7 +1,7 @@
 package api
 
 // lens_read.go serves GET /api/v1/lenses?on=<address>, the lens read of
-// dispatch://INFRA-1950/spec#b-r-lens and #b-r-lens-trigger: the lenses invoked on one node, in
+// spec requirements r-lens and r-lens-trigger: the lenses invoked on one node, in
 // the order they were invoked, each with its kind, its author, its time, its verdict, its state
 // and visibility, the lenses that triggered it and the lenses it triggered, its findings and its
 // risks; and each chain of triggered lenses those lenses stand in.
@@ -35,7 +35,7 @@ import (
 
 // lensChainDepth is the depth the lens read walks one chain of triggered lenses to, counted in
 // lenses: a chain lists at most this many, and names the first lens past them where the walk
-// reached one. R8 (dispatch://INFRA-1950/spec#b-r-lens-trigger) cuts every chain at 50, and the
+// reached one. R8 of the spec (requirement r-lens-trigger) cuts every chain at 50, and the
 // reason is the read's cost: a chain is a run of triggered_by tuples any writer may make as long
 // as it likes, and the bound holds one chain to fifty lenses listed and fifty-one loaded whatever
 // the store holds, so no chain anybody writes makes the read of its node slow. A cycle is no
@@ -50,7 +50,7 @@ import (
 const lensChainDepth = 50
 
 // lensStandsOnKinds are the kinds of node a lens may stand on, as decodeNodeAddress names them:
-// the kinds of a node under an issue, which is where P9 (dispatch://INFRA-1950/artifact/plan-md)
+// the kinds of a node under an issue, which is where P9 of the plan
 // lets a lens be invoked - the issue, a document and its blocks, an ask, a comment or a message
 // and its blocks, and the lenses, findings, risks and constraints under those, the kinds that
 // stand on a node by their part_of tuple alone (refs.StandingKinds) - as the arms of refs'
@@ -410,7 +410,7 @@ type walkedChain struct {
 // trigger read the other.
 //
 // A chain starts only at a root: a seed that holds no triggered_by tuple the reader may see to
-// another seed (R8, dispatch://INFRA-1950/spec#b-r-lens-trigger), and the roots begin their chains
+// another seed (R8, spec requirement r-lens-trigger), and the roots begin their chains
 // in the order of the seeds. The store takes a triggered_by only to a lens invoked before the lens
 // it goes out of (graphstore's pointerRules), so no tuple closes a cycle, and the seed invoked
 // first of each chain the seeds stand in is a root: every seed starts a chain or stands in one,

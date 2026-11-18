@@ -12,7 +12,7 @@ import (
 )
 
 // A write made for a run of the command bar names each node it created or changed as changed by
-// that run (dispatch://INFRA-1950/spec#b-r-interaction): one TupleChangedByRun out of the node to
+// that run (spec requirement r-interaction): one TupleChangedByRun out of the node to
 // the run's interaction, appended by Write and Caused in the write's own transaction and under the
 // write's own cause, beside the write's own tuples. A request names its run in a header, which api
 // reads once, holds to the caller's whole credential and to the run's window, and hands every

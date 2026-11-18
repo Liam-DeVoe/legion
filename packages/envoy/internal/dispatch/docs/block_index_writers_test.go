@@ -550,7 +550,7 @@ var indexPasses = map[string]string{
 	"api/messages.go#createStoredMessage":        "the message the request stores and the event it appended",
 	"api/message_delivery.go#insertSessionReply": "the session's reply the request stores and the event it appended",
 	"api/broadcasts.go#writeBroadcast":           "each copy the broadcast stores and the event it appended for it",
-	// The nodes of dispatch://INFRA-1950's reasoning kinds - a lens, its findings, a risk and a
+	// The nodes of the reasoning kinds - a lens, its findings, a risk and a
 	// constraint - written with their tuples and their author in one store write (graphstore.Write)
 	// from the request alone: they have no projection row, so there is no side of one to read.
 	"api/reasoning_write.go#writeReasoningNodes": "the request's nodes and tuples, its credential and the project of the issue it names",

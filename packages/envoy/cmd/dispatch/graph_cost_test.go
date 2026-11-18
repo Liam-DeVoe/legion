@@ -4,10 +4,10 @@
 
 package main
 
-// Three cost measurements share this file. c-write-cost of dispatch://INFRA-1149 is
+// Three cost measurements share this file. c-write-cost of cybermonklabs/legion#3178 is
 // TestNoWritePathThisChildChangesGetsSlower (write_cost_test.go), c-read-cost of
-// dispatch://INFRA-1149 is TestNoReadThisChildChangesGetsSlowerAndNoEventOutrunsItsNode
-// (read_cost_test.go), and c-read-cost of dispatch://INFRA-1950 is
+// cybermonklabs/legion#3178 is TestNoReadThisChildChangesGetsSlowerAndNoEventOutrunsItsNode
+// (read_cost_test.go), and c-read-cost of cybermonklabs/legion#4193 is
 // TestThePredicateAndTheLensReadsGetNoSlower (predicate_lens_read_cost_test.go). What they
 // share is the pair of arms they compare, the corpus writer that seeds each arm through that
 // arm's own API, the clock, the order statistic and the table every reading is printed in.

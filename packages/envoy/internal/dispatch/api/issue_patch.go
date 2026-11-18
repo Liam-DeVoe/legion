@@ -520,7 +520,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	// An issue's own field write made for a run (graphstore.WithRun, which withinGoingRun puts on
 	// a request naming its run) names the issue as changed by that run when it changed a field of
-	// it (dispatch://INFRA-1950/spec#b-r-interaction), as changedFields, which compares every field
+	// it (spec requirement r-interaction), as changedFields, which compares every field
 	// this route writes, says; a write that sent only values the issue already held appends its
 	// event with nothing changed and names no change. Nothing else this route writes reaches the
 	// store, so under a run it writes the issue's node as the create and the backfill write it

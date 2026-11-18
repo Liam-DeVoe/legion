@@ -3,8 +3,8 @@
 --
 -- block_moved_to (migration 20261117002006) follows the moved_to tuples from a block address no
 -- document_blocks row holds to the block they reach, for the resolvers that read a move
--- (dispatch://INFRA-1150 R8). The pre-mortem conversion (api.ConvertPremortem,
--- dispatch://INFRA-1950/spec#b-r-premortem-nodes) retires a document and appends one moved_to from
+-- (R8 of cybermonklabs/legion#4173). The pre-mortem conversion (api.ConvertPremortem,
+-- spec requirement r-premortem-nodes) retires a document and appends one moved_to from
 -- the document's own address - kind artifact, its ref_key - to the lens of kind pre-mortem it
 -- wrote in the document's place - kind lens, the lens's uuid - so a citation of the retired
 -- document reaches that lens rather than dangling. This migration widens the one reading of a move

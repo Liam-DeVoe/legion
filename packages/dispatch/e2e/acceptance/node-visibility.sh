@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Drives a node reserved for its author through every route that can disclose it, against a running
-# server (dispatch://INFRA-1950's c-visibility-every-route, dispatch://INFRA-1950/spec#b-r-node-visibility).
+# server (check c-visibility-every-route, spec requirement r-node-visibility).
 # A direct read refused proves nothing of the graph's other routes, so the driver hangs the hidden
 # nodes among public neighbours. On one issue the first person (DEV_SIGNIN_LOGIN, `alice`) writes,
 # under a spec every person reads, a public trade-off analysis that triggered a pre-mortem reserved

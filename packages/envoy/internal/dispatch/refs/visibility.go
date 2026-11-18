@@ -69,7 +69,7 @@ type nodeKind struct {
 	// authorOnly says every read of the kind binds its predicate, so the kind may hold a node
 	// reserved for its author: init hands every kind flagged so to the store, which refuses such
 	// a node of any other kind (graphstore.AdmitAuthorOnly). It is set by authoredKind and
-	// credentialAuthoredKind alone, the constructors of the kinds dispatch://INFRA-1950 adds that
+	// credentialAuthoredKind alone, the constructors of the kinds cybermonklabs/legion#4193 adds that
 	// take `author` - interaction, lens, lens_block, risk and constraint - each called in the
 	// commit that registers its kind; a lens_kind is always project-visible and takes neither.
 	authorOnly bool
@@ -94,9 +94,9 @@ func unresolvedKind(visibility nodeVisibility) nodeKind {
 
 // authoredKind registers a node kind that may hold a node reserved for its author and whose
 // predicate compares the author a credential proved (comparesAuthor), the one rule every kind
-// dispatch://INFRA-1149 registers compares too: the loader that reads its nodes, every one of
+// cybermonklabs/legion#3178 registers compares too: the loader that reads its nodes, every one of
 // which binds that predicate. A lens, a block of a lens's finding (lens_block), a risk and a
-// constraint are registered by it (dispatch://INFRA-1950's R19), so a person's cookie, her
+// constraint are registered by it (the spec's R19), so a person's cookie, her
 // personal token and a session the broker verified as hers read what any of them wrote.
 func authoredKind(load nodeLoader) nodeKind {
 	return nodeKind{load: load, visibility: nodeVisibility{compares: comparesAuthor}, authorOnly: true, stated: true}
@@ -175,13 +175,13 @@ func init() {
 		graphstore.KindSession: resolvedKind(loadStoreNodes, nodeVisibility{}),
 		graphstore.KindRole:    resolvedKind(loadStoreNodes, nodeVisibility{}),
 		graphstore.KindPage:    resolvedKind(loadStoreNodes, nodeVisibility{}),
-		// The kinds of dispatch://INFRA-1950 the store holds alone, each registered in the commit
+		// The kinds of cybermonklabs/legion#4193 the store holds alone, each registered in the commit
 		// that first writes a node of it (migration 20261116123354 writes the first two, the
 		// reasoning write of api the next three, and the going POST of api the last). A lens kind
 		// is a node of the catalogue, always project-visible, so its entry takes no node reserved
 		// for its author; a constraint, a lens, a finding of a lens and a risk may each be reserved
 		// for its author, and each one's predicate compares the author a credential proved, as
-		// every kind dispatch://INFRA-1149 registers does. A finding is stored as a node of kind
+		// every kind cybermonklabs/legion#3178 registers does. A finding is stored as a node of kind
 		// block at its own id, `lens/<uuid>#<block id>`, so its entry reads the store under that
 		// kind (storedAs). A lens, a finding and a risk are read by one loader, which takes the
 		// kind it reads (loadReasoningNodes). An interaction, one run of the command bar, is
@@ -257,10 +257,10 @@ type comparison uint8
 
 const (
 	// comparesAuthor compares the author the acting credential proved with the author the node's
-	// `made_by` records, the one rule of dispatch://INFRA-1149 (graphstore.AuthorIsSQL): the
+	// `made_by` records, the one rule of cybermonklabs/legion#3178 (graphstore.AuthorIsSQL): the
 	// person a cookie, a personal token or a session the broker verified proves, else the
 	// credential's own id, which counts for a session only where the broker proved that session
-	// (model.Actor's Proven), else its workload. It is every kind dispatch://INFRA-1149 registers,
+	// (model.Actor's Proven), else its workload. It is every kind cybermonklabs/legion#3178 registers,
 	// and a lens, a block of a lens's finding, a risk and a constraint (authoredKind).
 	comparesAuthor comparison = iota
 	// comparesCredential compares the whole acting credential with the one that wrote the node
@@ -403,7 +403,7 @@ const StoredNodeMarker = "/* the node's stored state and visibility */"
 // probe of the same row. That is a choice for a loader that answers a handful of nodes. The block
 // loader answers thousands - every block of an 8,001-block document, the 5,000 blocks a list of
 // links points from - where the second probe cost a read of 5,001 blocks a fifth of its time
-// (dispatch://INFRA-1950's c-read-cost), so it reads both from one probe (visibleStoredKind).
+// (check c-read-cost), so it reads both from one probe (visibleStoredKind).
 func storedNode(kind, address string) string {
 	return StoredNodeOf(`'`+StoredKindOf(kind)+`'`, address)
 }

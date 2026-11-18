@@ -15,7 +15,7 @@ import (
 
 // TestTheStoreRefusesAuthorOnAKindItDoesNotAdmit holds every node write of the store to the kinds
 // the read registry admits as ones that may hold a node reserved for its author
-// (dispatch://INFRA-1950/spec#b-r-node-visibility): a node at visibility author of any other kind
+// (spec requirement r-node-visibility): a node at visibility author of any other kind
 // is refused with ErrVisibilityNotAdmitted, as a VisibilityNotAdmittedError whose words name the
 // kind, before the write's first statement - the transaction of the refused write still commits
 // and holds no row and no tuple of the node. A block's kind is read off its id, so a finding of a

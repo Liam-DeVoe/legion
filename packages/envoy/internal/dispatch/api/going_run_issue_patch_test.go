@@ -17,7 +17,7 @@ import (
 )
 
 // An issue's own PATCH made for a run names the issue as changed by the run only where it changed
-// a field of it (dispatch://INFRA-1950/spec#b-r-interaction: the tuple comes from each node the
+// a field of it (spec requirement r-interaction: the tuple comes from each node the
 // write created or changed). Under alice's run the labels the issue already holds are sent again:
 // the write is accepted and appends its issue.updated, which changes nothing, and no
 // changed_by_run goes out of the issue, nor any tuple into the run. The control is the same run's

@@ -1,19 +1,19 @@
 -- 20261116123355_lens_catalogue_further_kinds.up.sql
 --
--- INFRA-1950: the further lens kinds, each from a primary source (plan task T10;
--- dispatch://INFRA-1950/spec#b-r-lens-catalogue). INFRA-1950's research task read the primary
+-- The further lens kinds, each from a primary source (plan task T10;
+-- spec requirement r-lens-catalogue). This change's research task read the primary
 -- sources of the analyses practitioners report using to review a design or a spec, and this writes
 -- each kind it found a source for into the catalogue 20261116123354 seeded, in the same shape: one
 -- `lens_kind` node holding its words, and one `constrained_by` tuple to a `constraint` node holding
 -- the kind's source (`standard`) and that source's `reference`. A kind no source it read supports
 -- is not here. The pull request body gives the reading, kind by kind, with each source.
 --
--- `chestertons-fence` is the kind INFRA-1297 cited Chesterton's fence for under `second-order`:
+-- `chestertons-fence` is the kind the lens design cited Chesterton's fence for under `second-order`:
 -- the passage is about knowing why a thing is there before it is removed, which is a kind of its
 -- own, so `second-order` took Bastiat (20261116123354) and Chesterton stands here.
 --
 -- Every catalogue constraint is the far end of exactly one constrained_by tuple from a lens_kind
--- node, and this writes no other constraint node, so dispatch://INFRA-3862's project clause reads
+-- node, and this writes no other constraint node, so the closed-project work's project clause reads
 -- every node here as the catalogue, which every viewer sees. Every node is project-visible and
 -- live, in no project and between no parties, made by the catalogue's writer, and each
 -- constraint's id is a uuid fixed here, so running this file again writes the same rows: each node

@@ -26,7 +26,7 @@ var statesRequirements = []struct{ id, state string }{
 	{"r-gone", graphstore.StateGone},
 }
 
-// The census counts every node except those at node state gone (R12 of dispatch://INFRA-1950):
+// The census counts every node except those at node state gone (R12 of the spec):
 // a node at proposed, settled or overtaken is a node a projection row projects, as one at live
 // is, and a move between those values loses no node.
 //
@@ -37,7 +37,7 @@ var statesRequirements = []struct{ id, state string }{
 // value of the state. graphcensus.StoreCensus, which `envoy-dispatch census --store` runs, reads
 // zero differences in both directions; its block line checked as many rows as document_blocks
 // holds, four, and compared as many present nodes; no difference names any of the four blocks; and
-// the gone block holds no projection row, which is the assertion dispatch://INFRA-1149's census
+// the gone block holds no projection row, which is the assertion cybermonklabs/legion#3178's census
 // keeps. The proposed requirement then moves to settled and the settled one to overtaken, and the
 // census reads the same again.
 func TestCensusCountsEveryNodeThatIsNotGone(t *testing.T) {

@@ -25,7 +25,7 @@ import (
 // not per request). Every read and write of that record is here; the routes that call them are
 // their own.
 //
-// A run is an interaction node of the node and tuple store (dispatch://INFRA-1950/spec#b-r-interaction),
+// A run is an interaction node of the node and tuple store (spec requirement r-interaction),
 // and its two tables are that node's projections: going_requests projects the node, its author
 // column the node's made_by, and each going_events row projects one frame value of it. Every
 // writer here writes the node or the value first and then the row, in one transaction
@@ -34,7 +34,7 @@ import (
 //
 // A run is kept, its row, its frames and its node, until `envoy-dispatch erase --node
 // interaction:<uuid>` erases all three in one transaction (grapherase): a node of the store is
-// removed by erasure alone (dispatch://INFRA-1950/spec#b-r-interaction). Nothing here deletes a
+// removed by erasure alone (spec requirement r-interaction). Nothing here deletes a
 // run. During a roll, and after a rollback, a process of the release before still deletes a run
 // an hour old (contracts.GoingRequestTTL, which this build reads nowhere); the backfill states its
 // node gone (graphcensus's backfillGoneRuns).
@@ -546,7 +546,7 @@ var goingEveryOverdueRun = goingOverdueRead("")
 // that was answering one may have died, and nobody may be reading it. An older run is the boot
 // pass's, or its reader's, as goingSweepWindow says.
 // It deletes no run: a run is kept, row, frames and node, until an erase removes it
-// (dispatch://INFRA-1950/spec#b-r-interaction), where the release before deleted every run past
+// (spec requirement r-interaction), where the release before deleted every run past
 // contracts.GoingRequestTTL. That value is read nowhere in this build.
 func sweepGoingRequests(ctx context.Context, pool *store.Pool) error {
 	_, err := endOverdueGoingRuns(ctx, pool, goingOverdueRuns, goingTerminalNames, goingSweepWindow.Seconds())
