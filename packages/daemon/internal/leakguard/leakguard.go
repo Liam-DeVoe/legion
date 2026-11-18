@@ -57,10 +57,12 @@ type Options struct {
 	// Visibility is the REST read of what GitHub reports a repository slug ("owner/name"). Nil is
 	// the ordinary case, gh's REST read with headers (Guard.ghVisibility). It replaces that first
 	// read alone: a read it refuses for a spent rate limit still goes on to the GraphQL read and
-	// ls-remote (Guard.Visibility), which a test stands gh and git in for on Env's PATH.
+	// ls-remote, and one that failed on its connection (a *transportError) to curl and ls-remote
+	// (Guard.Visibility), which a test stands gh, curl and git in for on Env's PATH.
 	Visibility func(ctx context.Context, slug string) (Visibility, error)
-	// Clock supplies the time and bounded wait of a rate-limited visibility read, the cap of the
-	// read with no credential (lsRemoteBound), and the time a stopped child ran. Nil is wall time.
+	// Clock supplies the time and bounded wait of a rate-limited visibility read, the caps of gh's
+	// REST read (ghReadBound), of the read through curl (curlBound) and of the read with no
+	// credential (lsRemoteBound), and the time a stopped child ran. Nil is wall time.
 	Clock Clock
 	// OnVisibility observes the source of a successful visibility answer. A caller uses it for
 	// audit logging and leaves it nil when it has no audit record of its own.
