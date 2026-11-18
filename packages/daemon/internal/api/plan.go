@@ -135,7 +135,8 @@ func (s *server) registerPlan(w http.ResponseWriter, r *http.Request) {
 	}
 	// Both checks run, so a plan with two causes gets two reasons: what this release does not
 	// carry out yet, then what no release can.
-	refusals := append(plan.Supported(given), plan.Validate(given, plan.Deployment{Roles: plan.BuiltinRoles()})...)
+	deployment := plan.Deployment{Roles: plan.BuiltinRoles()}
+	refusals := append(plan.Supported(given, deployment), plan.Validate(given, deployment)...)
 	if len(refusals) > 0 {
 		writeRefusal(w, intake.PlanRefused(refusals))
 		return

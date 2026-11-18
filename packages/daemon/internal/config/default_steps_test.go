@@ -88,10 +88,10 @@ func TestDefaultStepsAreReadAndRefused(t *testing.T) {
 		{name: "a role nobody defines", value: "[implementer, checker]",
 			refusal: "projects.ACME.default_steps: step 2 of task default names the role checker, which neither the deployment nor the plan defines."},
 		{name: "a step that reads a pull request before the implementer", value: "[reviewer, implementer]",
-			refusal: "projects.ACME.default_steps: step 1 of task default names reviewer, and no step before it names the role implementer, whose pull request reviewer reads." + yet},
+			refusal: "projects.ACME.default_steps: step 1 of task default names reviewer, and no step before it names the role implementer, whose pull request reviewer reads; a role of this deployment that reports pass or fail needs none." + yet},
 		{name: "a cause of each check", value: "[checker, reviewer]",
 			refusal: "projects.ACME.default_steps: task default has no step implementer." + yet +
-				" step 2 of task default names reviewer, and no step before it names the role implementer, whose pull request reviewer reads." + yet +
+				" step 2 of task default names reviewer, and no step before it names the role implementer, whose pull request reviewer reads; a role of this deployment that reports pass or fail needs none." + yet +
 				" step 1 of task default names the role checker, which neither the deployment nor the plan defines."},
 		{name: "a key", value: "[implementer, reviewer:r]",
 			refusal: "projects.ACME.default_steps: step 2 of task default names the key r." + yet},

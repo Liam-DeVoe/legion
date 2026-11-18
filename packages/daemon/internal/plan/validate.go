@@ -46,13 +46,14 @@ func Validate(p Plan, d Deployment) []Refusal {
 
 // Supported is what this release does not carry out yet (C6): more than one task, a role block,
 // and, for each task, `needs`, `owner`, `part_of` and `merges`, each key but the owner's on
-// acceptance, acceptance with no key, a role named at two steps, no implementer, and each step
-// of a role that reads the implementer's pull request with no implementer step before it. Its
-// steps stand in any other order: the planner at any place, and the tester, the reviewer and the
-// acceptance in any order after the implementer. A task that names no steps runs the project's
-// default steps, which the configuration loader holds to these same checks, so none of its step
-// causes apply.
-func Supported(p Plan) []Refusal {
+// acceptance, acceptance with no key, a role named at two steps, no implementer, each step of a
+// role that reads the implementer's pull request with no implementer step before it, and each
+// step after the implementer's whose role d gives the type implementation, since Legion's retro
+// is done by the implementer. Its steps stand in any other order: the planner at any place, the
+// tester, the reviewer and the acceptance in any order after the implementer, and a role of the
+// deployment at any place. A task that names no steps runs the project's default steps, which the
+// configuration loader holds to these same checks, so none of its step causes apply.
+func Supported(p Plan, d Deployment) []Refusal {
 	var refusals []Refusal
 	if len(p.Tasks) > 1 {
 		ids := make([]string, len(p.Tasks))
@@ -66,7 +67,7 @@ func Supported(p Plan) []Refusal {
 		refusals = append(refusals, Refusal{Reason: "the plan defines the role " + role + "." + notYet})
 	}
 	for _, task := range p.Tasks {
-		for _, reason := range taskReasons(task) {
+		for _, reason := range taskReasons(task, d) {
 			refusals = append(refusals, Refusal{Task: task.ID, Reason: reason + notYet})
 		}
 	}
@@ -74,7 +75,7 @@ func Supported(p Plan) []Refusal {
 }
 
 // taskReasons is Supported's causes in one task: its attributes first, then its steps (stepReasons).
-func taskReasons(t Task) []string {
+func taskReasons(t Task, d Deployment) []string {
 	var reasons []string
 	if len(t.Needs) > 0 {
 		reasons = append(reasons, fmt.Sprintf("task %s needs %s.", t.ID, strings.Join(t.Needs, ", ")))
@@ -89,7 +90,7 @@ func taskReasons(t Task) []string {
 		reasons = append(reasons, fmt.Sprintf("task %s names merges.", t.ID))
 	}
 	if t.HasSteps {
-		reasons = append(reasons, stepReasons(t)...)
+		reasons = append(reasons, stepReasons(t, d)...)
 	}
 	return reasons
 }
@@ -98,21 +99,23 @@ func taskReasons(t Task) []string {
 // the tester and the reviewer judge its head, and the owner's acceptance reads the evidence of it.
 // The implementer's move on waits for that pull request (the workflow's guard hasOpenOrMergedPR),
 // so such a step with no implementer step before it has no pull request to read, and this release
-// refuses it; a later release that gives such a step another pull request to read takes it. The
-// role decides, never the step's type.
+// refuses it; a later release that gives such a step another pull request to read takes it. A
+// role of the deployment reports pass or fail and reads no pull request, so it stands anywhere.
+// The role decides, never the step's type.
 var readsPullRequest = map[string]bool{"tester": true, "reviewer": true, "acceptance": true}
 
 // stepReasons is Supported's causes in the steps of t, in this order: each step's key, in step
-// order; each role named at two steps, at its first two; no implementer; and each step of a role
-// that reads a pull request with no implementer step before it, in step order, named by its word
-// as the plan writes it.
-func stepReasons(t Task) []string {
+// order; each role named at two steps, at its first two; no implementer; each step of a role that
+// reads a pull request with no implementer step before it, in step order, named by its word as the
+// plan writes it; and each step after the implementer's whose role d gives the type
+// implementation, in step order.
+func stepReasons(t Task, d Deployment) []string {
 	var keys, twice []string
 	firstAt := map[string]int{}
 	var roles []string // each role once, in the order of its first step
 	secondAt := map[string]int{}
-	hasImplementer := false // a step of the implementer stands before this one
-	var unopened []string
+	implementerAt := 0 // the place of the first step of the implementer, 0 before it
+	var unopened, retro []string
 	for i, step := range t.Steps {
 		at := i + 1
 		switch {
@@ -127,11 +130,17 @@ func stepReasons(t Task) []string {
 		} else if _, seen := secondAt[step.Role]; !seen {
 			secondAt[step.Role] = at
 		}
-		if readsPullRequest[step.Role] && !hasImplementer {
-			unopened = append(unopened, fmt.Sprintf("step %d of task %s names %s, and no step before it names the role implementer, whose pull request %s reads.",
+		if readsPullRequest[step.Role] && implementerAt == 0 {
+			unopened = append(unopened, fmt.Sprintf("step %d of task %s names %s, and no step before it names the role implementer, whose pull request %s reads; a role of this deployment that reports pass or fail needs none.",
 				at, t.ID, step, step))
 		}
-		hasImplementer = hasImplementer || step.Role == "implementer"
+		if implementerAt > 0 && step.Role != "implementer" && d.Roles[step.Role].Type == TypeImplementation {
+			retro = append(retro, fmt.Sprintf("task %s names %s at step %d, a step of the type implementation after the step implementer at step %d, and Legion's retro is done by the implementer in this release.",
+				t.ID, step.Role, at, implementerAt))
+		}
+		if implementerAt == 0 && step.Role == "implementer" {
+			implementerAt = at
+		}
 	}
 	for _, role := range roles {
 		if second, ok := secondAt[role]; ok {
@@ -139,8 +148,9 @@ func stepReasons(t Task) []string {
 		}
 	}
 	reasons := append(keys, twice...)
-	if !hasImplementer {
+	if implementerAt == 0 {
 		reasons = append(reasons, fmt.Sprintf("task %s has no step implementer.", t.ID))
 	}
-	return append(reasons, unopened...)
+	reasons = append(reasons, unopened...)
+	return append(reasons, retro...)
 }

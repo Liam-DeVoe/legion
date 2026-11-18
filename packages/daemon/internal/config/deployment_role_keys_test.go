@@ -146,7 +146,10 @@ func TestAHooksRolesAndDefaultStepsTakeARoleOfTheDeployment(t *testing.T) {
 			"projects.DEMO.default_steps: step 2 of task default names the role checker, which neither the deployment nor the plan defines."},
 		{"default_steps this release refuses for another cause", configFileWith(t, steps("  DEMO: {default_steps: [tester]}\n")),
 			"projects.DEMO.default_steps: task default has no step implementer. This release of Legion does not carry it out yet. " +
-				"step 1 of task default names tester, and no step before it names the role implementer, whose pull request tester reads. This release of Legion does not carry it out yet."},
+				"step 1 of task default names tester, and no step before it names the role implementer, whose pull request tester reads; a role of this deployment that reports pass or fail needs none. This release of Legion does not carry it out yet."},
+		{"default_steps whose role of the deployment does implementation work after the implementer",
+			configFileWith(t, steps("  DEMO: {default_steps: [implementer, checker]}\n")+strings.Replace(checkerRole, "type: testing", "type: implementation", 1), "checker.md"),
+			"projects.DEMO.default_steps: task default names checker at step 2, a step of the type implementation after the step implementer at step 1, and Legion's retro is done by the implementer in this release. This release of Legion does not carry it out yet."},
 		{"a refusal of an earlier key first", configFileWith(t, steps("  DEMO: {default_steps: [tester]}\n")+"admission_cap: 0\n"),
 			"admission_cap must be a positive integer"},
 	} {
