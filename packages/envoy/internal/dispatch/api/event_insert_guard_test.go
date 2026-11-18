@@ -6,10 +6,13 @@
 package api
 
 import (
+	"fmt"
 	"go/ast"
-	"os"
+	"go/parser"
+	"go/token"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -17,10 +20,12 @@ import (
 // brokerEventInsert is the one source file allowed to insert an event.
 const brokerEventInsert = "internal/dispatch/events/broker.go"
 
-// eventInsertStatement is an insert into events in each spelling Postgres resolves to the table:
-// bare, schema-qualified, and either part quoted. The statements the scan reads are lowercased
-// with their whitespace collapsed (sqlStatements), so one optional space stands for any.
-var eventInsertStatement = regexp.MustCompile(`\binsert into (?:"?public"? ?\. ?)?"?events\b`)
+// eventInsertStatement is a statement that writes rows into events: an insert, a merge, or a copy
+// from a client or a file, with the table in each spelling Postgres resolves to it (bare,
+// schema-qualified, and either part quoted). A copy to a client reads, and is not one. The
+// statements the scan reads are lowercased with their whitespace collapsed (sqlStatements), so one
+// optional space stands for any.
+var eventInsertStatement = regexp.MustCompile(`\b(?:insert into|merge into) (?:"?public"? ?\. ?)?"?events\b|\bcopy (?:"?public"? ?\. ?)?"?events\b"?(?: ?\([^)]*\))? from\b`)
 
 // TestOnlyTheBrokerInsertsEvents enforces what every reader of the event log by id rests on: every
 // row of it is written by events.Broker.Append, which keeps two invariants no other insert would.
@@ -47,6 +52,28 @@ var eventInsertStatement = regexp.MustCompile(`\binsert into (?:"?public"? ?\. ?
 // of the module. A test inserts events directly on purpose -- a backlog to page through, a row
 // shape to serve -- so test sources are outside it, as they are outside that scan.
 func TestOnlyTheBrokerInsertsEvents(t *testing.T) {
+	t.Run("the pattern reads every statement that writes rows into events", func(t *testing.T) {
+		for _, row := range []struct {
+			statement string
+			writes    bool
+		}{
+			{"insert into events (seq, type) values (0, 't')", true},
+			{`insert into "public"."events" (seq) values (0)`, true},
+			{"merge into events e using (select $1::bigint as id) s on false when not matched then insert (id, seq) values (s.id, 0)", true},
+			{"merge into public.events e using staged s on e.id = s.id when not matched then insert (seq) values (0)", true},
+			{"copy events (id, seq, type) from stdin", true},
+			{`copy "events" from '/tmp/events.csv'`, true},
+			{"copy events to stdout", false},
+			{"copy (select id from events) to stdout", false},
+			{"insert into events_archive (id) values (1)", false},
+			{"select id from events where id > $1", false},
+		} {
+			if got := eventInsertStatement.MatchString(row.statement); got != row.writes {
+				t.Errorf("%s: read as a write into events: %t, want %t", row.statement, got, row.writes)
+			}
+		}
+	})
+
 	sources := moduleSources(t)
 	constants, err := stringConstants(sources)
 	if err != nil {
@@ -88,9 +115,16 @@ var eventInsertColumns = regexp.MustCompile(`\binsert into (?:"?public"? ?\. ?)?
 
 // eventIDSequence names the sequence the events id default draws from: by its name, bare, quoted
 // or schema-qualified (\b holds at a quote or a dot), or through pg_get_serial_sequence with the
-// table in any of its spellings. The migrations' guard (migrationEventIDGuard) reads the same
-// pattern, and this test holds it to that.
-var eventIDSequence = regexp.MustCompile(`\bevents_id_seq\b|pg_get_serial_sequence\(\s*'\s*(?:"?public"?\s*\.\s*)?"?events"?\s*'`)
+// table in any of its spellings, or with a table argument that is no string literal (a parameter,
+// a variable, a dollar-quoted string), which no reading of the text can rule out. The migrations'
+// guard (migrationEventIDGuard) binds the same pattern, and this test holds it to that.
+var eventIDSequence = regexp.MustCompile(`\bevents_id_seq\b|pg_get_serial_sequence\(\s*'\s*(?:"?public"?\s*\.\s*)?"?events"?\s*'|pg_get_serial_sequence\(\s*[^'\s]`)
+
+// eventDerivedTable is a table made from events: one that inherits from it or is a partition of
+// it, whose rows are rows of events written under a lock on that table and not on events, or one
+// made `like events`, which can take events' id default. The migrations' schema is held to the
+// same by store.TestOnlyTheEventsIDDefaultDrawsFromItsSequence, which reads the catalog.
+var eventDerivedTable = regexp.MustCompile(`\binherits ?\([^)]*\bevents\b|\bpartition of (?:"?public"? ?\. ?)?"?events\b|\( ?like (?:"?public"? ?\. ?)?"?events\b`)
 
 // migrationEventIDGuard is store.TestNoMigrationDrawsAnEventIDOutsideTheInsertDefault's file: the
 // server runs its embedded migrations too, and that test holds their SQL to eventIDSequence.
@@ -110,6 +144,9 @@ const seedTool = "cmd/dispatch-seed/"
 func eventIDOffences(path, statement string) (offences []string, lists int) {
 	if eventIDSequence.MatchString(statement) && !(strings.HasSuffix(path, seedSequenceReset) && strings.Contains(statement, "setval(")) {
 		offences = append(offences, path+": names the events id sequence: "+statement)
+	}
+	if eventDerivedTable.MatchString(statement) {
+		offences = append(offences, path+": makes a table from events, which takes its id default or holds its rows: "+statement)
 	}
 	for _, insert := range eventInsertColumns.FindAllStringSubmatch(statement, -1) {
 		if insert[1] == "" {
@@ -154,6 +191,48 @@ func eventCopies(file *ast.File, constants map[string]string) int {
 	return copies
 }
 
+// migrationPattern is the pattern the file at path binds migrationEventIDSequence to: the string
+// literal its package-level `var migrationEventIDSequence = regexp.MustCompile(...)` passes. It
+// reads the declaration, not the text, so a second variable or a comment holding a pattern
+// cannot stand in for the one the migrations' guard reads.
+func migrationPattern(path string) (string, error) {
+	file, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.SkipObjectResolution)
+	if err != nil {
+		return "", err
+	}
+	var patterns []string
+	for _, declaration := range file.Decls {
+		general, ok := declaration.(*ast.GenDecl)
+		if !ok || general.Tok != token.VAR {
+			continue
+		}
+		for _, spec := range general.Specs {
+			value, ok := spec.(*ast.ValueSpec)
+			if !ok || len(value.Names) != 1 || value.Names[0].Name != "migrationEventIDSequence" || len(value.Values) != 1 {
+				continue
+			}
+			call, ok := value.Values[0].(*ast.CallExpr)
+			if !ok || len(call.Args) != 1 {
+				return "", fmt.Errorf("%s: migrationEventIDSequence is not bound to a call of one argument", path)
+			}
+			function, ok := call.Fun.(*ast.SelectorExpr)
+			literal, isLiteral := call.Args[0].(*ast.BasicLit)
+			if !ok || function.Sel.Name != "MustCompile" || !isLiteral || literal.Kind != token.STRING {
+				return "", fmt.Errorf("%s: migrationEventIDSequence is not regexp.MustCompile of a string literal", path)
+			}
+			pattern, err := strconv.Unquote(literal.Value)
+			if err != nil {
+				return "", err
+			}
+			patterns = append(patterns, pattern)
+		}
+	}
+	if len(patterns) != 1 {
+		return "", fmt.Errorf("%s declares migrationEventIDSequence %d times, want once", path, len(patterns))
+	}
+	return patterns[0], nil
+}
+
 // TestOnlyAnEventInsertsDefaultDrawsAnEventID enforces the other half of what the safe horizon's
 // proof rests on (events/horizon.go, "Safe horizon"): an event id is drawn only by the column
 // default of the insert that writes its row, so the writer holds RowExclusiveLock on events
@@ -163,14 +242,18 @@ func eventCopies(file *ast.File, constants map[string]string) int {
 // an insert naming the id) would hold an id the lock table cannot yet show, and the horizon would
 // pass it while it is open. So no statement may name events_id_seq but dispatch-seed's offline
 // setval, every insert into events lists its columns, without id: a list that leaves id out
-// leaves it to the default, and an insert with no list fills id by position. And no source but
-// dispatch-seed's copies rows into events, which writes them through no insert at all.
+// leaves it to the default, and an insert with no list fills id by position. No source but
+// dispatch-seed's copies rows into events, which writes them through no insert at all. And no
+// statement makes a table from events (inherits, partition of, like): a child's or a partition's
+// rows are rows of events written under a lock on another table, and a table made like events can
+// take its id default.
 //
 // Its reach is TestOnlyTheBrokerInsertsEvents's: the module's non-test Go sources as the scan
 // assembles their statements. The migrations' SQL, which the server also runs, is
-// migrationEventIDGuard's. Other SQL is outside both: loadtest/stack.sh's extend_events lists its
-// columns without id and runs only on a database no Dispatch serves (the seed template, or after
-// the seed stopped Dispatch).
+// migrationEventIDGuard's, and the schema they build is
+// store.TestOnlyTheEventsIDDefaultDrawsFromItsSequence's. Other SQL is outside all three:
+// loadtest/stack.sh's extend_events lists its columns without id and runs only on a database no
+// Dispatch serves (the seed template, or after the seed stopped Dispatch).
 func TestOnlyAnEventInsertsDefaultDrawsAnEventID(t *testing.T) {
 	t.Run("the patterns read every spelling of the table and of its sequence", func(t *testing.T) {
 		for _, row := range []struct {
@@ -196,6 +279,17 @@ func TestOnlyAnEventInsertsDefaultDrawsAnEventID(t *testing.T) {
 			{"a.go", "insert into events_archive (id, seq) values ($1, 0)", nil},
 			{"a.go", "select id, seq from events where id > $1", nil},
 			{"../../../" + seedSequenceReset, "select setval('events_id_seq', $1)", nil},
+			{"a.go", "select nextval(pg_get_serial_sequence($1, 'id'))", []string{"names the events id sequence"}},
+			{"a.go", "select nextval(pg_get_serial_sequence($$events$$, 'id'))", []string{"names the events id sequence"}},
+			{"a.go", "select pg_get_serial_sequence(table_name, 'id') from targets", []string{"names the events id sequence"}},
+			{"a.go", "select pg_get_serial_sequence('issues', 'id')", nil},
+			{"a.go", "create table event_children () inherits (events)", []string{"makes a table from events"}},
+			{"a.go", `create table staged (note text) inherits (issues, "public"."events")`, []string{"makes a table from events"}},
+			{"a.go", "create table events_2027 partition of events for values from (1) to (2)", []string{"makes a table from events"}},
+			{"a.go", "create table staged (like events including defaults)", []string{"makes a table from events"}},
+			{"a.go", "create table staged (like public.events including all)", []string{"makes a table from events"}},
+			{"a.go", "create table staged (like events_archive including all)", nil},
+			{"a.go", "select count(*) from events where type like 'events.%'", nil},
 		} {
 			offences, _ := eventIDOffences(row.path, row.statement)
 			if len(offences) != len(row.refused) {
@@ -209,14 +303,15 @@ func TestOnlyAnEventInsertsDefaultDrawsAnEventID(t *testing.T) {
 			}
 		}
 	})
-	t.Run("the migrations' guard reads the same sequence pattern", func(t *testing.T) {
-		source, err := os.ReadFile(filepath.Join(moduleRoot, migrationEventIDGuard))
+	t.Run("the migrations' guard binds the same sequence pattern", func(t *testing.T) {
+		pattern, err := migrationPattern(filepath.Join(moduleRoot, migrationEventIDGuard))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(string(source), "`"+eventIDSequence.String()+"`") {
-			t.Fatalf("%s does not spell eventIDSequence's pattern, %s: the migrations would be held to "+
-				"a different reading of the sequence than the Go sources are", migrationEventIDGuard, eventIDSequence)
+		if pattern != eventIDSequence.String() {
+			t.Fatalf("%s binds migrationEventIDSequence to %s, not eventIDSequence's %s: the migrations would "+
+				"be held to a different reading of the sequence than the Go sources are",
+				migrationEventIDGuard, pattern, eventIDSequence)
 		}
 	})
 

@@ -10,9 +10,10 @@ import (
 
 // migrationEventIDSequence names the sequence the events id default draws from: by its name, bare,
 // quoted or schema-qualified, or through pg_get_serial_sequence with the table in any of its
-// spellings. It is api.eventIDSequence's pattern, and api.TestOnlyAnEventInsertsDefaultDrawsAnEventID
-// fails when the two differ.
-var migrationEventIDSequence = regexp.MustCompile(`\bevents_id_seq\b|pg_get_serial_sequence\(\s*'\s*(?:"?public"?\s*\.\s*)?"?events"?\s*'`)
+// spellings or with a table argument that is no string literal (a variable, a dollar-quoted
+// string). It is api.eventIDSequence's pattern, and api.TestOnlyAnEventInsertsDefaultDrawsAnEventID
+// fails when this declaration binds another.
+var migrationEventIDSequence = regexp.MustCompile(`\bevents_id_seq\b|pg_get_serial_sequence\(\s*'\s*(?:"?public"?\s*\.\s*)?"?events"?\s*'|pg_get_serial_sequence\(\s*[^'\s]`)
 
 // migrationEventIDOffences is each place in a migration's SQL that names the events id sequence,
 // as "<path>:<line>: <match>".
@@ -33,7 +34,10 @@ func migrationEventIDOffences(path, sql string) []string {
 // before its writer holds RowExclusiveLock on events. The safe horizon dates a writer by that lock
 // (events/horizon.go, "Safe horizon"), so it would pass such an id while the transaction holding
 // it is still open. No migration may name the sequence; one that must (to alter it) needs its own
-// reading of why the horizon still holds, and an exemption here that says so.
+// reading of why the horizon still holds, and an exemption here that says so. A migration can
+// also hand events' id default to another table without naming the sequence (like events
+// including defaults, inherits, partition of), which no reading of the text sees:
+// TestOnlyTheEventsIDDefaultDrawsFromItsSequence reads the migrated catalog for that.
 func TestNoMigrationDrawsAnEventIDOutsideTheInsertDefault(t *testing.T) {
 	t.Run("the pattern reads each shape that draws from the sequence", func(t *testing.T) {
 		for _, row := range []struct {
@@ -49,6 +53,10 @@ func TestNoMigrationDrawsAnEventIDOutsideTheInsertDefault(t *testing.T) {
 			{"pg_get_serial_sequence, qualified and spaced", "select pg_get_serial_sequence( ' \"public\" . \"events\" ', 'id');", 1},
 			{"the table's own definition", "create table events (\n  id bigserial primary key,\n  seq integer not null\n);", 0},
 			{"another table's sequence", "select nextval('events_archive_id_seq');", 0},
+			{"a view through pg_get_serial_sequence, dollar-quoted", "create view next_ids as select nextval(pg_get_serial_sequence($$events$$, $$id$$)) as id;", 1},
+			{"a function through pg_get_serial_sequence of a variable", "create function d(t text) returns bigint language sql as $$\n" +
+				"select nextval(pg_get_serial_sequence(t, 'id'))\n$$;", 1},
+			{"pg_get_serial_sequence of another table", "select pg_get_serial_sequence('issues', 'id');", 0},
 		} {
 			if got := migrationEventIDOffences("m.sql", row.sql); len(got) != row.found {
 				t.Errorf("%s: %d matches %q, want %d", row.shape, len(got), got, row.found)
