@@ -61,15 +61,22 @@ func linkifyParsers() []util.PrioritizedValue {
 // applies the same rule in both of its pipelines (remarkWholeEmailLinks,
 // packages/proof-editor/src/whole-email-links.ts), so the two still agree. Once both readers have
 // linked a block (CloseBlock, wholeEmailLinks), an email link that a reader made from a bare
-// address, and that starts inside a run of local-part characters (`[-.+_A-Za-z0-9]`) of the text
-// just before it, is changed. The link takes the run, whatever stands before the run (the start
-// of the text, whitespace, punctuation, a symbol, a letter outside ASCII), except a `/`. When the
-// character right before the run is `/`, the link goes, and its text joins the text around it, so
-// a resource path reads as written, as `serviceAccounts/agenthosts@example.com` always has: the
-// whole link would link `serviceAccounts/agent-hosts@example.com` and leave that one text. A link
-// the writer wrote, `[…](mailto:…)`, `[…][label]` or `<…>`, is never changed, and neither is a
-// link that already starts at its run's start: `xé-agent@example.com` keeps `-agent@example.com`,
-// since `é` is no local-part character.
+// address is read with the run of characters that RFC 5322 allows in a local part (its atext, an
+// ASCII letter or digit, a backtick or one of `!#$%&'*+-/=?^_{|}~`, and `.`) in the decoded text
+// just before it, which the link's own local part ends. The walk back stops at the first
+// character outside that set, and goes on through the label of an autolink a reader made from
+// bare text (bareAutolinkAttr) as through text. At any other node it stops: where that node's
+// text ends in a character of the set, as in `*agent*-hosts@example.com`, the writer split the
+// address with markup, and the link stays as the reader made it; after code ending in `:`, after
+// `<br>`, after a line break or at the start of the block the run starts there. When every
+// character of the run before the link is one GFM links in a local part (`[-.+_A-Za-z0-9]`), the
+// link takes the run, unless the run reaches into a reader's autolink, when both links stay. When
+// one is not, the link goes, and its text joins the text around it, so the address reads as
+// written: the `/` of a resource path, the `%` of `a.b+c_d%e-f@example.com`, the `&` of
+// `agent&amp;hosts@example.com` and the `'` of `www\.a'b@c.test`, whose www link stays, are
+// local-part characters GFM does not link. With no run before the link nothing changes:
+// `xé-agent@example.com` keeps `-agent@example.com`, since `é` ends the walk. A link the writer
+// wrote, `[…](mailto:…)`, `[…][label]` or `<…>`, is never changed.
 //
 // Asking the guard at a character no other parser is asked at ends the text goldmark is building
 // there: a line asked at a `.` and nowhere else becomes two texts. The guard records the last such
@@ -246,15 +253,13 @@ func readLiteralAddress(parent ast.Node, block text.Reader, pc parser.Context, s
 }
 
 // bareAutolink is the autolink of a bare address of kind at source offsets [start, end), whose
-// href takes an `http://` before a www URL. An email's is marked as one a reader made from a bare
-// address (bareEmailAttr), which goldmark's `<…>` autolink is not.
+// href takes an `http://` before a www URL. It is marked as one a reader made from bare text
+// (bareAutolinkAttr), which goldmark's `<…>` autolink is not.
 func bareAutolink(kind ast.AutoLinkType, www bool, start, end int) *ast.AutoLink {
 	segment := text.NewSegment(start, end)
 	link := ast.NewAutoLink(kind, ast.NewTextSegment(segment))
-	switch {
-	case kind == ast.AutoLinkEmail:
-		link.SetAttributeString(bareEmailAttr, segment)
-	case www:
+	link.SetAttributeString(bareAutolinkAttr, segment)
+	if www {
 		link.Protocol = []byte("http")
 	}
 	return link

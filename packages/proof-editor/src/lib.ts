@@ -436,6 +436,13 @@ export async function createProofEditor(
     // Register proof mark schemas, plus this library's own dispatchAsk mark
     .use(proofMarkPlugins as unknown as MilkdownPlugin[])
     .use(dispatchMarkPlugins as unknown as MilkdownPlugin[])
+    // An email link remark-gfm made from a bare address is linked whole, or not at all
+    // (./whole-email-links.ts), as in the headless parser. First of this library's remark
+    // transformers, so it reads remark-gfm's tree as Go reads its own: a mark span is still its
+    // inline HTML, and no hoisted copy of a label's link, which carries no position, is there yet.
+    // The commonmark preset's remark-inline-links runs before it, so a reference-style link reaches
+    // it with no position, and the label's text, which keeps its own, tells it from the transform's.
+    .use(libraryRemarkWholeEmailLinksPlugin)
     // Register remark plugins for proof marks and dispatchAsk parsing
     .use(remarkProofMarksPlugin)
     .use(remarkDispatchMarksPlugin)
@@ -443,11 +450,6 @@ export async function createProofEditor(
     // read it: a block of HTML becomes a paragraph holding the same text, which the schema has a
     // node for. Before the fit check below, which reads that paragraph as the block's content.
     .use(libraryRemarkHtmlBlockPlugin)
-    // An email link remark-gfm made from a bare address starts at the start of the address the
-    // writer wrote, or there is none (./whole-email-links.ts), as in the headless parser. Before
-    // the hoist below, whose copies of a label's link carry no position, so every link it reads is
-    // one the parse made.
-    .use(libraryRemarkWholeEmailLinksPlugin)
     // Last of the remark plugins that shape inline content, so the links it splits are every link
     // the tree holds: a link inside a link label (an autolink, the only nesting CommonMark allows)
     // is hoisted beside the runs around it (./nested-links.ts). `$remark` puts it in `remarkCtx`,

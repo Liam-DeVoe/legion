@@ -87,13 +87,13 @@ const APP_PARSE_PLUGINS = [
   "remarkParse",
   "remarkFrontmatter",
   "remarkGfm",
+  "remarkWholeEmailLinks",
   "remarkContainerDirectives",
   "remarkStrictHtmlFlow",
   "remarkProofMarks",
   "remarkDispatchMarks",
   "remarkHtmlBlockParagraphs",
   "remarkInlineLinks",
-  "remarkWholeEmailLinks",
   "remarkHoistNestedLinks",
 ];
 
@@ -110,13 +110,13 @@ const answerParser = unified()
   .use(remarkParse)
   .use(remarkFrontmatter, ["yaml"])
   .use(remarkGfm)
+  .use(remarkWholeEmailLinks)
   .use(remarkContainerDirectives)
   .use(remarkStrictHtmlFlow)
   .use(remarkProofMarks)
   .use(remarkDispatchMarks)
   .use(remarkHtmlBlockParagraphs)
   .use(remarkInlineLinks)
-  .use(remarkWholeEmailLinks)
   .use(remarkHoistNestedLinks)
   .use(remarkSoftBreakAsSpace);
 

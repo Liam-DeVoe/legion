@@ -20,10 +20,12 @@ body: |-
   a paragraph that opens with a code span no longer hides the decisions after it from the
   stale-link check, and each decision is compared by the cut of its own heading, so a heading of
   the same name inside a quote or a list item no longer shifts it onto another decision's text.
-  Dispatch links an email address whole, or not at all: a link that a reader made from a bare
-  address takes the whole run of local-part characters before it, and there is no link where a
-  `/` stands right before that run. So a resource path such as
-  `projects/p/serviceAccounts/agent-hosts@example.com` is stored as written, and is no longer
-  stored as `agent-[hosts@example.com](mailto:hosts@example.com)`, which `dispatch artifact`
-  refused. A link the writer wrote is never changed. The browser editor reads by the same rule,
+  Dispatch links an email address whole, or not at all. For a link that a reader made from a bare
+  address, it takes the run of characters an RFC 5322 local part allows that ends at the `@`, as
+  the text decodes: the link is that whole run where GFM links every character of it, and there is
+  no link otherwise. So a resource path such as `projects/p/serviceAccounts/agent-hosts@example.com`
+  is stored as written, and is no longer stored as
+  `agent-[hosts@example.com](mailto:hosts@example.com)`, which `dispatch artifact` refused, and so
+  is `a.b+c_d%e-f@example.com`. An address split by inline markup keeps its earlier reading, and a
+  link the writer wrote is never changed. The browser editor reads by the same rule,
   and the display tree version is now 4, so every display tree stored before is read again.

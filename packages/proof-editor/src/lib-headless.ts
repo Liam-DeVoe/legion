@@ -165,6 +165,12 @@ export async function createHeadlessProof(options: HeadlessProofOptions = {}): P
       .use(remarkParse)
       .use(remarkFrontmatter, ['yaml'])
       .use(remarkGfm)
+      // An email link remark-gfm made from a bare address is linked whole, or not at all
+      // (./whole-email-links.ts). First of the transformers after the parse, so it reads
+      // remark-gfm's tree as Go reads its own: a mark span is still its inline HTML, a
+      // reference-style link is still a reference, and no hoisted copy of a label's link, which
+      // carries no position, is there yet.
+      .use(remarkWholeEmailLinks)
       .use(remarkContainerDirectives)
       .use(remarkStrictHtmlFlow)
       .use(remarkProofMarks)
@@ -180,11 +186,6 @@ export async function createHeadlessProof(options: HeadlessProofOptions = {}): P
       // so without this the parse throws and the whole body falls back to its literal source.
       // The live editor's commonmark preset installs the same plugin on its own import parser.
       .use(remarkInlineLinks)
-      // An email link remark-gfm made from a bare address starts at the start of the address
-      // the writer wrote, or there is none (./whole-email-links.ts). Before the hoist below,
-      // whose copies of a label's link carry no position, so every link it reads is one the parse
-      // made.
-      .use(remarkWholeEmailLinks)
       // After remark-inline-links, so a reference-style link inside a label is already the link
       // this splits out: a link inside a link label is hoisted beside the runs around it, each of
       // them wrapped in a copy of the label's link, which is the tree Go's reader reads.

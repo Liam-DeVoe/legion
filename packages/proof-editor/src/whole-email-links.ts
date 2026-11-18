@@ -12,16 +12,29 @@
  * `projects/p/serviceAccounts/agent-hosts@example.com` links `hosts@example.com`.
  *
  * The rule here is Dispatch's own, and Go's reader of the same document applies it too
- * (`packages/envoy/internal/dispatch/pmdoc/linkify.go`), so the two still agree. An email link
- * that a reader made from a bare address, and that starts inside a run of local-part characters
- * (`[-.+_A-Za-z0-9]`) of the text just before it, is changed. The link takes the run, whatever
- * stands before the run (the start of the text, whitespace, punctuation, a symbol, a letter
- * outside ASCII), except a `/`. When the character right before the run is `/`, the link goes,
- * and its text joins the text around it: a resource path reads as written, as
- * `serviceAccounts/agenthosts@example.com` always has. A link the writer wrote, `[…](mailto:…)`,
- * `[…][label]` or `<…>`, is never changed, and neither is a link that already starts at its
- * run's start: `xé-agent@example.com` keeps `-agent@example.com`, since `é` is no local-part
- * character.
+ * (`packages/envoy/internal/dispatch/pmdoc/linkify.go`), so the two still agree. It reads an email
+ * link that a reader made from a bare address, and the run of characters that RFC 5322 allows in
+ * a local part, its `atext` (``A-Za-z0-9!#$%&'*+-/=?^_`{|}~``) and `.`, in the decoded text just
+ * before the link: the run ends at the link's own local part, so with it, it ends at the `@`. A
+ * character reference counts as its character, and so does an escape. The walk back stops at the
+ * first character outside that set (whitespace, a line break, a letter outside ASCII such as `é`,
+ * any other character). A link a reader made from bare text (`bareLinkText`: a web address, a
+ * `www.` one or an email) is no markup, so the walk goes on through its text as through text.
+ * Any other node ends the walk: the run continues into it only when its text ends in a character
+ * of the set (`endsInRunCharacter`), and then the writer split the address with markup, as in
+ * `*agent*-hosts@example.com`, the run is not one run, and the link stays as remark-gfm made it.
+ * Before any other node, as `` `SA:` `` or `<br>`, and at the start of the block, the run starts
+ * there. Then, when every character of the run before the link's own text is one GFM links in a
+ * local part (`[-.+_A-Za-z0-9]`), the link takes the run: `x agent&#45;hosts@example.com` links
+ * `agent-hosts@example.com`. When one is not, the link goes, and its text joins the text around
+ * it, so the address reads as written: the `/` of
+ * `projects/p/serviceAccounts/agent-hosts@example.com`, the `%` of `a.b+c_d%e-f@example.com` and
+ * the `&` of `agent&amp;hosts@example.com` are local-part characters GFM does not link, and
+ * `www\.a'b@c.test` keeps its link to `www.a` and loses `b@c.test`. A run of GFM's characters
+ * that reaches into a link a reader made leaves both links as they are, since one link never
+ * takes another's text. With no run before the link nothing changes: `xé-agent@example.com`
+ * keeps `-agent@example.com`, since `é` ends the walk. A link the writer wrote, `[…](mailto:…)`,
+ * `[…][label]` or `<…>`, is never changed.
  *
  * Import only, as `./nested-links.ts` is: a unified transformer runs on parse and never on
  * `stringify`, so registering it on the editor's shared remark processor cannot change what the
@@ -57,38 +70,89 @@ function isLocalPart(code: number): boolean {
   );
 }
 
+/** Whether `code` is a character RFC 5322 allows in a local part: its `atext`, or `.`. */
+function isAtext(code: number): boolean {
+  switch (code) {
+    case 33: // !
+    case 35: // #
+    case 36: // $
+    case 37: // %
+    case 38: // &
+    case 39: // '
+    case 42: // *
+    case 47: // /
+    case 61: // =
+    case 63: // ?
+    case 94: // ^
+    case 96: // `
+    case 123: // {
+    case 124: // |
+    case 125: // }
+    case 126: // ~
+      return true;
+  }
+  return isLocalPart(code);
+}
+
 function isText(node: MdastNode | undefined): node is TextNode {
   return node?.type === "text" && typeof node.value === "string";
 }
 
 /**
- * The text of `node` when `node` is an email link remark-gfm made from a bare address, else
- * undefined. Such a link holds one text, and its url is that text after `mailto:`. The
- * transform's link and its text carry no position: `findEmail`
- * (`mdast-util-gfm-autolink-literal/lib/index.js:197`) builds both, and
- * `mdast-util-find-and-replace/lib/index.js:164-193` splices them in as they are. The
- * tokenizer's link starts in the source at its address's first character, which is a local-part
- * character. A link the writer wrote starts at its `[` or its `<`, even when its text starts
- * with a `[` too, or, when remark-inline-links made it from a reference, carries no position
- * while its text, the label's, does.
+ * Whether the text `node` shows ends in a character of an email's run (`isAtext`): a text's, an
+ * inline code's or an inline HTML's own value ends in its last character, and a node holding
+ * inline children (a link of any kind, emphasis, strong, strikethrough) in its last child's. An
+ * image, a break and a footnote reference hold no text.
  */
-function bareAddress(node: MdastNode, source: string): TextNode | undefined {
+function endsInRunCharacter(node: MdastNode): boolean {
+  if (typeof node.value === "string") {
+    return node.value !== "" && isAtext(node.value.charCodeAt(node.value.length - 1));
+  }
+  const last = node.children?.at(-1);
+  return last !== undefined && endsInRunCharacter(last);
+}
+
+/**
+ * The text of `node` when `node` is a link remark-gfm made from bare text, an email or a web
+ * address, else undefined. Such a link holds one text, and its url is that text, or that text
+ * after the scheme the reader adds: a `www.` link's `http://`, an email's `mailto:`. The
+ * transform's link and its text carry no position: `findUrl` and `findEmail`
+ * (`mdast-util-gfm-autolink-literal/lib/index.js:197`) build both, and
+ * `mdast-util-find-and-replace/lib/index.js:164-193` splices them in as they are. The tokenizer's
+ * link starts in the source at its address's first character, which is never a `[` or a `<`. A
+ * link the writer wrote starts at its `[` or its `<`, even when its text starts with a `[` too,
+ * or, when remark-inline-links made it from a reference, carries no position while its text, the
+ * label's, does.
+ */
+function bareLinkText(node: MdastNode, source: string): TextNode | undefined {
   if (node.type !== "link" || node.children?.length !== 1) return undefined;
   const text = node.children[0];
-  if (!isText(text) || text.value === "" || node.url !== `mailto:${text.value}`) {
+  if (!isText(text) || text.value === "") return undefined;
+  const url = node.url;
+  if (url !== text.value && url !== `http://${text.value}` && url !== `mailto:${text.value}`) {
     return undefined;
   }
   if (node.position === undefined) return text.position === undefined ? text : undefined;
   const offset = node.position.start?.offset;
-  if (offset === undefined || !isLocalPart(source.charCodeAt(offset))) return undefined;
+  if (offset === undefined) return undefined;
+  const first = source.charCodeAt(offset);
+  if (first === 91 /* [ */ || first === 60 /* < */) return undefined;
   return source[offset] === text.value[0] ? text : undefined;
+}
+
+/** The text of `node` when `node` is an email link remark-gfm made from a bare address. */
+function bareAddress(node: MdastNode, source: string): TextNode | undefined {
+  const text = bareLinkText(node, source);
+  return text !== undefined && node.url === `mailto:${text.value}` ? text : undefined;
 }
 
 /**
  * Applies the rule to the children of `parent`, at any depth, in order, so a text that a removed
- * link joined is the text before the next link. A node this changes loses its position, as the
- * nodes the transform splits off do: its offsets would no longer be the source's. A parent whose
- * links all stand keeps every node and the array it came in with.
+ * link joined is the text before the next link. The text before a link is the engine's one text
+ * node there, so the node before that text, if any, is no text. The run reads a link remark-gfm
+ * made from bare text as the text it shows: it is no markup the writer wrote. A node this changes
+ * loses its position, as the nodes the transform splits off do: its offsets would no longer be
+ * the source's. A parent whose links all stand keeps every node and the array it came in with.
  */
 function wholeEmailLinks(parent: MdastNode, source: string): void {
   const children = parent.children;
@@ -97,28 +161,63 @@ function wholeEmailLinks(parent: MdastNode, source: string): void {
   while (index < children.length) {
     const child = children[index];
     const address = bareAddress(child, source);
-    const before = children[index - 1];
-    if (address === undefined || !isText(before)) {
+    if (address === undefined) {
       wholeEmailLinks(child, source);
       index += 1;
       continue;
     }
-    let start = before.value.length;
-    while (start > 0 && isLocalPart(before.value.charCodeAt(start - 1))) start -= 1;
-    if (start === before.value.length) {
+    // The run, back from the link: `length` characters, of which `linked` says whether GFM links
+    // each in a local part, starting at `start` in the text right before the link. `crossed` is
+    // whether it reaches into a link remark-gfm made, and `split` whether markup splits it.
+    const before = children[index - 1];
+    let start = isText(before) ? before.value.length : 0;
+    let length = 0;
+    let linked = true;
+    let crossed = false;
+    let split = false;
+    for (let at = index - 1; at >= 0; at -= 1) {
+      const node = children[at];
+      const label = isText(node) ? undefined : bareLinkText(node, source);
+      const value = isText(node) ? node.value : label?.value;
+      if (value === undefined) {
+        split = endsInRunCharacter(node);
+        break;
+      }
+      let end = value.length;
+      while (end > 0 && isAtext(value.charCodeAt(end - 1))) {
+        end -= 1;
+        linked &&= isLocalPart(value.charCodeAt(end));
+      }
+      length += value.length - end;
+      crossed ||= label !== undefined && end < value.length;
+      if (at === index - 1 && node === before) start = end;
+      if (end > 0) break;
+    }
+    if (length === 0 || split || (linked && crossed)) {
+      // No run, one that markup splits, or one of GFM's characters that reaches into a link
+      // remark-gfm made, which this does not join to the email's: the link stands.
       index += 1;
       continue;
     }
-    if (start > 0 && before.value.charCodeAt(start - 1) === 47 /* / */) {
+    const after = children[index + 1];
+    if (!linked) {
       // The link goes: its text and the text after it, if any, join the text before it.
-      const after = children[index + 1];
-      const joinsAfter = isText(after);
-      before.value += address.value + (joinsAfter ? after.value : "");
-      delete before.position;
-      children.splice(index, joinsAfter ? 2 : 1);
+      const tail = isText(after) ? after.value : "";
+      if (isText(before)) {
+        before.value += address.value + tail;
+        delete before.position;
+        children.splice(index, isText(after) ? 2 : 1);
+        continue;
+      }
+      address.value += tail;
+      delete address.position;
+      children.splice(index, isText(after) ? 2 : 1, address);
+      index += 1;
       continue;
     }
-    // The link takes the run, and the text before it keeps what stands before the run.
+    // The link takes the run, which lies in the text before it, and that text keeps what stands
+    // before the run.
+    if (!isText(before)) throw new Error("a run of the text before a link lies in no text");
     address.value = before.value.slice(start) + address.value;
     child.url = `mailto:${address.value}`;
     delete child.position;

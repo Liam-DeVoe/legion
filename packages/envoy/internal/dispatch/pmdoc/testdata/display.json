@@ -609,7 +609,7 @@
   },
   {
     "name": "email-links-whole-or-not-at-all",
-    "markdown": "Grant act-as on agent-hosts@theorem-research.iam.gserviceaccount.com.\n\nprojects/theorem-research/serviceAccounts/agent-hosts@theorem-research.iam.gserviceaccount.com\n\nserviceAccounts/482450377695-compute@developer.gserviceaccount.com\n\na/b.c@example.com, a/b+c@example.com and a/b_c@example.com\n\nserviceAccounts/agenthosts@example.com\n\nx agent\u0026#45;hosts@example.com\n\nprojects/p/serviceAccounts/agent-hosts\\@example.com\n\nxé-agent@example.com\n\nxé\u0026#45;hosts@example.com\n\nx $agent\u0026#45;hosts@example.com\n\n- agent-hosts@example.com\n- x agent-hosts@example.com\n\n:::callout{kind=\"note\"}\n- agent-hosts@example.com\n- x agent-hosts@example.com\n:::\n\n\u003e projects/p/serviceAccounts/agent-hosts@example.com\n\n| Account |\n| --- |\n| projects/p/serviceAccounts/agent-hosts@example.com |\n| x agent\u0026#45;hosts@example.com |\n\nagent-[hosts@theorem-research.iam.gserviceaccount.com](mailto:hosts@theorem-research.iam.gserviceaccount.com), agent-\u003chosts@example.com\u003e and \u003cagent-hosts@example.com\u003e\n",
+    "markdown": "Grant act-as on agent-hosts@theorem-research.iam.gserviceaccount.com.\n\nprojects/theorem-research/serviceAccounts/agent-hosts@theorem-research.iam.gserviceaccount.com\n\nserviceAccounts/482450377695-compute@developer.gserviceaccount.com\n\na/b.c@example.com, a/b+c@example.com and a/b_c@example.com\n\nserviceAccounts/agenthosts@example.com\n\nx agent\u0026#45;hosts@example.com\n\nprojects/p/serviceAccounts/agent-hosts\\@example.com\n\nxé-agent@example.com\n\nxé\u0026#45;hosts@example.com\n\nx $agent\u0026#45;hosts@example.com\n\na.b+c_d%e-f@example.com and agent\u0026amp;hosts@example.com\n\nx 'agent\u0026#45;hosts@example.com', x =agent\u0026#45;hosts@example.com, x #agent\u0026#45;hosts@example.com, x ?agent\u0026#45;hosts@example.com and x ^agent\u0026#45;hosts@example.com\n\nagent\u0026#45;hosts@example.com\n\nx\u003cbr\u003eprojects/p/serviceAccounts/agent-hosts@example.com\n\n`SA:`agent\u0026#45;hosts@example.com and \u003cspan data-proof=\"comment\" data-id=\"c1\" data-by=\"user:x\"\u003ea\u003c/span\u003egent\u0026#45;hosts@example.com\n\n*agent*-hosts@example.com, `agent`-hosts@example.com and *agent*\u0026#45;hosts@example.com\n\nwww\\.a'b@c.test and a@b.co+c@d.co\n\n- agent-hosts@example.com\n- x agent-hosts@example.com\n\n:::callout{kind=\"note\"}\n- agent-hosts@example.com\n- x agent-hosts@example.com\n:::\n\n\u003e projects/p/serviceAccounts/agent-hosts@example.com\n\n| Account |\n| --- |\n| projects/p/serviceAccounts/agent-hosts@example.com |\n| x agent\u0026#45;hosts@example.com |\n\nagent-[hosts@theorem-research.iam.gserviceaccount.com](mailto:hosts@theorem-research.iam.gserviceaccount.com), agent-\u003chosts@example.com\u003e, a/\u003chosts@example.com\u003e, [agent-hosts@example.com](mailto:agent-hosts@example.com) and \u003cagent-hosts@example.com\u003e\n",
     "latest": {
       "type": "doc",
       "content": [
@@ -751,7 +751,75 @@
           "content": [
             {
               "type": "text",
-              "text": "x $"
+              "text": "x $agent-hosts@example.com"
+            }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "a.b+c_d%e-f@example.com and agent\u0026hosts@example.com"
+            }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "x 'agent-hosts@example.com', x =agent-hosts@example.com, x #agent-hosts@example.com, x ?agent-hosts@example.com and x ^agent-hosts@example.com"
+            }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "agent-hosts@example.com",
+              "marks": [
+                {
+                  "type": "link",
+                  "attrs": {
+                    "href": "mailto:agent-hosts@example.com"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "x"
+            },
+            {
+              "type": "html",
+              "attrs": {
+                "value": "\u003cbr\u003e"
+              }
+            },
+            {
+              "type": "text",
+              "text": "projects/p/serviceAccounts/agent-hosts@example.com"
+            }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "SA:",
+              "marks": [
+                {
+                  "type": "inlineCode"
+                }
+              ]
             },
             {
               "type": "text",
@@ -761,6 +829,166 @@
                   "type": "link",
                   "attrs": {
                     "href": "mailto:agent-hosts@example.com"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": " and "
+            },
+            {
+              "type": "text",
+              "text": "a",
+              "marks": [
+                {
+                  "type": "proofComment",
+                  "attrs": {
+                    "by": "user:x",
+                    "id": "c1"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": "gent-hosts@example.com",
+              "marks": [
+                {
+                  "type": "link",
+                  "attrs": {
+                    "href": "mailto:gent-hosts@example.com"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "agent",
+              "marks": [
+                {
+                  "type": "emphasis",
+                  "attrs": {
+                    "marker": "*"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": "-hosts@example.com",
+              "marks": [
+                {
+                  "type": "link",
+                  "attrs": {
+                    "href": "mailto:-hosts@example.com"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": ", "
+            },
+            {
+              "type": "text",
+              "text": "agent",
+              "marks": [
+                {
+                  "type": "inlineCode"
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": "-hosts@example.com",
+              "marks": [
+                {
+                  "type": "link",
+                  "attrs": {
+                    "href": "mailto:-hosts@example.com"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": " and "
+            },
+            {
+              "type": "text",
+              "text": "agent",
+              "marks": [
+                {
+                  "type": "emphasis",
+                  "attrs": {
+                    "marker": "*"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": "-"
+            },
+            {
+              "type": "text",
+              "text": "hosts@example.com",
+              "marks": [
+                {
+                  "type": "link",
+                  "attrs": {
+                    "href": "mailto:hosts@example.com"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "www.a",
+              "marks": [
+                {
+                  "type": "link",
+                  "attrs": {
+                    "href": "http://www.a"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": "'b@c.test and "
+            },
+            {
+              "type": "text",
+              "text": "a@b.co",
+              "marks": [
+                {
+                  "type": "link",
+                  "attrs": {
+                    "href": "mailto:a@b.co"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": "+c@d.co",
+              "marks": [
+                {
+                  "type": "link",
+                  "attrs": {
+                    "href": "mailto:+c@d.co"
                   }
                 }
               ]
@@ -1022,6 +1250,38 @@
                   "type": "link",
                   "attrs": {
                     "href": "mailto:hosts@example.com"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": ", a/"
+            },
+            {
+              "type": "text",
+              "text": "hosts@example.com",
+              "marks": [
+                {
+                  "type": "link",
+                  "attrs": {
+                    "href": "mailto:hosts@example.com"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": ", "
+            },
+            {
+              "type": "text",
+              "text": "agent-hosts@example.com",
+              "marks": [
+                {
+                  "type": "link",
+                  "attrs": {
+                    "href": "mailto:agent-hosts@example.com"
                   }
                 }
               ]
@@ -1187,7 +1447,75 @@
           "content": [
             {
               "type": "text",
-              "text": "x $"
+              "text": "x $agent-hosts@example.com"
+            }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "a.b+c_d%e-f@example.com and agent\u0026hosts@example.com"
+            }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "x 'agent-hosts@example.com', x =agent-hosts@example.com, x #agent-hosts@example.com, x ?agent-hosts@example.com and x ^agent-hosts@example.com"
+            }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "agent-hosts@example.com",
+              "marks": [
+                {
+                  "type": "link",
+                  "attrs": {
+                    "href": "mailto:agent-hosts@example.com"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "x"
+            },
+            {
+              "type": "html",
+              "attrs": {
+                "value": "\u003cbr\u003e"
+              }
+            },
+            {
+              "type": "text",
+              "text": "projects/p/serviceAccounts/agent-hosts@example.com"
+            }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "SA:",
+              "marks": [
+                {
+                  "type": "inlineCode"
+                }
+              ]
             },
             {
               "type": "text",
@@ -1197,6 +1525,166 @@
                   "type": "link",
                   "attrs": {
                     "href": "mailto:agent-hosts@example.com"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": " and "
+            },
+            {
+              "type": "text",
+              "text": "a",
+              "marks": [
+                {
+                  "type": "proofComment",
+                  "attrs": {
+                    "by": "user:x",
+                    "id": "c1"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": "gent-hosts@example.com",
+              "marks": [
+                {
+                  "type": "link",
+                  "attrs": {
+                    "href": "mailto:gent-hosts@example.com"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "agent",
+              "marks": [
+                {
+                  "type": "emphasis",
+                  "attrs": {
+                    "marker": "*"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": "-hosts@example.com",
+              "marks": [
+                {
+                  "type": "link",
+                  "attrs": {
+                    "href": "mailto:-hosts@example.com"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": ", "
+            },
+            {
+              "type": "text",
+              "text": "agent",
+              "marks": [
+                {
+                  "type": "inlineCode"
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": "-hosts@example.com",
+              "marks": [
+                {
+                  "type": "link",
+                  "attrs": {
+                    "href": "mailto:-hosts@example.com"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": " and "
+            },
+            {
+              "type": "text",
+              "text": "agent",
+              "marks": [
+                {
+                  "type": "emphasis",
+                  "attrs": {
+                    "marker": "*"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": "-"
+            },
+            {
+              "type": "text",
+              "text": "hosts@example.com",
+              "marks": [
+                {
+                  "type": "link",
+                  "attrs": {
+                    "href": "mailto:hosts@example.com"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "www.a",
+              "marks": [
+                {
+                  "type": "link",
+                  "attrs": {
+                    "href": "http://www.a"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": "'b@c.test and "
+            },
+            {
+              "type": "text",
+              "text": "a@b.co",
+              "marks": [
+                {
+                  "type": "link",
+                  "attrs": {
+                    "href": "mailto:a@b.co"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": "+c@d.co",
+              "marks": [
+                {
+                  "type": "link",
+                  "attrs": {
+                    "href": "mailto:+c@d.co"
                   }
                 }
               ]
@@ -1458,6 +1946,38 @@
                   "type": "link",
                   "attrs": {
                     "href": "mailto:hosts@example.com"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": ", a/"
+            },
+            {
+              "type": "text",
+              "text": "hosts@example.com",
+              "marks": [
+                {
+                  "type": "link",
+                  "attrs": {
+                    "href": "mailto:hosts@example.com"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": ", "
+            },
+            {
+              "type": "text",
+              "text": "agent-hosts@example.com",
+              "marks": [
+                {
+                  "type": "link",
+                  "attrs": {
+                    "href": "mailto:agent-hosts@example.com"
                   }
                 }
               ]

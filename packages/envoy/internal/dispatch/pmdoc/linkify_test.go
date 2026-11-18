@@ -9,8 +9,11 @@ import (
 // Go links exactly what the browser editor's engine (remark-gfm) links, and leaves text where the
 // engine does. Each row's expectation is the engine's reading (gen/differential.ts), an email's
 // href its mailto: URL. The last rows are R4's (INFRA-4224), which both readers read by Dispatch's
-// own rule after remark-gfm's (wholeEmailLinks): a resource path holds no link, a character
-// reference inside an address leaves it linked whole, and an address alone is linked whole.
+// own rule after remark-gfm's (wholeEmailLinks): an address holding a character RFC 5322 allows
+// in a local part and GFM does not link, as a resource path's `/`, a `%` or a decoded `&` or `$`,
+// holds no link, a character reference inside an address of GFM's characters leaves it linked
+// whole, an address alone is linked whole, an address inline markup splits keeps remark-gfm's
+// reading, and a run reaching into a www link a reader made reads through its text.
 func TestLinkifyReadsWhatTheEngineReads(t *testing.T) {
 	for _, test := range []struct{ markdown, want string }{
 		{"mail alice@example.com now", `text "mail " | text "alice@example.com" link mailto:alice@example.com | text " now"`},
@@ -33,10 +36,21 @@ func TestLinkifyReadsWhatTheEngineReads(t *testing.T) {
 		{"a/b_c@example.com", `text "a/b_c@example.com"`},
 		{"serviceAccounts/agenthosts@example.com", `text "serviceAccounts/agenthosts@example.com"`},
 		{"x agent&#45;hosts@example.com", `text "x " | text "agent-hosts@example.com" link mailto:agent-hosts@example.com`},
+		{"agent&#45;hosts@example.com", `text "agent-hosts@example.com" link mailto:agent-hosts@example.com`},
 		{"projects/p/serviceAccounts/agent-hosts\\@example.com", `text "projects/p/serviceAccounts/agent-hosts@example.com"`},
+		{"a.b+c_d%e-f@example.com", `text "a.b+c_d%e-f@example.com"`},
+		{"agent&amp;hosts@example.com", `text "agent&hosts@example.com"`},
 		{"xé-agent@example.com", `text "xé" | text "-agent@example.com" link mailto:-agent@example.com`},
 		{"xé&#45;hosts@example.com", `text "xé" | text "-hosts@example.com" link mailto:-hosts@example.com`},
-		{"x $agent&#45;hosts@example.com", `text "x $" | text "agent-hosts@example.com" link mailto:agent-hosts@example.com`},
+		{"x $agent&#45;hosts@example.com", `text "x $agent-hosts@example.com"`},
+		{"x 'agent&#45;hosts@example.com'", `text "x 'agent-hosts@example.com'"`},
+		{"*agent*-hosts@example.com", `text "agent" | text "-hosts@example.com" link mailto:-hosts@example.com`},
+		{"*agent*&#45;hosts@example.com", `text "agent" | text "-" | text "hosts@example.com" link mailto:hosts@example.com`},
+		{"x<br>projects/p/serviceAccounts/agent-hosts@example.com", `text "x" | html "" | text "projects/p/serviceAccounts/agent-hosts@example.com"`},
+		{`<span data-proof="comment" data-id="c1" data-by="user:x">a</span>gent&#45;hosts@example.com`, `text "a" | text "gent-hosts@example.com" link mailto:gent-hosts@example.com`},
+		{"`SA:`agent&#45;hosts@example.com", `text "SA:" | text "agent-hosts@example.com" link mailto:agent-hosts@example.com`},
+		{"www\\.a'b@c.test", `text "www.a" link http://www.a | text "'b@c.test"`},
+		{"a@b.co+c@d.co", `text "a@b.co" link mailto:a@b.co | text "+c@d.co" link mailto:+c@d.co`},
 	} {
 		doc, err := Parse(test.markdown)
 		if err != nil {
@@ -61,9 +75,11 @@ func TestLinkifyReadsWhatTheEngineReads(t *testing.T) {
 //
 // The rows whose reading the rule changes come first, each with what Go and the engine read before
 // it. The rest read the same before it, and are the controls: an address alone, a path that holds
-// no `-`, `.`, `+` or `_`, a link that already starts at its run's start, and the links a writer
-// wrote, which are never changed - an early link stored explicitly, as a rendering stored before
-// the rule writes it, is written unchanged.
+// no `-`, `.`, `+` or `_`, a link that already starts at its run's start, a run of GFM's
+// characters that reaches into an email link a reader made, an address inline markup splits,
+// which keeps remark-gfm's reading, and the links a writer wrote, which are never changed - an
+// early link stored explicitly, as a rendering stored before the rule writes it, is written
+// unchanged.
 func TestLinkifyLinksAnEmailWholeOrNotAtAll(t *testing.T) {
 	const callout = `:::callout{#c1 kind="note" title="T"}`
 	rows := []struct{ markdown, written string }{
@@ -79,17 +95,46 @@ func TestLinkifyLinksAnEmailWholeOrNotAtAll(t *testing.T) {
 		{"a/b.c@example.com, d/e.f@example.com.", "a/b.c@example.com, d/e.f@example.com."},
 		// Before: a link to `hosts@…`, which the transform read in the escape's decoded `@`.
 		{"projects/p/serviceAccounts/agent-hosts\\@example.com", "projects/p/serviceAccounts/agent-hosts@example.com"},
-		// Before: a link to `hosts@…`, which the tokenizer started right after the reference's `;`.
+		// Before: a link to `e-f@…` and to `hosts@…`, which the tokenizer started right after the
+		// `%` and the reference's `;`; the run holds the `%` and the decoded `&`.
+		{"a.b+c_d%e-f@example.com", "a.b+c_d%e-f@example.com"},
+		{"agent&amp;hosts@example.com", "agent&hosts@example.com"},
+		// Before: the text through the reference, and a link to `hosts@…`, which the tokenizer
+		// started right after the reference's `;`. Each symbol is a character RFC 5322 allows in
+		// a local part and GFM does not link, so the run holds it.
+		{"x $agent&#45;hosts@example.com", "x $agent-hosts@example.com"},
+		{"x 'agent&#45;hosts@example.com'", "x 'agent-hosts@example.com'"},
+		{"x =agent&#45;hosts@example.com", "x =agent-hosts@example.com"},
+		{"x #agent&#45;hosts@example.com", "x #agent-hosts@example.com"},
+		{"x ?agent&#45;hosts@example.com", "x ?agent-hosts@example.com"},
+		{"x ^agent&#45;hosts@example.com", "x ^agent-hosts@example.com"},
+		// Before: `agent-` or `x agent-` and a link to `hosts@…`; the run is all GFM's.
+		{"agent&#45;hosts@example.com", "[agent-hosts@example.com](mailto:agent-hosts@example.com)"},
 		{"x agent&#45;hosts@example.com", "x [agent-hosts@example.com](mailto:agent-hosts@example.com)"},
-		{"x $agent&#45;hosts@example.com", "x $[agent-hosts@example.com](mailto:agent-hosts@example.com)"},
 		// `é` is no local-part character, so the run is the `-`, as `xé-hosts@…` reads.
 		{"xé&#45;hosts@example.com", "xé[-hosts@example.com](mailto:-hosts@example.com)"},
+		// Before: the tag, the path through `agent-` and a link to `hosts@…`. The tag's text ends
+		// in `>`, so the run is the path's text, `/` and all.
+		{"x<br>projects/p/serviceAccounts/agent-hosts@example.com", "x<br>projects/p/serviceAccounts/agent-hosts@example.com"},
+		// Before: the code, `agent-` and a link to `hosts@…`. The code's text ends in `:`, so the
+		// run is `agent-`, and the link takes it.
+		{"`SA:`agent&#45;hosts@example.com", "`SA:`[agent-hosts@example.com](mailto:agent-hosts@example.com)"},
 		// The controls.
 		{"Grant act-as on agent-hosts@theorem-research.iam.gserviceaccount.com.", "Grant act-as on [agent-hosts@theorem-research.iam.gserviceaccount.com](mailto:agent-hosts@theorem-research.iam.gserviceaccount.com)."},
 		{"agent-hosts@example.com", "[agent-hosts@example.com](mailto:agent-hosts@example.com)"},
 		{"x agent-hosts@example.com", "x [agent-hosts@example.com](mailto:agent-hosts@example.com)"},
 		{"serviceAccounts/agenthosts@example.com", "serviceAccounts/agenthosts@example.com"},
 		{"xé-agent@example.com", "xé[-agent@example.com](mailto:-agent@example.com)"},
+		// A run of GFM's characters that reaches into an email link a reader made: one link never
+		// takes another's text, so both stand.
+		{"a@b.co+c@d.co", "[a@b.co](mailto:a@b.co)[+c@d.co](mailto:+c@d.co)"},
+		// Markup splits the address: the run's text follows a node whose text ends in a character
+		// of the run.
+		{"*agent*-hosts@example.com", "*agent*[-hosts@example.com](mailto:-hosts@example.com)"},
+		{"`agent`-hosts@example.com", "`agent`[-hosts@example.com](mailto:-hosts@example.com)"},
+		{"*agent*&#45;hosts@example.com", "*agent*-[hosts@example.com](mailto:hosts@example.com)"},
+		{"`agent`&#45;hosts@example.com", "`agent`-[hosts@example.com](mailto:hosts@example.com)"},
+		{"[agent-hosts@example.com](mailto:agent-hosts@example.com)", "[agent-hosts@example.com](mailto:agent-hosts@example.com)"},
 		{"agent-[hosts@theorem-research.iam.gserviceaccount.com](mailto:hosts@theorem-research.iam.gserviceaccount.com)", "agent-[hosts@theorem-research.iam.gserviceaccount.com](mailto:hosts@theorem-research.iam.gserviceaccount.com)"},
 		{"agent-[\\[hosts@example.com](mailto:[hosts@example.com)", "agent-[\\[hosts@example.com](mailto:[hosts@example.com)"},
 		{"<agent-hosts@example.com>", "[agent-hosts@example.com](mailto:agent-hosts@example.com)"},
@@ -151,6 +196,17 @@ func TestLinkifyLinksAnEmailWholeOrNotAtAll(t *testing.T) {
 		if got := inlineSummary(ReadForDisplay(reference, mode).Children[0]); got != referenceLink {
 			t.Errorf("the display read (%v) of %q opens %s, want %s", mode, reference, got, referenceLink)
 		}
+	}
+	// A www link a reader made, then text the run reaches through it: Go reads the www link and
+	// no email link, as the engine does, but no spelling the renderer writes reads back so. Written
+	// bare, the www link reads back holding the text after it, and written explicit, it is the
+	// writer's markup, which splits the run, so the email link stands. So a write of it is
+	// refused, naming the paragraph.
+	const wwwBeforeEmail = "www\\.a'b@c.test\n"
+	if doc, err := Parse(wwwBeforeEmail); err != nil {
+		t.Errorf("Parse(%q): %v", wwwBeforeEmail, err)
+	} else if err := RefuseMisreadDocument(doc); err == nil || !strings.Contains(err.Error(), "a paragraph reads back holding") {
+		t.Errorf("a write of %q is refused with %v, want a refusal naming the paragraph", wwwBeforeEmail, err)
 	}
 	t.Run("the engine", func(t *testing.T) {
 		markdowns := []string{reference}
