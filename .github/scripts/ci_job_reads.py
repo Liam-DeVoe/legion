@@ -947,6 +947,17 @@ SCHEMA_SCRIPT = (
     "# shellcheck disable=SC2016 # ${VERSION} is Pulumi's placeholder, not a shell expansion\n"
     """PULUMI_BACKEND_URL="file://$RUNNER_TEMP" pulumi package get-schema "$RUNNER_TEMP/pr" | jq -e '.version == "1.2.3" and .pluginDownloadURL == "https://github.com/cybermonklabs/legion/releases/download/envoy-infra-v${VERSION}"'"""
 )
+# envoy-smoke's step that fetches, before the live tests, the modules they build and resolve
+# (go-fetch.sh, whose deps mode lists the plugin's packages and whose pulumi-consumer mode runs
+# package add and a build of host/testdata/sdk-consumer): its one go command of its own is the
+# plugin's build, made as pulumitest.Plugin builds it.
+SMOKE_FETCH_STEP = "Fetch the modules the live tests build"
+SMOKE_FETCH_SCRIPT = (
+    ".github/scripts/go-fetch.sh deps packages/envoy/infra ./cmd/pulumi-resource-envoy-infra\n"
+    'plugin="$RUNNER_TEMP/sdk-consumer-plugin/pulumi-resource-envoy-infra"\n'
+    'go -C packages/envoy/infra build -ldflags "-X main.version=0.0.1" -o "$plugin" ./cmd/pulumi-resource-envoy-infra\n'
+    '.github/scripts/go-fetch.sh pulumi-consumer packages/envoy/infra/host/testdata/sdk-consumer "$plugin"'
+)
 # The six steps that run only what their build tag adds. A tag adds files to a package and
 # subtracts none, so `go test -tags T ./pkg` would run the untagged tests another job already
 # ran: each step takes its -run from .github/scripts/go-tagged-tests.sh, which reads the names
@@ -2094,6 +2105,9 @@ SCRIPT_TEST_GATES = [
     harness("repo_paths_test", "Test the repository path derivation", f"{SCRIPTS}/repo-paths.test.sh", [
         (f"{SCRIPTS}/repo-paths.sh", "the script under test"),
     ]),
+    harness("go_fetch_test", "Test the fetch the Go jobs run before their tests", f"{SCRIPTS}/go-fetch.test.sh", [
+        (f"{SCRIPTS}/go-fetch.sh", "the script under test"),
+    ]),
     harness("select_e2e_proofs_test", "Test the e2e proof selector", f"{SCRIPTS}/select-e2e-proofs.test.sh", [
         (f"{SCRIPTS}/select-e2e-proofs.sh", "the script under test"),
         (".github/e2e-scripts.json", "its last case runs the selector over this repository's own list"),
@@ -2283,6 +2297,7 @@ GATES = [
         ]),
     ], reads=reads(
         ("scripts/e2e/stage1-skeleton.sh", at("daemon-go", "Stage 1 live proof")),
+        (".github/scripts/go-fetch.sh", f"{at('daemon-go', 'Fetch the modules of the envoy commands the tests build')} runs it"),
         ("scripts/e2e/lib/rig.sh", "scripts/e2e/stage1-skeleton.sh:139 sources it"),
         ("scripts/e2e/lib/loopback-dsn.sh", "scripts/e2e/lib/rig.sh:93 sources it"),
         ("scripts/e2e/lib/port-file.sh", "scripts/e2e/lib/rig.sh:102 sources it"),
@@ -2956,6 +2971,7 @@ GATES = [
         (f"{ENVOY}/internal/testnats/nats.go", f"{at('envoy-infra-go', 'Pull the NATS and Postgres test container images')}: consts Image, HubImage"),
         (f"{ENVOY}/internal/testpg/testpg.go", f"{at('envoy-infra-go', 'Pull the NATS and Postgres test container images')}: const Image"),
         (TAGGED_TESTS, f"{at('envoy-infra-go', INFRA_NATSLIVE_STEP)} takes each call's -run from it"),
+        (".github/scripts/go-fetch.sh", f"{at('envoy-infra-go', 'Fetch the tools and modules the tests run and build')} runs it"),
     ) + setup_go("envoy-infra-go", f"{INFRA}/go.mod") + darwin_vet_reads("envoy-infra-go", INFRA_DARWIN_VET, INFRA)),
 
     # The text-check job: one `go test` of each module's text checks, in that module's own
@@ -3122,8 +3138,14 @@ GATES = [
         pinned_step("envoy-smoke", SCHEMA_STEP, INFRA, SCHEMA_SCRIPT, [
             (INFRA, ["./cmd/pulumi-resource-envoy-infra"], "go build ./cmd/pulumi-resource-envoy-infra", {"mode": "build"}),
         ]),
+        pinned_step("envoy-smoke", SMOKE_FETCH_STEP, ".", SMOKE_FETCH_SCRIPT, [
+            (INFRA, ["./cmd/pulumi-resource-envoy-infra"], "go -C packages/envoy/infra build ./cmd/pulumi-resource-envoy-infra", {"mode": "build"}),
+        ]),
     ], reads=reads(
         (".github/actions/pull-test-images/**", at("envoy-smoke", "Pull test container images")),
+        (".github/scripts/go-fetch.sh", f"{at('envoy-smoke', SMOKE_FETCH_STEP)} runs it"),
+        (f"{INFRA}/host/testdata/sdk-consumer/**", f"{at('envoy-smoke', SMOKE_FETCH_STEP)} copies it for package add, "
+                                                  "and TestLiveGoConsumersCanUseTheSDK copies it too"),
         (f"{ENVOY}/internal/testnats/nats.go", f"{at('envoy-smoke', 'Pull test container images')}: const HubImage"),
         (".github/actions/install-pulumi/**", at("envoy-smoke", "./.github/actions/install-pulumi")),
         (".github/actions/install-docker-plugin/**",

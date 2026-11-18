@@ -160,6 +160,10 @@ on:
         description: "ci.yaml's needs.changes.outputs.repo_paths_test: repo-paths.test.sh and what it tests."
         type: string
         required: true
+      go_fetch_test:
+        description: "ci.yaml's needs.changes.outputs.go_fetch_test: go-fetch.test.sh and what it tests."
+        type: string
+        required: true
       select_e2e_proofs_test:
         description: "ci.yaml's needs.changes.outputs.select_e2e_proofs_test: select-e2e-proofs.test.sh and what it tests."
         type: string
@@ -415,6 +419,12 @@ jobs:
       - name: Test the repository path derivation
         if: inputs.changes-result != 'success' || inputs.repo_paths_test == 'true'
         run: .github/scripts/repo-paths.test.sh
+
+      # The fetch the Go jobs run before their tests (envoy-infra-go, daemon-go, envoy-smoke), under
+      # stand-ins for go and pulumi.
+      - name: Test the fetch the Go jobs run before their tests
+        if: inputs.changes-result != 'success' || inputs.go_fetch_test == 'true'
+        run: .github/scripts/go-fetch.test.sh
 
       # The proof selector e2e.yaml's select job runs, over fixture trees and over this
       # repository's own .github/e2e-scripts.json and scripts/e2e/.
