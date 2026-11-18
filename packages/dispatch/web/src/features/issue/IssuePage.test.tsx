@@ -11,7 +11,7 @@ import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { fakeDocumentRuntime, markedText } from "../../__tests__/document-runtime";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
-import { listOf, textBoxes } from "../../__tests__/list-picks";
+import { listOf, pickNamed, textBoxes } from "../../__tests__/list-picks";
 import { choicesOf } from "../../__tests__/menu-picks";
 import { answerRequests } from "../../__tests__/network";
 import {
@@ -1734,8 +1734,8 @@ test("IssuePage opens a non-spec document at its version route", async () => {
   try {
     await screen.findByRole("tab", { name: "Artifacts 2", selected: true });
     expect(screen.getByRole("heading", { name: "design.md" })).not.toBeNull();
-    expect(screen.getAllByRole("button", { name: "Version" })).toHaveLength(1);
-    await user.click(screen.getByRole("button", { name: "Version" }));
+    expect(screen.getAllByRole("button", { name: pickNamed("Version") })).toHaveLength(1);
+    await user.click(screen.getByRole("button", { name: pickNamed("Version") }));
     await user.click(screen.getByRole("option", { name: "Version 1 — Initial design" }));
     await waitFor(() =>
       expect(screen.getByTestId("current-route").textContent).toBe(
@@ -1826,7 +1826,7 @@ test("a document page's Version list holds a text box that narrows its versions"
     expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
     await waitFor(() =>
       expect(
-        screen.getByRole("button", { name: "Version", description: "Version 3 — Settled design" })
+        screen.getByRole("button", { name: "Version Version 3 — Settled design" })
       ).toHaveFocus()
     );
   } finally {
@@ -1949,7 +1949,7 @@ test("IssuePage encodes primary-document version selection in the artifact route
   const view = renderIssuePage("/issues/CORE-1/spec");
 
   try {
-    await user.click(await screen.findByRole("button", { name: "Version" }));
+    await user.click(await screen.findByRole("button", { name: pickNamed("Version") }));
     await user.click(screen.getByRole("option", { name: "Version 1 — Initial spec" }));
     await waitFor(() =>
       expect(screen.getByTestId("current-route").textContent).toBe(
@@ -2016,8 +2016,7 @@ test("the Spec tab's Version list holds a text box that narrows its versions", a
     await waitFor(() =>
       expect(
         within(screen.getByTestId("issue-tabs")).getByRole("button", {
-          name: "Version",
-          description: "Version 2 — Settled spec",
+          name: "Version Version 2 — Settled spec",
         })
       ).toHaveFocus()
     );
@@ -2046,8 +2045,8 @@ test("IssuePage renders exactly one Version list on the Spec tab", async () => {
   const view = renderIssuePage("/issues/CORE-1/spec");
 
   try {
-    await screen.findByRole("button", { name: "Version" });
-    expect(screen.getAllByRole("button", { name: "Version" })).toHaveLength(1);
+    await screen.findByRole("button", { name: pickNamed("Version") });
+    expect(screen.getAllByRole("button", { name: pickNamed("Version") })).toHaveLength(1);
     expect(screen.queryByTestId("artifact-header")).not.toBeInTheDocument();
   } finally {
     view.unmount();
@@ -2071,14 +2070,14 @@ test("IssuePage keeps version controls in the active Spec tab row", async () => 
 
   try {
     const tabs = await screen.findByTestId("issue-tabs");
-    expect(within(tabs).getByRole("button", { name: "Version" })).not.toBeNull();
+    expect(within(tabs).getByRole("button", { name: pickNamed("Version") })).not.toBeNull();
     expect(within(tabs).getByRole("button", { name: "Name version" })).not.toBeNull();
     expect(screen.queryByTestId("spec-document-toolbar")).not.toBeInTheDocument();
 
     for (const tab of ["Conversation", "Children", "Artifacts 1", "Activity"] as const) {
       await user.click(screen.getByRole("tab", { name: tab }));
       await screen.findByRole("tab", { name: tab, selected: true });
-      expect(screen.queryByRole("button", { name: "Version" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: pickNamed("Version") })).not.toBeInTheDocument();
       expect(screen.queryByRole("button", { name: "Name version" })).not.toBeInTheDocument();
     }
   } finally {

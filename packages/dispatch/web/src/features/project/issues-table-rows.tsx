@@ -264,10 +264,10 @@ function EpicActions({
                       label="Merge into another epic"
                       mode="single"
                       onPick={setTarget}
-                      optionLabel={(key) => titles.get(key) ?? key}
+                      optionLabel={(key) => titles.get(key)}
                       options={others.map((epic) => epic.key)}
                       searchLabel="Search epics"
-                      triggerClassName={`mt-1 block w-full truncate rounded-md border px-1 py-1 text-left text-sm ${borderDefault} ${surfaceBg} ${textPrimaryOnCanvas}`}
+                      triggerClassName={`mt-1 block w-full rounded-md border px-1 py-1 text-left text-sm ${borderDefault} ${surfaceBg} ${textPrimaryOnCanvas}`}
                       value={target === "" ? undefined : target}
                     >
                       {target === "" ? "Choose an epic…" : undefined}

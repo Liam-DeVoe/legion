@@ -49,6 +49,7 @@ import {
   formatMinutes,
   type IssueSortKey,
   type PRListRow,
+  ROW_HEIGHT_PX,
 } from "./lib/prList";
 
 /** The facets that are columns of this table, so in the List view each is filtered on its own
@@ -105,7 +106,7 @@ export function columnFacetValue(
 }
 
 /** The attribute each drawn row carries, which the keys, the anchor and the box's height read,
- *  and the one inside it that opening the row follows. */
+ *  and the one on its plain title that `o` and Enter press to open the row. */
 const PR_ROW_ATTRIBUTE = "data-pr-row";
 const PR_OPEN_ATTRIBUTE = "data-pr-open";
 
@@ -125,22 +126,25 @@ type ColumnId =
   | "leadTime"
   | "rework";
 
-/** Every column, in the order the table opens with, at the width its longest usual content
- *  takes at `text-xs`: "deployed Sep 26, 10:48 PM", "ACME-1028 · No priority", a parent agent's
- *  title, and a sortable header's label with its arrow and its filter. Title takes the rest.
- *  Every column but the colour dot sorts. */
+/** Every column, in the order the table opens with, at the width the list drew it before the
+ *  shared table (INFRA-3135, R8): each fits its longest usual content at `text-xs`, "deployed
+ *  Sep 26, 10:48 PM", "ACME-1028 · No priority", a parent agent's title, and a sortable header's
+ *  label with its arrow. Title is the one the table fills its box with (`fillColumn`): never
+ *  narrower than its 128 px, it takes whatever the box has over the others, so the columns come
+ *  to 1152 px in a narrower box and to the box's width in a wider one. Every column but the
+ *  colour dot sorts. */
 const COLUMNS: { id: ColumnId; label: string; size: number; min: number; sortable?: false }[] = [
-  { id: "color", label: "", size: 24, min: 24, sortable: false },
+  { id: "color", label: "", size: 20, min: 20, sortable: false },
   { id: "merged", label: "Merged", size: 112, min: 96 },
   { id: "pr", label: "PR", size: 96, min: 80 },
-  { id: "title", label: "Title", size: 320, min: 128 },
-  { id: "issue", label: "Issue", size: 176, min: 120 },
-  { id: "parentAgent", label: "Parent agent", size: 144, min: 112 },
-  { id: "author", label: "Author", size: 120, min: 96 },
+  { id: "title", label: "Title", size: 128, min: 128 },
+  { id: "issue", label: "Issue", size: 160, min: 120 },
+  { id: "parentAgent", label: "Parent agent", size: 112, min: 112 },
+  { id: "author", label: "Author", size: 116, min: 96 },
   { id: "size", label: "Size", size: 88, min: 72 },
-  { id: "deployed", label: "Deployed", size: 176, min: 128 },
-  { id: "leadTime", label: "Lead time", size: 104, min: 84 },
-  { id: "rework", label: "Rework", size: 96, min: 80 },
+  { id: "deployed", label: "Deployed", size: 164, min: 128 },
+  { id: "leadTime", label: "Lead time", size: 84, min: 84 },
+  { id: "rework", label: "Rework", size: 72, min: 72 },
 ];
 
 /** The columns the list can be sorted by, which `?sort=` may name: an id that is none of them
@@ -268,12 +272,11 @@ function Deployed({
 }
 
 /** What a cell reads that changes with every live answer: the colours of the window, the issue
- *  titles, the session groups and the page's two handlers. */
+ *  titles, the session groups and the page's handler for a deploy run. */
 interface PRCellInputs {
   readonly colorBy: ColorFacet;
   readonly colorScale: Map<string, string>;
   readonly issueTitles: Readonly<Record<string, string>>;
-  readonly onSelect: (id: string) => void;
   readonly onSelectRun: (runId: number) => void;
   readonly sessionGroups: readonly DeliverySessionGroup[];
 }
@@ -337,23 +340,14 @@ function usePRColumns(inputs: PRCellInputs): ColumnDef<PRListRow>[] {
       title: {
         accessorFn: (row) => row.pr.title,
         sortingFn: byText,
-        // The row's own way in, and what the keys open: `PR_OPEN_ATTRIBUTE` is what the core's
-        // keymap clicks for the row in hand, and a pointer press anywhere on the row does the
-        // same, so the title is never the only way to the details.
+        // Plain text, as the list drew it before the shared table (INFRA-3135, R8), and what `o`
+        // and Enter press for the row in hand: the core's keymap clicks `PR_OPEN_ATTRIBUTE`. It
+        // is no control and no stop for the focus; the press goes up to the row's own, which
+        // opens the details as a pointer press anywhere on the row does.
         cell: ({ row }) => (
-          <button
-            className="w-full truncate text-left"
-            data-pr-open=""
-            onClick={(event) => {
-              event.stopPropagation();
-              live.current.onSelect(row.original.pr.id);
-            }}
-            tabIndex={-1}
-            title={row.original.pr.title}
-            type="button"
-          >
+          <span className="truncate" data-pr-open="" title={row.original.pr.title}>
             {row.original.pr.title}
-          </button>
+          </span>
         ),
       },
       issue: {
@@ -512,7 +506,6 @@ export function PRList({
     colorBy,
     colorScale,
     issueTitles,
-    onSelect,
     onSelectRun,
     sessionGroups,
   });
@@ -544,6 +537,9 @@ export function PRList({
     onGroupingChange: () => {},
     onPaginationChange: () => {},
     onSortingChange,
+    // Every row is drawn at the one height (`PRRow`), so the box scrolls the list's whole
+    // height before a row is measured, as it did before the shared table.
+    rowHeight: ROW_HEIGHT_PX,
     rows,
     state,
     viewKey,
@@ -588,6 +584,7 @@ export function PRList({
   return (
     <DataTable
       empty="No PRs in the current filter/window."
+      fillColumn="title"
       filterCounts={counts}
       label="Merged pull requests"
       model={model}
@@ -610,6 +607,12 @@ export function PRList({
     />
   );
 }
+
+/** Each cell's box: the 36 px row the list has always drawn (`ROW_HEIGHT_PX`), less the 1 px
+ *  rule under it, at every width. A row is as tall as its tallest cell, and under 1280 px a link
+ *  or a button is 44 px tall (`styles.css`): in a box of the row's own height it overflows the
+ *  cell, as it overflowed the row before the shared table, rather than make the row taller. */
+const CELL_BOX = { height: ROW_HEIGHT_PX - 1 } as const;
 
 /** One pull request's row: its cells, the press that opens its details, and the two keys the
  *  list answers itself. */
@@ -645,11 +648,11 @@ function PRRow({
     >
       {row.getVisibleCells().map((cell) => (
         <td
-          className={`overflow-hidden border-b px-1.5 py-2 text-xs whitespace-nowrap ${borderDefault} ${selected ? surfaceMutedBg : surfaceBg}`}
+          className={`overflow-hidden border-b px-1.5 py-0 text-xs whitespace-nowrap ${borderDefault} ${selected ? surfaceMutedBg : surfaceBg}`}
           key={cell.id}
           style={{ width: cell.column.getSize() }}
         >
-          <span className="flex min-w-0 items-center">
+          <span className="flex min-w-0 items-center" style={CELL_BOX}>
             {flexRender(cell.column.columnDef.cell, cell.getContext())}
           </span>
         </td>

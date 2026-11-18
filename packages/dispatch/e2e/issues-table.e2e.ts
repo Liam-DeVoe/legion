@@ -104,7 +104,10 @@ test("the table sorts, searches facets and fuzzy text, groups, pages and receive
     await second.goto(`/issues/${target.key}`);
     await expect(second.getByRole("heading", { level: 1, name: target.title })).toBeVisible();
     const priority = second.getByRole("button", { exact: true, name: `Priority of ${target.key}` });
-    const before = (await priority.textContent())?.trim();
+    // The menu's trigger is held to the priority the seed gave the issue before the edit picks the
+    // other of 0 and 1, so the trigger read is one the page has drawn rather than a first empty one.
+    const before = target.priority === null ? "Priority" : `P${target.priority}`;
+    await expect(priority).toHaveText(before);
     const next = before === "P0" ? "1" : "0";
     await pickFromMenu(priority, `P${next}`);
     await expect
@@ -196,7 +199,7 @@ test("merging an epic moves open descendants through closed intermediates and pr
       .getByRole("row")
       .filter({ has: page.getByRole("button", { name: /Source epic/ }) });
     await group.getByRole("button", { name: "Epic actions ▾" }).click();
-    await page.getByRole("button", { name: "Merge into another epic", exact: true }).click();
+    await page.getByRole("button", { name: "Merge into another epic" }).click();
     await page.getByRole("option", { name: target.title, exact: true }).click();
     await page.getByRole("button", { name: "Merge…" }).click();
     await page
@@ -234,7 +237,7 @@ test("selection actions move, remove and create an epic, whose name can then cha
       page.getByRole("checkbox", { name: `Select ${key}`, exact: true }).check();
     await select(first.key);
     await select(second.key);
-    await page.getByRole("button", { name: "Move to epic", exact: true }).click();
+    await page.getByRole("button", { name: "Move to epic" }).click();
     await page.getByRole("option", { name: target.title, exact: true }).click();
     await page.getByRole("button", { name: "Move", exact: true }).click();
     await expect
@@ -301,6 +304,8 @@ test("a live insertion above a vertically and horizontally scrolled reader keeps
     // 80 seeded rows and the epic, which is a row of the table like any other.
     await expect(page.getByText("81 of 81 issues", { exact: true })).toBeVisible();
     const scroller = page.getByTestId("issues-table-scroll");
+    // The handle is taken once on purpose: it names this scroller element, which the row checks
+    // later is still the one connected.
     const original = await scroller.elementHandle();
     const ancestorRequested = Promise.withResolvers<void>();
     const ancestorReady = Promise.withResolvers<void>();
@@ -322,6 +327,8 @@ test("a live insertion above a vertically and horizontally scrolled reader keeps
         return row ? { key: row.dataset.issueRow, top: row.getBoundingClientRect().top } : null;
       });
     await expect.poll(visibleAnchor).not.toBeNull();
+    // The poll above waited until a row sat under that point, and nothing has moved the table
+    // since, so this reads the row the poll found.
     const anchor = await visibleAnchor();
     if (!anchor?.key) throw new Error("No visible issue could be anchored after scrolling");
     expect(await scroller.evaluate((element) => element.scrollLeft)).toBeGreaterThan(0);
@@ -373,8 +380,14 @@ test("a refused bulk write retries after reload while the other operations have 
       // The bar is fixed to the window, so the geometry that matters is the page at its top,
       // where the bar sits under the header and the table begins below it.
       await page.evaluate(() => window.scrollTo(0, 0));
-      const bar = await page.getByRole("toolbar").boundingBox();
-      const box = await page.getByTestId("issues-table-scroll").boundingBox();
+      const toolbar = page.getByRole("toolbar");
+      const table = page.getByTestId("issues-table-scroll");
+      await expect(toolbar).toBeVisible();
+      await expect(table).toBeVisible();
+      // The waits above drew the bar and the table, and a drawn element has a box.
+      const bar = await toolbar.boundingBox();
+      // The table was waited for above too, so its box is there as the bar's is.
+      const box = await table.boundingBox();
       if (!bar || !box) throw new Error("The selection toolbar or table is missing");
       expect(
         bar.y + bar.height <= box.y || bar.y >= box.y + box.height,
@@ -440,8 +453,11 @@ test("phone headers, saved widths, popover focus and short-window paging stay us
     // wide as the row itself, which is the box a reader had before the controls moved into one
     // row. The three controls beside it sit on the line under it.
     await expect(page.getByRole("searchbox", { name: "Search issues" })).toBeVisible();
+    // The search box was waited for on the line above, and a drawn element has a box.
     const search = await page.getByRole("searchbox", { name: "Search issues" }).boundingBox();
+    // The row holds the search box waited for above, so it is drawn and has a box too.
     const row = await controlRow(page).boundingBox();
+    // `ControlRow` draws the trigger in the one commit that draws the search box waited for.
     const trigger = await page.getByRole("button", { name: /^Filters/ }).boundingBox();
     if (!search || !row || !trigger) throw new Error("The control row could not be measured");
     expect(search.width).toBeGreaterThan(300);
@@ -454,8 +470,14 @@ test("phone headers, saved widths, popover focus and short-window paging stay us
     const titleHeader = page
       .getByRole("columnheader")
       .filter({ has: page.getByRole("button", { name: "Title", exact: true }) });
+    await expect(keyHeader).toBeVisible();
+    await expect(titleHeader).toBeVisible();
+    await expect(box).toBeVisible();
+    // The waits above drew both headers and the table, and a drawn element has a box.
     const keyBefore = await keyHeader.boundingBox();
+    // The title header was waited for above too, so its box is there as the key's is.
     const titleBefore = await titleHeader.boundingBox();
+    // The table was waited for above too, so its box is there as the key's is.
     const tableBox = await box.boundingBox();
     if (!keyBefore || !titleBefore || !tableBox)
       throw new Error("The identifying columns are missing");
@@ -468,7 +490,10 @@ test("phone headers, saved widths, popover focus and short-window paging stay us
     await box.evaluate((element) => {
       element.scrollLeft = element.scrollWidth;
     });
+    // The headers were waited for above, and a scroll moves them without taking them off the
+    // page, so the key header's box is there.
     const keyAfter = await keyHeader.boundingBox();
+    // The title header was waited for above as well, so its box is there as the key's is.
     const titleAfter = await titleHeader.boundingBox();
     if (!keyAfter || !titleAfter)
       throw new Error("The identifying columns disappeared after scrolling");
@@ -478,6 +503,8 @@ test("phone headers, saved widths, popover focus and short-window paging stay us
       page.locator("[data-issue-row]").first().locator("[data-issue-link]")
     ).toBeVisible();
     const remainingControl = page.getByRole("button", { name: "Filter Updated", exact: true });
+    await expect(remainingControl).toBeVisible();
+    // The wait above drew the control, and a drawn element has a box, so the box is there.
     const controlAtEnd = await remainingControl.boundingBox();
     if (!controlAtEnd) throw new Error("The Updated filter is missing");
     await box.evaluate(
@@ -486,6 +513,8 @@ test("phone headers, saved widths, popover focus and short-window paging stay us
       },
       Math.max(0, titleAfter.x + titleAfter.width - controlAtEnd.x)
     );
+    // The control was waited for above, and a scroll moves it without taking it off the page, so
+    // its box is there.
     const controlBox = await remainingControl.boundingBox();
     if (!controlBox) throw new Error("No control is visible beside the identifying columns");
     expect(controlBox.x).toBeGreaterThanOrEqual(titleAfter.x + titleAfter.width - 1);
@@ -716,8 +745,11 @@ test("phone status labels are readable and closed issues load from the Status fi
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto("/projects/CORE/issues");
     const strip = page.getByRole("group", { name: "Issues by status" });
+    // The seed's three open statuses, Triage, Todo and Testing, each draw one cell.
+    await expect(strip.getByRole("button")).toHaveCount(3);
     // No Done cell at all while closed issues are unloaded: the bar counts what it has.
     await expect(strip.getByRole("button", { name: /^Done/ })).toHaveCount(0);
+    // The count of three above waited for every cell the strip draws, so one read lists them.
     for (const button of await strip.getByRole("button").all()) {
       await button.scrollIntoViewIfNeeded();
       const readable = await button.evaluate((element) => {
@@ -865,7 +897,7 @@ test("a refused merge move leaves the source open without a close reason", async
     // source's rather than at whichever heading comes first.
     const heading = page.locator("tr", { has: page.getByRole("link", { name: /Merge source/ }) });
     await heading.getByRole("button", { name: "Epic actions ▾" }).click();
-    await page.getByRole("button", { name: "Merge into another epic", exact: true }).click();
+    await page.getByRole("button", { name: "Merge into another epic" }).click();
     await page.getByRole("option", { name: target.title, exact: true }).click();
     await page.getByRole("button", { name: "Merge…" }).click();
     await page
@@ -1048,7 +1080,7 @@ test("reload mid merge moves current open descendants then records one reason an
       has: page.getByRole("link", { name: /Source workflow/ }),
     });
     await heading.getByRole("button", { name: "Epic actions ▾" }).click();
-    await page.getByRole("button", { name: "Merge into another epic", exact: true }).click();
+    await page.getByRole("button", { name: "Merge into another epic" }).click();
     await page.getByRole("option", { name: target.title, exact: true }).click();
     await page.getByRole("button", { name: "Merge…" }).click();
     await page
@@ -1113,8 +1145,8 @@ test("a status the bundle does not know leaves the whole page standing", async (
 });
 
 // B2: a closed `<select>` commits on an arrow key in Chrome on Linux and Windows. The merge
-// select stages a target instead, and the confirmation is what sends anything.
-test("an arrow key on the merge select closes no epic, and the confirmed merge does", async ({
+// list stages a target instead, and the confirmation is what sends anything.
+test("an arrow key on the merge list's trigger closes no epic, and the confirmed merge does", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -1129,8 +1161,8 @@ test("an arrow key on the merge select closes no epic, and the confirmed merge d
     await page.goto("/projects/CORE/issues?group=epic");
     const heading = page.locator("tr", { has: page.getByRole("link", { name: /Arrow source/ }) });
     await heading.getByRole("button", { name: "Epic actions ▾" }).click();
-    const select = page.getByRole("button", { name: "Merge into another epic", exact: true });
-    await select.focus();
+    const trigger = page.getByRole("button", { name: "Merge into another epic" });
+    await trigger.focus();
     await page.keyboard.press("ArrowDown");
     // Nothing must follow the keystroke: a merge the arrow key had started would leave the page
     // in that keypress's own task, so this window is where its write and its dialog would show.
@@ -1140,7 +1172,7 @@ test("an arrow key on the merge select closes no epic, and the confirmed merge d
     await expect(page.getByRole("dialog", { name: "Merge this epic?" })).toHaveCount(0);
 
     // The confirmed path still merges, and says what it is about to do first.
-    await select.click();
+    await trigger.click();
     await page.getByRole("option", { name: target.title, exact: true }).click();
     await page.getByRole("button", { name: "Merge…" }).click();
     const asked = page.getByRole("dialog", { name: "Merge this epic?" });

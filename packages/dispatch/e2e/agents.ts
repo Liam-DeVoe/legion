@@ -2,12 +2,14 @@ import { DELIVERY_CAPABILITIES, type LegionRole, roleToken } from "@legion/contr
 import { expect, type Locator, type Page } from "@playwright/test";
 
 import type { BroadcastCreated, CreateBroadcastInput, TmuxPlace } from "../web/src/api/types";
+import { CONTROL } from "../web/src/components/control-names";
 import type { AgentGroup } from "../web/src/features/agents/agent-groups";
 import { createAsk, createComment, createIssue, createProject } from "./api";
-import { openFilterPanel } from "./filters";
+import { control, controlRow, openFilterPanel } from "./filters";
 import { harnessPorts } from "./harness-ports";
 import { type KeyedWrite, keyedWrite, watchWrites } from "./keyed-writes";
 import { sessionIds } from "./session-ids";
+import { expandedState } from "./settled";
 
 export interface FakeSession {
   session_id: string;
@@ -401,6 +403,12 @@ export function issueListOf(row: Locator): Locator {
   return row.locator("xpath=id(.//*[@data-agent-issue-picker]/@aria-controls)");
 }
 
+/** The text box of a row's open Issue list, which narrows its issues and takes the arrows and
+ *  Enter: found through `issueListOf`, so while the list is shut this finds nothing. */
+export function issueSearchIn(row: Locator): Locator {
+  return issueListOf(row).getByRole("combobox", { name: "Issue" });
+}
+
 /** The option of a row's open Issue list that picks `key`: an issue's key (its row reads
  *  `CORE-1 · <title>`, or `CORE-1 (closed)`), or `""` for `No issue`. */
 export function issueOption(row: Locator, key: string): Locator {
@@ -417,12 +425,13 @@ export function agentGroupToggle(page: Page, group: AgentGroup): Locator {
 }
 
 /** Collapses `group` if it is open, or opens it if it is closed: every group is open when the
- *  page loads, so a row that needs one shut says so. */
+ *  page loads, so a row that needs one shut says so. The heading says which it is, and is read
+ *  once the page has drawn it rather than at the instant it attaches. */
 export async function toggleAgentGroup(page: Page, group: AgentGroup): Promise<void> {
   const toggle = agentGroupToggle(page, group);
-  const expanded = await toggle.getAttribute("aria-expanded");
+  const fold = await expandedState(`the ${group} group's heading`, toggle);
   await toggle.click();
-  await expect(toggle).toHaveAttribute("aria-expanded", expanded === "true" ? "false" : "true");
+  await expect(toggle).toHaveAttribute("aria-expanded", fold === "open" ? "false" : "true");
 }
 
 /** The three filters live in the panel the row's one **Filter** trigger opens: opens it unless
@@ -438,6 +447,18 @@ export function agentFilter(page: Page, filter: "group" | "machine" | "role"): L
   return page.getByRole("button", { name: `Filter by ${filter}` });
 }
 
+/** Opens a filter's panel if it is shut, once the panel the three stand in is open. Its trigger's
+ *  `aria-expanded` says which it is, and is read once the page has drawn the trigger rather than
+ *  at the instant it attaches. */
+export async function openAgentFilter(
+  page: Page,
+  filter: "group" | "machine" | "role"
+): Promise<void> {
+  await openAgentFilters(page);
+  const trigger = agentFilter(page, filter);
+  if ((await expandedState(`the ${filter} filter`, trigger)) === "shut") await trigger.click();
+}
+
 /** Ticks or unticks one option of a filter and closes its popover, and the panel the three
  *  stand in with it, so neither portalled layer covers the control the row drives next. */
 export async function pickAgentFilter(
@@ -445,14 +466,13 @@ export async function pickAgentFilter(
   filter: "group" | "machine" | "role",
   option: string
 ): Promise<void> {
-  await openAgentFilters(page);
-  const trigger = agentFilter(page, filter);
-  if ((await trigger.getAttribute("aria-expanded")) === "false") await trigger.click();
+  await openAgentFilter(page, filter);
   await page.getByRole("option", { exact: true, name: option }).click();
   await page.keyboard.press("Escape");
   await expect(page.getByRole("listbox")).toHaveCount(0);
   const panel = page.getByRole("dialog", { name: "Filter" });
-  if ((await panel.count()) !== 0) {
+  const panelTrigger = control(controlRow(page), CONTROL.panelTrigger);
+  if ((await expandedState("the row's filter trigger", panelTrigger)) === "open") {
     await page.keyboard.press("Escape");
     await expect(panel).toHaveCount(0);
   }

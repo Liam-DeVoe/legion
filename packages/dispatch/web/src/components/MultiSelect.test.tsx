@@ -4,6 +4,7 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 
+import { panelOf, pickNamed } from "../__tests__/list-picks";
 import { type ListMarks, MultiSelect } from "./MultiSelect";
 
 function Host({ onCreate, options }: { onCreate?: (value: string) => void; options: string[] }) {
@@ -34,12 +35,14 @@ function SingleHost({
   initial,
   keysOnTrigger,
   marks,
+  onCreate,
   options,
 }: {
   focusOnOpen?: boolean;
   initial?: string;
   keysOnTrigger?: boolean;
   marks?: ListMarks;
+  onCreate?: (value: string) => boolean;
   options: string[];
 }) {
   const [open, setOpen] = useState(false);
@@ -49,12 +52,14 @@ function SingleHost({
   return (
     <>
       <MultiSelect
+        createLabel={(typed) => `Use "${typed}"`}
         emptyMessage="Nothing here."
         focusOnOpen={focusOnOpen}
         keysOnTrigger={keysOnTrigger}
         label="Epic"
         marks={marks}
         mode="single"
+        onCreate={onCreate}
         onOpenChange={(next, closedBy) => {
           setOpen(next);
           if (!next) setClosings((before) => [...before, closedBy ?? "nothing"]);
@@ -303,8 +308,7 @@ test("a single pick's listbox is not multiselectable, and only its current value
   const user = userEvent.setup();
   const view = render(<SingleHost initial="docs" options={["api", "docs", "frontend"]} />);
   try {
-    // Named for the list whatever it shows, and the value it shows is what it says it holds.
-    const trigger = screen.getByRole("button", { name: "Epic", description: "docs" });
+    const trigger = screen.getByRole("button", { name: pickNamed("Epic") });
     expect(trigger).toHaveTextContent("docs");
     await user.click(trigger);
     expect(screen.getByRole("listbox", { name: "Epic options" })).not.toHaveAttribute(
@@ -315,6 +319,113 @@ test("a single pick's listbox is not multiselectable, and only its current value
       expect(screen.getByRole("option", { name })).toHaveAttribute("aria-selected", "false");
     // One value is changed by picking another, so there is nothing to clear.
     expect(screen.queryByRole("button", { name: "Clear epic" })).not.toBeInTheDocument();
+  } finally {
+    view.unmount();
+  }
+});
+
+// INFRA-3135, round 12: axe's `label-content-name-mismatch` (WCAG 2.5.3, Label in Name) failed on
+// every single pick that showed a value: its trigger was named "Assignee of CORE-1" while it
+// showed "alice", so the words on it were not in its name. Its name is the list's name, or the
+// host's own, then what it shows, leaving out words the host hides from assistive technology,
+// and no description repeats the value; a trigger that shows the list's name says it once.
+test("a single pick's trigger is named for its list and then for what it shows", () => {
+  const view = render(
+    <>
+      <SingleHost initial="docs" options={["api", "docs"]} />
+      <MultiSelect
+        emptyMessage="Nothing here."
+        label="Issue"
+        mode="single"
+        onOpenChange={() => undefined}
+        onPick={() => undefined}
+        open={false}
+        options={["CORE-1"]}
+        searchLabel="Search issues"
+        triggerAriaLabel="Choose issue"
+        value="CORE-1"
+      >
+        Issue: CORE-1
+      </MultiSelect>
+      <MultiSelect
+        chevron={false}
+        emptyMessage="Nothing here."
+        label="Repository"
+        mode="single"
+        onOpenChange={() => undefined}
+        onPick={() => undefined}
+        open={false}
+        options={["acme/widgets"]}
+        searchLabel="Search repositories"
+        value="acme/widgets"
+      >
+        <span aria-hidden="true">acme/widgets</span>
+        <span className="sr-only">acme/widgets, inherited</span>
+      </MultiSelect>
+      <MultiSelect
+        emptyMessage="Nothing here."
+        label="Project"
+        mode="single"
+        onOpenChange={() => undefined}
+        onPick={() => undefined}
+        open={false}
+        options={["CORE"]}
+        searchLabel="Search projects"
+      />
+    </>
+  );
+  try {
+    const picked = screen.getByRole("button", { name: "Epic docs" });
+    expect(picked).toHaveTextContent(/^docs$/);
+    expect(picked).not.toHaveAccessibleDescription();
+    expect(screen.getByRole("button", { name: "Choose issue Issue: CORE-1" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Repository acme/widgets, inherited" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Project" })).toHaveTextContent(/^Project$/);
+  } finally {
+    view.unmount();
+  }
+});
+
+// INFRA-3135, round 12: below 1280 px every button is a flex box (`styles.css`), whose own text
+// ends in no ellipsis, so a trigger cut a long value mid-word; and no trigger showed that it
+// opens a list. In both modes the trigger's text is an element of its own that truncates - a
+// single pick's carries its whole value as its title and is still what the trigger's name ends
+// in - with a hidden chevron after it; a host whose children are a look of their own, a badge,
+// draws them alone. `e2e/table-controls.e2e.ts` reads the ellipsis and the chevron in a browser.
+test("a trigger's text truncates in its own element before a hidden chevron, unless its host draws a look of its own", () => {
+  const view = render(
+    <>
+      <SingleHost initial="docs" options={["api", "docs"]} />
+      <Host options={["api"]} />
+      <MultiSelect
+        chevron={false}
+        emptyMessage="Nothing here."
+        label="Assignee"
+        mode="single"
+        onOpenChange={() => undefined}
+        onPick={() => undefined}
+        open={false}
+        options={["bob"]}
+        searchLabel="Search people"
+        value="bob"
+      >
+        <span data-testid="badge">bob</span>
+      </MultiSelect>
+    </>
+  );
+  try {
+    const single = screen.getByRole("button", { name: pickNamed("Epic") });
+    for (const trigger of [single, screen.getByRole("button", { name: "Labels" })]) {
+      const chevron = trigger.querySelector("svg");
+      expect(chevron).toHaveAttribute("aria-hidden", "true");
+      expect(chevron?.previousElementSibling).toHaveClass("truncate");
+    }
+    expect(single.querySelector(".truncate")).toHaveAttribute("title", "docs");
+
+    const badge = screen.getByRole("button", { name: pickNamed("Assignee") });
+    expect(badge.querySelector("svg")).toBeNull();
+    expect(badge.querySelector(".truncate")).toBeNull();
+    expect(screen.getByTestId("badge").parentElement?.parentElement).toBe(badge);
   } finally {
     view.unmount();
   }
@@ -357,7 +468,7 @@ test("Escape, Tab and an outside press close a single pick with nothing picked a
   const user = userEvent.setup();
   const view = render(<SingleHost initial="api" options={["api", "docs"]} />);
   try {
-    const trigger = screen.getByRole("button", { name: "Epic" });
+    const trigger = screen.getByRole("button", { name: pickNamed("Epic") });
     await user.click(trigger);
     await user.keyboard("{ArrowDown}");
     await user.keyboard("{Escape}");
@@ -385,6 +496,71 @@ test("Escape, Tab and an outside press close a single pick with nothing picked a
   }
 });
 
+/** Makes the document keep naming a focused element once it has left the page, as an engine that
+ *  moves the focus off a removed element only at its next rendering update does (the HTML spec's
+ *  focus fixup, `focusLost`); happy-dom names the body at once, as Chromium does. Answers what
+ *  puts the document back. */
+function keepRemovedFocus(): () => void {
+  let prototype: object | null = Object.getPrototypeOf(document);
+  let accessor: PropertyDescriptor | undefined;
+  while (prototype !== null && accessor === undefined) {
+    accessor = Object.getOwnPropertyDescriptor(prototype, "activeElement");
+    prototype = Object.getPrototypeOf(prototype);
+  }
+  const read = accessor?.get;
+  if (read === undefined) throw new Error("expected document.activeElement to be an accessor");
+  let last: Element | null = null;
+  const note = (event: Event) => {
+    if (event.target instanceof Element) last = event.target;
+  };
+  document.addEventListener("focus", note, true);
+  Object.defineProperty(document, "activeElement", {
+    configurable: true,
+    get() {
+      const focused: Element | null = read.call(document);
+      return focused === document.body && last !== null && !last.isConnected ? last : focused;
+    },
+  });
+  return () => {
+    Reflect.deleteProperty(document, "activeElement");
+    document.removeEventListener("focus", note, true);
+  };
+}
+
+// INFRA-3135, round 12: the close returned the focus to the trigger only where it had fallen to
+// the body, and an engine that moves the focus off a removed element only at its next rendering
+// update still names the text box the close took away when the close runs, so there Tab or
+// Shift+Tab out of the box left the focus to the page's rescue. A close the list makes itself puts
+// the reader on the trigger in every engine; a press outside still leaves them where it put them.
+test("where the engine still names a removed text box focused, Tab out of it puts the focus on the trigger and a press outside leaves it where it landed", async () => {
+  const user = userEvent.setup();
+  const restore = keepRemovedFocus();
+  const view = render(<SingleHost initial="api" options={["api", "docs"]} />);
+  try {
+    const trigger = screen.getByRole("button", { name: pickNamed("Epic") });
+    for (const shift of [false, true]) {
+      await user.click(trigger);
+      expect(screen.getByRole("combobox", { name: "Search epics" })).toHaveFocus();
+      await user.tab({ shift });
+      expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+      expect(
+        trigger,
+        `${shift ? "Shift+Tab" : "Tab"} left the focus off the trigger`
+      ).toHaveFocus();
+    }
+
+    await user.click(trigger);
+    const elsewhere = screen.getByRole("button", { name: "Elsewhere" });
+    await user.click(elsewhere);
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    expect(elsewhere).toHaveFocus();
+    expect(screen.getByTestId("handed").textContent).toBe("");
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
+
 test("a single pick's text box narrows its options, and Enter over none picks nothing", async () => {
   const user = userEvent.setup();
   const view = render(<SingleHost options={["api", "docs", "frontend"]} />);
@@ -407,6 +583,98 @@ test("a single pick's text box narrows its options, and Enter over none picks no
   }
 });
 
+// A single pick whose host takes values its options lack - the issue header's Repository takes
+// any `owner/name` - offers a typed text no option holds as a row of its own, in the host's words,
+// and hands the text over trimmed. A text that names an option offers no such row; one an option
+// merely contains does. The host's `true` closes the list as a pick does.
+test("a single pick's onCreate row offers a text no option holds, and a taken one closes the list on the trigger", async () => {
+  const user = userEvent.setup();
+  const created: string[] = [];
+  const view = render(
+    <SingleHost
+      onCreate={(value) => {
+        created.push(value);
+        return true;
+      }}
+      options={["api", "docs"]}
+    />
+  );
+  try {
+    const trigger = screen.getByRole("button", { name: "Epic" });
+    await user.click(trigger);
+    const search = screen.getByRole("combobox", { name: "Search epics" });
+    await user.click(search);
+    await user.paste("DOCS");
+    expect(screen.getAllByRole("option").map((option) => option.textContent)).toEqual(["docs"]);
+    await user.clear(search);
+    await user.click(search);
+    await user.paste(" urgent ");
+    // No option holds it: the empty message says so, and the row under it takes the text.
+    expect(screen.getByText("Nothing here.")).toBeTruthy();
+    expect(screen.getAllByRole("option").map((option) => option.textContent)).toEqual([
+      '+Use "urgent"',
+    ]);
+    await user.click(screen.getByRole("option", { name: 'Use "urgent"' }));
+    expect(created).toEqual(["urgent"]);
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+    expect(screen.getByTestId("closings").textContent).toBe("pick");
+    expect(screen.getByTestId("handed").textContent).toBe("");
+
+    // From the keyboard: Enter takes the row while it is the active one.
+    await user.keyboard("{Enter}");
+    await user.paste("ap");
+    expect(screen.getAllByRole("option").map((option) => option.textContent)).toEqual([
+      "api",
+      '+Use "ap"',
+    ]);
+    await user.keyboard("{ArrowDown}");
+    expect(screen.getByRole("combobox", { name: "Search epics" })).toHaveAttribute(
+      "aria-activedescendant",
+      screen.getByRole("option", { name: 'Use "ap"' }).id
+    );
+    await user.keyboard("{Enter}");
+    expect(created).toEqual(["urgent", "ap"]);
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+    expect(screen.getByTestId("handed").textContent).toBe("");
+  } finally {
+    view.unmount();
+  }
+});
+
+// The host's `false` refuses the text: the list stays open with the text in its box and the
+// focus in it, for the reader to correct.
+test("a single pick's onCreate row the host refuses leaves the list open with the text in its box", async () => {
+  const user = userEvent.setup();
+  const created: string[] = [];
+  const view = render(
+    <SingleHost
+      onCreate={(value) => {
+        created.push(value);
+        return false;
+      }}
+      options={["api"]}
+    />
+  );
+  try {
+    await user.click(screen.getByRole("button", { name: "Epic" }));
+    const search = screen.getByRole("combobox", { name: "Search epics" }) as HTMLInputElement;
+    await user.click(search);
+    await user.paste("not one");
+    await user.keyboard("{Enter}");
+    await user.click(screen.getByRole("option", { name: 'Use "not one"' }));
+    expect(created).toEqual(["not one", "not one"]);
+    expect(screen.getByRole("listbox", { name: "Epic options" })).toBeTruthy();
+    expect(search.value).toBe("not one");
+    expect(search).toHaveFocus();
+    expect(screen.getByTestId("closings").textContent).toBe("");
+    expect(screen.getByTestId("handed").textContent).toBe("");
+  } finally {
+    view.unmount();
+  }
+});
+
 // INFRA-3135, round 12: the Agents composer's Issue list. Enter on the list opened over the issue
 // already picked has to keep that issue, as Enter on a `<select>` does, so the list opens with its
 // picked value active rather than its first option.
@@ -414,7 +682,7 @@ test("a single pick opens with its picked value active, so Enter keeps it and th
   const user = userEvent.setup();
   const view = render(<SingleHost initial="docs" options={["api", "docs", "frontend"]} />);
   try {
-    const trigger = screen.getByRole("button", { name: "Epic" });
+    const trigger = screen.getByRole("button", { name: pickNamed("Epic") });
     await user.click(trigger);
     expect(screen.getByRole("combobox", { name: "Search epics" })).toHaveAttribute(
       "aria-activedescendant",
@@ -441,7 +709,7 @@ test("every close tells the host what closed the list: a pick, Escape, Tab, a pr
   const user = userEvent.setup();
   const view = render(<SingleHost initial="api" options={["api", "docs"]} />);
   try {
-    const trigger = screen.getByRole("button", { name: "Epic" });
+    const trigger = screen.getByRole("button", { name: pickNamed("Epic") });
     await user.click(trigger);
     await user.click(screen.getByRole("option", { name: "docs" }));
     await user.click(trigger);
@@ -477,11 +745,11 @@ test("the trigger names the open list's panel, the host's marks are on the trigg
     expect(trigger).not.toHaveAttribute("aria-controls");
     await user.click(trigger);
     expect(trigger).toHaveFocus();
-    const panel = document.getElementById(trigger.getAttribute("aria-controls") ?? "");
+    const panel = panelOf(trigger);
     const search = screen.getByRole("combobox", { name: "Search epics" });
     expect(search).toHaveAttribute("data-test-search", "");
-    expect(panel?.contains(search)).toBe(true);
-    expect(panel?.contains(screen.getByRole("listbox", { name: "Epic options" }))).toBe(true);
+    expect(panel.contains(search)).toBe(true);
+    expect(panel.contains(screen.getByRole("listbox", { name: "Epic options" }))).toBe(true);
   } finally {
     view.unmount();
   }
@@ -532,7 +800,7 @@ test("with keysOnTrigger, a move key on the closed trigger opens the list on the
   const view = render(<SingleHost initial="epic-13" keysOnTrigger options={epics} />);
   const page = keysThePageReads();
   try {
-    const trigger = screen.getByRole("button", { name: "Epic" });
+    const trigger = screen.getByRole("button", { name: pickNamed("Epic") });
     act(() => trigger.focus());
     for (const [key, to] of [
       ["ArrowDown", "epic-14"],
@@ -573,7 +841,7 @@ test("with keysOnTrigger, a printable key on the closed trigger opens the list w
   );
   const page = keysThePageReads();
   try {
-    const trigger = screen.getByRole("button", { name: "Epic" });
+    const trigger = screen.getByRole("button", { name: pickNamed("Epic") });
     act(() => trigger.focus());
     await user.keyboard("d");
     const search = screen.getByRole("combobox", { name: "Search epics" });
@@ -616,7 +884,7 @@ test("without keysOnTrigger, the closed trigger's move keys and printable keys s
   const view = render(<SingleHost initial="api" options={["api", "docs"]} />);
   const page = keysThePageReads();
   try {
-    const trigger = screen.getByRole("button", { name: "Epic" });
+    const trigger = screen.getByRole("button", { name: pickNamed("Epic") });
     act(() => trigger.focus());
     for (const key of [
       "{ArrowDown}",

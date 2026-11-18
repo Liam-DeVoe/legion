@@ -4,7 +4,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { graphNode } from "../../__tests__/graph-fixture";
-import { listOf, textBoxes } from "../../__tests__/list-picks";
+import { listOf, pickNamed, textBoxes } from "../../__tests__/list-picks";
 import { api } from "../../api/client";
 import type { Artifact } from "../../api/types";
 import { ArtifactDetails } from "./ArtifactDetails";
@@ -77,11 +77,11 @@ function noReferences(target: Artifact) {
   });
 }
 
-/** Picks the version named `version` on one side of the compare, the list named `side`
+/** Picks the version named `version` on one side of the compare, the list labelled `side`
  *  (`Compare <name> from`, `Compare <name> to`): opens that side's list and presses its option.
  *  The list is portalled onto the body, so it is reached from the screen. */
 async function pickCompared(user: UserEvent, side: string, version: string): Promise<void> {
-  await user.click(screen.getByRole("button", { name: side }));
+  await user.click(screen.getByRole("button", { name: pickNamed(side) }));
   await user.click(
     within(screen.getByRole("listbox", { name: `${side} options` })).getByRole("option", {
       name: version,

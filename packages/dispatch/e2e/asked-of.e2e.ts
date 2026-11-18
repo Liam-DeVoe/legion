@@ -186,7 +186,7 @@ test("a person hands an ask to another person and it moves between the two Inbox
     // it waits on until she does.
     const rowControl = handOnControl(inboxRow(alicePage, moved.id), moved.id);
     await expect(rowControl).toHaveCount(1);
-    await expect(rowControl).toHaveAccessibleDescription("Asked of alice");
+    await expect(rowControl).toHaveAccessibleName("Hand this question to Asked of alice");
     await expect(inboxRow(alicePage, moved.id)).toContainText("Asked of alice");
     await handTo(rowControl, "bob");
     await handsOff(alicePage);
@@ -246,7 +246,7 @@ test("a person hands an ask to another person and it moves between the two Inbox
     await selectRow(bobPage, moved.id);
     const paneControl = handOnControl(inboxPane(bobPage), moved.id);
     await expect(paneControl).toHaveCount(1);
-    await expect(paneControl).toHaveAccessibleDescription("Asked of bob");
+    await expect(paneControl).toHaveAccessibleName("Hand this question to Asked of bob");
     await expect(handOnControl(aliceCard, moved.id)).toHaveCount(1);
 
     const docPage = await alice.newPage();
@@ -357,8 +357,8 @@ test("an agent sets and clears the issue assignee from the command", async ({
   try {
     const page = await alice.newPage();
     await page.goto(`/issues/${issue.key}`);
-    const assignee = page.getByRole("button", { exact: true, name: `Assignee of ${issue.key}` });
-    await expect(assignee).toHaveAccessibleDescription("carol");
+    const assignee = page.getByLabel(`Assignee of ${issue.key}`);
+    await expect(assignee).toHaveAccessibleName(`Assignee of ${issue.key} carol`);
 
     const bobPage = await bob.newPage();
     await bobPage.goto("/?group=waiting-on");
@@ -371,7 +371,7 @@ test("an agent sets and clears the issue assignee from the command", async ({
       home
     );
     expect(assigned.code, `${assigned.stdout}${assigned.stderr}`).toBe(0);
-    await expect(assignee).toHaveAccessibleDescription("bob");
+    await expect(assignee).toHaveAccessibleName(`Assignee of ${issue.key} bob`);
     await expect(inboxRow(bobPage, ask.id)).toBeVisible();
     await expect(bobPage.locator("[data-inbox-row]")).toHaveCount(1);
 
@@ -382,8 +382,10 @@ test("an agent sets and clears the issue assignee from the command", async ({
       home
     );
     expect(cleared.code, `${cleared.stdout}${cleared.stderr}`).toBe(0);
-    await expect(assignee).toHaveAccessibleDescription("Unassigned");
-    await expect(assignee).toHaveText("Unassigned");
+    await expect(assignee).toHaveAccessibleName(`Assignee of ${issue.key} Unassigned`);
+    await expect(
+      page.getByTestId("issue-header").getByText("Unassigned", { exact: true })
+    ).toBeVisible();
     await expect(inboxRow(bobPage, ask.id)).toHaveCount(0);
 
     // 3. An address nobody has signed in with is refused, and the page does not change.
@@ -394,7 +396,7 @@ test("an agent sets and clears the issue assignee from the command", async ({
     expect(stranger.code).not.toBe(0);
     expect(`${stranger.stdout}${stranger.stderr}`).toContain("ASSIGNEE_NOT_ALLOWED");
     expect((await getIssue(issue.key)).assignee).toBeNull();
-    await expect(assignee).toHaveAccessibleDescription("Unassigned");
+    await expect(assignee).toHaveAccessibleName(`Assignee of ${issue.key} Unassigned`);
 
     // 4. The same call on a closed issue is refused too: a closed issue takes no assignee until
     // somebody reopens it.

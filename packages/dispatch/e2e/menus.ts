@@ -12,6 +12,7 @@ export async function menuOf(trigger: Locator): Promise<Locator> {
     "aria-expanded",
     "true"
   );
+  // The wait above settled the open menu, so the id its trigger names now is the menu's own.
   const id = await trigger.getAttribute("aria-controls");
   if (id === null) throw new Error("the open menu button names no menu in aria-controls");
   return trigger.page().locator(`[id="${id}"]`);

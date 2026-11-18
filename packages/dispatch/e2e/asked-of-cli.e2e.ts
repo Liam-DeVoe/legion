@@ -132,7 +132,7 @@ test("open-asks names the person each ask waits on, before and after a hand-on",
     await expect(card).toContainText("Asked of alice");
     await card
       .locator(`[data-ask-hand-on="${issueAsk}"]`)
-      .getByRole("button", { exact: true, name: "Hand this question to" })
+      .getByRole("button", { name: "Hand this question to" })
       .click();
     await page
       .getByRole("listbox", { name: "Hand this question to options" })

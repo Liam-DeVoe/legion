@@ -34,6 +34,7 @@ import {
   seedMessageThread,
   THREAD_SESSION,
 } from "./inbox-threads";
+import { expandedState } from "./settled";
 
 /** The list this file reads: every row, whoever holds it, so the fields have something to say. */
 export const INBOX = "/?assignee=everyone";
@@ -345,16 +346,18 @@ export function sortedIds(
     .map((row) => row.id);
 }
 
-/** The ids the list is drawing, top to bottom. */
-export async function drawnIds(page: Page): Promise<string[]> {
-  return page
+/** The ids the list inside `within` is drawing, top to bottom: the page's, or a drawer's own,
+ *  never the page's under it. */
+export async function drawnIds(within: Page | Locator): Promise<string[]> {
+  return within
     .locator("[data-inbox-row]")
     .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-inbox-row") ?? ""));
 }
 
-/** Every band heading the list is drawing, top to bottom, with its count. */
-export async function bandHeadings(page: Page): Promise<string[]> {
-  return inboxList(page)
+/** Every band heading the list inside `within` - the page, or a drawer - is drawing, top to
+ *  bottom, with its count. */
+export async function bandHeadings(within: Page | Locator): Promise<string[]> {
+  return inboxList(within)
     .locator("h2 button")
     .evaluateAll((nodes) => nodes.map((node) => (node.textContent ?? "").trim()));
 }
@@ -363,7 +366,7 @@ export async function bandHeadings(page: Page): Promise<string[]> {
 export async function openField(page: Page, field: string): Promise<Locator> {
   const fields = await openFilterFields(page);
   const trigger = fields.getByRole("button", { name: `Filter by ${field}` });
-  if ((await trigger.getAttribute("aria-expanded")) !== "true") await trigger.click();
+  if ((await expandedState(`the ${field} filter`, trigger)) === "shut") await trigger.click();
   const label = field === "assignee" ? "Assignee" : field[0]?.toUpperCase() + field.slice(1);
   const options = page.getByRole("listbox", { name: `${label} options` });
   await expect(options).toHaveCount(1);

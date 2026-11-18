@@ -1352,6 +1352,25 @@ test("after a first read that failed the row still draws the link's chips", asyn
   expect(rowControls()).toEqual(["Filter · 1", "Remove Author: octocat filter"]);
 });
 
+// `?rework=` and `?deployed=` each name a closed set: a value outside it is dropped, as an unknown
+// `?sort=` id is. `constructor` is a key every object inherits, and none of the labels' own.
+test("a rework or deployed value the page has no label for reaches neither the subscription nor a chip, and a known one beside it does", async () => {
+  renderPage(`${DELIVERY_URL}&rework=constructor&rework=rework&deployed=waiting&deployed=bogus`);
+  const socket = await openSocket();
+  const { sub } = await subscriptionTo(socket, {
+    kind: "timeline",
+    window: URL_WINDOW,
+    query: "rework=rework&deployed=waiting",
+  });
+  serve(socket, snapshotFrame(sub, everyFacet));
+  expect(await screen.findByText("1 PRs in current filter/window")).toBeDefined();
+  expect(rowControls()).toEqual([
+    "Filter · 2",
+    "Remove Rework: rework filter",
+    "Remove Deployed: waiting filter",
+  ]);
+});
+
 // F2 item 3: the count is the answer's for the filter and the window the address names, so the
 // previous answer's number is never shown as this filter's.
 test("the count says it is counting while a new filter's read is out, and shows the answer's number again", async () => {
@@ -1381,13 +1400,14 @@ test("the count says it is counting while a new filter's read is out, and shows 
 });
 
 // F2 item 4: `?ws=x&we=y` was kept as written, `Date.parse` gave NaN and every pull request was
-// filtered out of the chart, the list and the count.
-for (const [which, bad] of [
+// filtered out of the chart, the list and the count. One row per window, through this file's own
+// `test`, which unmounts inside act and has no `.each`.
+for (const [what, bad] of [
   ["two words", "ws=x&we=y"],
   ["one end alone", "ws=2024-06-01T06%3A00%3A00Z"],
   ["an end before its start", "ws=2024-06-01T18%3A00%3A00Z&we=2024-06-01T06%3A00%3A00Z"],
 ] as const) {
-  test(`a brush window that is ${which} is dropped, and the page shows its whole window`, async () => {
+  test(`a brush window that is ${what} is dropped, and the page shows its whole window`, async () => {
     renderPage(`${DELIVERY_URL}&${bad}`);
     await answered(everyFacet);
     expect(await screen.findByText("1 PRs in current filter/window")).toBeDefined();

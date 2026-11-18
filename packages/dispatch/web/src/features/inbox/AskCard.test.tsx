@@ -756,7 +756,7 @@ test("a hand-on reads the ask's thread again, so a card reading that thread foll
   const card = within(view.container);
   try {
     const control = await card.findByLabelText("Hand this question to");
-    expect(control).toHaveAccessibleDescription("Asked of nobody");
+    expect(control).toHaveAccessibleName("Hand this question to Asked of nobody");
     // The people are read only once the reader reaches for the control (`AskHandOn`).
     await user.click(control);
     // The list is portalled to the body, outside the card's own container.
@@ -767,8 +767,8 @@ test("a hand-on reads the ask's thread again, so a card reading that thread foll
     await waitFor(() => expect(threadReads).toBeGreaterThan(before));
     // What that read is for: the person the write moved the ask to is on the screen.
     await waitFor(() =>
-      expect(card.getByLabelText("Hand this question to")).toHaveAccessibleDescription(
-        "Asked of bob"
+      expect(card.getByLabelText("Hand this question to")).toHaveAccessibleName(
+        "Hand this question to Asked of bob"
       )
     );
   } finally {
@@ -897,7 +897,7 @@ test("the hand-on badge's keys open its list and move the highlight, reach no pa
       await user.keyboard("{Escape}");
       expect(within(document.body).queryByRole("listbox")).not.toBeInTheDocument();
       expect(control).toHaveFocus();
-      expect(control).toHaveAccessibleDescription("Asked of alice");
+      expect(control).toHaveAccessibleName("Hand this question to Asked of alice");
     }
     expect(pageKeys, "no key on the closed badge reached the page").toEqual([]);
     expect(handAskTo).not.toHaveBeenCalled();
@@ -910,6 +910,38 @@ test("the hand-on badge's keys open its list and move the highlight, reach no pa
     view.unmount();
     getAsk.mockRestore();
     handAskTo.mockRestore();
+    listUsers.mockRestore();
+  }
+});
+
+// INFRA-3135, round 12: the hand-on list passed no failure, so after a failed read of the people
+// it offered the person the question waits on as if that were everyone, with nothing to say the
+// people never came. It says so, as the Inbox's own people list does.
+test("the hand-on list says the people could not be loaded when their read fails", async () => {
+  const user = userEvent.setup();
+  const open = answeredAsk({
+    answer: null,
+    asked_of: "alice",
+    state: "open",
+    waiting_on_person: "alice",
+  });
+  const listUsers = spyOn(api, "listUsers").mockRejectedValue(new Error("users unreachable"));
+  const getAsk = spyOn(api, "getAsk").mockResolvedValue(thread(open, []));
+  const { view } = renderCard(<AskCard ask={open} initialThread={thread(open, [])} />);
+  // The list is portalled to the body, outside the card's own container.
+  const page = within(document.body);
+  try {
+    await user.click(await within(view.container).findByLabelText("Hand this question to"));
+    const list = await page.findByRole("listbox", { name: "Hand this question to options" });
+    const panel = list.parentElement as HTMLElement;
+    expect(await within(panel).findByText("Could not load the people list.")).toBeTruthy();
+    expect(within(list).getByRole("option", { name: /^alice\b/ })).toHaveAttribute(
+      "aria-selected",
+      "true"
+    );
+  } finally {
+    view.unmount();
+    getAsk.mockRestore();
     listUsers.mockRestore();
   }
 });

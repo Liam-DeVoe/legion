@@ -1,17 +1,21 @@
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useId, useState } from "react";
+import { type ReactNode, useState } from "react";
 
 import { api, apiErrorMessage } from "../../api/client";
-import { heldPress } from "../../components/held-press";
+import { MultiSelect } from "../../components/MultiSelect";
 import { QueryError } from "../../components/QueryError";
+import { badgeLow, badgePrimary, textSecondaryOnSurface } from "../../theme/classes";
 import {
-  dangerText,
-  focusVisibleRing,
-  inputClasses,
-  textSecondaryHoverToPrimary,
-  textSecondaryOnSurface,
-} from "../../theme/classes";
+  badgeReachHandlers,
+  badgeSelectBadge,
+  badgeSelectRailTrigger,
+  badgeSelectRailWrapper,
+} from "./badge-select";
 import { useIssueRepo } from "./useIssueRepo";
+
+/** The option that clears the issue's own repository, so it resolves to its nearest ancestor's,
+ *  else to the project's default, again. */
+const INHERIT = "";
 
 /** The grammar a repository GitHub could hold is written in, which is the grammar the server
  *  holds an issue's repository to (`githubCouldHoldRepo`, `issue_repo.go`, itself copied from the
@@ -21,57 +25,54 @@ import { useIssueRepo } from "./useIssueRepo";
  *  repository name is at most 100 letters, digits, `.`, `-` and `_`, and is neither `.` nor
  *  `..`. It is written here rather than taken from `ownerRepoPattern`, the looser `owner/name`
  *  shape the settings forms share, because those forms write a repository mapping, which the
- *  server holds to that looser shape alone.
- *
- *  The hyphen is written `\-` in both classes because this is also the box's `pattern`, which a
- *  browser compiles with the `v` flag, and under that flag a bare hyphen in a class is a syntax
- *  error: the browser then ignores the attribute and logs the error, and only the check below
- *  holds the box. */
-const ownerRepoPattern = "[A-Za-z0-9][A-Za-z0-9_\\-]{0,38}/(?!\\.{1,2}$)[A-Za-z0-9._\\-]{1,100}";
+ *  server holds to that looser shape alone. This control tests a typed repository against it
+ *  before it writes, so a typo shows in the list rather than coming back as the server's 400 a
+ *  round trip later. */
+const ownerRepo = /^[A-Za-z0-9][A-Za-z0-9_-]{0,38}\/(?!\.{1,2}$)[A-Za-z0-9._-]{1,100}$/;
 
-/** `ownerRepoPattern` as a test of a whole value: the check this control makes before it writes,
- *  so a typo shows at the box rather than coming back as the server's 400 a round trip later. */
-const ownerRepo = new RegExp(`^(?:${ownerRepoPattern})$`);
-
-/** What the box says about a value GitHub could hold no repository at. The server says the same
- *  thing in its own words for anything that reaches it. */
+/** What the list says about a typed value GitHub could hold no repository at. The server says the
+ *  same thing in its own words for anything that reaches it. */
 const NOT_OWNER_NAME = "Write the repository as owner/name.";
 
 /**
- * The issue's repository in the details rail: `Repository:` and one combobox, labelled
- * `Repository of <KEY>`, holding the issue's own repository, with a `<datalist>` of the
- * repositories Dispatch maps to this issue's project. The mappings are suggestions rather than the set
- * of values: any `owner/name` may be typed, one this project maps, one another project maps, or
- * one no project maps, which is what the server takes, and that is why this is a text box with a
- * list and not a `<select>`, which cannot hold a value its options lack.
+ * The issue's repository in the details rail: `Repository:` and a badge naming the repository the
+ * issue resolves to (its own, else its nearest ancestor's, else the project's default, muted when
+ * not its own; "No repository" when none resolves), which is the trigger of the shared list's
+ * single pick (`MultiSelect`), laid over the badge as `AssigneeControl`'s is. Labelled
+ * `Repository of <KEY>`. The badge is hidden from assistive technology; the trigger's name goes on
+ * from its label to the words that read what it shows: the repository,
+ * `, inherited or the project's default` when it is not the issue's own, or `No repository`.
  *
- * The box shows the issue's own repository and nothing else, so the repository it resolves to -
- * its nearest ancestor's, else the project's default - is its placeholder, which is what an empty
- * box stands for; the description (`aria-describedby`, an `sr-only` span) says the same in words,
- * with `, inherited or the project's default` after it when it is not the issue's own, and
- * `No repository` when none resolves. A clear control inside the box, shown only while the issue
- * has a repository of its own, puts it back to inheriting; an emptied box and Enter do the same.
+ * The list holds Inherit first, which clears the issue's own repository, then the repositories
+ * mapped to the issue's project in Settings, and the issue's own repository when no mapping lists
+ * it; its text box narrows them as the reader types. The mappings are suggestions rather than the
+ * set of values: any `owner/name` may be given, one this project maps, one another project maps,
+ * or one no project maps, which is what the server takes. So a typed text that matches no option
+ * gets a row of its own, `Use "<typed>"`. A pick writes at once through `useIssueRepo`, and a pick
+ * of the value the issue holds writes nothing. A typed text GitHub could hold no repository at
+ * (`ownerRepo` above) writes nothing: the list stays open with the text in its box and says so
+ * under the options until the text changes. A typed text that passes is written as typed, less
+ * the spaces at its ends, and the server's own refusal shows beside the trigger with the write
+ * rolled back (`useIssueFieldWrite`). Leaving the list picks nothing; a typed repository is given
+ * by its row or Enter.
  *
- * What is typed, or a suggestion picked into the box, is written when Enter is pressed and at no
- * other moment, never per keystroke, since `owner/name` is only a repository once the whole of it
- * is there. Escape, and leaving the box, write nothing and put back what the issue holds, as every
- * choice control of the page does (INFRA-2160's R6): a key or a move of the focus is no act on the
- * issue. A value GitHub could hold no repository at - one that is not `owner/name`, or one whose
- * owner or name is outside GitHub's own grammar (`ownerRepoPattern` above) - is refused here, at
- * the box, with what was typed still in it, and the write path (`useIssueRepo`,
- * `useIssueFieldWrite`) is unchanged, so the optimistic write, the rollback and the server's own
- * refusal - `INVALID_ISSUE` for anything that reaches it - show as they did.
+ * Its closed trigger takes the list's keys (`keysOnTrigger`): an arrow, Home, End, Page Up, Page
+ * Down or a letter opens the list and moves its highlight, and only Enter or a click on a row
+ * writes. Escape, Tab and a press outside write nothing and leave the badge showing what the
+ * issue holds, as every choice control of the page does (INFRA-2160's R6): a key or a move of the
+ * focus is no act on the issue.
  *
  * The item renders whenever the issue can carry a repository, which is always: a project that
  * maps none has nothing to suggest, and its issues still take any repository. The mappings are
  * read once the reader reaches for the control (pointer over it, a touch on it, or focus), and at
  * once while the issue resolves to no repository at all, which is the issue most likely to be
- * given one. A read that fails costs the suggestions and nothing else: the failure and a Retry
- * show beside the box, which takes a typed repository as ever.
+ * given one. Until they answer, the list says the repositories are loading where a typed word
+ * matches no option. A read that fails costs the suggestions and nothing else: the failure shows
+ * beside the trigger with a Retry, and in the list, which still takes a typed repository.
  *
- * `held` is the host's own write out (the issue page's other field writes): the box and its clear
- * control keep the focus and their Tab stops (`aria-disabled`, the box read-only), and nothing is
- * written while it lasts; a draft typed before it stays in the box for the next Enter.
+ * `held` is the host's own write out (the issue page's other field writes): the trigger keeps the
+ * focus and its Tab stop (`aria-disabled`), and nothing is written while it lasts - a pick is
+ * dropped, and a typed repository stays in the list's text box for the next Enter.
  */
 export function RepoControl({
   disabled = false,
@@ -89,138 +90,104 @@ export function RepoControl({
   resolvedRepo: string | null;
 }): ReactNode {
   const [wanted, setWanted] = useState(false);
-  /** What the reader has typed since the box was last written, left or restored; null while the
-   *  box shows the issue's own repository. */
-  const [draft, setDraft] = useState<string | null>(null);
-  /** Whether the draft was refused here, for not being `owner/name`. */
-  const [refused, setRefused] = useState(false);
   const mappings = useQuery({
     enabled: wanted || resolvedRepo === null,
     queryKey: ["repo-projects"],
     queryFn: () => api.listRepoProjects(),
   });
-  const want = () => setWanted(true);
-  const descriptionId = useId();
-  const suggestionsId = useId();
+  const [open, setOpen] = useState(false);
+  /** Whether the typed repository was refused here, for not being `owner/name`. */
+  const [refused, setRefused] = useState(false);
   const write = useIssueRepo(issueKey);
   const mapped = (mappings.data ?? [])
     .filter((mapping) => mapping.project === project)
     .map((mapping) => mapping.repo)
     .sort();
-  const description =
+  const failure = mappings.isError
+    ? apiErrorMessage(mappings.error, `Could not load the repositories mapped to ${project}.`)
+    : null;
+  // The issue's own repository stays in the list whether or not its project maps it, so the list
+  // never lacks the value it marks picked.
+  const options = repo === null || mapped.includes(repo) ? mapped : [repo, ...mapped];
+  const value = repo ?? INHERIT;
+  const tone = repo === null ? badgeLow : badgePrimary;
+  const spoken =
     resolvedRepo === null
       ? "No repository"
       : repo === null
         ? `${resolvedRepo}, inherited or the project's default`
         : resolvedRepo;
-  const restore = () => {
-    setDraft(null);
-    setRefused(false);
-  };
-  // The draft goes back to the issue's own repository as it is written, so the optimistic value
-  // is what the box shows and a rollback puts the previous one back under it. A refused draft
-  // stays in the box: it is what the reader has to correct.
-  const commit = () => {
-    if (draft === null || held) {
-      return;
-    }
-    const typed = draft.trim();
-    // What is read is what the server reads: it drops a `.git` suffix before it judges the name
-    // (canonicalRepo), so a clone URL's name is no longer to the box than to the server.
-    if (typed !== "" && !ownerRepo.test(typed.replace(/\.git$/i, ""))) {
+  // What is read is what the server reads: it drops a `.git` suffix before it judges the name
+  // (canonicalRepo), so a clone URL's name is no longer to the list than to the server. The list
+  // offers no row for a text that names an option, so the typed text is never the value the
+  // issue holds.
+  const give = (typed: string): boolean => {
+    if (held) return false;
+    if (!ownerRepo.test(typed.replace(/\.git$/i, ""))) {
       setRefused(true);
-      return;
+      return false;
     }
-    restore();
-    if (typed !== (repo ?? "")) {
-      write.submit(typed === "" ? null : typed);
-    }
+    write.submit(typed);
+    return true;
   };
   return (
     <div className={`flex shrink-0 items-center gap-2 text-sm ${textSecondaryOnSurface}`}>
       <span className="font-medium">Repository:</span>
-      {/* `relative` is load-bearing: the description is `sr-only`, which is absolutely
-          positioned, and with no positioned ancestor it is laid out against the page and makes it
-          as wide as its own text at a phone width. */}
-      <span className="relative inline-flex shrink-0 items-center">
-        <input
-          aria-describedby={descriptionId}
-          aria-disabled={held || undefined}
-          aria-invalid={refused || undefined}
-          aria-label={`Repository of ${issueKey}`}
-          autoComplete="off"
-          className={`min-h-11 w-[200px] rounded-sm border py-0.5 pl-1.5 font-mono text-xs outline-none focus-visible:ring-2 refused:opacity-50 md:min-h-7 ${repo === null ? "pr-1.5" : "pr-8"} ${inputClasses(false)} ${focusVisibleRing}`}
+      <span
+        className={`${badgeSelectRailWrapper} ${disabled || held ? "opacity-50" : ""}`}
+        {...badgeReachHandlers(() => setWanted(true))}
+        title={
+          repo === null && resolvedRepo !== null ? "Inherited or the project's default" : undefined
+        }
+      >
+        <MultiSelect
+          ariaDisabled={held}
+          chevron={false}
+          createLabel={(typed) => `Use "${typed}"`}
           disabled={disabled}
-          list={suggestionsId}
-          onBlur={restore}
-          onChange={(event) => {
-            setDraft(event.target.value);
+          emptyMessage={
+            mappings.isPending ? "Loading repositories…" : "No repository matches that."
+          }
+          error={refused ? NOT_OWNER_NAME : failure}
+          keysOnTrigger
+          label={`Repository of ${issueKey}`}
+          mode="single"
+          onCreate={give}
+          onOpenChange={(next) => {
+            setOpen(next);
             setRefused(false);
           }}
-          onFocus={want}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") {
-              event.preventDefault();
-              commit();
-            } else if (event.key === "Escape") {
-              restore();
-            }
+          onPick={(picked) => {
+            if (held || picked === value) return;
+            write.submit(picked === INHERIT ? null : picked);
           }}
-          onMouseDown={(event) => event.stopPropagation()}
-          onPointerDown={(event) => event.stopPropagation()}
-          onPointerEnter={want}
-          onTouchStart={(event) => {
-            event.stopPropagation();
-            want();
-          }}
-          pattern={ownerRepoPattern}
-          placeholder={resolvedRepo ?? "owner/name"}
-          readOnly={held}
-          spellCheck={false}
-          value={draft ?? repo ?? ""}
-        />
-        {repo === null ? null : (
-          <button
-            aria-label={`Clear the repository of ${issueKey}`}
-            className={`absolute inset-y-0 right-0 inline-flex w-8 items-center justify-center rounded-sm text-base outline-none focus-visible:ring-2 refused:opacity-50 ${textSecondaryHoverToPrimary} ${focusVisibleRing}`}
-            disabled={disabled}
-            {...heldPress(held, () => {
-              restore();
-              write.submit(null);
-            })}
-            // A press here keeps the focus in the box, where the reader was: leaving the box
-            // would put back what the issue holds, and the click then clears it, one write.
-            onMouseDown={(event) => event.preventDefault()}
-            title="Clear it, and the issue inherits a repository again"
-            type="button"
+          onQueryChange={() => setRefused(false)}
+          open={open}
+          optionLabel={(candidate) => (candidate === INHERIT ? "Inherit" : candidate)}
+          options={[INHERIT, ...options]}
+          searchLabel="Search repositories"
+          triggerClassName={badgeSelectRailTrigger}
+          value={value}
+        >
+          {/* A single pick's trigger is named for its list and then for what it shows, and the
+              badge is hidden from that name: a screen reader hears the words beside it, the
+              target as well as Inherit. */}
+          <span
+            aria-hidden="true"
+            className={`${badgeSelectBadge} font-mono ${tone.bg} ${tone.text}`}
           >
-            <span aria-hidden="true">×</span>
-          </button>
-        )}
-        <datalist id={suggestionsId}>
-          {mapped.map((candidate) => (
-            <option key={candidate} value={candidate} />
-          ))}
-        </datalist>
-        <span className="sr-only" id={descriptionId}>
-          {description}
-        </span>
+            {resolvedRepo ?? "No repository"}
+          </span>
+          <span className="sr-only">{spoken}</span>
+        </MultiSelect>
       </span>
-      {refused ? (
-        <p className={dangerText} role="alert">
-          {NOT_OWNER_NAME}
-        </p>
-      ) : null}
-      {mappings.isError ? (
+      {failure === null ? null : (
         <QueryError
-          message={apiErrorMessage(
-            mappings.error,
-            `Could not load the repositories mapped to ${project}.`
-          )}
+          message={failure}
           onRetry={() => void mappings.refetch()}
           retrying={mappings.isFetching}
         />
-      ) : null}
+      )}
       {write.failed ? (
         <QueryError
           message={write.error ?? `Could not update the repository of ${issueKey}.`}

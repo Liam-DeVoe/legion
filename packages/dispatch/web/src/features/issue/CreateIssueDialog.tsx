@@ -7,6 +7,7 @@ import { ApiError, api, type WriteBounds } from "../../api/client";
 import { projectsQuery } from "../../api/queries";
 import type { CreateIssueInput, Issue } from "../../api/types";
 import { heldPress } from "../../components/held-press";
+import { MultiSelect } from "../../components/MultiSelect";
 import { QueryError } from "../../components/QueryError";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
@@ -43,6 +44,14 @@ const createIssue = (input: CreateIssueInput, bounds: WriteBounds): Promise<Issu
  * **Create anyway** (`force`), the same path an agent takes. Success opens the new issue. While
  * a person types a title, the dialog lists the related items the check finds for it, so a
  * duplicate is seen before it is filed.
+ *
+ * The project is the shared list's single pick (`MultiSelect`), whose text box narrows the
+ * projects as the reader types (`KEY · name`), held while the create is out. Its panel is
+ * portalled out of the dialog and stands in the layer over it (`AnchoredPanel`), so its options
+ * take the press rather than the backdrop, and Escape and Tab in the list are the list's: they
+ * close it and leave the reader on its trigger, inside the dialog, whose own Escape and Tab
+ * cycle then take over. It says the projects are loading while their read is out, and that they
+ * could not be loaded where it failed, as the dialog does beside it.
  */
 export function CreateIssueDialog({
   onClose,
@@ -60,6 +69,7 @@ export function CreateIssueDialog({
   const projects = useQuery(projectsQuery());
   const routeProject = routeProjectOf(location.pathname);
   const [project, setProject] = useState<string | undefined>(undefined);
+  const [projectListOpen, setProjectListOpen] = useState(false);
   const [title, setTitle] = useState("");
   const [spec, setSpec] = useState("");
   const submitGuard = useSubmitGuard();
@@ -85,6 +95,9 @@ export function CreateIssueDialog({
   });
 
   const available = projects.data ?? [];
+  const projectLabels = new Map(
+    available.map((candidate) => [candidate.key, `${candidate.key} · ${candidate.name}`])
+  );
   const selectedProject =
     project ??
     available.find((candidate) => candidate.key === routeProject)?.key ??
@@ -135,24 +148,38 @@ export function CreateIssueDialog({
           role="dialog"
         >
           <h2 className={`text-base font-semibold ${textPrimaryOnSurface}`}>Create issue</h2>
-          <label className={`block text-sm font-medium ${textSecondaryOnSurface}`}>
-            Project
-            <select
-              aria-disabled={held || undefined}
-              className={`mt-1 block min-h-11 w-full rounded-lg border px-3 py-2 text-sm font-normal outline-none aria-disabled:opacity-50 ${inputClasses(true)} ${textPrimaryOnSurface}`}
-              disabled={available.length === 0}
-              onChange={(event) => {
-                if (!held) setProject(event.target.value);
+          <div className={`text-sm font-medium ${textSecondaryOnSurface}`}>
+            <span aria-hidden="true">Project</span>
+            <MultiSelect
+              ariaDisabled={held}
+              emptyMessage={
+                projects.isPending
+                  ? "Loading projects…"
+                  : projects.isError || available.length > 0
+                    ? "No project matches that."
+                    : "No projects yet"
+              }
+              error={projects.isError ? "Could not load projects." : null}
+              label="Project"
+              mode="single"
+              onOpenChange={setProjectListOpen}
+              onPick={(key) => {
+                if (!held) setProject(key);
               }}
-              value={selectedProject}
+              open={projectListOpen}
+              optionLabel={(key) => projectLabels.get(key)}
+              options={available.map((candidate) => candidate.key)}
+              searchLabel="Search projects"
+              triggerClassName={`mt-1 block min-h-11 w-full rounded-lg border px-3 py-2 text-left text-sm font-normal outline-none aria-disabled:opacity-50 ${inputClasses(true)} ${textPrimaryOnSurface}`}
+              value={selectedProject === "" ? undefined : selectedProject}
             >
-              {available.map((candidate) => (
-                <option key={candidate.key} value={candidate.key}>
-                  {candidate.key} · {candidate.name}
-                </option>
-              ))}
-            </select>
-          </label>
+              {selectedProject === ""
+                ? projects.isPending
+                  ? "Loading projects…"
+                  : "Choose a project"
+                : undefined}
+            </MultiSelect>
+          </div>
           {projects.isSuccess && available.length === 0 ? (
             <p className={`text-sm ${textMutedOnSurface}`}>
               No projects yet — create one under Settings first.

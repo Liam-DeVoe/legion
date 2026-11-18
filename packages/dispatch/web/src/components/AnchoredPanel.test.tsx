@@ -303,3 +303,53 @@ test("Escape goes back to where a key noted it opened the panel from, and the no
     view.unmount();
   }
 });
+
+/** A panel beside a control that keeps its own press from propagating, as an ask card's hand-on
+ *  keeps its press from the row it sits in. */
+function PanelBesideAStoppedPress({ dismissals }: { dismissals: PanelDismissal[] }) {
+  const [open, setOpen] = useState(false);
+  const anchor = useRef<HTMLButtonElement>(null);
+  return (
+    <>
+      <button onClick={() => setOpen(true)} ref={anchor} type="button">
+        Open
+      </button>
+      <button onPointerDown={(event) => event.stopPropagation()} type="button">
+        Stopped
+      </button>
+      {open ? (
+        <AnchoredPanel
+          anchorRef={anchor}
+          className=""
+          label="Panel"
+          onDismiss={(how) => {
+            dismissals.push(how);
+            setOpen(false);
+          }}
+          role="dialog"
+        >
+          <button type="button">Inside</button>
+        </AnchoredPanel>
+      ) : null}
+    </>
+  );
+}
+
+// INFRA-3135, round 12: the panel listened for a press outside it as the press bubbled up to the
+// document, so a control that stopped its press on the way - the ask card's hand-on, keeping it
+// from the row under it - kept every open panel open.
+test("a press outside on a control that stops it from propagating still closes the panel", async () => {
+  const user = userEvent.setup();
+  const dismissals: PanelDismissal[] = [];
+  const view = render(<PanelBesideAStoppedPress dismissals={dismissals} />);
+  try {
+    await user.click(screen.getByRole("button", { name: "Open" }));
+    expect(screen.getByRole("dialog", { name: "Panel" })).toBeTruthy();
+    // A press with no release, as the outside press above is.
+    fireEvent.pointerDown(screen.getByRole("button", { name: "Stopped" }));
+    expect(screen.queryByRole("dialog", { name: "Panel" })).toBeNull();
+    expect(dismissals).toEqual(["press"]);
+  } finally {
+    view.unmount();
+  }
+});

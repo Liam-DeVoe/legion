@@ -2,6 +2,7 @@ import {
   agentRow,
   issueListOf,
   issueOption,
+  issueSearchIn,
   openAgents,
   plannerSession,
   seedAgents,
@@ -73,7 +74,7 @@ test.describe("agents page", () => {
       await expect(reviewerPicker).toHaveAttribute("aria-expanded", "true");
       // `i` leaves the reader in the Issue list's text box, where the letters narrow the issues
       // and are not the page's keys - Escape is the way back to the row, closing it behind them.
-      await expect(issueListOf(reviewer).getByRole("combobox", { name: "Issue" })).toBeFocused();
+      await expect(issueSearchIn(reviewer)).toBeFocused();
       await page.keyboard.press("Escape");
       await expect(reviewerPicker).toHaveAttribute("aria-expanded", "false");
       await expect(reviewer).toBeFocused();
@@ -124,7 +125,7 @@ test.describe("agents page", () => {
       await page.keyboard.press("i");
       const toggle = row.getByRole("button", { name: "Choose issue" });
       await expect(toggle).toHaveAttribute("aria-expanded", "true");
-      const picker = issueListOf(row).getByRole("combobox", { name: "Issue" });
+      const picker = issueSearchIn(row);
       await expect(picker).toBeFocused();
 
       await page.keyboard.press("Escape");
@@ -150,9 +151,9 @@ test.describe("agents page", () => {
       await page.keyboard.press("j");
       await page.keyboard.press("i");
       const toggle = row.getByRole("button", { name: "Choose issue" });
-      await expect(issueListOf(row).getByRole("combobox", { name: "Issue" })).toBeFocused();
+      await expect(issueSearchIn(row)).toBeFocused();
 
-      // The arrows move the selection; Enter is the pick.
+      // The arrows move the active issue; Enter is the pick.
       await page.keyboard.press("ArrowDown");
       await expect(toggle).toHaveAttribute("aria-expanded", "true");
       await page.keyboard.press("Enter");
@@ -191,7 +192,11 @@ test.describe("agents page", () => {
       await expect(rows.nth(1)).toBeFocused();
 
       release?.();
-      await expect(issueListOf(rows.nth(0)).getByRole("combobox", { name: "Issue" })).toBeVisible();
+      // The issues have landed, which is when the list decides whether to take the focus. Its
+      // text box is drawn at the open, before they land, so it cannot be what this waits on; the
+      // `<select>` the list replaced was drawn only once they had, which is what this row waited
+      // on.
+      await expect(issueOption(rows.nth(0), "CORE-1")).toBeVisible();
       await expect(rows.nth(1)).toBeFocused();
 
       // And the reader's next key is still a rove, not a write on the row they left.
@@ -227,7 +232,7 @@ test.describe("agents page", () => {
       // composer is its own discard prompt, which is not this path - and the pick itself is made
       // from the keyboard the open hands over to.
       await toggle.click();
-      await expect(issueListOf(row).getByRole("combobox", { name: "Issue" })).toBeFocused();
+      await expect(issueSearchIn(row)).toBeFocused();
       await page.keyboard.press("ArrowDown");
       await page.keyboard.press("Enter");
       await expect(toggle).toContainText("CORE-1");
@@ -368,7 +373,9 @@ test.describe("agents page", () => {
       await page.keyboard.type("still typing");
 
       release?.();
-      await expect(issueListOf(row).getByRole("combobox", { name: "Issue" })).toBeVisible();
+      // The issues have landed, which is when the list decides whether to take the focus; its
+      // text box is drawn at the open, before they land.
+      await expect(issueOption(row, "CORE-1")).toBeVisible();
       await expect(field).toBeFocused();
       await expect(field).toHaveValue("still typing");
       await expect(row.getByRole("button", { name: "Choose issue" })).toContainText("No issue");
@@ -445,7 +452,7 @@ test.describe("agents page", () => {
       await openAgents(page);
       const row = shownAgentRows(page).nth(0);
       const toggle = row.getByRole("button", { name: "Choose issue" });
-      const picker = issueListOf(row).getByRole("combobox", { name: "Issue" });
+      const picker = issueSearchIn(row);
       const field = row.getByRole("textbox", { name: "Comment" });
       const broadcast = row.getByRole("checkbox", { name: "Select Planner for broadcast" });
 
@@ -503,7 +510,7 @@ test.describe("agents page", () => {
       await openAgents(page);
       const row = shownAgentRows(page).nth(0);
       const toggle = row.getByRole("button", { name: "Choose issue" });
-      const picker = issueListOf(row).getByRole("combobox", { name: "Issue" });
+      const picker = issueSearchIn(row);
       const field = row.getByRole("textbox", { name: "Comment" });
 
       await page.keyboard.press("j");
@@ -540,7 +547,7 @@ test.describe("agents page", () => {
       const row = shownAgentRows(page).nth(0);
       const toggle = row.getByRole("button", { name: "Choose issue" });
       const list = issueListOf(row);
-      const picker = list.getByRole("combobox", { name: "Issue" });
+      const picker = issueSearchIn(row);
       const field = row.getByRole("textbox", { name: "Comment" });
 
       await page.keyboard.press("j");
@@ -571,7 +578,7 @@ test.describe("agents page", () => {
       await openAgents(page);
       const row = shownAgentRows(page).nth(0);
       const toggle = row.getByRole("button", { name: "Choose issue" });
-      const picker = issueListOf(row).getByRole("combobox", { name: "Issue" });
+      const picker = issueSearchIn(row);
       const field = row.getByRole("textbox", { name: "Comment" });
 
       await page.keyboard.press("j");
@@ -610,7 +617,7 @@ test.describe("agents page", () => {
       await openAgents(page);
       const row = shownAgentRows(page).nth(0);
       const toggle = row.getByRole("button", { name: "Choose issue" });
-      const picker = issueListOf(row).getByRole("combobox", { name: "Issue" });
+      const picker = issueSearchIn(row);
       const field = row.getByRole("textbox", { name: "Comment" });
 
       await page.keyboard.press("j");

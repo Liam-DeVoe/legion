@@ -1,6 +1,8 @@
 import { expect, type Locator, type Page } from "@playwright/test";
 
-import { openFilterPanel } from "./filters";
+import { CONTROL } from "../web/src/components/control-names";
+import { control, controlRow, openFilterPanel } from "./filters";
+import { expandedState } from "./settled";
 
 /**
  * The Inbox's `?assignee=` control (the Assignee field `features/inbox/Inbox.tsx` draws), one of
@@ -40,7 +42,7 @@ export async function typeFilterCount(
 ): Promise<number> {
   await openFilterPanel(page, within);
   const trigger = page.getByRole("button", { name: "Filter by type" });
-  if ((await trigger.getAttribute("aria-expanded")) !== "true") await trigger.click();
+  if ((await expandedState("the Type filter", trigger)) === "shut") await trigger.click();
   const options = page.getByRole("listbox", { name: "Type options" });
   const label =
     (await options
@@ -54,7 +56,7 @@ export async function typeFilterCount(
 export async function openAssigneeFilter(page: Page): Promise<void> {
   await openFilterFields(page);
   const trigger = assigneeFilter(page);
-  if ((await trigger.getAttribute("aria-expanded")) !== "true") {
+  if ((await expandedState("the assignee filter", trigger)) === "shut") {
     await trigger.click();
   }
   await expect(assigneeOptions(page)).toHaveCount(1);
@@ -92,7 +94,8 @@ export async function closeAssigneeFilter(page: Page): Promise<void> {
   await page.keyboard.press("Escape");
   await expect(assigneeOptions(page)).toHaveCount(0);
   const panel = page.getByRole("dialog", { name: "Filter" });
-  if ((await panel.count()) !== 0) {
+  const panelTrigger = control(controlRow(page), CONTROL.panelTrigger);
+  if ((await expandedState("the row's filter trigger", panelTrigger)) === "open") {
     await page.keyboard.press("Escape");
     await expect(panel).toHaveCount(0);
   }

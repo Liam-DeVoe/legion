@@ -87,6 +87,10 @@ export function noteOpenedFrom(anchor: HTMLElement): void {
  * trap follow (`focusableIn`), else to the panel itself, unless the host opens it without
  * (`focusOnOpen`).
  *
+ * The press outside is read at the document's capture phase, before any control under it can
+ * stop it on its way up: an ask card's hand-on keeps its press from the row it sits in, and a
+ * press there still closes every other panel, another card's hand-on list among them.
+ *
  * Tab never leaves the panel for whatever the body holds after it: portalled there, the panel is
  * outside the dialog it was opened in, whose own Tab cycle never sees it, so the focus would go
  * past the end of the page and on to the page behind the dialog. Closing at either end and
@@ -289,6 +293,8 @@ export function AnchoredPanel({
       const controls = focusableIn(open);
       ((edge === "start" ? controls[0] : controls.at(-1)) ?? open).focus();
     };
+    // Read in the capture phase, so a control that stops its own press from propagating - to keep
+    // it from the row or card under it - cannot keep this panel open.
     const outside = (event: PointerEvent) => {
       const target = event.target;
       if (!(target instanceof Node)) return;
@@ -326,11 +332,11 @@ export function AnchoredPanel({
       dismiss.current("escape");
     };
     document.addEventListener("focusin", followFocus, true);
-    document.addEventListener("pointerdown", outside);
+    document.addEventListener("pointerdown", outside, true);
     document.addEventListener("keydown", dismissOnEscape, true);
     return () => {
       document.removeEventListener("focusin", followFocus, true);
-      document.removeEventListener("pointerdown", outside);
+      document.removeEventListener("pointerdown", outside, true);
       document.removeEventListener("keydown", dismissOnEscape, true);
       if (anchor !== null) openedFrom.delete(anchor);
     };

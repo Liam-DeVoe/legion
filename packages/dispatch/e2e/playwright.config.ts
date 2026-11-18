@@ -8,6 +8,7 @@ import {
   stubProjectNames,
   tagged,
 } from "./configurations";
+import { expectTimeout } from "./expect-timeout";
 import { harnessProcessCount } from "./harness-processes";
 import { harnessSignIn } from "./harness-signin";
 import { measuring } from "./measure";
@@ -168,10 +169,6 @@ if (clockFile !== undefined) {
   );
 }
 
-// The default wait for asynchronous server and rendering readiness. A spec only sets its own
-// timeout when that deadline is its observable contract (the keyboard chord-expiry test).
-const expectTimeout = 15_000;
-
 // The per-test budget, measured rather than inherited. Playwright's own default is 30 s, chosen
 // when this suite ran one row at a time; it now runs four workers on a four-core runner. Read from
 // the report.json artifact of 201 ci.yaml runs between 2026-11-05T08:56:19Z and
@@ -318,10 +315,12 @@ const parallelProjects = [
   // pickers' keyboard-step rule rests on: all five rows of `keyboard-session-pickers`.
   // The keys a text box takes, and how the engine takes the focus out of one on Tab, which the
   // shared single-pick list (`MultiSelect`) is driven by: the five rows of `keyboard-agents-picker`
-  // that drive the Agents composer's Issue list from the keyboard, and the three
+  // that drive the Agents composer's Issue list from the keyboard, the three
   // `k-choice-writes-on-enter` rows of `keyboard-complete`, whose keys on a focused closed trigger
   // (the assignee, the repository, an ask's hand-on) open its list and move the highlight, and
-  // whose list writes only on Enter.
+  // whose list writes only on Enter, and `table-controls`'s row that Tab and Escape never leave a
+  // panel for the page behind it, which leaves a list's text box by Tab on a page and by Shift+Tab
+  // in a dialog and reads the focus on the list's trigger.
   // A send held open across two in-app navigations, with the row's draft, its picker and its
   // Reply held until the server answers: `keyboard-agents-picker`'s row back after the reader
   // left mid-send, which carries `@webkit` alone because each of its six measured failures was
@@ -351,9 +350,17 @@ const parallelProjects = [
   // socket the engine reconnects and the paint after it.
   // A focused control taken away, itself or with a parent, which the HTML spec's focus fixup
   // does with no `focusout`, so the page's focus rescue sees it only by watching the page:
-  // `table-controls`'s page-own focus row. Measured in WebKit as well as Firefox: neither fires
-  // a `focusout` for it. And a table scrolled while one of its rows holds the focus, whose row
-  // the virtual list takes away out of sight: `table-controls`'s scrolling-table row.
+  // `table-controls`'s page-own focus row, and its row whose focused row a live update takes
+  // away. Measured in WebKit as well as Firefox: neither fires a `focusout` for it. And a table
+  // scrolled while one of its rows holds the focus, whose row the virtual list takes away out of
+  // sight: `table-controls`'s scrolling-table row.
+  // The engine's own Tab order - a stop for each field of a date box, one for a radio group -
+  // which decides when a Tab leaves a panel's last control, where the panel puts the focus on its
+  // trigger: `table-controls`'s row that Tab and Escape never leave a panel for the page behind
+  // it.
+  // How the engine lays out a scroll box, lands a wheel step's scroll and clamps a scroll, which
+  // a panel cut to a short window is scrolled by: `table-controls`'s row that such a panel
+  // scrolls to its last control, by the wheel and by Tab.
   // How the engine names a download from the `filename*` and `filename` of its
   // `Content-Disposition`, and whether it asks the server again for a download address it holds,
   // where an older version's name changes once a newer one exists: `download-names`'s six rows.
@@ -405,10 +412,12 @@ const parallelProjects = [
   // pickers' keyboard-step rule rests on: all five rows of `keyboard-session-pickers`.
   // The keys a text box takes, and how the engine takes the focus out of one on Tab, which the
   // shared single-pick list (`MultiSelect`) is driven by: the five rows of `keyboard-agents-picker`
-  // that drive the Agents composer's Issue list from the keyboard, and the three
+  // that drive the Agents composer's Issue list from the keyboard, the three
   // `k-choice-writes-on-enter` rows of `keyboard-complete`, whose keys on a focused closed trigger
   // (the assignee, the repository, an ask's hand-on) open its list and move the highlight, and
-  // whose list writes only on Enter.
+  // whose list writes only on Enter, and `table-controls`'s row that Tab and Escape never leave a
+  // panel for the page behind it, which leaves a list's text box by Tab on a page and by Shift+Tab
+  // in a dialog and reads the focus on the list's trigger.
   // The engine's cancellation of a chunk the navigation away from it left downloading, and the
   // margin hold's frame and scroll order: seven `deep-links` rows - the held chunk's, the press
   // raced against the landing's own frames, the two hidden-editor rows that run with the page's
@@ -434,7 +443,15 @@ const parallelProjects = [
   // The reload line a read-only admission names: `doc-reload-line`'s one row.
   // A focused control taken away, itself or with a parent, for which this engine fires no
   // `focusout`, so the page's focus rescue sees it only by watching the page: `table-controls`'s
-  // page-own focus row, and its scrolling-table row, whose focused row a scroll takes away.
+  // page-own focus row, its row whose focused row a live update takes away, and its
+  // scrolling-table row, whose focused row a scroll takes away.
+  // The engine's own Tab order - a stop for each field of a date box, one for a radio group -
+  // which decides when a Tab leaves a panel's last control, where the panel puts the focus on its
+  // trigger: `table-controls`'s row that Tab and Escape never leave a panel for the page behind
+  // it.
+  // How the engine lays out a scroll box, lands a wheel step's scroll and clamps a scroll, which
+  // a panel cut to a short window is scrolled by: `table-controls`'s row that such a panel
+  // scrolls to its last control, by the wheel and by Tab.
   // How the engine names a download from the `filename*` and `filename` of its
   // `Content-Disposition`, and whether it asks the server again for a download address it holds,
   // where an older version's name changes once a newer one exists: `download-names`'s six rows.

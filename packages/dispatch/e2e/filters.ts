@@ -1,6 +1,7 @@
 import { expect, type Locator, type Page } from "@playwright/test";
 
 import { CONTROL, type ControlName } from "../web/src/components/control-names";
+import { expandedState } from "./settled";
 
 /**
  * One of the shared controls, found by the `data-control` value it writes
@@ -25,7 +26,7 @@ export function controlRow(within: Locator | Page): Locator {
  */
 export async function openFilterPanel(page: Page, within: Locator | Page = page): Promise<Locator> {
   const trigger = control(controlRow(within), CONTROL.panelTrigger);
-  if ((await trigger.getAttribute("aria-expanded")) !== "true") await trigger.click();
+  if ((await expandedState("the row's filter trigger", trigger)) === "shut") await trigger.click();
   // `Filter` on the Inbox, the Agents page, the Delivery page and the search bar; `Filters` on
   // the project List and Board, where the trigger also counts what is on.
   const panel = page.getByRole("dialog", { name: /^Filters?$/ });
@@ -40,8 +41,8 @@ export async function openFilterPanel(page: Page, within: Locator | Page = page)
  */
 export async function openDisplayMenu(page: Page, label = "View"): Promise<Locator> {
   const menu = page.getByRole("dialog", { name: label });
-  if ((await menu.count()) === 0)
-    await page.getByRole("button", { exact: true, name: label }).click();
+  const trigger = page.getByRole("button", { exact: true, name: label });
+  if ((await expandedState(`the ${label} menu`, trigger)) === "shut") await trigger.click();
   await expect(menu).toHaveCount(1);
   return menu;
 }
@@ -75,16 +76,15 @@ export function filterPicker(page: Page, picker: "Claimed by" | "Labels" | "Stat
 }
 
 /** Toggles one option in an expanded strip's `Labels` or `Status` multi-select, then closes the
- *  popover with Escape so it never covers the control the test drives next. */
+ *  popover with Escape so it never covers the control the test drives next. The trigger says
+ *  whether the popover is open, and is read once the page has drawn it. */
 export async function pickFilterOption(
   page: Page,
   picker: "Claimed by" | "Labels" | "Status",
   option: string
 ): Promise<void> {
   const trigger = filterPicker(page, picker);
-  if ((await trigger.getAttribute("aria-expanded")) === "false") {
-    await trigger.click();
-  }
+  if ((await expandedState(`the ${picker} picker`, trigger)) === "shut") await trigger.click();
   await page
     .getByRole("option", {
       // "Done, not loaded" while closed issues are still out: its count would be a lie.
@@ -95,4 +95,24 @@ export async function pickFilterOption(
     .click();
   await page.keyboard.press("Escape");
   await expect(page.getByRole("listbox")).toHaveCount(0);
+}
+
+/** The control labelled `label` that opens a list: the list's own button. A native select, which
+ *  is what several of these lists were before each held a text box, is found by the same label, so
+ *  a page that still draws one fails on that list by name rather than on a trigger not found. A
+ *  label finds a trigger named by it alone or by it and then what the trigger shows, as a single
+ *  pick's is (`MultiSelect`); a pattern finds a trigger whose name it matches. */
+export function listTrigger(scope: Locator | Page, label: string | RegExp): Locator {
+  const name =
+    typeof label === "string"
+      ? new RegExp(`^${label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?: |$)`)
+      : label;
+  return scope.getByRole("button", { name }).or(scope.getByRole("combobox", { name }));
+}
+
+/** The panel a list's trigger names in `aria-controls` while the list stands open: the list is
+ *  portalled out of its host, so it is found from its own trigger and from nothing page-wide, as
+ *  `issueListOf` (`e2e/agents.ts`) finds the composer's. */
+export function listOf(trigger: Locator): Locator {
+  return trigger.locator("xpath=id(./@aria-controls)");
 }

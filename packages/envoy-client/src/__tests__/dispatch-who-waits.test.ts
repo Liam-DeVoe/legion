@@ -603,6 +603,12 @@ const OLD_RULE_ALLOWED: readonly (readonly [string, string, string])[] = [
     "a badge reading `Asked of <person>`, or `Asked of nobody`",
     "the card's badge where the server names no person, which only an older Dispatch does",
   ],
+  // The trigger of that badge's list is named by its label and then the badge it shows.
+  [
+    "packages/dispatch/web/src/features/inbox/AskCard.test.tsx",
+    "Hand this question to Asked of nobody",
+    "the hand-on list's trigger, named for the card's badge where the server names no person",
+  ],
   // Not a question: a block copied from another ask, a bus message, a notification.
   [
     "packages/envoy/internal/dispatch/docs/ask_blocks.go",

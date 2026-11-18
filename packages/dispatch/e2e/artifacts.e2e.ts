@@ -16,6 +16,7 @@ import {
 } from "./api";
 import { countDocumentSockets, documentEditor, documentTransport, typeAtEnd } from "./editor";
 import { navigateInApp } from "./sends";
+import { expandedState } from "./settled";
 import { expect, type Locator, type Page, type TestInfo, test } from "./test";
 import { assertPageFits } from "./unclipped";
 
@@ -37,13 +38,20 @@ async function notesFile(testInfo: TestInfo): Promise<string> {
   return path;
 }
 
+/** The phone's review panel toggle, whose name says Open or Close as the panel is shut or open. */
+function reviewPanelToggle(page: Page): Locator {
+  return page.getByRole("button", { name: /review panel/i });
+}
+
+/** Shuts the phone's review panel where it is open over the page. The toggle says which it is,
+ *  and is read once the page has drawn it rather than at the instant it attaches. */
+async function shutReviewPanel(page: Page): Promise<void> {
+  const toggle = reviewPanelToggle(page);
+  if ((await expandedState("the review panel", toggle)) === "open") await toggle.click();
+}
+
 async function openArtifacts(page: Page, isPhone: boolean) {
-  if (isPhone) {
-    const reviewPanel = page.getByRole("button", { name: /review panel/i });
-    if ((await reviewPanel.getAttribute("aria-expanded")) === "true") {
-      await reviewPanel.click();
-    }
-  }
+  if (isPhone) await shutReviewPanel(page);
   await page.getByRole("tab", { name: "Artifacts" }).click();
 }
 
@@ -248,10 +256,8 @@ test("artifacts upload, version, references, and phone layout @phone @pr", async
     await expect(page.getByRole("navigation", { name: "Navigation" })).toBeVisible();
     await page.getByRole("button", { name: "Close navigation" }).click();
     await navigateInApp(page, `/issues/${issue.key}`);
-    const openMargin = page.getByRole("button", { name: /review panel/i });
-    if ((await openMargin.getAttribute("aria-expanded")) === "true") {
-      await openMargin.click();
-    }
+    const openMargin = reviewPanelToggle(page);
+    await shutReviewPanel(page);
     const [navigationBox, marginBox] = await Promise.all([
       openNavigation.boundingBox(),
       openMargin.boundingBox(),
@@ -306,9 +312,9 @@ test("the version history compares two versions of a document with the change vi
   await compare.getByRole("button", { name: "Show comparison" }).click();
   // Each side is a list, portalled out of the region, and the one open list's options are the
   // ones pressed.
-  await compare.getByRole("button", { exact: true, name: "Compare notes.md from" }).click();
+  await compare.getByRole("button", { name: "Compare notes.md from" }).click();
   await page.getByRole("option", { name: /^Version 1(?: — |$)/ }).click();
-  await compare.getByRole("button", { exact: true, name: "Compare notes.md to" }).click();
+  await compare.getByRole("button", { name: "Compare notes.md to" }).click();
   await page.getByRole("option", { name: /^Version 2(?: — |$)/ }).click();
   const changed = compare.getByTestId("change-view").locator('[data-change="changed"]');
   await expect(changed).toHaveCount(1);
@@ -463,7 +469,7 @@ test("the Artifacts badge counts the rows the tab lists, and a row's details are
   await expect(page.getByRole("tab", { exact: true, name: "Artifacts 2" })).toBeVisible();
 
   // Every row shows its whole detail line: it wraps where it must rather than truncating on a
-  // row with room beside it.
+  // row with room beside it. The count of two above waited for both rows, so one read lists them.
   for (const row of await rows.all()) {
     const details = row.locator("p").first();
     await expect(details).toContainText("Updated");

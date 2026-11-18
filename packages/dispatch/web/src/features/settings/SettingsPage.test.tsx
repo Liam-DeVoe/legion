@@ -1,9 +1,10 @@
 import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { panelOf } from "../../__tests__/list-picks";
 import { api } from "../../api/client";
 import { SettingsPage } from "./SettingsPage";
 
@@ -231,6 +232,68 @@ test("a grant with no expiry says it ends when its session ends", async () => {
     cleanup();
     getCredentialPending.mockRestore();
     getCredentialGrants.mockRestore();
+    for (const spy of Object.values(unrelated)) {
+      spy.mockRestore();
+    }
+  }
+});
+
+// The mapping form's Project list is a button, which no `required` holds as the select it
+// replaced held the form: with no project picked, Add mapping files nothing and the form says to
+// choose one, as the browser said for the select; a pick takes that away, and the next press maps
+// the repository there.
+test("with no project picked, Add mapping files nothing and says to choose a project", async () => {
+  const user = userEvent.setup();
+  const unrelated = stubUnrelatedQueries();
+  unrelated.listProjects.mockResolvedValue([
+    {
+      created_at: "2026-09-01T00:00:00Z",
+      gated_steps: [],
+      key: "CORE",
+      name: "Core",
+      open_asks: 0,
+    },
+  ]);
+  const getCredentialPending = spyOn(api, "getCredentialPending").mockResolvedValue(null);
+  const whoAmI = spyOn(api, "whoAmI").mockResolvedValue({
+    event_head: "0",
+    kind: "user",
+    login: "alice",
+  });
+  const putRepoProject = spyOn(api, "putRepoProject").mockImplementation(async (repo, input) => ({
+    created_at: "2026-09-10T00:00:00Z",
+    created_by: { id: "alice", kind: "user" },
+    default: false,
+    project: input.project,
+    renamed_to: null,
+    repo,
+  }));
+
+  try {
+    renderPage();
+    const section = within(await screen.findByRole("region", { name: "Repositories → Projects" }));
+    const trigger = await section.findByLabelText("Project");
+    expect(trigger).toHaveTextContent("Choose a project");
+    await user.click(section.getByLabelText("Repository"));
+    await user.paste("owner/repo");
+    await user.click(section.getByRole("button", { name: "Add mapping" }));
+    await act(async () => {});
+    expect(putRepoProject, "a repository was mapped to no project").not.toHaveBeenCalled();
+    expect(section.getByRole("alert")).toHaveTextContent("Choose a project.");
+
+    await user.click(trigger);
+    await user.click(within(panelOf(trigger)).getByRole("option", { name: "CORE · Core" }));
+    expect(section.queryByRole("alert")).toBeNull();
+    await user.click(section.getByRole("button", { name: "Add mapping" }));
+    await waitFor(() =>
+      expect(putRepoProject).toHaveBeenCalledWith("owner/repo", { project: "CORE" }, keyedAttempt)
+    );
+    expect(putRepoProject).toHaveBeenCalledTimes(1);
+  } finally {
+    cleanup();
+    getCredentialPending.mockRestore();
+    whoAmI.mockRestore();
+    putRepoProject.mockRestore();
     for (const spy of Object.values(unrelated)) {
       spy.mockRestore();
     }

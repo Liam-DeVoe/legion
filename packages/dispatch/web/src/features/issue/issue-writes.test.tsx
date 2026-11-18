@@ -1,11 +1,12 @@
 import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for blur, submit, focus and one edit inside a single act batch
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { pickNamed } from "../../__tests__/list-picks";
 import { choicesOf, pickFromMenu } from "../../__tests__/menu-picks";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api, NetworkError } from "../../api/client";
@@ -110,7 +111,8 @@ function stubIssueApi() {
     "CORE-1": { dismissed: [], last_read_seq: 0, pinned: false, seq: 0 },
   });
   // The header reads the project's repository mappings at once for an issue that resolves to
-  // none, as this one does; a project that maps none shows no repository item.
+  // none, as this one does; a project that maps none still shows the repository item, with
+  // nothing to suggest.
   const listRepoProjects = spyOn(api, "listRepoProjects").mockResolvedValue([]);
   // The Spec tab's requirements and the header's component line read these for the issue under
   // test; both answer the API's empty shape, which is what this fixture's issue has.
@@ -1000,14 +1002,19 @@ test("IssuePage mounts the header without reading who has signed in until the as
   ]);
   const { unmount } = renderIssuePage();
   try {
-    const control = await screen.findByRole("button", { name: "Assignee of CORE-1" });
+    const control = await screen.findByRole("button", { name: pickNamed("Assignee of CORE-1") });
     await screen.findByRole("heading", { level: 1 });
     expect(listUsers).not.toHaveBeenCalled();
     // Focus has no user-event form; the control is reached for, never pressed.
     fireEvent.focus(control);
     await waitFor(() => expect(listUsers).toHaveBeenCalledTimes(1));
+    // The list draws its options only while it stands open.
     await user.click(control);
-    expect(await screen.findByRole("option", { name: "bob" })).toBeInTheDocument();
+    expect(
+      await within(
+        await screen.findByRole("listbox", { name: "Assignee of CORE-1 options" })
+      ).findByRole("option", { name: "bob" })
+    ).toBeTruthy();
   } finally {
     unmount();
     restore();

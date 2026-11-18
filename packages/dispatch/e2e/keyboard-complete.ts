@@ -328,12 +328,13 @@ export async function holdWrites(page: Page, method: string, path: RegExp): Prom
 // ---------------------------------------------------------------------------
 
 /** The ask card's hand-on control, wherever that card is drawn: the trigger of the list of
- *  people, inside the badge the card marks with its ask's id. Every query for it is scoped to
+ *  people, inside the badge the card marks with its ask's id, named for the list and then for
+ *  the badge's words ("Hand this question to Asked of alice"). Every query for it is scoped to
  *  the card's own ask rather than to a bare role, since a page can draw many cards. */
 export function handOnControl(scope: Locator | Page, askId: string): Locator {
   return scope
     .locator(`[data-ask-hand-on="${askId}"]`)
-    .getByRole("button", { exact: true, name: "Hand this question to" });
+    .getByRole("button", { name: "Hand this question to" });
 }
 
 // ---------------------------------------------------------------------------

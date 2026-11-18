@@ -2,6 +2,7 @@ import {
   agentRow,
   issueListOf,
   issueOption,
+  issueSearchIn,
   openAgents,
   plannerSession,
   seedAgents,
@@ -15,7 +16,7 @@ import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 // The composer's Issue list is the shared single-pick list (`MultiSelect`, `mode: "single"`): a
-// text box that narrows the project's issues, arrows that move the active issue, Enter that picks
+// text box that narrows the open issues, arrows that move the active issue, Enter that picks
 // it, and Tab, Shift+Tab, Escape and a press outside that pick nothing. The five rows below that
 // drive that rule from the keyboard - the arrows and Enter, an arrow left by Tab and by
 // Shift+Tab, an arrow from No issue left by Tab, and a typed word - carry `@webkit @firefox`, the
@@ -48,6 +49,8 @@ async function sendAndCapturePath(page: Page, field: Locator): Promise<string> {
 /** The id of the option of a row's open Issue list that picks `key`, which the list's text box
  *  names in `aria-activedescendant` while that option is the active one. */
 async function optionIdOf(row: Locator, key: string): Promise<string> {
+  // `getAttribute` waits for the option to attach, and `MultiSelect` writes its id on that same
+  // element in the render that draws it, so the first answer is the option's id.
   const id = await issueOption(row, key).getAttribute("id");
   if (id === null) throw new Error(`the Issue list's option for "${key}" has no id`);
   return id;
@@ -72,7 +75,7 @@ test.describe("agents page", () => {
 
       await page.keyboard.press("j");
       await page.keyboard.press("i");
-      const picker = issueListOf(row).getByRole("combobox", { name: "Issue" });
+      const picker = issueSearchIn(row);
       await expect(picker).toBeFocused();
       await page.keyboard.press("ArrowDown");
       await page.keyboard.press("ArrowDown");
@@ -121,7 +124,7 @@ test.describe("agents page", () => {
         await openAgents(page);
         const row = shownAgentRows(page).nth(0);
         const toggle = row.getByRole("button", { name: "Choose issue" });
-        const picker = issueListOf(row).getByRole("combobox", { name: "Issue" });
+        const picker = issueSearchIn(row);
         const field = row.getByRole("textbox", { name: "Comment" });
 
         await page.keyboard.press("j");
@@ -165,7 +168,7 @@ test.describe("agents page", () => {
       await openAgents(page);
       const row = shownAgentRows(page).nth(0);
       const toggle = row.getByRole("button", { name: "Choose issue" });
-      const picker = issueListOf(row).getByRole("combobox", { name: "Issue" });
+      const picker = issueSearchIn(row);
       const field = row.getByRole("textbox", { name: "Comment" });
 
       await page.keyboard.press("j");
@@ -200,7 +203,7 @@ test.describe("agents page", () => {
       await openAgents(page);
       const row = shownAgentRows(page).nth(0);
       const toggle = row.getByRole("button", { name: "Choose issue" });
-      const picker = issueListOf(row).getByRole("combobox", { name: "Issue" });
+      const picker = issueSearchIn(row);
       const field = row.getByRole("textbox", { name: "Comment" });
 
       await page.keyboard.press("j");
@@ -235,7 +238,7 @@ test.describe("agents page", () => {
       await openAgents(page);
       const row = shownAgentRows(page).nth(0);
       const toggle = row.getByRole("button", { name: "Choose issue" });
-      const picker = issueListOf(row).getByRole("combobox", { name: "Issue" });
+      const picker = issueSearchIn(row);
       const field = row.getByRole("textbox", { name: "Comment" });
       const send = await holdPosts(page, "**/api/v1/agents/*/messages");
 
@@ -377,7 +380,7 @@ test.describe("agents page", () => {
       const row = agentRow(page, plannerSession.session_id);
       const field = row.getByRole("textbox", { name: "Comment" });
       const cancelReply = row.getByRole("button", { name: "Cancel reply" });
-      const picker = issueListOf(row).getByRole("combobox", { name: "Issue" });
+      const picker = issueSearchIn(row);
       const refuse = await refusePosts(page, "**/api/v1/agents/*/messages", MESSAGE_REFUSED);
 
       await page.keyboard.press("j");
@@ -534,7 +537,7 @@ test.describe("agents page", () => {
       const row = shownAgentRows(page).nth(0);
       const field = row.getByRole("textbox", { name: "Comment" });
       const toggle = row.getByRole("button", { name: "Choose issue" });
-      const picker = issueListOf(row).getByRole("combobox", { name: "Issue" });
+      const picker = issueSearchIn(row);
       const refuse = await refusePosts(page, "**/api/v1/agents/*/messages", MESSAGE_REFUSED);
       const sent = page.waitForRequest(
         (request) =>
@@ -754,7 +757,7 @@ test.describe("agents page", () => {
   // the issue header's Status select keeps a closed issue's own status among its options - so
   // what the list shows, what the toggle names and where the message goes stay one issue until
   // the reader picks another; a closed issue takes comments, so the message posts there.
-  test("an issue closed after the pick stays named in the select and the toggle, marked closed, and takes the message", async ({
+  test("an issue closed after the pick stays named in the list and the toggle, marked closed, and takes the message", async ({
     browser,
   }) => {
     const issueKey = await seedAgents();
@@ -767,7 +770,7 @@ test.describe("agents page", () => {
       const row = agentRow(page, plannerSession.session_id);
       const toggle = row.getByRole("button", { name: "Choose issue" });
       const list = issueListOf(row);
-      const picker = list.getByRole("combobox", { name: "Issue" });
+      const picker = issueSearchIn(row);
       const field = row.getByRole("textbox", { name: "Comment" });
 
       await page.keyboard.press("j");
@@ -830,7 +833,7 @@ test.describe("agents page", () => {
       await openAgents(page);
       const row = agentRow(page, plannerSession.session_id);
       const toggle = row.getByRole("button", { name: "Choose issue" });
-      const picker = issueListOf(row).getByRole("combobox", { name: "Issue" });
+      const picker = issueSearchIn(row);
       const field = row.getByRole("textbox", { name: "Comment" });
       const sends: { input: unknown; key: string | undefined; ok: boolean; path: string }[] = [];
       page.on("response", (response) => {
@@ -918,7 +921,7 @@ test.describe("agents page", () => {
       await openAgents(page);
       const row = agentRow(page, plannerSession.session_id);
       const toggle = row.getByRole("button", { name: "Choose issue" });
-      const picker = issueListOf(row).getByRole("combobox", { name: "Issue" });
+      const picker = issueSearchIn(row);
 
       await page.keyboard.press("j");
       await page.keyboard.press("i");

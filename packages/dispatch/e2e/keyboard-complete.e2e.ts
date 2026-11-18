@@ -788,6 +788,7 @@ function showsOther(shown: Shown, rest: Shown): boolean {
 /** Puts the focus on `control` with the keyboard: Tab, press by press from where the focus is,
  *  until the control holds it. */
 async function tabTo(page: Page, control: Locator, message: string): Promise<void> {
+  // A Tab moves the focus inside its own key press, so each read after one is settled.
   for (let press = 0; press < TAB_PRESSES && !(await isActive(control)); press += 1) {
     await page.keyboard.press("Tab");
   }
@@ -988,40 +989,31 @@ test("k-menu-contrast: every choice of the snooze, priority and status menus rea
   }
 });
 
-/** Reads the contrast of the choice control `control` and of each choice of its list, failing
- *  softly for each pair under 4.5:1, and for a native `<select>` or `<option>` whose own
- *  background is transparent, with the theme, the control and the choice named. A native select
- *  is read with its options; the shared list's trigger is read on the element that draws its
- *  text, and its options are read in the list a click on it opens. */
-async function readChoiceContrast(control: Locator, what: string): Promise<void> {
-  const native = await control.evaluate((element) => element instanceof HTMLSelectElement);
+/** Reads the contrast of the shared list's trigger `control` and of each choice of its list,
+ *  failing softly for each pair under 4.5:1, with the theme, the control and the choice named.
+ *  The trigger is read on the element that draws its text, and its choices in the list a click
+ *  on it opens, once that list holds `fromRead`, a choice only the list's own read brings. */
+async function readChoiceContrast(control: Locator, what: string, fromRead: string): Promise<void> {
   const measure = async (target: Locator, name: string) => {
     const reading = await contrastOf(target);
-    const say = `k-menu-contrast: ${what}, ${name}`;
-    if (native) {
-      expect
-        .soft(reading.ownBackgroundAlpha, `${say}: a native ${name} with a transparent background`)
-        .toBeGreaterThan(0);
-    }
     expect
-      .soft(reading.ratio, `${say}: ${reading.color} on ${reading.background}`)
+      .soft(
+        reading.ratio,
+        `k-menu-contrast: ${what}, ${name}: ${reading.color} on ${reading.background}`
+      )
       .toBeGreaterThanOrEqual(4.5);
   };
-  if (native) {
-    await measure(control, "select");
-    const options = control.locator("option");
-    for (let index = 0; index < (await options.count()); index += 1) {
-      const option = options.nth(index);
-      await measure(option, `option ${(await option.textContent()) ?? index}`);
-    }
-    return;
-  }
   await measure(control.locator("xpath=.//*[text()[normalize-space()]]").first(), "the control");
   await control.click();
   const list = control.locator("xpath=id(./@aria-controls)");
   const options = list.getByRole("option");
-  await expect(options.first(), `k-menu-contrast: ${what}: a click opens its list`).toBeVisible();
-  for (let index = 0; index < (await options.count()); index += 1) {
+  await expect(
+    list.getByRole("option", { exact: true, name: fromRead }),
+    `k-menu-contrast: ${what}: a click opens its list, and its read brings ${fromRead}`
+  ).toBeVisible();
+  // The wait above saw a choice only the list's read brings, so every choice is drawn.
+  const count = await options.count();
+  for (let index = 0; index < count; index += 1) {
     const option = options.nth(index);
     await measure(option, `the choice ${(await option.innerText()).replace("✓", "").trim()}`);
   }
@@ -1041,16 +1033,19 @@ test("k-menu-contrast: every choice of the assignee, repository and hand-on list
     await openIssue(page, issueKey, title);
     await readChoiceContrast(
       page.getByLabel(`Assignee of ${issueKey}`, { exact: true }),
-      `${theme}, the assignee`
+      `${theme}, the assignee`,
+      "bob"
     );
     await readChoiceContrast(
       page.getByLabel(`Repository of ${issueKey}`, { exact: true }),
-      `${theme}, the repository`
+      `${theme}, the repository`,
+      "acme/gadgets"
     );
     const inbox = await openInboxAt(page, "card mode", 1);
     await readChoiceContrast(
       handOnControl(rowOf(inbox, askId), askId),
-      `${theme}, the hand-on control`
+      `${theme}, the hand-on control`,
+      "bob"
     );
   }
 });
@@ -1061,6 +1056,8 @@ test("k-menu-contrast: every choice of the assignee, repository and hand-on list
 
 /** Holds each of `choices` to a tap's height, 44 px or more, naming `what` and the choice. */
 async function expectTapHeight(choices: Locator, what: string): Promise<void> {
+  await expect(choices.first(), `k-phone: ${what} has choices`).toBeVisible();
+  // A menu draws all its choices in the render that drew the first, waited for above.
   const heights = await choices.evaluateAll((nodes) =>
     nodes.map((node) => ({
       height: node.getBoundingClientRect().height,
@@ -1095,6 +1092,7 @@ test("k-phone: a tap opens the Snooze and the priority menus, whose choices take
   await page.goto("/");
   const rows = page.locator("[data-inbox-row]");
   await expect(rows).toHaveCount(2);
+  // The count above waited for both rows, so their ids are read once they are drawn.
   const [first, second] = await rows.evaluateAll((nodes) =>
     nodes.map((node) => node.getAttribute("data-inbox-row") ?? "")
   );
@@ -1531,6 +1529,7 @@ async function tabThrough(page: Page, scope: Locator, limit = 60): Promise<TabSt
   const stops: TabStop[] = [];
   for (let press = 0; press < limit; press += 1) {
     await page.keyboard.press("Tab");
+    // A Tab moves the focus inside its own key press, so this reads where it settled.
     const stop = await scope.evaluate((root): TabStop | null => {
       const active = document.activeElement;
       if (!(active instanceof HTMLElement) || !root.contains(active)) return null;
@@ -2999,8 +2998,12 @@ async function showView(page: Page, inbox: InboxAt, label: "Inbox" | "Dismissed"
   const menu = page.getByRole("dialog", { name: "View" });
   await view.click();
   await menu.getByRole("group", { name: "Show" }).getByRole("radio", { name: label }).click();
-  if ((await menu.count()) !== 0) await view.click();
-  await expect(menu).toHaveCount(0);
+  // The pick leaves the menu open, or closes it where the drawer draws the view anew: the
+  // trigger is pressed until the menu is shut, its state read again on each pass.
+  await expect(async () => {
+    if ((await view.getAttribute("aria-expanded")) === "true") await view.click();
+    await expect(menu).toHaveCount(0, { timeout: 1_000 });
+  }).toPass();
 }
 
 /** k-next-item's snoozes where `place` draws the Inbox: one with the Later band folded, one with
@@ -3225,6 +3228,7 @@ async function snoozeLaterToday(page: Page, step: string): Promise<void> {
     menu.or(select),
     `${step}: h opens the Snooze menu, or puts the focus on the snooze select`
   ).toHaveCount(1);
+  // The wait above settled on the menu or the select, so one count tells which one it is.
   if ((await menu.count()) === 0) {
     await select.selectOption({ label: "Later today" });
     return;
@@ -3567,8 +3571,10 @@ async function everyActionSteps(
       await expect(pane.locator("header").first(), step(`${what}'s head is drawn`)).toBeVisible();
       names.push(...(await controlNames(pane.locator("header").first())));
       const card = pane.getByTestId(`ask-${id}`);
+      // The pane draws its body in the render that drew its head, which was waited for above.
       if ((await card.count()) > 0) names.push(...(await controlNames(card)));
       const thread = pane.locator("[data-inbox-thread-body]");
+      // The same render drew any thread body of the item, so this count is the drawn one.
       if ((await thread.count()) > 0) names.push(...(await controlNames(thread.first())));
     }
     await expectEveryAction(page, names, (text) => step(`${what}: ${text}`));
