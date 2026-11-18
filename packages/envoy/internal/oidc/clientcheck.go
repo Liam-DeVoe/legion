@@ -64,12 +64,12 @@ func CheckClient(ctx context.Context, issuer, clientID, clientSecret string) (Cl
 		// plainly accepted the client, which is the one question this asks.
 		return ClientCheckReady, nil
 	case !errors.As(err, &retrieve):
-		return ClientCheckIssuerUnreachable, fmt.Errorf("oidc: check the client at %s: %w", redact.URL(issuer), issuerError(err, issuer))
+		return ClientCheckIssuerUnreachable, fmt.Errorf("oidc: check the client at %s: %w", redact.URL(issuer), redact.RequestError(err, issuer))
 	case retrieve.ErrorCode == "invalid_grant":
 		return ClientCheckReady, nil
 	case retrieve.ErrorCode == "invalid_client":
 		return ClientCheckRejected, fmt.Errorf("oidc: issuer %s refused the client %s: %s", redact.URL(issuer), clientID, retrieve.ErrorCode)
 	}
 	return ClientCheckIssuerUnreachable, fmt.Errorf("oidc: issuer %s answered the client check with the OAuth error %q, which says nothing about the client: %w",
-		redact.URL(issuer), retrieve.ErrorCode, issuerError(err, issuer))
+		redact.URL(issuer), retrieve.ErrorCode, redact.RequestError(err, issuer))
 }

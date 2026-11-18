@@ -13,17 +13,6 @@ import (
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
-// issuerError is err as a message may print it, err having come from asking issuer: err itself for
-// an issuer redact.URL prints whole, and otherwise only the class of the failure (redact.Error),
-// since a library's error can quote the URL it was asked on, and an issuer can carry a user and a
-// password. Every message of this package names an issuer through redact.URL.
-func issuerError(err error, issuer string) error {
-	if redact.URL(issuer) == issuer {
-		return err
-	}
-	return redact.Error(err, issuer)
-}
-
 // ErrIssuerUnavailable means the issuer could not be asked: its discovery document has not been
 // read yet, or a call to it failed in a way that says nothing about the token or the grant it
 // carried (no answer, a timeout, a 5xx, a 429, a refusal of the client itself, an answer without a

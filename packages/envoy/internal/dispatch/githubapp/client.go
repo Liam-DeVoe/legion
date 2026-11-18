@@ -896,7 +896,7 @@ func (c *Client) send(ctx context.Context, scope, method, target, authorization,
 	defer cancel()
 	request, err := http.NewRequestWithContext(ctx, method, target, body)
 	if err != nil {
-		return nil, 0, nil, fmt.Errorf("build %s %s: %w", method, c.shownTarget(target), redact.Error(err, c.base))
+		return nil, 0, nil, fmt.Errorf("build %s %s: %w", method, c.shownTarget(target), redact.RequestError(err, c.base))
 	}
 	request.Header.Set("Authorization", authorization)
 	request.Header.Set("Accept", accept)
@@ -908,7 +908,7 @@ func (c *Client) send(ctx context.Context, scope, method, target, authorization,
 	}
 	response, err := c.http.Do(request)
 	if err != nil {
-		return nil, 0, nil, fmt.Errorf("%s %s: %w", method, c.shownTarget(target), redact.Error(err, c.base))
+		return nil, 0, nil, fmt.Errorf("%s %s: %w", method, c.shownTarget(target), redact.RequestError(err, c.base))
 	}
 	defer response.Body.Close()
 	responseBody, err := io.ReadAll(io.LimitReader(response.Body, limit+1))

@@ -1,7 +1,10 @@
 package redact
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -49,5 +52,31 @@ func TestEachMisreadingIsNamedByItsCause(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A request's error reads as net/http wrote it when URL prints the configured base whole: the
+// request's URL is then the base and the path and query the client wrote, and a deadline says
+// "deadline". A base with a user part, or one URL will not print, is named by Error's class alone.
+// The user and the password are made for this test.
+func TestRequestErrorKeepsAnHonestURLsError(t *testing.T) {
+	const (
+		user     = "made-up-user-6d2f"
+		password = "not-a-secret-0a4e"
+	)
+	failed := func(base string) error {
+		return &url.Error{Op: "Get", URL: base + "/repos/acme/widgets?per_page=1", Err: context.DeadlineExceeded}
+	}
+	honest := failed("http://127.0.0.1:1")
+	if got := RequestError(honest, "http://127.0.0.1:1"); got != honest {
+		t.Errorf("an honest base: %q, want net/http's error itself, %q", got, honest)
+	}
+	withUser := "http://" + user + ":" + password + "@127.0.0.1:1"
+	got := RequestError(failed(withUser), withUser)
+	if !strings.Contains(got.Error(), "timed out") || strings.Contains(got.Error(), user) || strings.Contains(got.Error(), password) {
+		t.Errorf("a base with a user part: %q, want the failure's class and no part of the user part", got)
+	}
+	if !errors.Is(got, context.DeadlineExceeded) {
+		t.Errorf("a base with a user part: %v does not unwrap to the deadline", got)
 	}
 }

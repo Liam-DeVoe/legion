@@ -16,8 +16,9 @@ import (
 // reach the base fails naming no part of it, with the failure's class, since net/http's transport
 // error quotes the request's URL with the user kept and a token written as the whole user part
 // whole; and an answer it refuses is named by the request's path, not by the URL the base begins.
-// The control is the same base with no user part, whose errors name the same class and the same
-// path. The user part's values are made for this test.
+// The control is the same base with no user part, whose errors name the same path, and whose
+// unreached request's error is net/http's own, the request's URL with it, since redact.URL prints
+// that base whole. The user part's values are made for this test.
 func TestAnAPIBaseWithAUserPartIsNamedWithNoneOfIt(t *testing.T) {
 	const (
 		user     = "made-up-user-3a8c"
@@ -38,6 +39,9 @@ func TestAnAPIBaseWithAUserPartIsNamedWithNoneOfIt(t *testing.T) {
 		_, _, _, err = client.Read(context.Background(), "made-up-installation-token", "/repos/acme/widgets")
 		if err == nil || !strings.Contains(err.Error(), "connection refused") {
 			t.Fatalf("user part %q: Read err = %v, want the refused connection's class", userPart, err)
+		}
+		if userPart == "" && !strings.Contains(err.Error(), `Get "http://127.0.0.1:1/repos/acme/widgets"`) {
+			t.Errorf("the control: Read err = %v, want net/http's own error naming the request's URL", err)
 		}
 		texts["a request that cannot reach the base"] = err.Error()
 		answering, err := githubapp.New(&auth.AppConfig{ClientID: "Iv1.made-up", PEM: key}, "http://"+userPart+strings.TrimPrefix(failing.URL, "http://"))

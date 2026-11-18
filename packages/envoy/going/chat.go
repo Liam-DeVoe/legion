@@ -143,6 +143,9 @@ type HTTPConfig struct {
 // POST per turn does not need a vendor SDK, and reading the stream frame by frame is what lets
 // the answer reach the reader while the model is still writing it.
 type HTTPClient struct {
+	// endpoint is the endpoint as configured, which redact.RequestError judges; url is the
+	// request's, the route and any api-version query after it.
+	endpoint string
 	url      string
 	identity string
 	model    string
@@ -180,6 +183,7 @@ func NewHTTPClient(cfg HTTPConfig) (*HTTPClient, error) {
 		target.RawQuery = url.Values{"api-version": {cfg.APIVersion}}.Encode()
 	}
 	return &HTTPClient{
+		endpoint: cfg.Endpoint,
 		url:      target.String(),
 		identity: cfg.Place + ":" + strings.ToLower(endpoint.Host) + "/" + cfg.Model,
 		model:    cfg.Model,
@@ -308,8 +312,8 @@ func (c *HTTPClient) Chat(ctx context.Context, request ChatRequest, onText func(
 	if err != nil {
 		// The endpoint is a setting that may carry a user and a password, and a parse error or
 		// net/http's transport error quotes the URL (net/http keeps the user, and a token written
-		// as the whole user part): redact.Error prints only the failure's class then.
-		return nil, fmt.Errorf("going: build chat request: %w", redact.Error(err, c.url))
+		// as the whole user part): redact.RequestError prints only the failure's class then.
+		return nil, fmt.Errorf("going: build chat request: %w", redact.RequestError(err, c.endpoint))
 	}
 	token, err := c.token(ctx)
 	if err != nil {
@@ -320,7 +324,7 @@ func (c *HTTPClient) Chat(ctx context.Context, request ChatRequest, onText func(
 	httpRequest.Header.Set("Authorization", "Bearer "+token)
 	response, err := c.http.Do(httpRequest)
 	if err != nil {
-		return nil, fmt.Errorf("going: chat completions: %w", redact.Error(err, c.url))
+		return nil, fmt.Errorf("going: chat completions: %w", redact.RequestError(err, c.endpoint))
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode > 299 {

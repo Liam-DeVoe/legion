@@ -255,6 +255,18 @@ func Error(err error, raw string) error {
 	return &classified{text, err}
 }
 
+// RequestError is err, the error of a request a client built from base, a URL a person
+// configured, as a message may print it: err itself when URL prints base whole, since the request
+// URL net/http names in it is then base and the path and query the client wrote, with no user part;
+// Error's class otherwise. Each client of a setting's URL wraps the errors of its requests with it,
+// so an honest URL's error, its deadline or its refused connection, reads as net/http wrote it.
+func RequestError(err error, base string) error {
+	if URL(base) == base {
+		return err
+	}
+	return Error(err, base)
+}
+
 // Cause is Error without the *url.Error's own wrapper, for a message that names the call itself:
 // the error the *url.Error wraps when Error would return err unchanged, and the class alone,
 // unwrapping to err, when it would not.

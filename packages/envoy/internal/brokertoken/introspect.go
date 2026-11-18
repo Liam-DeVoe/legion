@@ -105,8 +105,8 @@ func (v *Verifier) introspect(ctx context.Context, token string) (Introspection,
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, v.brokerURL+IntrospectPath, strings.NewReader(form))
 	if err != nil {
 		// The request is built from the broker URL, which may carry a user and a password, and a
-		// parse error quotes the URL whole: redact.Error prints only its class then.
-		return Introspection{}, fmt.Errorf("%w: build the introspection request: %w", ErrBrokerUnreachable, redact.Error(err, v.brokerURL))
+		// parse error quotes the URL whole: redact.RequestError prints only its class then.
+		return Introspection{}, fmt.Errorf("%w: build the introspection request: %w", ErrBrokerUnreachable, redact.RequestError(err, v.brokerURL))
 	}
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	request.Header.Set("Authorization", "Bearer "+account)
@@ -114,9 +114,9 @@ func (v *Verifier) introspect(ctx context.Context, token string) (Introspection,
 	if err != nil {
 		// The error carries the request's URL, the broker's, which may carry a user and a password:
 		// net/http masks a password and keeps the user, and a token written as the whole user part
-		// is printed whole. redact.Error prints only the failure's class then. The token is in the
-		// body, which http.Client puts in no error.
-		return Introspection{}, fmt.Errorf("%w: %w", ErrBrokerUnreachable, redact.Error(err, v.brokerURL))
+		// is printed whole. redact.RequestError prints only the failure's class then. The token is
+		// in the body, which http.Client puts in no error.
+		return Introspection{}, fmt.Errorf("%w: %w", ErrBrokerUnreachable, redact.RequestError(err, v.brokerURL))
 	}
 	defer response.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(response.Body, maxIntrospectionBytes))
