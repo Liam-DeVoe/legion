@@ -209,6 +209,7 @@ EXCEPTIONS = (
     Exception_(
         steps=frozenset({
             (".github/workflows/ci-job-envoy-go.yaml", "Test what the race build cannot run at all or at full size"),
+            (".github/workflows/ci-job-envoy-go.yaml", "Count the database broker suites' skips"),
             (".github/workflows/ci-job-envoy-go-race.yaml", "Race-test delivery, the store, the bus, the listener, the registry store, the session cache, kvwatch, the NATS credentials and the NATS auth service"),
         }),
         package="github.com/sjawhar/envoy/internal/broker/natscallout",
@@ -218,7 +219,27 @@ EXCEPTIONS = (
             "connections reconnect at once after a server restart and every one is admitted. The "
             "restart storm opens two hundred under the race detector (raceEnabled), whose cost per "
             "in-process connect fails the setup at five hundred on a loaded runner, so envoy-go's "
-            "plain step is its full-size run and envoy-go-race the detector's run of the smaller one."
+            "step for what the race build cannot run at full size, which ci_job_reads.py builds from "
+            "the race packages' source (race_impossible_tests), is a full-size run and envoy-go-race "
+            "the detector's run of the smaller one. envoy-go's step \"Count the database broker "
+            "suites' skips\" runs it at full size too, with the rest of the package, for the reason "
+            "the next entry gives: the generated step does not read which packages that script runs."
+        ),
+    ),
+    Exception_(
+        steps=frozenset({
+            (".github/workflows/ci-job-envoy-go.yaml", "Count the database broker suites' skips"),
+            (".github/workflows/ci-job-envoy-go-race.yaml", "Race-test delivery, the store, the bus, the listener, the registry store, the session cache, kvwatch, the NATS credentials and the NATS auth service"),
+        }),
+        package="github.com/sjawhar/envoy/internal/broker/natscallout",
+        functions=None,
+        requirement=(
+            "The NATS auth service answers every connection's callout on goroutines of its own, so "
+            "envoy-go-race runs its package under the race detector, as its step's name says. The "
+            "package sits under internal/broker, and envoy-go's step \"Count the database broker "
+            "suites' skips\" runs ./internal/broker/... whole through the audited "
+            "packages/envoy/scripts/database-skips.sh, the broker's one plain run (#4319), which no "
+            "step narrows; so the package also runs there, without the detector."
         ),
     ),
     Exception_(
