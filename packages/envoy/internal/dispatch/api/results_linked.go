@@ -48,8 +48,8 @@ const linkedPullRequestReads = 10
 // reason and what mends it (linkedReads.couldNotRead): the issue already links such a pull
 // request, so a refusal that left it out would tell the caller to link what it has linked.
 // It answers the repository the result's commit is taken to be of, which the read-through after
-// the write reads (readThroughPullRequests) and recordCheckResult keeps with the row where it is
-// a linked repository.
+// the write reads (readThroughPullRequests) and recordResultUnderOwnerLocks writes with the row
+// where it is a linked repository.
 //
 // A result may name a commit of two kinds of repository. The first is repo, the repository the
 // check's issue resolves to, which recordCheckResult resolved for this refusal; a nil repo is
@@ -103,7 +103,7 @@ const linkedPullRequestReads = 10
 //     links were read.
 //
 // So a linked repository is answered only where GitHub said it holds the commit.
-// recordCheckResult keeps a linked repository it answers with the row
+// recordResultUnderOwnerLocks writes a linked repository it answers with the row
 // (model.CheckResult.CommitRepo), so the results read compares a branch check's result in that
 // repository (comparisonReader.onNamedBranch) and reads a `before_merge` result's pull requests
 // through it (comparisonReader.readThroughHead).
