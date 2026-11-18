@@ -88,8 +88,18 @@ const STILL_PX = 1;
  * place-keeping left there, which is how a scrollbar drag, a find-in-page jump, an assistive
  * tool and a scroll made over the automation protocol end it though they are none of those
  * inputs; a selection change inside the document, a reader working in the page rather than
- * waiting for a link to land; and the focus moving anywhere the document is not - a click on a
- * control outside it, a tap into a field outside it, a dialog that took the focus.
+ * waiting for a link to land; and the focus moving anywhere the document is not once the reader
+ * has pressed, touched or typed - a click on a control outside it, a tap into a field outside
+ * it, a dialog their press or key opened.
+ * A focus the page moves by itself, with no input of the reader's since this was called, is the
+ * page and ends nothing: a comment link opens its card in the margin, whose reply field takes the
+ * focus (`MentionComposer`), and React commits that before or after the landing's own focus as
+ * it schedules the two. Read as the reader, it ended the landing 22 to 83 ms after it began - in
+ * 3 runs of 20 of a comment link in Firefox, and 11 of 20 of a past version's in WebKit - before
+ * the document's web font grew each paragraph above the quote from 24 to 25.6 px; nothing put
+ * the reader back, and in Firefox the quote was left 21.6 px from where the link put it in each
+ * of the 3 (`e2e/deep-links.e2e.ts`, "a composer opened from the document is in the margin's
+ * view after a comment link").
  * The fifth is the limit. An input that moves nothing is not among them, and nor is a press
  * that has moved neither the place nor the focus - a click on empty space, a tap that lands on
  * nothing: this watch is also what puts a reader back on their own place once the editor is
@@ -188,15 +198,26 @@ export function refocusWhenSettled(refocus: () => void, drawn?: Element): () => 
     document.removeEventListener("selectionchange", selected);
     releaseThePress();
   };
+  /** Whether the reader has pressed, touched, turned the wheel or pressed a key since this was
+   *  called, which a focus that leaves the document is read by (`focused`). A scroll is no
+   *  input of theirs on its own, and nor is a `keydown` no keyboard made. */
+  let theReaderActed = false;
   /** The reader did something: where it moves them, by the table of their inputs, this ends. */
   const acted = (event: Event) => {
+    if (event.type !== "scroll" && (event.type !== "keydown" || event instanceof KeyboardEvent)) {
+      theReaderActed = true;
+    }
     if (movesTheReader(event)) stop();
   };
-  /** The focus moved: into the document is the caret, which `selected` reads; anywhere else is
-   *  the reader taking it there - a press on a control, a tap into a field - and ends this. A
-   *  caller with no drawn root has no document of its own, and any focus that moves is that. */
+  /** The focus moved: into the document is the caret, which `selected` reads; anywhere else,
+   *  after an input of the reader's, is the reader taking it there - a press on a control, a
+   *  tap into a field, a dialog their key opened - and ends this. With no input of theirs since
+   *  this was called it is the page's own focus, such as the margin's reply field taking it as a
+   *  comment link opens its card, and moves nobody. A caller with no drawn root has no document
+   *  of its own, and any focus the reader moves is that. */
   const focused = (event: Event) => {
     if (root !== undefined && event.target instanceof Node && root.contains(event.target)) return;
+    if (!theReaderActed) return;
     stop();
   };
   /** A scroll this watch owns has just been made - its own correction, or the page's own

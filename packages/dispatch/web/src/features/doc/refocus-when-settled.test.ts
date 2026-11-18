@@ -698,17 +698,36 @@ for (const situation of ["the editor's build", "a panel's arrival"] as const) {
   }
 
   // The focus moving out of the document is no entry of the table but this watch's own stop
-  // (`focused`, `refocus-when-settled.ts`), and is read as one: a press on a control outside the
-  // document, a tap into a field outside it, a dialog that took the focus.
+  // (`focused`, `refocus-when-settled.ts`), and is read as one once the reader has acted: a press
+  // on a control outside the document, a tap into a field outside it, a dialog that took the focus.
+  // The press is what a browser hands the page before the focus it moves, so it comes first here.
   test(`the focus moving out of the document: a focus moved to a control outside the document during ${situation} is the reader moving on, as a wheel is`, async () => {
     const read = await stillPutsThemBack(situation, async () => {
       const control = document.createElement("button");
       document.body.append(control);
+      control.dispatchEvent(eventOf({ pointerType: "mouse", type: "pointerdown" }));
       control.focus();
       control.remove();
     });
 
     expect(read).toBe(await reference(situation, "a wheel"));
+  });
+
+  // The page moving the focus by itself, with no input of the reader's before it: a comment link
+  // expands its card in the margin, whose reply field takes the focus, and React commits that
+  // after the landing's own focus in some runs and before it in others. Read as the reader, it
+  // ended the landing before the web font grew the paragraphs above the quote, and the quote was
+  // left 21.6 px from where the link put it in 3 of 20 Firefox runs (`e2e/deep-links.e2e.ts`, "a
+  // composer opened from the document is in the margin's view after a comment link").
+  test(`the focus moving out of the document: a focus the page moves to a field outside the document by itself during ${situation} leaves the put-back as no act at all leaves it`, async () => {
+    const read = await stillPutsThemBack(situation, async () => {
+      const field = document.createElement("textarea");
+      document.body.append(field);
+      field.focus();
+      field.remove();
+    });
+
+    expect(read).toBe(await reference(situation, "nothing"));
   });
 }
 
