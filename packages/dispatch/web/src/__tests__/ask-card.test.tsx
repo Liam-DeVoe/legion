@@ -1777,6 +1777,36 @@ test("AskCard renders replies under the question without an open-ask thread comp
   }
 });
 
+test("AskCard draws a Copy reference on each reply of an ask on an issue, and none on a reply on no issue", async () => {
+  const input = ask();
+  const { view } = renderCard(
+    <AskCard
+      ask={input}
+      getAskThread={async () => ({
+        ...(await emptyThread(input)()),
+        replies: [
+          reply({ body: "On the issue", id: "comment-1" }),
+          reply({ body: "On no issue", id: "comment-2", issue_key: null }),
+        ],
+      })}
+    />
+  );
+
+  try {
+    const thread = await view.findByTestId("thread-ask-1");
+    await waitFor(() => expect(thread).toHaveTextContent("On no issue"));
+    expect(
+      within(thread)
+        .getAllByRole("button", { name: /^Copy reference / })
+        .map((button) => button.getAttribute("aria-label"))
+    ).toEqual(["Copy reference dispatch://CORE-1/comment/comment-1"]);
+    // Outside the Conversation tab a reply takes no focus of its own.
+    expect(thread.querySelector("[data-reply][tabindex]")).toBeNull();
+  } finally {
+    view.unmount();
+  }
+});
+
 test("AskCard keeps the thread and reply composer visible after the ask is answered", async () => {
   const user = userEvent.setup();
   const input = ask({ options: [{ label: "Ship" }] });

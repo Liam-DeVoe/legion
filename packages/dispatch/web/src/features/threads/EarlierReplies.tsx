@@ -13,7 +13,7 @@ import { earlierRepliesLabel } from "./thread-layout";
  * foot of the thread in Newest first. Each host lists its replies its own way, so it is handed
  * the id the button names and gives back the list wearing it. Nothing folded, no control. The
  * Inbox's command bar presses the button by its mark (`data-inbox-action`), inside the item in
- * hand.
+ * hand, and the Conversation tab's Enter and `o` by theirs (`data-turn-fold`), on an ask's turn.
  */
 export function EarlierReplies({
   count,
@@ -40,6 +40,7 @@ export function EarlierReplies({
         aria-expanded={open}
         className={`min-h-11 text-sm font-medium ${linkText} ${linkHoverText}`}
         data-inbox-action="earlier-replies"
+        data-turn-fold=""
         onClick={onToggle}
         type="button"
       >

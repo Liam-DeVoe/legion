@@ -53,7 +53,7 @@ import { badgeMenuTrigger, badgeSelectBadge } from "../issue/badge-select";
 import { issuePriority } from "../issue/issue-priority";
 import { PriorityControl } from "../issue/PriorityControl";
 import { AgentName, useAgentText } from "../refs/AgentName";
-import { COPY_REF_SELECTOR, CopyRefButton } from "../refs/CopyRefButton";
+import { CopyRefButton, ITEM_COPY_REF_SELECTOR } from "../refs/CopyRefButton";
 import {
   INBOX_FILTER_FIELDS,
   INBOX_FILTER_VOCABULARY,
@@ -541,7 +541,7 @@ function ThreadShortRow({
       owner={
         <>
           <ThreadOwnerLine className={`truncate text-sm ${textMutedOnCanvas}`} thread={thread} />
-          {reference === undefined ? null : <CopyRefButton route={reference} />}
+          {reference === undefined ? null : <CopyRefButton item route={reference} />}
           <DismissControl shown={selected} thread={thread} />
         </>
       }
@@ -1593,11 +1593,12 @@ export function Inbox({
       when: () => inHand("[data-inbox-owner]") !== null,
     },
     {
-      // An Agent row has no reference of its own - its thread is a message to a session - so
-      // it draws no copy control and this stands down on it.
+      // The item's own reference, never one of a comment or reply its thread draws, each of
+      // which has its own control. An Agent row has no reference of its own - its thread is a
+      // message to a session - so it draws no copy control and this stands down on it.
       action: "inbox.copy-ref",
-      run: () => inHand(COPY_REF_SELECTOR)?.click(),
-      when: () => inHand(COPY_REF_SELECTOR) !== null,
+      run: () => inHand(ITEM_COPY_REF_SELECTOR)?.click(),
+      when: () => inHand(ITEM_COPY_REF_SELECTOR) !== null,
     },
     {
       action: "inbox.back",

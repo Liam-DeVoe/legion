@@ -59,6 +59,7 @@ import {
   textSecondaryHoverToPrimary,
   textSecondaryOnSurface,
 } from "../../theme/classes";
+import { TURN_ROW } from "../conversation/turn-keys";
 import { ApprovalChip } from "../doc/ApprovalChip";
 import { outsideAskCard } from "../inbox/ask-card";
 import { waitingOnHuman } from "../inbox/BlockedOnYou";
@@ -97,10 +98,10 @@ const routeHint =
 
 const titleRefusals = new Set(["CAP_EXCEEDED", "ISSUE_CLOSED"]);
 
-/** A turn of the Conversation tab, or a reply inside one. While the focus is on one the reader is
- *  on that turn, not on the header, so the header's Approve and Request changes keys stand down. */
-const CONVERSATION_TURN =
-  "#issue-conversation-panel [data-turn], #issue-conversation-panel [data-reply]";
+/** A turn of the Conversation tab, or a reply inside one (`turn-keys.ts`). While the focus is on
+ *  one the reader is on that turn, not on the header, so the header's Approve and Request
+ *  changes keys stand down. */
+const CONVERSATION_TURN = `#issue-conversation-panel :is(${TURN_ROW})`;
 
 /** Whether `input` is the Status pill's pick alone: that control shows its write in the shell's
  *  indicator and rolls back on a refusal, where every other header field holds its draft and

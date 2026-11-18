@@ -1,5 +1,6 @@
 import { type MutationKey, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { Link } from "react-router-dom";
 
 import { api, issueStateRequest, type WriteBounds } from "../../api/client";
@@ -17,6 +18,7 @@ import { heldPress } from "../../components/held-press";
 import { PinButton } from "../../components/PinButton";
 import { useSending } from "../../hooks/useSending";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
+import { copyText } from "../../lib/clipboard";
 import { compareTimestamps } from "../../lib/timestamps";
 import {
   borderDefault,
@@ -52,10 +54,18 @@ import {
 } from "../refs/AgentName";
 import { CopyRefButton } from "../refs/CopyRefButton";
 import { MarkdownBody } from "../refs/MarkdownBody";
-import { buildIssuePath, documentItemPath, sessionOfAddress } from "../refs/routes";
+import {
+  buildIssuePath,
+  buildReferencePath,
+  documentItemPath,
+  parseNodeReference,
+  sessionOfAddress,
+} from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
 import { Unfurl } from "../refs/Unfurl";
+import { useKeymap } from "../shell/keymap";
+import { closestMatching, focusedMatching, roveFocus } from "../shell/roving";
 import { PHONE_VIEWPORT_QUERY, useDialog, useMediaQuery } from "../shell/useDialog";
 import { type DwellRef, useDwell } from "../shell/useDwell";
 import { ViewportAnchor } from "../shell/ViewportAnchor";
@@ -97,6 +107,15 @@ import { ReplyButton } from "./ReplyButton";
 import { ReplyTurn, ThreadReplies, TurnActions } from "./ReplyTurn";
 import type { CarriedBlockIds } from "./send-request";
 import { capabilitiesForTarget, TargetedMessageCard } from "./TargetedMessageCard";
+import {
+  ConversationTurns,
+  ownControl,
+  ROOT_TURN,
+  TURN_FOLD,
+  TURN_ROW,
+  turnFocusRing,
+  turnMarks,
+} from "./turn-keys";
 import { useFollowLatest } from "./use-follow-latest";
 import { useAgents } from "./useAgents";
 import { threadRepliesSendKey, threadReplySendKey, usePhoneThread } from "./usePhoneThread";
@@ -120,6 +139,27 @@ const FILTERS: readonly { readonly label: string; readonly value: ConversationFi
   { label: "Open", value: "open" },
   { label: "Closed", value: "closed" },
 ];
+
+/** How a key of the tab opened a comment thread inline. Enter or `o` opened it `standing`: its
+ *  reply box takes no focus, which stays on the turn. `r` opened it, or reached its open box, to
+ *  `reply`: the box has the focus, and Escape in it gives the focus back to the turn `r` was
+ *  pressed on and leaves the thread open. A thread a click or a link opened is neither: its box
+ *  takes the focus, and Escape in it closes the thread. */
+type KeyedThread = "standing" | "reply";
+
+/** A reply box (`MentionComposer`, `AskReplyComposer`): where `r` puts the caret. */
+const REPLY_BOX = "[data-reply-box]";
+
+/** A turn's Reply (`ReplyButton`), which `r` presses on a message. */
+const REPLY_BUTTON = 'button[aria-label="Reply"]';
+
+/** The comment whose thread `turn`, a conversation's own turn, is: its `data-turn` names it
+ *  `comment:<id>` (`conversationItemId`). */
+function commentOfTurn(turn: HTMLElement): string | undefined {
+  const prefix = conversationItemId("comment", "");
+  const id = turn.dataset.turn;
+  return id?.startsWith(prefix) === true ? id.slice(prefix.length) : undefined;
+}
 
 /** A delivery's address as `AgentParts` draws it: a `session:` address is that session, drawn
  *  by `AgentName`; a role address stays text. */
@@ -226,7 +266,6 @@ function ConversationReply({
   const parent = [root.root, ...root.replies].find((node) => node.id === reply.in_reply_to);
   return (
     <ReplyTurn
-      actions={<CopyRefButton route={{ id: reply.id, key: issueKey, kind: "message" }} />}
       at={reply.created_at}
       author={reply.author}
       body={
@@ -268,6 +307,7 @@ function ConversationReply({
             ? undefined
             : buildIssuePath({ id: reply.in_reply_to, key: issueKey, kind: "message" }),
       }}
+      reference={{ id: reply.id, key: issueKey, kind: "message" }}
       replyHeld={replyHeld}
       turnID={conversationItemId("message", reply.id)}
     />
@@ -352,12 +392,14 @@ function MessageTurn({
   replyHeld: boolean;
 }): ReactNode {
   const author = item.root.author;
+  const reference = { id: item.root.id, key: issueKey, kind: "message" } as const;
   return (
     <li
       aria-current={current ? "true" : undefined}
-      className={`group mt-2 rounded-lg px-2 py-1 ${surfaceMutedHoverBg}`}
+      className={`group mt-2 rounded-lg px-2 py-1 ${surfaceMutedHoverBg} ${turnFocusRing}`}
       data-turn={item.id}
       ref={register}
+      {...turnMarks(true, reference)}
     >
       <div className="flex gap-3">
         <Avatar actor={author} />
@@ -375,7 +417,7 @@ function MessageTurn({
           <Unfurl body={item.root.body} source={textSourceOf("message", item.root.id)} />
         </div>
         <TurnActions>
-          <CopyRefButton route={{ id: item.root.id, key: issueKey, kind: "message" }} />
+          <CopyRefButton route={reference} />
           <ReplyButton
             held={replyHeld}
             onClick={() => onReply(replyTargetFor(item.root, item, issueKey))}
@@ -472,9 +514,10 @@ function HandoffTurn({
   return (
     <li
       aria-current={current ? "true" : undefined}
-      className={`group mt-2 rounded-lg px-2 py-1 ${surfaceMutedHoverBg}`}
+      className={`group mt-2 rounded-lg px-2 py-1 ${surfaceMutedHoverBg} ${turnFocusRing}`}
       data-turn={item.id}
       ref={register}
+      {...turnMarks(true, undefined)}
     >
       <div className="flex gap-3">
         <Avatar actor={author} />
@@ -491,6 +534,7 @@ function HandoffTurn({
             aria-controls={expanded ? fieldsId : undefined}
             aria-expanded={expanded}
             className={`min-h-8 text-sm font-medium ${linkText}`}
+            data-turn-fold=""
             onClick={() => setExpanded((open) => !open)}
             type="button"
           >
@@ -629,11 +673,13 @@ function CommentTurn({
   isPhone = false,
   issueKey,
   item,
+  keyed,
   onAction,
   onPhoneThreadToggle,
   onPin,
   onReply,
   onRetryAction,
+  onReplyCancel,
   pendingAction,
   pinned,
   register,
@@ -667,6 +713,8 @@ function CommentTurn({
   isPhone?: boolean;
   issueKey: string;
   item: Extract<Conversation, { kind: "comment" }>;
+  /** How a key of the tab opened the thread, which its reply box follows (`KeyedThread`). */
+  keyed?: KeyedThread;
   onAction: (id: string, kind: "accept" | "reject" | "resolve" | "reopen") => void;
   onPhoneThreadToggle?: () => void;
   onPin: () => void;
@@ -674,6 +722,9 @@ function CommentTurn({
    *  reply is its thread's, so the host opens the thread with it. */
   onReply: (target: ReplyTarget) => boolean;
   onRetryAction: () => void;
+  /** Where the thread's reply box gives the focus back on Escape, keeping the thread open, once
+   *  the tab's `r` put the reader in it (`ThreadCard`'s `onReplyCancel`). */
+  onReplyCancel?: () => void;
   pendingAction: boolean;
   pinned: boolean;
   register?: DwellRef;
@@ -749,12 +800,14 @@ function CommentTurn({
     }
     setExpanded(!expanded);
   };
+  const reference = { id: item.root.id, key: issueKey, kind: "comment" } as const;
   return (
     <li
       aria-current={current ? "true" : undefined}
-      className="my-2"
+      className={`my-2 rounded-lg ${turnFocusRing}`}
       data-turn={item.id}
       ref={register}
+      {...turnMarks(true, reference)}
     >
       {item.unread && !hideUnreadMark ? (
         <div className="mb-1 flex justify-end">
@@ -776,12 +829,14 @@ function CommentTurn({
         onEdit={editComment}
         onEditingChange={setEditingCommentId}
         onRetryAction={onRetryAction}
+        onReplyCancel={onReplyCancel}
         onToggle={toggleThread}
         owner={{ key: issueKey, kind: "issue" }}
         pendingAction={pendingAction}
         pulseOrphanBlock={false}
         replyMutationKey={replySendKey}
-        showReference={false}
+        replyStanding={keyed === "standing"}
+        showRootReference={false}
         renderDeliveries={(comment) => (
           <CommentDeliveryList
             agents={agents}
@@ -812,7 +867,7 @@ function CommentTurn({
             {currentExpanded ? "Collapse thread" : "Expand thread"}
           </button>
         )}
-        <CopyRefButton route={{ id: item.root.id, key: issueKey, kind: "comment" }} />
+        <CopyRefButton route={reference} />
         <ReplyButton
           held={replyHeld}
           onClick={() => {
@@ -857,6 +912,7 @@ function TargetedMessageTurn({
   });
   const capabilities = capabilitiesForTarget(item.root.target, agents);
   const asker = item.root.author;
+  const reference = { id: item.root.id, key: issueKey, kind: "message" } as const;
 
   return (
     <TargetedMessageCard
@@ -866,7 +922,7 @@ function TargetedMessageTurn({
           <p className={`flex flex-wrap items-center gap-x-2 text-sm ${textSecondaryOnSurface}`}>
             <AgentName actor={asker} className="font-semibold" inline />
             <Timestamp at={item.root.created_at} />
-            <CopyRefButton route={{ id: item.root.id, key: issueKey, kind: "message" }} />
+            <CopyRefButton route={reference} />
             {item.unread ? <UnreadMark /> : null}
           </p>
           <MarkdownBody
@@ -886,6 +942,7 @@ function TargetedMessageTurn({
       onReply={() => onReply(replyTargetFor(item.root, item, issueKey))}
       onRetry={retry.mutate}
       register={register}
+      reference={reference}
       replyHeld={replyHeld}
       retrying={retry.isPending}
       targetName={targetName}
@@ -984,12 +1041,31 @@ export function ConversationTab({
   const phone = usePhoneThread({ isPhoneViewport, sendKey, sendingNow });
   // The comments whose thread the reader has open inline.
   const [openThreads, setOpenThreads] = useState<ReadonlySet<string>>(() => new Set());
-  const setThreadOpen = useCallback((id: string, open: boolean) => {
+  // The open threads a key of the tab opened, by how (`KeyedThread`): the thread card's reply box
+  // follows it. A thread a click opened, or a link, is in neither.
+  const [keyedThreads, setKeyedThreads] = useState<ReadonlyMap<string, KeyedThread>>(
+    () => new Map()
+  );
+  // The turn `r` was pressed on for each thread whose box it put the reader in: where Escape in
+  // that box gives the focus back.
+  const replyOrigins = useRef(new Map<string, HTMLElement>());
+  /** Opens or closes comment `id`'s thread, by a key of the tab where `keyed` says how; a thread
+   *  opened any other way, and every thread closed, is a key's no longer. */
+  const setThreadOpen = useCallback((id: string, open: boolean, keyed?: KeyedThread) => {
     setOpenThreads((current) => {
       if (current.has(id) === open) return current;
       const next = new Set(current);
       if (open) next.add(id);
       else next.delete(id);
+      return next;
+    });
+    const how = open ? keyed : undefined;
+    if (how !== "reply") replyOrigins.current.delete(id);
+    setKeyedThreads((current) => {
+      if (current.get(id) === how) return current;
+      const next = new Map(current);
+      if (how === undefined) next.delete(id);
+      else next.set(id, how);
       return next;
     });
   }, []);
@@ -1066,7 +1142,11 @@ export function ConversationTab({
   // (`redirectedReplyTarget`'s doc comment explains why a Reply elsewhere while it holds a
   // refusal redirects onto that comment or message instead of overwriting its draft).
   const [replyTo, setReplyTo] = useHeldReplyTo(sendKey);
+  // The turn `r` started the docked composer's reply from, where Escape in it, or its Cancel
+  // reply, gives the focus back. A reply started by a click starts from nowhere.
+  const dockedReplyFrom = useRef<HTMLElement | null>(null);
   const beginReply = (target: ReplyTarget): boolean => {
+    dockedReplyFrom.current = null;
     if (sendingNow()) return false;
     const reply = redirectedReplyTarget(store, sendKey, target);
     setReplyTo(reply);
@@ -1206,6 +1286,152 @@ export function ConversationTab({
       op: isPinnedConversation(dismissed, id) ? "unpin" : "pin",
     }));
 
+  // The keys of the turns (R22, `turn-keys.ts`). `j` and `k` walk the turns and the replies the
+  // list draws, an open thread's replies among them; Enter, `o`, `r`, `y` and Shift+Y act on the
+  // turn the focus is on itself, never on one that merely holds a focused control, whose keys
+  // are its own. Every key stands down while another tab is shown.
+  const turnList = useRef<HTMLOListElement>(null);
+  /** The turn or reply of the list that holds the keyboard's focus itself. */
+  const focusedTurn = (): HTMLElement | null => {
+    const turn = focusedMatching(TURN_ROW);
+    return turn !== null && turnList.current?.contains(turn) === true ? turn : null;
+  };
+  /** What `of` finds to do on the focused turn, while the tab is shown. */
+  const onFocusedTurn = (of: (turn: HTMLElement) => (() => void) | null) => {
+    const turn = visible ? focusedTurn() : null;
+    return turn === null ? null : of(turn);
+  };
+  /** The reference `y` copies off the focused turn, while the tab is shown. */
+  const turnRef = (): string | undefined => (visible ? focusedTurn()?.dataset.turnRef : undefined);
+  /** What Enter and `o` do on `turn`: open or close its comment thread - with the reply box
+   *  standing, so the focus stays on the turn - or press its conversation's other fold
+   *  (`TURN_FOLD`). Where the press takes the turn away, a reply in the closed thread or fold,
+   *  its conversation takes the focus. Null where there is nothing to open or close, and on a
+   *  thread whose own reply is out, which stays open until it lands, as a resolve holds it. */
+  const toggleOf = (turn: HTMLElement): (() => void) | null => {
+    const root = turn.closest<HTMLElement>(ROOT_TURN);
+    if (root === null) return null;
+    const comment = commentOfTurn(root);
+    let press: (() => void) | undefined;
+    if (comment === undefined) {
+      const fold = ownControl(root, TURN_FOLD);
+      if (fold !== null) press = () => fold.click();
+    } else if (!openThreads.has(comment)) {
+      press = isPhoneViewport
+        ? () => phone.open(comment)
+        : () => setThreadOpen(comment, true, "standing");
+    } else if (
+      queryClient.isMutating({ mutationKey: threadReplySendKey(sendKey, comment) }) === 0
+    ) {
+      press = () => setThreadOpen(comment, false);
+    }
+    if (press === undefined) return null;
+    const pressed = press;
+    return () => {
+      flushSync(pressed);
+      if (!turn.isConnected) root.focus();
+    };
+  };
+  /** Where `r` puts the caret from `turn`: in its comment thread's reply box - opening the thread
+   *  first, its box not standing, so the box takes the focus as it mounts - or an answered ask's
+   *  box behind its "Write a reply". A message, and a comment on a phone, press their own Reply,
+   *  which hands the docked composer, or the phone's thread, the reply. Null where nothing takes
+   *  a reply: an open ask waits on its answer, a handoff takes none, and a Reply is held while a
+   *  send is out. */
+  const replyOf = (turn: HTMLElement): (() => void) | null => {
+    const root = turn.closest<HTMLElement>(ROOT_TURN);
+    if (root === null) return null;
+    const comment = commentOfTurn(root);
+    if (comment !== undefined && !isPhoneViewport) {
+      const box = openThreads.has(comment)
+        ? root.querySelector<HTMLElement>(`[data-thread-reply]:not([hidden]) ${REPLY_BOX}`)
+        : undefined;
+      if (box === null) return null;
+      return () => {
+        replyOrigins.current.set(comment, turn);
+        setThreadOpen(comment, true, "reply");
+        box?.focus();
+      };
+    }
+    const opener = root.querySelector<HTMLElement>("[data-reply-opener]");
+    if (opener !== null) {
+      return () => {
+        // "Write a reply" draws its box under it as it is pressed: the press is flushed, so the
+        // box stands in the page when the panel the control names is read.
+        if (opener.getAttribute("aria-expanded") !== "true") flushSync(() => opener.click());
+        document
+          .getElementById(opener.getAttribute("aria-controls") ?? "")
+          ?.querySelector<HTMLElement>(REPLY_BOX)
+          ?.focus();
+      };
+    }
+    const reply = ownControl(turn, REPLY_BUTTON) ?? ownControl(root, REPLY_BUTTON);
+    if (reply === null || reply.getAttribute("aria-disabled") === "true") return null;
+    return () => {
+      reply.click();
+      dockedReplyFrom.current = turn;
+    };
+  };
+  /** Escape in the reply box of comment `comment`'s thread, which `r` put the reader in: the
+   *  focus goes back to the turn `r` was pressed on, or to the thread's own turn where that one
+   *  is gone, and the thread stays open. */
+  const giveBackFromThread = (comment: string) => {
+    const from = replyOrigins.current.get(comment);
+    const turn =
+      from?.isConnected === true
+        ? from
+        : turnList.current?.querySelector<HTMLElement>(
+            `[data-turn="${CSS.escape(conversationItemId("comment", comment))}"]`
+          );
+    turn?.focus();
+  };
+  useKeymap("issue", [
+    ...(
+      [
+        ["issue.next-turn", 1],
+        ["issue.previous-turn", -1],
+      ] as const
+    ).map(([action, step]) => ({
+      action,
+      run: () =>
+        roveFocus(
+          [...(turnList.current?.querySelectorAll<HTMLElement>(TURN_ROW) ?? [])],
+          closestMatching(document.activeElement, TURN_ROW),
+          step
+        ),
+      when: () => visible && turnList.current?.querySelector(TURN_ROW) != null,
+    })),
+    {
+      action: "issue.toggle-turn",
+      run: () => onFocusedTurn(toggleOf)?.(),
+      when: () => onFocusedTurn(toggleOf) !== null,
+    },
+    {
+      action: "issue.reply-turn",
+      run: () => onFocusedTurn(replyOf)?.(),
+      when: () => onFocusedTurn(replyOf) !== null,
+    },
+    {
+      action: "issue.copy-turn-ref",
+      run: () => {
+        const reference = turnRef();
+        if (reference !== undefined) void copyText(reference);
+      },
+      when: () => turnRef() !== undefined,
+    },
+    {
+      // The turn's own page address: its issue's Conversation, landed on the turn.
+      action: "issue.copy-turn-address",
+      run: () => {
+        const route = parseNodeReference(turnRef() ?? "");
+        if (route !== undefined) {
+          void copyText(`${window.location.origin}${buildReferencePath(route)}`);
+        }
+      },
+      when: () => turnRef() !== undefined,
+    },
+  ]);
+
   if (loading) {
     return <p className={textMutedOnCanvas}>Loading conversation…</p>;
   }
@@ -1215,60 +1441,68 @@ export function ConversationTab({
 
   // The reader's card keeps its viewport position across live updates - a reply arriving while
   // they browse, a pin reflow, the failed-operations banner, a card moving bucket - except while
-  // they follow the newest conversation, where an arrival simply appears in place.
+  // they follow the newest conversation, where an arrival simply appears in place. The turns
+  // below take the focus from the tab's keys (`ConversationTurns`).
   return (
-    <ViewportAnchor
-      as="section"
-      className="flex min-h-[60dvh] flex-col gap-3 pb-56 sm:pb-16 xl:pb-0"
-      enabled={() => !follow.pinnedToTop()}
-      item="data-turn"
-      label="Conversation"
-    >
-      {/* Mounted, and hidden, while a phone thread covers it: its draft, a send it has out, that
+    <ConversationTurns value>
+      <ViewportAnchor
+        as="section"
+        className="flex min-h-[60dvh] flex-col gap-3 pb-56 sm:pb-16 xl:pb-0"
+        enabled={() => !follow.pinnedToTop()}
+        item="data-turn"
+        label="Conversation"
+      >
+        {/* Mounted, and hidden, while a phone thread covers it: its draft, a send it has out, that
           send's refusal and its reply are all still there on Back. A closed issue takes comments
           and message replies, so it shows and sends there as on an open one (`closed` hides only
           the kinds a closed issue refuses). `contents`, so the composer's own box stays the one
           that sticks. */}
-      <div className="contents" hidden={phoneThread !== undefined}>
-        <MentionComposer
-          closed={isClosed}
-          docked
-          mutationKey={sendKey}
-          onCancelReply={() => setReplyTo(null)}
-          onClose={() => setReplyTo(null)}
-          onSent={() => {
-            setReplyTo(null);
-            setOwnSendCount((count) => count + 1);
-          }}
-          owner={{ issueKey, kind: "issue" }}
-          replyTo={replyTo}
-        />
-      </div>
-      {/* All / Open / Closed, the one control over the list. It starts on All every visit: a
+        <div className="contents" hidden={phoneThread !== undefined}>
+          <MentionComposer
+            closed={isClosed}
+            docked
+            mutationKey={sendKey}
+            onCancelReply={() => {
+              setReplyTo(null);
+              // A reply `r` started gives the focus back to the turn it was pressed on.
+              const from = dockedReplyFrom.current;
+              dockedReplyFrom.current = null;
+              if (from?.isConnected === true) from.focus();
+            }}
+            onClose={() => setReplyTo(null)}
+            onSent={() => {
+              setReplyTo(null);
+              setOwnSendCount((count) => count + 1);
+            }}
+            owner={{ issueKey, kind: "issue" }}
+            replyTo={replyTo}
+          />
+        </div>
+        {/* All / Open / Closed, the one control over the list. It starts on All every visit: a
           reader who filtered yesterday still meets the whole conversation today. */}
-      <div className="flex items-center justify-end">
-        <fieldset
-          aria-label="Conversations"
-          className={`flex rounded-md border ${secondaryButtonBorder}`}
-        >
-          {FILTERS.map(({ label, value }) => (
-            <button
-              aria-pressed={filter === value}
-              className={`min-h-11 px-3 text-sm font-medium first:rounded-l-md last:rounded-r-md ${
-                filter === value
-                  ? `${surfaceMutedBg} ${textPrimaryOnSurfaceMuted}`
-                  : textSecondaryOnCanvas
-              }`}
-              key={value}
-              onClick={() => setFilter(value)}
-              type="button"
-            >
-              {label}
-            </button>
-          ))}
-        </fieldset>
-      </div>
-      {/* The pill floats at an edge the docked composer leaves free, so it covers none of the
+        <div className="flex items-center justify-end">
+          <fieldset
+            aria-label="Conversations"
+            className={`flex rounded-md border ${secondaryButtonBorder}`}
+          >
+            {FILTERS.map(({ label, value }) => (
+              <button
+                aria-pressed={filter === value}
+                className={`min-h-11 px-3 text-sm font-medium first:rounded-l-md last:rounded-r-md ${
+                  filter === value
+                    ? `${surfaceMutedBg} ${textPrimaryOnSurfaceMuted}`
+                    : textSecondaryOnCanvas
+                }`}
+                key={value}
+                onClick={() => setFilter(value)}
+                type="button"
+              >
+                {label}
+              </button>
+            ))}
+          </fieldset>
+        </div>
+        {/* The pill floats at an edge the docked composer leaves free, so it covers none of the
           composer's controls; below `sm` that edge is the right edge of the content column
           itself rather than a margin outside it, which is why a card under the pill is covered
           at all. Below `sm` the composer sits at the foot of the screen and grows upward (a
@@ -1286,222 +1520,233 @@ export function ConversationTab({
           and so does the pill's own tap, which jumps to the latest and takes the pill off the
           screen. A thread opened full-screen covers the Conversation the pill acts on, and its
           own composer sits at the foot, so the pill waits for Back. */}
-      {visible && phoneThread === undefined && !follow.atTop && shown.length > 0 ? (
-        <button
-          className={`fixed right-6 bottom-[max(5rem,calc(var(--foot-status-inset,var(--foot-composer-inset,0px))_+_1rem))] z-20 min-h-11 rounded-full px-4 text-sm font-semibold whitespace-nowrap shadow-lg sm:bottom-36 xl:bottom-24 ${primaryButtonBg} ${primaryButtonHoverBg}`}
-          data-testid="jump-to-latest"
-          onClick={follow.jumpToLatest}
-          type="button"
+        {visible && phoneThread === undefined && !follow.atTop && shown.length > 0 ? (
+          <button
+            className={`fixed right-6 bottom-[max(5rem,calc(var(--foot-status-inset,var(--foot-composer-inset,0px))_+_1rem))] z-20 min-h-11 rounded-full px-4 text-sm font-semibold whitespace-nowrap shadow-lg sm:bottom-36 xl:bottom-24 ${primaryButtonBg} ${primaryButtonHoverBg}`}
+            data-testid="jump-to-latest"
+            onClick={follow.jumpToLatest}
+            type="button"
+          >
+            Jump to latest{unreadCount === 0 ? "" : ` · ${unreadCount} new`}
+          </button>
+        ) : null}
+        <ol
+          aria-hidden={phoneThread === undefined ? undefined : true}
+          aria-label="Conversation turns"
+          className="flex flex-col gap-1"
+          inert={phoneThread === undefined ? undefined : true}
+          ref={turnList}
         >
-          Jump to latest{unreadCount === 0 ? "" : ` · ${unreadCount} new`}
-        </button>
-      ) : null}
-      <ol
-        aria-hidden={phoneThread === undefined ? undefined : true}
-        aria-label="Conversation turns"
-        className="flex flex-col gap-1"
-        inert={phoneThread === undefined ? undefined : true}
-      >
-        {shown.map((item) => {
-          const current = item.id === focus?.id;
-          const currentReplyId = current ? focus?.replyId : undefined;
-          const pinned = isPinnedConversation(issueState.dismissed ?? [], item.id);
-          // A thread covering the list hides its copy of the newest card, so that copy gives
-          // up the mark's ref while one is open; the thread's own card carries it below.
-          const register =
-            item.id === newestId && phoneThread === undefined ? registerNewest : undefined;
+          {shown.map((item) => {
+            const current = item.id === focus?.id;
+            const currentReplyId = current ? focus?.replyId : undefined;
+            const pinned = isPinnedConversation(issueState.dismissed ?? [], item.id);
+            // A thread covering the list hides its copy of the newest card, so that copy gives
+            // up the mark's ref while one is open; the thread's own card carries it below.
+            const register =
+              item.id === newestId && phoneThread === undefined ? registerNewest : undefined;
 
-          if (item.kind === "targeted-message") {
+            if (item.kind === "targeted-message") {
+              return (
+                <TargetedMessageTurn
+                  agents={agents}
+                  current={current}
+                  currentReplyId={currentReplyId}
+                  issueKey={issueKey}
+                  item={item}
+                  key={item.id}
+                  onReply={beginReply}
+                  register={register}
+                  replyHeld={composerSending}
+                />
+              );
+            }
+            if (item.kind === "message") {
+              return (
+                <MessageTurn
+                  agents={agents}
+                  issueKey={issueKey}
+                  current={current}
+                  currentReplyId={currentReplyId}
+                  item={item}
+                  key={item.id}
+                  onPin={() => pinConversation(item.id)}
+                  onReply={beginReply}
+                  pinned={pinned}
+                  register={register}
+                  replyHeld={composerSending}
+                />
+              );
+            }
+            if (item.kind === "handoff") {
+              return (
+                <HandoffTurn
+                  current={current}
+                  item={item}
+                  key={item.id}
+                  onPin={() => pinConversation(item.id)}
+                  pinned={pinned}
+                  register={register}
+                />
+              );
+            }
+            if (item.kind === "comment") {
+              return (
+                <CommentTurn
+                  actionFailure={
+                    commentActions.actionFailure?.id === item.root.id
+                      ? commentActions.actionFailure
+                      : undefined
+                  }
+                  hideReplyComposer={
+                    replyTo?.parentKind === "comment" && replyTo.id === item.root.id
+                  }
+                  agents={agents}
+                  issueArtifacts={issueArtifacts}
+                  isPhone={isPhoneViewport}
+                  onPhoneThreadToggle={() => phone.open(item.root.id)}
+                  onAction={(id, kind) => commentActions.mutateItem({ id, kind })}
+                  current={current}
+                  currentReplyId={currentReplyId}
+                  expanded={openThreads.has(item.root.id)}
+                  keyed={keyedThreads.get(item.root.id)}
+                  onReplyCancel={
+                    keyedThreads.get(item.root.id) === "reply"
+                      ? () => giveBackFromThread(item.root.id)
+                      : undefined
+                  }
+                  onRetryAction={commentActions.retryItem}
+                  pendingAction={commentActions.pendingActionIds.has(item.root.id)}
+                  isClosed={isClosed}
+                  issueKey={issueKey}
+                  item={item}
+                  key={item.id}
+                  onPin={() => pinConversation(item.id)}
+                  onReply={isPhoneViewport ? phone.beginReply : beginReply}
+                  pinned={pinned}
+                  register={register}
+                  replyHeld={composerSending}
+                  sendKey={sendKey}
+                  setExpanded={(open) => setThreadOpen(item.root.id, open)}
+                  viewerLogin={viewer.data?.login ?? ""}
+                />
+              );
+            }
             return (
-              <TargetedMessageTurn
-                agents={agents}
-                current={current}
-                currentReplyId={currentReplyId}
-                issueKey={issueKey}
-                item={item}
+              <li
+                aria-current={current ? "true" : undefined}
+                className={`my-2 flex gap-3 rounded-lg ${turnFocusRing}`}
+                data-turn={item.id}
                 key={item.id}
-                onReply={beginReply}
-                register={register}
-                replyHeld={composerSending}
-              />
-            );
-          }
-          if (item.kind === "message") {
-            return (
-              <MessageTurn
-                agents={agents}
-                issueKey={issueKey}
-                current={current}
-                currentReplyId={currentReplyId}
-                item={item}
-                key={item.id}
-                onPin={() => pinConversation(item.id)}
-                onReply={beginReply}
-                pinned={pinned}
-                register={register}
-                replyHeld={composerSending}
-              />
-            );
-          }
-          if (item.kind === "handoff") {
-            return (
-              <HandoffTurn
-                current={current}
-                item={item}
-                key={item.id}
-                onPin={() => pinConversation(item.id)}
-                pinned={pinned}
-                register={register}
-              />
-            );
-          }
-          if (item.kind === "comment") {
-            return (
-              <CommentTurn
-                actionFailure={
-                  commentActions.actionFailure?.id === item.root.id
-                    ? commentActions.actionFailure
-                    : undefined
-                }
-                hideReplyComposer={replyTo?.parentKind === "comment" && replyTo.id === item.root.id}
-                agents={agents}
-                issueArtifacts={issueArtifacts}
-                isPhone={isPhoneViewport}
-                onPhoneThreadToggle={() => phone.open(item.root.id)}
-                onAction={(id, kind) => commentActions.mutateItem({ id, kind })}
-                current={current}
-                currentReplyId={currentReplyId}
-                expanded={openThreads.has(item.root.id)}
-                onRetryAction={commentActions.retryItem}
-                pendingAction={commentActions.pendingActionIds.has(item.root.id)}
-                isClosed={isClosed}
-                issueKey={issueKey}
-                item={item}
-                key={item.id}
-                onPin={() => pinConversation(item.id)}
-                onReply={isPhoneViewport ? phone.beginReply : beginReply}
-                pinned={pinned}
-                register={register}
-                replyHeld={composerSending}
-                sendKey={sendKey}
-                setExpanded={(open) => setThreadOpen(item.root.id, open)}
-                viewerLogin={viewer.data?.login ?? ""}
-              />
-            );
-          }
-          return (
-            <li
-              aria-current={current ? "true" : undefined}
-              className="my-2 flex gap-3"
-              data-turn={item.id}
-              key={item.id}
-              ref={register}
-            >
-              <div className="min-w-0 flex-1">
-                {item.unread ? (
-                  <div className="mb-1 flex justify-end">
-                    <UnreadMark />
-                  </div>
-                ) : null}
-                {/* The margin shows this same open ask beside the document, so a full
+                ref={register}
+                {...turnMarks(true, { id: item.ask.id, key: issueKey, kind: "ask" })}
+              >
+                <div className="min-w-0 flex-1">
+                  {item.unread ? (
+                    <div className="mb-1 flex justify-end">
+                      <UnreadMark />
+                    </div>
+                  ) : null}
+                  {/* The margin shows this same open ask beside the document, so a full
                     two-row composer here is the question, its options and its answer
                     controls twice on one screen. The list is the record: it carries the
                     compact density, whose options answer in one click and whose note field
                     stays behind its own disclosure. The row's own thread seeds the card, so a
                     page of asks makes no per-ask thread request. */}
-                <AskCard
-                  ask={item.ask}
-                  currentReplyId={currentReplyId}
-                  initialThread={{ ask: item.ask, ...item.ask.thread }}
-                  initialThreadUpdatedAt={asks.dataUpdatedAt}
-                  markRead
-                  thread="collapsed"
-                  variant="compact"
-                />
-              </div>
-              <TurnPin onPin={() => pinConversation(item.id)} pinned={pinned} />
-            </li>
-          );
-        })}
-      </ol>
-      {/* The thread view stays mounted, hidden, while its reply composer holds a reply: Back, or
+                  <AskCard
+                    ask={item.ask}
+                    currentReplyId={currentReplyId}
+                    initialThread={{ ask: item.ask, ...item.ask.thread }}
+                    initialThreadUpdatedAt={asks.dataUpdatedAt}
+                    markRead
+                    thread="collapsed"
+                    variant="compact"
+                  />
+                </div>
+                <TurnPin onPin={() => pinConversation(item.id)} pinned={pinned} />
+              </li>
+            );
+          })}
+        </ol>
+        {/* The thread view stays mounted, hidden, while its reply composer holds a reply: Back, or
           another comment's thread, leaves that composer - its draft, a send it has out and the
           send's refusal - where reopening the comment's thread finds it. */}
-      {phoneThread === undefined && phone.replyTo === null ? null : (
-        <section
-          aria-label="Thread"
-          aria-modal="true"
-          className={`fixed inset-0 z-20 flex flex-col ${card}`}
-          hidden={phoneThread === undefined}
-          ref={phoneThreadDialog.containerRef}
-          role="dialog"
-        >
-          <header className={`flex items-center border-b px-4 py-3 ${borderDefault}`}>
-            <button
-              className={`min-h-11 text-sm font-medium refused:cursor-not-allowed refused:opacity-50 ${textPrimaryOnSurface}`}
-              {...heldPress(phone.cardReplySending, phone.leave)}
-              type="button"
-            >
-              Back
-            </button>
-          </header>
-          {phoneThread === undefined ? null : (
-            <ol className="min-h-0 flex-1 overflow-y-auto px-4 pb-32">
-              <CommentTurn
-                actionFailure={
-                  commentActions.actionFailure?.id === phoneThread.root.id
-                    ? commentActions.actionFailure
-                    : undefined
-                }
-                agents={agents}
-                issueArtifacts={issueArtifacts}
-                composerClassName={`fixed inset-x-0 bottom-0 z-20 border-t px-4 pt-4 pb-2 ${card} ${borderDefault}`}
-                current={phoneThread.id === focus?.id}
-                currentReplyId={phoneThread.id === focus?.id ? focus?.replyId : undefined}
-                viewerLogin={viewer.data?.login ?? ""}
-                expanded={openThreads.has(phoneThread.root.id)}
-                forceExpanded
-                hideReplyComposer={phoneReplyTargetsThread}
-                hideUnreadMark
-                isClosed={isClosed}
-                issueKey={issueKey}
-                item={phoneThread}
-                isPhone
-                key={phoneThread.id}
-                onAction={(id, kind) => commentActions.mutateItem({ id, kind })}
-                onPhoneThreadToggle={phone.leave}
-                onRetryAction={commentActions.retryItem}
-                pendingAction={commentActions.pendingActionIds.has(phoneThread.root.id)}
-                onPin={() => pinConversation(phoneThread.id)}
-                onReply={phone.beginReply}
-                pinned={isPinnedConversation(issueState.dismissed ?? [], phoneThread.id)}
-                register={phoneThreadIsNewest ? registerNewest : undefined}
-                replyHeld={composerSending}
-                sendKey={sendKey}
-                setExpanded={(open) => setThreadOpen(phoneThread.root.id, open)}
-              />
-            </ol>
-          )}
-          {phone.replyTo === null ? null : (
-            <div hidden={!phoneReplyTargetsThread}>
-              <MentionComposer
-                closed={isClosed}
-                frame={`fixed inset-x-0 bottom-0 z-20 border-t px-4 pt-4 pb-2 ${card} ${borderDefault}`}
-                mutationKey={phone.composerKey}
-                onCancelReply={phone.endReply}
-                onClose={phone.endReply}
-                onSent={() => {
-                  phone.endReply();
-                  setOwnSendCount((count) => count + 1);
-                }}
-                owner={{ issueKey, kind: "issue" }}
-                replyTo={phone.replyTo}
-              />
-            </div>
-          )}
-        </section>
-      )}
-      {shown.length === 0 ? <p className={textMutedOnCanvas}>No conversations yet.</p> : null}
-    </ViewportAnchor>
+        {phoneThread === undefined && phone.replyTo === null ? null : (
+          <section
+            aria-label="Thread"
+            aria-modal="true"
+            className={`fixed inset-0 z-20 flex flex-col ${card}`}
+            hidden={phoneThread === undefined}
+            ref={phoneThreadDialog.containerRef}
+            role="dialog"
+          >
+            <header className={`flex items-center border-b px-4 py-3 ${borderDefault}`}>
+              <button
+                className={`min-h-11 text-sm font-medium refused:cursor-not-allowed refused:opacity-50 ${textPrimaryOnSurface}`}
+                {...heldPress(phone.cardReplySending, phone.leave)}
+                type="button"
+              >
+                Back
+              </button>
+            </header>
+            {phoneThread === undefined ? null : (
+              <ol className="min-h-0 flex-1 overflow-y-auto px-4 pb-32">
+                <CommentTurn
+                  actionFailure={
+                    commentActions.actionFailure?.id === phoneThread.root.id
+                      ? commentActions.actionFailure
+                      : undefined
+                  }
+                  agents={agents}
+                  issueArtifacts={issueArtifacts}
+                  composerClassName={`fixed inset-x-0 bottom-0 z-20 border-t px-4 pt-4 pb-2 ${card} ${borderDefault}`}
+                  current={phoneThread.id === focus?.id}
+                  currentReplyId={phoneThread.id === focus?.id ? focus?.replyId : undefined}
+                  viewerLogin={viewer.data?.login ?? ""}
+                  expanded={openThreads.has(phoneThread.root.id)}
+                  forceExpanded
+                  hideReplyComposer={phoneReplyTargetsThread}
+                  hideUnreadMark
+                  isClosed={isClosed}
+                  issueKey={issueKey}
+                  item={phoneThread}
+                  isPhone
+                  key={phoneThread.id}
+                  onAction={(id, kind) => commentActions.mutateItem({ id, kind })}
+                  onPhoneThreadToggle={phone.leave}
+                  onRetryAction={commentActions.retryItem}
+                  pendingAction={commentActions.pendingActionIds.has(phoneThread.root.id)}
+                  onPin={() => pinConversation(phoneThread.id)}
+                  onReply={phone.beginReply}
+                  pinned={isPinnedConversation(issueState.dismissed ?? [], phoneThread.id)}
+                  register={phoneThreadIsNewest ? registerNewest : undefined}
+                  replyHeld={composerSending}
+                  sendKey={sendKey}
+                  setExpanded={(open) => setThreadOpen(phoneThread.root.id, open)}
+                />
+              </ol>
+            )}
+            {phone.replyTo === null ? null : (
+              <div hidden={!phoneReplyTargetsThread}>
+                <MentionComposer
+                  closed={isClosed}
+                  frame={`fixed inset-x-0 bottom-0 z-20 border-t px-4 pt-4 pb-2 ${card} ${borderDefault}`}
+                  mutationKey={phone.composerKey}
+                  onCancelReply={phone.endReply}
+                  onClose={phone.endReply}
+                  onSent={() => {
+                    phone.endReply();
+                    setOwnSendCount((count) => count + 1);
+                  }}
+                  owner={{ issueKey, kind: "issue" }}
+                  replyTo={phone.replyTo}
+                />
+              </div>
+            )}
+          </section>
+        )}
+        {shown.length === 0 ? <p className={textMutedOnCanvas}>No conversations yet.</p> : null}
+      </ViewportAnchor>
+    </ConversationTurns>
   );
 }

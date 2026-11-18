@@ -39,6 +39,7 @@ import type {
 import { messageDeliveryFields } from "../agents/delivery-fixture";
 import { stubMatchMedia } from "../margin/margin-fixture";
 import { KeymapProvider } from "../shell/KeymapProvider";
+import { useKeymapScope } from "../shell/keymap";
 import { userPreferenceStorageKey } from "../shell/userPreference";
 import { seedUnread } from "../threads/replies-fixture";
 import { writesOf } from "../writes/write-store";
@@ -2449,5 +2450,333 @@ test("a Conversation turn links the `#q2` the question map of its message names"
     stub.restore();
     getAsk.mockRestore();
     getReferenceQuestions.mockRestore();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// The keys of the turns (dispatch://INFRA-2160, R22): `j` and `k` walk the turns and the replies
+// drawn in them; Enter, `o`, `r`, `y` and Shift+Y act on the turn the focus is on.
+// ---------------------------------------------------------------------------
+
+/** Pushes the issue page's scope, under which the tab registers its keys (`IssuePage`). */
+function IssueScope(): null {
+  useKeymapScope("issue");
+  return null;
+}
+
+const bob: Actor = { id: "bob", kind: "user" };
+
+/** One conversation of each kind a turn comes in, newest activity first: a message with a reply,
+ *  a comment thread with two replies, and a handoff. */
+function turnLists(): Lists {
+  return {
+    comments: [
+      comment("comment-1", {
+        body: "The ledger needs a lease.",
+        created_at: "2026-09-20T00:00:00Z",
+      }),
+      comment("reply-a", {
+        author: bob,
+        body: "First answer",
+        created_at: "2026-09-20T00:01:00Z",
+        reply_to: "comment-1",
+      }),
+      comment("reply-b", {
+        author: bob,
+        body: "Second answer",
+        created_at: "2026-09-20T00:02:00Z",
+        reply_to: "comment-1",
+      }),
+    ],
+    handoffs: [handoffRecord("handoff-1", 1, '{"summary":"First pass"}', "2026-09-10T09:00:00Z")],
+    messages: [
+      thread(
+        message("message-1", {
+          body: "Who holds the lease?",
+          created_at: "2026-09-21T00:00:00Z",
+        }),
+        [
+          message("message-2", {
+            author: bob,
+            body: "The mirror does.",
+            created_at: "2026-09-21T00:01:00Z",
+            in_reply_to: "message-1",
+          }),
+        ]
+      ),
+    ],
+  };
+}
+
+/** The tab under the issue page's scope, once `first` - a turn's `data-turn` - is drawn. */
+async function renderTurns(lists: Lists, first: string, visible = true) {
+  const stub = stubLists(lists);
+  const view = render(
+    <>
+      <IssueScope />
+      {tab({ "CORE-1": issueState() }, visible, newQueryClient())}
+    </>
+  );
+  const turn = (id: string) => {
+    const found = view.container.querySelector<HTMLElement>(`[data-turn="${id}"]`);
+    if (found === null) throw new Error(`expected the ${id} turn`);
+    return found;
+  };
+  await waitFor(() => turn(first));
+  const list = screen.getByRole("list", { name: "Conversation turns" });
+  return {
+    cleanup: () => {
+      view.unmount();
+      stub.restore();
+    },
+    /** Every turn and reply the list draws, top to bottom. */
+    rows: () => [...list.querySelectorAll<HTMLElement>("[data-turn], [data-reply]")],
+    turn,
+  };
+}
+
+/** The reply box of the comment thread `root` holds, once it is drawn. */
+function threadBox(root: HTMLElement): Promise<HTMLElement> {
+  return waitFor(() => {
+    const found = root.querySelector<HTMLElement>("[data-thread-reply] [data-reply-box]");
+    if (found === null) throw new Error("the thread drew no reply box");
+    return found;
+  });
+}
+
+test("j and k walk the Conversation's turns and the replies drawn in them, each a turn Tab does not stop on", async () => {
+  const user = userEvent.setup();
+  const page = await renderTurns(turnLists(), "message:message-1");
+  try {
+    // A comment's thread is closed, so its replies are not drawn and not walked.
+    expect(page.rows().map((row) => row.getAttribute("data-turn"))).toEqual([
+      "message:message-1",
+      "message:message-2",
+      "comment:comment-1",
+      "handoff:handoff-1",
+    ]);
+    for (const row of page.rows()) expect(row).toHaveAttribute("tabindex", "-1");
+
+    await user.keyboard("j");
+    expect(document.activeElement).toBe(page.turn("message:message-1"));
+    await user.keyboard("j");
+    expect(document.activeElement).toBe(page.turn("message:message-2"));
+    await user.keyboard("jj");
+    expect(document.activeElement).toBe(page.turn("handoff:handoff-1"));
+    // The walk stops at either end.
+    await user.keyboard("j");
+    expect(document.activeElement).toBe(page.turn("handoff:handoff-1"));
+    await user.keyboard("k");
+    expect(document.activeElement).toBe(page.turn("comment:comment-1"));
+  } finally {
+    page.cleanup();
+  }
+});
+
+test("Enter and o open and close a comment's thread with the focus kept on the turn and its reply box standing, and j then walks its replies", async () => {
+  const user = userEvent.setup();
+  const page = await renderTurns(turnLists(), "comment:comment-1");
+  try {
+    const root = page.turn("comment:comment-1");
+    act(() => root.focus());
+    await user.keyboard("{Enter}");
+    expect(within(root).getByRole("button", { name: "Collapse thread" })).toBeTruthy();
+    // The thread's box is drawn, and takes no focus: it is standing.
+    await threadBox(root);
+    expect(document.activeElement).toBe(root);
+
+    await user.keyboard("j");
+    const first = (await within(root).findByText("First answer")).closest("[data-reply]");
+    expect(document.activeElement).toBe(first);
+    expect(first).toHaveAttribute("data-turn-ref", "dispatch://CORE-1/comment/reply-a");
+    // `o` on a reply closes its thread, which takes the reply away: the thread's turn has the
+    // focus.
+    await user.keyboard("o");
+    expect(within(root).getByRole("button", { name: "Expand thread" })).toBeTruthy();
+    expect(document.activeElement).toBe(root);
+    await user.keyboard("o");
+    expect(within(root).getByRole("button", { name: "Collapse thread" })).toBeTruthy();
+    expect(document.activeElement).toBe(root);
+    await user.keyboard("{Enter}");
+    expect(within(root).getByRole("button", { name: "Expand thread" })).toBeTruthy();
+    expect(document.activeElement).toBe(root);
+  } finally {
+    page.cleanup();
+  }
+});
+
+test("r puts the caret in a comment thread's reply box, opening the thread, and Escape in the empty box gives the focus back to the turn and keeps the thread open", async () => {
+  const user = userEvent.setup();
+  const page = await renderTurns(turnLists(), "comment:comment-1");
+  try {
+    const root = page.turn("comment:comment-1");
+    act(() => root.focus());
+    await user.keyboard("r");
+    const box = await threadBox(root);
+    await waitFor(() => expect(box).toHaveFocus());
+    await user.keyboard("{Escape}");
+    expect(document.activeElement).toBe(root);
+    expect(within(root).getByRole("button", { name: "Collapse thread" })).toBeTruthy();
+
+    // From a reply of the open thread `r` reaches the same box, and Escape gives the focus back
+    // to the reply.
+    await user.keyboard("j");
+    const reply = document.activeElement;
+    expect(reply?.hasAttribute("data-reply")).toBe(true);
+    await user.keyboard("r");
+    expect(box).toHaveFocus();
+    await user.keyboard("{Escape}");
+    expect(document.activeElement).toBe(reply);
+    expect(within(root).getByRole("button", { name: "Collapse thread" })).toBeTruthy();
+
+    // A thread the pointer opens keeps its own Escape, which closes it.
+    await user.keyboard("k");
+    await user.keyboard("o");
+    await user.click(within(root).getByRole("button", { name: "Expand thread" }));
+    await waitFor(async () => expect(await threadBox(root)).toHaveFocus());
+    await user.keyboard("{Escape}");
+    expect(within(root).getByRole("button", { name: "Expand thread" })).toBeTruthy();
+  } finally {
+    page.cleanup();
+  }
+});
+
+test("r on a message presses its Reply, and Escape in the composer gives the focus back to the turn", async () => {
+  const user = userEvent.setup();
+  const page = await renderTurns(turnLists(), "message:message-2");
+  try {
+    const reply = page.turn("message:message-2");
+    act(() => reply.focus());
+    await user.keyboard("r");
+    const composer = screen.getByRole("form", { name: "Comment composer" });
+    await waitFor(() => expect(composer.querySelector("[data-reply-box]")).toHaveFocus());
+    expect(within(composer).getByRole("button", { name: "Cancel reply" })).toBeTruthy();
+    await user.keyboard("{Escape}");
+    expect(document.activeElement).toBe(reply);
+    expect(within(composer).queryByRole("button", { name: "Cancel reply" })).toBeNull();
+  } finally {
+    page.cleanup();
+  }
+});
+
+test("y and Shift+Y copy the focused turn's reference and its page address, and on a handoff, which has neither, copy nothing", async () => {
+  const user = userEvent.setup();
+  const originalClipboard = navigator.clipboard;
+  const writeText = spyOn({ writeText: async () => undefined }, "writeText");
+  Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+  const page = await renderTurns(turnLists(), "handoff:handoff-1");
+  try {
+    act(() => page.turn("comment:comment-1").focus());
+    await user.keyboard("y");
+    await waitFor(() =>
+      expect(writeText).toHaveBeenLastCalledWith("dispatch://CORE-1/comment/comment-1")
+    );
+    await user.keyboard("{Shift>}Y{/Shift}");
+    await waitFor(() =>
+      expect(writeText).toHaveBeenLastCalledWith(
+        `${window.location.origin}/issues/CORE-1/comments/comment-1`
+      )
+    );
+    act(() => page.turn("message:message-2").focus());
+    await user.keyboard("y");
+    await waitFor(() =>
+      expect(writeText).toHaveBeenLastCalledWith("dispatch://CORE-1/message/message-2")
+    );
+
+    const handoff = page.turn("handoff:handoff-1");
+    act(() => handoff.focus());
+    const copies = writeText.mock.calls.length;
+    await user.keyboard("y{Shift>}Y{/Shift}");
+    expect(writeText.mock.calls.length).toBe(copies);
+    // Enter opens the handoff's other fold, its fields, and the focus stays on it.
+    await user.keyboard("{Enter}");
+    expect(within(handoff).getByRole("button", { name: "Hide fields" })).toBeTruthy();
+    expect(document.activeElement).toBe(handoff);
+  } finally {
+    page.cleanup();
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: originalClipboard });
+  }
+});
+
+test("Enter on an ask's turn opens its earlier replies, and r on an answered ask puts the caret in its reply box", async () => {
+  const user = userEvent.setup();
+  const replies = ["First", "Second", "Third"].map((body, index) =>
+    comment(`ask-reply-${index + 1}`, {
+      ask_id: "ask-1",
+      author: bob,
+      body: `${body} reply`,
+      created_at: `2026-09-10T09:0${index + 1}:00Z`,
+    })
+  );
+  const answered = askRow(
+    {
+      answer: { at: "2026-09-10T09:00:30Z", selected: ["Ship"], text: null, user: "alice" },
+      state: "answered",
+    },
+    replies
+  );
+  const page = await renderTurns({ asks: [answered], comments: replies }, "ask:ask-1");
+  try {
+    const ask = page.turn("ask:ask-1");
+    expect(ask).toHaveAttribute("data-turn-ref", "dispatch://CORE-1/ask/ask-1");
+    const fold = await within(ask).findByRole("button", { name: "Show 1 earlier reply" });
+    act(() => ask.focus());
+    await user.keyboard("{Enter}");
+    expect(fold).toHaveAttribute("aria-expanded", "true");
+    expect(document.activeElement).toBe(ask);
+    // Each reply is a turn, with its own reference.
+    const drawn = [...ask.querySelectorAll("[data-reply]")];
+    expect(drawn.map((row) => row.getAttribute("data-turn-ref"))).toEqual(
+      expect.arrayContaining(replies.map(({ id }) => `dispatch://CORE-1/comment/${id}`))
+    );
+    expect(drawn).toHaveLength(3);
+
+    await user.keyboard("r");
+    await waitFor(() => expect(document.activeElement?.matches("[data-reply-box]")).toBe(true));
+    expect(ask.contains(document.activeElement)).toBe(true);
+  } finally {
+    page.cleanup();
+  }
+});
+
+test("every comment, reply and message the Conversation draws has its own Copy reference, and a comment's own is drawn once", async () => {
+  const user = userEvent.setup();
+  const page = await renderTurns(turnLists(), "comment:comment-1");
+  try {
+    await user.click(
+      within(page.turn("comment:comment-1")).getByRole("button", { name: "Expand thread" })
+    );
+    await screen.findByText("Second answer");
+    for (const reference of [
+      "message/message-1",
+      "message/message-2",
+      "comment/comment-1",
+      "comment/reply-a",
+      "comment/reply-b",
+    ]) {
+      expect(
+        screen.getAllByRole("button", { name: `Copy reference dispatch://CORE-1/${reference}` })
+      ).toHaveLength(1);
+    }
+    expect(page.turn("handoff:handoff-1").querySelector("[data-copy-ref]")).toBeNull();
+    expect(page.turn("handoff:handoff-1").hasAttribute("data-turn-ref")).toBe(false);
+  } finally {
+    page.cleanup();
+  }
+});
+
+test("the turns' keys stand down while another tab is shown", async () => {
+  const user = userEvent.setup();
+  const page = await renderTurns(turnLists(), "message:message-1", false);
+  try {
+    await user.keyboard("j");
+    expect(document.activeElement).toBe(document.body);
+    act(() => page.turn("comment:comment-1").focus());
+    await user.keyboard("{Enter}");
+    expect(
+      within(page.turn("comment:comment-1")).getByRole("button", { name: "Expand thread" })
+    ).toBeTruthy();
+  } finally {
+    page.cleanup();
   }
 });

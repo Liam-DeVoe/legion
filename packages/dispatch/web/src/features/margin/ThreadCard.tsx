@@ -1,5 +1,5 @@
 import type { MutationKey } from "@tanstack/react-query";
-import type { ReactNode } from "react";
+import { type ReactNode, useContext } from "react";
 import { Link } from "react-router-dom";
 
 import type { Suggestion } from "../../api/types";
@@ -33,6 +33,7 @@ import { useHeldSendsUnder } from "../conversation/held-sends";
 import { MentionComposer } from "../conversation/MentionComposer";
 import { passageItem, ReplyQuote } from "../conversation/ReplyQuote";
 import type { SaveCommentEdit } from "../conversation/send-request";
+import { ConversationTurns, turnFocusRing, turnMarks } from "../conversation/turn-keys";
 import { AgentName } from "../refs/AgentName";
 import { CopyRefButton } from "../refs/CopyRefButton";
 import { MarkdownBody } from "../refs/MarkdownBody";
@@ -106,6 +107,10 @@ export interface ThreadCardProps {
    *  thread's own - so the card's reply composer stays mounted, hidden, keeping an unsent draft
    *  for when that reply ends. */
   hideReplyComposer?: boolean;
+  /** Ends a reply in the card's reply box without closing the thread: where the Conversation
+   *  tab's `r` put the reader in the box, its Escape and its Cancel reply give the focus back to
+   *  the turn `r` was pressed on (`ConversationTab`). Unset, they close the thread. */
+  onReplyCancel?(): void;
   expanded: boolean;
   hovered: boolean;
   isClosed: boolean;
@@ -126,8 +131,12 @@ export interface ThreadCardProps {
    *  and draft, whatever unmounted the last one; and a host that holds its own Replies while one
    *  of its sends is out (the Conversation tab) holds them for this one too. */
   replyMutationKey?: MutationKey;
-  /** Conversation owns the turn-level copy control outside this card. */
-  showReference?: boolean;
+  /** The reply box mounts standing (`MentionComposer`), taking no focus: the Conversation tab's
+   *  Enter or `o` opened the thread, and the focus stays on the turn it was pressed on. */
+  replyStanding?: boolean;
+  /** Whether the card draws its root's Copy reference, beside its preview while collapsed. The
+   *  Conversation tab draws the root's on its own turn instead; every reply draws its own. */
+  showRootReference?: boolean;
   /** Document margins pulse an orphaned block; timeline cards link to the document instead. */
   pulseOrphanBlock?: boolean;
   /** The thread named by the current document URL; it can be selected without expanding on phone. */
@@ -242,15 +251,17 @@ export function ThreadCard({
   onAction,
   onEdit,
   onRetryAction,
+  onReplyCancel,
   onSelect,
   onToggle,
   owner,
   selected = false,
-  showReference = true,
+  showRootReference = true,
   pendingAction,
   pulseOrphanBlock = true,
   renderDeliveries,
   replyMutationKey,
+  replyStanding = false,
   thread,
   viewerLogin,
   editingCommentId: editingId,
@@ -258,8 +269,12 @@ export function ThreadCard({
   onEditingChange: setEditingId,
 }: ThreadCardProps): ReactNode {
   const { focusBlock } = useMargin();
+  const inTab = useContext(ConversationTurns);
   const active = expanded || selected;
   const root = thread.root.comment;
+  // The document that owns a comment on no issue, under which its reference is named.
+  const documentOwner = owner.kind === "document" ? owner : undefined;
+  const rootReference = showRootReference ? itemRoute("comment", root, documentOwner) : undefined;
   const rootSuggestion = root.suggestion;
   const terminalSuggestion = rootSuggestion !== null && rootSuggestion.accepted !== null;
   // The server refuses accept and reject on an orphaned anchor (409 ANCHOR_ORPHANED), so the
@@ -329,9 +344,10 @@ export function ThreadCard({
      no reply, it shows only a reply of its own still out or its refusal, and still sends
      (`finishing`). `contents`, so the composer's own box is the one laid out. It sits next to
      the newest message: under the root in Newest first, at the foot of the thread in Oldest
-     first. */
+     first. `data-thread-reply` tells its box from a comment's edit box, which the Conversation
+     tab's `r` leaves alone. */
   const replyComposer = expanded ? (
-    <div className="contents" hidden={hideReplyComposer}>
+    <div className="contents" data-thread-reply="" hidden={hideReplyComposer}>
       <MentionComposer
         closed={isClosed}
         finishing={terminalSuggestion}
@@ -339,11 +355,12 @@ export function ThreadCard({
         inline
         kind="comment"
         mutationKey={replyMutationKey}
-        onCancelReply={onToggle}
+        onCancelReply={onReplyCancel ?? onToggle}
         onClose={onToggle}
         onSent={() => {}}
         owner={composerOwner(owner)}
         replyTo={{ actor: root.author, excerpt: "", id: root.id, parentKind: "comment" }}
+        standing={replyStanding}
       />
     </div>
   ) : null;
@@ -435,7 +452,7 @@ export function ThreadCard({
                   comment={root}
                   owner={owner}
                   showOrphan
-                  showReference={showReference}
+                  showReference={showRootReference}
                 />
                 {renderDeliveries?.(root)}
               </>
@@ -479,11 +496,12 @@ export function ThreadCard({
                 {shown.map((reply) => (
                   <li
                     aria-current={reply.id === currentReplyId ? "true" : undefined}
-                    className={`rounded-lg p-2 ${card}`}
+                    className={`rounded-lg p-2 ${card} ${inTab ? turnFocusRing : ""}`}
                     data-reply=""
                     key={reply.id}
                     ref={reply === newestReply ? markRead : undefined}
                     style={{ marginLeft: "0px" }}
+                    {...turnMarks(inTab, itemRoute("comment", reply, documentOwner))}
                   >
                     {editing(reply) ? (
                       renderEditor(reply)
@@ -504,7 +522,7 @@ export function ThreadCard({
                           comment={reply}
                           owner={owner}
                           showOrphan={false}
-                          showReference={showReference}
+                          showReference
                         />
                         {renderDeliveries?.(reply)}
                       </>
@@ -518,71 +536,80 @@ export function ThreadCard({
             )}
           </>
         ) : (
-          <button
-            aria-expanded={false}
-            className={`block w-full text-left ${textPrimaryOnSurface}`}
-            onClick={() => {
-              if (
-                pulseOrphanBlock &&
-                thread.anchor?.orphaned &&
-                typeof thread.anchor.block_id === "string"
-              ) {
-                focusBlock(thread.anchor.block_id);
-              }
-              onToggle();
-            }}
-            type="button"
-          >
-            {/* The compact sheet's stylesheet lays every button out inline-flex, so one block
-                wrapper keeps the preview's rows stacked. */}
-            <span className="block w-full">
-              {rootSuggestion !== null && root.anchor !== null ? (
-                <>
-                  {root.anchor.orphaned ? (
-                    <p className={`mb-2 text-xs font-medium ${inlineWarningText}`}>Text changed.</p>
-                  ) : null}
-                  <span className="block space-y-1 font-mono text-xs">
-                    <SuggestionDiff clamp quote={root.anchor.quote} suggestion={rootSuggestion} />
-                  </span>
-                  {root.body === "Suggested replacement." ? null : (
+          // The root's Copy reference sits beside the preview, outside it: the preview is one
+          // button that opens the thread.
+          <div className="flex items-start gap-1">
+            <button
+              aria-expanded={false}
+              className={`block min-w-0 flex-1 text-left ${textPrimaryOnSurface}`}
+              onClick={() => {
+                if (
+                  pulseOrphanBlock &&
+                  thread.anchor?.orphaned &&
+                  typeof thread.anchor.block_id === "string"
+                ) {
+                  focusBlock(thread.anchor.block_id);
+                }
+                onToggle();
+              }}
+              type="button"
+            >
+              {/* The compact sheet's stylesheet lays every button out inline-flex, so one block
+                  wrapper keeps the preview's rows stacked. */}
+              <span className="block w-full">
+                {rootSuggestion !== null && root.anchor !== null ? (
+                  <>
+                    {root.anchor.orphaned ? (
+                      <p className={`mb-2 text-xs font-medium ${inlineWarningText}`}>
+                        Text changed.
+                      </p>
+                    ) : null}
+                    <span className="block space-y-1 font-mono text-xs">
+                      <SuggestionDiff clamp quote={root.anchor.quote} suggestion={rootSuggestion} />
+                    </span>
+                    {root.body === "Suggested replacement." ? null : (
+                      <MarkdownPreview
+                        className={`mt-2 text-xs ${textSecondaryOnSurface}`}
+                        lines={1}
+                        links="live"
+                        markdown={root.body}
+                        source={textSourceOf("comment", root.id)}
+                        tree={root.body_tree}
+                      />
+                    )}
+                  </>
+                ) : (
+                  <>
+                    {root.anchor === null ? null : (
+                      <blockquote
+                        className={`mb-2 border-l-2 pl-2 ${quoteAccentBorder} ${quoteBodyText}`}
+                      >
+                        {root.anchor.quote}
+                      </blockquote>
+                    )}
                     <MarkdownPreview
-                      className={`mt-2 text-xs ${textSecondaryOnSurface}`}
-                      lines={1}
+                      lines={2}
                       links="live"
                       markdown={root.body}
                       source={textSourceOf("comment", root.id)}
                       tree={root.body_tree}
                     />
-                  )}
-                </>
-              ) : (
-                <>
-                  {root.anchor === null ? null : (
-                    <blockquote
-                      className={`mb-2 border-l-2 pl-2 ${quoteAccentBorder} ${quoteBodyText}`}
-                    >
-                      {root.anchor.quote}
-                    </blockquote>
-                  )}
-                  <MarkdownPreview
-                    lines={2}
-                    links="live"
-                    markdown={root.body}
-                    source={textSourceOf("comment", root.id)}
-                    tree={root.body_tree}
-                  />
-                  <Unfurl body={root.body} source={textSourceOf("comment", root.id)} />
-                </>
-              )}
-              {thread.replies.length === 0 ? null : (
-                <p className={`mt-2 text-xs ${textMutedOnSurfaceMuted}`}>
-                  {thread.replies.length} {thread.replies.length === 1 ? "reply" : "replies"} · last
-                  reply{" "}
-                  {thread.lastReplyAt === undefined ? null : <Timestamp at={thread.lastReplyAt} />}
-                </p>
-              )}
-            </span>
-          </button>
+                    <Unfurl body={root.body} source={textSourceOf("comment", root.id)} />
+                  </>
+                )}
+                {thread.replies.length === 0 ? null : (
+                  <p className={`mt-2 text-xs ${textMutedOnSurfaceMuted}`}>
+                    {thread.replies.length} {thread.replies.length === 1 ? "reply" : "replies"} ·
+                    last reply{" "}
+                    {thread.lastReplyAt === undefined ? null : (
+                      <Timestamp at={thread.lastReplyAt} />
+                    )}
+                  </p>
+                )}
+              </span>
+            </button>
+            {rootReference === undefined ? null : <CopyRefButton route={rootReference} />}
+          </div>
         )}
         {composerFirst ? null : replyComposer}
         {expanded ? null : renderDeliveries?.(root)}

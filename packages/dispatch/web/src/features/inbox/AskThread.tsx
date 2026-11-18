@@ -1,6 +1,6 @@
 import type { UseQueryResult } from "@tanstack/react-query";
 import { useQueryClient } from "@tanstack/react-query";
-import { type FormEvent, type ReactNode, useId, useState } from "react";
+import { type FormEvent, type ReactNode, useContext, useId, useState } from "react";
 
 import { type ArtifactOwner, api, type WriteBounds } from "../../api/client";
 import type { Ask, AskRead, Comment, CommentWithTrees, CreateCommentInput } from "../../api/types";
@@ -19,8 +19,11 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { appendToDraft, DraftUploadStatus, useDraftUpload } from "../artifacts/ArtifactUpload";
+import { ConversationTurns, turnFocusRing, turnMarks } from "../conversation/turn-keys";
 import { AgentName } from "../refs/AgentName";
+import { CopyRefButton } from "../refs/CopyRefButton";
 import { MarkdownBody } from "../refs/MarkdownBody";
+import { itemRoute } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
 import { Unfurl } from "../refs/Unfurl";
@@ -40,6 +43,8 @@ export type CreateReply = (
 const createReply: CreateReply = (issueKey, input, bounds) =>
   api.createComment(issueKey, input, bounds);
 
+/** One reply of an ask's thread, with the Copy reference of a reply on an issue. On an issue's
+ *  Conversation tab it is a turn that tab's keys reach (`turn-keys.ts`). */
 function AskReply({
   comment,
   current = false,
@@ -49,12 +54,15 @@ function AskReply({
   current?: boolean;
   markRef?: DwellRef;
 }): ReactNode {
+  const inTab = useContext(ConversationTurns);
+  const reference = itemRoute("comment", comment, undefined);
   return (
     <li
       aria-current={current ? "true" : undefined}
-      className={`rounded-lg p-2 text-sm ${surfaceMutedBg}`}
+      className={`rounded-lg p-2 text-sm ${surfaceMutedBg} ${inTab ? turnFocusRing : ""}`}
       data-reply=""
       ref={markRef}
+      {...turnMarks(inTab, reference)}
     >
       <div className={textPrimaryOnSurfaceMuted}>
         <MarkdownBody
@@ -64,8 +72,11 @@ function AskReply({
         />
       </div>
       <Unfurl body={comment.body} source={textSourceOf("comment", comment.id)} />
-      <p className={`mt-1 text-xs ${textMutedOnSurfaceMuted}`}>
-        <AgentName actor={comment.author} inline /> · <Timestamp at={comment.created_at} />
+      <p className={`mt-1 flex flex-wrap items-center gap-x-1 text-xs ${textMutedOnSurfaceMuted}`}>
+        <span>
+          <AgentName actor={comment.author} inline /> · <Timestamp at={comment.created_at} />
+        </span>
+        {reference === undefined ? null : <CopyRefButton route={reference} />}
       </p>
     </li>
   );

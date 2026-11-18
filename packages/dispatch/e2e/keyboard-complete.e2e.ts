@@ -18,8 +18,10 @@ import {
   createArtifactAsk,
   createAsk,
   createComment,
+  createHandoff,
   createIssue,
   createIssueArtifact,
+  createMessage,
   createProject,
   createProjectDocument,
   editArtifact,
@@ -27,6 +29,7 @@ import {
   getInbox,
   getIssueArtifactText,
   listIssueAsks,
+  markThreadRead,
   patchIssue,
   putRepoProject,
   requestApproval,
@@ -37,7 +40,7 @@ import {
 import { recordClipboard } from "./clipboard";
 import { documentEditor, openSpec, placeCaret } from "./editor";
 import { drawer } from "./inbox-drawer";
-import { inboxPane, paneScroller, selectedRow, selectRow } from "./inbox-pane";
+import { inboxPane, inboxRow, paneScroller, selectedRow, selectRow } from "./inbox-pane";
 import {
   DOCUMENT_FOOT,
   headingOffset,
@@ -2735,14 +2738,11 @@ test("k-approval-keys: in the drawer a approves the request in hand with one pre
 
 // ---------------------------------------------------------------------------
 // k-approval-keys (R7), today's issue page: `a` and Shift+R press the header's Approve and Request
-// changes while the issue's spec has an approval request that waits on the reader, and send
-// nothing while only another document's request waits - the Verification document's, since
+// changes while the issue's spec has an approval request that waits on the reader, send nothing
+// while the focus is on the turn of a question on the Conversation tab (R22's turns take it), and
+// send nothing while only another document's request waits - the Verification document's, since
 // Dispatch refuses an approval request of a plan (`PLAN_APPROVED_BY_REVIEW`, the plan's D1).
 // ---------------------------------------------------------------------------
-
-// t11 (R22): the check's step on the Conversation tab - with the focus on the turn of the first
-// request's question, `a` and Shift+R send nothing - needs a turn that takes the focus, which R22
-// gives the Conversation's turns; it lands here with them.
 
 /** The lines of the `?` help's Issue section. */
 function issueKeyHelp(page: Page): Locator {
@@ -2752,25 +2752,44 @@ function issueKeyHelp(page: Page): Locator {
     .getByRole("listitem");
 }
 
-// SLOW(>=2s): an approval request seeded at version 2, the issue page loaded and one review read
-// back.
-test("k-approval-keys: on today's issue page a approves the spec from the header's Approve and Shift+R opens its Request changes while the spec's request waits on the reader", async ({
+// SLOW(>=2s): an approval request and a question seeded, the issue page loaded on two tabs and
+// one review read back.
+test("k-approval-keys: on today's issue page a approves the spec from the header's Approve and Shift+R opens its Request changes while the spec's request waits on the reader, and on the Conversation tab a question's turn holds both back", async ({
   page,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
   const title = "Ledger handover";
   const approval = await seedApprovalAtVersionTwo("CORE", title);
+  const question = await createAsk(
+    approval.issueKey,
+    { question: "Which ledger does the handover read?" },
+    asker
+  );
   const reviews = watchReviews(page, [approval]);
   const step = (text: string) => `k-approval-keys: the issue page: ${text}`;
   const header = page.getByTestId("issue-header");
   const dialog = page.getByRole("dialog", { name: "Request changes" });
+  const approve = header.getByRole("button", { disabled: false, exact: true, name: "Approve" });
 
+  // On the Conversation tab, with the focus on the question's turn, the reader is on that turn
+  // and not on the header.
   await page.setViewportSize(WIDE);
-  await openIssue(page, approval.issueKey, title);
+  await page.goto(`/issues/${approval.issueKey}/conversation`);
   await expect(
-    header.getByRole("button", { disabled: false, exact: true, name: "Approve" }),
-    step("the header draws the spec's Approve")
+    approve,
+    step("the header draws the spec's Approve on the Conversation tab")
   ).toBeVisible();
+  const questionTurn = page.locator(`#issue-conversation-panel [data-turn="ask:${question.id}"]`);
+  await questionTurn.focus();
+  await expect(questionTurn, step("the question's turn takes the focus")).toBeFocused();
+  await page.keyboard.press("a");
+  await page.keyboard.press("Shift+R");
+  await expect(dialog, step("on the question's turn Shift+R opens nothing")).toHaveCount(0);
+  await expect(questionTurn, step("on the question's turn the focus stays there")).toBeFocused();
+  expect(reviewCount(reviews), step("on the question's turn a and Shift+R send nothing")).toBe(0);
+
+  await openIssue(page, approval.issueKey, title);
+  await expect(approve, step("the header draws the spec's Approve")).toBeVisible();
 
   await page.keyboard.press("Shift+R");
   await expect(dialog, step("Shift+R opens Request changes")).toBeVisible();
@@ -4628,4 +4647,367 @@ test("k-issue-tabs: Escape in the spec the reader edits takes the focus out of t
     (await getIssueArtifactText(seed.key, "spec")).markdown,
     step("the spec's Markdown is as it was")
   ).toBe(before);
+});
+
+// ---------------------------------------------------------------------------
+// k-threads (R22): on an issue's Conversation tab `j` and `k` walk the turns, an open thread's
+// replies among them; Enter and `o` open and close a thread or a fold with the focus kept on the
+// turn; `r` puts the caret in the thread's reply box, and Escape in the empty box gives the focus
+// back; `y` and Shift+Y copy a turn's reference and its web address, and nothing on a handoff.
+// Each comment, reply and message of the issue has a Copy reference that Tab reaches, on the
+// Conversation tab, in the margin of the spec, and in the Inbox's reading pane, cards and drawer.
+// ---------------------------------------------------------------------------
+
+/** The text of k-threads' spec that its comment thread is anchored to. */
+const THREAD_ANCHOR = "The mirror renews the ledger's lease every hour.";
+
+/** k-threads' issue, and the ids of what its conversation holds, each list oldest first. */
+interface ThreadSeed {
+  readonly key: string;
+  readonly title: string;
+  readonly message: string;
+  readonly messageReply: string;
+  readonly comment: string;
+  readonly commentReplies: readonly string[];
+  readonly ask: string;
+  readonly askReplies: readonly string[];
+  readonly handoff: string;
+}
+
+/** An issue of CORE whose conversation holds the reader's message with bob's reply, the reader's
+ *  comment anchored in the spec with three of bob's replies, the reader's question with four of
+ *  them, and a handoff, so the Inbox lists each of the three threads. Each thread is marked read
+ *  through its newest reply: the Inbox and the Conversation then fold the same earlier replies
+ *  from their first draw, and no read mark a row's dwell writes folds one under the keys. */
+async function seedThreads(): Promise<ThreadSeed> {
+  await createProject({ key: "CORE", name: "Core" });
+  const title = "Ledger lease";
+  const issue = await createIssue({
+    project: "CORE",
+    spec: `# ${title}\n\n${THREAD_ANCHOR}\n`,
+    title,
+  });
+  const bob = { login: "bob" };
+  const message = await createMessage(issue.key, { body: "Who holds the ledger's lease?" });
+  const messageReply = await createMessage(
+    issue.key,
+    { body: "The mirror holds it.", in_reply_to: message.id },
+    bob
+  );
+  const comment = await createComment(issue.key, {
+    anchor: { artifact: "spec", quote: THREAD_ANCHOR },
+    body: "Is an hour long enough?",
+  });
+  const commentReplies = [];
+  for (const body of ["First thread reply.", "Second thread reply.", "Third thread reply."]) {
+    commentReplies.push(await createComment(issue.key, { body, reply_to: comment.id }, bob));
+  }
+  const ask = await createAsk(issue.key, { question: "Do we shorten the lease?" });
+  const askReplies = [];
+  for (const body of ["First ask reply.", "Second ask reply.", "Third ask reply.", "Fourth."]) {
+    askReplies.push(await createComment(issue.key, { ask_id: ask.id, body }, bob));
+  }
+  const handoff = await createHandoff(issue.key, "implement", { summary: "The lease renews." });
+  const newestComment = commentReplies.at(-1);
+  const newestAskReply = askReplies.at(-1);
+  if (newestComment === undefined || newestAskReply === undefined) {
+    throw new Error("k-threads: the replies were seeded");
+  }
+  await markThreadRead(message.id, messageReply.created_at);
+  await markThreadRead(comment.id, newestComment.created_at);
+  await markThreadRead(ask.id, newestAskReply.created_at);
+  return {
+    ask: ask.id,
+    askReplies: askReplies.map(({ id }) => id),
+    comment: comment.id,
+    commentReplies: commentReplies.map(({ id }) => id),
+    handoff: handoff.id,
+    key: issue.key,
+    message: message.id,
+    messageReply: messageReply.id,
+    title,
+  };
+}
+
+/** The Conversation tab of `seed`'s issue at 1440x900, every conversation drawn, the focus on
+ *  the page itself; answers the list of its turns. */
+async function openConversation(page: Page, seed: ThreadSeed): Promise<Locator> {
+  await page.setViewportSize(WIDE);
+  await page.goto(`/issues/${seed.key}/conversation`);
+  const turns = page.getByRole("list", { name: "Conversation turns" });
+  for (const turn of [
+    `handoff:${seed.handoff}`,
+    `ask:${seed.ask}`,
+    `comment:${seed.comment}`,
+    `message:${seed.message}`,
+    `message:${seed.messageReply}`,
+  ]) {
+    await expect(turns.locator(`[data-turn="${turn}"]`)).toBeVisible();
+  }
+  await page.locator("body").focus();
+  return turns;
+}
+
+/** The Copy reference names of every comment, reply and message of `seed`'s three threads, by
+ *  thread. */
+function threadCopyNames(seed: ThreadSeed): Record<"ask" | "comment" | "message", string[]> {
+  const name = (kind: "ask" | "comment" | "message", id: string) =>
+    `Copy reference dispatch://${seed.key}/${kind}/${id}`;
+  return {
+    ask: [name("ask", seed.ask), ...seed.askReplies.map((id) => name("comment", id))],
+    comment: [
+      name("comment", seed.comment),
+      ...seed.commentReplies.map((id) => name("comment", id)),
+    ],
+    message: [name("message", seed.message), name("message", seed.messageReply)],
+  };
+}
+
+/** Presses Tab from where the focus is until it has been inside `scope` and left it again, at
+ *  most `TAB_PRESSES` times, and answers the name of each control inside `scope` it stopped on:
+ *  its `aria-label`, else its text. */
+async function tabNames(page: Page, scope: Locator): Promise<string[]> {
+  const names: string[] = [];
+  for (let press = 0; press < TAB_PRESSES; press += 1) {
+    await page.keyboard.press("Tab");
+    // The focus moves inside the Tab press itself, so one read once it returns is settled.
+    const name = await scope.evaluate((root) => {
+      const active = document.activeElement;
+      if (!(active instanceof HTMLElement) || !root.contains(active)) return null;
+      return active.getAttribute("aria-label") ?? active.innerText.trim();
+    });
+    // That settled read says whether the walk is still inside the scope, or has left it.
+    if (name !== null) {
+      names.push(name);
+    } else if (names.length > 0) {
+      break;
+    }
+  }
+  return names;
+}
+
+/** Holds that Tab, walking `scope` from where the focus is, reaches each control `expected`
+ *  names, in `where`. */
+async function expectTabReaches(
+  page: Page,
+  scope: Locator,
+  expected: readonly string[],
+  where: string
+): Promise<void> {
+  const names = await tabNames(page, scope);
+  for (const name of expected) {
+    expect(names, `k-threads: ${where}, Tab reaches ${name}`).toContain(name);
+  }
+}
+
+// SLOW(>=2s): an issue with four conversations and eight replies seeded, the Conversation tab
+// walked by its keys and five copies read back.
+test("k-threads: j and k walk the turns and an open thread's replies, Enter and o open and close a thread with the focus kept on the turn, r reaches its reply box and Escape comes back, and y and Shift+Y copy a turn's reference and address", async ({
+  page,
+}) => {
+  const copied = await recordClipboard(page);
+  const seed = await seedThreads();
+  const step = (text: string) => `k-threads: ${text}`;
+  const turns = await openConversation(page, seed);
+  const turn = (id: string) => turns.locator(`[data-turn="${id}"]`);
+  const askReply = (id: string) =>
+    turns.locator(`[data-reply][data-turn-ref="dispatch://${seed.key}/comment/${id}"]`);
+  const commentTurn = turn(`comment:${seed.comment}`);
+  const replies = commentTurn.locator("[data-reply]");
+  const origin = new URL(page.url()).origin;
+  const lastCopy = async () => (await copied()).at(-1);
+
+  // Newest activity first: the handoff, the question with its two newest replies (the fold holds
+  // the two before them), the comment with its thread closed, the message and its reply.
+  const walk: readonly (readonly [Locator, string])[] = [
+    [turn(`handoff:${seed.handoff}`), "the handoff"],
+    [turn(`ask:${seed.ask}`), "the question"],
+    [askReply(seed.askReplies[2] ?? ""), "the question's third reply"],
+    [askReply(seed.askReplies[3] ?? ""), "the question's fourth reply"],
+    [commentTurn, "the comment"],
+    [turn(`message:${seed.message}`), "the message"],
+    [turn(`message:${seed.messageReply}`), "the message's reply"],
+  ];
+  for (const [row, what] of walk) {
+    await page.keyboard.press("j");
+    await expect(row, step(`j focuses ${what}`)).toBeFocused();
+  }
+  await expect(
+    turns.locator("[data-turn], [data-reply]"),
+    step("j walked every turn and reply the tab draws")
+  ).toHaveCount(walk.length);
+  await page.keyboard.press("k");
+  await expect(turn(`message:${seed.message}`), step("k goes back to the message")).toBeFocused();
+  await page.keyboard.press("k");
+  await expect(commentTurn, step("k goes back to the comment")).toBeFocused();
+
+  // The collapsed comment thread: Enter opens it with the focus kept on the turn, and `j` then
+  // walks its replies.
+  await expect(replies, step("the comment's thread is closed")).toHaveCount(0);
+  await page.keyboard.press("Enter");
+  await expect(replies, step("Enter opens the comment's thread")).toHaveCount(3);
+  await expect(commentTurn, step("Enter keeps the focus on the comment's turn")).toBeFocused();
+  await page.keyboard.press("j");
+  await expect(replies.first(), step("j then focuses the thread's first reply")).toBeFocused();
+  await page.keyboard.press("r");
+  await expect(
+    commentTurn.getByRole("textbox", { name: "Reply" }),
+    step("r on the reply puts the caret in the thread's reply box")
+  ).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(
+    replies.first(),
+    step("Escape in the empty box puts the focus back on the reply")
+  ).toBeFocused();
+  await expect(replies, step("Escape keeps the thread open")).toHaveCount(3);
+  await page.keyboard.press("k");
+  await expect(commentTurn, step("k goes back to the comment's turn")).toBeFocused();
+  await page.keyboard.press("o");
+  await expect(replies, step("o on the thread closes it")).toHaveCount(0);
+  await expect(commentTurn, step("o keeps the focus on the comment's turn")).toBeFocused();
+
+  // `y` and Shift+Y on the comment: its reference and its page's address.
+  await page.keyboard.press("y");
+  await expect
+    .poll(lastCopy, { message: step("y copies the comment's reference") })
+    .toBe(`dispatch://${seed.key}/comment/${seed.comment}`);
+  await page.keyboard.press("Shift+Y");
+  await expect
+    .poll(lastCopy, { message: step("Shift+Y copies the comment's web address") })
+    .toBe(`${origin}/issues/${seed.key}/comments/${seed.comment}`);
+
+  // The handoff: Enter opens its fields, and it has no reference to copy. The next copy, `y` on
+  // the question, is then the first copy since the handoff's keys.
+  const handoff = turn(`handoff:${seed.handoff}`);
+  for (const [row, what] of [...walk.slice(0, 4)].reverse()) {
+    await page.keyboard.press("k");
+    await expect(row, step(`k goes back to ${what}`)).toBeFocused();
+  }
+  await page.keyboard.press("Enter");
+  await expect(
+    handoff.getByRole("button", { name: "Hide fields" }),
+    step("Enter on the handoff opens its fields")
+  ).toBeVisible();
+  await expect(handoff, step("Enter keeps the focus on the handoff")).toBeFocused();
+  const copiesBefore = (await copied()).length;
+  await page.keyboard.press("y");
+  await page.keyboard.press("Shift+Y");
+  await page.keyboard.press("j");
+  await expect(turn(`ask:${seed.ask}`), step("j goes on to the question")).toBeFocused();
+  await page.keyboard.press("y");
+  await expect
+    .poll(async () => (await copied()).slice(copiesBefore), {
+      message: step("y and Shift+Y on the handoff copy nothing, and y on the question copies it"),
+    })
+    .toEqual([`dispatch://${seed.key}/ask/${seed.ask}`]);
+
+  // On the third reply of the comment's thread, `y` copies that reply's reference.
+  for (const [row, what] of walk.slice(2, 5)) {
+    await page.keyboard.press("j");
+    await expect(row, step(`j focuses ${what}`)).toBeFocused();
+  }
+  await page.keyboard.press("Enter");
+  await expect(replies, step("Enter opens the comment's thread again")).toHaveCount(3);
+  await page.keyboard.press("j");
+  await page.keyboard.press("j");
+  await page.keyboard.press("j");
+  await expect(replies.nth(2), step("j focuses the thread's third reply")).toBeFocused();
+  await page.keyboard.press("y");
+  await expect
+    .poll(lastCopy, { message: step("y on the third reply copies its reference") })
+    .toBe(`dispatch://${seed.key}/comment/${seed.commentReplies[2]}`);
+});
+
+// SLOW(>=2s): an issue with four conversations seeded, the Conversation tab and the spec's margin
+// each walked by Tab.
+test("k-threads: each comment, reply and message on the Conversation tab and in the spec's margin has a Copy reference that Tab reaches", async ({
+  page,
+}) => {
+  const seed = await seedThreads();
+  const names = threadCopyNames(seed);
+
+  // The Conversation tab, with the comment's thread and the question's earlier replies open, walked
+  // from its filter, above the turns.
+  const turns = await openConversation(page, seed);
+  await turns
+    .locator(`[data-turn="comment:${seed.comment}"]`)
+    .getByRole("button", { name: "Expand thread" })
+    .click();
+  await turns
+    .locator(`[data-turn="ask:${seed.ask}"]`)
+    .getByRole("button", { name: "Show 2 earlier replies" })
+    .click();
+  await expect(turns.locator("[data-reply]")).toHaveCount(8);
+  await page
+    .getByRole("group", { name: "Conversations" })
+    .getByRole("button", { name: "All" })
+    .click();
+  await expectTabReaches(
+    page,
+    turns,
+    [...names.message, ...names.comment, ...names.ask],
+    "on the Conversation tab"
+  );
+
+  // The spec's margin: the comment's card, open, walked from the text it quotes.
+  await page.goto(`/issues/${seed.key}/spec`);
+  const card = page.locator(`[data-margin-item="${seed.comment}"]`);
+  await expectTabReaches(page, card, [names.comment[0] ?? ""], "on the margin's closed card");
+  await card.getByRole("button", { expanded: false }).click();
+  await expect(card.locator("[data-reply]")).toHaveCount(3);
+  await card.locator("blockquote").first().click();
+  await expectTabReaches(page, card, names.comment, "on the margin's open card");
+});
+
+// SLOW(>=2s): an issue with four conversations seeded, and the Inbox's reading pane, cards and
+// drawer each walked by Tab over its three threads.
+test("k-threads: each comment, reply and message of an issue in the Inbox's reading pane, cards and drawer has a Copy reference that Tab reaches", async ({
+  page,
+}) => {
+  const seed = await seedThreads();
+  const names = threadCopyNames(seed);
+  // Each thread, the fold its older replies are drawn behind, and its Copy reference names.
+  const threads = [
+    [seed.message, undefined, names.message, "the message's thread"],
+    [seed.comment, "Show 1 earlier reply", names.comment, "the comment's thread"],
+    [seed.ask, "Show 2 earlier replies", names.ask, "the question's thread"],
+  ] as const;
+
+  // The reading pane: each thread selected, its fold opened, and its column walked after `l`.
+  await page.setViewportSize(WIDE);
+  await page.goto("/");
+  for (const [thread, fold, expected, what] of threads) {
+    await selectRow(page, replyRowId(thread));
+    if (fold !== undefined) await paneScroller(page).getByRole("button", { name: fold }).click();
+    await inboxRow(page, replyRowId(thread)).locator("time").first().click();
+    await page.keyboard.press("l");
+    await expect(paneScroller(page), `k-threads: l puts the focus in ${what}`).toBeFocused();
+    await expectTabReaches(page, paneScroller(page), expected, `in the reading pane, in ${what}`);
+  }
+
+  // The cards, below the reading pane's width, and the drawer over a project page: each thread's
+  // card, its fold opened, walked from the card's row.
+  for (const place of ["card mode", "the drawer"] as const) {
+    let scope: Locator;
+    if (place === "card mode") {
+      await page.setViewportSize(NARROW);
+      await page.goto("/");
+      scope = page.getByTestId("inbox-list");
+    } else {
+      await page.setViewportSize(WIDE);
+      await page.goto("/projects/CORE");
+      await expect(page.getByRole("button", { exact: true, name: "Board" })).toBeVisible();
+      await page.locator("body").focus();
+      await page.keyboard.press("i");
+      await expect(drawer(page), "k-threads: i opens the drawer").toBeVisible();
+      scope = drawer(page);
+    }
+    for (const [thread, fold, expected, what] of threads) {
+      const row = scope.locator(`[data-inbox-row="${replyRowId(thread)}"]`);
+      if (fold !== undefined) await row.getByRole("button", { name: fold }).click();
+      await row.focus();
+      await expect(row, `k-threads: in ${place}, ${what}'s row takes the focus`).toBeFocused();
+      await expectTabReaches(page, row, expected, `in ${place}, in ${what}`);
+    }
+  }
 });

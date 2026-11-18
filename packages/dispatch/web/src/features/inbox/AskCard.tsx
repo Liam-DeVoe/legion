@@ -885,7 +885,7 @@ export function AskCard({
               <Timestamp at={displayedAsk.created_at} />
             </span>
           </span>
-          {reference === undefined ? null : <CopyRefButton route={reference} />}
+          {reference === undefined ? null : <CopyRefButton item route={reference} />}
           {!handlesOpen ? null : (
             <span className="flex basis-full flex-wrap items-center gap-x-1.5">
               {sessionAuthor === undefined ? null : (

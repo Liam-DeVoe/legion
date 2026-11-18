@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { type ReactNode, useContext } from "react";
 
 import type { Actor, Agent, DeliveryAttemptState, MessageDeliveryMode } from "../../api/types";
 import { heldPress } from "../../components/held-press";
@@ -11,6 +11,7 @@ import {
   textPrimaryOnSurface,
 } from "../../theme/classes";
 import { type AgentPart, AgentParts } from "../refs/AgentName";
+import type { DispatchReferenceRoute } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import type { DwellRef } from "../shell/useDwell";
 import {
@@ -22,6 +23,7 @@ import {
   withGuidance,
 } from "./delivery";
 import { ReplyButton } from "./ReplyButton";
+import { ConversationTurns, turnFocusRing, turnMarks } from "./turn-keys";
 
 /** The current live capabilities behind a stored delivery target - a bare session, or a role
  *  re-resolved to whoever holds it now, since a role's holder can change between a recorded
@@ -290,6 +292,9 @@ interface TargetedMessageCardProps {
   /** Holds the Reply button while the composer it would address is busy with a send. */
   readonly replyHeld?: boolean;
   readonly register?: DwellRef;
+  /** The message's own reference, which the Conversation tab's `y` copies off the card: a
+   *  message to a session that names no issue has none. */
+  readonly reference?: DispatchReferenceRoute;
   readonly retrying?: boolean;
   /** Who the message went to (`DeliveryStatus`). */
   readonly targetName: AgentPart;
@@ -311,20 +316,23 @@ export function TargetedMessageCard({
   onReply,
   onRetry,
   register,
+  reference,
   replyHeld = false,
   retrying = false,
   targetName,
   thread,
   turnID,
 }: TargetedMessageCardProps): ReactNode {
+  const inTab = useContext(ConversationTurns);
   // Narrowed once, so the render below needs no second test of the same condition.
   const retry = answeredBy === undefined && !takenAsUserTurn(deliveries) ? onRetry : undefined;
   return (
     <li
       aria-current={current ? "true" : undefined}
-      className={`my-2 rounded-lg border p-3 ${surfaceMutedHoverBg} ${secondaryButtonBorder}`}
+      className={`my-2 rounded-lg border p-3 ${surfaceMutedHoverBg} ${secondaryButtonBorder} ${inTab ? turnFocusRing : ""}`}
       data-turn={turnID}
       ref={register}
+      {...turnMarks(inTab, reference)}
     >
       <div className="flex gap-3">
         {header}

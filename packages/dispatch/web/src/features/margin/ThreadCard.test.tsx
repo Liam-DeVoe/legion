@@ -12,6 +12,7 @@ import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerThreadReads } from "../../__tests__/send-answers";
 import { api } from "../../api/client";
 import type { Comment } from "../../api/types";
+import { ConversationTurns } from "../conversation/turn-keys";
 import { userPreferenceStorageKey } from "../shell/userPreference";
 import { seedUnread } from "../threads/replies-fixture";
 import { ThreadCard } from "./ThreadCard";
@@ -402,6 +403,104 @@ test("Escape with an empty inline reply collapses the thread", async () => {
     expect(collapsed).toBe(true);
   } finally {
     view.unmount();
+  }
+});
+
+test("a reply box a key opened stands, taking no focus, and its Escape goes where the host says, the thread staying open", async () => {
+  const user = userEvent.setup();
+  let collapsed = false;
+  let cancelled = false;
+  const view = renderCard(undefined, {
+    onReplyCancel: () => {
+      cancelled = true;
+    },
+    onToggle: () => {
+      collapsed = true;
+    },
+    replyStanding: true,
+  });
+  try {
+    const box = await screen.findByLabelText("Reply");
+    expect(box).not.toHaveFocus();
+    await user.click(box);
+    await user.keyboard("{Escape}");
+    expect(cancelled).toBe(true);
+    expect(collapsed).toBe(false);
+  } finally {
+    view.unmount();
+  }
+});
+
+test("every reply draws its own Copy reference, and the root's is drawn only where the host draws none", () => {
+  const name = (id: string) => `Copy reference dispatch://CORE-1/comment/${id}`;
+  const own = renderCard();
+  try {
+    expect(screen.getAllByRole("button", { name: name(root.id) })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: name(reply.id) })).toHaveLength(1);
+  } finally {
+    own.unmount();
+  }
+  const hosted = renderCard(undefined, { showRootReference: false });
+  try {
+    expect(screen.queryByRole("button", { name: name(root.id) })).toBeNull();
+    expect(screen.getAllByRole("button", { name: name(reply.id) })).toHaveLength(1);
+  } finally {
+    hosted.unmount();
+  }
+});
+
+test("a collapsed card draws its root's Copy reference beside its preview, outside the button that opens it", () => {
+  const view = renderCard(undefined, { expanded: false });
+  try {
+    const copy = screen.getByRole("button", {
+      name: `Copy reference dispatch://CORE-1/comment/${root.id}`,
+    });
+    const preview = view.container.querySelector('button[aria-expanded="false"]');
+    expect(preview).not.toBeNull();
+    expect(preview?.contains(copy)).toBe(false);
+  } finally {
+    view.unmount();
+  }
+});
+
+test("on the Conversation tab each reply is a turn its keys reach, and elsewhere no reply takes the focus", async () => {
+  const inTab = render(
+    <ConversationTurns value>
+      <MemoryRouter>
+        <QueryClientProvider client={new QueryClient()}>
+          <EditableCard
+            actionFailure={undefined}
+            artifactSlug="spec"
+            expanded
+            hovered={false}
+            isClosed={false}
+            onAction={() => {}}
+            onEdit={async () => undefined}
+            onRetryAction={() => {}}
+            onToggle={() => {}}
+            owner={{ key: "CORE-1", kind: "issue" }}
+            pendingAction={false}
+            thread={thread()}
+            viewerLogin="alice"
+          />
+        </QueryClientProvider>
+      </MemoryRouter>
+    </ConversationTurns>
+  );
+  try {
+    const row = (await screen.findByText("First reply")).closest("[data-reply]");
+    expect(row).toHaveAttribute("tabindex", "-1");
+    expect(row).toHaveAttribute("data-turn-ref", `dispatch://CORE-1/comment/${reply.id}`);
+  } finally {
+    inTab.unmount();
+  }
+  const margin = renderCard();
+  try {
+    const row = (await screen.findByText("First reply")).closest("[data-reply]");
+    expect(row).not.toHaveAttribute("tabindex");
+    expect(row).not.toHaveAttribute("data-turn-ref");
+  } finally {
+    margin.unmount();
   }
 });
 

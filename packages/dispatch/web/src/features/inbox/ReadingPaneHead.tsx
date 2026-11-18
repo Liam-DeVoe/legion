@@ -216,7 +216,7 @@ export function ReadingPaneHead({
             unsnoozeKeys={unsnoozeKeys}
           />
           {reference === undefined ? null : (
-            <CopyRefButton route={reference} shortcutKeys={copyKeys} />
+            <CopyRefButton item route={reference} shortcutKeys={copyKeys} />
           )}
           {onSkipToAnswer === undefined ? null : (
             <button
@@ -328,7 +328,7 @@ export function ThreadPaneHead({
             <ControlKeyHint keys={openKeys} />
           </Link>
           {reference === undefined ? null : (
-            <CopyRefButton route={reference} shortcutKeys={copyKeys} />
+            <CopyRefButton item route={reference} shortcutKeys={copyKeys} />
           )}
         </div>
         <div className={END_PLACE} data-inbox-head-place="">
