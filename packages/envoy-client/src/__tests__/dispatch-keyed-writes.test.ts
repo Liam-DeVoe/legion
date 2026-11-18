@@ -147,6 +147,47 @@ function hang(signal: AbortSignal | null | undefined): Promise<Response> {
   return promise;
 }
 
+/** A connection Dispatch read the request from and then reset, as Bun 1.4 fails it (measured in
+ *  the review of c5ed36708c, `rr-reset-probe.ts`). */
+const reset = () =>
+  Object.assign(new TypeError("The socket connection was closed"), { code: "ECONNRESET" });
+/** A connection nothing took: Bun 1.4's refused port. */
+const refused = () => Object.assign(new TypeError("Unable to connect"), { code: "ECONNREFUSED" });
+
+/** A credential whose write presentations after the first fail fast, as a broker credential does
+ *  once its token lapsed and the broker is down; the `/healthz` probe's is answered. */
+function failingAfterFirst(): RequestCredential {
+  let presented = 0;
+  return {
+    scheme: "Bearer",
+    headers: (_method, url) => {
+      if (url.endsWith("/healthz")) return { Authorization: "Bearer secret" };
+      presented += 1;
+      if (presented > 1) throw new TradeRetryingError("the secrets broker answered 503");
+      return { Authorization: "Bearer secret" };
+    },
+    secret: () => "secret",
+  };
+}
+
+/** A credential whose write presentations after the first wait until their signal ends, then
+ *  reject with its reason, as a broker credential waiting on a broker that does not answer does. */
+function waitingAfterFirst(): RequestCredential {
+  let presented = 0;
+  return {
+    scheme: "Bearer",
+    headers: (_method, url, _session, signal) => {
+      if (url.endsWith("/healthz")) return { Authorization: "Bearer secret" };
+      presented += 1;
+      if (presented === 1) return { Authorization: "Bearer secret" };
+      const { promise, reject } = Promise.withResolvers<Readonly<Record<string, string>>>();
+      signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+      return promise;
+    },
+    secret: () => "secret",
+  };
+}
+
 const actor = { kind: "session" as const, id: "session-1" };
 const comment = { body: "Shipped.", actor };
 /** What these tests read of a posted comment; the rest of the shape is left out. */
@@ -573,20 +614,83 @@ describe("DispatchClient's writes", () => {
   });
 
   // The last attempt's failure is the client's own error: the URL as `urlForText` names it and the
-  // failure by its class, since the runtime's message repeats the host it dialed (#4140, B1).
-  test("a transport failure on every attempt throws the last one, named by its class", async () => {
-    const { fetchImpl, sent } = scripted(
-      Array.from({ length: 5 }, (_, n) => new TypeError(`fetch failed ${n + 1}`))
-    );
+  // failure by its class, since the runtime's message repeats the host it dialed (#4140, B1). A
+  // Dispatch that is down refuses the connection (`ECONNREFUSED`, as Bun 1.4 names it), which
+  // sends nothing, so no attempt can have landed and the write is told Dispatch is unreachable.
+  test("a refused connection on every attempt throws the last one, named by its class", async () => {
+    const { fetchImpl, sent } = scripted(Array.from({ length: 5 }, () => refused()));
 
     const error = await failure(client(fetchImpl, pacing().retry).comment("DSP-1", comment));
 
     expect(sent).toHaveLength(5);
+    expect(error).not.toBeInstanceOf(DispatchWriteUnsettledError);
     expect(error.message).toBe(
-      "Dispatch at http://dispatch.test is unreachable: TypeError (message withheld). If the " +
+      "Dispatch at http://dispatch.test is unreachable: ECONNREFUSED. If the " +
         "Dispatch URL changed, restart this agent process so it picks up the new configuration."
     );
   });
+
+  // c2 (the review of c5ed36708c): a connection reset after Dispatch read the whole request may
+  // follow a write Dispatch received, and its keyed layer runs that write to its end whatever the
+  // client does, so a reset on every attempt may have landed: unsettled, never "unreachable".
+  test("a connection reset on every attempt leaves the write unsettled", async () => {
+    const { fetchImpl, sent } = scripted(Array.from({ length: 5 }, () => reset()));
+
+    const error = await failure(client(fetchImpl, pacing().retry).comment("DSP-1", comment));
+
+    expect(sent).toHaveLength(5);
+    expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
+    expect(error.message).toStartWith(
+      "POST http://dispatch.test/api/v1/issues/DSP-1/comments failed on its last attempt " +
+        "(Dispatch at http://dispatch.test is unreachable: ECONNRESET."
+    );
+  });
+
+  // c1 and its twin: after a reset the write may have landed, so a credential that then cannot
+  // present is unsettled; after a refused connection nothing went out, so the broker's own error
+  // stands.
+  test.each([
+    ["reset", () => reset(), true],
+    ["refused", () => refused(), false],
+  ] as const)("a credential that fails after a %s connection", async (_, first, unsettled) => {
+    const { fetchImpl } = scripted([first()]);
+    const error = await failure(
+      new DispatchClient("http://dispatch.test", failingAfterFirst(), fetchImpl, {
+        writeRetry: pacing().retry,
+      }).comment("DSP-1", comment)
+    );
+    if (unsettled) {
+      expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
+      expect((error as DispatchWriteUnsettledError).last).toBeInstanceOf(TradeRetryingError);
+    } else {
+      expect(error).toBeInstanceOf(TradeRetryingError);
+    }
+  });
+
+  // c3 and its twin: the same, where the second credential waits out the client's own deadline.
+  test.each([
+    ["reset", () => reset(), true],
+    ["refused", () => refused(), false],
+  ] as const)(
+    "a credential that waits out the deadline after a %s connection",
+    async (_, first, unsettled) => {
+      const { fetchImpl } = scripted([first()]);
+      const error = await failure(
+        new DispatchClient("http://dispatch.test", waitingAfterFirst(), fetchImpl, {
+          writeRetry: pacing().retry,
+          deadlineMs: 300,
+        }).comment("DSP-1", comment)
+      );
+      if (unsettled) {
+        expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
+        expect(error.message).toContain("had no definitive answer when its deadline ended it");
+      } else {
+        expect(error).not.toBeInstanceOf(DispatchWriteUnsettledError);
+        expect(error.name).toBe("TimeoutError");
+      }
+    },
+    10_000
+  );
 
   test("wait a Retry-After longer than the pause, and stop rather than start past 30 s", async () => {
     const { fetchImpl, sent } = scripted([

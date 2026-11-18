@@ -95,6 +95,7 @@ import { errorClass, isCleanUrl, requestForText, urlForText } from "@legion/cont
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import { textHead } from "./ask-answer";
 import { credentialDeadline, type RequestCredential } from "./bearer";
+import { reachedNothing } from "./errors";
 
 /** What names the Dispatch URL in a text where the URL does not parse (`urlForText`,
  *  `requestForText`). The configuration refuses such a URL before a client is made
@@ -283,6 +284,22 @@ export function isNoRoute(error: unknown): boolean {
 export class DispatchNoRouteError extends DispatchServiceError {
   constructor() {
     super("NOT_FOUND", 404, NO_ROUTE_ROLLING_RELEASE_MESSAGE);
+  }
+}
+
+/**
+ * A request that got no answer from Dispatch at the transport, named by the Dispatch URL as
+ * `urlForText` names it and the failure's class (`DispatchClient`'s `#fetch`). `reachedNothing`
+ * says the failure sent nothing to any server (a refused connection, a name that did not resolve):
+ * a write attempt that failed so cannot have landed, where one that failed otherwise (a reset after
+ * Dispatch read the request) may have, since Dispatch runs a keyed write it received to its end.
+ */
+export class DispatchUnreachableError extends Error {
+  constructor(
+    message: string,
+    readonly reachedNothing: boolean
+  ) {
+    super(message);
   }
 }
 
@@ -957,10 +974,13 @@ export class DispatchClient {
           return await fetchImpl(...args);
         } catch (error) {
           // Bun's and undici's fetch reject a request that reached no server with a TypeError; a
-          // deadline or a caller's stop is a DOMException, which passes on unchanged.
+          // deadline or a caller's stop is a DOMException, which passes on unchanged. The error
+          // keeps whether the failure reached nothing at all (`reachedNothing`), which the write
+          // loop reads before the runtime's error is dropped.
           if (error instanceof TypeError) {
-            throw new Error(
-              `Dispatch at ${shown} is unreachable: ${errorClass(error)}. If the Dispatch URL changed, restart this agent process so it picks up the new configuration.`
+            throw new DispatchUnreachableError(
+              `Dispatch at ${shown} is unreachable: ${errorClass(error)}. If the Dispatch URL changed, restart this agent process so it picks up the new configuration.`,
+              reachedNothing(error)
             );
           }
           throw error;
@@ -2242,13 +2262,18 @@ export class DispatchClient {
         }
         thrown = error;
         // A credential that failed sent nothing, so it is no attempt that may have reached
-        // Dispatch; the loop still asks it again on the schedule, as the broker may come back. A
-        // silence cut shows the attempt reached Dispatch, which may still be running it.
-        if (!unpresented) progress.reached = true;
-        if (error instanceof WriteAttemptSilent) {
-          progress.landed = true;
-          progress.running ||= !upload;
+        // Dispatch; the loop still asks it again on the schedule, as the broker may come back. An
+        // attempt that went out may have landed whatever ended it — a silence cut, which Dispatch
+        // may still be running, or a reset after Dispatch read the request — unless its transport
+        // failure says it reached nothing at all (a refused connection, a name that did not
+        // resolve: `DispatchUnreachableError.reachedNothing`).
+        if (!unpresented) {
+          progress.reached = true;
+          if (!(error instanceof DispatchUnreachableError && error.reachedNothing)) {
+            progress.landed = true;
+          }
         }
+        if (error instanceof WriteAttemptSilent) progress.running ||= !upload;
       }
       const scheduled = progress.running
         ? Math.min(pausesMs[attempt - 1] ?? inFlightPauseMs, inFlightPauseMs)

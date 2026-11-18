@@ -5378,6 +5378,10 @@ describe("executeDispatchTool", () => {
     const reset =
       "The socket connection was closed unexpectedly. For more information, pass `verbose: true` " +
       "in the second argument to fetch()";
+    const landedTail =
+      "an attempt of the write may have reached Dispatch, so it may or may not have taken " +
+      "effect. Dispatch finishes an attempt it received whatever this command does, so read " +
+      "the write back before you send it again: a new command sends it under a new key.";
     for (const [message, expected, attempts] of [
       [
         () => gatewayPage(502, "Bad Gateway"),
@@ -5397,18 +5401,21 @@ describe("executeDispatchTool", () => {
             tries,
           ] as const
       ),
+      // A failure with no code the client can read (these fakes throw a plain Error with Bun's
+      // text) is no proof that nothing reached Dispatch, so after it an attempt may have landed
+      // and the write ends unsettled; the reason's account follows as a sentence of its own.
       [
         (): Response => {
           throw new Error(refused);
         },
-        `${refused}${unknownSentence}`,
+        `POST http://dispatch.test/api/v1/issues/ACME-175/messages failed on its last attempt (${refused}) (the last of 5 attempts), and ${landedTail}${unknownSentence}`,
         5,
       ],
       [
         (): Response => {
           throw new Error(reset);
         },
-        `${reset}${unknown}`,
+        `POST http://dispatch.test/api/v1/issues/ACME-175/messages failed on its last attempt (${reset}) (the last of 5 attempts), and ${landedTail}${unknownSentence}`,
         5,
       ],
       [
