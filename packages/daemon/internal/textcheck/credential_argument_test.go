@@ -256,6 +256,13 @@ func TestTheCredentialMatcherCatchesEachSpellingAndPassesAnInputCurlReads(t *tes
 		`        run: .github/scripts/dispatch-browser-reading-rows.sh "${{ steps.download-blobs.conclusion }}" "${{ github.token }}"`,
 		`        run: .github/scripts/publish.sh ${{ secrets.DEPLOY_KEY }}`,
 		`          gh-read.sh --token "${{ github.token }}" jobs`,
+		// An Actions expression is the value of a credential flag as much as a shell variable is:
+		// after --token, -u's password or a body flag, with or without `=`, quoted or not.
+		`          gh api --token ${{ secrets.ADMIN_PAT }} /user`,
+		`          gh-read.sh --token="${{ github.token }}" jobs`,
+		`        run: gh-read.sh --token=${{ github.token }} jobs`,
+		`          curl -u "ci:${{ secrets.REGISTRY_PASSWORD }}" https://registry.internal.example/v2/`,
+		`          curl -d "token=${{ secrets.DISPATCH_TOKEN }}" https://dispatch.internal.example/api`,
 	} {
 		if !credentialArgument(line) {
 			t.Errorf("does not catch a credential given as an argument: %s", line)
