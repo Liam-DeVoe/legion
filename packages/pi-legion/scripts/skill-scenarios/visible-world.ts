@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
 // visible-world.ts: every place in one run's world where its agent could read the name of its
-// scenario, its case or its label, or the word `ablate`, or the path of a label's checkout or of
-// the map. A run measures what its label removes only when its agent cannot learn which label it
-// runs under, nor which case it is in.
+// scenario, its case or its label, the word `ablate`, another run's id, or the path of a label's
+// checkout, of the map or of any other rig work directory's tree. A run measures what its label
+// removes only when its agent cannot learn which label it runs under, nor which case it is in.
 //
 //   bun visible-world.ts <run dir> [--live]
 //
@@ -16,10 +16,19 @@
 //   tree       the path and the bytes of every file under the run's directory (its cwd, HOME,
 //              TMPDIR, stand-ins and fixtures), and the target of every symbolic link there
 //   transcript the files under <run>/sessions: what the agent read and wrote
-//   plugins    the path and the bytes of every file under each directory a link in the run's HOME
-//              points at outside the run (the label's packed plugins)
+//   plugins    the path and the bytes of every file under each place a link of the run points at
+//              outside it (the label's packed plugins, the tools' installs, the native module
+//              cache), read where the host holds what the agent's view shows there; a place the
+//              run's view file holds nothing at is not read
 //   git        the commits, their messages and the refs of each git repository under the run
-//   listing    the names in each directory above the run's directory, up to /
+//   view       every path name in the agent's whole view but under /proc, /sys and /dev: a walk
+//              (find) inside bwrap with the view file the agent ran under (<work>/views/<id>), or
+//              with --live a walk of the running agent's own root (/proc/<pid>/root). Each name is
+//              matched against the terms, and against a map, run or profile tree of a rig work
+//              directory (<w>/maps/runs, <w>/runs/<16 hex digits>, <w>/profiles/<16 hex digits>)
+//              that is not this run's own. A fixed-string filter (grep) of the terms' words passes
+//              the names on, so a walk of hundreds of millions of names keeps find's pace. A hit
+//              names the shortest path that holds its match: a tree that matches is one hit.
 // and with --live, while the run's agent runs:
 //   process    the environment and command line of each process that carries the run's
 //              SKILL_SCENARIO_RUN
@@ -34,18 +43,23 @@
 // the term and the text around it. A label or case that is a plain word (`head`, `facts`) is
 // searched only in the shapes a rig name gives it (`profiles/head`, `skills-head`, `-head-3`), so
 // prose that says "head" is no hit. Exit 0: no hit. Exit 1: hits. Exit 2: a usage error. Exit 3:
-// a channel enumerated nothing it should have (no file under the run, no agent process with
-// --live): the search could not see, and says UNKNOWN rather than clean.
+// no hit, and a channel could not see what it should have (no file under the run, no agent
+// process with --live, a view walk that did not finish, an agent root or a database it could not
+// read): it says UNKNOWN rather than clean.
 import { execFileSync } from "node:child_process";
 import type { Dirent } from "node:fs";
 import {
   existsSync,
+  mkdtempSync,
   readdirSync,
   readFileSync,
   readlinkSync,
   realpathSync,
+  rmSync,
   statSync,
+  writeFileSync,
 } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { ASKGATE_RUN, OWN_HEAD_RUN } from "./score";
 
@@ -54,6 +68,8 @@ interface Term {
   readonly own: boolean;
   readonly pattern: RegExp;
   readonly text: string;
+  /** Fixed strings, lower case, one of which each match holds: the view walk's prefilter. */
+  readonly literals: readonly string[];
 }
 interface Hit {
   readonly channel: string;
@@ -114,12 +130,28 @@ function mapOf(work: string, runDir: string): RunMap {
   return { own, runs, labels, checkouts, maps: path.join(work, "maps") };
 }
 
+/** `word` between two separators, `-` or `_`, as fixed strings: the literals of `[-_]word[-_]`. */
+const separated = (word: string) =>
+  ["-", "_"].flatMap((before) => ["-", "_"].map((after) => `${before}${word}${after}`));
+
 function termsOf(map: RunMap): Term[] {
   const own = map.own;
   const terms: Term[] = [];
-  const add = (kind: string, isOwn: boolean, text: string, pattern: RegExp) => {
+  const add = (
+    kind: string,
+    isOwn: boolean,
+    text: string,
+    pattern: RegExp,
+    literals: readonly string[] = [text]
+  ) => {
     if (!terms.some((term) => term.pattern.source === pattern.source))
-      terms.push({ kind, own: isOwn, text, pattern });
+      terms.push({
+        kind,
+        own: isOwn,
+        text,
+        pattern,
+        literals: literals.map((literal) => literal.toLowerCase()),
+      });
   };
   for (const scenario of new Set(map.runs.map((run) => run.scenario))) {
     if (scenario === "") continue;
@@ -133,7 +165,13 @@ function termsOf(map: RunMap): Term[] {
     if (runCase === "") continue;
     const isOwn = runCase === own?.case;
     if (plainWord(runCase))
-      add("case", isOwn, `-${runCase}-`, new RegExp(`[-_]${escaped(runCase)}[-_]`, "g"));
+      add(
+        "case",
+        isOwn,
+        `-${runCase}-`,
+        new RegExp(`[-_]${escaped(runCase)}[-_]`, "g"),
+        separated(runCase)
+      );
     else add("case", isOwn, runCase, new RegExp(escaped(runCase), "g"));
   }
   for (const label of map.labels) {
@@ -142,10 +180,22 @@ function termsOf(map: RunMap): Term[] {
     add("label", isOwn, `profiles/${label}`, new RegExp(`profiles/${escaped(label)}\\b`, "g"));
     add("label", isOwn, `skills-${label}`, new RegExp(`skills-${escaped(label)}\\b`, "g"));
     add("label", isOwn, `skills${squashed}r`, new RegExp(`skills${escaped(squashed)}r\\d`, "g"));
-    add("label", isOwn, `-${label}-<n>`, new RegExp(`[-_]${escaped(label)}[-_]\\d`, "g"));
+    add(
+      "label",
+      isOwn,
+      `-${label}-<n>`,
+      new RegExp(`[-_]${escaped(label)}[-_]\\d`, "g"),
+      separated(label)
+    );
     if (!plainWord(label)) add("label", isOwn, label, new RegExp(escaped(label), "g"));
   }
   add("word", false, "ablate", /ablate/gi);
+  // Another run's directory name, 16 random hex digits: what the run is called nowhere but there.
+  for (const run of map.runs)
+    if (run.target !== "" && run.target !== own?.target) {
+      const id = path.basename(run.target);
+      add("run", false, id, new RegExp(escaped(id), "g"));
+    }
   for (const { label, checkout } of map.checkouts)
     add("checkout", label === own?.label, checkout, new RegExp(escaped(checkout), "g"));
   add("map", false, map.maps, new RegExp(escaped(map.maps), "g"));
@@ -156,6 +206,8 @@ function termsOf(map: RunMap): Term[] {
 const hits: Hit[] = [];
 const counts = new Map<string, number>();
 const count = (channel: string, n = 1) => counts.set(channel, (counts.get(channel) ?? 0) + n);
+/** Each place a channel could not see, printed as UNKNOWN: with no hit, the exit is 3. */
+const unknowns: string[] = [];
 
 function search(channel: string, where: string, text: string, terms: Term[]) {
   for (const term of terms) {
@@ -219,7 +271,51 @@ function gitRepositories(files: string[]): string[] {
   return [...repos];
 }
 
-function staticWorld(runDir: string, terms: Term[]) {
+/** One mount of a bubblewrap view, in the order bwrap makes them: a bind of `source` (a host path),
+ *  a symbolic link to `link`, or an empty one of its own (a tmpfs, /dev, /proc). */
+interface Mount {
+  readonly dest: string;
+  readonly source?: string;
+  readonly link?: string;
+}
+
+/** The mounts of a view file (<work>/views/<id>, NUL-separated bwrap arguments). */
+function mountsOf(file: string): Mount[] {
+  const args = readFileSync(file, "latin1").split("\0").filter(Boolean);
+  const mounts: Mount[] = [];
+  for (let at = 0; at < args.length; ) {
+    const option = args[at] ?? "";
+    if (["--bind", "--ro-bind", "--dev-bind", "--symlink"].includes(option)) {
+      const [from = "", dest = ""] = args.slice(at + 1, at + 3);
+      mounts.push(option === "--symlink" ? { dest, link: from } : { dest, source: from });
+      at += 3;
+    } else if (["--tmpfs", "--dev", "--proc"].includes(option)) {
+      mounts.push({ dest: args[at + 1] ?? "" });
+      at += 2;
+    } else at += option === "--chdir" ? 2 : 1;
+  }
+  return mounts;
+}
+
+/** Where the host holds `place`, a path of the agent's view: under the source of the last mount
+ *  that covers it, through the view's own links; undefined where the view holds nothing there or
+ *  an empty mount of its own. */
+function hostPath(place: string, mounts: readonly Mount[]): string | undefined {
+  let at = place;
+  for (let hops = 0; hops < 8; hops++) {
+    const mount = mounts.findLast(
+      ({ dest }) => dest === "/" || at === dest || at.startsWith(`${dest}/`)
+    );
+    if (mount === undefined) return undefined;
+    const rest = mount.dest === "/" ? at : at.slice(mount.dest.length);
+    if (mount.source !== undefined) return path.join(mount.source, rest);
+    if (mount.link === undefined) return undefined;
+    at = path.join(path.resolve(path.dirname(mount.dest), mount.link), rest);
+  }
+  return undefined;
+}
+
+function staticWorld(runDir: string, terms: Term[], mounts: readonly Mount[] | undefined) {
   const files: string[] = [];
   const links: string[] = [];
   walk(runDir, files, links);
@@ -257,13 +353,26 @@ function staticWorld(runDir: string, terms: Term[]) {
     search("tree", `${link} (its target)`, target, terms);
     count("links");
     const resolved = path.resolve(path.dirname(link), target);
-    if (!resolved.startsWith(`${runDir}/`) && existsSync(resolved)) outside.add(resolved);
+    if (!resolved.startsWith(`${runDir}/`)) outside.add(resolved);
   }
-  // The label's plugins and every other place a link of the run points at outside it.
+  // The label's plugins and every other place a link of the run points at outside it, read where
+  // the host holds what the agent's view shows there. A place the view does not hold is no part
+  // of the agent's world, and is not read: a link to the operator's home, which mise leaves in a
+  // run's state when it runs there with the operator's config, would read all of it.
+  if (mounts === undefined && outside.size > 0)
+    unknowns.push(
+      `plugins: no view file, so none of ${outside.size} places links point at is read`
+    );
   for (const place of outside) {
+    if (mounts === undefined) break;
+    const host = hostPath(place, mounts);
+    if (host === undefined || !existsSync(host)) {
+      count("links to nothing the view holds");
+      continue;
+    }
     const inner: string[] = [];
-    if (statSync(place).isDirectory()) walk(realpathSync(place), inner, []);
-    else inner.push(place);
+    if (statSync(host).isDirectory()) walk(realpathSync(host), inner, []);
+    else inner.push(host);
     for (const file of inner) {
       searchPath("plugins", file, terms);
       const text = readText(file);
@@ -288,20 +397,151 @@ function staticWorld(runDir: string, terms: Term[]) {
       count("unreadable");
     }
   }
-  for (let dir = path.dirname(runDir); ; dir = path.dirname(dir)) {
-    try {
-      for (const name of readdirSync(dir))
-        search("listing", dir, `${dir}/${name}`.slice(dir.length), terms);
-      count("listing");
-    } catch {
-      count("unreadable");
-    }
-    if (dir === "/") break;
-  }
   return files.length;
 }
 
-function liveWorld(runDir: string, work: string, terms: Term[], map: RunMap): number {
+/** A rig work directory's own trees in a path: its map (<w>/maps/runs, profiles or built-from),
+ *  and a run's or a label's directory (<w>/runs/<id>, <w>/profiles/<id>, <id> 16 hex digits). */
+const WORK_TREE =
+  /\/maps(?=\/(?:runs|profiles|built-from)(?:\/|$))|\/(?:runs|profiles)\/[0-9a-f]{16}(?=\/|$)/g;
+const WORK_TERM: Term = {
+  kind: "work",
+  own: false,
+  text: "a rig work directory's map, run or profile",
+  pattern: WORK_TREE,
+  literals: ["/maps/", "/runs/", "/profiles/"],
+};
+
+/** The walk: every name of the view, each with a leading /, as find prints it with -printf
+ *  '/%P\0', through a fixed-string filter of the literals (case-insensitive, in the C locale), on
+ *  stdout; find's own count of names (one NUL each, counted on a FIFO beside the filter), its
+ *  errors and each stage's status in the directory $1. $2 is `view`, a walk inside bwrap with the
+ *  view file $3, or `root`, a walk under the directory $3 (an agent's /proc/<pid>/root). */
+const WALK = `set -o pipefail
+out=$1 mode=$2 where=$3
+if [ "$mode" = view ]; then
+  walk() { bwrap --args 3 -- find / \\( -path /proc -o -path /sys -o -path /dev \\) -prune -o -printf '/%P\\0' 3<"$where"; }
+else
+  walk() { find "$where/" \\( -path "$where/proc" -o -path "$where/sys" -o -path "$where/dev" \\) -prune -o -printf '/%P\\0'; }
+fi
+mkfifo "$out/names"
+tr -dc '\\000' <"$out/names" | wc -c >"$out/count" &
+counter=$!
+walk 2>"$out/errors" | tee "$out/names" | LC_ALL=C grep -zFi -f "$out/literals"
+printf '%s\\n' "\${PIPESTATUS[@]}" >"$out/status"
+wait "$counter"
+`;
+
+/** find's own words for a name the walk could not enter, which the agent cannot read either, or
+ *  that went between the listing and the read. Any other line on its stderr, a bwrap error among
+ *  them, means the walk did not see the whole view. */
+const WALK_NOTE =
+  /^find: .*: (Permission denied|No such file or directory)$|^find: File system loop detected;/;
+
+/**
+ * The view channel: every name of the agent's whole view, walked as `source` says, matched
+ * against each term and against another rig work directory's tree (WORK_TREE), but for the run's
+ * own trees, `own`. A hit names the shortest path that holds its match, once per term. The walk
+ * must reach the run's own directory, which every view holds: a walk that did not, or did not
+ * finish, is UNKNOWN.
+ */
+async function viewWorld(
+  runDir: string,
+  terms: Term[],
+  own: readonly string[],
+  source: { readonly mode: "view" | "root"; readonly where: string }
+) {
+  const out = mkdtempSync(path.join(tmpdir(), "visible-world-"));
+  try {
+    const literals = new Set(WORK_TERM.literals);
+    for (const term of terms) for (const literal of term.literals) literals.add(literal);
+    writeFileSync(path.join(out, "literals"), `${[...literals].join("\n")}\n`);
+    const walk = Bun.spawn(["bash", "-c", WALK, "-", out, source.mode, source.where], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const matchers = [...terms, WORK_TERM];
+    const seen = new Set<string>();
+    let candidates = 0;
+    let reachedRun = false;
+    const consider = (name: string) => {
+      candidates++;
+      if (name === runDir) reachedRun = true;
+      const lower = name.toLowerCase();
+      for (const term of matchers) {
+        if (!term.literals.some((literal) => lower.includes(literal))) continue;
+        for (const match of name.matchAll(term.pattern)) {
+          const at = match.index ?? 0;
+          const end = at + match[0].length;
+          const cut = term === WORK_TERM ? end : name.indexOf("/", end);
+          const where = cut === -1 ? name : name.slice(0, cut);
+          if (term === WORK_TERM && own.includes(where)) continue;
+          const key = `${term.kind}\0${term.text}\0${where}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          const context = where.slice(Math.max(0, at - 60), end + 60).replace(/[^\x20-\x7e]/g, " ");
+          hits.push({ channel: "view", where, term, context });
+        }
+      }
+    };
+    let rest = Buffer.alloc(0);
+    for await (const chunk of walk.stdout) {
+      const buffer = rest.length === 0 ? Buffer.from(chunk) : Buffer.concat([rest, chunk]);
+      let start = 0;
+      for (let end = buffer.indexOf(0, start); end !== -1; end = buffer.indexOf(0, start)) {
+        consider(buffer.toString("latin1", start, end));
+        start = end + 1;
+      }
+      rest = buffer.subarray(start);
+    }
+    const shell = (await new Response(walk.stderr).text()).trim();
+    const exit = await walk.exited;
+    const read = (name: string) => {
+      try {
+        return readFileSync(path.join(out, name), "utf8");
+      } catch {
+        return "";
+      }
+    };
+    const [walked = "", tee = "", filter = ""] = read("status").trim().split("\n");
+    const names = Number(read("count").trim() || "0");
+    const errors = read("errors").split("\n").filter(Boolean);
+    const other = errors.filter((line) => !WALK_NOTE.test(line));
+    count("view names", names);
+    count("view names past the filter", candidates);
+    count("view names it could not enter", errors.length - other.length);
+    const why =
+      exit !== 0
+        ? `the walk's shell exited ${exit}${shell ? `: ${shell.split("\n")[0]}` : ""}`
+        : !["0", "1"].includes(walked)
+          ? `the walk exited ${walked || "with no status"}`
+          : tee !== "0"
+            ? `its tee exited ${tee}`
+            : !["0", "1"].includes(filter)
+              ? `its filter exited ${filter}`
+              : other.length > 0
+                ? `the walk said: ${other[0]}`
+                : !reachedRun
+                  ? `the walk of ${names} names never reached the run's own directory ${runDir}`
+                  : "";
+    if (why !== "") unknowns.push(`view (${source.mode} ${source.where}): ${why}`);
+    else
+      console.log(
+        `view: walked all ${names} names of the agent's view (${source.mode} ${source.where}), ${errors.length - other.length} it could not enter`
+      );
+  } finally {
+    rmSync(out, { recursive: true, force: true });
+  }
+}
+
+/** The live channels; returns how many processes carry the run's SKILL_SCENARIO_RUN, and the pid
+ *  of its agent among them. */
+function liveWorld(
+  runDir: string,
+  work: string,
+  terms: Term[],
+  map: RunMap
+): { agents: number; agent: string | undefined } {
   const marker = `SKILL_SCENARIO_RUN=${runDir}\0`;
   const pids = readdirSync("/proc").filter((pid) => {
     if (!/^\d+$/.test(pid)) return false;
@@ -354,7 +594,7 @@ function liveWorld(runDir: string, work: string, terms: Term[], map: RunMap): nu
         }
       }
     } catch {
-      console.log(`UNKNOWN visible: cannot read ${root}/proc`);
+      unknowns.push(`visible: cannot read ${root}/proc`);
     }
     const names: string[] = [];
     const list = (dir: string, depth: number) => {
@@ -435,13 +675,13 @@ function liveWorld(runDir: string, work: string, terms: Term[], map: RunMap): nu
         search("dispatch", `database ${database}`, dump, terms);
         count("dispatch bytes", dump.length);
       } catch (error) {
-        console.log(
-          `UNKNOWN dispatch: pg_dump of ${database} failed: ${error instanceof Error ? error.message.split("\n")[0] : error}`
+        unknowns.push(
+          `dispatch: pg_dump of ${database} failed: ${error instanceof Error ? error.message.split("\n")[0] : error}`
         );
       }
     }
   }
-  return pids.length;
+  return { agents: pids.length, agent };
 }
 
 if (import.meta.main) {
@@ -463,8 +703,28 @@ if (import.meta.main) {
   console.log(
     `run ${map.own.name} (${runDir}): scenario ${map.own.scenario}, case ${map.own.case || "none"}, label ${map.own.label}; ${terms.length} terms from ${map.runs.length} runs and ${map.labels.length} labels`
   );
-  const files = staticWorld(runDir, terms);
-  const agents = live ? liveWorld(runDir, work, terms, map) : -1;
+  const viewFile = path.join(work, "views", path.basename(runDir));
+  const files = staticWorld(runDir, terms, existsSync(viewFile) ? mountsOf(viewFile) : undefined);
+  const seen = live ? liveWorld(runDir, work, terms, map) : undefined;
+  // The trees of its own that the run's view holds: its directory and its label's profile.
+  const own = [runDir];
+  try {
+    own.push(realpathSync(path.join(work, "maps", "profiles", map.own.label)));
+  } catch {
+    // A label whose profile was removed: the view walk then names any profile it sees.
+  }
+  if (seen !== undefined) {
+    if (seen.agent !== undefined)
+      await viewWorld(runDir, terms, own, { mode: "root", where: `/proc/${seen.agent}/root` });
+    else if (seen.agents > 0)
+      unknowns.push(
+        `view: none of the run's ${seen.agents} processes runs omp, so no walk of its view`
+      );
+  } else {
+    if (existsSync(viewFile))
+      await viewWorld(runDir, terms, own, { mode: "view", where: viewFile });
+    else unknowns.push(`view: no view file ${viewFile}, so no walk of the agent's view`);
+  }
   for (const hit of hits)
     console.log(
       `${hit.channel}\t${hit.where}\t${hit.term.kind}${hit.term.own ? " (own)" : ""}\t${hit.term.text}\t…${hit.context}…`
@@ -475,15 +735,11 @@ if (import.meta.main) {
   console.log(
     `hits: ${hits.length}${hits.length ? ` (${[...byChannel].map(([c, n]) => `${c} ${n}`).join(", ")})` : ""}`
   );
-  if (files === 0) {
-    console.log(`UNKNOWN: read no file under ${runDir}`);
-    process.exit(3);
-  }
-  if (live && agents === 0) {
-    console.log(
-      `UNKNOWN: no process carries SKILL_SCENARIO_RUN=${runDir}: run --live while its agent runs`
+  if (files === 0) unknowns.push(`tree: read no file under ${runDir}`);
+  if (seen?.agents === 0)
+    unknowns.push(
+      `process: no process carries SKILL_SCENARIO_RUN=${runDir}: run --live while its agent runs`
     );
-    process.exit(3);
-  }
-  process.exit(hits.length === 0 ? 0 : 1);
+  for (const why of unknowns) console.log(`UNKNOWN ${why}`);
+  process.exit(hits.length > 0 ? 1 : unknowns.length > 0 ? 3 : 0);
 }

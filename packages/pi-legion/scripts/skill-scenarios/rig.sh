@@ -227,16 +227,19 @@
 #     run through `mise exec` bypasses the stand-in and goes unrecorded. Every container and tmux
 #     session a work directory starts carries the directory's digest in its name.
 #   - Its agent runs under bubblewrap (launch), in a PID namespace of its own, so it sees no other
-#     process, and with an empty <work> but for its run's directory, its label's plugins and the
-#     batch's services, so it sees neither the map nor another run or label. It can still read the
-#     rest of the filesystem, the operator's home included, and write the machine's /tmp, which
-#     nothing here cleans. score.ts does not score a run that reads
-#     a skill file outside its own label or a file of another label's checkout, or whose PR body
-#     carries another run's line (unscored, testerProof). It flags, and still scores, a run whose
-#     tool calls only name such a skill file or checkout (skillReaches), or name a path outside its
-#     work directory, its label's checkout and the system locations (outsideReaches): a flag shows
-#     the path was named, not that it was read. A path a call reaches without naming it, as a
-#     glob from `/` does, is not caught.
+#     process, and in a view that holds only what it runs (agent_view): the system's /usr and /etc,
+#     its run's directory with the run's own tmp at /tmp, its label's plugins and model key, the
+#     batch's services, and the installs of the tools it runs. So it sees neither the map nor
+#     another run, label or work directory, no label's checkout, and nothing of the operator's home
+#     or the disks but those installs: a reviewer that searched the whole machine (`find / -name …`)
+#     read the skills of another label's profile in an older work directory, and of the operator's
+#     own plugins. visible-world.ts walks every name of the view. score.ts does not score a run
+#     that reads a skill file outside its own label or a file of another label's checkout, or whose
+#     PR body carries another run's line (unscored, testerProof). It flags, and still scores, a run
+#     whose tool calls only name such a skill file or checkout (skillReaches), or name a path
+#     outside its work directory, its label's checkout and the system locations (outsideReaches): a
+#     flag shows the path was named, not that it was read. A path a call reaches without naming
+#     it, as a glob from `/` does, is not caught.
 #   - An exit stops what its command started (on_exit, stop_run, stop_batch).
 #
 # A spec run (run_spec) is a conversation of at most 8 turns. Turn 1 is the prompt. After each turn,
@@ -663,6 +666,159 @@ EOF
   [ -f "$R/fixtures.json" ] || printf '{"routes":[]}\n' >"$R/fixtures.json"
 }
 
+# view_bind MODE SOURCE [DEST] adds SOURCE to the agent's view at DEST (SOURCE's own path when none
+# is given), MODE --ro-bind or --bind, and records SOURCE in `bound`: the arrays of agent_view's
+# caller, launch.
+view_bind() {
+  view+=("$1" "$2" "${3:-$2}")
+  bound+=("$2")
+}
+
+# view_tool NAME PATH DATA gives the agent's shell the tool NAME: its first match on PATH (the
+# pane's) that is the run's own, the system's (under /usr, where /bin, /sbin and /lib lead) or in a
+# mise install, <DATA>/installs/<tool>/<version> (DATA the pane's MISE_DATA_DIR). A mise install
+# binds whole, at the path PATH names, since a tool's links and libraries sit beside its binary,
+# and the run's bin links NAME to it: `mise x`, which runs the agent, takes every mise install but
+# the pin's off the agent's PATH, and the run's bin stays first on it. Any other match is not in
+# the view, and the search goes on past it: a wrapper in the operator's home, or a mise shim, which
+# resolves the tool from the operator's own mise config. No match gives nothing.
+view_tool() {
+  local name=$1 data=$3 dir dirs found real tool version install
+  IFS=: read -ra dirs <<<"$2"
+  for dir in "${dirs[@]}"; do
+    found=$dir/$name
+    [ -f "$found" ] && [ -x "$found" ] || continue
+    case $found in "$R"/*) return 0 ;; esac
+    real=$(realpath -e -- "$found") || continue
+    case $real in /usr/* | /bin/* | /sbin/* | /lib/* | /lib32/* | /lib64/* | /libx32/*) return 0 ;; esac
+    [ -n "$data" ] || continue
+    case $dir/ in "$data"/installs/*/*/*) ;; *) continue ;; esac
+    tool=${dir#"$data"/installs/}
+    version=${tool#*/}
+    install=$data/installs/${tool%%/*}/${version%%/*}
+    case $real in "$(realpath -e -- "$install")"/*) ;; *) continue ;; esac
+    view_bind --ro-bind "$(realpath -e -- "$install")" "$install"
+    mkdir -p "$R/bin"
+    ln -sfn -- "$found" "$R/bin/$name"
+    return 0
+  done
+}
+
+# provider_key_file MODELS prints the file that the provider route's models.yml (MODELS, JSON, as
+# install_provider_route writes it) reads its key from with `!cat <file>`, and nothing for a
+# models.yml of another route.
+provider_key_file() {
+  local key
+  key=$(jq -r '[.providers[].apiKey] | first // empty' "$1" 2>/dev/null) || key=
+  case $key in '!cat '*) printf '%s\n' "${key#'!cat '}" ;; esac
+}
+
+# key_command_file COMMAND prints the key file that a key-file route's key command
+# (install-key-file-model-route.sh) reads on each call: its `key_file=` line assigns the path with
+# printf %q, so the line is read as bash reads it.
+key_command_file() {
+  bash -c "$(grep -m1 '^key_file=' "$1")"$'\nprintf %s "$key_file"'
+}
+
+# fresh_gateway_key makes the gateway route's kept key good past the run's deadline. The route's
+# key command, <P>/key/hawk-token (install-model-gateway.sh), serves the key it keeps in <P>/cache
+# and mints one with hawk-token when none is good, and hawk-token needs the operator's HOME and
+# session bus, which no agent's view holds. So the key is minted here, on the host, and the agent's
+# key command serves it from its read-only view of the cache. A kept key that expires before the
+# run's deadline is dropped and minted once more, as judge_keys does for a judge.
+fresh_gateway_key() {
+  local cache=$P/cache/hawk-token.key kept_until='' deadline=$((EPOCHSECONDS + ${SKILL_SCENARIOS_TIMEOUT:-1500}))
+  "$P/key/hawk-token" >/dev/null || fail "the gateway's key command gave no key; see $P/key/hawk-token.log"
+  [ ! -s "$cache" ] || read -r kept_until _ <"$cache"
+  [ "${kept_until:-0}" -lt "$deadline" ] || return 0
+  rm -f -- "$cache"
+  "$P/key/hawk-token" >/dev/null || fail "the gateway's key command gave no key; see $P/key/hawk-token.log"
+  kept_until=''
+  [ ! -s "$cache" ] || read -r kept_until _ <"$cache"
+  [ "${kept_until:-0}" -ge "$deadline" ] ||
+    fail "the gateway's key command keeps its key until ${kept_until:-no time}, before the run's deadline $deadline, and an agent's key command cannot mint one in its view"
+}
+
+# agent_view OMP MISE fills launch's `view` with the bubblewrap arguments of the agent's view: an
+# empty root, and in it only what the agent runs.
+#   - The system, read-only: /usr, the links at / that lead into it (or the directories, on a
+#     system that keeps them apart), /etc, and the directory of each file outside both that a link
+#     of /etc names (resolv.conf's, under /run). A /dev of its own, its PID namespace's /proc, and
+#     an empty /dev/shm and /var/tmp, since the machine's are every run's.
+#   - The run's directory, writable, with its own tmp at /tmp: in the third round 27 agents wrote
+#     scratch files to the machine's /tmp under fixed names (`/tmp/lweval1_review.json` by five),
+#     which another run could read.
+#   - The label's packed plugins and model key and the batch's services, read-only, and none of
+#     the profile's own records (checkout, built-from), which name the label's checkout.
+#   - The key the model route reads, read-only: the directory of the provider route's `!cat <file>`
+#     in the run's models.yml (the directory, so a key the operator renews by writing a new file in
+#     its place still reaches the agent), the key file of the key-file route's key command, and the
+#     gateway route's kept key (fresh_gateway_key).
+#   - The tools it runs: OMP's install, which MISE (run by its path) runs as the pin; MISE and the
+#     bun the stand-ins run; the native module cache the run's HOME links to (make_omp_home),
+#     writable, since omp extracts its own version's addon there when another session has pruned
+#     it; and the install of each of agent_tools on the pane's PATH (view_tool). The agents' shells
+#     are seen to run jj, jq, git and python3 (the eval tool's kernel among them) beyond the
+#     system's own commands.
+# It fails when a label's checkout holds a path the view binds, or lies under one.
+agent_view() {
+  local omp=$1 mise=$2 dir link target key_file record checkout pane_path data tool agent_tools=(git jj jq python3)
+  view_bind --ro-bind /usr
+  for dir in /bin /sbin /lib /lib32 /lib64 /libx32; do
+    if [ -L "$dir" ]; then
+      view+=(--symlink "$(readlink -- "$dir")" "$dir")
+    elif [ -d "$dir" ]; then
+      view_bind --ro-bind "$dir"
+    fi
+  done
+  view_bind --ro-bind /etc
+  for link in /etc/*; do
+    [ -L "$link" ] || continue
+    target=$(realpath -e -- "$link" 2>/dev/null) || continue
+    case $target in /etc/* | /usr/* | /proc/* | /dev/*) ;; *) view_bind --ro-bind "$(dirname -- "$target")" ;; esac
+  done
+  view+=(--dev /dev --tmpfs /dev/shm --proc /proc --tmpfs /var/tmp)
+  view_bind --bind "$R"
+  view_bind --bind "$R/tmp" /tmp
+  for dir in "$P/pi-envoy" "$P/pi-legion" "$P/model-key" "$P/key" "$work/services"; do
+    [ ! -e "$dir" ] || view_bind --ro-bind "$dir"
+  done
+  key_file=$(provider_key_file "$R/home/.omp/profiles/$profile/agent/models.yml")
+  case $key_file in
+  '') ;;
+  /*) view_bind --ro-bind "$(dirname -- "$key_file")" ;;
+  *) fail "the run's models.yml reads its key with \`!cat $key_file\`, not from an absolute path" ;;
+  esac
+  if [ -f "$P/model-key/anthropic-key" ]; then
+    key_file=$(key_command_file "$P/model-key/anthropic-key")
+    [ -f "$key_file" ] || fail "the key command $P/model-key/anthropic-key names '$key_file', which is not a file"
+    view_bind --ro-bind "$key_file"
+  fi
+  if [ -x "$P/key/hawk-token" ]; then
+    fresh_gateway_key
+    view_bind --ro-bind "$P/cache"
+  fi
+  dir=$(dirname -- "$(dirname -- "$omp")")
+  view_bind --ro-bind "$(realpath -e -- "$dir")" "$dir"
+  view_bind --ro-bind "$mise"
+  target=$(bun -e 'console.log(process.execPath)') || fail "cannot run the bun this script runs on, which the run's stand-ins run"
+  target=$(realpath -e -- "$target") || fail "the bun this script runs on, $target, is no file"
+  view_bind --ro-bind "$target"
+  link=$R/home/.omp/natives
+  if [ -L "$link" ] && target=$(realpath -e -- "$link"); then view_bind --bind "$target" "$(readlink -- "$link")"; fi
+  pane_path=$(sed -n 's/^PATH=//p' "$R/pane.env" | tail -n 1)
+  data=$(sed -n 's/^MISE_DATA_DIR=//p' "$R/pane.env" | tail -n 1)
+  for tool in "${agent_tools[@]}"; do view_tool "$tool" "$pane_path" "$data"; done
+  for record in "$maps"/profiles/*/checkout; do
+    [ -f "$record" ] || continue
+    checkout=$(<"$record")
+    for dir in "${bound[@]}"; do
+      case $dir/ in "$checkout"/*) fail "label checkout $checkout holds $dir, which the agent's view binds" ;; esac
+      case $checkout/ in "$dir"/*) fail "label checkout $checkout is under $dir, which the agent's view binds" ;; esac
+    done
+  done
+}
+
 # launch [OMP_ARG]... runs `omp -p "$(cat $R/prompt.txt)"` and then each OMP_ARG in $R/cwd under
 # $R/pane.env, followed by $R/system-args (one --append-system-prompt argument, as shell text) when
 # it exists, as the tmux session <tag>-<id>, <id> the name of the run's directory. It waits for the
@@ -670,37 +826,23 @@ EOF
 # so this wait is not an until_true. A spec run's later turn passes --continue. Each launch starts
 # out.txt again, so its wait reads only its own exit line.
 launch() {
-  local system='' extra='' omp scope bwrap memory_max=${SKILL_SCENARIOS_MEMORY_MAX:-8G} view dir record checkout
+  local system='' extra='' omp mise scope bwrap memory_max=${SKILL_SCENARIOS_MEMORY_MAX:-8G} view=() bound=()
   omp=$(pinned_omp "$pin") || exit 1
+  mise=$(command -v mise) || fail "mise is not on PATH: a run's agent runs its pin through \`mise x\`"
+  mise=$(realpath -e -- "$mise") || fail "mise on PATH, $mise, is no file"
   # The agent runs in a systemd user scope of its own, capped at SKILL_SCENARIOS_MEMORY_MAX (8G)
   # with no swap: an agent that grows past it is killed alone (exit 137 in out.txt), and never
   # the caller's session, whose scope a run's processes would otherwise share.
   scope=$(command -v systemd-run) || fail "systemd-run is not on PATH: a run's agent runs in a capped user scope"
   # And under bubblewrap, in a PID namespace of its own, where it sees no process but its own (not
-  # the batch's command line, which names its labels), and with <work> an empty tmpfs but for the
-  # run's directory, the label's plugins and model key, and the batch's services: no map, no other
-  # run, and none of the profile's own records (checkout, built-from), which name the label's
-  # checkout. Its /tmp is the run's own $R/tmp, and /var/tmp and /dev/shm are empty: the machine's
-  # are shared by every run, and in the third round 27 agents wrote scratch files there under fixed
-  # names (`/tmp/lweval1_review.json` by five), which another run could read. Every label's
-  # checkout is an empty tmpfs too, so no agent reads another label's texts by a path no tool call
-  # names (`find / -name …`): it runs from its label's packed plugins alone. The view lists every
-  # label's checkout, so bwrap reads it from <work>/views/<id> (--args), which the agent's tmpfs on
-  # <work> hides, and neither launch.sh nor bwrap's own command line, which the agent's /proc shows
-  # as its process 1, holds it. bwrap reaches the namespaces through the user namespace AppArmor
-  # lets it make.
-  bwrap=$(command -v bwrap) || fail "bwrap is not on PATH: a run's agent runs in a PID namespace and a view of <work> of its own"
-  view=(--dev-bind / / --tmpfs "$work" --bind "$R" "$R" --bind "$R/tmp" /tmp --tmpfs /var/tmp --tmpfs /dev/shm)
-  for record in "$maps"/profiles/*/checkout; do
-    [ -f "$record" ] || continue
-    checkout=$(<"$record")
-    case $R/ in "$checkout"/*) fail "label checkout $checkout holds the run's directory $R" ;; esac
-    [ ! -d "$checkout" ] || view+=(--tmpfs "$checkout")
-  done
-  for dir in "$P/pi-envoy" "$P/pi-legion" "$P/model-key" "$P/key" "$work/services"; do
-    [ ! -e "$dir" ] || view+=(--ro-bind "$dir" "$dir")
-  done
-  view+=(--unshare-pid --proc /proc --die-with-parent --chdir "$R/cwd")
+  # the batch's command line, which names its labels), in a view that holds only what it runs
+  # (agent_view). bwrap reads the view from <work>/views/<id> (--args), which the view does not
+  # hold and visible-world.ts walks, and neither launch.sh nor bwrap's own command line, which the
+  # agent's /proc shows as its process 1, lists it. bwrap reaches the namespaces through the user
+  # namespace AppArmor lets it make.
+  bwrap=$(command -v bwrap) || fail "bwrap is not on PATH: a run's agent runs in a PID namespace and a view of its own"
+  agent_view "$omp" "$mise"
+  view+=(--unshare-pid --die-with-parent --chdir "$R/cwd")
   mkdir -p "$work/views"
   printf '%s\0' "${view[@]}" >"$work/views/${R##*/}"
   session=$tag-${R##*/}
@@ -710,7 +852,7 @@ launch() {
 #!/usr/bin/env bash
 cd $(printf %q "$R/cwd")
 mapfile -t vars <$(printf %q "$R/pane.env")
-exec $(printf %q "$scope") --user --scope --quiet -p MemoryMax=$(printf %q "$memory_max") -p MemorySwapMax=0 -- $(printf %q "$bwrap") --args 3 -- env -i "\${vars[@]}" mise x $(printf %q "$pin") -- $(printf %q "$omp") -p "\$(cat $(printf %q "$R/prompt.txt"))"$extra$system --session-dir $(printf %q "$R/sessions") 3<$(printf %q "$work/views/${R##*/}") >$(printf %q "$R/out.txt") 2>&1
+exec $(printf %q "$scope") --user --scope --quiet -p MemoryMax=$(printf %q "$memory_max") -p MemorySwapMax=0 -- $(printf %q "$bwrap") --args 3 -- env -i "\${vars[@]}" $(printf %q "$mise") x $(printf %q "$pin") -- $(printf %q "$omp") -p "\$(cat $(printf %q "$R/prompt.txt"))"$extra$system --session-dir $(printf %q "$R/sessions") 3<$(printf %q "$work/views/${R##*/}") >$(printf %q "$R/out.txt") 2>&1
 EOF
   chmod +x "$R/launch.sh"
   : >"$R/out.txt"
@@ -1296,8 +1438,7 @@ judge_keys() {
   local P=$1 agent=$2 keys=$3 host_command token exp deadline payload key_file read_from
   (umask 077 && mkdir -p -- "$keys") || fail "judge-omp: cannot make $keys"
   if [ "${LEGION_E2E_MODEL_ROUTE:-gateway}" = provider ]; then
-    key_file=$(jq -r '[.providers[].apiKey] | first // empty' "$agent/models.yml") || key_file=
-    key_file=${key_file#'!cat '}
+    key_file=$(provider_key_file "$agent/models.yml")
     case $key_file in /*) ;; *) fail "judge-omp: $agent/models.yml does not read its key as \"!cat <absolute file>\"" ;; esac
     case $key_file in *[!A-Za-z0-9/._-]*) fail "judge-omp: the key file's path '$key_file' holds a character a mount cannot name plainly" ;; esac
     cp -- "$agent/models.yml" "$keys/models.yml"
@@ -1307,8 +1448,7 @@ judge_keys() {
   if [ "${LEGION_E2E_MODEL_ROUTE:-gateway}" = key-file ]; then
     host_command=$P/model-key/anthropic-key
     [ -f "$host_command" ] || fail "judge-omp: the key-file profile $P has no key command $host_command"
-    # The key command assigns the key file's path with printf %q: read it as bash reads that line.
-    key_file=$(bash -c "$(grep -m1 '^key_file=' "$host_command")"$'\nprintf %s "$key_file"')
+    key_file=$(key_command_file "$host_command")
     [ -f "$key_file" ] || fail "judge-omp: the key command names '$key_file', which is not a file"
     case $key_file in *[!A-Za-z0-9/._-]*) fail "judge-omp: the key file's path '$key_file' holds a character a key command cannot name plainly" ;; esac
     read_from=$key_file

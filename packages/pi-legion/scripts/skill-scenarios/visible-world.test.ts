@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, readlinkSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
 // Each row's work directory, reserved here (the fixture's hook makes it before the rows run).
@@ -9,7 +10,20 @@ const works = {
   others: temporaryDirectory("visible-world-others", { real: true }),
   clean: temporaryDirectory("visible-world-clean", { real: true }),
   stray: temporaryDirectory("visible-world-stray", { real: true }),
+  view: temporaryDirectory("visible-world-view", { real: true }),
+  links: temporaryDirectory("visible-world-links", { real: true }),
 };
+
+// The view rows walk a real bubblewrap view, which needs bwrap and a user namespace it may make
+// (AppArmor lets a user make one on some hosts and not on others). Read once, so one warning
+// names what is missing for the whole file.
+const bwrapMissing = skipWithout("bwrap");
+const withoutBwrap =
+  bwrapMissing || Bun.spawnSync(["bwrap", "--ro-bind", "/", "/", "true"]).exitCode !== 0;
+if (withoutBwrap && !bwrapMissing)
+  console.warn(
+    "Skipped the view rows of visible-world.test.ts: bwrap cannot make its namespaces on this host."
+  );
 
 // A work directory laid out as rig.sh lays it out: runs and profiles of random names, and the map's
 // links that name them (rig.sh's header, "the map"), with `files` in the run's directory.
@@ -75,8 +89,8 @@ test("another case's name, the word ablate and a case.txt are hits too", () => {
   expect(out).toContain(`tree\t${run}/tmp/a\tword\tablate\t`);
 });
 
-// Catches: a search that flags ordinary prose for a label that is a plain word (`head`). The
-// directories above the test's own (the listing channel) are the host's, so they are left out.
+// Catches: a search that flags ordinary prose for a label that is a plain word (`head`). The run
+// has no view file, so the view channel says UNKNOWN and only the file channels are read here.
 test("a world that names nothing has no hit in its own files, and the word head in prose is no hit", () => {
   const run = runIn(works.clean, { "cwd/README.md": "Review the head of #702.\n" });
   const { out } = search(run);
@@ -92,4 +106,75 @@ test("a run the map does not name is refused, not reported clean", () => {
   const stray = path.join(works.stray, "runs", "9999999999999999");
   mkdirSync(stray);
   expect(search(stray).code).toBe(2);
+});
+
+/** A view file of the run, as launch writes it (<work>/views/<id>, NUL-separated bwrap arguments):
+ *  the system's /usr and the links at / into it, so find runs, the run's directory, each of
+ *  `binds`, and a /proc and /dev of its own. */
+function viewFile(work: string, run: string, binds: readonly string[]) {
+  const view = ["--ro-bind", "/usr", "/usr"];
+  for (const dir of ["/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32"]) {
+    try {
+      if (lstatSync(dir).isSymbolicLink()) view.push("--symlink", readlinkSync(dir), dir);
+      else view.push("--ro-bind", dir, dir);
+    } catch {
+      // Not on this system.
+    }
+  }
+  view.push("--bind", run, run);
+  for (const bind of binds) view.push("--ro-bind", bind, bind);
+  view.push("--proc", "/proc", "--dev", "/dev", "--unshare-pid", "--die-with-parent");
+  mkdirSync(path.join(work, "views"), { recursive: true });
+  writeFileSync(path.join(work, "views", path.basename(run)), `${view.join("\0")}\0`);
+}
+
+// Catches: a search that reads the run's own files and the names above it, and so reports clean
+// while the agent's view holds, deep in a directory outside the run, a name that tells its case
+// and another label; and a walk that cannot set the view up reported clean. The plant is four
+// levels below the directory the view binds, where no listing of a directory's own names reaches.
+test.skipIf(withoutBwrap)(
+  "the view walk names a deep path of the agent's view that holds a case and a label, and a view it cannot walk is UNKNOWN",
+  () => {
+    const run = runIn(works.view, { "cwd/notes.txt": "Review the head of #702.\n" });
+    const outside = path.join(works.view, "outside");
+    const plant = path.join(outside, "a", "b", "c", "d", "sibling-fails-ablate-head-2");
+    mkdirSync(plant, { recursive: true });
+    viewFile(works.view, run, [outside]);
+    const planted = search(run);
+    expect(planted.out).toMatch(/^view: walked all \d+ names of the agent's view/m);
+    expect(planted.out).toContain(`view\t${plant}\tcase (own)\tsibling-fails\t`);
+    expect(planted.out).toContain(`view\t${plant}\tlabel (own)\tablate-head\t`);
+    expect(planted.code).toBe(1);
+    // The same view without the plant's directory: the walk still walks, and names nothing.
+    viewFile(works.view, run, []);
+    const clean = search(run);
+    expect(clean.out).toMatch(/^view: walked all \d+ names of the agent's view/m);
+    expect(clean.out.split("\n").filter((line) => line.startsWith("view\t"))).toEqual([]);
+    // A view whose directory is gone: bwrap cannot set it up, and the walk is no clean answer.
+    viewFile(works.view, run, [path.join(works.view, "gone")]);
+    const broken = search(run);
+    expect(broken.out).toMatch(/^UNKNOWN view \(view .*\): the walk said: bwrap: /m);
+    expect(broken.code).toBe(3);
+  }
+);
+
+// Catches: a search that reads every place a link of the run points at, the places the agent's
+// view does not hold among them, so that a link mise leaves in a run's state to the operator's home
+// reads all of the home (one such search held 36 GB before it was stopped), and one that names a
+// file the agent cannot read as a place it could learn its label from.
+test("the plugins channel reads a place a link points at only where the run's view holds it", () => {
+  const run = runIn(works.links, {});
+  const held = path.join(works.links, "held");
+  const unheld = path.join(works.links, "unheld");
+  for (const dir of [held, unheld]) {
+    mkdirSync(dir);
+    writeFileSync(path.join(dir, "notes.md"), "this label is ablate-head\n");
+  }
+  symlinkSync(held, path.join(run, "cwd", "plugins"));
+  symlinkSync(unheld, path.join(run, "cwd", "home"));
+  viewFile(works.links, run, [held]);
+  const { out } = search(run);
+  expect(out).toContain(`plugins\t${held}/notes.md\tlabel (own)\tablate-head\t`);
+  expect(out).not.toContain(`${unheld}/notes.md`);
+  expect(out).toMatch(/links to nothing the view holds 1\b/);
 });

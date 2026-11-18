@@ -3,8 +3,11 @@ import {
   appendFileSync,
   cpSync,
   existsSync,
+  lstatSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
+  readlinkSync,
   realpathSync,
   rmSync,
   symlinkSync,
@@ -1230,19 +1233,30 @@ describe("require_superpowers", () => {
 // launch with a stand-in tmux that records its session's name and starts the pane's command a
 // moment later, as a real tmux server does, a stand-in systemd-run that records the scope it was
 // asked for and runs the command after `--`, a stand-in bwrap that records its arguments and runs
-// the command after `--`, and a stand-in mise that prints the omp command line it was given. The
-// run's directory and the label's profile sit in a work directory, as rig.sh lays them out.
+// the command after `--`, a stand-in mise that prints the omp command line it was given, and a
+// stand-in bun that names its binary. The run's directory and the label's profile sit in a work
+// directory, as rig.sh lays them out. The pane's PATH holds what an operator's does: a wrapper of
+// git and jj in the operator's home first, then mise's shims (jq's is a link to mise, as mise
+// makes them), then two mise installs, jq's and jj's, under the pane's MISE_DATA_DIR, then the
+// system. The run's HOME links to a native module cache, and its models.yml reads its key with
+// `!cat`, as the provider route writes it; the label's key-file command names a key file.
 describe("launch", () => {
-  function launchRun(args: string, env: Record<string, string> = {}) {
+  type Dirs = { run: string; profile: string; bin: string; tools: string };
+  function launchRun(
+    args: string,
+    env: Record<string, string> = {},
+    before?: (dirs: Dirs) => void
+  ) {
     const work = freshDir("launch-work");
     const run = path.join(work, "runs", "0123456789abcdef");
     const profile = path.join(work, "profiles", "fedcba9876543210");
     const bin = freshDir("launch-bin");
-    for (const dir of ["cwd", "sessions", "tmp"])
+    const tools = freshDir("launch-tools");
+    for (const dir of ["cwd", "sessions", "tmp", "home/.omp/profiles/skills/agent"])
       mkdirSync(path.join(run, dir), { recursive: true });
-    for (const dir of ["pi-envoy", "pi-legion"])
+    for (const dir of ["pi-envoy", "pi-legion", "model-key"])
       mkdirSync(path.join(profile, dir), { recursive: true });
-    // The label's checkout, which every agent's view hides, and the map's link to its profile.
+    // The label's checkout, which no agent's view holds, and the map's link to its profile.
     const checkout = freshDir("launch-checkout");
     writeFileSync(path.join(profile, "checkout"), `${checkout}\n`);
     mkdirSync(path.join(work, "services"));
@@ -1251,8 +1265,44 @@ describe("launch", () => {
       "../../profiles/fedcba9876543210",
       path.join(work, "maps", "profiles", "ablate-head")
     );
+    const data = path.join(tools, "mise");
+    const wrappers = path.join(tools, "home", ".dotfiles", "shims");
+    for (const dir of [wrappers, path.join(data, "shims"), path.join(data, "installs/jq/1.0")])
+      mkdirSync(dir, { recursive: true });
+    mkdirSync(path.join(data, "installs/jj/0.1/bin"), { recursive: true });
+    for (const file of [
+      path.join(wrappers, "git"),
+      path.join(wrappers, "jj"),
+      path.join(data, "installs/jq/1.0/jq"),
+      path.join(data, "installs/jj/0.1/bin/jj"),
+    ])
+      writeFileSync(file, "#!/bin/sh\n", { mode: 0o755 });
+    symlinkSync(path.join(bin, "mise"), path.join(data, "shims", "jq"));
+    const panePath = [
+      bin,
+      wrappers,
+      path.join(data, "shims"),
+      path.join(data, "installs/jq/1.0"),
+      path.join(data, "installs/jj/0.1/bin"),
+      "/usr/bin",
+      "/bin",
+    ].join(":");
+    mkdirSync(path.join(tools, "natives"));
+    symlinkSync(path.join(tools, "natives"), path.join(run, "home/.omp/natives"));
+    mkdirSync(path.join(tools, "keys"));
+    writeFileSync(path.join(tools, "keys", "token"), "a key\n");
+    writeFileSync(
+      path.join(run, "home/.omp/profiles/skills/agent/models.yml"),
+      `${JSON.stringify({ providers: { rig: { apiKey: `!cat ${tools}/keys/token` } } })}\n`
+    );
+    writeFileSync(path.join(tools, "anthropic-key"), "a key\n");
+    writeFileSync(
+      path.join(profile, "model-key", "anthropic-key"),
+      `#!/bin/sh\nkey_file=${tools}/anthropic-key\n`,
+      { mode: 0o755 }
+    );
     writeFileSync(path.join(run, "prompt.txt"), "The person answered your asks on LWEVAL-2.\n");
-    writeFileSync(path.join(run, "pane.env"), `PATH=${bin}:${process.env.PATH ?? ""}\n`);
+    writeFileSync(path.join(run, "pane.env"), `PATH=${panePath}\nMISE_DATA_DIR=${data}\n`);
     writeFileSync(path.join(run, "out.txt"), "the first turn\nexit=0\n");
     mkdirSync(path.join(bin, "pin", "bin"), { recursive: true });
     writeFileSync(path.join(bin, "pin", "bin", "omp"), "#!/bin/sh\n", { mode: 0o755 });
@@ -1261,6 +1311,8 @@ describe("launch", () => {
       `#!/bin/sh\nif [ "$1" = where ]; then echo "${bin}/pin"; exit 0; fi\nshift 3\necho "$@"\n`,
       { mode: 0o755 }
     );
+    writeFileSync(path.join(bin, "bun-real"), "", { mode: 0o755 });
+    writeFileSync(path.join(bin, "bun"), `#!/bin/sh\necho "${bin}/bun-real"\n`, { mode: 0o755 });
     writeFileSync(
       path.join(bin, "systemd-run"),
       `#!/bin/bash\nscope=()\nwhile [ "$1" != -- ]; do scope+=("$1"); shift; done\nshift\necho "\${scope[*]}" >"${run}/scope"\nexec "$@"\n`,
@@ -1271,16 +1323,71 @@ describe("launch", () => {
       `#!/bin/bash\n: >"${run}/view"\nif [ "$1" = --args ]; then tr '\\0' '\\n' <&"$2" >>"${run}/view"; shift 2; fi\nwhile [ "$1" != -- ]; do printf '%s\\n' "$1" >>"${run}/view"; shift; done\nshift\nexec "$@"\n`,
       { mode: 0o755 }
     );
+    before?.({ run, profile, bin, tools });
     const standIns = `
 tmux() { case $1 in new-session) printf '%s\\n' "$4" >"$R/session"; (command sleep 0.3 && bash -c "\${@: -1}") & ;; esac; }
 sleep() { command sleep 0.05; }`;
+    const functions = [
+      "fail",
+      "pinned_omp",
+      "view_bind",
+      "view_tool",
+      "provider_key_file",
+      "key_command_file",
+      "fresh_gateway_key",
+      "agent_view",
+      "launch",
+    ];
     const result = bash(
-      `${fn("fail")}\n${fn("pinned_omp")}\n${fn("launch")}\n${standIns}\nR=$1 P=$2 work=$3 maps=$3/maps tag=t pin=omp@pin\nlaunch${args}\ncp "$R/out.txt" "$R/seen"`,
+      `${functions.map(fn).join("\n")}\n${standIns}\nR=$1 P=$2 work=$3 maps=$3/maps tag=t pin=omp@pin profile=skills\nlaunch${args}\ncp "$R/out.txt" "$R/seen"`,
       [run, profile, work],
       { PATH: `${bin}:${childEnv.PATH}`, ...env }
     );
     const read = (name: string) => readFileSync(path.join(run, name), "utf8");
-    return { ...result, run, bin, read, work, profile, checkout };
+    return { ...result, run, bin, read, work, profile, checkout, tools, data };
+  }
+
+  /** The view's bubblewrap arguments, read back: each bind (`--bind` or `--ro-bind`, a source
+   *  and a destination) and, apart, every other argument with its operands. */
+  function viewOf(lines: string[]) {
+    const binds: { mode: string; source: string; dest: string }[] = [];
+    const others: string[] = [];
+    const operands: Record<string, number> = {
+      "--symlink": 2,
+      "--dev": 1,
+      "--proc": 1,
+      "--tmpfs": 1,
+      "--chdir": 1,
+    };
+    for (let at = 0; at < lines.length; ) {
+      const option = lines[at] ?? "";
+      if (option === "--bind" || option === "--ro-bind" || option === "--dev-bind") {
+        binds.push({ mode: option, source: lines[at + 1] ?? "", dest: lines[at + 2] ?? "" });
+        at += 3;
+      } else {
+        const n = operands[option] ?? 0;
+        others.push(lines.slice(at, at + n + 1).join(" "));
+        at += n + 1;
+      }
+    }
+    return { binds, others };
+  }
+
+  /** What launch binds of the system: /usr, /etc, each directory at / that is no link, and the
+   *  directory of each file outside /etc and /usr that a link of /etc names. */
+  const systemSources = new Set(["/usr", "/etc"]);
+  for (const dir of ["/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32"])
+    if (existsSync(dir) && !lstatSync(dir).isSymbolicLink()) systemSources.add(dir);
+  for (const name of readdirSync("/etc")) {
+    const link = path.join("/etc", name);
+    if (!lstatSync(link).isSymbolicLink()) continue;
+    let target: string;
+    try {
+      target = realpathSync(link);
+    } catch {
+      continue;
+    }
+    if (!/^\/(etc|usr|proc|dev)\//.test(target)) systemSources.add(path.dirname(target));
   }
 
   // Catches: a later turn that reads the previous turn's `exit=` line as its own and returns at
@@ -1307,27 +1414,106 @@ sleep() { command sleep 0.05; }`;
     expect(named.read("scope")).toBe("--user --scope --quiet -p MemoryMax=2G -p MemorySwapMax=0\n");
   });
 
-  // Catches: an agent that can learn its label or case from what it sees: the map (<work>/maps),
-  // another run's directory, the profile's records (its checkout's path names the label), the
-  // batch's command line in the process table, another run's scratch files in the machine's /tmp,
-  // or another label's texts in its checkout; and a tmux session named after the run.
-  test("the agent runs under bwrap, in a PID namespace of its own, with <work> empty but for its run, its label's plugins and the services, its own /tmp, and every label's checkout empty", () => {
-    const { code, read, run, work, profile, checkout } = launchRun("");
+  // Catches: an agent whose view is the whole machine with holes in it (`--dev-bind / /`), where a
+  // search from / reads another label's skills in an older work directory's profile or in the
+  // operator's installed plugins; a view that binds a label's checkout, the map, another run or
+  // label, the profile's own records, or a tool's wrapper in the operator's home or mise's shims in
+  // place of the tool's install; another run's scratch files in the machine's /tmp; and a tmux
+  // session named after the run.
+  test("the agent's view is an allowlist: the system, its run with its own /tmp, its label's plugins and keys, the services, and its tools' installs, in a PID namespace of its own", () => {
+    const { code, read, run, work, profile, checkout, bin, tools, data } = launchRun("");
     expect(code).toBe(0);
-    expect(read("view").split("\n").filter(Boolean)).toEqual([
-      ...["--dev-bind", "/", "/", "--tmpfs", work, "--bind", run, run],
-      ...["--bind", `${run}/tmp`, "/tmp", "--tmpfs", "/var/tmp", "--tmpfs", "/dev/shm"],
-      ...["--tmpfs", checkout],
-      ...["--ro-bind", `${profile}/pi-envoy`, `${profile}/pi-envoy`],
-      ...["--ro-bind", `${profile}/pi-legion`, `${profile}/pi-legion`],
-      ...["--ro-bind", `${work}/services`, `${work}/services`],
-      ...["--unshare-pid", "--proc", "/proc", "--die-with-parent", "--chdir", `${run}/cwd`],
+    const { binds, others } = viewOf(read("view").split("\n").filter(Boolean));
+    expect(binds.filter((bind) => bind.mode === "--dev-bind" || bind.source === "/")).toEqual([]);
+    const ro = (source: string, dest = source) => ({ mode: "--ro-bind", source, dest });
+    const real = (file: string) => realpathSync(file);
+    expect(binds.filter((bind) => !systemSources.has(bind.source))).toEqual([
+      { mode: "--bind", source: run, dest: run },
+      { mode: "--bind", source: `${run}/tmp`, dest: "/tmp" },
+      ro(`${profile}/pi-envoy`),
+      ro(`${profile}/pi-legion`),
+      ro(`${profile}/model-key`),
+      ro(`${work}/services`),
+      ro(`${tools}/keys`),
+      ro(`${tools}/anthropic-key`),
+      ro(real(`${bin}/pin`), `${bin}/pin`),
+      ro(real(`${bin}/mise`)),
+      ro(real(`${bin}/bun-real`)),
+      { mode: "--bind", source: real(`${tools}/natives`), dest: `${tools}/natives` },
+      ro(real(`${data}/installs/jj/0.1`), `${data}/installs/jj/0.1`),
+      ro(real(`${data}/installs/jq/1.0`), `${data}/installs/jq/1.0`),
     ]);
+    for (const bind of binds) expect(bind.source.startsWith(checkout)).toBe(false);
+    // `mise x` takes every mise install but the pin's off the agent's PATH, so the run's bin,
+    // first on it, links each tool a mise install holds; git is the system's.
+    expect(readlinkSync(path.join(run, "bin", "jj"))).toBe(`${data}/installs/jj/0.1/bin/jj`);
+    expect(readlinkSync(path.join(run, "bin", "jq"))).toBe(`${data}/installs/jq/1.0/jq`);
+    expect(existsSync(path.join(run, "bin", "git"))).toBe(false);
+    expect(others.filter((other) => !other.startsWith("--symlink "))).toEqual([
+      "--dev /dev",
+      "--tmpfs /dev/shm",
+      "--proc /proc",
+      "--tmpfs /var/tmp",
+      "--unshare-pid",
+      "--die-with-parent",
+      `--chdir ${run}/cwd`,
+    ]);
+    for (const other of others.filter((one) => one.startsWith("--symlink ")))
+      expect(other).toMatch(/^--symlink usr\/\S+ \/\S+$/);
     expect(read("session")).toBe("t-0123456789abcdef\n");
-    // The view, which names every label's checkout, is in no file of the run and on no command line
-    // the agent's /proc shows: bwrap reads it from a file under <work>, which its view hides.
+    // bwrap reads the view from a file under <work>, which the view does not hold, and the agent
+    // runs mise by the path the view binds.
     expect(read("launch.sh")).not.toContain(checkout);
-    expect(read("launch.sh")).toContain(" --args 3 -- ");
+    expect(read("launch.sh")).toContain(
+      ` --args 3 -- env -i "\${vars[@]}" ${real(`${bin}/mise`)} x omp@pin -- `
+    );
+  });
+
+  // Catches: a gateway route whose key command must mint inside the agent's view, which holds
+  // neither hawk-token nor the operator's HOME and session bus; and a kept key that expires
+  // before the run's deadline. The stand-in key command serves the kept key while it is good, as
+  // install-model-gateway.sh's does, and mints one good for 60 s first and for a day after.
+  test("on the gateway route the host mints a key good past the run's deadline, and the view holds the kept key read-only", () => {
+    const keyCommand = (dirs: Dirs, lives: string) => {
+      mkdirSync(path.join(dirs.profile, "key"));
+      mkdirSync(path.join(dirs.profile, "cache"));
+      writeFileSync(
+        path.join(dirs.profile, "key", "hawk-token"),
+        [
+          "#!/bin/bash",
+          `cache=${dirs.profile}/cache/hawk-token.key calls=${dirs.profile}/key/calls`,
+          'echo call >>"$calls"',
+          'if [ -s "$cache" ]; then read -r until key <"$cache"; [ "$EPOCHSECONDS" -ge "$until" ] || { echo "$key"; exit 0; }; fi',
+          `lives=(${lives})`,
+          'n=$(wc -l <"$calls")',
+          'printf "%s key%s\\n" $((EPOCHSECONDS + lives[n - 1])) "$n" >"$cache"',
+          'echo "key$n"',
+          "",
+        ].join("\n"),
+        { mode: 0o755 }
+      );
+    };
+    const fresh = launchRun("", {}, (dirs) => keyCommand(dirs, "60 86400"));
+    expect(fresh.code).toBe(0);
+    expect(readFileSync(path.join(fresh.profile, "key", "calls"), "utf8")).toBe("call\ncall\n");
+    const [until] = readFileSync(path.join(fresh.profile, "cache", "hawk-token.key"), "utf8").split(
+      " "
+    );
+    expect(Number(until)).toBeGreaterThan(Date.now() / 1000 + 1500);
+    const { binds } = viewOf(fresh.read("view").split("\n").filter(Boolean));
+    expect(binds).toContainEqual({
+      mode: "--ro-bind",
+      source: `${fresh.profile}/key`,
+      dest: `${fresh.profile}/key`,
+    });
+    expect(binds).toContainEqual({
+      mode: "--ro-bind",
+      source: `${fresh.profile}/cache`,
+      dest: `${fresh.profile}/cache`,
+    });
+    const short = launchRun("", {}, (dirs) => keyCommand(dirs, "60 60"));
+    expect(short.code).not.toBe(0);
+    expect(short.stderr).toContain("before the run's deadline");
   });
 });
 
