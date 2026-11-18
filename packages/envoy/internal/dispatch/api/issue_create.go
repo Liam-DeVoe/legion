@@ -51,10 +51,19 @@ type createIssueInput struct {
 	// Project and Title are not required of a caller: a create that names an external
 	// owner/repo#n takes the project from that repository's mapping and the title from the
 	// external issue (:92-127, :169-170), and only a create that names neither is refused.
-	Project   string   `json:"project"`
-	Title     string   `json:"title"`
-	Parent    *string  `json:"parent"`
+	Project string  `json:"project"`
+	Title   string  `json:"title"`
+	Parent  *string `json:"parent"`
+	// Needs is the issues the new issue waits on, and BlockedBy the same list under the spelling
+	// a client of the release before sends; a body naming both names the same issues in each
+	// (resolveIssueWaits).
+	Needs     []string `json:"needs"`
 	BlockedBy []string `json:"blocked_by"`
+	// DuplicateOf is the key of an issue of the project the new issue repeats, and FiledFrom the
+	// canonical reference of the public ask, comment or message of the project it was filed out
+	// of, each a string or null (resolveDuplicateOf, resolveFiledFrom).
+	DuplicateOf json.RawMessage `json:"duplicate_of"`
+	FiledFrom   json.RawMessage `json:"filed_from"`
 	// Advances is the priorities the new issue advances, a list of priority ids. A create
 	// carries the whole list and no revision, and is never refused for it: the issue holds no
 	// relation yet, so there is no read to be answering (refuseAdvancesRevision).
@@ -83,7 +92,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	blockers, err := normalizeIssueBlockers(input.BlockedBy)
+	waits, _, err := resolveIssueWaits(optionalList(input.Needs), optionalList(input.BlockedBy))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -146,8 +155,8 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// respondWithExistingExternalIssue would also record a related-check outcome on. Nothing
 	// is written before this point.
 	// callerProject is empty for a credential that names none, which is every caller that
-	// exists today; the dependency lock step and writeBlockedBy below read it again, since a
-	// blocked_by target's project is no part of this address.
+	// exists today; the dependency lock step and writeIssueNeeds below read it again, since a
+	// wait's target's project is no part of this address.
 	callerProject, scoped := s.callerProject(r)
 	if scoped && callerProject != input.Project {
 		refuseWriteOutsideProjectScope(w, callerProject, input.Project)
@@ -304,12 +313,12 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	// A create with blockers can close a wait cycle, and a create with a parent adds a link the
+	// A create with waits can close a wait cycle, and a create with a parent adds a link the
 	// depth cap counts (refuseParentTooDeep): both take the dependency locks before the number
 	// or the rank (lockIssueDependencyWrite). A new issue with neither takes none. Only the
-	// blockers can name another project, since a parent is of the issue's own project.
-	if len(blockers) > 0 || parentKey != "" {
-		if err := lockIssueDependencyWrite(r.Context(), tx, input.Project, callerProject, blockers); err != nil {
+	// waits can name another project, since a parent is of the issue's own project.
+	if len(waits.targets) > 0 || parentKey != "" {
+		if err := lockIssueDependencyWrite(r.Context(), tx, input.Project, callerProject, waits); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -334,6 +343,18 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 			s.writeHandlerError(w, err)
 			return
 		}
+	}
+	// The new issue's duplicate_of and filed_from are read against the store before anything is
+	// written, so a refused one leaves no issue. The new issue holds no key yet, so none names it.
+	duplicateOf, _, err := resolveDuplicateOf(r.Context(), tx, "", input.Project, input.DuplicateOf)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	filedFrom, _, err := resolveFiledFrom(r.Context(), tx, input.Project, input.FiledFrom)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
 	}
 	var number int
 	var projectDefaultAssignee string
@@ -381,29 +402,52 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// them in the store's order, each in the issue's project, with the spec's part_of the issue
 	// (R16 of dispatch://INFRA-1253); what that write states waits for the issue.created event
 	// below (graphstore.Caused). Each row names its node in the same transaction. Both are nodes
-	// this write creates, so each is marked changed (graphstore.Node's Changed): a create made
-	// for a run names them as changed by it.
+	// this write creates (graphstore.Created). The item filed_from names is stated before them
+	// where the store holds no node of it (stateFiledFromNode).
+	if err := stateFiledFromNode(r.Context(), tx, filedFrom); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	createdAt := time.Now().UTC()
 	specRefKey := graphstore.ArtifactRefKey(key, input.Project, "", "spec")
-	issueNode := graphstore.IssueNode(key, input.Project, actor, createdAt)
-	specNode := graphstore.ArtifactNode(specRefKey, input.Project, "", actor, createdAt)
-	issueNode.Changed, specNode.Changed = true, true
+	issueNode := graphstore.Created(graphstore.IssueNode(key, input.Project, actor, createdAt))
+	specNode := graphstore.Created(graphstore.ArtifactNode(specRefKey, input.Project, "", actor, createdAt))
 	issueNodes, err := graphstore.WriteUncaused(r.Context(), tx, []graphstore.Node{issueNode, specNode},
 		[]graphstore.Tuple{graphstore.ArtifactPartOf(specRefKey, key, actor, createdAt)})
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if _, err := tx.Exec(r.Context(), `
+	var issueCreatedAt time.Time
+	if err := tx.QueryRow(r.Context(), `
 		insert into issues (key, project_key, number, title, parent_key, created_by, labels, priority, rank, assignee, repo, node_kind, node_address)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $1)
-	`, key, input.Project, number, input.Title, parent, actorJSON, labels, priority, issueRank, assignee, repo, graphstore.KindIssue); err != nil {
+		returning created_at
+	`, key, input.Project, number, input.Title, parent, actorJSON, labels, priority, issueRank, assignee, repo, graphstore.KindIssue).Scan(&issueCreatedAt); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if err := writeBlockedBy(r.Context(), tx, key, input.Project, callerProject, blockers); err != nil {
-		s.writeHandlerError(w, err)
-		return
+	// The relations the new issue states, each caused by issue.created below
+	// (stateIssueRelations): its child_of, dated at its row's created_at, which the arm over the
+	// rows that name no node dates the same edge by, its waits, whose rows are written here, and
+	// its duplicate_of and filed_from.
+	var relations issueRelationFacts
+	if parentKey != "" {
+		relations.claim(key, graphstore.TupleChildOf, graphstore.KindIssue, parentKey, issueCreatedAt)
+	}
+	if len(waits.targets) > 0 {
+		needs, err := writeIssueNeeds(r.Context(), tx, key, input.Project, callerProject, waits, issueCreatedAt)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		relations.tuples = append(relations.tuples, needs...)
+	}
+	if duplicateOf != nil {
+		relations.claim(key, graphstore.TupleDuplicateOf, graphstore.KindIssue, *duplicateOf, issueCreatedAt)
+	}
+	if filedFrom != nil {
+		relations.claim(key, graphstore.TupleFiledFrom, filedFrom.kind, filedFrom.id, issueCreatedAt)
 	}
 	// The new issue holds no relation, so every id it names is stated and none is retracted.
 	if len(advances) > 0 {
@@ -514,7 +558,14 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	issue.LastSeq++
-	// A new issue's blocked_by edges move each blocker's count, beside what its spec cites.
+	// The issue's duplicate_of and filed_from are tuples its event causes, appended after that
+	// event (stateIssueRelations), so the read above holds neither yet: the payload and the answer
+	// carry what the write states.
+	issue.DuplicateOf = duplicateOf
+	if filedFrom != nil {
+		issue.FiledFrom = &filedFrom.ref
+	}
+	// A new issue's waits move each target's count, beside what its spec cites.
 	blockerChanges, err := issueEdgeChanges(r.Context(), tx, unsetIssue, issue, false)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -543,6 +594,10 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := graphstore.Caused(r.Context(), tx, issueNodes, event.ID); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := stateIssueRelations(r.Context(), tx, relations, actor, event.ID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -597,11 +652,18 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 }
 
 // duplicateGateTimeout bounds the near-copy gate's whole read, on the context and as the read
-// transaction's own statement_timeout. Every create waits on it before it is written, so it is
-// held well under the second the title rule it replaces was given: past it the create goes in
-// and is told that no near-copy check was made, which is what a slow read must cost rather than
-// a project nobody can write to.
-const duplicateGateTimeout = 500 * time.Millisecond
+// transaction's own statement_timeout. Every create waits on it before it is written: past it the
+// create goes in and is told that no near-copy check was made, which is what a slow read must cost
+// rather than a project nobody can write to.
+//
+// 500 ms came from the replay on an idle machine (TestNearCopyRefusalReplay: p50 135 ms, p95
+// 228 ms, max 566 ms), which predicted it would cut 0.17% of creates. In production it cut 9 of
+// INFRA's first 29 creates in near_copy_checks (2026-11-17, build 4055c4a5, reason bound). 2 s is an
+// estimate, not a measurement: the rows hold no read time past the bound. If production's reads
+// are a uniform multiple of the replay's (about three times, which puts the replay's 70th
+// percentile at 500 ms), 2 s covers the replay's slowest read. How many reads 2 s still cuts is
+// read from near_copy_checks after it is deployed.
+const duplicateGateTimeout = 2 * time.Second
 
 // nearCopyOutcome is everything the near-copy gate decides for one create, settled once by
 // runNearCopyGate and then only copied: the 409 the create is refused with, what the

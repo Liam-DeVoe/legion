@@ -534,7 +534,7 @@ function viewNode(
 ): TreeAnswerNode {
   return {
     attributes: {},
-    author: null,
+    author: [],
     id,
     made_at: "2026-11-05T00:00:00Z",
     mark,

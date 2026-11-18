@@ -220,7 +220,7 @@ func requireTheRunFramesLockOrder(t *testing.T) {
 		`select 1 from going_requests where id = $1::uuid for update`, run)
 	node := lockstep.HoldRow(t, database, &lockstep.Hold{
 		Name: "the run's interaction node row", Step: lockstep.StepNode, Taken: true,
-		Kind: graphstore.KindInteraction, ID: run, Statement: runNodeLock,
+		Kind: graphstore.KindInteraction, ID: run, Statement: graphstore.NodeRowLockSQL,
 		Unlocked: []string{"going_events", "graph_tuples"},
 	}, `select 1 from graph_nodes where kind = $1 and id = $2 for update`, graphstore.KindInteraction, run)
 
@@ -247,7 +247,7 @@ func requireTheGoneRunLockOrder(t *testing.T) {
 	}
 	node := lockstep.HoldRow(t, database, &lockstep.Hold{
 		Name: "the run's interaction node row", Step: lockstep.StepNode, Taken: true,
-		Kind: graphstore.KindInteraction, ID: run, Statement: runNodeLock,
+		Kind: graphstore.KindInteraction, ID: run, Statement: graphstore.NodeRowLockSQL,
 		Unlocked: []string{"graph_tuples"},
 	}, `select 1 from graph_nodes where kind = $1 and id = $2 for update`, graphstore.KindInteraction, run)
 

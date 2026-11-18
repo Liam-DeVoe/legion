@@ -37,7 +37,7 @@ github_apps:
 nats_urls: [nats://127.0.0.1:4222]
 `
 
-// The five `gates.design` shapes the configuration check drives `legion start --check-config`
+// The five `gates.design` shapes the configuration check drives `legion config check`
 // against: a list, the empty list, no `gates` key at all, a word the key does not take, and a
 // list naming one step twice. Each is a whole legion.yaml but for the one thing it tests, so the
 // check reads the OK line or the refusal and nothing else can be what failed. Their paths are
@@ -60,7 +60,7 @@ github_apps:
     private_key: review-test-key
 nats_urls: [nats://127.0.0.1:4222]
 gates:
-  design: [decisions, criteria]
+  design: [criteria, spec]
 `
 
 const gatesEmptyListFile = `project: DEMO
@@ -425,7 +425,9 @@ hooks:
 // words it took before the list as the lists they mean. A key that names nothing, written as
 // `design:` or as the empty string, is the unset key the loader read before the list, the single
 // step spec. A value it does not take, and a list naming one step twice, are refused by a
-// message naming what the key takes.
+// message naming what the key takes. The `decisions` step an earlier release gated is refused by
+// a message of its own, which says the step is gone, that decisions are nodes of the spec, and to
+// gate `spec`, and still names the steps the key takes.
 func TestLoadReadsTheDesignGateSteps(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -433,7 +435,7 @@ func TestLoadReadsTheDesignGateSteps(t *testing.T) {
 		want    []record.DesignStep
 		refusal string
 	}{
-		{name: "a list", body: gatesListFile, want: []record.DesignStep{record.DesignStepDecisions, record.DesignStepCriteria}},
+		{name: "a list", body: gatesListFile, want: []record.DesignStep{record.DesignStepCriteria, record.DesignStepSpec}},
 		{name: "the empty list", body: gatesEmptyListFile, want: []record.DesignStep{}},
 		{name: "no gates key", body: gatesAbsentFile, want: []record.DesignStep{record.DesignStepSpec}},
 		{name: "the word root-issues", body: minimalFile, want: []record.DesignStep{record.DesignStepSpec}},
@@ -443,13 +445,16 @@ func TestLoadReadsTheDesignGateSteps(t *testing.T) {
 		{
 			name:    "a word the key does not take",
 			body:    gatesUnknownWordFile,
-			refusal: "gates.design must be a list of 'decisions', 'criteria' or 'spec', or 'root-issues' for the single step 'spec', or 'off' for no step",
+			refusal: "gates.design must be a list of 'criteria' or 'spec', or 'root-issues' for the single step 'spec', or 'off' for no step",
 		},
 		{name: "a step named twice", body: gatesRepeatedStepFile, refusal: "gates.design names 'spec' twice"},
 		{name: "a step the key does not take", body: strings.Replace(minimalFile, "design: root-issues", "design: [spec, later]", 1),
-			refusal: "gates.design[1] must be 'decisions', 'criteria' or 'spec'"},
+			refusal: "gates.design[1] must be 'criteria' or 'spec'"},
+		{name: "the decisions step, which is gone", body: strings.Replace(minimalFile, "design: root-issues", "design: [decisions]", 1),
+			refusal: "gates.design[0] names the 'decisions' step, which is gone: decisions are nodes of the spec, " +
+				"so gate 'spec' to have a person approve them; gates.design[0] must be 'criteria' or 'spec'"},
 		{name: "a value that is neither a string nor a list", body: strings.Replace(minimalFile, "design: root-issues", "design: {step: spec}", 1),
-			refusal: "gates.design must be a list of 'decisions', 'criteria' or 'spec', or 'root-issues' for the single step 'spec', or 'off' for no step"},
+			refusal: "gates.design must be a list of 'criteria' or 'spec', or 'root-issues' for the single step 'spec', or 'off' for no step"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg, err := Load(writeConfigFile(t, tc.body), noEnv)
@@ -787,7 +792,7 @@ func TestLoadRefusesEveryStage3Key(t *testing.T) {
 			want: "dispatch_url must be the dispatch service base URL, not the /mcp endpoint",
 		},
 		// Boot needs each of these for a workflow, so the loader refuses the file, in the words of
-		// its own refusal: `legion start --check-config` never passes a file `legion start` refuses.
+		// its own refusal: `legion config check` never passes a file `legion start` refuses.
 		{
 			name: "dispatch_url without dispatch_token_file",
 			body: strings.Replace(minimalFile, "dispatch_token_file: /var/run/legion/DISPATCH_TOKEN\n", "", 1),
@@ -848,7 +853,7 @@ func TestLoadRefusesEveryStage3Key(t *testing.T) {
 		{
 			name: "gates design is invalid",
 			body: minimalFile + "gates: {design: later}\n",
-			want: "gates.design must be a list of 'decisions', 'criteria' or 'spec', or 'root-issues' for the single step 'spec', or 'off' for no step",
+			want: "gates.design must be a list of 'criteria' or 'spec', or 'root-issues' for the single step 'spec', or 'off' for no step",
 		},
 		{
 			name: "gates has an unknown setting",
@@ -1640,7 +1645,7 @@ func TestLoadAcceptsAWakeRateOfZero(t *testing.T) {
 }
 
 // Every refused wake pacing value names its own key, which is what an operator reading
-// `legion start --check-config` needs: which of the two the daemon would not take. The assertion
+// `legion config check` needs: which of the two the daemon would not take. The assertion
 // is on the key's name rather than the sentence, so rewording a refusal is no test change.
 func TestLoadRefusesAWakePacingValueNamingItsKey(t *testing.T) {
 	for _, tc := range []struct{ name, line, key string }{
@@ -1863,7 +1868,7 @@ func TestAWarnedKeyLoadsWithEveryOtherValueIntact(t *testing.T) {
 // port, and the daemon adds the port itself (shimAddress, internal/daemon/daemon.go). So the loader
 // refuses, by its exact message, every value that is not an IP address or a DNS name: under
 // runtime: kubernetes, the one runtime that reads advertise_host, so no other refusal can stand in
-// for this one, rather than `legion start --check-config` passing a file no pod boots on.
+// for this one, rather than `legion config check` passing a file no pod boots on.
 func TestAdvertiseHostMustBeABareHost(t *testing.T) {
 	const refused = "advertise_host must be an IP address or a DNS name, with no scheme, port, path or brackets: the daemon adds worker_stream_port itself"
 	for _, tc := range []struct{ name, yaml, want string }{

@@ -1250,7 +1250,9 @@ func (p HookPrompt) Message(issue string) string {
 //
 // The ask is best effort: the round ends at its bound whether or not the role reads it. So a
 // row whose role no live session holds finishes undelivered, and a row whose round the claim no
-// longer records finishes without a publish (the daemon's updateAsk).
+// longer records finishes without a publish (the daemon's updateAsk). The daemon marks a claim
+// asked only once its row's publish reached a session, so an ask that finished undelivered is
+// lost, not given, and the daemon's sweep writes the claim a new row of this kind at a later tick.
 type UpdateAsk struct {
 	Role  claim.Role `json:"role"`
 	Round string     `json:"round"`
@@ -1445,6 +1447,11 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 		if err := decoder.Decode(&value); err != nil {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
+		// A row the release before queued may name its `decisions` step, which the enqueue of this
+		// release refuses; the rest of the set is what Dispatch takes, so the row sends that.
+		value.Gates = slices.DeleteFunc(value.Gates, func(gate DesignGateDocument) bool {
+			return !gate.Step.Valid() // kept for one release: design-gate-rows
+		})
 		payload = value
 	case OutboxKindRoleHoldersPublish:
 		value := RoleHoldersPublish{}

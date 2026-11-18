@@ -27,8 +27,8 @@ import { sql } from "./psql";
 import type { ReviewSeed } from "./review-routes";
 import { seedWorkspace, workspaceSessions } from "./workspace";
 
-/** The decision `decisions.md` records, which the Decisions tab lists under the reader's review
- *  and the Spec tab draws beside the block it shaped. */
+/** The decision a `decision` block of the issue records, which the Decisions tab lists under the
+ *  reader's review and the Spec tab draws beside the block it shaped. */
 const DECISION = "Seed one corpus for both review layers";
 const REASON = "Chosen so a scan and a shot read the same page.";
 
@@ -164,8 +164,8 @@ Each page is read once it is drawn.
   const specId = (await getIssue(issue)).primary_artifact_id ?? "";
   const shaped = await blockId(specId, "One command, a seeded corpus, a signed-in browser.");
   await createIssueArtifact(issue, {
-    content: `## ${DECISION}\n\n${REASON} Shapes dispatch://${issue}/spec#b-${shaped}.\n`,
-    name: "decisions.md",
+    content: `:::decision{#d1 shaped="dispatch://${issue}/spec#b-${shaped}"}\n### ${DECISION}\n\n${REASON}\n:::\n`,
+    name: "choices.md",
   });
 
   // The priority `/priorities` lists and `/priorities/:id` opens, and the work under it. The

@@ -91,7 +91,7 @@ func (s *statusWrites) SetStatus(_ context.Context, key, status string) (dispatc
 	return dispatch.Issue{}, nil
 }
 
-// controllerDaemon is the daemon's HTTP surface as `legion controller start` and `legion status`
+// controllerDaemon is the daemon's HTTP surface as `legion controller start` and `legion issue status`
 // reach it: the real api.NewServer over an in-memory controller record, grants, and Dispatch, on
 // a loopback port, with every request that reached it recorded.
 type controllerDaemon struct {
@@ -211,7 +211,7 @@ func (f fixedStateSource) State(context.Context, pgx.Tx) (api.State, []supervise
 }
 
 // newControllerDaemonWithOptions is the daemon's HTTP surface as `legion controller start` and
-// `legion status` reach it: the real api.NewServer over an in-memory controller record, grants,
+// `legion issue status` reach it: the real api.NewServer over an in-memory controller record, grants,
 // and Dispatch, on a loopback port, with every request that reached it recorded.
 func newControllerDaemonWithOptions(t *testing.T, opts controllerDaemonOptions) *controllerDaemon {
 	t.Helper()
@@ -1099,14 +1099,16 @@ func TestControllerStartNeverMintsWhenTheRepositoryReadFails(t *testing.T) {
 
 // A daemon that answers the secret without the steps it gates is refused, never guessed at: the
 // controller would otherwise promise, or withhold, a design approval on an assumption. A daemon
-// from before the list names no `designGateSteps` at all, and one beyond this release may name a
-// step this one does not know; the empty list is neither, and is the deployment that gates
+// from before the list names no `designGateSteps` at all, one from before this release may name
+// the `decisions` step, which this one no longer has, and one beyond this release may name a step
+// this one does not know; the empty list is none of them, and is the deployment that gates
 // nothing.
 func TestControllerSecretWithoutTheConfiguredStepsIsRefused(t *testing.T) {
 	for _, tc := range []struct{ body, want string }{
 		{`{"secret":"s"}`, "answered no design gate steps (designGateSteps); upgrade the daemon"},
 		{`{"secret":"s","designGateSteps":null}`, "answered no design gate steps (designGateSteps); upgrade the daemon"},
-		{`{"secret":"s","designGateSteps":["sometimes"]}`, `answered design gate step "sometimes", not 'decisions', 'criteria' or 'spec'; upgrade the daemon`},
+		{`{"secret":"s","designGateSteps":["decisions","spec"]}`, `answered design gate step "decisions", not 'criteria' or 'spec'; upgrade the daemon`},
+		{`{"secret":"s","designGateSteps":["sometimes"]}`, `answered design gate step "sometimes", not 'criteria' or 'spec'; upgrade the daemon`},
 	} {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
@@ -1673,9 +1675,9 @@ func TestControllerStartUsage(t *testing.T) {
 		argv []string
 		want string
 	}{
-		{[]string{"legion", "controller"}, subcommandUsage("controller", controllerCommands)},
-		{[]string{"legion", "controller", "stop"}, `legion controller: unknown subcommand "stop"`},
-		{[]string{"legion", "controller", "start"}, "usage: legion controller start --config <controller.yaml> [--daemon-url <url>]"},
+		{[]string{"legion", "controller"}, "legion controller [command]"},
+		{[]string{"legion", "controller", "stop"}, `legion controller: unknown command "stop" for "legion controller"`},
+		{[]string{"legion", "controller", "start"}, "legion controller start: --config is required"},
 	} {
 		var out, errb bytes.Buffer
 		if code := run(context.Background(), tc.argv, &out, &errb); code != 2 || !strings.Contains(errb.String(), tc.want) {

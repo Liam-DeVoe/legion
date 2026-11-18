@@ -34,8 +34,12 @@ import (
 // or the backfill beside one - queue at that row, and the second, reading in a statement of its
 // own once the first has committed, finds the node there and writes nothing. The lock conflicts
 // with no insert of a frame: a going_events row's foreign key takes the run's row `for key share`.
-// It is the step the frame path (api's appendGoingEvent) takes for a run with no node, before it
-// takes the node's row.
+// It is the step the frame path (api's lockGoingRun) takes for a run with no node, before it
+// takes the node's row. The node this writes is its transaction's own, which no other transaction
+// can see until it commits, let alone hold; a node another write committed first, which this
+// writes nothing of, may be held by then - an erase of the run takes the node's row and then the
+// run's - so the frame takes that node's row without waiting and, where another holds it, lets its
+// transaction go and begins again, taking the node's row first.
 func WriteRun(ctx context.Context, tx pgx.Tx, id string) (bool, error) {
 	written, err := writeRun(ctx, tx, id)
 	return written.held, err
@@ -78,25 +82,9 @@ func writeRun(ctx context.Context, tx pgx.Tx, id string) (runWritten, error) {
 		return runWritten{}, fmt.Errorf("decode the author of run %s: %w", run.ID, err)
 	}
 	nodes, tuples := graphstore.InteractionFacts(run)
-	rows, err := tx.Query(ctx, `
-		select `+graphstore.FrameValueSQL("e.sequence", "e.name", "e.data")+`, e.created_at
-		from going_events e
-		where e.request_id = $1::uuid
-		order by e.sequence
-	`, run.ID)
+	frames, err := readRunFrames(ctx, tx, run.ID, false)
 	if err != nil {
-		return runWritten{}, fmt.Errorf("read the frames of run %s: %w", run.ID, err)
-	}
-	frames, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (graphstore.Tuple, error) {
-		var value string
-		var at time.Time
-		if err := row.Scan(&value, &at); err != nil {
-			return graphstore.Tuple{}, err
-		}
-		return graphstore.FrameTuple(run.ID, value, at), nil
-	})
-	if err != nil {
-		return runWritten{}, fmt.Errorf("read the frames of run %s: %w", run.ID, err)
+		return runWritten{}, err
 	}
 	if err := graphstore.Write(ctx, tx, nodes, append(tuples, frames...)); err != nil {
 		return runWritten{}, fmt.Errorf("write the interaction node of run %s: %w", run.ID, err)
@@ -110,4 +98,37 @@ func writeRun(ctx context.Context, tx pgx.Tx, id string) (runWritten, error) {
 		}
 	}
 	return written, nil
+}
+
+// readRunFrames reads a frame value of each going_events row of run, in sequence, as the frame
+// path states one (graphstore.FrameTuple): its text read off the row in SQL
+// (graphstore.FrameValueSQL), dated at the row's created_at. owedOnly leaves out each frame the
+// run's interaction holds a value of already (runFrameHeld), the frames the backfill owes
+// (writeRunFrames); writeRun reads them all, for a run whose node it makes.
+func readRunFrames(ctx context.Context, tx pgx.Tx, run string, owedOnly bool) ([]graphstore.Tuple, error) {
+	owed, problem := "", "read the frames of run %s: %w"
+	if owedOnly {
+		owed, problem = ` and not `+runFrameHeld, "read the frames of run %s the store holds no value of: %w"
+	}
+	rows, err := tx.Query(ctx, `
+		select `+graphstore.FrameValueSQL("e.sequence", "e.name", "e.data")+`, e.created_at
+		from going_events e
+		where e.request_id = $1::uuid`+owed+`
+		order by e.sequence
+	`, run)
+	if err != nil {
+		return nil, fmt.Errorf(problem, run, err)
+	}
+	frames, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (graphstore.Tuple, error) {
+		var value string
+		var at time.Time
+		if err := row.Scan(&value, &at); err != nil {
+			return graphstore.Tuple{}, err
+		}
+		return graphstore.FrameTuple(run, value, at), nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf(problem, run, err)
+	}
+	return frames, nil
 }

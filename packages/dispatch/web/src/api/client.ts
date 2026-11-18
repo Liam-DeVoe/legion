@@ -747,7 +747,9 @@ export interface IssueTreeNode {
   /** The node's place among its siblings, compared byte by byte; null for a sibling that has
    *  none (an ask, a comment, a message, a lens, a risk), which comes after the ranked ones. */
   rank: string | null;
-  author: Actor | null;
+  /** Every author of the node's first version, whoever made it first ahead of the rest; an empty
+   *  list where none is recorded. A row that draws one name draws the first. */
+  author: Actor[];
   state: "live" | "proposed" | "overtaken" | "settled";
   visibility: "project" | "author";
   /** When the node was made (RFC 3339), kept through a move. */
@@ -1645,13 +1647,13 @@ export class DispatchApiClient {
     return this.read("/api/v1/schema/blocks", {});
   }
 
-  /** An issue's decision records: its decisions.md, the open questions its spec holds, and each
-   *  decision with the spec blocks it shaped. */
+  /** An issue's decision records: its decision nodes and asks (`entries`), the open questions
+   *  its spec holds, and each decision with the spec nodes it shaped. */
   getIssueDecisions(key: string) {
     return this.read("/api/v1/issues/{key}/decisions", { key });
   }
 
-  /** Record that the caller agrees with the decision that heading block opens, as the text they
+  /** Record that the caller agrees with the decision at that block, as the text they
    *  read: `textSha256` is the decision's own `text_sha256`, and a decision that changed since
    *  is `409 DECISION_CHANGED`. */
   keepDecision(id: string, blockId: string, textSha256: string, bounds: WriteBounds) {
@@ -1760,8 +1762,8 @@ export class DispatchApiClient {
   /** What many `dispatch://` references point at, in one read: one member per `ref` in the
    *  request's order, each `{ref, kind, name, gone}`. A page that names many references can read
    *  all their names through this, in as few requests as both bounds allow
-   *  (`referenceTargetsQuery`), rather than one `getReferences` per reference
-   *  (R21 of dispatch://INFRA-1196/spec#b-r-requests). At most `REFERENCE_TARGETS_MAX` references:
+   *  (`referenceTargetsQuery`), rather than one `getReferences` per reference, so a page's first
+   *  load makes no request for each reference. At most `REFERENCE_TARGETS_MAX` references:
    *  past that the server answers `400 CAP_EXCEEDED`. */
   getReferenceTargets(refs: readonly string[]) {
     return this.read("/api/v1/reference-targets", {}, { ref: [...refs] });
@@ -1801,6 +1803,36 @@ export class DispatchApiClient {
    *  the GitHub App can read `deploy_repo`, answering `409 DELIVERY_SETTINGS_ACCESS` when not. */
   putDeliverySettings(input: Body<"/api/v1/settings/delivery", "put">, bounds: WriteBounds) {
     return this.put("/api/v1/settings/delivery", {}, input, bounds);
+  }
+
+  /** One project's Legion daemon: the base URL its state is read from, the actor that first named
+   *  it and when it last changed, or `null` for a project that names none. There is no list of
+   *  every project's daemon, so the Settings page's daemon section reads this once per project
+   *  (`useLegionDaemons`): `null` is an ordinary answer rather than a failure. A key that is not a
+   *  project key is `400 INVALID_PROJECT`, and an unknown project `404 PROJECT_NOT_FOUND`. */
+  getLegionDaemon(project: string) {
+    return this.read("/api/v1/projects/{key}/legion/daemon", { key: project });
+  }
+
+  /** Names the daemon a project's state is read from, and answers the row as it was stored.
+   *  Deployment-scoped (`scopeDeployment`), so a credential naming one project is refused it; a
+   *  `state_url` that is not an absolute http(s) URL with a host and no path, carrying no user,
+   *  password, query or fragment, is `400 LEGION_SETTING_INPUT` with the server's own reason
+   *  (`legionStateURL` in packages/envoy/internal/dispatch/api/settings_legion.go), and an
+   *  unknown project is `404 PROJECT_NOT_FOUND`. */
+  putLegionDaemon(project: string, stateUrl: string, bounds: WriteBounds) {
+    return this.put(
+      "/api/v1/projects/{key}/legion/daemon",
+      { key: project },
+      { state_url: stateUrl },
+      bounds
+    );
+  }
+
+  /** Stops reading a project's daemon: what was read stays, and nothing re-reads it. Scoped as
+   *  the PUT is; a project with no daemon is `404 NOT_FOUND`. */
+  async deleteLegionDaemon(project: string, bounds: WriteBounds): Promise<void> {
+    await this.remove("/api/v1/projects/{key}/legion/daemon", { key: project }, bounds);
   }
 
   /** Creates a Delivery session group: its sessions' pull requests take it as their Parent agent.

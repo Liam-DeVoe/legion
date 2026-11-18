@@ -30,7 +30,7 @@ import {
 import { useAgentText } from "../refs/AgentName";
 import { buildReferencePath, parseNodeReference } from "../refs/routes";
 import { agentRoleWord } from "./agent-role";
-import { type Clamp, watchClamp } from "./clamp-measurer";
+import { type Clamp, sameClamp, watchClamp } from "./clamp-measurer";
 import { DecisionActions } from "./DecisionActions";
 import { STAGE_IN_ROW, useDocumentStage } from "./document-stage";
 import { ChildIssueFacts, ChildIssueTag } from "./IssueChildren";
@@ -39,6 +39,7 @@ import { isProposed } from "./issue-address";
 import {
   drawnLine,
   firstLineOf,
+  isStatement,
   lineWords,
   type NodeChip,
   type ParentLine,
@@ -62,6 +63,7 @@ import { authorText, pageChrome } from "./page-structure";
 import {
   ANSWER_LINES,
   type AuthorKind,
+  BLOCK_TYPE_NAMES,
   CONTROL_LABELS,
   GAP_LINES,
   GAP_WORDS,
@@ -74,9 +76,8 @@ import {
 import { documentWord, RowText } from "./RowText";
 
 /**
- * One row of the issue's outline, and the body it opens on focus (dispatch://INFRA-1196 R1,
- * R6, R9, R34, and the architect's rulings 1, 4, 5 and 6 in
- * dispatch://INFRA-1196/artifact/build-rulings-md).
+ * One row of the issue's outline, and the body it opens on focus (R1, R6, R9, R34, and the
+ * architect's rulings 1, 4, 5 and 6).
  *
  * A row reads from the left as the prototype's `.card` does: its bullet in its kind's colour,
  * which is also its fold control where it holds nodes, then its words, and at their end the
@@ -179,10 +180,11 @@ export function NodeRow({
   ownAnswer: boolean;
   pinned: boolean;
   /** Whether the row brings itself on screen while it has the focus (`useRowOnScreen`), which
-   *  every row does but two of the outline's: its first row as the page opens on it with no
-   *  question waiting on the reader, which stays where it stands until the reader acts, and
-   *  the row the reader is editing, which the editor's own caret keeps in view while it grows
-   *  as the reader writes. Both are `IssueTree.tsx`'s to set. */
+   *  every row does but three of the outline's: its first row as the page opens on it with no
+   *  question waiting on the reader, and the row a zoom leaves the reader on under the crumb line
+   *  it draws, each of which stays where it stands until the reader acts, and the row the reader
+   *  is editing, which the editor's own caret keeps in view while it grows as the reader writes.
+   *  All three are `IssueTree.tsx`'s to set. */
   placesItself?: boolean;
   /** What a key pressed on this row answers, where it answers in words (`ANSWER_LINES`): drawn at
    *  the row, last, until the next key, a focus move or leaving the tree clears it (R22). */
@@ -208,7 +210,7 @@ export function NodeRow({
   // The reader's own words: a turn a person wrote who is the reader (R34). An ask, a block or a
   // decision is not a turn, so its words are never the reader's here, whoever asked it.
   const own = author.reader && (node.type === "comment" || node.type === "message");
-  const tone = context ? "context" : toneOf(node.type, author.kind);
+  const tone = context ? "context" : toneOf(node, author.kind);
   // A folded branch draws one line and its count (R1); its focus draws its words whole.
   const collapsed = expanded === false;
   const oneLine = collapsed && !body;
@@ -582,8 +584,8 @@ export const UNTYPED: Readonly<Partial<Record<NodeType, true>>> = { comment: tru
  *  turn, by who wrote it: a person's words are the ink, an agent's the quiet grey. */
 export type Tone = keyof typeof pageKindBullet;
 
-function toneOf(type: NodeType, author: AuthorKind): Tone {
-  switch (type) {
+function toneOf(node: Pick<TreeNode, "statement" | "type">, author: AuthorKind): Tone {
+  switch (node.type) {
     case "ask":
       return "question";
     case "check":
@@ -609,7 +611,9 @@ function toneOf(type: NodeType, author: AuthorKind): Tone {
     case "criterion":
     case "constraint":
     case "requirement":
-      return "statement";
+      // Only the spec's own requirement is a statement (`isStatement`); one of any other
+      // document is a block and nothing more, in a block's colour (decision 246).
+      return isStatement(node) ? "statement" : "issue";
     case "callout":
     case "document":
     case "handoff":
@@ -738,11 +742,20 @@ export function RowMargin({
             className={`inline-flex items-center gap-1 font-semibold whitespace-nowrap ${pageKindTag[tone]}`}
             data-node-tag=""
           >
-            <NodeGlyph className="size-3 shrink-0" token={GLYPH_TOKENS.types[node.type]} />
-            {node.lens?.kind === undefined ? (
-              <span {...pageChrome}>{NODE_TYPE_NAMES[node.type]}</span>
+            {/* A `requirement` block of a document other than the spec is no statement: it says
+                its type's own word and draws no statement's shape (decision 246), as a `check`
+                block outside the Verification document draws no state word (decision 152). */}
+            {node.type === "requirement" && !isStatement(node) ? (
+              <span {...pageChrome}>{BLOCK_TYPE_NAMES.requirement}</span>
             ) : (
-              <span {...authorText}>{chipWords(kindWords(node.lens.kind))}</span>
+              <>
+                <NodeGlyph className="size-3 shrink-0" token={GLYPH_TOKENS.types[node.type]} />
+                {node.lens?.kind === undefined ? (
+                  <span {...pageChrome}>{NODE_TYPE_NAMES[node.type]}</span>
+                ) : (
+                  <span {...authorText}>{chipWords(kindWords(node.lens.kind))}</span>
+                )}
+              </>
             )}
           </span>
         )}
@@ -924,11 +937,11 @@ export function NodeOptions({
  * What the reader can do with the focused row, on one quiet line under it (the prototype's
  * `.acts`, drawn on the focused row alone): Reply on every row that takes a reply - a comment, a
  * message, an ask whatever its state, and the issue itself, whose reply is a new comment on it
- * (R16, dispatch://INFRA-3677) - Answer on an open question, and Change answer on a question the
+ * (R16) - Answer on an open question, and Change answer on a question the
  * reader answered. Each sets the line at the foot of the outline and puts the caret in it; `r`
  * and `a` press the first two from the keyboard (`useTreeKeymap.ts`). A typed node - a
  * statement, a check, a decision - takes no reply in today's model, which holds no reply to a
- * block (dispatch://INFRA-1253), so it draws none; and with no writer (`OutlineWriterProvider`)
+ * block, so it draws none; and with no writer (`OutlineWriterProvider`)
  * the row draws none of the three.
  *
  * Last, Copy reference copies the node's `dispatch://` address, as today's page offers it on the
@@ -1025,7 +1038,7 @@ export function RowActs({
 
 /**
  * A person's answer to an ask, which is part of the ask and no node of its own
- * (dispatch://INFRA-1150 R3, dispatch://INFRA-1196 R1): the page's word for it, who answered by
+ * (R1): the page's word for it, who answered by
  * a name and a shape as every author is drawn (R9), what they chose where the ask offers no list
  * to mark it in, and what they wrote, whole and character for character, keeping the line breaks
  * they typed (R9, ruling 1). The reader's own answer carries the ink rule their own words carry
@@ -1383,10 +1396,13 @@ export function MoreWords({
 /**
  * Where a row cuts its words, read from the words as the browser laid them out, which is the
  * prototype's own reading (`measureClamps`), by the page's one measurer (`clamp-measurer.ts`):
- * for a row that may be cut - an agent's words and an answered question - while it stands within
- * one screen of the viewport, and again when its width or its words change; never for any other
- * row. Undefined where the words are drawn whole, or not measured yet; a row the reader scrolled
- * away from keeps the cut it last had.
+ * for a row that may be cut - an agent's words and an answered question - as it mounts in view,
+ * before the page is painted, and while it stands within one screen of the viewport but wholly
+ * outside the view, and again when its width or its words change or the page's typeface
+ * arrives; never for any other row. A row in view keeps its length until a scroll leaves it
+ * wholly outside the view. Undefined where the words are drawn whole, or not measured yet; a row
+ * the reader scrolled away from keeps the cut it last had, save one measured on the fallback
+ * face, which is measured again once the typeface arrives.
  */
 export function useClamp(
   words: RefObject<HTMLElement | null>,
@@ -1399,15 +1415,7 @@ export function useClamp(
       setClamp(undefined);
       return;
     }
-    return watchClamp(element, (next) =>
-      setClamp((held) =>
-        held?.height === next?.height &&
-        held?.hidden === next?.hidden &&
-        held?.pictures === next?.pictures
-          ? held
-          : next
-      )
-    );
+    return watchClamp(element, (next) => setClamp((held) => (sameClamp(held, next) ? held : next)));
   }, [cuttable, words]);
   return cuttable ? clamp : undefined;
 }

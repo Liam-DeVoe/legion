@@ -57,7 +57,7 @@ function node(
   const text = `Words of ${id}.`;
   return {
     attributes: {},
-    author: null,
+    author: [],
     id,
     made_at: "2026-11-05T00:00:00Z",
     parent,
@@ -95,7 +95,7 @@ function bare(
   extra: Partial<TreeAnswerNode> = {}
 ): TreeAnswerNode {
   return node(id, supertag, parent, {
-    author: READER_ACTOR,
+    author: [READER_ACTOR],
     text: "",
     text_tree: undefined,
     ...extra,
@@ -121,7 +121,7 @@ function finding(
   extra: Partial<TreeAnswerNode> = {}
 ): TreeAnswerNode {
   return node(id, supertag, parent, {
-    author: READER_ACTOR,
+    author: [READER_ACTOR],
     text: `**${words}**`,
     text_tree: reading(words),
     ...extra,
@@ -130,7 +130,7 @@ function finding(
 
 /** A kind of the catalogue, which the read brings in as context for a `has_kind` tuple. */
 function lensKind(id: string, attributes: Record<string, unknown>, text = ""): TreeAnswerNode {
-  return bare(id, "lens_kind", null, { attributes, author: null, mark: "context", text });
+  return bare(id, "lens_kind", null, { attributes, author: [], mark: "context", text });
 }
 
 /** The words of the pre-mortem kind, longer than a chip holds. */
@@ -583,7 +583,7 @@ test("a lens on an ask's block stands under the ask, and one on no drafted paren
         bare("lost-risk", "risk", SECOND, { attributes: { heading: "Unseen." } }),
         node("doc-1", "document", KEY),
         lens(THIRD, "doc-1"),
-        node("q1", "ask", KEY, { author: READER_ACTOR }),
+        node("q1", "ask", KEY, { author: [READER_ACTOR] }),
         node("q1-words", "paragraph", "q1"),
         lens(FIRST, "q1-words"),
         finding("kept-finding", FIRST, "The question has two answers."),
@@ -608,10 +608,10 @@ test("a lens on a comment's block stands under the comment", () => {
   const { root } = drawn(
     answer(
       [
-        node("c1", "comment", KEY, { author: READER_ACTOR }),
+        node("c1", "comment", KEY, { author: [READER_ACTOR] }),
         node("c1-words", "paragraph", "c1"),
         lens(FIRST, "c1-words"),
-        node("m1", "message", KEY, { author: READER_ACTOR }),
+        node("m1", "message", KEY, { author: [READER_ACTOR] }),
         node("m1-list", "list", "m1"),
         node("m1-item", "paragraph", "m1-list"),
         lens(SECOND, "m1-item"),
@@ -645,7 +645,7 @@ test("a catalogue constraint is no row and its chip has no link", () => {
             reference: "w3.org/TR/WCAG22",
             standard,
           },
-          author: null,
+          author: [],
           mark: "context",
         }),
         PRE_MORTEM,

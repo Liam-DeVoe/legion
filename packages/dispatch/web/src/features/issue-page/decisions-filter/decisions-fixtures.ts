@@ -204,7 +204,7 @@ export function decisionNode(block: string, partial: Partial<TreeNode> = {}): Tr
 }
 
 /** One `shaped` tie, as today's read carries it: a link from a block of the decision to the
- *  node `ref` names (dispatch://INFRA-1150 R1). */
+ *  node `ref` names. */
 export function shaped(ref: string, stale = false): DecisionLink {
   return {
     created_at: "2026-11-10T00:00:00Z",
@@ -232,7 +232,7 @@ export function decision(block: string, partial: Partial<TreeAnswerNode> = {}): 
   return {
     asks: [],
     attributes: {},
-    author: null,
+    author: [],
     changed_at: "2026-11-10T12:00:00Z",
     changed_version: 1,
     document: { artifact_id: SPEC_DOCUMENT.id, position: 0, slug: SPEC_SLUG },
@@ -267,7 +267,7 @@ export function changeComment(
 ): TreeAnswerNode {
   return {
     attributes: {},
-    author: by,
+    author: [by],
     id,
     made_at: at,
     parent: block,
@@ -288,7 +288,7 @@ export function treeAnswer(nodes: readonly TreeAnswerNode[]): TreeAnswer {
     nodes: [
       {
         attributes: {},
-        author: null,
+        author: [],
         id: KEY,
         made_at: "2026-11-05T00:00:00Z",
         parent: null,

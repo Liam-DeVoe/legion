@@ -66,16 +66,16 @@ function keysOf<T extends object>(value: T): readonly (keyof T)[] {
 
 /**
  * A plain name for every kind of node the page draws, which is every kind the model holds: the
- * issue, the documents and images it carries, the five typed blocks of those documents, the
+ * issue, the documents and images it carries, the seven typed blocks of those documents, the
  * decisions and asks, the conversation, the results recorded against a check, and the child
  * issues.
  *
  * A key is the model's own token for the kind, so the page needs no second table to read a
- * node: `callout`, `ask`, `requirement`, `plan_task` and `check` are the block type names in
- * `packages/envoy/internal/dispatch/pmdoc/schema/blocks.json`, and `ask`, `comment` and
- * `message` are the item kinds of a `dispatch://` reference. A name is lowercase because the
- * page draws it inside its own sentences and rows, where a capital would read as a proper noun;
- * `sentenceCase` supplies the capital where a name opens a sentence or a heading.
+ * node: `callout`, `ask`, `requirement`, `plan_task`, `check`, `decision` and `reading` are the
+ * block type names in `packages/envoy/internal/dispatch/pmdoc/schema/blocks.json`, and `ask`,
+ * `comment` and `message` are the item kinds of a `dispatch://` reference. A name is lowercase
+ * because the page draws it inside its own sentences and rows, where a capital would read as a
+ * proper noun; `sentenceCase` supplies the capital where a name opens a sentence or a heading.
  */
 export const NODE_TYPE_NAMES = freeze({
   /** An `ask`: the word the approved pictures draw on its tag, "question" (R34). */
@@ -106,6 +106,8 @@ export const NODE_TYPE_NAMES = freeze({
   lens: "lens",
   message: "message",
   plan_task: "plan task",
+  /** A `reading` block: an agent's reading of a decision, or of a question a person answered,
+   *  written at the end of the block it reads. */
   reading: "reading",
   /** A `requirement` block, drawn by his word for it (R22, the Design's "The words"): a
    *  sentence that must be true of the software. */
@@ -117,6 +119,17 @@ export const NODE_TYPE_NAMES = freeze({
 
 /** One kind of node the page draws, by the model's own token for it. */
 export type NodeType = keyof typeof NODE_TYPE_NAMES;
+
+/**
+ * The name a typed block draws in a document that does not play its type's part, in place of
+ * its type's name, lowercase as every name above: a `requirement` block of any document but the
+ * issue's spec is no statement (`isStatement`), so its row's tag says its type's own word and
+ * never "statement" (decision 246), as a `check` block outside the Verification document draws
+ * no state word (decision 152).
+ */
+export const BLOCK_TYPE_NAMES = freeze({
+  requirement: "requirement",
+} as const);
 
 /**
  * The state words of each type whose state the model holds, and no entry at all for a type it
@@ -1270,12 +1283,14 @@ export const BLOCK_ATTRIBUTE_LABELS = freeze({
   copied_from: "copied from",
   copied_from_document: "copied from document",
   decided_by: "decided by",
-  /** The question a decision answers: an `ask` is a question on the page (`NODE_TYPE_NAMES`). */
+  /** The question the decision came from, by the page's word for an ask (R34). */
   from_ask: "from question",
   /** Why the block cannot be answered as written; "invalid" names a verdict, not the reason. */
   invalid: "problem",
   kept_by: "kept by",
-  kept_text_sum: "kept text sum",
+  /** The sum of the decision's words as the person who kept it read them: a decision whose
+   *  words no longer match it waits for review again. */
+  kept_text_sum: "sum of the words kept",
   kind: "kind",
   /** Whether the reader may choose more than one option. */
   multiple: "more than one answer",
@@ -1287,13 +1302,16 @@ export const BLOCK_ATTRIBUTE_LABELS = freeze({
   selected: "selected",
   /** The requirements a check or a plan task is there for; the spec's own verb for the edge. */
   serves: "serves",
+  /** The blocks a decision or a question shaped, by the spec's own verb for the edge, as
+   *  `serves` is. */
   shaped: "shaped",
   size: "size",
   state: "state",
   surface: "surface",
   title: "title",
   uncertainty: "uncertainty",
-  uncertainty_reason: "uncertainty reason",
+  /** Why the agent who made the decision is unsure of it. */
+  uncertainty_reason: "reason for the uncertainty",
   urgency: "urgency",
   when: "when",
 } as const);
@@ -1571,6 +1589,7 @@ export { phrasesIn };
  */
 export const UNASKED_SOURCES: readonly unknown[] = freeze([
   NODE_TYPE_NAMES,
+  BLOCK_TYPE_NAMES,
   NODE_STATE_WORDS,
   PRESET_NAMES,
   FILTER_SIGNAL_WORDS,

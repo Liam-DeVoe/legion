@@ -294,18 +294,17 @@ export function treeContext(
  * document's own name is its file name, `spec.md`, which is no word a reader reads it by (R21).
  *
  * Which document plays which part is the issue read's answer and nothing else: the id it names
- * for each (`primary_artifact_id`, `plan_artifact_id`, `verification_artifact_id`,
- * `decisions_artifact_id`), read by `primarySpec` and `roleDocument`, the rule the tree read's
- * blocks of each part are read by (`tree-read/tree-nodes.ts`' `blocksOfRole`). Where the issue
- * names no id for a part - none (`""`), or a Dispatch older than that part (absent) - no
- * document plays it, and a document flagged `primary` or carrying that part's `role` is named by
- * the page's word for a document: a chip naming "Spec" or "Decisions" opens a document whose
- * blocks the tree reads as that part.
+ * for each (`primary_artifact_id`, `plan_artifact_id`, `verification_artifact_id`), read by
+ * `primarySpec` and `roleDocument`, the rule the tree read's blocks of each part are read by
+ * (`tree-read/tree-nodes.ts`' `blocksOfRole`). Where the issue names no id for a part - none
+ * (`""`), or a Dispatch older than that part (absent) - no document plays it, and a document
+ * flagged `primary` or carrying that part's `role` is named by the page's word for a document: a
+ * chip naming "Spec" opens a document whose blocks the tree reads as that part.
  */
 function documentWord(issue: IssueDetails, document: Pick<Artifact, "id"> | undefined): string {
   if (document === undefined) return NODE_TYPE_NAMES.document;
   if (document.id === primarySpec(issue)?.id) return PRESET_NAMES.spec;
-  for (const role of ["plan", "verification", "decisions"] as const) {
+  for (const role of ["plan", "verification"] as const) {
     if (document.id === roleDocument(issue, role)?.id) return PRESET_NAMES[role];
   }
   return NODE_TYPE_NAMES.document;

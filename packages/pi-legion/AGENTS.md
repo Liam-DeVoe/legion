@@ -95,7 +95,12 @@ field from `legion.goDaemonApiVersion` when the plugin dropped its TypeScript-da
 (LEGION-223): a release before it declares the TypeScript daemon's 9 under this name and is
 refused naming that number. The split of the one plugin into this package and `@sjawhar/pi-envoy`
 (LEGION-247) moved no request, response or pane variable, so it bumped nothing of its own: the
-number is the one `DaemonAPIVersion` declares, last bumped by contract 146 (dispatch://INFRA-2614:
+number is the one `DaemonAPIVersion` declares, last bumped by contract 158 (dispatch://INFRA-1150:
+the `decisions` design-gate step is gone, so the step `register_gate` sends, each
+`gatedSteps[].step` of `GET /legion/v1/state` and each entry of the controller secret's
+`designGateSteps` is `criteria` or `spec`, the two names of `DESIGN_GATE_STEPS`; a state of a
+daemon of this contract names no other step, and a plugin of 151 parses it as before), after
+contract 146 (dispatch://INFRA-2614:
 a root at `admitted` carries its architect's `phaseEntry` and `givenEntry`, every issue carries
 `entryQueuedAt` and `entryConfirmedAt`, the two times of a claim's own record of its handshake of
 its last entry, which outlast that entry's task and which a tree's own root carries from its
@@ -532,7 +537,7 @@ controller on an earlier plugin release never runs against this daemon: contract
 subscription, `legion controller start` refuses to launch an Oh My Pi whose plugin speaks another
 contract, and the daemon refuses its registration with 409. A later
 `legion controller start` mints a new capability, so the earlier session's grants stop working.
-The CLI's `legion status <issue> <status>` is the operator's alone: it takes
+The CLI's `legion issue status <issue> <status>` is the operator's alone: it takes
 `--operator-token-file`, which buys a controller grant over the operator's bearer and, like
 `legion claims`, is refused when its group or others can read it; the controller session writes a
 status only through its tool's `set_status`.

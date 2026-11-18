@@ -123,7 +123,10 @@ export function lensDrafts(
   const draft = blank(context.treeIdOf(node.id), type, 0);
   draft.parents = parents;
   draft.at = node.made_at;
-  if (node.author !== null) draft.author = node.author;
+  // The read lists every author of the node's first version, the one who made it first ahead of
+  // the rest, and a row draws the first.
+  const author = node.author[0];
+  if (author !== undefined) draft.author = author;
   const address = addressOf(node, context);
   if (address !== undefined) draft.reference = address;
   const attributes = node.attributes;

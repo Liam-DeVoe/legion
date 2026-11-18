@@ -404,6 +404,7 @@ export function menuItems(menu: Locator): Promise<LensMenuItem[]> {
 export async function drawnIdOf(page: Page, readId: string): Promise<string | null> {
   expect(readId, `${readId} cannot be written into a selector`).not.toContain('"');
   const rows = issuePage(page).locator(`${SELECTORS.nodeRow}[data-node-read-id="${readId}"]`);
+  // One instant is this read's meaning: each caller polls it, or reads it after a poll.
   return (await rows.count()) === 0 ? null : rows.first().getAttribute("data-node-id");
 }
 

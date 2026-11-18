@@ -98,6 +98,29 @@ test("the live feed reads down while Dispatch has ended its subscription on a so
   }
 });
 
+// Dispatch can refuse the feed after it started it, the socket staying open: it then holds no
+// subscription, and the page sends the feed again only after a backoff. From the refusal until
+// Dispatch starts the next send, no event can arrive, so the feed is down.
+test("the live feed reads down once Dispatch refuses a subscription it had started", () => {
+  // The backoff before the page sends the feed again: 1 s, at the middle of its spread.
+  const random = spyOn(Math, "random").mockReturnValue(0.5);
+  try {
+    withFeed(() => {
+      const socket = sockets.latest();
+      socket.open();
+      const { sub } = socket.subscribed("events");
+      socket.receive({ type: "events_start", sub, since: "30", replay_complete: false });
+      expect(liveFeedUp(client), "the feed Dispatch started").toBe(true);
+      socket.receive({ type: "error", sub, code: "STREAM_UNAVAILABLE", message: "no feed" });
+      expect(socket.readyState, "the socket stays open").toBe(1);
+      expect(socket.subscribes(), "the feed not sent again yet").toHaveLength(1);
+      expect(liveFeedUp(client), "the started feed refused, its next send waiting").toBe(false);
+    });
+  } finally {
+    random.mockRestore();
+  }
+});
+
 test("the live feed reads up once Dispatch has started its subscription on the open socket", () => {
   // The reconnect after a lost socket waits the middle of its first attempt's spread: 1 s.
   const random = spyOn(Math, "random").mockReturnValue(0.5);

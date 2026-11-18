@@ -211,7 +211,7 @@ function readNode(
 ): TreeAnswerNode {
   return {
     attributes: {},
-    author: null,
+    author: [],
     id,
     made_at: "2026-11-17T09:00:00Z",
     parent,
@@ -244,7 +244,7 @@ function treeAnswer(lenses: number): TreeAnswer {
       }),
       ...Array.from({ length: lenses }, (_unused, made) =>
         readNode(`0c6f1d2e-${made}000-4a6b-9c1d-5e2f3a4b5c60`, "lens", "r1", {
-          author: READER_ACTOR,
+          author: [READER_ACTOR],
           made_at: `2026-11-17T1${made}:00:00Z`,
         })
       ),

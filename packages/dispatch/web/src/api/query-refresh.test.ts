@@ -1,7 +1,12 @@
 import { afterEach, beforeEach, expect, jest, test } from "bun:test";
 import { QueryClient, type QueryKey, QueryObserver } from "@tanstack/react-query";
 
-import { MIN_REFETCH_INTERVAL_MS, refreshQueries, trackQueryFetches } from "./query-refresh";
+import {
+  MIN_REFETCH_INTERVAL_MS,
+  recordFetchSent,
+  refreshQueries,
+  trackQueryFetches,
+} from "./query-refresh";
 
 // The scheduler runs on the clock: every test drives fake timers, and each answer from the server
 // is a timer too, so a fetch takes exactly as long as the test says.
@@ -304,5 +309,52 @@ test("a test of a read's data while a fetch is out runs on the response that lan
     expect(inbox.mostInFlight()).toBe(1);
   } finally {
     inbox.stop();
+  }
+});
+
+// A fetch that waits before it sends its request - the issue page's tree read waits until no
+// write is out - records the moment it sends (`recordFetchSent`). A refresh asked while it waited
+// is answered by that request, and the next refresh keeps its second from the send, not from the
+// moment the fetch began waiting.
+test("a refresh asked while a fetch waits to send is answered by the request it sends, and the next waits a second from that send", async () => {
+  const queryClient = newClient();
+  const origin = Date.now();
+  const key = ["issue-tree", "CORE-1"];
+  const gate = Promise.withResolvers<void>();
+  const sent: number[] = [];
+  const observer = new QueryObserver(queryClient, {
+    queryFn: async () => {
+      await gate.promise;
+      recordFetchSent(queryClient, key);
+      sent.push(Date.now() - origin);
+      // Answered 50 ms on, on the test's fake clock.
+      const answer = Promise.withResolvers<void>();
+      setTimeout(answer.resolve, 50);
+      await answer.promise;
+      return sent.length;
+    },
+    queryKey: key,
+    retry: false,
+    staleTime: 30_000,
+  });
+  const unsubscribe = observer.subscribe(() => {});
+  try {
+    // The fetch begins at 0 and waits; a refresh is asked at 1,500 ms; it sends at 2,000 ms.
+    await advance(1_500);
+    refreshQueries(queryClient, [{ exact: true, queryKey: key }]);
+    await advance(500);
+    gate.resolve();
+    await settle();
+    // It lands at 2,050 ms; a refresh at 2,300 ms waits for a second after the send.
+    await advance(300);
+    refreshQueries(queryClient, [{ exact: true, queryKey: key }]);
+    await advance(3_000);
+
+    expect(sent).toHaveLength(2);
+    expect(sent[0]).toBe(2_000);
+    expect(sent[1]).toBeGreaterThanOrEqual(2_000 + MIN_REFETCH_INTERVAL_MS);
+    expect(sent[1]).toBeLessThan(2_000 + MIN_REFETCH_INTERVAL_MS + 20);
+  } finally {
+    unsubscribe();
   }
 });

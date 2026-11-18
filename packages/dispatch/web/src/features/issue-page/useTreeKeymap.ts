@@ -136,8 +136,8 @@ function pressedByAKey(control: HTMLElement): boolean {
  * the tree because every row but that one takes no focus. `rows` answers the tree's rows as the
  * browser holds them, in order, and `moveTo` moves the reader to the row at an index of them.
  *
- * It is exported because another drawing of the page, a chart of the plan, enters its rows as
- * the outline is entered.
+ * It is exported for the Plan view's chart, which is to enter its rows as the outline is
+ * entered.
  */
 export function treeEnterKey({
   moveTo,
@@ -322,7 +322,16 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
           return;
         }
         tree.onReport("");
-        if (tree.oneNodeAtATime) {
+        // The row the tree is zoomed to is the view's own root, drawn open over what it holds:
+        // where the tree is read one node at a time, zooming into it again moved nothing and
+        // said nothing, so the key steps into it as into any open row, and says where it holds
+        // nothing to step into.
+        const zoomRoot = row.node.id === tree.zoom;
+        if (zoomRoot && row.expanded === undefined) {
+          tree.onReport(KEY_REPORTS.nothing_under);
+          return;
+        }
+        if (tree.oneNodeAtATime && !zoomRoot) {
           if (row.expanded !== undefined) tree.onZoom(row.node.id);
           return;
         }
@@ -365,8 +374,18 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
         }
         tree.onReport("");
         if (tree.oneNodeAtATime) {
+          // A child of the row the tree is zoomed to asked to zoom to that row, which is the
+          // zoom already: at 390 px the key moved nothing and said nothing. It says so at the
+          // row, as every key with nowhere to go does, and the zoom's own row zooms out.
           const parent = row.trail.at(-1);
-          if (parent !== undefined) tree.onZoom(parent);
+          if (parent === undefined) return;
+          if (parent === tree.zoom) {
+            tree.onReport(
+              parent === tree.root.id ? KEY_REPORTS.whole_tree : KEY_REPORTS.parent_zoomed
+            );
+            return;
+          }
+          tree.onZoom(parent);
           return;
         }
         if (row.expanded === true) {

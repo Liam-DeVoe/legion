@@ -50,7 +50,7 @@ function node(
   const text = `Words of ${id}.`;
   return {
     attributes: {},
-    author: null,
+    author: [],
     id,
     made_at: "2026-11-05T00:00:00Z",
     parent,
@@ -188,7 +188,7 @@ test("a decision node answers the shape decisionsParts reads", () => {
     [
       block("r1", "requirement", SPEC, 0),
       d1,
-      node("c1", "comment", "d1", { author: { id: "alice", kind: "user" } }),
+      node("c1", "comment", "d1", { author: [{ id: "alice", kind: "user" }] }),
       block("q1", "ask", SPEC, 2),
       ALICE,
     ],

@@ -129,11 +129,12 @@ func (r *seedRun) writeArchitecture(ctx context.Context) error {
 // writeIssues writes every issue, parents before children, so issues_parent_key_fkey holds on
 // each row as it lands. The search vector, the title lexemes and the embedding queue row are the
 // triggers' work, as they are on every other write. Each batch writes its issues' nodes first, in
-// the transaction that copies their rows and in each issue's project, and each row names its node
-// (node_kind, node_address), as the server's issue create does (api's createIssue); the seed
-// records no event of an issue, so what the node write states carries the sentinel. A database
-// migrated from a release before the marker migration (20261116092210) carries no node columns on
-// issues, and its rows are written without them (carriesNodeMarker).
+// the transaction that copies their rows and in each issue's project, with the child_of of each
+// issue that has a parent, and each row names its node (node_kind, node_address), as the server's
+// issue create does (api's createIssue); the seed records no event of an issue, so what the node
+// write states carries the sentinel. A database migrated from a release before the marker migration
+// (20261116092210) carries no node columns on issues, and its rows are written without them
+// (carriesNodeMarker), and without a child_of, which the backfill states with the row's node.
 func (r *seedRun) writeIssues(ctx context.Context) error {
 	marked, err := r.carriesNodeMarker(ctx, "issues")
 	if err != nil {
@@ -150,6 +151,7 @@ func (r *seedRun) writeIssues(ctx context.Context) error {
 	return r.inBatches(ctx, "issues", len(issues), batchRows, func(ctx context.Context, tx pgx.Tx, from, to int) error {
 		rows := make([][]any, 0, to-from)
 		nodes := make([]graphstore.Node, 0, to-from)
+		var tuples []graphstore.Tuple
 		for index := from; index < to; index++ {
 			issue := issues[index]
 			project := r.plan.projects[issue.Project].Key
@@ -175,8 +177,11 @@ func (r *seedRun) writeIssues(ctx context.Context) error {
 			}
 			rows = append(rows, row)
 			nodes = append(nodes, graphstore.IssueNode(issue.Key, project, seedAuthor, issue.CreatedAt))
+			if marked && parent != nil {
+				tuples = append(tuples, graphstore.IssueChildOf(issue.Key, *parent, seedAuthor, issue.CreatedAt))
+			}
 		}
-		if err := graphstore.Write(ctx, tx, nodes, nil); err != nil {
+		if err := graphstore.Write(ctx, tx, nodes, tuples); err != nil {
 			return fmt.Errorf("the issues' nodes: %w", err)
 		}
 		_, err := tx.CopyFrom(ctx, pgx.Identifier{"issues"}, columns, pgx.CopyFromRows(rows))

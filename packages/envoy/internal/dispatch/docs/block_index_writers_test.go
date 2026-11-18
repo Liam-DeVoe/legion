@@ -241,7 +241,7 @@ func TestTheIndexPassesAreStoreWritersAndNoRepairExists(t *testing.T) {
 
 	requireTheTickLocksTheOwnerThenTheOwedRow(t, database, service)
 	requireTheItemBlockPassWritesNoStoreRow(t, database, service)
-	requireTheRebuildWritesNoProjectedRow(t, database)
+	requireTheRebuildWritesRefsAndNoProjectedRow(t, database, document)
 }
 
 // requireTheTickLocksTheOwnerThenTheOwedRow holds each of the two rows the tick takes and reads
@@ -399,12 +399,23 @@ func requireTheItemBlockPassWritesNoStoreRow(t *testing.T, database *store.Store
 	}
 }
 
-// requireTheRebuildWritesNoProjectedRow holds refs.RebuildAll to what it is: a writer of refs
-// that marks the work the block index owes. A row of document_blocks, block_refs or comments
+// requireTheRebuildWritesRefsAndNoProjectedRow holds refs.RebuildAll to what it is: a writer of
+// refs that marks the work the block index owes. A row of document_blocks, block_refs or comments
 // written by it would make it a repair of the projection, which is what this fails on.
-func requireTheRebuildWritesNoProjectedRow(t *testing.T, database *store.Store) {
+//
+// The refs it writes are read as its own: the request already wrote the document's refs, so a
+// count after the rebuild would read those and pass a rebuild that wrote none. They are deleted
+// first, and the rebuild must write the same references back from the document's text.
+func requireTheRebuildWritesRefsAndNoProjectedRow(t *testing.T, database *store.Store, document string) {
 	t.Helper()
 	ctx := context.Background()
+	written := documentRefs(t, database, document)
+	if written == "" {
+		t.Fatalf("the request wrote no refs row of %s, so the rebuild has nothing to be seen writing", document)
+	}
+	if _, err := database.Pool.Exec(ctx, `delete from refs where from_kind = 'artifact' and from_id = $1`, document); err != nil {
+		t.Fatalf("delete the refs the request wrote of %s: %v", document, err)
+	}
 	projected := []string{"document_blocks", "block_refs", "comments"}
 	before := map[string]string{}
 	for _, table := range projected {
@@ -417,6 +428,12 @@ func requireTheRebuildWritesNoProjectedRow(t *testing.T, database *store.Store) 
 	if report.BlocksOwed == 0 {
 		t.Errorf("the rebuild marked %d documents owed a block index, want the ones it holds", report.BlocksOwed)
 	}
+	if rebuilt := documentRefs(t, database, document); rebuilt != written {
+		t.Errorf("the rebuild wrote the refs of %s as [%s], want the [%s] the request wrote and the test deleted before it ran",
+			document, rebuilt, written)
+	} else {
+		t.Logf("the rebuild wrote the refs of %s back: [%s]", document, rebuilt)
+	}
 	if report.Edges == 0 {
 		t.Errorf("the rebuild left %d references, want the ones it wrote", report.Edges)
 	}
@@ -426,6 +443,19 @@ func requireTheRebuildWritesNoProjectedRow(t *testing.T, database *store.Store) 
 				table, before[table], now)
 		}
 	}
+}
+
+// documentRefs is every refs row out of one document, by its far end, in one order.
+func documentRefs(t *testing.T, database *store.Store, document string) string {
+	t.Helper()
+	var held string
+	if err := database.Pool.QueryRow(context.Background(), `
+		select coalesce(string_agg(to_kind || ':' || to_id, ', ' order by to_kind, to_id), '')
+		from refs where from_kind = 'artifact' and from_id = $1
+	`, document).Scan(&held); err != nil {
+		t.Fatalf("read the refs of %s: %v", document, err)
+	}
+	return held
 }
 
 // indexPasses is every pass that writes document_blocks, block_refs, comments, graph_nodes or
@@ -439,9 +469,14 @@ func requireTheRebuildWritesNoProjectedRow(t *testing.T, database *store.Store) 
 // question that tells a writer from a repair.
 var indexPasses = map[string]string{
 	"api/comment_actions.go#commentAction":   "the request naming the action and the comment it acts on",
-	"api/comment_actions.go#editComment":     "the edit request's own body",
 	"api/comment_actions.go#reopenComment":   "the reopen request",
 	"api/comment_create.go#createCommentFor": "the create request's own body",
+	// An edit of a comment's words writes its row from the request's body, and, made for a run,
+	// restates the comment's node from that row it locked and caused by its own event, so the
+	// run's change of the comment is named (changed_by_run), as an edit of an ask's words names
+	// the ask's. Neither reads a row of either side to decide what the other says.
+	"api/comment_actions.go#editComment": "the edit request's own body, the comment's row it locked and the comment's own event",
+	"api/asks.go#editAsk":                "the edit request's own body, the ask's row it locked and the ask's own event",
 	// The comment path's two halves of one store write, split at its event (commentStoreWrite):
 	// the node and facts of the comment the request stores, then the same facts under the event
 	// that stored it. Neither reads a row of either side.
@@ -514,14 +549,17 @@ var indexPasses = map[string]string{
 	// One node's state, written or settled through the store's writer from the request and the
 	// node's own row: the state is a base attribute of the node, which no projection row holds.
 	"api/reasoning_write.go#writeNodeState": "the request's state, the node's own row and the issue it stands under",
-	// A document's retirement states its artifact node gone, keeping every other fact of the
-	// node, and appends that fact under the document.retired event it appends (graphstore.Caused).
-	"docs/retire.go#RetireDocument":   "the document the caller retires and the document.retired event it appended",
-	"docs/retire.go#writeRetiredNode": "the retired document's row and the node the store holds of it",
 	// An issue's own field write made for a run: the issue's node, restated from the PATCH and the
 	// issue's row it locked, and caused by the issue's own event, so the run's change of the issue
 	// is named (changed_by_run). It reads no row of either side to decide what the other says.
 	"api/issue_patch.go#patchIssue": "the PATCH's own body, the issue's row it locked and the issue's own event",
+	// An issue's relations its create and its PATCH state (dispatch://INFRA-1253 R9, R10): the
+	// claims and tuples the request names, read against the issue's own row, the issue_links rows
+	// it holds and the tuples its node states only to state what moved, and the node of the item
+	// its filed_from names where the store held none, from that item's own row, as the backfill
+	// writes it. Neither reads one side of a projection to mend the other.
+	"api/issue_relations.go#stateIssueRelations": "the request's relations and the issue's own event",
+	"api/issue_relations.go#stateFiledFromNode":  "the row of the item the request's filed_from names",
 	// A run of the command bar: its interaction node, its author's node and their tuples, written
 	// from the POST alone before the going_requests row that projects them, and each frame's value,
 	// written from the frame its writer hands it before the going_events row that projects it.
@@ -540,6 +578,25 @@ var indexPasses = map[string]string{
 	// as the store holds it, of which it moves the state alone, never mending a row from the store.
 	"graphcensus/backfill.go#writeRunFrames": "each going_events row an earlier build appended with no frame value, and the run's node row it takes first",
 	"graphcensus/backfill.go#writeGoneRun":   "the interaction node whose going_requests row an earlier build deleted, and that the row is gone",
+	// A document's retirement states its artifact node gone, keeping every other fact of the
+	// node, and appends that fact under the document.retired event it appends (graphstore.Caused).
+	// A removal of an untouched document states its node gone through the same writer, with each
+	// changed_by_run the node states now retracted - the store's own relations, which no
+	// projection holds, retracted because the document they name has gone - and appends those
+	// facts under the artifact.removed event it appends.
+	"docs/retire.go#RetireDocument":   "the document the caller retires and the document.retired event it appended",
+	"docs/retire.go#writeRetiredNode": "the retired or removed document's row, the node the store holds of it and the facts its caller states beside it",
+	// A person's Keep of an agent's decision states its kept_by and kept_text_sum on the decision's
+	// node and writes their projection row, decision_keeps, from the request and the decision the
+	// person read. It reads the kept_by the node holds only to retract one naming another person,
+	// so the node holds the one Keep the row projects: what moved, never a side mended.
+	"api/decisions.go#keepDecisionNode": "the Keep request, the decision the person read, and the kept_by its node holds",
+	// The decisions step's restore and conversion of an issue (dispatch://INFRA-1150 R6 to R9):
+	// each version it writes appends its index pass's facts under the version's event, and the
+	// moves, the ask nodes' relations and the Keeps it carries onto a decision's node are drawn
+	// from what it read of the issue's documents and asks under their locks, mending nothing.
+	"docs/decision_restore.go#writeVersion": "the facts the version's index pass stated and the event that recorded the version",
+	"docs/decision_restore.go#writeFacts":   "the restore's and the conversion's plan, read off the documents and the asks rows it locked",
 	// The block index's cause: what a version's index pass stated, appended under the event
 	// that recorded the version once it is appended (graphstore.Caused), which reads no
 	// projection and mends nothing.
@@ -556,13 +613,15 @@ var indexPasses = map[string]string{
 	// version's bytes on the node its row names, which reads that row's node column and nothing of
 	// the store; the node of each version every version insert writes, from the row its own insert
 	// returned; a removal's document and versions stated gone, read off the nodes the store holds
-	// of them so each keeps its supertag and its values, which reads the store to state what it
-	// writes into that same node and mends no projection from it; and an issue's tree artifact,
-	// its node and its part_of written from the issue its caller names, before the rows naming it.
+	// of them so each keeps its supertag and its values, the document's through
+	// docs.WriteRemovedNode with each changed_by_run its node states retracted, which reads the
+	// store to state what it writes into that same node and mends no projection from it; and an
+	// issue's tree artifact, its node and its part_of written from the issue its caller names,
+	// before the rows naming it.
 	"api/artifacts.go#statedVersionBytes":          "the upload's own bytes and the node its document's row names",
 	"docs/mutation.go#WriteVersionNode":            "the version row its write inserted and that row's document",
 	"api/artifact_removal.go#removedDocumentNodes": "the document the removal takes and the nodes the store holds of it and its versions",
-	"api/artifact_removal.go#removeArtifact":       "the facts removedDocumentNodes stated and the event the removal appended",
+	"api/artifact_removal.go#removeArtifact":       "the facts removedDocumentNodes stated, the changed_by_run its document's node states among them, and the artifact.removed event it appended",
 	"api/artifacts.go#createIssueTree":             "the issue its caller names and the slugs its documents hold",
 	// The seed's comments: their nodes, their author's person node and each comment's
 	// authored_by tuple, all drawn from the plan before any row is written (commentStoreWrite).
@@ -608,6 +667,10 @@ var indexPasses = map[string]string{
 	// found by an anti-join on graph_nodes since the row names no node, and its document's row,
 	// which give the node its address, its project and whether it is a query's version.
 	"graphcensus/census_versions.go#writeVersionBatch": "the artifact_versions rows no version node stands for, and their documents' rows",
+	// The backfill of the waits a process of the release before wrote: each issue_links row naming
+	// no node, its own content, read again under its issue's row, and that issue's own row, whose
+	// node the object pass wrote first.
+	"graphcensus/census_issues.go#writeIssueLinkBatch": "each pre-store issue_links row's own content and its issue's row",
 	// The erase (R5), the one statement of the tree that removes bytes. Its input is the node
 	// the operator named and what the store itself holds about it, which is neither side of a
 	// projection read to mend the other: it deletes both sides together, the store's through
@@ -677,9 +740,18 @@ var indexPasses = map[string]string{
 	// that release dropped, so it also reads what the store still asserts of the document
 	// (heldDocumentBlocks); what it states of those - gone, retracted - is decided by the render
 	// that does not hold them, as reconcileBlockParents reads the parents the store asserts to
-	// state the render's.
-	"refs/blocks.go#IndexBlocks":                "the version's render, each decision's stored decided_by, the pointer tuples the store holds at each block the render drops, and where another release indexed the document since the store stated it, what the store still asserts against that render",
-	"refs/block_nodes.go#reconcileBlockParents": "the version's render",
+	// state the render's. Of each block whose row it writes first and whose node records its
+	// authors (dispatch://INFRA-1253's T7), it reads the authors of the version that first holds
+	// it, off that version's own row, and whether the node states its authors already, off the
+	// store's own authored_by, which it reads only to add none where the node's first write did.
+	"refs/blocks.go#IndexBlocks": "the version's render, the authors of the versions its blocks first stand in, each decision's stored decided_by, the pointer tuples the store holds at each block the render drops, and where another release indexed the document since the store stated it, what the store still asserts against that render",
+	// The parents of a version's blocks, from its render. An authored node's first parent is its
+	// author's (D4 of dispatch://INFRA-1253's plan): the targets its parent attribute, its serves
+	// pointer and its From: line name in the render, read where they stand - a conversation item's
+	// issue and R2's test, a block's document - and after that its parent moves only where its
+	// parent attribute names another target than the parent value the store holds of it, which is
+	// read with its placement and its part_of to state what moved, never to mend a row.
+	"refs/block_nodes.go#reconcileBlockParents": "the version's render, and of each authored node the placement, part_of and parent value the store holds of it",
 	"refs/blocks.go#replaceBlockRefs":           "the version's render, and each decision's stored decided_by",
 	// The typed-node pass: the decision and reading nodes of the version, their values and their
 	// authors, from the version's render and the credential the version's write proved, and above
@@ -698,8 +770,12 @@ var projectedWrite = regexp.MustCompile(`(?is)\b(insert into|update|delete from)
 // own, and a scan of SQL alone would never see it. asks.Follow picks graphstore.WriteArms or
 // graphstore.WriteArmsUncaused by its cause and then calls what it picked, so a scan for calls
 // alone would read it as no writer, where graphstore's TestEveryStoreWriteCallSiteIsListed reads
-// the same use as one.
-var storeWriterCall = regexp.MustCompile(`\bgraphstore\.(Write|WriteUncaused|Caused|Authored|Reached|WriteArms|WriteArmsUncaused|EraseNode|RedactValues|FillScopes|Retarget)\b`)
+// the same use as one. The names are every exported function of graphstore that writes the store
+// or builds the statement that does, the list that test holds as storeWriteFunctions:
+// SessionRecorded writes a session's node through arms of its own, and a pass that wrote the
+// store through it alone would otherwise be read as no writer at all, and FillScopes is the
+// backfill's fill of the project of a node stored with none.
+var storeWriterCall = regexp.MustCompile(`\bgraphstore\.(Write|WriteUncaused|Caused|Authored|Reached|SessionRecorded|WriteArms|WriteArmsUncaused|EraseNode|RedactValues|FillScopes|Retarget|QueueFrameTuple)\b`)
 
 // projectionRead matches one read of either side of a projection: a projected table or the
 // store. A `delete from` is a write and no read, so the match takes the delete with it, and the

@@ -726,26 +726,38 @@ func requireTheBackfillIsFenced(t *testing.T, database *store.Store) {
 	}
 }
 
-// fenceWriter names where a statement that writes document_block_versions may live: the one
-// fenced writer. A statement that only owes a document an index writes no revision at all, so
-// it is told apart by what it sets rather than by where it is.
-const (
-	fenceWriterFile     = "refs/blocks.go"
-	fenceWriterFunction = "func standsAtVersion("
-)
+// fencedWriters names where a statement that writes a revision into document_block_versions may
+// live: the fenced writers, each by its file and its `func` line. A statement that only owes a
+// document an index writes no revision at all, so it is told apart by what it sets rather than by
+// where it is.
+//
+// The fence of one document's pass is standsAtVersion. An issue room adds two (T12a of
+// dispatch://INFRA-1253's plan, version 63: "it runs ... the same one pass under the tree artifact
+// that a settlement of the room runs, then clears the owed mark of every artifact of the room, the
+// tree's own included, in that transaction"): standsAtVersions, the same conditional write over
+// every document of the room the pass covers a version of, under the tree artifact's owner row;
+// and the room reconciliation (indexOwedRoom), which under that row, in the pass's transaction,
+// clears the mark of each artifact of the room the pass covers no version of.
+var fencedWriters = []struct{ file, function string }{
+	{"refs/blocks.go", "func standsAtVersion("},
+	{"refs/blocks.go", "func standsAtVersions("},
+	{"docs/block_index.go", "func (s *Service) indexOwedRoom("},
+}
 
 // owedRowWrite matches one statement of a Go source file that writes document_block_versions,
 // up to the backtick that ends it.
 var owedRowWrite = regexp.MustCompile("(?is)(insert into|update)\\s+document_block_versions\\b[^`]*")
 
 // requireOnlyTheFenceWritesTheOwedRow reads the source tree and fails on any statement that
-// writes a revision into document_block_versions outside the fenced writer. A statement that
+// writes a revision into document_block_versions outside the fenced writers. A statement that
 // sets the revision to null owes the document an index and asserts nothing, so it is allowed
 // wherever it is; one that writes a number is the fence's alone, and a backfill or a repair
-// that wrote one would be caught here rather than in production.
+// that wrote one would be caught here rather than in production. Each fenced writer must hold
+// such a statement, so the list names no writer that is gone.
 func requireOnlyTheFenceWritesTheOwedRow(t *testing.T) {
 	t.Helper()
 	found := 0
+	wrote := make([]bool, len(fencedWriters))
 	for _, file := range dispatchSourceFiles(t) {
 		body, err := os.ReadFile(file)
 		if err != nil {
@@ -767,14 +779,25 @@ func requireOnlyTheFenceWritesTheOwedRow(t *testing.T) {
 			}
 			found++
 			enclosing := enclosingFunction(text, match[0])
-			if !strings.HasSuffix(filepath.ToSlash(file), fenceWriterFile) || !strings.HasPrefix(enclosing, fenceWriterFunction) {
-				t.Errorf("%s writes a revision into document_block_versions in %q, outside the fenced writer %s in %s:\n%s",
-					file, enclosing, fenceWriterFunction, fenceWriterFile, statement)
+			fenced := false
+			for index, writer := range fencedWriters {
+				if strings.HasSuffix(filepath.ToSlash(file), writer.file) && strings.HasPrefix(enclosing, writer.function) {
+					fenced, wrote[index] = true, true
+				}
+			}
+			if !fenced {
+				t.Errorf("%s writes a revision into document_block_versions in %q, outside the fenced writers %+v:\n%s",
+					file, enclosing, fencedWriters, statement)
 			}
 		}
 	}
 	if found == 0 {
 		t.Errorf("the source read found no statement writing a revision into document_block_versions, so it proves nothing")
+	}
+	for index, writer := range fencedWriters {
+		if !wrote[index] {
+			t.Errorf("%s %s writes no revision into document_block_versions: the fenced writer this test names is not where it looks", writer.file, writer.function)
+		}
 	}
 }
 

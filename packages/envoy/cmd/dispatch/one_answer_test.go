@@ -21,11 +21,9 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/crdt"
 
@@ -289,61 +287,6 @@ func askNodeHolds(t *testing.T, ctx context.Context, database *pgx.Conn, askID s
 	return held
 }
 
-// otherBuild keeps a row of the registry live for a process of the build commit, as a process of
-// that build serving beside this head registers one (processes.Register), with the head's own key
-// set and schema numbers, so the head's admission reads one fleet. It heartbeats every two seconds
-// until stop removes it, which leaves the fleet one build again.
-type otherBuild struct {
-	stop func()
-}
-
-func registerOtherBuild(t *testing.T, ctx context.Context, databaseURL, commit string) otherBuild {
-	t.Helper()
-	conn, err := pgx.Connect(ctx, databaseURL)
-	if err != nil {
-		t.Fatalf("connect to register a process of the build %s: %v", commit, err)
-	}
-	instance := uuid.NewString()
-	tag, err := conn.Exec(ctx, `
-		insert into server_processes (instance, commit, dashboard_build, signing_keys, started_at, heartbeat_at,
-			schema_version, schema_creatable, embedder_identity, file_store)
-		select $1::uuid, $2, dashboard_build, signing_keys, now(), now(), schema_version, schema_creatable, embedder_identity, file_store
-		from server_processes where commit = $3 order by heartbeat_at desc limit 1
-	`, instance, commit, headBuildStamp)
-	if err != nil || tag.RowsAffected() != 1 {
-		t.Fatalf("register a process of the build %s beside the head: %v (%d rows)", commit, err, tag.RowsAffected())
-	}
-	done := make(chan struct{})
-	var wait sync.WaitGroup
-	wait.Add(1)
-	go func() {
-		defer wait.Done()
-		ticker := time.NewTicker(2 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-done:
-				return
-			case <-ticker.C:
-				_, _ = conn.Exec(ctx, `update server_processes set heartbeat_at = now() where instance = $1::uuid`, instance)
-			}
-		}
-	}()
-	var once sync.Once
-	stop := func() {
-		once.Do(func() {
-			close(done)
-			wait.Wait()
-			if _, err := conn.Exec(ctx, `delete from server_processes where instance = $1::uuid`, instance); err != nil {
-				t.Errorf("remove the process of the build %s: %v", commit, err)
-			}
-			_ = conn.Close(ctx)
-		})
-	}
-	t.Cleanup(stop)
-	return otherBuild{stop: stop}
-}
-
 // insertAskBlock has the test's agent append an ask block to the document, an edit the document
 // versions at once, and waits for the settlement that indexes it; it answers the ask's id.
 func insertAskBlock(t *testing.T, p *dispatchProcess, issueKey, artifactID, blockID, question string) string {
@@ -364,9 +307,10 @@ const oneAnswerSpec = "# One answer\n\nThe service ships behind a flag.\n\n" +
 // through the answer route, and the answer is on the ask's node, each fact under the ask.answered
 // that caused it, and on the asks row; the document's stored bytes and its newest version do not
 // move; the block holds no answer, no answerer, no time and no selection, in its stored bytes and
-// in the live tree; and an approval recorded before the answer still stands after it, the answer
-// reporting no superseded approval. before is the document's newest stored text before the
-// answer, which the caller has read.
+// in the live tree; and an approval recorded before the answer still stands after it: the answer's
+// reply carries no superseded_approval in its advice, the member a document write reports the
+// approval it superseded through, and GET /api/v1/artifacts/{id} reads the approval at the
+// document's latest version, which did not move.
 func requireAnswerHeldOnce(t *testing.T, ctx context.Context, p *dispatchProcess, database *pgx.Conn, artifactID, askID, blockID, what string) {
 	t.Helper()
 	settledDocument(t, ctx, p, database, artifactID)
@@ -380,8 +324,14 @@ func requireAnswerHeldOnce(t *testing.T, ctx context.Context, p *dispatchProcess
 
 	const text = "Ship it once the flag is on."
 	answered := answerAsk(t, p, askID, "Ship", text)
-	if strings.Contains(string(answered), "superseded_approval") {
-		t.Errorf("%s: the answer reports a superseded approval: %s", what, answered)
+	var reply struct {
+		Advice map[string]json.RawMessage `json:"advice"`
+	}
+	if err := json.Unmarshal(answered, &reply); err != nil {
+		t.Fatalf("%s: decode the answer's reply: %v: %s", what, err, answered)
+	}
+	if superseded, reported := reply.Advice["superseded_approval"]; reported {
+		t.Errorf("%s: the answer reports the superseded approval %s, want none: %s", what, superseded, answered)
 	}
 	event := answeredEvent(t, ctx, database, askID)
 	var state string
@@ -445,7 +395,7 @@ func requireAnswerHeldOnce(t *testing.T, ctx context.Context, p *dispatchProcess
 // a process of the base release is registered, the roll window keeps the block in step for that
 // build's pages; once it is gone the helper writes nothing. A block that fails the strict read and
 // claims an answer puts none on the node, a copy is one copied_from tuple and no attribute, and the
-// whole case holds over an ask the base release wrote and this head's boot step carried forward.
+// whole case holds over asks the base release wrote and this head's boot step carried forward.
 // Last, the source of docs and pmdoc declares neither deleted writer.
 func TestAnAnswerIsHeldOnceOnTheAskNode(t *testing.T) {
 	ctx := context.Background()
@@ -458,20 +408,26 @@ func TestAnAnswerIsHeldOnceOnTheAskNode(t *testing.T) {
 	}
 	defer database.Close(ctx)
 
-	// The base release writes an ask before the upgrade, and the test captures it.
+	// The base release writes two asks before the upgrade, and the test captures them.
 	previous := startDispatchProcessWith(t, databaseURL, dispatchOptions{Binary: base, SigningKey: previousBuildSigningKey, SettleDelay: oneAnswerSettleDelay})
 	previous.waitHealthy(t)
 	baseCommit := announcedBaseCommit(t, ctx, database)
 	previous.call(t, http.MethodPost, "/api/v1/projects", `{"key":"ONE","name":"One answer"}`, http.StatusCreated)
-	carriedIssue, carriedSpec := createCensusIssue(t, previous, "ONE", "An ask the base release wrote",
-		"# Carried\n\n:::ask{#carried urgency=\"med\" multiple=\"false\"}\nCarry the ask forward?\n\n- Ship: Now.\n- Hold: Later.\n:::\n")
+	carriedIssue, carriedSpec := createCensusIssue(t, previous, "ONE", "Asks the base release wrote",
+		"# Carried\n\n:::ask{#carried urgency=\"med\" multiple=\"false\"}\nCarry the ask forward?\n\n- Ship: Now.\n- Hold: Later.\n:::\n\n"+carriedSourceBlock)
 	carriedAsk := blockAskOf(t, previous, carriedIssue, "carried")
+	carriedSource := blockAskOf(t, previous, carriedIssue, "carried-source")
 	_, capturedMarkdown := latestMarkdown(t, previous, carriedSpec)
-	var capturedState, capturedQuestion string
-	if err := database.QueryRow(ctx, `select state, question from asks where id = $1::uuid`, carriedAsk).Scan(&capturedState, &capturedQuestion); err != nil {
-		t.Fatalf("capture the base release's ask: %v", err)
+	type capturedAsk struct{ state, question string }
+	captured := map[string]capturedAsk{}
+	for _, id := range []string{carriedAsk, carriedSource} {
+		var ask capturedAsk
+		if err := database.QueryRow(ctx, `select state, question from asks where id = $1::uuid`, id).Scan(&ask.state, &ask.question); err != nil {
+			t.Fatalf("capture the base release's ask %s: %v", id, err)
+		}
+		captured[id] = ask
 	}
-	t.Logf("captured before the upgrade: ask %s %s %q, markdown:\n%s", carriedAsk, capturedState, capturedQuestion, capturedMarkdown)
+	t.Logf("captured before the upgrade: asks %v, markdown:\n%s", captured, capturedMarkdown)
 	stopProcess(t, previous)
 
 	// This head alone: the test registers no other build.
@@ -485,72 +441,146 @@ func TestAnAnswerIsHeldOnceOnTheAskNode(t *testing.T) {
 		t.Fatalf("the live processes serve %v, want this head's build alone", commits)
 	}
 	issue, spec := createCensusIssue(t, current, "ONE", "One answer", oneAnswerSpec)
-	own := blockAskOf(t, current, issue, "own")
-	source := blockAskOf(t, current, issue, "source")
-	requireAnswerHeldOnce(t, ctx, current, database, spec, own, "own", "the head's own ask")
-	for id, attributes := range liveAskAttributesOf(t, current, spec) {
-		for _, name := range storedAskAttributes {
-			if value, held := attributes[name]; held {
-				t.Errorf("on a fleet of one build the live tree's block %s holds %s=%v, want none of the seven", id, name, value)
+	requireOneAnswerCase(t, ctx, current, database, databaseURL, baseCommit, oneAnswerCase{
+		what: "the head's asks", issue: issue, spec: spec,
+		own: blockAskOf(t, current, issue, "own"), ownBlock: "own",
+		source: blockAskOf(t, current, issue, "source"), sourceBlock: "source", sourceMarkdown: oneAnswerSourceBlock,
+	})
+
+	// The whole case again over the asks the base release wrote, compared with the capture.
+	for id, want := range captured {
+		var question string
+		var marked bool
+		if err := database.QueryRow(ctx, `select question, node_kind is not null from asks where id = $1::uuid`, id).Scan(&question, &marked); err != nil || !marked || question != want.question {
+			t.Fatalf("the carried ask %s reads %q, marked %t (%v), want the captured question %q on a node the boot step stated", id, question, marked, err, want.question)
+		}
+		if state := askNodeHolds(t, ctx, database, id)[graphstore.TupleAnswerState].ToID; state != want.state {
+			t.Errorf("the carried ask %s's node holds answer_state %q, want the captured %q", id, state, want.state)
+		}
+	}
+	if _, markdown := latestMarkdown(t, current, carriedSpec); markdown != capturedMarkdown {
+		t.Errorf("the carried document reads otherwise than the capture before the upgrade:\n%s\nwant:\n%s", markdown, capturedMarkdown)
+	}
+	requireOneAnswerCase(t, ctx, current, database, databaseURL, baseCommit, oneAnswerCase{
+		what: "the asks the base release wrote", issue: carriedIssue, spec: carriedSpec,
+		own: carriedAsk, ownBlock: "carried",
+		source: carriedSource, sourceBlock: "carried-source", sourceMarkdown: carriedSourceBlock,
+		baseWritten: true,
+	})
+
+	scanForTheDeletedWriters(t)
+}
+
+// oneAnswerSourceBlock and carriedSourceBlock are the asks the copy steps copy, the head's and the
+// base release's; each offers East, which the case answers.
+const (
+	oneAnswerSourceBlock = ":::ask{#source urgency=\"low\" multiple=\"false\"}\nWhich region goes first?\n\n- East: The quiet one.\n- West: The busy one.\n:::\n"
+	carriedSourceBlock   = ":::ask{#carried-source urgency=\"low\" multiple=\"false\"}\nWhich team carries it first?\n\n- East: The quiet one.\n- West: The busy one.\n:::\n"
+)
+
+// oneAnswerCase is the issue and the asks requireOneAnswerCase runs the check's case over: own, an
+// open ask of the issue's spec under the block ownBlock, and source, another, under the block
+// sourceBlock, whose markdown, sourceMarkdown, a copy carries. baseWritten is whether the base
+// release wrote the spec.
+type oneAnswerCase struct {
+	what, issue, spec   string
+	own, ownBlock       string
+	source, sourceBlock string
+	sourceMarkdown      string
+	baseWritten         bool
+}
+
+// requireOneAnswerCase is the whole of c-one-answer over c: the answer held once
+// (requireAnswerHeldOnce); while a process of the base release is registered, the roll window
+// keeping all eight attributes of a block answered meanwhile as its asks row and node hold them;
+// once it is gone, an answer that moves no byte; a block that fails the strict read and claims an
+// answer, which puts none on the node; and a copy of source on a second document, which is one
+// copied_from tuple and no attribute, names the spec through the source's parent tuple, and, once
+// the source is answered, owes a settlement, settles again and reads that answer through its own
+// text.
+func requireOneAnswerCase(t *testing.T, ctx context.Context, current *dispatchProcess, database *pgx.Conn, databaseURL, baseCommit string, c oneAnswerCase) {
+	t.Helper()
+	requireAnswerHeldOnce(t, ctx, current, database, c.spec, c.own, c.ownBlock, c.what)
+	// A spec this head wrote holds none of the seven anywhere on a fleet of one build. One the base
+	// release wrote keeps the state it wrote into each block until its first write on this build,
+	// which c-attribute-removal reads; the answer, which moves no byte, adds no answer to any.
+	held := storedAskAttributes
+	if c.baseWritten {
+		held = answerAttributes
+	}
+	for id, attributes := range liveAskAttributesOf(t, current, c.spec) {
+		for _, name := range held {
+			if value, ok := attributes[name]; ok {
+				t.Errorf("%s: on a fleet of one build the live tree's block %s holds %s=%v", c.what, id, name, value)
 			}
 		}
 	}
 
 	// While a process of the base release is registered, the roll window keeps the block in step.
-	roll := registerOtherBuild(t, ctx, databaseURL, baseCommit)
-	rolled := insertAskBlock(t, current, issue, spec, "roll", "Roll it out?")
+	roll := registerOtherBuild(t, ctx, databaseURL, baseCommit, headBuildStamp)
+	rolled := insertAskBlock(t, current, c.issue, c.spec, "roll", "Roll it out?")
 	answerAsk(t, current, rolled, "Ship", "Roll it out now.")
 	var rolledRow []byte
 	if err := database.QueryRow(ctx, `select answer from asks where id = $1::uuid`, rolled).Scan(&rolledRow); err != nil {
-		t.Fatalf("read the rolled ask's row: %v", err)
+		t.Fatalf("%s: read the rolled ask's row: %v", c.what, err)
 	}
 	var rolledAnswer struct {
-		User string    `json:"user"`
-		At   time.Time `json:"at"`
+		User     string    `json:"user"`
+		Selected []string  `json:"selected"`
+		Text     *string   `json:"text"`
+		At       time.Time `json:"at"`
 	}
-	if err := json.Unmarshal(rolledRow, &rolledAnswer); err != nil {
-		t.Fatalf("decode the rolled ask's answer: %v", err)
+	if err := json.Unmarshal(rolledRow, &rolledAnswer); err != nil || rolledAnswer.Text == nil {
+		t.Fatalf("%s: decode the rolled ask's answer %s: %v", c.what, rolledRow, err)
 	}
+	// The eight as the row and the node hold them: the block's own ask, so no copy of another
+	// document's, and one whose block reads, whose node holds no invalid reason.
 	inStep := map[string]any{
 		"state": "answered", "answered_by": rolledAnswer.User, "answered_at": asks.AnsweredAtValue(rolledAnswer.At),
-		"selected": []any{"Ship"}, "answer": "Roll it out now.",
+		"selected": rolledAnswer.Selected, "answer": *rolledAnswer.Text,
 	}
-	rolledBlock := liveAskAttributesOf(t, current, spec)["roll"]
-	for name, value := range inStep {
-		if got, _ := json.Marshal(rolledBlock[name]); string(got) != mustJSON(t, value) {
-			t.Errorf("while two builds serve the block holds %s=%s, want %s in step with the asks row", name, got, mustJSON(t, value))
+	if invalid := askNodeHolds(t, ctx, database, rolled)["invalid"].ToID; invalid != "" {
+		inStep["invalid"] = invalid
+	}
+	rolledBlock := liveAskAttributesOf(t, current, c.spec)["roll"]
+	for _, name := range append(slices.Clone(storedAskAttributes), "invalid") {
+		want, wanted := inStep[name]
+		got, held := rolledBlock[name]
+		if held != wanted || (wanted && mustJSON(t, got) != mustJSON(t, want)) {
+			t.Errorf("%s: while two builds serve the block holds %s=%s (held %t), want %s (held %t), in step with the asks row",
+				c.what, name, mustJSON(t, got), held, mustJSON(t, want), wanted)
 		}
 	}
-	settledDocument(t, ctx, current, database, spec)
-	if _, markdown := latestMarkdown(t, current, spec); !strings.Contains(markdown, `state="answered" answered_by="`+rolledAnswer.User+`"`) {
-		t.Errorf("while two builds serve the stored version does not hold the rolled answer:\n%s", markdown)
+	settledDocument(t, ctx, current, database, c.spec)
+	if _, markdown := latestMarkdown(t, current, c.spec); !strings.Contains(markdown, `state="answered" answered_by="`+rolledAnswer.User+`"`) {
+		t.Errorf("%s: while two builds serve the stored version does not hold the rolled answer:\n%s", c.what, markdown)
 	}
-	t.Logf("while a process of %s is registered the block reads %v", baseCommit, rolledBlock)
+	t.Logf("%s: while a process of %s is registered the block reads %v", c.what, baseCommit, rolledBlock)
 	roll.stop()
 
 	// The fleet is one build again: the helper writes nothing.
-	last := insertAskBlock(t, current, issue, spec, "last", "One more question?")
-	settledDocument(t, ctx, current, database, spec)
-	lastNumber, lastBefore := latestMarkdown(t, current, spec)
+	last := insertAskBlock(t, current, c.issue, c.spec, "last", "One more question?")
+	settledDocument(t, ctx, current, database, c.spec)
+	lastNumber, lastBefore := latestMarkdown(t, current, c.spec)
 	answerAsk(t, current, last, "Hold", "Not yet.")
-	settledDocument(t, ctx, current, database, spec)
-	if number, markdown := latestMarkdown(t, current, spec); number != lastNumber || markdown != lastBefore {
+	settledDocument(t, ctx, current, database, c.spec)
+	if number, markdown := latestMarkdown(t, current, c.spec); number != lastNumber || markdown != lastBefore {
 		for name, value := range storedAskBlock(t, markdown, "last").Attrs {
 			if slices.Contains(storedAskAttributes, name) {
-				t.Errorf("the roll window wrote %s=%v on the block once the fleet is one build", name, value)
+				t.Errorf("%s: the roll window wrote %s=%v on the block once the fleet is one build", c.what, name, value)
 			}
 		}
-		t.Errorf("once the fleet is one build the answer moved the document from version %d to %d:\n%s", lastNumber, number, markdown)
+		t.Errorf("%s: once the fleet is one build the answer moved the document from version %d to %d:\n%s", c.what, lastNumber, number, markdown)
 	}
-	for name, value := range liveAskAttributesOf(t, current, spec)["last"] {
+	for name, value := range liveAskAttributesOf(t, current, c.spec)["last"] {
 		if slices.Contains(storedAskAttributes, name) {
-			t.Errorf("once the fleet is one build the live tree's block last holds %s=%v", name, value)
+			t.Errorf("%s: once the fleet is one build the live tree's block last holds %s=%v", c.what, name, value)
 		}
 	}
 
 	// A block that fails the strict read and claims an answer and an answerer puts neither on the node.
-	probe := insertAskBlock(t, current, issue, spec, "probe", "Probe the forgery?")
-	editAsBrowser(t, current, spec, "Probe the forgery?", func(tree *pmdoc.Node) error {
+	probe := insertAskBlock(t, current, c.issue, c.spec, "probe", "Probe the forgery?")
+	editAsBrowser(t, current, c.spec, "Probe the forgery?", func(tree *pmdoc.Node) error {
 		for _, node := range tree.Children {
 			if id, _ := node.Attrs[pmdoc.BlockIDAttr].(string); node.Type == "ask" && id == "probe" {
 				node.Children[0].Children = nil
@@ -561,32 +591,29 @@ func TestAnAnswerIsHeldOnceOnTheAskNode(t *testing.T) {
 		}
 		return errors.New("the document holds no ask block probe")
 	})
-	settledDocument(t, ctx, current, database, spec)
+	settledDocument(t, ctx, current, database, c.spec)
 	probeHeld := askNodeHolds(t, ctx, database, probe)
 	for _, kind := range []string{graphstore.TupleAnswer, graphstore.TupleAnsweredBy, graphstore.TupleSelected, graphstore.TupleAnsweredAt} {
 		if tuple, held := probeHeld[kind]; held {
-			t.Errorf("the forged block put %s %q on the probe ask's node", kind, tuple.ToID)
+			t.Errorf("%s: the forged block put %s %q on the probe ask's node", c.what, kind, tuple.ToID)
 		}
 	}
 	// The ask settlement opened for the block states no answer_state of its own until something
 	// settles one; either way it is no answer.
 	if state := probeHeld[graphstore.TupleAnswerState].ToID; (state != "" && state != asks.StateOpen) || probeHeld["invalid"].ToID == "" {
-		t.Errorf("the probe ask's node holds answer_state %q and invalid %q, want it open and the reason its block fails the strict read", state, probeHeld["invalid"].ToID)
+		t.Errorf("%s: the probe ask's node holds answer_state %q and invalid %q, want it open and the reason its block fails the strict read", c.what, state, probeHeld["invalid"].ToID)
 	}
 
 	// A copy of the source ask on a second document - the same block id and the same wording, as
 	// a copy carries them - is one copied_from tuple and no attribute.
-	copyBody, err := json.Marshal(map[string]string{"name": "copy.md", "content": "# Copy\n\n:::ask{#source urgency=\"low\" multiple=\"false\"}\nWhich region goes first?\n\n- East: The quiet one.\n- West: The busy one.\n:::\n"})
-	if err != nil {
-		t.Fatal(err)
-	}
 	var uploaded struct {
 		Artifact struct {
 			ID string `json:"id"`
 		} `json:"artifact"`
 	}
-	if err := json.Unmarshal(current.call(t, http.MethodPost, "/api/v1/issues/"+issue+"/artifacts", string(copyBody), http.StatusCreated), &uploaded); err != nil {
-		t.Fatalf("upload the copy: %v", err)
+	copyBody := encodeJSON(t, map[string]string{"name": "copy.md", "content": "# Copy\n\n" + c.sourceMarkdown})
+	if err := json.Unmarshal(current.call(t, http.MethodPost, "/api/v1/issues/"+c.issue+"/artifacts", copyBody, http.StatusCreated), &uploaded); err != nil {
+		t.Fatalf("%s: upload the copy: %v", c.what, err)
 	}
 	copyDocument := uploaded.Artifact.ID
 	settledDocument(t, ctx, current, database, copyDocument)
@@ -595,8 +622,8 @@ func TestAnAnswerIsHeldOnceOnTheAskNode(t *testing.T) {
 	for time.Now().Before(deadline) {
 		if err := database.QueryRow(ctx, `
 			select count(*) from graph_tuples where kind = $1 and to_kind = $2 and to_id = $3 and asserted
-		`, graphstore.TupleCopiedFrom, graphstore.KindAsk, source).Scan(&copies); err != nil {
-			t.Fatalf("count the copies of the source ask: %v", err)
+		`, graphstore.TupleCopiedFrom, graphstore.KindAsk, c.source).Scan(&copies); err != nil {
+			t.Fatalf("%s: count the copies of the source ask: %v", c.what, err)
 		}
 		if copies > 0 {
 			break
@@ -604,16 +631,16 @@ func TestAnAnswerIsHeldOnceOnTheAskNode(t *testing.T) {
 		time.Sleep(200 * time.Millisecond)
 	}
 	if copies != 1 {
-		t.Errorf("the source ask has %d copied_from tuples, want one", copies)
+		t.Errorf("%s: the source ask has %d copied_from tuples, want one", c.what, copies)
 	}
-	for _, document := range []string{spec, copyDocument} {
+	for _, document := range []string{c.spec, copyDocument} {
 		_, markdown := latestMarkdown(t, current, document)
 		if strings.Contains(markdown, "copied_from") {
-			t.Errorf("document %s stores a copied_from attribute:\n%s", document, markdown)
+			t.Errorf("%s: document %s stores a copied_from attribute:\n%s", c.what, document, markdown)
 		}
 		for id, attributes := range liveAskAttributesOf(t, current, document) {
 			if value, held := attributes["copied_from_document"]; held {
-				t.Errorf("the live tree's block %s of %s holds copied_from_document=%v", id, document, value)
+				t.Errorf("%s: the live tree's block %s of %s holds copied_from_document=%v", c.what, id, document, value)
 			}
 		}
 	}
@@ -621,47 +648,53 @@ func TestAnAnswerIsHeldOnceOnTheAskNode(t *testing.T) {
 	if err := database.QueryRow(ctx, `
 		select (select to_id from graph_tuples where from_kind = $1 and from_id = $2 and kind = $3 and asserted order by seq desc limit 1),
 		       (select ref_key from artifacts where id = $4::uuid)
-	`, graphstore.KindAsk, source, graphstore.TuplePartOf, spec).Scan(&sourceDocument, &specKey); err != nil {
-		t.Fatalf("read the source ask's parent: %v", err)
+	`, graphstore.KindAsk, c.source, graphstore.TuplePartOf, c.spec).Scan(&sourceDocument, &specKey); err != nil {
+		t.Fatalf("%s: read the source ask's parent: %v", c.what, err)
 	}
 	if sourceDocument != specKey {
-		t.Errorf("the source ask's part_of reaches %q, want the spec %q", sourceDocument, specKey)
+		t.Errorf("%s: the source ask's part_of reaches %q, want the spec %q", c.what, sourceDocument, specKey)
 	}
-	answerAsk(t, current, source, "East", "East first.")
+
+	// The source is answered: the copy's document owes a settlement, and once it has settled again
+	// the copy reads the source's answer in the text an agent reads, naming the source and its
+	// document.
+	answerAsk(t, current, c.source, "East", "East first.")
 	var owed bool
 	if err := database.QueryRow(ctx, `select exists (select 1 from doc_settlements_pending where artifact_id = $1::uuid)`, copyDocument).Scan(&owed); err != nil || !owed {
-		t.Errorf("the answer to the source left the copy's document owing no settlement (%v), want it settled again", err)
+		t.Errorf("%s: the answer to the source left the copy's document owing no settlement (%v), want it settled again", c.what, err)
 	}
 	settledDocument(t, ctx, current, database, copyDocument)
 	var copiedState, copiedAnswer string
 	if err := database.QueryRow(ctx, `
 		with copied as (
-			select t.to_id from graph_tuples t join document_blocks b on b.node_id = t.from_id and b.artifact_id = $1::uuid and b.block_id = 'source'
+			select t.to_id from graph_tuples t join document_blocks b on b.node_id = t.from_id and b.artifact_id = $1::uuid and b.block_id = $5
 			where t.kind = $2 and t.asserted order by t.seq desc limit 1)
 		select coalesce((select to_id from graph_tuples where from_kind = 'ask' and from_id = (select to_id from copied) and kind = $3 order by seq desc limit 1), ''),
 		       coalesce((select to_id from graph_tuples where from_kind = 'ask' and from_id = (select to_id from copied) and kind = $4 order by seq desc limit 1), '')
-	`, copyDocument, graphstore.TupleCopiedFrom, graphstore.TupleAnswerState, graphstore.TupleAnswer).Scan(&copiedState, &copiedAnswer); err != nil {
-		t.Fatalf("read the copy's source answer: %v", err)
+	`, copyDocument, graphstore.TupleCopiedFrom, graphstore.TupleAnswerState, graphstore.TupleAnswer, c.sourceBlock).Scan(&copiedState, &copiedAnswer); err != nil {
+		t.Fatalf("%s: read the copy's source answer: %v", c.what, err)
 	}
 	if copiedState != asks.StateAnswered || copiedAnswer != "East first." {
-		t.Errorf("the copy settled again reads its source %q %q, want the source's answer", copiedState, copiedAnswer)
+		t.Errorf("%s: the copy settled again reads its source %q %q, want the source's answer", c.what, copiedState, copiedAnswer)
 	}
-
-	// The whole case again over the ask the base release wrote, compared with the capture.
-	var question string
-	var marked bool
-	if err := database.QueryRow(ctx, `select question, node_kind is not null from asks where id = $1::uuid`, carriedAsk).Scan(&question, &marked); err != nil || !marked || question != capturedQuestion {
-		t.Fatalf("the carried ask reads %q, marked %t (%v), want the captured question %q on a node the boot step stated", question, marked, err, capturedQuestion)
+	var text struct {
+		Markdown string `json:"markdown"`
 	}
-	if state := askNodeHolds(t, ctx, database, carriedAsk)[graphstore.TupleAnswerState].ToID; state != capturedState {
-		t.Errorf("the carried ask's node holds answer_state %q, want the captured %q", state, capturedState)
+	readJSON(t, current, "/api/v1/artifacts/"+copyDocument+"/text", &text)
+	opener := ""
+	for line := range strings.SplitSeq(text.Markdown, "\n") {
+		if strings.HasPrefix(line, ":::ask{#"+c.sourceBlock+" ") {
+			opener = line
+		}
 	}
-	if _, markdown := latestMarkdown(t, current, carriedSpec); markdown != capturedMarkdown {
-		t.Errorf("the carried document reads otherwise than the capture before the upgrade:\n%s\nwant:\n%s", markdown, capturedMarkdown)
+	for _, want := range []string{
+		`state="answered"`, `answered_by="` + dispatchTestLogin + `"`, `answer="East first."`,
+		`copied_from="` + c.source + `"`, `copied_from_document="dispatch://` + c.issue + `/spec"`,
+	} {
+		if !strings.Contains(opener, want) {
+			t.Errorf("%s: the copy's text, settled again, opens its block %q, want it holding %s:\n%s", c.what, opener, want, text.Markdown)
+		}
 	}
-	requireAnswerHeldOnce(t, ctx, current, database, carriedSpec, carriedAsk, "carried", "the ask the base release wrote")
-
-	scanForTheDeletedWriters(t)
 }
 
 func mustJSON(t *testing.T, value any) string {

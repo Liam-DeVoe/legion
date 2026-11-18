@@ -28,6 +28,10 @@
 -- targets, so block_pointer_targets finds no attribute of a document block under the ask's id and
 -- the types test lists the tie.
 --
+-- The three arms over asks and ask_followers, and the tuple arm's three joins to those rows, stay
+-- for one release (dispatch://INFRA-1150 R11): the root's own pull request deletes them.
+-- kept for one release: asks-arms
+--
 -- Each `exists` the tuple arm makes under its `case` ends in `offset 0`, the fence 20261109215947
 -- gives its three: PostgreSQL plans a correlated `exists` of equalities either as a probe per edge
 -- or as a hashed `= any` that reads the whole table once a statement, by its cost estimate alone,

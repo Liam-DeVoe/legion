@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -249,10 +250,9 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 		return
 	}
 	nodes, facts, marked := graphstore.AskFacts(rowID, project, parties, actor, createdAt, graphstore.NoEvent, places)
-	// The ask is the node this create makes, the first AskFacts gives, so it is marked changed
-	// (graphstore.Node's Changed): a create made for a run names it as changed by it. Its
-	// author's node is never marked.
-	nodes[0].Changed = true
+	// The ask is the node this create makes, first of the nodes AskFacts answers
+	// (graphstore.Created).
+	nodes[0] = graphstore.Created(nodes[0])
 	askNode, err := graphstore.WriteUncaused(r.Context(), tx, nodes, facts)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -608,12 +608,46 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// An edit of an ask's words made for a run (graphstore.WithRun, which withinGoingRun puts on
+	// a request naming its run) names the ask as changed by that run where it changed them
+	// (dispatch://INFRA-1950/spec#b-r-interaction): its question, or the words of an option
+	// (askWordsChanged); an edit of its urgency or of multiple alone changes no fact the store
+	// holds of the ask and no words of it, and names no change. Nothing else this route writes
+	// reaches the ask's node, so under a run it writes that node as the create and the backfill
+	// write it (graphstore.AskNode): in the project, or between the parties, of what it is asked
+	// on (graphstore.ScopeOf), made by its asker at its created_at, and marked changed. The node
+	// restates the ask, so a node already there keeps the state, the visibility, the made_at and
+	// the made_by the store holds and moves nothing else, and an ask a process of the release
+	// before created gets here the node the backfill would give it. The changed_by_run is this
+	// edit's, dated at its edited_at and signed by its writer (graphstore.Node's ChangedAt and
+	// ChangedBy). It is the last node row this transaction takes, after the ask's row and its
+	// document, and what it states waits for ask.edited (graphstore.Caused), as an issue's own
+	// field write does (patchIssue). A write made for no run writes no node and sends no
+	// statement more than it did.
+	var askNode graphstore.Uncaused
+	if graphstore.MadeForRun(documentCtx) && askWordsChanged(previous, ask) {
+		project, parties, err := graphstore.ScopeOf(documentCtx, tx, ask.IssueKey, ask.ArtifactID)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		node := graphstore.AskNode(ask.ID, project, parties, ask.Author, ask.CreatedAt)
+		node.Changed, node.ChangedAt, node.ChangedBy = true, editedAt, actor
+		if askNode, err = graphstore.WriteUncaused(documentCtx, tx, []graphstore.Node{node}, nil); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
 	event, err := s.appendEvent(documentCtx, tx, ownerOf(ask.IssueKey, ask.ArtifactID).event(
 		"ask.edited",
 		actor,
 		model.NewAskEditEventPayload(ask, previous, actor, askChanges),
 	))
 	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := graphstore.Caused(documentCtx, tx, askNode, event.ID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -641,6 +675,17 @@ func blockArtifactOf(ask model.Ask) (string, error) {
 		return "", fmt.Errorf("ask %q has block id without block artifact", ask.ID)
 	}
 	return *ask.BlockArtifactID, nil
+}
+
+// askWordsChanged is whether an edit changed the words of the ask, as the row now stores them
+// against what it held before: its question, or the label or the description of an option, an
+// option added or an option dropped. An option's block id is no word of it, and multiple and
+// urgency are none either. It is what an edit made for a run names the ask's node changed by
+// (editAsk).
+func askWordsChanged(previous model.AskEditPrevious, ask model.Ask) bool {
+	return previous.Question != ask.Question || !slices.EqualFunc(previous.Options, ask.Options, func(was, now model.AskOption) bool {
+		return was.Label == now.Label && was.Description == now.Description
+	})
 }
 
 func timestampPtr(value *time.Time) *string {

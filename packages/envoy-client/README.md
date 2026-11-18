@@ -293,19 +293,23 @@ record another process wrote is only while this one holds no role. Both read an 
 process named, exactly as an absent one. The mark is why a holder an older client's hand-back
 reached claims its role again at its next heartbeat and has it back, the grant writing a fresh
 record that carries no mark, rather than reading the lookup as confirmation until the role claim
-reaper frees the role a live window and up to one reap interval later.
+reaper frees the role a live window and up to one reap interval later. That holds for a claim
+that names the holder's process. A soft claim over a marked claim that names no process is
+weighed by that claim's renewal and refused until the renewal is older than the live window or
+the reaper frees the claim; the way back is an outright claim (`setRole` without `soft`), which
+lands at once and writes a fresh record with no mark.
 
 `setRole` and `unsubscribe` take a `clientInstanceID` of their own, sent as `client_instance_id`
 and omitted from the wire when the caller states none: the listener records the claim's as the
 process holding the role, and frees on a release only the role claims naming the release's own,
 so a second process that resumed this session id can neither take the role nor hand it back, and
-a release naming no process frees no claim that names one, while it frees a claim that names
-none outright. `unsubscribe` answers in `removed` the topics that left the record rather than the
-ones it named: a role lane topic whose claim the release did not free stays in the record,
-because one interest record serves every process running under one session id and that topic is
-the interest half of a claim that still stands. Such a release,
-where it names that role's own lane topic, is a hand-back, and the listener marks the claim it
-could not free. A release the holder's own renewal beat under
+a release naming no process frees no claim at all, and no release but the administrator's force
+frees a claim that names no process. `unsubscribe` answers in `removed` the topics that left the
+record rather than the ones it named: a role lane topic whose claim the release did not free
+stays in the record, because one interest record serves every process running under one session
+id and that topic is the interest half of a claim that still stands. Such a release, where it
+names that role's own lane topic, is a hand-back, and the listener marks the claim it could not
+free, whether that claim names a process or none. A release the holder's own renewal beat under
 each of its three conditional deletes fails rather than answering success, so `unsubscribe`
 rejects and the caller sends the hand-back again rather than treating the role as given up. A
 `setRole` soft claim (`soft`) naming a predecessor (`previousSessionID`) takes the role from it
@@ -658,7 +662,7 @@ the issue's messages for the reason, then close with one that points at it). The
 
 Successful write responses may include `advice`. The executor preserves that object as
 `details.advice` and appends short pointers after the subscription/follow suffix: a primary spec
-with no decision blocks, three or more session writes without a human response (with stronger
+with no ask blocks, three or more session writes without a human response (with stronger
 wording from six), a write while the issue is still in triage, and up to two still-open asks owned
 by the session. Ask replies do not trigger the write-cadence pointer and suppress an open-ask
 pointer when replying to that ask; a status-setting issue update does not trigger the triage
@@ -904,7 +908,7 @@ a PATCH that fails after the post names the posted message. The result is one li
 server refusal keeps its `code` (`INVALID_STATUS`, `ISSUE_CLOSED`, `EXTERNAL_LINK_TAKEN`) at the
 head of the thrown message.
 `dispatch request-approval` refuses, before it sends anything, while the version the request would
-name (the document's latest, `approval.latest_version`) holds a decision block open. It reads the
+name (the document's latest, `approval.latest_version`) holds an ask block open. It reads the
 live document's `ask` blocks (`GET /api/v1/artifacts/{id}/blocks`), then that version's markdown
 and the owner's asks (the issue's for an issue document, since the artifact route refuses those),
 and judges each block by its `state` on every line of the version that opens it, so a line quoting

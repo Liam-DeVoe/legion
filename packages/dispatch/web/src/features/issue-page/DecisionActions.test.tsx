@@ -30,7 +30,7 @@ import {
 } from "./tree-read/tree-read";
 
 /**
- * The two controls a decision's node draws (dispatch://INFRA-1196 R7). The tree is one tab stop,
+ * The two controls a decision's node draws (R7). The tree is one tab stop,
  * so neither takes the tab order and the row's own keys press them (`useTreeKeymap.ts`); what
  * this file reads is what the controls themselves do, which is what both a pointer and those
  * keys get. Each case holds the read the page holds, the tree read's answer, under the key the
@@ -69,7 +69,7 @@ function decisionNode(
   return {
     asks: [],
     attributes: {},
-    author: null,
+    author: [],
     changed_at: null,
     changed_version: 1,
     document: { artifact_id: document_.id, position: 1, slug: document_.slug },

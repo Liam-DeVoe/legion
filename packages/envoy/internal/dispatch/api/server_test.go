@@ -143,7 +143,7 @@ type testServerOptions struct {
 	browserPeers bool
 	// duplicateBound is the near-copy gate's bound (server.duplicateBound); zero keeps
 	// production's duplicateGateTimeout. A case that reads the gate's verdict passes
-	// nearCopyVerdictBound, so whether the machine met 500 ms is not what it measures.
+	// nearCopyVerdictBound, so whether the machine met duplicateGateTimeout is not what it measures.
 	duplicateBound time.Duration
 }
 
@@ -789,8 +789,8 @@ func (failingLoadStore) Load(context.Context, string) (persistence.LoadResult, e
 	return persistence.LoadResult{}, errors.New("persistence unavailable")
 }
 
-func (failingLoadStore) DocumentStamp(context.Context, string) (docs.DocumentStamp, error) {
-	return docs.DocumentStamp{}, errors.New("persistence unavailable")
+func (failingLoadStore) DocumentStamp(context.Context, string) (string, docs.DocumentStamp, error) {
+	return "", docs.DocumentStamp{}, errors.New("persistence unavailable")
 }
 
 func (failingLoadStore) LoadDocument(context.Context, string) (docs.LoadedDocument, error) {

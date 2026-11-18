@@ -21,6 +21,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/cmdtest"
+	"github.com/sjawhar/envoy/internal/dispatch/asks"
 )
 
 // askOpener is the opening line of an ask block, at any depth and under any quote or list prefix.
@@ -140,7 +141,7 @@ func TestAnApprovalCarriesAcrossTheRemovalOfTheServerOwnedAskAttributes(t *testi
 	baseCommit := announcedBaseCommit(t, ctx, database)
 	previous.call(t, http.MethodPost, "/api/v1/projects", `{"key":"RMV","name":"The removal"}`, http.StatusCreated)
 	issue, first := createCensusIssue(t, previous, "RMV", "The removal", removalDocument("one"))
-	uploadDocument(t, previous, issue, "source.md", "# Source\n\n:::ask{#shared urgency=\"med\" multiple=\"false\"}\nShare the source?\n\n- Share: Now.\n- Keep: Later.\n:::\n")
+	sourceDocument := uploadedID(t, uploadDocument(t, previous, issue, "source.md", "# Source\n\n:::ask{#shared urgency=\"med\" multiple=\"false\"}\nShare the source?\n\n- Share: Now.\n- Keep: Later.\n:::\n"))
 	blockAskOf(t, previous, issue, "shared")
 	previous.call(t, http.MethodPost, "/api/v1/artifacts/"+first+"/edits", encodeJSON(t, map[string]any{"ops": []map[string]string{{
 		"op": "insert", "after": "end", "markdown": ":::ask{#shared urgency=\"med\" multiple=\"false\"}\nShare the source?\n\n- Share: Now.\n- Keep: Later.\n:::\n",
@@ -186,6 +187,7 @@ func TestAnApprovalCarriesAcrossTheRemovalOfTheServerOwnedAskAttributes(t *testi
 	if !strings.Contains(thirdText, ":::reading{#read-r1}") {
 		t.Fatalf("this head's third document holds no reading:\n%s", thirdText)
 	}
+	thirdHeld := thirdDocumentHolds(t, ctx, database, third)
 
 	// The base release boots again beside this head, over the database this head migrated.
 	again := startDispatchProcessWith(t, databaseURL, dispatchOptions{Binary: base, SigningKey: previousBuildSigningKey, SettleDelay: oneAnswerSettleDelay})
@@ -203,17 +205,30 @@ func TestAnApprovalCarriesAcrossTheRemovalOfTheServerOwnedAskAttributes(t *testi
 	if versions, text := latestMarkdown(t, current, third); versions != thirdVersions || text != thirdText {
 		t.Errorf("the third document moved from version %d to %d while the base release served beside this head:\n%s", thirdVersions, versions, text)
 	}
+	if held := thirdDocumentHolds(t, ctx, database, third); held != thirdHeld {
+		t.Errorf("while the base release served beside this head the third document's ask row and reading node moved from %+v to %+v, want them as they were", thirdHeld, held)
+	}
 	// While both builds are live, an accepted write to the first document keeps the attributes, in
 	// step with the asks row: the upload takes them off, and the roll window writes them back.
 	uploadDocument(t, current, issue, documentName(t, current, first), one.markdown)
 	settledDocument(t, ctx, current, database, first)
 	_, rolled := latestMarkdown(t, current, first)
-	if withoutAskServerAttributes(rolled) != withoutAskServerAttributes(one.markdown) || !strings.Contains(rolled, `state="answered" answered_by="`+dispatchTestLogin+`"`) || !strings.Contains(rolled, `copied_from="`) {
-		t.Errorf("while both builds serve the first document reads:\n%s\nwant its attributes kept, in step with the asks row", rolled)
+	if withoutAskServerAttributes(rolled) != withoutAskServerAttributes(one.markdown) {
+		t.Errorf("while both builds serve the first document reads:\n%s\nwant its text as the person approved it, its attributes aside", rolled)
 	}
+	var sourceSlug string
+	if err := database.QueryRow(ctx, `select slug from artifacts where id = $1::uuid`, sourceDocument).Scan(&sourceSlug); err != nil {
+		t.Fatalf("read the source document's slug: %v", err)
+	}
+	requireBlockInStepWithRow(t, ctx, database, rolled, "decided-one", first, "")
+	requireBlockInStepWithRow(t, ctx, database, rolled, "pending-one", first, "")
+	requireBlockInStepWithRow(t, ctx, database, rolled, "shared", sourceDocument, "dispatch://"+issue+"/artifact/"+sourceSlug)
 	if approval := approvalOf(t, current, first); !approval.approvedLatest() {
 		t.Errorf("while both builds serve the first document reads %+v, want its approval carried", approval)
 	}
+	var rolledReviews []newestReview
+	readJSON(t, current, "/api/v1/artifacts/"+first+"/reviews", &rolledReviews)
+	t.Logf("while both builds serve the first document's reviews, newest first: %+v", rolledReviews)
 	stopProcess(t, again)
 	deadline := time.Now().Add(30 * time.Second)
 	for {
@@ -249,9 +264,12 @@ func TestAnApprovalCarriesAcrossTheRemovalOfTheServerOwnedAskAttributes(t *testi
 		}
 		approval := approvalOf(t, current, document.id)
 		carried := newestReviewOf(t, current, document.id)
-		prefix := fmt.Sprintf("Carried forward from the approval of version %d:", before.Version)
+		// The carried review records the version the person approved, whatever carries stand
+		// between it and this one.
+		prefix := fmt.Sprintf("Carried forward from the approval of version %d:", document.version)
 		if !approval.approvedLatest() || approval.LatestVersion != number || carried.Version != number || carried.Reason == nil || !strings.HasPrefix(*carried.Reason, prefix) {
-			t.Errorf("%s reads %+v with newest review %+v at version %d, want its approval carried there with a reason opening %q", document.name, approval, carried, number, prefix)
+			t.Errorf("%s reads %+v with newest review %+v at version %d (the newest review before the write: %+v), want its approval carried there with a reason opening %q",
+				document.name, approval, carried, number, before, prefix)
 		}
 		strippedApproved, strippedNew := withoutAskServerAttributes(document.markdown), withoutAskServerAttributes(rendering)
 		t.Logf("%s: the approved markdown without the eight is %d bytes, the new rendering %d", document.name, len(strippedApproved), len(strippedNew))
@@ -308,4 +326,75 @@ func requireSuperseded(t *testing.T, ctx context.Context, p *dispatchProcess, da
 		t.Errorf("%s (%s) left the document reading %+v, want its approval superseded", what, document.name, approval)
 	}
 	settledDocument(t, ctx, p, database, document.id)
+}
+
+// thirdDocumentRead is what the third document's ask and reading stand at: the ask row of its
+// block read-it, its state and its answer as stored, and the graph node of its reading read-r1 and
+// that node's state.
+type thirdDocumentRead struct {
+	ask, state, answer string
+	reading, nodeState string
+}
+
+// thirdDocumentHolds reads the third document's ask row and reading node (thirdDocumentRead).
+func thirdDocumentHolds(t *testing.T, ctx context.Context, database *pgx.Conn, artifactID string) thirdDocumentRead {
+	t.Helper()
+	var held thirdDocumentRead
+	if err := database.QueryRow(ctx, `
+		select a.id::text, a.state, coalesce(a.answer::text, ''),
+		       coalesce((select node_id from document_blocks where artifact_id = $1::uuid and block_id = 'read-r1'), ''),
+		       coalesce((select n.state from graph_nodes n join document_blocks b on n.id = b.node_id
+		                 where b.artifact_id = $1::uuid and b.block_id = 'read-r1' limit 1), '')
+		from asks a where a.block_artifact_id = $1::uuid and a.block_id = 'read-it'
+	`, artifactID).Scan(&held.ask, &held.state, &held.answer, &held.reading, &held.nodeState); err != nil {
+		t.Fatalf("read the third document's ask row and reading node: %v", err)
+	}
+	if held.reading == "" || held.nodeState == "" {
+		t.Fatalf("the third document's reading has no node: %+v", held)
+	}
+	return held
+}
+
+// requireBlockInStepWithRow fails t unless the ask block blockID of markdown, a stored version,
+// holds of the eight server-owned attributes exactly what the release before writes from the ask
+// row of the block blockID on rowDocument, each value as the row holds it: the state; for an
+// answered ask, who answered, when, the options chosen and the words; and, where copied is the
+// address of rowDocument, the row's ask and that address, the block being a copy. It never holds
+// invalid, which no stored version holds.
+func requireBlockInStepWithRow(t *testing.T, ctx context.Context, database *pgx.Conn, markdown, blockID, rowDocument, copied string) {
+	t.Helper()
+	var askID, state string
+	var answer []byte
+	if err := database.QueryRow(ctx, `select id::text, state, answer from asks where block_artifact_id = $1::uuid and block_id = $2`,
+		rowDocument, blockID).Scan(&askID, &state, &answer); err != nil {
+		t.Fatalf("read the ask row of the block %s: %v", blockID, err)
+	}
+	want := map[string]any{"state": state}
+	if state == "answered" && answer != nil {
+		var row struct {
+			User     string    `json:"user"`
+			Selected []string  `json:"selected"`
+			Text     *string   `json:"text"`
+			At       time.Time `json:"at"`
+		}
+		if err := json.Unmarshal(answer, &row); err != nil {
+			t.Fatalf("decode the answer of the block %s's ask: %v: %s", blockID, err, answer)
+		}
+		want["answered_by"], want["answered_at"], want["selected"] = row.User, asks.AnsweredAtValue(row.At), row.Selected
+		if row.Text != nil {
+			want["answer"] = *row.Text
+		}
+	}
+	if copied != "" {
+		want["copied_from"], want["copied_from_document"] = askID, copied
+	}
+	block := storedAskBlock(t, markdown, blockID)
+	for _, name := range []string{"state", "answered_by", "answered_at", "selected", "answer", "invalid", "copied_from", "copied_from_document"} {
+		wanted, isWanted := want[name]
+		got, held := block.Attrs[name]
+		if held != isWanted || (isWanted && mustJSON(t, got) != mustJSON(t, wanted)) {
+			t.Errorf("while both builds serve the block %s holds %s=%s (held %t), want %s (held %t), as its asks row holds it",
+				blockID, name, mustJSON(t, got), held, mustJSON(t, wanted), isWanted)
+		}
+	}
 }

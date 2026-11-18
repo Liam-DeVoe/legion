@@ -194,14 +194,16 @@ func (p *PgVersioned) Head(ctx context.Context, room string) (persistence.Versio
 	return p.head(ctx, rooms, room)
 }
 
-// DocumentStamp is the room's DocumentStamp now, read through the pool that owns loads, as Head
-// reads the head.
-func (p *PgVersioned) DocumentStamp(ctx context.Context, room string) (DocumentStamp, error) {
+// DocumentStamp is, read through the pool that owns loads as Head reads the head, the room
+// artifactID's document is edited in and the DocumentStamp of the stored history named artifactID
+// now, in one round trip (readDocumentStamp): the stamp is the room's where the document is its own
+// room, and a read of an issue room asks it by the room's own id.
+func (p *PgVersioned) DocumentStamp(ctx context.Context, artifactID string) (string, DocumentStamp, error) {
 	rooms, err := p.store.Pool.Rooms()
 	if err != nil {
-		return DocumentStamp{}, err
+		return "", DocumentStamp{}, err
 	}
-	return readDocumentStamp(ctx, rooms, room)
+	return readDocumentStamp(ctx, rooms, artifactID)
 }
 
 // AppendUpdate validates and stores one incremental V1 update as content: a batch of one

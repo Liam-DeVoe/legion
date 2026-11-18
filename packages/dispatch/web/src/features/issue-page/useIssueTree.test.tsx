@@ -1,4 +1,14 @@
-import { expect, jest, type Mock, setSystemTime, spyOn, test } from "bun:test";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  jest,
+  type Mock,
+  setSystemTime,
+  spyOn,
+  test,
+} from "bun:test";
 import { NO_ROUTE_ROLLING_RELEASE_MESSAGE } from "@legion/contracts";
 import {
   focusManager,
@@ -6,9 +16,10 @@ import {
   onlineManager,
   QueryClient,
   QueryClientProvider,
+  QueryObserver,
   useQuery,
 } from "@tanstack/react-query";
-import { act, render, renderHook, waitFor } from "@testing-library/react";
+import { act, type RenderHookResult, render, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
@@ -17,7 +28,7 @@ import { type FakeLiveSockets, installFakeLiveSockets } from "../../__tests__/li
 import { ApiError, api } from "../../api/client";
 import { useEventFeed } from "../../api/event-feed";
 import { eventRefreshTargets } from "../../api/event-refresh";
-import { liveSocketFor } from "../../api/live-socket";
+import { liveFeedUp, liveSocketFor } from "../../api/live-socket";
 import { issueCoverageQuery, issueQuery } from "../../api/queries";
 import { DispatchQueryClient, queryRetry, queryRetryDelay } from "../../api/query-client";
 import {
@@ -54,8 +65,11 @@ import {
   subscribeTreeFreshness,
   type TreeAnswer,
   type TreeAnswerNode,
+  type TreeRead as TreeReadState,
   type TreeTuple,
+  useTreeRead,
   viewKey,
+  viewQuery,
 } from "./tree-read/tree-read";
 import { ViewReadProvider } from "./tree-read/view-read";
 import { useIssueTree } from "./useIssueTree";
@@ -98,7 +112,7 @@ function answerNode(
 ): TreeAnswerNode {
   return {
     attributes: {},
-    author: null,
+    author: [],
     id,
     made_at: "2026-11-05T00:00:00Z",
     parent: KEY,
@@ -131,7 +145,7 @@ function treeAnswer(
       task,
       ...comments.map((one) =>
         answerNode(one.id, "comment", {
-          author: one.author,
+          author: [one.author],
           made_at: one.created_at,
           text: one.body,
         })
@@ -1354,7 +1368,7 @@ test("a second write while the first write's comments read is out reads the tree
 });
 
 /** How many reads of the tree, with no view or with `view`, have been sent. */
-function treeReadsOf(view?: "plan" | "spec"): number {
+function treeReadsOf(view?: "plan" | "spec" | "verification"): number {
   return (api.getIssueTree as Mock<typeof api.getIssueTree>).mock.calls.filter(
     ([, query]) => query?.view === view
   ).length;
@@ -1368,7 +1382,7 @@ function holdsComment(root: TreeNode): boolean {
 /** The filter on in a stage `turnedStage` draws, which a case turns off and on as the reader
  *  presses it. */
 interface FilterOn {
-  preset: "conversation" | "plan" | "spec";
+  preset: "conversation" | "plan" | "spec" | "verification";
 }
 
 /** The stage of the issue as `stageWrapper` mounts it, with whichever filter `on` names on, so a
@@ -3134,7 +3148,7 @@ test("the outline's tree that took the focus for want of a row hands it to the f
     nodes: [answerNode(KEY, "issue", { parent: null }), ...nodes],
   });
   const reply = answerNode(comment.id, "comment", {
-    author: comment.author,
+    author: [comment.author],
     made_at: comment.created_at,
     text: comment.body,
   });
@@ -3197,6 +3211,44 @@ test("the outline's tree that took the focus for want of a row hands it to the f
   }
 });
 
+/** The tree as Dispatch answers it while it holds `held`, the issue's one comment: settled once
+ *  it is resolved; and each of `others`, comments someone else posted, as `treeAnswer` answers
+ *  a comment. */
+function heldCommentTree(held: Comment, others: readonly Comment[] = []): TreeAnswer {
+  return treeAnswer(others, {
+    nodes: [
+      answerNode(held.id, "comment", {
+        author: [held.author],
+        made_at: held.created_at,
+        state: held.resolved ? "settled" : "live",
+        text: held.body,
+      }),
+    ],
+  });
+}
+
+/** The margin's resolve of the comment (`useMarginItems.ts`) on `client`, which Dispatch takes in
+ *  `write`: its `onMutate` writes the resolve into the comments read before Dispatch holds it, and
+ *  its `onSuccess` invalidates the comments and the issue once Dispatch answers. */
+function marginResolveOn(
+  client: QueryClient,
+  write: () => Promise<void>
+): MutationObserver<void, Error, void, void> {
+  return new MutationObserver(client, {
+    mutationFn: write,
+    onMutate: async () => {
+      await client.cancelQueries({ queryKey: ["comments", KEY] });
+      client.setQueryData<Comment[]>(["comments", KEY], (current) =>
+        current?.map((one) => ({ ...one, resolved: true }))
+      );
+    },
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: ["comments", KEY] });
+      void client.invalidateQueries({ queryKey: ["issue", KEY] });
+    },
+  });
+}
+
 // The margin's resolve of a comment (`useMarginItems.ts`): its `onMutate` writes the resolve
 // into the comments read before Dispatch holds it, its `onSuccess` invalidates the comments and
 // the issue once Dispatch answers, and the resolve's event refreshes the comments 150 ms later,
@@ -3210,16 +3262,7 @@ for (const latency of [200, 1_200]) {
     let held: Comment = comment;
     (api.listComments as Mock<typeof api.listComments>).mockImplementation(async () => [held]);
     (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(async () =>
-      treeAnswer([], {
-        nodes: [
-          answerNode(held.id, "comment", {
-            author: held.author,
-            made_at: held.created_at,
-            state: held.resolved ? "settled" : "live",
-            text: held.body,
-          }),
-        ],
-      })
+      heldCommentTree(held)
     );
     const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
     trackQueryFetches(client);
@@ -3232,21 +3275,9 @@ for (const latency of [200, 1_200]) {
       });
       const before = treeReadsOf();
 
-      const resolve = new MutationObserver(client, {
-        mutationFn: async () => {
-          held = { ...comment, resolved: true };
-          await Bun.sleep(latency);
-        },
-        onMutate: async () => {
-          await client.cancelQueries({ queryKey: ["comments", KEY] });
-          client.setQueryData<Comment[]>(["comments", KEY], (current) =>
-            current?.map((one) => ({ ...one, resolved: true }))
-          );
-        },
-        onSuccess: () => {
-          void client.invalidateQueries({ queryKey: ["comments", KEY] });
-          void client.invalidateQueries({ queryKey: ["issue", KEY] });
-        },
+      const resolve = marginResolveOn(client, async () => {
+        held = { ...comment, resolved: true };
+        await Bun.sleep(latency);
       });
       await act(async () => {
         await resolve.mutate();
@@ -3288,16 +3319,7 @@ test("a resolve from the margin with the live feed down reads the tree once, aft
   (api.listComments as Mock<typeof api.listComments>).mockImplementation(async () => [held]);
   (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(async () => {
     readsAnswered.push(answered);
-    return treeAnswer([], {
-      nodes: [
-        answerNode(held.id, "comment", {
-          author: held.author,
-          made_at: held.created_at,
-          state: held.resolved ? "settled" : "live",
-          text: held.body,
-        }),
-      ],
-    });
+    return heldCommentTree(held);
   });
   const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
   trackQueryFetches(client);
@@ -3309,22 +3331,10 @@ test("a resolve from the margin with the live feed down reads the tree once, aft
     });
     const before = readsAnswered.length;
 
-    const resolve = new MutationObserver(client, {
-      mutationFn: async () => {
-        held = { ...comment, resolved: true };
-        await Bun.sleep(200);
-        answered = true;
-      },
-      onMutate: async () => {
-        await client.cancelQueries({ queryKey: ["comments", KEY] });
-        client.setQueryData<Comment[]>(["comments", KEY], (current) =>
-          current?.map((one) => ({ ...one, resolved: true }))
-        );
-      },
-      onSuccess: () => {
-        void client.invalidateQueries({ queryKey: ["comments", KEY] });
-        void client.invalidateQueries({ queryKey: ["issue", KEY] });
-      },
+    const resolve = marginResolveOn(client, async () => {
+      held = { ...comment, resolved: true };
+      await Bun.sleep(200);
+      answered = true;
     });
     await act(async () => {
       await resolve.mutate();
@@ -3605,27 +3615,43 @@ test("a refused tree read is read once, not twice, when the live feed comes back
 });
 
 // With the live feed down, no event says when a write has reached Dispatch. A change of the
-// issue seen while a write is out - here an invalidation of the issue read that no event raised
-// - would read a tree Dispatch has not changed yet, so the tree is read no more until the write
-// settles, and then once.
+// issue seen while a write is out - here the page's read of the issue, invalidated with no event
+// to raise it, answering a field someone's act moves - would read a tree Dispatch has not changed
+// yet, so the tree is read no more until the write settles, and then once.
 test("with the live feed down, a change seen while a write is out reads the tree only once the write settles, and once", async () => {
   const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  let answer: IssueDetails = issue;
+  const getIssue = spyOn(api, "getIssue").mockImplementation(async () => answer);
   const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
   const answered = Promise.withResolvers<void>();
   try {
-    const view = renderHook(() => useIssueTree(issue), { wrapper: stageWrapper(client) });
+    const view = renderHook(
+      () => {
+        // The page's read of the issue.
+        useQuery(issueQuery(KEY));
+        return useIssueTree(issue);
+      },
+      { wrapper: stageWrapper(client) }
+    );
     await waitFor(() => expect(client.getQueryState(issueTreeKey(KEY))?.status).toBe("success"));
+    await waitFor(() => expect(client.getQueryState(["issue", KEY])?.status).toBe("success"));
     await act(async () => {
       await Bun.sleep(1_100);
     });
     const before = treeReadsOf();
+    const issueReads = getIssue.mock.calls.length;
 
     const write = new MutationObserver(client, { mutationFn: () => answered.promise });
     const settled = write.mutate();
+    answer = { ...issue, status: "in_progress" };
     await act(async () => {
       await client.invalidateQueries({ queryKey: ["issue", KEY] });
       await Bun.sleep(1_500);
     });
+    expect(getIssue.mock.calls.length, "the issue read is read again").toBe(issueReads + 1);
+    expect(client.getQueryData<IssueDetails>(["issue", KEY])?.status, "its moved field").toBe(
+      "in_progress"
+    );
     expect(treeReadsOf() - before, "no tree read while the write is out").toBe(0);
 
     await act(async () => {
@@ -3637,6 +3663,7 @@ test("with the live feed down, a change seen while a write is out reads the tree
     view.unmount();
   } finally {
     answered.resolve();
+    getIssue.mockRestore();
     for (const stub of stubs) stub.mockRestore();
     client.clear();
   }
@@ -3747,5 +3774,1865 @@ test("with the live feed down, a focus while a write is out reads a refused tree
     focusManager.setFocused(undefined);
     for (const stub of stubs) stub.mockRestore();
     client.clear();
+  }
+});
+
+// A tree that holds an answer, whose next read Dispatch refused, is a refused read as much as a
+// first read refused: the outline draws the answer it holds, and the read stays refused until
+// the reader's Retry, an event of the issue or the live feed coming back. A surface that starts
+// reading the tree afterwards - a filter pressed, which draws its slot - is none of those, so it
+// reads nothing of its own.
+test("a surface that starts reading a tree whose refresh was refused sends no read while the live feed is up", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  let refused = false;
+  (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(async () => {
+    if (refused) throw new Error("the tree read was refused");
+    return treeAnswer([comment]);
+  });
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const feed = liveFeedOn(client);
+  try {
+    const view = renderHook(() => useIssueTree(issue), { wrapper: stageWrapper(client) });
+    await waitFor(() => expect(client.getQueryState(issueTreeKey(KEY))?.status).toBe("success"));
+    refused = true;
+    await act(async () => {
+      await client.refetchQueries({ exact: true, queryKey: issueTreeKey(KEY) });
+    });
+    await waitFor(() => expect(client.getQueryState(issueTreeKey(KEY))?.status).toBe("error"));
+    expect(holdsComment(view.result.current.root), "the outline draws the answer it holds").toBe(
+      true
+    );
+    const before = treeReadsOf();
+
+    const later = renderHook(() => useIssueTree(issue), {
+      wrapper: ({ children }: { children: ReactNode }) => (
+        <QueryClientProvider client={client}>{children}</QueryClientProvider>
+      ),
+    });
+    await act(async () => {
+      await Bun.sleep(1_500);
+    });
+    expect(
+      treeReadsOf() - before,
+      "a surface that starts reading the tree reads nothing of its own"
+    ).toBe(0);
+    later.unmount();
+    view.unmount();
+  } finally {
+    feed.end();
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
+  }
+});
+
+// The same for a filter's view: the Spec view holds an answer, and Dispatch refused its next
+// read. The reader pressing the Spec filter off and on again is no Retry, no event and no feed
+// coming back, so it sends no view read.
+test("a filter pressed off and on after its view's refresh was refused sends no read", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  const specView: TreeAnswer = { ...treeAnswer([]), nodes: [{ ...task, mark: "query" }] };
+  let refused = false;
+  (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(async (_key, query) => {
+    if (query?.view !== "spec") return treeAnswer([]);
+    if (refused) throw new Error("the spec view read was refused");
+    return specView;
+  });
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const on: FilterOn = { preset: "spec" };
+  try {
+    const view = renderHook(() => useIssueTree(issue).root, { wrapper: turnedStage(client, on) });
+    await waitFor(() => expect(client.getQueryState(viewKey(KEY, "spec"))?.status).toBe("success"));
+    refused = true;
+    await act(async () => {
+      await client.refetchQueries({ exact: true, queryKey: viewKey(KEY, "spec") });
+    });
+    await waitFor(() => expect(client.getQueryState(viewKey(KEY, "spec"))?.status).toBe("error"));
+    expect(client.getQueryState(viewKey(KEY, "spec"))?.data, "the view keeps its answer").toBe(
+      specView
+    );
+    const before = treeReadsOf("spec");
+
+    await pressSpecOffAndOn(view, on);
+    await act(async () => {
+      await Bun.sleep(1_200);
+    });
+    expect(treeReadsOf("spec") - before, "no view read for the press").toBe(0);
+    view.unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
+  }
+});
+
+// A tree read refused, its retries spent, and the reader leaves the issue for another page, the
+// shell's event feed staying. While the reader is away, the live feed comes back with its gap
+// replayed whole, which reads a refused tree again. The reader comes back to the issue: the tree
+// is read, and the outline draws what Dispatch serves now in place of its failed line.
+test("a refused tree read is read again when the live feed comes back while the reader is on another page", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  let refused = true;
+  (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(async () => {
+    if (refused) throw new Error("the tree read was refused");
+    return treeAnswer([comment]);
+  });
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const sockets = installFakeLiveSockets();
+  // Signed in at event head 1, as the app's sign-in gate holds it before the page.
+  client.setQueryData(["whoami"], { event_head: "1", kind: "user", login: "alice" });
+  const shell = render(
+    <QueryClientProvider client={client}>
+      <ShellEventFeed />
+    </QueryClientProvider>
+  );
+  const on: FilterOn = { preset: "conversation" };
+  try {
+    const first = renderHook(() => useIssueTree(issue), { wrapper: turnedStage(client, on) });
+    startFeedOn(sockets, true);
+    await waitFor(() => expect(client.getQueryState(issueTreeKey(KEY))?.status).toBe("error"));
+    await act(async () => {
+      await Bun.sleep(1_100);
+    });
+    first.unmount();
+    refused = false;
+
+    await feedBackAfterRestart(sockets, true);
+    await act(async () => {
+      await Bun.sleep(1_500);
+    });
+
+    const back = renderHook(() => useIssueTree(issue), { wrapper: turnedStage(client, on) });
+    await act(async () => {
+      await Bun.sleep(1_500);
+    });
+    expect(
+      client.getQueryState(issueTreeKey(KEY))?.status,
+      "the refused tree was read again for the feed coming back"
+    ).toBe("success");
+    expect(holdsComment(back.result.current.root), "the outline draws what Dispatch serves").toBe(
+      true
+    );
+    back.unmount();
+  } finally {
+    shell.unmount();
+    liveSocketFor(client).close();
+    sockets.restore();
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
+  }
+});
+
+// With the live feed down, a window focus while a write is out waits until the write settles
+// before it reads a refused tree. The feed comes back before that, with its gap replayed whole,
+// and asks for the refused tree, whose read waits for the write and is sent as it settles. Once
+// the write settles the feed is up, and a focus while
+// the feed is up reads no refused tree: the focus that waited reads nothing, so the tree is read
+// once, not twice.
+test("a focus held for a write reads no refused tree once the live feed came back and read it", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  (api.getIssueTree as Mock<typeof api.getIssueTree>).mockRejectedValue(
+    new Error("the tree read was refused")
+  );
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const sockets = installFakeLiveSockets();
+  // Signed in at event head 1, as the app's sign-in gate holds it before the page.
+  client.setQueryData(["whoami"], { event_head: "1", kind: "user", login: "alice" });
+  const answered = Promise.withResolvers<void>();
+  try {
+    const view = renderHook(() => useIssueTree(issue), {
+      wrapper: fedStage(client, { preset: "conversation" }),
+    });
+    startFeedOn(sockets, true);
+    await waitFor(() => expect(client.getQueryState(issueTreeKey(KEY))?.status).toBe("error"));
+    await act(async () => {
+      await Bun.sleep(1_100);
+    });
+    // Dispatch restarts under the page's socket; the page opens its next one and sends the feed
+    // there, which Dispatch has not started yet: the feed is down.
+    const lost = sockets.latest();
+    act(() => lost.restart());
+    await act(async () => {
+      await Bun.sleep(200);
+    });
+    const next = sockets.latest();
+    expect(next, "the page opened its next socket").not.toBe(lost);
+    act(() => next.open());
+    const before = treeReadsOf();
+
+    const write = new MutationObserver(client, { mutationFn: () => answered.promise });
+    const settled = write.mutate();
+    await act(async () => {
+      focusWindow();
+      await Bun.sleep(300);
+    });
+    expect(treeReadsOf() - before, "no tree read while the write is out").toBe(0);
+
+    const { sub } = next.subscribed("events");
+    act(() => next.receive({ type: "events_start", sub, since: "1", replay_complete: true }));
+    await act(async () => {
+      await Bun.sleep(1_500);
+    });
+    expect(
+      treeReadsOf() - before,
+      "the feed coming back reads no refused tree while the write is out"
+    ).toBe(0);
+
+    await act(async () => {
+      answered.resolve();
+      await settled;
+      await Bun.sleep(1_500);
+    });
+    expect(
+      treeReadsOf() - before,
+      "the focus that waited for the write reads nothing once the feed is up"
+    ).toBe(1);
+    view.unmount();
+  } finally {
+    answered.resolve();
+    focusManager.setFocused(undefined);
+    liveSocketFor(client).close();
+    sockets.restore();
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
+  }
+});
+
+// An event of the comments with the live feed up, a moment after the tree was read and the
+// comments were read just after it: the app's scheduler marks the comments invalid, which the
+// page's subscription hears, and the scheduler would hold both reads back to a second after
+// their last ones began, the tree's first. In that order the comments read the scheduler owes
+// begins after the tree read the event asked for, in a later task, still marked invalid by the
+// event, and answers what the comments held; counted as newer, it would read the tree once more
+// for the one event. The tree read waits until that comments read has begun, so the event reads
+// the tree once.
+test("the tree read an event asks for begins after the comments read the scheduler owes for it, and the event reads the tree once", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs), { comments: [comment] });
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  trackQueryFetches(client);
+  const feed = liveFeedOn(client);
+  const commentReads = () => readsSent().comments;
+  try {
+    const view = renderHook(() => useIssueTree(issue).root, { wrapper: stageWrapper(client) });
+    await waitFor(() => expect(holdsComment(view.result.current)).toBe(true));
+    await act(async () => {
+      await Bun.sleep(1_100);
+      // A read of the tree, and 50 ms later one of the comments, each answering what it held.
+      await client.refetchQueries({ exact: true, queryKey: issueTreeKey(KEY) });
+      await Bun.sleep(50);
+      await client.refetchQueries({ queryKey: ["comments", KEY] });
+      await Bun.sleep(200);
+    });
+    const before = treeReadsOf();
+    const commentsBefore = commentReads();
+
+    act(() => {
+      refreshQueries(client, [{ queryKey: ["comments", KEY] }]);
+    });
+    await act(async () => {
+      await Bun.sleep(100);
+    });
+    expect(client.getQueryState(["comments", KEY])?.isInvalidated, "the event's mark").toBe(true);
+    expect(commentReads() - commentsBefore, "the comments read is held back").toBe(0);
+    expect(treeReadsOf() - before, "and so is the tree read").toBe(0);
+
+    // Past the moment a tree read made for the comments read would begin, a second after the
+    // event's tree read.
+    await act(async () => {
+      await Bun.sleep(2_500);
+    });
+    expect(commentReads() - commentsBefore, "the comments read the scheduler owed").toBe(1);
+    expect(treeReadsOf() - before, "one tree read for the event").toBe(1);
+    view.unmount();
+  } finally {
+    feed.end();
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
+  }
+});
+
+/** What a row of the rule below reads: the tree, or the view of the Spec, Plan or Verification
+ *  filter. */
+type RuleRead = "tree" | "spec" | "plan" | "verification";
+
+/** A row's read in its title's words. */
+const RULE_READ_WORDS: Record<RuleRead, string> = {
+  plan: "the Plan view",
+  spec: "the Spec view",
+  tree: "the tree",
+  verification: "the Verification view",
+};
+
+/** The stage a row draws, around the page's model, answering the tree read as the outline's
+ *  failed line reads it (`TreeReadFailed`), whose `refetch` is the tree's Retry. */
+type RuleStage = RenderHookResult<TreeReadState, unknown>;
+
+/** One row's page: its client, the shell's event feed beside the page with the live feed up, and
+ *  what the row has drawn. Dispatch answers every read, but refuses the row's own read while
+ *  `refusing` holds, and holds it open until `out` settles. */
+interface Rig {
+  readonly read: RuleRead;
+  readonly client: QueryClient;
+  readonly sockets: FakeLiveSockets;
+  readonly on: FilterOn;
+  /** The stage, while it is mounted. */
+  stage: RuleStage | undefined;
+  /** The slots a way drew beside the stage, until the row takes them down. */
+  readonly slots: { readonly unmount: () => void }[];
+  /** What Dispatch holds of the issue's one comment: resolved once a resolve reaches it. */
+  held: Comment;
+  /** The comments someone else posted on the issue, which Dispatch holds once posted. */
+  readonly posted: Comment[];
+  refusing: boolean;
+  out: { readonly promise: Promise<void>; readonly resolve: () => void } | undefined;
+  /** Every request the page has sent. */
+  readonly requests: () => number;
+  readonly close: () => void;
+}
+
+/** The Spec view as Dispatch serves it: the plan's task, marked as the view's query found it. */
+const SPEC_VIEW: TreeAnswer = { ...treeAnswer([]), nodes: [{ ...task, mark: "query" }] };
+
+/** A row's page, with the shell's event feed mounted and its live feed up, and no stage yet. */
+function openRig(read: RuleRead): Rig {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const sockets = installFakeLiveSockets();
+  // Signed in at event head 1, as the app's sign-in gate holds it before the page.
+  client.setQueryData(["whoami"], { event_head: "1", kind: "user", login: "alice" });
+  const shell = render(
+    <QueryClientProvider client={client}>
+      <ShellEventFeed />
+    </QueryClientProvider>
+  );
+  const rig: Rig = {
+    client,
+    close: () => {
+      rig.out?.resolve();
+      for (const slot of rig.slots.splice(0)) slot.unmount();
+      rig.stage?.unmount();
+      shell.unmount();
+      liveSocketFor(client).close();
+      sockets.restore();
+      focusManager.setFocused(undefined);
+      onlineManager.setOnline(true);
+      for (const stub of stubs) stub.mockRestore();
+      client.clear();
+    },
+    held: comment,
+    on: { preset: read === "tree" ? "conversation" : read },
+    out: undefined,
+    posted: [],
+    read,
+    refusing: false,
+    requests: () => stubs.reduce((sent, stub) => sent + stub.mock.calls.length, 0),
+    slots: [],
+    sockets,
+    stage: undefined,
+  };
+  (api.listComments as Mock<typeof api.listComments>).mockImplementation(async () => [
+    rig.held,
+    ...rig.posted,
+  ]);
+  // The tree holds the comment as Dispatch holds it: settled once it is resolved; and each comment
+  // someone else posted.
+  (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(async (_key, query) => {
+    if ((query?.view ?? "tree") === read) {
+      await rig.out?.promise;
+      if (rig.refusing) throw new Error(`the ${read} read was refused`);
+    }
+    if (query?.view !== undefined) return SPEC_VIEW;
+    return heldCommentTree(rig.held, rig.posted);
+  });
+  startFeedOn(sockets, true);
+  return rig;
+}
+
+/** The key of the row's query. */
+function ruleKey(rig: Rig): readonly unknown[] {
+  return rig.read === "tree" ? issueTreeKey(KEY) : viewKey(KEY, rig.read);
+}
+
+/** How many reads of the row's query the page has sent. */
+function ruleReads(rig: Rig): number {
+  return treeReadsOf(rig.read === "tree" ? undefined : rig.read);
+}
+
+/** The row's stage, which a row that observes its read has mounted. */
+function stageOf(rig: Rig): RuleStage {
+  if (rig.stage === undefined) throw new Error("no stage is mounted");
+  return rig.stage;
+}
+
+/** The stage mounted, with whichever filter `rig.on` names on. */
+function mountStage(rig: Rig): void {
+  rig.stage = renderHook(
+    () => {
+      useIssueTree(issue);
+      return useTreeRead(issue);
+    },
+    { wrapper: turnedStage(rig.client, rig.on) }
+  );
+}
+
+/** Lets what the row just did run for 100 ms of the clock, and checks that the row's query then
+ *  stands in `status`. */
+async function ruleSettled(rig: Rig, status: "error" | "success"): Promise<void> {
+  await tick(100, 10);
+  expect(rig.client.getQueryState(ruleKey(rig))?.status).toBe(status);
+}
+
+/** The reader stops observing the row's read: leaves the issue for another page, the shell and its
+ *  event feed staying, or turns the row's filter off. */
+function leave(rig: Rig): void {
+  if (rig.read === "tree") {
+    stageOf(rig).unmount();
+    rig.stage = undefined;
+    return;
+  }
+  rig.on.preset = "conversation";
+  stageOf(rig).rerender();
+}
+
+/** The reader observes the row's read again: comes back to the issue, or turns the row's filter
+ *  on. */
+function comeBack(rig: Rig): void {
+  if (rig.read === "tree") {
+    mountStage(rig);
+    return;
+  }
+  rig.on.preset = rig.read;
+  stageOf(rig).rerender();
+}
+
+/** Moves the clock on until the page has sent nothing for 1.2 s, past the scheduler's second
+ *  between two reads of one query, with nothing out but the read the row holds open: by then every
+ *  read the scheduler or the page's subscription owes has begun. */
+async function quiet(rig: Rig): Promise<void> {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const sent = rig.requests();
+    await tick(MIN_REFETCH_INTERVAL_MS + 200, 50);
+    const out = rig.client.isFetching() - (rig.out === undefined ? 0 : 1);
+    if (rig.requests() === sent && out === 0) return;
+  }
+  throw new Error("the page was still reading after 12 s");
+}
+
+/** An event of the issue: the event feed's refresh of the issue's comments, in an awaited `act`.
+ *  The page's subscription hears the comments marked stale and asks for its reads in a microtask,
+ *  which runs after a plain `act` has closed, and a read it begins updates the stage. */
+async function commentsEvent(rig: Rig): Promise<void> {
+  await act(async () => {
+    refreshQueries(rig.client, [{ queryKey: ["comments", KEY] }]);
+  });
+}
+
+/** Dispatch restarting under the page's socket, and 200 ms of the clock, in which the page makes
+ *  its next socket (`feedBackAfterRestart`'s first half, on the row's clock). */
+async function restartFeed(rig: Rig): Promise<void> {
+  const lost = rig.sockets.latest();
+  act(() => lost.restart());
+  await tick(200, 10);
+  expect(rig.sockets.latest(), "the page made its next socket").not.toBe(lost);
+}
+
+/** Dispatch restarting under the page's socket, and the page's next socket open with the feed
+ *  sent on it and not started yet: the live feed is down. */
+async function feedDown(rig: Rig): Promise<void> {
+  await restartFeed(rig);
+  const next = rig.sockets.latest();
+  act(() => next.open());
+  expect(liveFeedUp(rig.client), "the live feed is down").toBe(false);
+}
+
+/** A state a row's read stands in before the way, and how the row reaches it: observed, or with
+ *  the reader away from it. */
+interface RuleState {
+  readonly words: string;
+  readonly reach: (rig: Rig, observed: boolean) => Promise<void>;
+}
+
+/** The read answered, the reader then away from it where the row says so. */
+async function reachAnswered(rig: Rig, observed: boolean): Promise<void> {
+  mountStage(rig);
+  await ruleSettled(rig, "success");
+  if (!observed) leave(rig);
+}
+
+const STATES = {
+  never: {
+    words: "never read",
+    // The tree before the reader first opens the issue: no stage, and no subscription of the
+    // issue. The Spec view while its filter was never on in the load.
+    reach: async (rig, observed) => {
+      if (observed) throw new Error("an observer reads a read never made");
+      if (rig.read === "tree") return;
+      rig.on.preset = "conversation";
+      mountStage(rig);
+      await tick(100, 10);
+      expect(rig.client.getQueryState(issueTreeKey(KEY))?.status).toBe("success");
+    },
+  },
+  answered: { words: "answered", reach: reachAnswered },
+  stale: {
+    words: "answered and marked stale by an event while nothing observed it",
+    reach: async (rig, observed) => {
+      if (observed) throw new Error("an observer reads a stale answer");
+      await reachAnswered(rig, false);
+      await commentsEvent(rig);
+      await tick(100, 10);
+      expect(rig.client.getQueryState(ruleKey(rig))?.isInvalidated).toBe(true);
+    },
+  },
+  refused: {
+    words: "refused with no answer held",
+    reach: async (rig, observed) => {
+      rig.refusing = true;
+      mountStage(rig);
+      await ruleSettled(rig, "error");
+      if (!observed) leave(rig);
+    },
+  },
+  refusedHeld: {
+    words: "refused over a held answer",
+    reach: async (rig, observed) => {
+      mountStage(rig);
+      await ruleSettled(rig, "success");
+      rig.refusing = true;
+      await act(async () => {
+        await rig.client.refetchQueries({ exact: true, queryKey: ruleKey(rig) });
+      });
+      await ruleSettled(rig, "error");
+      expect(rig.client.getQueryState(ruleKey(rig))?.data, "the answer it holds").toBeDefined();
+      if (!observed) leave(rig);
+    },
+  },
+  inFlight: {
+    words: "in flight",
+    // The read held open until the way is done, and then answered.
+    reach: async (rig, observed) => {
+      rig.out = Promise.withResolvers<void>();
+      mountStage(rig);
+      await tick(100, 10);
+      expect(rig.client.getQueryState(ruleKey(rig))?.fetchStatus).toBe("fetching");
+      if (!observed) leave(rig);
+    },
+  },
+  inFlightRefused: {
+    words: "in flight and refused once the way is done",
+    // The read held open until the way is done, and then refused. The tree's is given up as the
+    // stage leaves (the note above the rows), so only the views' stand in it unobserved.
+    reach: async (rig, observed) => {
+      rig.refusing = true;
+      rig.out = Promise.withResolvers<void>();
+      mountStage(rig);
+      await tick(100, 10);
+      expect(rig.client.getQueryState(ruleKey(rig))?.fetchStatus).toBe("fetching");
+      if (!observed) leave(rig);
+    },
+  },
+  inFlightHeld: {
+    words: "in flight over a held answer",
+    // Answered, then read again by a refetch held open until the way is done, and then answered.
+    reach: async (rig, observed) => {
+      mountStage(rig);
+      await ruleSettled(rig, "success");
+      rig.out = Promise.withResolvers<void>();
+      act(() => {
+        void rig.client.refetchQueries({ exact: true, queryKey: ruleKey(rig) });
+      });
+      await tick(100, 10);
+      expect(rig.client.getQueryState(ruleKey(rig))?.fetchStatus).toBe("fetching");
+      if (!observed) leave(rig);
+    },
+  },
+  refusedAgain: {
+    words:
+      "refused, asked for again by the live feed back whole while nothing observed it, read again as it was next observed and refused again",
+    reach: async (rig, observed) => {
+      rig.refusing = true;
+      mountStage(rig);
+      await ruleSettled(rig, "error");
+      leave(rig);
+      await quiet(rig);
+      await restartFeed(rig);
+      startFeedOn(rig.sockets, true);
+      await quiet(rig);
+      const away = ruleReads(rig);
+      comeBack(rig);
+      await quiet(rig);
+      expect(ruleReads(rig) - away, "the read observed again").toBe(1);
+      expect(rig.client.getQueryState(ruleKey(rig))?.status).toBe("error");
+      if (!observed) leave(rig);
+    },
+  },
+} satisfies Record<string, RuleState>;
+
+/** A way a read may be started, and what else must hold once its reads settled. */
+interface RuleWay {
+  readonly words: string;
+  readonly does: (rig: Rig) => Promise<void>;
+  readonly ends?: (rig: Rig) => void;
+}
+
+/** That the tree read holds the comment as Dispatch left it, where the stage is mounted, so the
+ *  tree has been read since, and the row's read is not the tree refused, which holds no answer of
+ *  the write. */
+function treeHoldsComment(state: "live" | "settled"): (rig: Rig) => void {
+  return (rig) => {
+    if (rig.stage === undefined || (rig.read === "tree" && rig.refusing)) return;
+    expect(
+      rig.client
+        .getQueryData<TreeAnswer>(issueTreeKey(KEY))
+        ?.nodes.find((node) => node.id === comment.id)?.state,
+      state === "settled" ? "the tree read holds the resolve" : "the tree read holds no resolve"
+    ).toBe(state);
+  };
+}
+
+/** Every read of the tree and of its views the page has sent. */
+function treeAndViewReads(): number {
+  return (api.getIssueTree as Mock<typeof api.getIssueTree>).mock.calls.length;
+}
+
+/** Presses a write (`press`), and moves the clock 10 ms at a time until Dispatch has answered or
+ *  refused it; `meanwhile` runs once, halfway through `latency`, while the write is out. */
+async function writeSettles(
+  press: () => Promise<unknown>,
+  latency: number,
+  meanwhile?: () => Promise<void>
+): Promise<void> {
+  let settled = false;
+  const done = () => {
+    settled = true;
+  };
+  void press().then(done, done);
+  let ran = false;
+  for (let waited = 0; !settled && waited <= latency + 1_000; waited += 10) {
+    if (!ran && waited >= latency / 2) {
+      ran = true;
+      await meanwhile?.();
+    }
+    await tick(10, 10);
+  }
+  expect(settled, "Dispatch answered the write").toBe(true);
+}
+
+/** The margin's resolve with the live feed down: no event comes, and the resolve reads the tree
+ *  once, after Dispatch answered, and nothing of the tree or its views while it is out. */
+function marginResolveDown(latency: number): RuleWay {
+  return {
+    words: `a resolve from the margin answered in ${latency} ms with the live feed down`,
+    does: async (rig) => {
+      await feedDown(rig);
+      const before = treeAndViewReads();
+      let whileOut: number | undefined;
+      const resolve = marginResolveOn(rig.client, async () => {
+        rig.held = { ...comment, resolved: true };
+        await Bun.sleep(latency);
+        whileOut = treeAndViewReads() - before;
+      });
+      await writeSettles(() => resolve.mutate(), latency);
+      expect(whileOut, "the reads of the tree and its views while the resolve is out").toBe(0);
+    },
+    ends: treeHoldsComment("settled"),
+  };
+}
+
+/** A comment someone else posts on the issue while a row's write is out. */
+const postedComment: Comment = {
+  ...comment,
+  author: { id: "bob", kind: "user" },
+  body: "A word from someone else.",
+  created_at: "2026-11-05T02:00:00Z",
+  id: "comment-2",
+};
+
+/** That the tree read holds each comment someone else posted, where the stage is mounted, so the
+ *  tree has been read since they were posted. */
+function treeHoldsPosted(rig: Rig): void {
+  if (rig.stage === undefined) return;
+  const nodes = rig.client.getQueryData<TreeAnswer>(issueTreeKey(KEY))?.nodes ?? [];
+  for (const one of rig.posted) {
+    expect(
+      nodes.some((node) => node.id === one.id),
+      "the tree read holds the comment posted while the write was out"
+    ).toBe(true);
+  }
+}
+
+/** The margin's resolve Dispatch refuses in 200 ms (`useMarginItems.ts`): its `onMutate` writes
+ *  the resolve into the comments read, and its `onError` puts the comments back and reads them
+ *  again. With the live feed down, nothing of the tree or its views is read while it is out.
+ *  With `posted`, someone else posts a comment 100 ms in, and its event refreshes the comments
+ *  while the resolve is out. */
+function refusedResolve(feed: "down" | "up", posted = false): RuleWay {
+  return {
+    words: `a resolve from the margin Dispatch refuses in 200 ms and the page rolls back, with the live feed ${feed}${posted ? ", and the event of a comment someone else posts landing while it is out" : ""}`,
+    does: async (rig) => {
+      if (feed === "down") await feedDown(rig);
+      const before = treeAndViewReads();
+      let whileOut: number | undefined;
+      const resolve = new MutationObserver<void, Error, void, { previous: Comment[] | undefined }>(
+        rig.client,
+        {
+          mutationFn: async () => {
+            await Bun.sleep(200);
+            whileOut = treeAndViewReads() - before;
+            throw new Error("Dispatch refused the resolve");
+          },
+          onError: (_error, _input, context) => {
+            rig.client.setQueryData(["comments", KEY], context?.previous);
+            void rig.client.invalidateQueries({ queryKey: ["comments", KEY] });
+          },
+          onMutate: async () => {
+            await rig.client.cancelQueries({ queryKey: ["comments", KEY] });
+            const previous = rig.client.getQueryData<Comment[]>(["comments", KEY]);
+            rig.client.setQueryData<Comment[]>(["comments", KEY], (current) =>
+              current?.map((one) => ({ ...one, resolved: true }))
+            );
+            return { previous };
+          },
+        }
+      );
+      await writeSettles(
+        () => resolve.mutate(),
+        200,
+        posted
+          ? async () => {
+              rig.posted.push(postedComment);
+              await commentsEvent(rig);
+            }
+          : undefined
+      );
+      if (feed === "down") {
+        expect(whileOut, "the reads of the tree and its views while the resolve is out").toBe(0);
+      }
+    },
+    ends: (rig) => {
+      treeHoldsComment("live")(rig);
+      treeHoldsPosted(rig);
+    },
+  };
+}
+
+/** A write of the issue's title put in the cache (`setQueryData`), as a Keep or a status pick
+ *  puts what Dispatch answered (`landIssueWrite`). */
+function renameIssue(client: QueryClient): void {
+  client.setQueryData<IssueDetails>(["issue", KEY], {
+    ...issue,
+    title: `${issue.title}, renamed`,
+  });
+}
+
+/** A write of the issue that Dispatch answers in 200 ms and the page puts in the cache by
+ *  `setQueryData` (a Keep, a status pick: `landIssueWrite`), with no event. With the live feed
+ *  down, nothing of the tree or its views is read while it is out. */
+function issueWriteSet(feed: "down" | "up"): RuleWay {
+  return {
+    words: `a write of the issue the page puts in the cache, answered in 200 ms with the live feed ${feed} and no event`,
+    does: async (rig) => {
+      if (feed === "down") await feedDown(rig);
+      const before = treeAndViewReads();
+      let whileOut: number | undefined;
+      const write = new MutationObserver<void, Error, void, void>(rig.client, {
+        mutationFn: async () => {
+          await Bun.sleep(200);
+          whileOut = treeAndViewReads() - before;
+        },
+        onSuccess: () => {
+          renameIssue(rig.client);
+        },
+      });
+      await writeSettles(() => write.mutate(), 200);
+      if (feed === "down") {
+        expect(whileOut, "the reads of the tree and its views while the write is out").toBe(0);
+      }
+    },
+  };
+}
+
+/** A write that Dispatch takes, resolving the comment, and whose answer is lost 200 ms on: the
+ *  write store refreshes every query the app holds inside the write (`answerlessLanding`). */
+function answerlessWrite(rig: Rig): MutationObserver<void, Error, void, void> {
+  return new MutationObserver<void, Error, void, void>(rig.client, {
+    mutationFn: async () => {
+      rig.held = { ...comment, resolved: true };
+      await Bun.sleep(200);
+      void rig.client.invalidateQueries();
+    },
+  });
+}
+
+/** A write that Dispatch took and whose answer was lost, so it lands with none (`keyed-write.ts`'
+ *  `writeUnderKey` answers `null`): the write store refreshes every query the app holds
+ *  (`invalidateQueries()`, `write-store.ts`' `#landed`) inside the write, before its mutation
+ *  settles. With the live feed up its event follows 150 ms on. */
+function answerlessLanding(feed: "down" | "up"): RuleWay {
+  return {
+    words: `a write that lands in 200 ms with no answer and a refresh of every query, with the live feed ${feed}`,
+    does: async (rig) => {
+      if (feed === "down") await feedDown(rig);
+      const write = answerlessWrite(rig);
+      await writeSettles(() => write.mutate(), 200);
+      if (feed === "up") {
+        await tick(150, 10);
+        await commentsEvent(rig);
+      }
+    },
+    ends: treeHoldsComment("settled"),
+  };
+}
+
+/** A write of the page that Dispatch holds until the row lets it go: pressed now, and settled, with
+ *  `onSuccess` then where given, by the function it returns. */
+function holdWrite(rig: Rig, onSuccess?: () => void): () => void {
+  const answer = Promise.withResolvers<void>();
+  const write = new MutationObserver<void, Error, void, void>(rig.client, {
+    mutationFn: () => answer.promise,
+    ...(onSuccess === undefined ? {} : { onSuccess }),
+  });
+  void write.mutate();
+  return answer.resolve;
+}
+
+/** A write that lands with no answer (`answerlessLanding`) while a second write of the page is
+ *  still out: nothing of the tree or its views is read until the second write settles too, with
+ *  the live feed up or down, and no event comes. The second reads and writes nothing of the issue
+ *  (a pin, say), or, with `kept`, puts its answer in the cache as it settles (a Keep), which with
+ *  the feed down is a change of the issue the refresh held for the writes then reads. With
+ *  `feedBackPart`, the live feed, down, comes back with its gap replayed in part while the tree and
+ *  the open view wait for the second write, and the event feed refreshes every query. With
+ *  `focus`, a window focus comes then, with the live feed down, whose ask the writes hold. */
+function answerlessBesideWrite(
+  feed: "down" | "up",
+  {
+    feedBackPart = false,
+    focus = false,
+    kept = false,
+  }: { feedBackPart?: boolean; focus?: boolean; kept?: boolean } = {}
+): RuleWay {
+  return {
+    words: `a write that lands in 200 ms with no answer and a refresh of every query while a second write is out, ${feedBackPart ? "the live feed then back with its gap replayed in part, " : ""}${focus ? "a window focus then, " : ""}the second then settling${kept ? " and putting its answer in the cache" : ""}, with the live feed ${feed} and no event`,
+    does: async (rig) => {
+      if (feed === "down") await feedDown(rig);
+      const settleSecond = holdWrite(rig, () => {
+        if (!kept) return;
+        renameIssue(rig.client);
+      });
+      await tick(10, 10);
+      const before = treeAndViewReads();
+      const write = answerlessWrite(rig);
+      await writeSettles(() => write.mutate(), 200);
+      if (focus) act(() => focusWindow());
+      await tick(300, 10);
+      expect(
+        treeAndViewReads() - before,
+        "the reads of the tree and its views while the second write is out"
+      ).toBe(0);
+      if (feedBackPart) {
+        await feedStartsAgain(rig, false);
+        expect(
+          treeAndViewReads() - before,
+          "the reads of the tree and its views while the second write is out, the feed back"
+        ).toBe(0);
+      }
+      act(() => settleSecond());
+      await tick(50, 10);
+    },
+    ends: treeHoldsComment("settled"),
+  };
+}
+
+/** Dispatch starting the event feed again on the page's open socket, the subscription it sent
+ *  there, with the gap replayed whole or in part. */
+async function feedStartsAgain(rig: Rig, replayComplete: boolean): Promise<void> {
+  const socket = rig.sockets.latest();
+  const { sub } = socket.subscribed("events");
+  act(() =>
+    socket.receive({ type: "events_start", sub, since: "1", replay_complete: replayComplete })
+  );
+  expect(liveFeedUp(rig.client), "the live feed is up").toBe(true);
+  await tick(300, 10);
+}
+
+/** A window focus with the live feed down while a write that reads and writes nothing of the
+ *  issue (a pin, say) is out: nothing of the tree or its views is read until it settles.
+ *  `meanwhile` runs after the focus and before the write settles. */
+function focusWhileWriting(words: string, meanwhile?: (rig: Rig) => Promise<void>): RuleWay {
+  return {
+    words,
+    does: async (rig) => {
+      await feedDown(rig);
+      const settleWrite = holdWrite(rig);
+      await tick(10, 10);
+      const before = treeAndViewReads();
+      act(() => focusWindow());
+      await tick(300, 10);
+      expect(
+        treeAndViewReads() - before,
+        "the reads of the tree and its views while the write is out"
+      ).toBe(0);
+      await meanwhile?.(rig);
+      act(() => settleWrite());
+      await tick(50, 10);
+    },
+  };
+}
+
+/** A write out for 1.5 s while the tree is read again, with the live feed up: the read waits for
+ *  the write and sends as it settles. 200 ms on the comments are read, and 200 ms after that an
+ *  event refreshes them: the scheduler holds that comments read back to a second after the last
+ *  one began, and the tree read the event asks for waits until it has begun (as the case "the
+ *  tree read an event asks for begins after the comments read the scheduler owes for it" shows),
+ *  counting the tree's own second from the moment its last read sent, not from the moment it
+ *  began to wait. So the way reads the tree twice: as the write settles, and once for the event. */
+const EVENT_AFTER_WAITED_READ: RuleWay = {
+  words:
+    "a write out for 1.5 s while the tree is read again, the comments read 200 ms after it settles and an event of the issue 200 ms later",
+  does: async (rig) => {
+    const settleWrite = holdWrite(rig);
+    await tick(10, 10);
+    act(() => {
+      void rig.client.refetchQueries({ exact: true, queryKey: issueTreeKey(KEY) });
+    });
+    await tick(1_500, 10);
+    act(() => settleWrite());
+    await tick(200, 10);
+    act(() => {
+      void rig.client.refetchQueries({ queryKey: ["comments", KEY] });
+    });
+    await tick(200, 10);
+    await commentsEvent(rig);
+  },
+};
+
+/** The stage drawn as a slot of its own while a row's way runs, so the row's own stage, which it
+ *  takes down and draws again around the way, is not the one the way drew. */
+function stageSlot(rig: Rig): void {
+  rig.slots.push(
+    renderHook(
+      () => {
+        useIssueTree(issue);
+        return useTreeRead(issue);
+      },
+      { wrapper: turnedStage(rig.client, rig.on) }
+    )
+  );
+}
+
+/** The live feed back with its gap replayed whole while the reader is away, which asks for a
+ *  refused read, then the reader coming back while a write is out, so the read waits for the
+ *  write, and leaving before the write settles, so the read is given up unsent. */
+const BACK_AND_GONE_WHILE_WAITING: RuleWay = {
+  words:
+    "the live feed back with its gap replayed whole, then the reader coming back while a write is out and leaving before it settles",
+  does: async (rig) => {
+    await restartFeed(rig);
+    startFeedOn(rig.sockets, true);
+    await tick(300, 10);
+    const settleWrite = holdWrite(rig);
+    await tick(10, 10);
+    comeBack(rig);
+    await tick(500, 10);
+    leave(rig);
+    await tick(100, 10);
+    act(() => settleWrite());
+    await tick(50, 10);
+  },
+};
+
+/** The reader coming back, pressing Retry on the refused tree's failed line while a write is out,
+ *  so the Retry's read waits for the write, and leaving before the write settles, so the read is
+ *  given up unsent. */
+const RETRY_GONE_WHILE_WAITING: RuleWay = {
+  words:
+    "the reader coming back, pressing Retry while a write is out and leaving before it settles",
+  does: async (rig) => {
+    comeBack(rig);
+    await tick(300, 10);
+    const settleWrite = holdWrite(rig);
+    await tick(10, 10);
+    act(() => {
+      void stageOf(rig).result.current.refetch();
+    });
+    await tick(300, 10);
+    leave(rig);
+    await tick(100, 10);
+    act(() => settleWrite());
+    await tick(50, 10);
+  },
+};
+
+/** Two writes out together, each landing with no answer (`answerlessWrite`), the second 200 ms
+ *  after the first: each makes the write store refresh every query the app holds while the
+ *  other, or itself, is still out. */
+function twoAnswerlessWrites(feed: "down" | "up"): RuleWay {
+  return {
+    words: `two writes out together that each land with no answer, 200 ms apart, with the live feed ${feed} and no event`,
+    does: async (rig) => {
+      if (feed === "down") await feedDown(rig);
+      const second = Promise.withResolvers<void>();
+      const write = new MutationObserver<void, Error, void, void>(rig.client, {
+        mutationFn: async () => {
+          await second.promise;
+          void rig.client.invalidateQueries();
+        },
+      });
+      void write.mutate();
+      await tick(10, 10);
+      await writeSettles(() => answerlessWrite(rig).mutate(), 200);
+      await tick(200, 10);
+      act(() => second.resolve());
+      await tick(50, 10);
+    },
+    ends: treeHoldsComment("settled"),
+  };
+}
+
+/** The stage mounting as the reader opens the issue while a write that lands with no answer
+ *  (`answerlessWrite`) is out, so its first tree read waits for the write, and the write's
+ *  refresh of every query lands while it waits. */
+function openDuringAnswerlessWrite(feed: "down" | "up"): RuleWay {
+  return {
+    words: `the reader opening the issue while a write that lands in 200 ms with no answer is out, with the live feed ${feed}`,
+    does: async (rig) => {
+      if (feed === "down") await feedDown(rig);
+      await writeSettles(
+        () => answerlessWrite(rig).mutate(),
+        200,
+        async () => {
+          stageSlot(rig);
+        }
+      );
+    },
+  };
+}
+
+/** The stage mounting as the reader opens the issue while a write of another issue is out, so
+ *  its first tree read waits for the write, and an event of this issue 500 ms into the wait. */
+const OPEN_DURING_WRITE_WITH_EVENT: RuleWay = {
+  words:
+    "the reader opening the issue while a write of another issue is out, an event of the issue 500 ms into the wait, the write then settling",
+  does: async (rig) => {
+    const settleWrite = holdWrite(rig);
+    await tick(10, 10);
+    stageSlot(rig);
+    await tick(500, 10);
+    await commentsEvent(rig);
+    await tick(500, 10);
+    act(() => settleWrite());
+    await tick(50, 10);
+  },
+};
+
+/** The margin's resolve of the comment (`useMarginItems.ts`), answered by Dispatch in `latency`:
+ *  its `onMutate` writes the resolve into the comments read before Dispatch holds it, its
+ *  `onSuccess` invalidates the comments and the issue once Dispatch answers, and the resolve's
+ *  event refreshes the comments 150 ms later, as the live feed's rule does. */
+function marginResolve(latency: number): RuleWay {
+  return {
+    words: `a resolve from the margin answered in ${latency} ms, with its event`,
+    does: async (rig) => {
+      const resolve = marginResolveOn(rig.client, async () => {
+        rig.held = { ...comment, resolved: true };
+        await Bun.sleep(latency);
+      });
+      // The clock moves 10 ms at a time until Dispatch has answered, then 150 ms to the event.
+      let answered = false;
+      void resolve.mutate().then(() => {
+        answered = true;
+      });
+      for (let waited = 0; !answered && waited <= latency + 1_000; waited += 10) {
+        await tick(10, 10);
+      }
+      expect(answered, "Dispatch answered the resolve").toBe(true);
+      await tick(150, 10);
+      await commentsEvent(rig);
+    },
+    ends: treeHoldsComment("settled"),
+  };
+}
+
+const WAYS = {
+  mount: {
+    words: "a new surface mounting",
+    does: async (rig) => {
+      // The filter pressed off and on.
+      if (rig.read !== "tree" && rig.on.preset === rig.read) {
+        leave(rig);
+        comeBack(rig);
+        await tick(300, 10);
+        return;
+      }
+      rig.slots.push(
+        renderHook(() => useIssueTree(issue), {
+          wrapper: ({ children }: { children: ReactNode }) => (
+            <QueryClientProvider client={rig.client}>{children}</QueryClientProvider>
+          ),
+        })
+      );
+    },
+  },
+  focusUp: {
+    words: "a window focus with the live feed up",
+    does: async (rig) => {
+      expect(liveFeedUp(rig.client), "the live feed is up").toBe(true);
+      act(() => focusWindow());
+    },
+  },
+  focusDown: {
+    words: "a window focus with the live feed down",
+    does: async (rig) => {
+      await feedDown(rig);
+      act(() => focusWindow());
+    },
+  },
+  online: {
+    words: "the network back",
+    does: async () => {
+      act(() => {
+        onlineManager.setOnline(false);
+        onlineManager.setOnline(true);
+      });
+    },
+  },
+  // `feedBackAfterRestart`, on the row's clock.
+  feedWhole: {
+    words: "the live feed back with its gap replayed whole",
+    does: async (rig) => {
+      await restartFeed(rig);
+      startFeedOn(rig.sockets, true);
+    },
+  },
+  feedPart: {
+    words: "the live feed back with its gap replayed in part",
+    does: async (rig) => {
+      await restartFeed(rig);
+      startFeedOn(rig.sockets, false);
+    },
+  },
+  event: {
+    words: "an event of the issue",
+    does: commentsEvent,
+  },
+  retry: {
+    words: "the reader's Retry",
+    // An observer's `refetch`, which joins a read out that holds no answer: the tree's is the
+    // outline's failed line's, and the Spec view's one of a new observer of its query. The app's
+    // `refetchQueries` is no Retry: it reads a query that is out once more when it settles.
+    does: async (rig) => {
+      act(() => {
+        if (rig.read === "tree") void stageOf(rig).result.current.refetch();
+        else void new QueryObserver(rig.client, viewQuery(KEY, rig.read)).refetch();
+      });
+    },
+  },
+  resolve200: marginResolve(200),
+  resolve1200: marginResolve(1_200),
+  resolveDown200: marginResolveDown(200),
+  resolveDown1200: marginResolveDown(1_200),
+  resolveRefusedUp: refusedResolve("up"),
+  resolveRefusedDown: refusedResolve("down"),
+  setDataUp: issueWriteSet("up"),
+  setDataDown: issueWriteSet("down"),
+  landedBlankUp: answerlessLanding("up"),
+  landedBlankDown: answerlessLanding("down"),
+  resolveRefusedUpPosted: refusedResolve("up", true),
+  landedBlankBesideUp: answerlessBesideWrite("up"),
+  landedBlankBesideDown: answerlessBesideWrite("down"),
+  landedBlankBesideKeepDown: answerlessBesideWrite("down", { kept: true }),
+  landedBlankBesideFeedPart: answerlessBesideWrite("down", { feedBackPart: true }),
+  landedBlankBesideFocus: answerlessBesideWrite("down", { focus: true }),
+  eventAfterWaitedRead: EVENT_AFTER_WAITED_READ,
+  focusDownWriting: focusWhileWriting(
+    "a window focus with the live feed down while a write is out, the write then settling with the feed still down"
+  ),
+  focusHeldFeedWhole: focusWhileWriting(
+    "a window focus with the live feed down while a write is out, the feed then back whole before the write settles",
+    (rig) => feedStartsAgain(rig, true)
+  ),
+  focusHeldFeedPart: focusWhileWriting(
+    "a window focus with the live feed down while a write is out, the feed then back in part before the write settles",
+    (rig) => feedStartsAgain(rig, false)
+  ),
+  focusFeedRefused: {
+    words: "a window focus after Dispatch refused the live feed it had started",
+    does: async (rig) => {
+      const socket = rig.sockets.latest();
+      const { sub } = socket.subscribed("events");
+      act(() =>
+        socket.receive({ type: "error", sub, code: "UNAVAILABLE", message: "the feed is refused" })
+      );
+      expect(liveFeedUp(rig.client), "the live feed is down").toBe(false);
+      act(() => focusWindow());
+    },
+  },
+  reload: {
+    words: "the reader leaving the issue and coming back to it",
+    // A new load of the stage, with the filter that was on: the page mounts the stage once for
+    // each issue it opens, and the stage's mount drops every view a past load held
+    // (`dropViews`).
+    does: async (rig) => {
+      stageOf(rig).unmount();
+      rig.stage = undefined;
+      await tick(100, 10);
+      mountStage(rig);
+    },
+  },
+  backAndGoneWhileWaiting: BACK_AND_GONE_WHILE_WAITING,
+  retryGoneWhileWaiting: RETRY_GONE_WHILE_WAITING,
+  twoAnswerlessUp: twoAnswerlessWrites("up"),
+  twoAnswerlessDown: twoAnswerlessWrites("down"),
+  openDuringAnswerlessUp: openDuringAnswerlessWrite("up"),
+  openDuringAnswerlessDown: openDuringAnswerlessWrite("down"),
+  openDuringWriteWithEvent: OPEN_DURING_WRITE_WITH_EVENT,
+} satisfies Record<string, RuleWay>;
+
+/** How many reads of a query a way starts: a count, or the least and the most. */
+type RuleReads = number | { readonly atLeast: number; readonly atMost: number };
+
+/** A write and the event it raises: the write's own read, and one more for its event at most. */
+const ONE_OR_TWO: RuleReads = { atLeast: 1, atMost: 2 };
+
+/** One cell of the rule: a read in a state, observed or not, the way, and the reads of that query
+ *  the way starts (`now`) and, for a read not observed, the reads the reader coming back to it
+ *  then starts (`back`). */
+type ReadRule = {
+  readonly read: RuleRead;
+  readonly state: keyof typeof STATES;
+  readonly way: keyof typeof WAYS;
+  readonly now: RuleReads;
+} & ({ readonly observed: true } | { readonly observed: false; readonly back: RuleReads });
+
+/** The words of a count of reads. */
+function readsWords(reads: RuleReads): string {
+  if (typeof reads !== "number") return `${reads.atLeast} to ${reads.atMost} times`;
+  return reads === 1 ? "once" : `${reads} times`;
+}
+
+/** A row's own words, its title. */
+function ruleWords(rule: ReadRule): string {
+  const read = RULE_READ_WORDS[rule.read];
+  const observed =
+    rule.read === "tree"
+      ? rule.observed
+        ? "the stage mounted"
+        : "the reader on another page"
+      : rule.observed
+        ? "its filter on"
+        : "its filter off";
+  const words = `${read}, ${STATES[rule.state].words}, ${observed}: ${WAYS[rule.way].words} reads it ${readsWords(rule.now)}`;
+  if (rule.observed) return words;
+  const back = rule.read === "tree" ? "the reader coming back" : "its filter pressed on";
+  return `${words}, and ${back} then reads it ${readsWords(rule.back)}`;
+}
+
+/** Whether `sent` reads are what `expected` says. */
+function expectReads(sent: number, expected: RuleReads, message: string): void {
+  if (typeof expected === "number") {
+    expect(sent, message).toBe(expected);
+    return;
+  }
+  expect(sent, message).toBeGreaterThanOrEqual(expected.atLeast);
+  expect(sent, message).toBeLessThanOrEqual(expected.atMost);
+}
+
+/** Runs one row on a fresh client and stage: the read brought to its state, a quiet second and
+ *  more, the way, and the reads of that query until the page is quiet again; for a read not
+ *  observed, then the reader coming back to it, and the reads until the page is quiet. */
+async function holdsRule(rule: ReadRule): Promise<void> {
+  const rig = openRig(rule.read);
+  const way: RuleWay = WAYS[rule.way];
+  try {
+    await STATES[rule.state].reach(rig, rule.observed);
+    await quiet(rig);
+    const before = ruleReads(rig);
+    await way.does(rig);
+    // A read held open answers once the way is done, and whatever the way asked for after it
+    // then begins.
+    await tick(50, 10);
+    act(() => {
+      rig.out?.resolve();
+      rig.out = undefined;
+    });
+    await quiet(rig);
+    expectReads(ruleReads(rig) - before, rule.now, "the reads the way starts");
+    way.ends?.(rig);
+    if (rule.observed) return;
+    for (const slot of rig.slots.splice(0)) slot.unmount();
+    const away = ruleReads(rig);
+    comeBack(rig);
+    await quiet(rig);
+    expectReads(ruleReads(rig) - away, rule.back, "the reads coming back starts");
+  } finally {
+    rig.close();
+  }
+}
+
+// The rule for when a read of the tree, or of a view, starts: one row for each cell, and a way of
+// starting a read found later is a new row here.
+//
+// A read refused by Dispatch, with or without an answer held, stays refused until the reader's
+// Retry, an event of the issue, the live feed coming back (its gap replayed whole, or the event
+// feed's refresh of every query on an incomplete replay), or a window focus while the feed is
+// down. No other way starts a read of it: no new surface (a slot drawn, a surface opened, the
+// reader coming back to the issue), no filter press, no network return, no focus while the feed
+// is up. A read that holds an answer is read again by an event or a write of the issue (once its
+// observer is there, if nothing observed it then); a read never made is made when something
+// first observes it.
+//
+// Each row is a read (the tree, or the Spec view), its state, whether it is observed (the stage
+// mounted, or the reader on another page with the stage gone and the shell's event feed staying;
+// for the view, its filter on or off), the way, and how many reads of that query the way starts
+// and, for a read not observed, how many the reader coming back then starts (the stage mounted
+// again; for the view, its filter pressed on). The live feed is up until a way takes it down.
+// "A new surface mounting" is a slot of the page drawn outside the stage (`useIssueTree`), and
+// for the Spec view with its filter on, the filter pressed off and on. An event is the event
+// feed's refresh of the issue's comments. The reader's Retry is an observer's `refetch`: the
+// outline's failed line's for the tree, and, since the page draws no Retry of the Spec view's
+// own, a new observer's of its query. An in-flight read answers once the way is done.
+//
+// The rows run on the fake clock (`jest.useFakeTimers()`, which moves `setTimeout`, `Bun.sleep`,
+// `Date.now` and `performance.now` together), moved through `tick` in steps that let every
+// answer's promises and React's updates run, so a second the scheduler waits costs no real time.
+//
+// Cells left out, as no row can stand in them:
+// - never read and observed: a stage reads the tree as it mounts, and a filter on reads its view;
+// - marked stale while nothing observed it, and observed: an observer reads a stale answer as it
+//   comes, so the read stands answered by then;
+// - the tree in flight and not observed: a read whose abort signal TanStack handed out is given up
+//   once its last observer goes, so the stage leaving while the tree's read is out leaves the tree
+//   never read. The Spec view's read keeps going with its filter off, since the page's model
+//   still watches it;
+// - the reader's Retry while the read is not observed: a Retry is a control of the drawn stage.
+const READ_RULES: readonly ReadRule[] = [
+  { read: "tree", state: "never", observed: false, way: "mount", now: 1, back: 0 },
+  { read: "tree", state: "never", observed: false, way: "focusUp", now: 0, back: 1 },
+  { read: "tree", state: "never", observed: false, way: "focusDown", now: 0, back: 1 },
+  { read: "tree", state: "never", observed: false, way: "online", now: 0, back: 1 },
+  { read: "tree", state: "never", observed: false, way: "feedWhole", now: 0, back: 1 },
+  { read: "tree", state: "never", observed: false, way: "feedPart", now: 0, back: 1 },
+  { read: "tree", state: "never", observed: false, way: "event", now: 0, back: 1 },
+  { read: "tree", state: "answered", observed: true, way: "mount", now: 0 },
+  { read: "tree", state: "answered", observed: true, way: "focusUp", now: 0 },
+  { read: "tree", state: "answered", observed: true, way: "focusDown", now: 0 },
+  { read: "tree", state: "answered", observed: true, way: "online", now: 0 },
+  { read: "tree", state: "answered", observed: true, way: "feedWhole", now: 0 },
+  { read: "tree", state: "answered", observed: true, way: "feedPart", now: 1 },
+  { read: "tree", state: "answered", observed: true, way: "event", now: 1 },
+  { read: "tree", state: "answered", observed: true, way: "retry", now: 1 },
+  { read: "tree", state: "answered", observed: true, way: "resolve200", now: ONE_OR_TWO },
+  { read: "tree", state: "answered", observed: true, way: "resolve1200", now: ONE_OR_TWO },
+  { read: "tree", state: "answered", observed: false, way: "mount", now: 0, back: 0 },
+  { read: "tree", state: "answered", observed: false, way: "focusUp", now: 0, back: 0 },
+  { read: "tree", state: "answered", observed: false, way: "focusDown", now: 0, back: 0 },
+  { read: "tree", state: "answered", observed: false, way: "online", now: 0, back: 0 },
+  { read: "tree", state: "answered", observed: false, way: "feedWhole", now: 0, back: 0 },
+  { read: "tree", state: "answered", observed: false, way: "feedPart", now: 0, back: 1 },
+  { read: "tree", state: "answered", observed: false, way: "event", now: 0, back: 1 },
+  { read: "tree", state: "stale", observed: false, way: "mount", now: 1, back: 0 },
+  { read: "tree", state: "stale", observed: false, way: "focusUp", now: 0, back: 1 },
+  { read: "tree", state: "stale", observed: false, way: "focusDown", now: 0, back: 1 },
+  { read: "tree", state: "stale", observed: false, way: "online", now: 0, back: 1 },
+  { read: "tree", state: "stale", observed: false, way: "feedWhole", now: 0, back: 1 },
+  { read: "tree", state: "stale", observed: false, way: "feedPart", now: 0, back: 1 },
+  { read: "tree", state: "stale", observed: false, way: "event", now: 0, back: 1 },
+  { read: "tree", state: "refused", observed: true, way: "mount", now: 0 },
+  { read: "tree", state: "refused", observed: true, way: "focusUp", now: 0 },
+  { read: "tree", state: "refused", observed: true, way: "focusDown", now: 1 },
+  { read: "tree", state: "refused", observed: true, way: "online", now: 0 },
+  { read: "tree", state: "refused", observed: true, way: "feedWhole", now: 1 },
+  { read: "tree", state: "refused", observed: true, way: "feedPart", now: 1 },
+  { read: "tree", state: "refused", observed: true, way: "event", now: 1 },
+  { read: "tree", state: "refused", observed: true, way: "retry", now: 1 },
+  { read: "tree", state: "refused", observed: false, way: "mount", now: 0, back: 0 },
+  { read: "tree", state: "refused", observed: false, way: "focusUp", now: 0, back: 0 },
+  { read: "tree", state: "refused", observed: false, way: "focusDown", now: 0, back: 1 },
+  { read: "tree", state: "refused", observed: false, way: "online", now: 0, back: 0 },
+  { read: "tree", state: "refused", observed: false, way: "feedWhole", now: 0, back: 1 },
+  { read: "tree", state: "refused", observed: false, way: "feedPart", now: 0, back: 1 },
+  { read: "tree", state: "refused", observed: false, way: "event", now: 0, back: 1 },
+  { read: "tree", state: "refusedHeld", observed: true, way: "mount", now: 0 },
+  { read: "tree", state: "refusedHeld", observed: true, way: "focusUp", now: 0 },
+  { read: "tree", state: "refusedHeld", observed: true, way: "focusDown", now: 1 },
+  { read: "tree", state: "refusedHeld", observed: true, way: "online", now: 0 },
+  { read: "tree", state: "refusedHeld", observed: true, way: "feedWhole", now: 1 },
+  { read: "tree", state: "refusedHeld", observed: true, way: "feedPart", now: 1 },
+  { read: "tree", state: "refusedHeld", observed: true, way: "event", now: 1 },
+  { read: "tree", state: "refusedHeld", observed: true, way: "retry", now: 1 },
+  { read: "tree", state: "refusedHeld", observed: false, way: "mount", now: 0, back: 0 },
+  { read: "tree", state: "refusedHeld", observed: false, way: "focusUp", now: 0, back: 0 },
+  { read: "tree", state: "refusedHeld", observed: false, way: "focusDown", now: 0, back: 1 },
+  { read: "tree", state: "refusedHeld", observed: false, way: "online", now: 0, back: 0 },
+  { read: "tree", state: "refusedHeld", observed: false, way: "feedWhole", now: 0, back: 1 },
+  { read: "tree", state: "refusedHeld", observed: false, way: "feedPart", now: 0, back: 1 },
+  { read: "tree", state: "refusedHeld", observed: false, way: "event", now: 0, back: 1 },
+  { read: "tree", state: "inFlight", observed: true, way: "mount", now: 0 },
+  { read: "tree", state: "inFlight", observed: true, way: "event", now: 1 },
+  { read: "tree", state: "inFlight", observed: true, way: "retry", now: 0 },
+  { read: "spec", state: "never", observed: false, way: "mount", now: 0, back: 1 },
+  { read: "spec", state: "never", observed: false, way: "focusUp", now: 0, back: 1 },
+  { read: "spec", state: "never", observed: false, way: "focusDown", now: 0, back: 1 },
+  { read: "spec", state: "never", observed: false, way: "online", now: 0, back: 1 },
+  { read: "spec", state: "never", observed: false, way: "feedWhole", now: 0, back: 1 },
+  { read: "spec", state: "never", observed: false, way: "feedPart", now: 0, back: 1 },
+  { read: "spec", state: "never", observed: false, way: "event", now: 0, back: 1 },
+  { read: "spec", state: "answered", observed: true, way: "mount", now: 0 },
+  { read: "spec", state: "answered", observed: true, way: "focusUp", now: 0 },
+  { read: "spec", state: "answered", observed: true, way: "focusDown", now: 0 },
+  { read: "spec", state: "answered", observed: true, way: "online", now: 0 },
+  { read: "spec", state: "answered", observed: true, way: "feedWhole", now: 0 },
+  { read: "spec", state: "answered", observed: true, way: "feedPart", now: 1 },
+  { read: "spec", state: "answered", observed: true, way: "event", now: 1 },
+  { read: "spec", state: "answered", observed: true, way: "retry", now: 1 },
+  { read: "spec", state: "answered", observed: false, way: "mount", now: 0, back: 0 },
+  { read: "spec", state: "answered", observed: false, way: "focusUp", now: 0, back: 0 },
+  { read: "spec", state: "answered", observed: false, way: "focusDown", now: 0, back: 0 },
+  { read: "spec", state: "answered", observed: false, way: "online", now: 0, back: 0 },
+  { read: "spec", state: "answered", observed: false, way: "feedWhole", now: 0, back: 0 },
+  { read: "spec", state: "answered", observed: false, way: "feedPart", now: 0, back: 1 },
+  { read: "spec", state: "answered", observed: false, way: "event", now: 0, back: 1 },
+  { read: "spec", state: "stale", observed: false, way: "mount", now: 0, back: 1 },
+  { read: "spec", state: "stale", observed: false, way: "focusUp", now: 0, back: 1 },
+  { read: "spec", state: "stale", observed: false, way: "focusDown", now: 0, back: 1 },
+  { read: "spec", state: "stale", observed: false, way: "online", now: 0, back: 1 },
+  { read: "spec", state: "stale", observed: false, way: "feedWhole", now: 0, back: 1 },
+  { read: "spec", state: "stale", observed: false, way: "feedPart", now: 0, back: 1 },
+  { read: "spec", state: "stale", observed: false, way: "event", now: 0, back: 1 },
+  { read: "spec", state: "refused", observed: true, way: "mount", now: 0 },
+  { read: "spec", state: "refused", observed: true, way: "focusUp", now: 0 },
+  { read: "spec", state: "refused", observed: true, way: "focusDown", now: 1 },
+  { read: "spec", state: "refused", observed: true, way: "online", now: 0 },
+  { read: "spec", state: "refused", observed: true, way: "feedWhole", now: 1 },
+  { read: "spec", state: "refused", observed: true, way: "feedPart", now: 1 },
+  { read: "spec", state: "refused", observed: true, way: "event", now: 1 },
+  { read: "spec", state: "refused", observed: true, way: "retry", now: 1 },
+  { read: "spec", state: "refused", observed: false, way: "mount", now: 0, back: 0 },
+  { read: "spec", state: "refused", observed: false, way: "focusUp", now: 0, back: 0 },
+  { read: "spec", state: "refused", observed: false, way: "focusDown", now: 0, back: 1 },
+  { read: "spec", state: "refused", observed: false, way: "online", now: 0, back: 0 },
+  { read: "spec", state: "refused", observed: false, way: "feedWhole", now: 0, back: 1 },
+  { read: "spec", state: "refused", observed: false, way: "feedPart", now: 0, back: 1 },
+  { read: "spec", state: "refused", observed: false, way: "event", now: 0, back: 1 },
+  { read: "spec", state: "refusedHeld", observed: true, way: "mount", now: 0 },
+  { read: "spec", state: "refusedHeld", observed: true, way: "focusUp", now: 0 },
+  { read: "spec", state: "refusedHeld", observed: true, way: "focusDown", now: 1 },
+  { read: "spec", state: "refusedHeld", observed: true, way: "online", now: 0 },
+  { read: "spec", state: "refusedHeld", observed: true, way: "feedWhole", now: 1 },
+  { read: "spec", state: "refusedHeld", observed: true, way: "feedPart", now: 1 },
+  { read: "spec", state: "refusedHeld", observed: true, way: "event", now: 1 },
+  { read: "spec", state: "refusedHeld", observed: true, way: "retry", now: 1 },
+  { read: "spec", state: "refusedHeld", observed: false, way: "mount", now: 0, back: 0 },
+  { read: "spec", state: "refusedHeld", observed: false, way: "focusUp", now: 0, back: 0 },
+  { read: "spec", state: "refusedHeld", observed: false, way: "focusDown", now: 0, back: 1 },
+  { read: "spec", state: "refusedHeld", observed: false, way: "online", now: 0, back: 0 },
+  { read: "spec", state: "refusedHeld", observed: false, way: "feedWhole", now: 0, back: 1 },
+  { read: "spec", state: "refusedHeld", observed: false, way: "feedPart", now: 0, back: 1 },
+  { read: "spec", state: "refusedHeld", observed: false, way: "event", now: 0, back: 1 },
+  { read: "spec", state: "inFlight", observed: true, way: "mount", now: 0 },
+  { read: "spec", state: "inFlight", observed: true, way: "event", now: 1 },
+  { read: "spec", state: "inFlight", observed: true, way: "retry", now: 0 },
+  { read: "spec", state: "inFlight", observed: false, way: "mount", now: 0, back: 0 },
+  { read: "spec", state: "inFlight", observed: false, way: "event", now: 0, back: 1 },
+  // The cells added below: a write with the live feed down, a write the page puts in the cache,
+  // a write Dispatch refuses, the reader leaving the issue and coming back to it (a new load of
+  // the stage), a focus while a write is out, a focus after Dispatch refused the live feed, a read
+  // out that is refused or that holds an answer, a read refused a second time after an ask, the
+  // Plan and Verification views, a write that lands with no answer, alone or while a second write
+  // is out, and a read out at a focus or the feed's return that is then refused.
+  // Writes with the live feed up and down, a write the page puts in the cache, and a write Dispatch refuses.
+  { read: "tree", state: "answered", observed: true, way: "resolveDown200", now: 1 },
+  { read: "tree", state: "answered", observed: true, way: "resolveDown1200", now: 1 },
+  { read: "tree", state: "answered", observed: true, way: "resolveRefusedDown", now: 1 },
+  { read: "tree", state: "answered", observed: true, way: "setDataUp", now: 0 },
+  { read: "tree", state: "answered", observed: true, way: "setDataDown", now: 1 },
+  { read: "tree", state: "answered", observed: false, way: "resolve200", now: 0, back: 1 },
+  { read: "tree", state: "answered", observed: false, way: "resolveDown200", now: 0, back: 1 },
+  { read: "tree", state: "answered", observed: false, way: "resolveRefusedDown", now: 0, back: 1 },
+  { read: "tree", state: "answered", observed: false, way: "setDataUp", now: 0, back: 0 },
+  { read: "tree", state: "answered", observed: false, way: "setDataDown", now: 0, back: 1 },
+  { read: "tree", state: "never", observed: false, way: "resolve200", now: 0, back: 1 },
+  { read: "tree", state: "never", observed: false, way: "resolveDown200", now: 0, back: 1 },
+  { read: "tree", state: "stale", observed: false, way: "resolve200", now: 0, back: 1 },
+  { read: "tree", state: "stale", observed: false, way: "resolveDown200", now: 0, back: 1 },
+  { read: "tree", state: "refused", observed: true, way: "resolve200", now: ONE_OR_TWO },
+  { read: "tree", state: "refused", observed: true, way: "resolve1200", now: ONE_OR_TWO },
+  { read: "tree", state: "refused", observed: true, way: "resolveDown200", now: 1 },
+  { read: "tree", state: "refused", observed: true, way: "resolveDown1200", now: 1 },
+  { read: "tree", state: "refused", observed: true, way: "resolveRefusedDown", now: 1 },
+  { read: "tree", state: "refused", observed: true, way: "setDataUp", now: 0 },
+  { read: "tree", state: "refused", observed: true, way: "setDataDown", now: 1 },
+  { read: "tree", state: "refused", observed: false, way: "resolve200", now: 0, back: 1 },
+  { read: "tree", state: "refused", observed: false, way: "resolveDown200", now: 0, back: 1 },
+  { read: "tree", state: "refused", observed: false, way: "resolveRefusedDown", now: 0, back: 1 },
+  { read: "tree", state: "refused", observed: false, way: "setDataUp", now: 0, back: 0 },
+  { read: "tree", state: "refused", observed: false, way: "setDataDown", now: 0, back: 1 },
+  { read: "tree", state: "refusedHeld", observed: true, way: "resolve200", now: ONE_OR_TWO },
+  { read: "tree", state: "refusedHeld", observed: true, way: "resolveDown200", now: 1 },
+  { read: "tree", state: "refusedHeld", observed: true, way: "setDataUp", now: 0 },
+  { read: "tree", state: "refusedHeld", observed: true, way: "setDataDown", now: 1 },
+  { read: "tree", state: "refusedHeld", observed: false, way: "resolve200", now: 0, back: 1 },
+  { read: "tree", state: "refusedHeld", observed: false, way: "resolveDown200", now: 0, back: 1 },
+  { read: "tree", state: "inFlight", observed: true, way: "resolve200", now: ONE_OR_TWO },
+  { read: "tree", state: "inFlight", observed: true, way: "resolveDown200", now: 1 },
+  { read: "tree", state: "inFlightRefused", observed: true, way: "resolve200", now: ONE_OR_TWO },
+  { read: "tree", state: "inFlightRefused", observed: true, way: "resolveDown200", now: 1 },
+  { read: "spec", state: "answered", observed: true, way: "resolve200", now: ONE_OR_TWO },
+  { read: "spec", state: "answered", observed: true, way: "resolve1200", now: ONE_OR_TWO },
+  { read: "spec", state: "answered", observed: true, way: "resolveDown200", now: 1 },
+  { read: "spec", state: "answered", observed: true, way: "resolveDown1200", now: 1 },
+  { read: "spec", state: "answered", observed: true, way: "resolveRefusedDown", now: 1 },
+  { read: "spec", state: "answered", observed: true, way: "setDataUp", now: 0 },
+  { read: "spec", state: "answered", observed: true, way: "setDataDown", now: 1 },
+  { read: "spec", state: "answered", observed: false, way: "resolve200", now: 0, back: 1 },
+  { read: "spec", state: "answered", observed: false, way: "resolveDown200", now: 0, back: 1 },
+  { read: "spec", state: "answered", observed: false, way: "setDataUp", now: 0, back: 0 },
+  { read: "spec", state: "answered", observed: false, way: "setDataDown", now: 0, back: 1 },
+  { read: "spec", state: "never", observed: false, way: "resolve200", now: 0, back: 1 },
+  { read: "spec", state: "never", observed: false, way: "resolveDown200", now: 0, back: 1 },
+  { read: "spec", state: "stale", observed: false, way: "resolve200", now: 0, back: 1 },
+  { read: "spec", state: "stale", observed: false, way: "resolveDown200", now: 0, back: 1 },
+  { read: "spec", state: "refused", observed: true, way: "resolve200", now: ONE_OR_TWO },
+  { read: "spec", state: "refused", observed: true, way: "resolveDown200", now: 1 },
+  { read: "spec", state: "refused", observed: true, way: "resolveRefusedDown", now: 1 },
+  { read: "spec", state: "refused", observed: true, way: "setDataUp", now: 0 },
+  { read: "spec", state: "refused", observed: true, way: "setDataDown", now: 1 },
+  { read: "spec", state: "refused", observed: false, way: "resolve200", now: 0, back: 1 },
+  { read: "spec", state: "refused", observed: false, way: "resolveDown200", now: 0, back: 1 },
+  { read: "spec", state: "refused", observed: false, way: "setDataDown", now: 0, back: 1 },
+  { read: "spec", state: "refusedHeld", observed: true, way: "resolve200", now: ONE_OR_TWO },
+  { read: "spec", state: "refusedHeld", observed: true, way: "resolveDown200", now: 1 },
+  { read: "spec", state: "refusedHeld", observed: false, way: "resolve200", now: 0, back: 1 },
+  { read: "spec", state: "refusedHeld", observed: false, way: "resolveDown200", now: 0, back: 1 },
+  { read: "spec", state: "inFlight", observed: true, way: "resolve200", now: ONE_OR_TWO },
+  { read: "spec", state: "inFlight", observed: true, way: "resolveDown200", now: 1 },
+  { read: "spec", state: "inFlight", observed: false, way: "resolveDown200", now: 0, back: 1 },
+  { read: "spec", state: "inFlightRefused", observed: true, way: "resolveDown200", now: 1 },
+  // A read out, answered or refused once the way is done, or out over a held answer, with every way.
+  { read: "tree", state: "inFlight", observed: true, way: "focusUp", now: 0 },
+  { read: "tree", state: "inFlight", observed: true, way: "focusDown", now: 0 },
+  { read: "tree", state: "inFlight", observed: true, way: "online", now: 0 },
+  { read: "tree", state: "inFlight", observed: true, way: "feedWhole", now: 0 },
+  { read: "tree", state: "inFlight", observed: true, way: "feedPart", now: 1 },
+  { read: "tree", state: "inFlightRefused", observed: true, way: "mount", now: 0 },
+  { read: "tree", state: "inFlightRefused", observed: true, way: "focusUp", now: 0 },
+  { read: "tree", state: "inFlightRefused", observed: true, way: "online", now: 0 },
+  { read: "tree", state: "inFlightRefused", observed: true, way: "feedPart", now: 1 },
+  { read: "tree", state: "inFlightRefused", observed: true, way: "event", now: 1 },
+  { read: "tree", state: "inFlightRefused", observed: true, way: "retry", now: 0 },
+  { read: "tree", state: "inFlightHeld", observed: true, way: "mount", now: 0 },
+  { read: "tree", state: "inFlightHeld", observed: true, way: "focusUp", now: 0 },
+  { read: "tree", state: "inFlightHeld", observed: true, way: "focusDown", now: 0 },
+  { read: "tree", state: "inFlightHeld", observed: true, way: "online", now: 0 },
+  { read: "tree", state: "inFlightHeld", observed: true, way: "feedWhole", now: 0 },
+  { read: "tree", state: "inFlightHeld", observed: true, way: "feedPart", now: 1 },
+  { read: "tree", state: "inFlightHeld", observed: true, way: "event", now: 1 },
+  { read: "tree", state: "inFlightHeld", observed: true, way: "retry", now: 1 },
+  { read: "spec", state: "inFlight", observed: true, way: "focusUp", now: 0 },
+  { read: "spec", state: "inFlight", observed: true, way: "focusDown", now: 0 },
+  { read: "spec", state: "inFlight", observed: true, way: "online", now: 0 },
+  { read: "spec", state: "inFlight", observed: true, way: "feedWhole", now: 0 },
+  { read: "spec", state: "inFlight", observed: true, way: "feedPart", now: 1 },
+  { read: "spec", state: "inFlight", observed: false, way: "focusUp", now: 0, back: 0 },
+  { read: "spec", state: "inFlight", observed: false, way: "focusDown", now: 0, back: 0 },
+  { read: "spec", state: "inFlight", observed: false, way: "online", now: 0, back: 0 },
+  { read: "spec", state: "inFlight", observed: false, way: "feedWhole", now: 0, back: 0 },
+  { read: "spec", state: "inFlight", observed: false, way: "feedPart", now: 0, back: 1 },
+  { read: "spec", state: "inFlightRefused", observed: true, way: "mount", now: 0 },
+  { read: "spec", state: "inFlightRefused", observed: true, way: "focusUp", now: 0 },
+  { read: "spec", state: "inFlightRefused", observed: true, way: "online", now: 0 },
+  { read: "spec", state: "inFlightRefused", observed: true, way: "feedPart", now: 1 },
+  { read: "spec", state: "inFlightRefused", observed: true, way: "event", now: 1 },
+  { read: "spec", state: "inFlightRefused", observed: true, way: "retry", now: 0 },
+  { read: "spec", state: "inFlightRefused", observed: false, way: "mount", now: 0, back: 0 },
+  { read: "spec", state: "inFlightRefused", observed: false, way: "focusUp", now: 0, back: 0 },
+  { read: "spec", state: "inFlightRefused", observed: false, way: "online", now: 0, back: 0 },
+  { read: "spec", state: "inFlightRefused", observed: false, way: "feedPart", now: 0, back: 1 },
+  { read: "spec", state: "inFlightRefused", observed: false, way: "event", now: 0, back: 1 },
+  { read: "spec", state: "inFlightHeld", observed: true, way: "mount", now: 0 },
+  { read: "spec", state: "inFlightHeld", observed: true, way: "focusUp", now: 0 },
+  { read: "spec", state: "inFlightHeld", observed: true, way: "focusDown", now: 0 },
+  { read: "spec", state: "inFlightHeld", observed: true, way: "online", now: 0 },
+  { read: "spec", state: "inFlightHeld", observed: true, way: "feedWhole", now: 0 },
+  { read: "spec", state: "inFlightHeld", observed: true, way: "feedPart", now: 1 },
+  { read: "spec", state: "inFlightHeld", observed: true, way: "event", now: 1 },
+  { read: "spec", state: "inFlightHeld", observed: true, way: "retry", now: 1 },
+  { read: "spec", state: "inFlightHeld", observed: false, way: "mount", now: 0, back: 0 },
+  { read: "spec", state: "inFlightHeld", observed: false, way: "focusDown", now: 0, back: 0 },
+  { read: "spec", state: "inFlightHeld", observed: false, way: "feedPart", now: 0, back: 1 },
+  { read: "spec", state: "inFlightHeld", observed: false, way: "event", now: 0, back: 1 },
+  // The reader leaving the issue and coming back to it: a new load of the stage.
+  { read: "tree", state: "answered", observed: true, way: "reload", now: 0 },
+  { read: "tree", state: "refused", observed: true, way: "reload", now: 0 },
+  { read: "tree", state: "refusedHeld", observed: true, way: "reload", now: 0 },
+  { read: "tree", state: "inFlight", observed: true, way: "reload", now: 1 },
+  { read: "tree", state: "refusedAgain", observed: true, way: "reload", now: 0 },
+  { read: "spec", state: "answered", observed: true, way: "reload", now: 1 },
+  { read: "spec", state: "answered", observed: false, way: "reload", now: 0, back: 1 },
+  { read: "spec", state: "never", observed: false, way: "reload", now: 0, back: 1 },
+  { read: "spec", state: "stale", observed: false, way: "reload", now: 0, back: 1 },
+  { read: "spec", state: "inFlight", observed: true, way: "reload", now: 1 },
+  { read: "spec", state: "refusedAgain", observed: true, way: "reload", now: 1 },
+  { read: "spec", state: "refusedAgain", observed: false, way: "reload", now: 0, back: 1 },
+  { read: "spec", state: "refused", observed: true, way: "reload", now: 1 },
+  { read: "spec", state: "refused", observed: false, way: "reload", now: 0, back: 1 },
+  { read: "spec", state: "refusedHeld", observed: true, way: "reload", now: 1 },
+  { read: "spec", state: "refusedHeld", observed: false, way: "reload", now: 0, back: 1 },
+  { read: "plan", state: "refused", observed: true, way: "reload", now: 1 },
+  { read: "plan", state: "refused", observed: false, way: "reload", now: 0, back: 1 },
+  { read: "plan", state: "refusedHeld", observed: true, way: "reload", now: 1 },
+  { read: "plan", state: "refusedHeld", observed: false, way: "reload", now: 0, back: 1 },
+  { read: "verification", state: "refused", observed: true, way: "reload", now: 1 },
+  { read: "verification", state: "refused", observed: false, way: "reload", now: 0, back: 1 },
+  { read: "verification", state: "refusedHeld", observed: true, way: "reload", now: 1 },
+  { read: "verification", state: "refusedHeld", observed: false, way: "reload", now: 0, back: 1 },
+  // Refused, asked for again while nothing observed it, read again and refused again.
+  { read: "tree", state: "refusedAgain", observed: true, way: "mount", now: 0 },
+  { read: "tree", state: "refusedAgain", observed: true, way: "focusUp", now: 0 },
+  { read: "tree", state: "refusedAgain", observed: true, way: "focusDown", now: 1 },
+  { read: "tree", state: "refusedAgain", observed: true, way: "online", now: 0 },
+  { read: "tree", state: "refusedAgain", observed: true, way: "feedWhole", now: 1 },
+  { read: "tree", state: "refusedAgain", observed: true, way: "feedPart", now: 1 },
+  { read: "tree", state: "refusedAgain", observed: true, way: "event", now: 1 },
+  { read: "tree", state: "refusedAgain", observed: true, way: "retry", now: 1 },
+  { read: "tree", state: "refusedAgain", observed: false, way: "mount", now: 0, back: 0 },
+  { read: "tree", state: "refusedAgain", observed: false, way: "focusUp", now: 0, back: 0 },
+  { read: "tree", state: "refusedAgain", observed: false, way: "focusDown", now: 0, back: 1 },
+  { read: "tree", state: "refusedAgain", observed: false, way: "online", now: 0, back: 0 },
+  { read: "tree", state: "refusedAgain", observed: false, way: "feedWhole", now: 0, back: 1 },
+  { read: "tree", state: "refusedAgain", observed: false, way: "feedPart", now: 0, back: 1 },
+  { read: "tree", state: "refusedAgain", observed: false, way: "event", now: 0, back: 1 },
+  { read: "spec", state: "refusedAgain", observed: true, way: "mount", now: 0 },
+  { read: "spec", state: "refusedAgain", observed: true, way: "focusUp", now: 0 },
+  { read: "spec", state: "refusedAgain", observed: true, way: "focusDown", now: 1 },
+  { read: "spec", state: "refusedAgain", observed: true, way: "online", now: 0 },
+  { read: "spec", state: "refusedAgain", observed: true, way: "feedWhole", now: 1 },
+  { read: "spec", state: "refusedAgain", observed: true, way: "feedPart", now: 1 },
+  { read: "spec", state: "refusedAgain", observed: true, way: "event", now: 1 },
+  { read: "spec", state: "refusedAgain", observed: true, way: "retry", now: 1 },
+  { read: "spec", state: "refusedAgain", observed: false, way: "mount", now: 0, back: 0 },
+  { read: "spec", state: "refusedAgain", observed: false, way: "focusUp", now: 0, back: 0 },
+  { read: "spec", state: "refusedAgain", observed: false, way: "focusDown", now: 0, back: 1 },
+  { read: "spec", state: "refusedAgain", observed: false, way: "online", now: 0, back: 0 },
+  { read: "spec", state: "refusedAgain", observed: false, way: "feedWhole", now: 0, back: 1 },
+  { read: "spec", state: "refusedAgain", observed: false, way: "feedPart", now: 0, back: 1 },
+  { read: "spec", state: "refusedAgain", observed: false, way: "event", now: 0, back: 1 },
+  // The Plan and Verification views.
+  { read: "plan", state: "never", observed: false, way: "mount", now: 0, back: 1 },
+  { read: "plan", state: "answered", observed: true, way: "mount", now: 0 },
+  { read: "plan", state: "answered", observed: true, way: "event", now: 1 },
+  { read: "plan", state: "refused", observed: true, way: "mount", now: 0 },
+  { read: "plan", state: "refused", observed: true, way: "focusUp", now: 0 },
+  { read: "plan", state: "refused", observed: true, way: "focusDown", now: 1 },
+  { read: "plan", state: "refused", observed: true, way: "online", now: 0 },
+  { read: "plan", state: "refused", observed: true, way: "feedWhole", now: 1 },
+  { read: "plan", state: "refused", observed: true, way: "feedPart", now: 1 },
+  { read: "plan", state: "refused", observed: true, way: "event", now: 1 },
+  { read: "plan", state: "refused", observed: true, way: "retry", now: 1 },
+  { read: "plan", state: "refused", observed: false, way: "mount", now: 0, back: 0 },
+  { read: "plan", state: "refused", observed: false, way: "focusUp", now: 0, back: 0 },
+  { read: "plan", state: "refused", observed: false, way: "focusDown", now: 0, back: 1 },
+  { read: "plan", state: "refused", observed: false, way: "online", now: 0, back: 0 },
+  { read: "plan", state: "refused", observed: false, way: "feedWhole", now: 0, back: 1 },
+  { read: "plan", state: "refused", observed: false, way: "feedPart", now: 0, back: 1 },
+  { read: "plan", state: "refused", observed: false, way: "event", now: 0, back: 1 },
+  { read: "plan", state: "refusedHeld", observed: true, way: "mount", now: 0 },
+  { read: "plan", state: "refusedHeld", observed: true, way: "focusUp", now: 0 },
+  { read: "plan", state: "refusedHeld", observed: true, way: "focusDown", now: 1 },
+  { read: "plan", state: "refusedHeld", observed: true, way: "online", now: 0 },
+  { read: "plan", state: "refusedHeld", observed: true, way: "feedWhole", now: 1 },
+  { read: "plan", state: "refusedHeld", observed: true, way: "feedPart", now: 1 },
+  { read: "plan", state: "refusedHeld", observed: true, way: "event", now: 1 },
+  { read: "plan", state: "refusedHeld", observed: true, way: "retry", now: 1 },
+  { read: "plan", state: "refusedHeld", observed: false, way: "mount", now: 0, back: 0 },
+  { read: "plan", state: "refusedHeld", observed: false, way: "focusUp", now: 0, back: 0 },
+  { read: "plan", state: "refusedHeld", observed: false, way: "focusDown", now: 0, back: 1 },
+  { read: "plan", state: "refusedHeld", observed: false, way: "online", now: 0, back: 0 },
+  { read: "plan", state: "refusedHeld", observed: false, way: "feedWhole", now: 0, back: 1 },
+  { read: "plan", state: "refusedHeld", observed: false, way: "feedPart", now: 0, back: 1 },
+  { read: "plan", state: "refusedHeld", observed: false, way: "event", now: 0, back: 1 },
+  { read: "verification", state: "never", observed: false, way: "mount", now: 0, back: 1 },
+  { read: "verification", state: "answered", observed: true, way: "mount", now: 0 },
+  { read: "verification", state: "answered", observed: true, way: "event", now: 1 },
+  { read: "verification", state: "refused", observed: true, way: "mount", now: 0 },
+  { read: "verification", state: "refused", observed: true, way: "focusUp", now: 0 },
+  { read: "verification", state: "refused", observed: true, way: "focusDown", now: 1 },
+  { read: "verification", state: "refused", observed: true, way: "online", now: 0 },
+  { read: "verification", state: "refused", observed: true, way: "feedWhole", now: 1 },
+  { read: "verification", state: "refused", observed: true, way: "feedPart", now: 1 },
+  { read: "verification", state: "refused", observed: true, way: "event", now: 1 },
+  { read: "verification", state: "refused", observed: true, way: "retry", now: 1 },
+  { read: "verification", state: "refused", observed: false, way: "mount", now: 0, back: 0 },
+  { read: "verification", state: "refused", observed: false, way: "focusUp", now: 0, back: 0 },
+  { read: "verification", state: "refused", observed: false, way: "focusDown", now: 0, back: 1 },
+  { read: "verification", state: "refused", observed: false, way: "online", now: 0, back: 0 },
+  { read: "verification", state: "refused", observed: false, way: "feedWhole", now: 0, back: 1 },
+  { read: "verification", state: "refused", observed: false, way: "feedPart", now: 0, back: 1 },
+  { read: "verification", state: "refused", observed: false, way: "event", now: 0, back: 1 },
+  { read: "verification", state: "refusedHeld", observed: true, way: "mount", now: 0 },
+  { read: "verification", state: "refusedHeld", observed: true, way: "focusUp", now: 0 },
+  { read: "verification", state: "refusedHeld", observed: true, way: "focusDown", now: 1 },
+  { read: "verification", state: "refusedHeld", observed: true, way: "online", now: 0 },
+  { read: "verification", state: "refusedHeld", observed: true, way: "feedWhole", now: 1 },
+  { read: "verification", state: "refusedHeld", observed: true, way: "feedPart", now: 1 },
+  { read: "verification", state: "refusedHeld", observed: true, way: "event", now: 1 },
+  { read: "verification", state: "refusedHeld", observed: true, way: "retry", now: 1 },
+  { read: "verification", state: "refusedHeld", observed: false, way: "mount", now: 0, back: 0 },
+  { read: "verification", state: "refusedHeld", observed: false, way: "focusUp", now: 0, back: 0 },
+  {
+    read: "verification",
+    state: "refusedHeld",
+    observed: false,
+    way: "focusDown",
+    now: 0,
+    back: 1,
+  },
+  { read: "verification", state: "refusedHeld", observed: false, way: "online", now: 0, back: 0 },
+  {
+    read: "verification",
+    state: "refusedHeld",
+    observed: false,
+    way: "feedWhole",
+    now: 0,
+    back: 1,
+  },
+  { read: "verification", state: "refusedHeld", observed: false, way: "feedPart", now: 0, back: 1 },
+  { read: "verification", state: "refusedHeld", observed: false, way: "event", now: 0, back: 1 },
+  // A focus while a write is out with the live feed down, and a focus after Dispatch refused the live feed.
+  { read: "tree", state: "refused", observed: true, way: "focusDownWriting", now: 1 },
+  { read: "tree", state: "refused", observed: false, way: "focusDownWriting", now: 0, back: 1 },
+  { read: "tree", state: "refused", observed: true, way: "focusHeldFeedWhole", now: 1 },
+  { read: "tree", state: "refused", observed: false, way: "focusHeldFeedWhole", now: 0, back: 1 },
+  { read: "tree", state: "refused", observed: true, way: "focusHeldFeedPart", now: 1 },
+  { read: "tree", state: "refused", observed: false, way: "focusHeldFeedPart", now: 0, back: 1 },
+  { read: "tree", state: "refused", observed: true, way: "focusFeedRefused", now: 1 },
+  { read: "tree", state: "refused", observed: false, way: "focusFeedRefused", now: 0, back: 1 },
+  { read: "tree", state: "refusedHeld", observed: true, way: "focusDownWriting", now: 1 },
+  { read: "tree", state: "refusedHeld", observed: false, way: "focusDownWriting", now: 0, back: 1 },
+  { read: "tree", state: "refusedHeld", observed: true, way: "focusFeedRefused", now: 1 },
+  { read: "tree", state: "refusedHeld", observed: false, way: "focusFeedRefused", now: 0, back: 1 },
+  { read: "tree", state: "answered", observed: true, way: "focusDownWriting", now: 0 },
+  { read: "tree", state: "answered", observed: true, way: "focusHeldFeedWhole", now: 0 },
+  { read: "tree", state: "answered", observed: true, way: "focusHeldFeedPart", now: 1 },
+  { read: "tree", state: "answered", observed: true, way: "focusFeedRefused", now: 0 },
+  { read: "tree", state: "answered", observed: false, way: "focusDownWriting", now: 0, back: 0 },
+  { read: "tree", state: "answered", observed: false, way: "focusFeedRefused", now: 0, back: 0 },
+  { read: "tree", state: "refusedAgain", observed: true, way: "focusDownWriting", now: 1 },
+  { read: "tree", state: "refusedAgain", observed: true, way: "focusFeedRefused", now: 1 },
+  { read: "spec", state: "refused", observed: true, way: "focusDownWriting", now: 1 },
+  { read: "spec", state: "refused", observed: false, way: "focusDownWriting", now: 0, back: 1 },
+  { read: "spec", state: "refused", observed: true, way: "focusHeldFeedWhole", now: 1 },
+  { read: "spec", state: "refused", observed: false, way: "focusHeldFeedWhole", now: 0, back: 1 },
+  { read: "spec", state: "refused", observed: true, way: "focusHeldFeedPart", now: 1 },
+  { read: "spec", state: "refused", observed: false, way: "focusHeldFeedPart", now: 0, back: 1 },
+  { read: "spec", state: "refused", observed: true, way: "focusFeedRefused", now: 1 },
+  { read: "spec", state: "refused", observed: false, way: "focusFeedRefused", now: 0, back: 1 },
+  { read: "spec", state: "refusedHeld", observed: true, way: "focusDownWriting", now: 1 },
+  { read: "spec", state: "refusedHeld", observed: false, way: "focusDownWriting", now: 0, back: 1 },
+  { read: "spec", state: "refusedHeld", observed: true, way: "focusFeedRefused", now: 1 },
+  { read: "spec", state: "refusedHeld", observed: false, way: "focusFeedRefused", now: 0, back: 1 },
+  { read: "spec", state: "answered", observed: true, way: "focusDownWriting", now: 0 },
+  { read: "spec", state: "answered", observed: true, way: "focusHeldFeedWhole", now: 0 },
+  { read: "spec", state: "answered", observed: true, way: "focusHeldFeedPart", now: 1 },
+  { read: "spec", state: "answered", observed: true, way: "focusFeedRefused", now: 0 },
+  { read: "spec", state: "answered", observed: false, way: "focusDownWriting", now: 0, back: 0 },
+  { read: "spec", state: "answered", observed: false, way: "focusFeedRefused", now: 0, back: 0 },
+  { read: "spec", state: "refusedAgain", observed: true, way: "focusDownWriting", now: 1 },
+  { read: "spec", state: "refusedAgain", observed: true, way: "focusFeedRefused", now: 1 },
+  // A write that lands with no answer, and the refresh of every query the write store makes for it.
+  { read: "tree", state: "answered", observed: true, way: "landedBlankUp", now: ONE_OR_TWO },
+  { read: "tree", state: "answered", observed: true, way: "landedBlankDown", now: 1 },
+  { read: "tree", state: "answered", observed: false, way: "landedBlankDown", now: 0, back: 1 },
+  { read: "tree", state: "refused", observed: true, way: "landedBlankUp", now: ONE_OR_TWO },
+  { read: "tree", state: "refused", observed: true, way: "landedBlankDown", now: 1 },
+  { read: "tree", state: "refusedHeld", observed: true, way: "landedBlankDown", now: 1 },
+  { read: "spec", state: "answered", observed: true, way: "landedBlankUp", now: ONE_OR_TWO },
+  { read: "spec", state: "answered", observed: true, way: "landedBlankDown", now: 1 },
+  { read: "spec", state: "refused", observed: true, way: "landedBlankDown", now: 1 },
+  { read: "tree", state: "answered", observed: true, way: "landedBlankBesideUp", now: 1 },
+  { read: "tree", state: "answered", observed: true, way: "landedBlankBesideDown", now: 1 },
+  // The refresh held for the writes reads no tree or view read the writes held: each sends as
+  // they settle.
+  { read: "tree", state: "answered", observed: true, way: "landedBlankBesideKeepDown", now: 1 },
+  { read: "spec", state: "answered", observed: true, way: "landedBlankBesideKeepDown", now: 1 },
+  // A refresh asked while a read waits for the writes - the event feed's refresh of every query
+  // after an incomplete replay - is answered by the request that read sends as they settle.
+  { read: "tree", state: "answered", observed: true, way: "landedBlankBesideFeedPart", now: 1 },
+  { read: "spec", state: "answered", observed: true, way: "landedBlankBesideFeedPart", now: 1 },
+  // The tree read an event asks for after a read that waited for a write keeps its second from
+  // the moment that read sent.
+  { read: "tree", state: "answered", observed: true, way: "eventAfterWaitedRead", now: 2 },
+  // A refused read that waits for the writes when a focus with the live feed down asks for every
+  // refused one: sent as they settle, after the ask, and refused, it is read no second time.
+  { read: "tree", state: "refused", observed: true, way: "landedBlankBesideFocus", now: 1 },
+  { read: "spec", state: "refused", observed: true, way: "landedBlankBesideFocus", now: 1 },
+  // A write Dispatch refuses with the live feed up: its rollback is no change, and an event that
+  // lands while it is out is read once it settles.
+  { read: "tree", state: "answered", observed: true, way: "resolveRefusedUp", now: 0 },
+  { read: "tree", state: "answered", observed: true, way: "resolveRefusedUpPosted", now: 1 },
+  // A read out as a window focus with the live feed down, or the feed back whole, asks for every
+  // refused one, then refused: owed, and read once more.
+  { read: "tree", state: "inFlightRefused", observed: true, way: "focusDown", now: 1 },
+  { read: "tree", state: "inFlightRefused", observed: true, way: "feedWhole", now: 1 },
+  { read: "spec", state: "inFlightRefused", observed: true, way: "focusDown", now: 1 },
+  { read: "spec", state: "inFlightRefused", observed: true, way: "feedWhole", now: 1 },
+  // An answered Plan or Verification view at a new load: read once, as the Spec view is.
+  { read: "plan", state: "answered", observed: true, way: "reload", now: 1 },
+  { read: "plan", state: "answered", observed: false, way: "reload", now: 0, back: 1 },
+  { read: "verification", state: "answered", observed: true, way: "reload", now: 1 },
+  { read: "verification", state: "answered", observed: false, way: "reload", now: 0, back: 1 },
+  // A trigger whose read waited for a write and was given up unsent as the reader left is still
+  // owed: the reader coming back reads it.
+  {
+    read: "tree",
+    state: "refused",
+    observed: false,
+    way: "backAndGoneWhileWaiting",
+    now: 0,
+    back: 1,
+  },
+  {
+    read: "tree",
+    state: "refused",
+    observed: false,
+    way: "retryGoneWhileWaiting",
+    now: 0,
+    back: 1,
+  },
+  // Two writes out together, each landing with no answer: read once, as the last settles.
+  { read: "tree", state: "answered", observed: true, way: "twoAnswerlessUp", now: 1 },
+  { read: "tree", state: "answered", observed: true, way: "twoAnswerlessDown", now: 1 },
+  { read: "spec", state: "answered", observed: true, way: "twoAnswerlessUp", now: 1 },
+  { read: "spec", state: "answered", observed: true, way: "twoAnswerlessDown", now: 1 },
+  // The issue opened while a write that lands with no answer is out: its first load is one read.
+  { read: "tree", state: "never", observed: false, way: "openDuringAnswerlessUp", now: 1, back: 0 },
+  {
+    read: "tree",
+    state: "never",
+    observed: false,
+    way: "openDuringAnswerlessDown",
+    now: 1,
+    back: 0,
+  },
+  // The issue opened while a write of another issue is out, with an event of it during the wait:
+  // the read the wait holds answers the event, so the first load is one read.
+  {
+    read: "tree",
+    state: "never",
+    observed: false,
+    way: "openDuringWriteWithEvent",
+    now: 1,
+    back: 0,
+  },
+];
+
+describe("the rule for when a read of the tree or of a view starts", () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+  });
+  afterEach(() => {
+    realClock();
+  });
+  for (const rule of READ_RULES) {
+    test(ruleWords(rule), () => holdsRule(rule));
   }
 });

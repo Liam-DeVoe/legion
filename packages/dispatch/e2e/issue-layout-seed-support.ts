@@ -10,13 +10,14 @@ import { setInterests, setLiveSessions } from "./agents";
 import {
   answerAsk,
   claimIssue,
-  createAsk,
   createComment,
   createHandoff,
   createIssue,
   createIssueArtifact,
   createProject,
   editArtifact,
+  getArtifact,
+  getArtifactBlocks,
   getIssue,
   getIssueResults,
   patchIssue,
@@ -26,18 +27,19 @@ import {
   replyToCommentBlock,
   syncArchitectureSource,
 } from "./api";
-import { blockId } from "./editor";
 import { seedFakeGithub } from "./fake-github-helpers";
 import {
+  ANSWERED_ASK_BLOCK_ID,
+  ANSWERED_READING_BLOCK_ID,
   checkBlockId,
   checkStateOf,
   checkText,
-  decisionHeadings,
-  decisionsDocument,
+  decisionBlocks,
   OPEN_QUESTION_BLOCK_ID,
   planDocument,
   rewordedCheckText,
   type SeededCheckState,
+  seededDecisionIds,
   specDocument,
   verificationDocument,
 } from "./issue-layout-seed-text";
@@ -197,14 +199,47 @@ export async function seedSessions(
   );
 }
 
-/** The heading block of each decision, in document order: the block id
- *  `GET /api/v1/issues/{key}/decisions` answers each decision under. */
-async function decisionBlockIds(artifactId: string, count: number): Promise<string[]> {
-  const ids: string[] = [];
-  for (const heading of decisionHeadings(count)) {
-    ids.push(await blockId(artifactId, heading));
+/** What the stored spec holds of its ask block `block` (`GET /api/v1/artifacts/{id}/blocks`): the
+ *  blocks its `shaped` names, and every reading standing inside it, in document order. */
+export async function askBlockOf(
+  specArtifactId: string,
+  block: string
+): Promise<{ readonly readings: string[]; readonly shaped: string[] }> {
+  const blocks = await getArtifactBlocks(specArtifactId);
+  const ask = blocks.find((one) => one.type === "ask" && one.id === block);
+  if (ask === undefined) throw new Error(`${specArtifactId} holds no ask block ${block}`);
+  const shaped = ask.attributes?.find((attribute) => attribute.name === "shaped")?.value ?? "";
+  return {
+    readings: blocks
+      .filter((one) => one.type === "reading" && one.from >= ask.from && one.to <= ask.to)
+      .map((one) => one.id),
+    shaped: shaped.split(" ").filter((ref) => ref !== ""),
+  };
+}
+
+/** Writes `markdown` as the issue's spec, as the planner, and holds the reading `reading` to
+ *  standing inside the ask block `ask`. A write takes a reading only in an ask a person answered
+ *  (`400 INVALID_ASK_BLOCK` otherwise), so a seed calls this after the answer. An edit cannot put
+ *  one there - an insert anchored in the ask lands beside it, and a replace reads its `with` as a
+ *  fragment of its own, where a reading stands at no decision's or ask's end - so the spec is
+ *  uploaded again under its own name, as the server's own tests add one
+ *  (`api/decision_census_test.go`). */
+export async function writeReading(options: {
+  ask: string;
+  issueKey: string;
+  markdown: string;
+  reading: string;
+  specArtifactId: string;
+}): Promise<void> {
+  const { name } = await getArtifact(options.specArtifactId);
+  await createIssueArtifact(options.issueKey, { content: options.markdown, name }, asPlanner);
+  const { readings } = await askBlockOf(options.specArtifactId, options.ask);
+  if (!readings.includes(options.reading)) {
+    throw new Error(
+      `${options.issueKey}'s ask block ${options.ask} holds the readings ${JSON.stringify(readings)}, ` +
+        `not ${options.reading}`
+    );
   }
-  return ids;
 }
 
 /** One result per check, in the state `checkStateOf` names: a pass and a fail at the pull
@@ -262,6 +297,7 @@ export interface IssueShape {
   readonly children: number;
   readonly commentReplies: number;
   readonly commentThreads: number;
+  /** At least 2: the second decision is the person's, the answered ask. */
   readonly decisions: number;
   readonly planTasks: number;
   readonly repository: string;
@@ -286,8 +322,8 @@ export interface SeededSkeleton {
 }
 
 /** One whole issue: a parent, every property the identity block draws, its children with one
- *  blocked and one done, its spec, Verification, plan and decisions documents, one result per
- *  check, its comment threads and two handoffs. */
+ *  blocked and one done, its spec with its decisions, its Verification and plan documents, one
+ *  result per check, its comment threads and two handoffs. */
 export async function seedIssueWithDocuments(shape: IssueShape): Promise<SeededSkeleton> {
   await createProject({ key: PROJECT, name: "Issue layout" });
   // `force` past the possible-duplicate guard: these titles are deliberately close to each other.
@@ -296,11 +332,16 @@ export async function seedIssueWithDocuments(shape: IssueShape): Promise<SeededS
     project: PROJECT,
     title: "The issue page is redesigned",
   });
+  const spec = specDocument({
+    openQuestion: true,
+    requirements: shape.requirements,
+    summary: true,
+  });
   const issue = await createIssue({
     force: true,
     parent: parent.key,
     project: PROJECT,
-    spec: specDocument({ openQuestion: true, requirements: shape.requirements, summary: true }),
+    spec,
     title: shape.title,
   });
   const specArtifactId = issue.primary_artifact_id ?? "";
@@ -356,19 +397,24 @@ export async function seedIssueWithDocuments(shape: IssueShape): Promise<SeededS
     }),
     name: "plan.md",
   });
-  const answered = await createAsk(
-    issue.key,
-    { question: "Which addresses must the new page still answer?", urgency: "high" },
+  // The decisions are blocks of the spec's `## Decisions` part, which the
+  // planner writes, so each is an agent's and the ask block's ask is the planner's. A person
+  // answers that ask, and the reading of the answer goes inside it after.
+  const decisions = (reading: boolean) =>
+    decisionBlocks({ count: shape.decisions, issueKey: issue.key, reading });
+  await editArtifact(
+    specArtifactId,
+    { ops: [{ after: "end", markdown: decisions(false), op: "insert" }] },
     asPlanner
   );
-  await answerAsk(answered.id, { expected_edited_at: null, selected: [], text: "All of them." });
-  const decisions = await createIssueArtifact(issue.key, {
-    content: decisionsDocument({
-      askRef: `dispatch://${issue.key}/ask/${answered.id}`,
-      count: shape.decisions,
-      issueKey: issue.key,
-    }),
-    name: "decisions.md",
+  const answeredAskId = await awaitBlockAsk(issue.key, ANSWERED_ASK_BLOCK_ID);
+  await answerAsk(answeredAskId, { expected_edited_at: null, selected: [], text: "All of them." });
+  await writeReading({
+    ask: ANSWERED_ASK_BLOCK_ID,
+    issueKey: issue.key,
+    markdown: `${spec}\n${decisions(true)}`,
+    reading: ANSWERED_READING_BLOCK_ID,
+    specArtifactId,
   });
   await recordSeededResults(issue.key, shape.checks, verification.artifact.id);
 
@@ -397,13 +443,13 @@ export async function seedIssueWithDocuments(shape: IssueShape): Promise<SeededS
   );
 
   return {
-    answeredAskId: answered.id,
+    answeredAskId,
     checks: Array.from({ length: shape.checks }, (_, index) => checkBlockId(index + 1)),
     children: { blocked, done, keys: children },
     commentReplies,
     commentThreads,
-    decisions: await decisionBlockIds(decisions.artifact.id, shape.decisions),
-    decisionsArtifactId: decisions.artifact.id,
+    decisions: seededDecisionIds(shape.decisions),
+    decisionsArtifactId: specArtifactId,
     key: issue.key,
     openQuestionAskId: await awaitBlockAsk(issue.key, OPEN_QUESTION_BLOCK_ID),
     parentKey: parent.key,

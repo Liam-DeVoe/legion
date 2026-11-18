@@ -73,7 +73,6 @@ import {
   architecture,
   CLAIMED_AT,
   classOf,
-  DECISIONS_ID,
   doc,
   draw,
   GONE_SESSION,
@@ -107,14 +106,6 @@ import { useIssueHeaderWrites } from "./useIssueHeaderWrites";
 
 function specEntry(approval?: ArtifactApproval): StepEntry {
   return { document: doc(SPEC_ID, "spec.md", approval), label: "Spec", step: "spec" };
-}
-
-function decisionsEntry(approval?: ArtifactApproval): StepEntry {
-  return {
-    document: doc(DECISIONS_ID, "decisions.md", approval),
-    label: "Decisions",
-    step: "decisions",
-  };
 }
 
 function verificationEntry(approval?: ArtifactApproval): StepEntry {
@@ -200,6 +191,7 @@ beforeEach(() => {
     getIssueDecisions: spyOn(api, "getIssueDecisions").mockResolvedValue({
       decisions: [],
       document: null,
+      entries: [],
       open_questions: [],
     }),
     getIssueSubscribers: spyOn(api, "getIssueSubscribers").mockResolvedValue([]),
@@ -352,10 +344,11 @@ function componentsIssue(components: IssueComponents, key = "CORE-1") {
 test("an approval entry links its document at the version the request asks about", () => {
   const entries = [
     specEntry({ latest_version: 2, state: "awaiting", waiting_on: "human" }),
-    decisionsEntry({ latest_version: 3, state: "stale", version: 2 }),
+    // The request asks about version 4 and the document stands at 5, so the link names the
+    // request's version and not the latest.
     verificationEntry({
       by: { id: "bob", kind: "user" },
-      latest_version: 4,
+      latest_version: 5,
       reason: "The checks name no command.",
       state: "changes_requested",
       version: 4,
@@ -373,9 +366,6 @@ test("an approval entry links its document at the version the request asks about
     const scope = within(details.container);
     expect(scope.getByRole("link", { name: "spec.md, version 1" }).getAttribute("href")).toBe(
       "/issues/CORE-1/artifacts/spec-md?v=1"
-    );
-    expect(scope.getByRole("link", { name: "decisions.md, version 2" }).getAttribute("href")).toBe(
-      "/issues/CORE-1/artifacts/decisions-md?v=2"
     );
     expect(
       scope.getByRole("link", { name: "verification.md, version 4" }).getAttribute("href")
@@ -415,9 +405,6 @@ test("an approval entry links its document at the version the request asks about
     );
     expect(scope.queryByTestId("issue-approval-steps")).toBeNull();
     expect(scope.getByRole("button", { name: "Awaiting approval" })).toBeInTheDocument();
-    expect(
-      scope.getByRole("button", { name: `Approved v2 · ${CONTROL_LABELS.approval_latest} v3` })
-    ).toBeInTheDocument();
     expect(scope.getByRole("button", { name: "Changes requested" })).toBeInTheDocument();
     expect(scope.queryAllByRole("link")).toHaveLength(0);
     expect(scope.queryByRole("button", { name: /^Approve( v\d+)?$/ })).toBeNull();
@@ -686,12 +673,11 @@ test("the compact size draws the chip and both actions at the header's size, wit
   }
 });
 
-/** A gate's three steps as the layout cases draw them: the spec awaiting its review, the
- *  decisions with no request, and the verification sent back with a reason. */
+/** A gate's two steps as the layout cases draw them: the spec awaiting its review, and the
+ *  verification sent back with a reason. */
 function layoutEntries(): StepEntry[] {
   return [
     specEntry({ latest_version: 1, state: "awaiting", waiting_on: "human" }),
-    decisionsEntry(),
     verificationEntry({
       by: { id: "bob", kind: "user" },
       latest_version: 4,
@@ -761,7 +747,6 @@ test("ApprovalSteps at its default layout draws main's list", async () => {
     expect(parentOf(list).getAttribute("class")).toBe("flex w-full min-w-0 flex-col gap-2");
     const entries = within(list).getAllByRole("listitem");
     expect(entries.map((entry) => entry.getAttribute("class"))).toEqual([
-      "flex min-w-0 flex-wrap items-center gap-2",
       "flex min-w-0 flex-wrap items-center gap-2",
       "flex min-w-0 flex-wrap items-center gap-2",
     ]);
@@ -851,13 +836,9 @@ test("ApprovalSteps with layout contents adds no box of its own and keeps each e
       const list = within(line).getByRole("list", { name: "Approvals" });
       expect(list.dataset.testid).toBe("issue-header-approval-steps");
       const entries = within(list).getAllByRole("listitem");
-      expect(entries.map((entry) => entry.dataset.approvalStep)).toEqual([
-        "spec",
-        "decisions",
-        "criteria",
-      ]);
-      const [spec, decisions, verification] = entries;
-      if (spec === undefined || decisions === undefined || verification === undefined) {
+      expect(entries.map((entry) => entry.dataset.approvalStep)).toEqual(["spec", "criteria"]);
+      const [spec, verification] = entries;
+      if (spec === undefined || verification === undefined) {
         throw new Error("an entry is missing");
       }
 
@@ -885,13 +866,10 @@ test("ApprovalSteps with layout contents adds no box of its own and keeps each e
         if (name === null) throw new Error(`the ${entry.dataset.approvalStep} entry draws nothing`);
         return name;
       });
-      expect(names.map((name) => name.textContent)).toEqual(["Spec", "Decisions", "Verification"]);
+      expect(names.map((name) => name.textContent)).toEqual(["Spec", "Verification"]);
       const items: Element[] = [
         ...names,
         within(spec).getByRole("button", { name: "Awaiting approval" }),
-        within(decisions).getByText(
-          surface === "inside" ? CONTROL_LABELS.not_requested : "Not requested"
-        ),
         within(verification).getByRole("button", { name: "Changes requested" }),
         ...groups,
         reason,
@@ -905,6 +883,42 @@ test("ApprovalSteps with layout contents adds no box of its own and keeps each e
       expect(boxed).toEqual([]);
     } finally {
       undraw(view);
+    }
+
+    // A step with no request draws its "Not requested" mark, which is an item of the caller's
+    // line as the others are.
+    const unasked = draw(
+      <div className="flex flex-wrap" data-case="line">
+        <ApprovalSteps
+          actionsOn={[SPEC_ID]}
+          entries={[
+            specEntry({ latest_version: 1, state: "awaiting", waiting_on: "human" }),
+            { document: undefined, label: "Verification", step: "criteria" },
+          ]}
+          layout="contents"
+          primaryArtifactId={SPEC_ID}
+          size="compact"
+          testId="issue-header-approval-steps"
+        />
+      </div>,
+      surface
+    );
+    try {
+      const line = caseOf(unasked, "line");
+      const list = within(line).getByRole("list", { name: "Approvals" });
+      const [, criteria] = within(list).getAllByRole("listitem");
+      if (criteria === undefined) throw new Error("the step with no request is missing");
+      const mark = within(criteria).getByText(
+        surface === "inside" ? CONTROL_LABELS.not_requested : "Not requested"
+      );
+      const boxed: string[] = [];
+      for (let at = parentOf(mark); at !== line; at = parentOf(at)) {
+        const box = at.getAttribute("class") ?? "";
+        if (box !== "contents") boxed.push(box);
+      }
+      expect(boxed, "the Not requested mark stands in a box of its own").toEqual([]);
+    } finally {
+      undraw(unasked);
     }
   }
 });
@@ -2199,8 +2213,9 @@ test("the default shapes keep main's class strings", async () => {
     "AskCard own words": "min-h-11 text-sm font-medium text-slate-700 dark:text-slate-300",
     "AskCard reason label": "mb-1 block text-sm font-medium text-slate-700 dark:text-slate-300",
     "AskCard submit hint": "text-xs text-slate-500 dark:text-slate-400",
-    // `main`'s features/inbox/AskCard.tsx: the unsent answer's box, its note and its words.
-    "AskCard unsent answer": "mt-3 rounded-xl border p-3 border-slate-200 dark:border-slate-800",
+    // `main`'s features/inbox/UnsentText.tsx, as AskCard draws it: the unsent answer's box, its
+    // note and its words.
+    "AskCard unsent answer": "rounded-xl border p-3 border-slate-200 dark:border-slate-800 mt-3",
     "AskCard unsent answer note": "text-xs text-slate-500 dark:text-slate-400",
     "AskCard unsent answer words":
       "mt-1 text-sm whitespace-pre-wrap text-slate-900 dark:text-slate-100",
@@ -2229,14 +2244,23 @@ test("the default shapes keep main's class strings", async () => {
         <ApprovalSteps
           entries={[
             specEntry({ latest_version: 1, state: "awaiting", waiting_on: "human" }),
-            decisionsEntry({
+            { document: undefined, label: "Verification", step: "criteria" },
+          ]}
+          primaryArtifactId={SPEC_ID}
+        />
+      </div>
+      {/* Neither of the gate's two steps above was sent back, so a step sent back, which draws
+          its reason under the list, is drawn in a list of its own. */}
+      <div data-case="approval reason">
+        <ApprovalSteps
+          entries={[
+            verificationEntry({
               by: { id: "bob", kind: "user" },
               latest_version: 3,
-              reason: "The second decision cites no evidence.",
+              reason: "The checks name no command.",
               state: "changes_requested",
               version: 3,
             }),
-            { document: undefined, label: "Verification", step: "criteria" },
           ]}
           primaryArtifactId={SPEC_ID}
         />
@@ -2430,7 +2454,7 @@ test("the default shapes keep main's class strings", async () => {
     );
     classAt(
       "ApprovalSteps reason",
-      caseOf(view, "approval steps").querySelector('[data-approval-step-reason="decisions"]')
+      caseOf(view, "approval reason").querySelector('[data-approval-step-reason="criteria"]')
     );
 
     const assignee = within(caseOf(view, "assignee")).getByRole("combobox");

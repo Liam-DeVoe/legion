@@ -46,24 +46,18 @@ USAGE
 # shellcheck source-path=SCRIPTDIR source=lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 require_env DISPATCH_URL PROJECT DEV_SIGNIN_LOGIN
-require_commands curl jq
+require_commands cmp curl jq
 read_bearer
 
 readonly driver=lens-invocation.sh
 # shellcheck disable=SC2031 # the DISPATCH_URL lib.sh's `cli` exports is its own; this one is the caller's
 readonly base="${DISPATCH_URL%/}"
-# The dashboard's origin, the scheme and host of DISPATCH_URL: a write the person's cookie
-# authenticates must name it (enforceCookieOrigin).
-base_host="${base#*://}"
-readonly origin="${base%%://*}://${base_host%%/*}"
 # shellcheck disable=SC2153 # PROJECT is the caller's input, checked by name above
 readonly project="$PROJECT"
 readonly login="$DEV_SIGNIN_LOGIN"
 stamp="$(date +%s)-$$"
 readonly stamp
 readonly session="lens-invocation-$stamp"
-# The ten kinds dispatch://INFRA-1297 records, which the catalogue's migration seeds.
-readonly seeded_kinds='["best-practice","boring-solution","botec","conway","first-principles","inversion","pre-mortem","reversibility","second-order","trade-off"]'
 # A word no lens_kind node holds: a slug the catalogue's ids take the form of, named for this run.
 readonly unheld_kind="unheld-kind-$stamp"
 
@@ -73,39 +67,13 @@ printf 'Authorization: Bearer %s\n' "$token" >"$work/auth"
 key=""
 cleanup() {
   local code=$?
-  if [[ -n "$key" ]]; then
-    send PATCH "/api/v1/issues/$key" \
-      "$(jq -cn --arg s "$session" '{status: "done", actor: {kind: "session", id: $s}}')"
-    [[ "$status" == 200 ]] ||
-      printf '%s: could not close %s: HTTP %s: %s\n' "$driver" "$key" "$status" "$(body)" >&2
-  fi
+  [[ -z "$key" ]] || close_issue "$key"
   rm -rf "$work"
   exit "$code"
 }
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-
-# request AS METHOD PATH [JSON]: sends METHOD PATH as AS: `agent`, with the bearer in $work/auth,
-# or `person`, with the session cookie the dev sign-in left in $work/jar and the dashboard's origin,
-# which the server requires of every write a cookie authenticates. The answer's body goes to
-# $work/body and its HTTP status to $status.
-request() {
-  local -a auth data=()
-  if [[ "$1" == person ]]; then
-    auth=(-b "$work/jar" -H "Origin: $origin")
-  else
-    auth=(-H "@$work/auth")
-  fi
-  [[ $# -lt 4 ]] || data=(-H 'Content-Type: application/json' --data-binary "$4")
-  status="$(curl -sS --max-time 60 -X "$2" -o "$work/body" -w '%{http_code}' "${auth[@]}" "${data[@]}" \
-    "$base$3" 2>"$work/curl")" || status="curl failed: $(<"$work/curl")"
-}
-
-# send METHOD PATH [JSON]: request as the agent bearer.
-send() { request agent "$@"; }
-# person_send METHOD PATH [JSON]: request as the person DEV_SIGNIN_LOGIN signed in.
-person_send() { request person "$@"; }
 
 # lenses_on SECTION WHAT ADDRESS: the person's read of GET /api/v1/lenses?on=ADDRESS.
 lenses_on() {
@@ -128,27 +96,13 @@ tuples_out() {
     fail "$1" "read the tuples out of $2" "unreadable: $(body)"
 }
 
-# held_kinds SECTION LENS: sets $kinds to the far ends of the lens's has_kind tuples, by id,
-# comma-separated, and $kind_count to how many there are.
+# held_kinds SECTION LENS FILE: writes the tuples out of the lens LENS to FILE (tuples_out), and
+# sets $kinds to the far ends of the has_kind tuples among them, by id, comma-separated, and
+# $kind_count to how many there are.
 held_kinds() {
-  references "$1" "read the has_kind tuples of $2" from "$2" has_kind
-  kinds="$(jq -r '[.edges[] | .node.id] | sort | join(", ")' "$work/body")" ||
-    fail "$1" "read the has_kind tuples of $2" "unreadable: $(body)"
-  kind_count="$(jq -r '.edges | length' "$work/body")"
-}
-
-# invoke SECTION WHAT BODY: the person invokes the lens BODY names (POST /api/v1/issues/{key}/lenses)
-# and the answer is 201. It sets $lens to the lens's address and $lens_id to its uuid, and keeps
-# the answer in $work/invoked.
-invoke() {
-  person_send POST "/api/v1/issues/$key/lenses" "$3"
-  want_status 201 "$1" "$2"
-  cp "$work/body" "$work/invoked"
-  lens="$(jq -er '.address' "$work/invoked")" || fail "$1" "$2" "no address: $(body)"
-  lens_id="$(jq -er '.id' "$work/invoked")" || fail "$1" "$2" "no id: $(body)"
-  [[ "$lens" == "dispatch://lens/$lens_id" ]] ||
-    fail "$1" "$2" "the lens answers the address $lens, want dispatch://lens/$lens_id"
-  pass "$1" "$2 ($lens)"
+  tuples_out "$1" "$2" "$3"
+  kinds="$(jq -r '[.[] | select(.kind == "has_kind") | .to | ltrimstr("dispatch://lens_kind/")] | sort | join(", ")' "$3")"
+  kind_count="$(jq -r '[.[] | select(.kind == "has_kind")] | length' "$3")"
 }
 
 # pointer SECTION WHAT NODE BODY: the person writes one pointer tuple out of the node whose store
@@ -159,25 +113,14 @@ pointer() {
 
 # --- the catalogue ------------------------------------------------------------------------------
 
-request agent GET /api/v1/schema/blocks
-want_status 200 "$driver" "read the catalogue"
-cp "$work/body" "$work/catalogue.json"
-held="$(jq -cS --argjson want "$seeded_kinds" '[.lens_kinds[].id] as $ids | [$want[] | select(. as $id | $ids | index($id))]' \
-  "$work/catalogue.json")" || fail "$driver" "read the catalogue" "unreadable: $(body)"
-[[ "$held" == "$seeded_kinds" ]] ||
-  fail "$driver" "the catalogue holds its ten kinds" "it holds $held of $seeded_kinds"
-pass "$driver" "the catalogue holds its ten kinds"
+seeded_catalogue
 
 # words KIND: the words the catalogue's lens_kind node KIND carries.
 words() { jq -r --arg k "$1" '.lens_kinds[] | select(.id == $k) | .words' "$work/catalogue.json"; }
 
 # --- setup --------------------------------------------------------------------------------------
 
-status="$(curl -sS --max-time 60 -o "$work/body" -w '%{http_code}' -c "$work/jar" \
-  "$base/auth/_dev/signin?login=$(q "$login")" 2>"$work/curl")" || status="curl failed: $(<"$work/curl")"
-want_status 302 setup "dev sign-in as $login"
-grep -q $'\tdsession\t' "$work/jar" || fail setup "dev sign-in as $login" "the answer set no session cookie"
-pass setup "signed in as $login"
+sign_in setup "$login"
 
 send POST /api/v1/issues "$(jq -cn --arg p "$project" --arg s "$session" \
   '{project: $p, title: "Lens invocation check", force: true, actor: {kind: "session", id: $s},
@@ -196,29 +139,30 @@ pass setup "wrote the comment $comment"
 
 # --- L1: three lenses on one spec, in the order they were invoked -------------------------------
 
-invoke L1 "invoke a pre-mortem on the spec" "$(jq -cn --arg on "$spec" '{on: $on, kind: "pre-mortem"}')"
+invoke L1 "invoke a pre-mortem on the spec" "cookie:$login" "$(jq -cn --arg on "$spec" '{on: $on, kind: "pre-mortem"}')"
 readonly premortem="$lens" premortem_id="$lens_id"
 cp "$work/invoked" "$work/premortem.json"
 
-invoke L1 "invoke a trade-off analysis on the spec, with two findings" "$(jq -cn --arg on "$spec" \
+invoke L1 "invoke a trade-off analysis on the spec, with two findings" "cookie:$login" "$(jq -cn --arg on "$spec" \
   '{on: $on, kind: "trade-off", findings: ["Postgres holds the graph; a second store doubles the writes.", "One store is the boring choice."]}')"
 readonly tradeoff="$lens" tradeoff_id="$lens_id"
 cp "$work/invoked" "$work/tradeoff.json"
 
 # The BOTEC is reserved for its author, so a finding that took any visibility but its lens's own
 # reads apart from the trade-off analysis's, which every viewer of the project reads.
-invoke L1 "invoke a BOTEC on the spec, reserved for its author, with one finding" "$(jq -cn --arg on "$spec" \
+invoke L1 "invoke a BOTEC on the spec, reserved for its author, with one finding" "cookie:$login" "$(jq -cn --arg on "$spec" \
   '{on: $on, kind: "botec", visibility: "author", findings: ["Three lenses an issue, a hundred issues a week: three hundred lens rows."]}')"
 readonly botec="$lens" botec_id="$lens_id"
 cp "$work/invoked" "$work/botec.json"
+# Each of the three by its name: its address, its uuid, its kind and the visibility it was written at.
+declare -rA address_of=([premortem]="$premortem" [tradeoff]="$tradeoff" [botec]="$botec")
+declare -rA id_of=([premortem]="$premortem_id" [tradeoff]="$tradeoff_id" [botec]="$botec_id")
+declare -rA kind_of=([premortem]=pre-mortem [tradeoff]=trade-off [botec]=botec)
+declare -rA visibility_of=([premortem]=project [tradeoff]=project [botec]=author)
 
 for written in premortem tradeoff botec; do
   cp "$work/$written.json" "$work/body"
-  case "$written" in
-    premortem) address="$premortem" kind=pre-mortem visibility=project ;;
-    tradeoff) address="$tradeoff" kind=trade-off visibility=project ;;
-    botec) address="$botec" kind=botec visibility=author ;;
-  esac
+  address="${address_of[$written]}" kind="${kind_of[$written]}" visibility="${visibility_of[$written]}"
   expect L1 "the write answers $address as a $kind lens on the spec, by $login, at $visibility" \
     "$(jq -cnS --arg k "$kind" --arg on "$spec" --arg l "$login" --arg v "$visibility" \
       '{author: {id: $l, kind: "person"}, kind: $k, on: $on, state: "live", visibility: $v}')" \
@@ -246,11 +190,7 @@ expect L1 "the spec answers the three lenses in the order they were invoked" \
   "$(jq -cn --arg a "$premortem" --arg b "$tradeoff" --arg c "$botec" '[$a, $b, $c]')" \
   '[.lenses[].address]'
 for written in premortem tradeoff botec; do
-  case "$written" in
-    premortem) address="$premortem" kind=pre-mortem ;;
-    tradeoff) address="$tradeoff" kind=trade-off ;;
-    botec) address="$botec" kind=botec ;;
-  esac
+  address="${address_of[$written]}" kind="${kind_of[$written]}"
   expect L1 "$address answers its kind $kind with the words its lens_kind node carries" \
     "$(jq -cnS --arg k "$kind" --arg w "$(words "$kind")" '{id: $k, words: $w}')" \
     --arg a "$address" '.lenses[] | select(.address == $a) | .kind'
@@ -278,10 +218,7 @@ jq -c --slurpfile added "$work/botec-added.json" \
   >"$work/botec-findings.json"
 
 for written in tradeoff botec; do
-  case "$written" in
-    tradeoff) address="$tradeoff" id="$tradeoff_id" visibility=project ;;
-    botec) address="$botec" id="$botec_id" visibility=author ;;
-  esac
+  address="${address_of[$written]}" id="${id_of[$written]}" visibility="${visibility_of[$written]}"
   cp "$work/spec-lenses.json" "$work/body"
   expect L2 "$address answers its findings under it, text for text, in the order they were written" \
     "$(jq -cS '.' "$work/$written-findings.json")" \
@@ -306,12 +243,8 @@ done
 
 # --- L3: the parent tuple is the log of the invocation ------------------------------------------
 
-for address in "$premortem" "$tradeoff" "$botec"; do
-  case "$address" in
-    "$premortem") kind=pre-mortem ;;
-    "$tradeoff") kind=trade-off ;;
-    *) kind=botec ;;
-  esac
+for written in premortem tradeoff botec; do
+  address="${address_of[$written]}" kind="${kind_of[$written]}"
   references L3 "read the tuples out of $address" from "$address"
   expect L3 "$address holds one part_of tuple, to the spec, and one has_kind tuple, to lens_kind $kind" \
     "$(jq -cn --arg s "$spec" --arg k "dispatch://lens_kind/$kind" '[["has_kind", "lens_kind", $k], ["part_of", "artifact", $s]]')" \
@@ -320,7 +253,7 @@ done
 
 # --- L4: a lens applies to any node -------------------------------------------------------------
 
-invoke L4 "invoke an inversion on the comment, which is no spec" \
+invoke L4 "invoke an inversion on the comment, which is no spec" "cookie:$login" \
   "$(jq -cn --arg on "$comment" '{on: $on, kind: "inversion"}')"
 readonly on_comment="$lens"
 lenses_on L4 "read the lenses on the comment" "$comment"
@@ -346,7 +279,7 @@ expect L5 "the retarget answers the move from trade-off to reversibility" \
   '{action, from: .from.address, to: .to.address}'
 
 # The second pre-mortem holds no risk; the first holds the one L1 wrote under it.
-invoke L5 "invoke a second pre-mortem on the spec, which holds no risk" \
+invoke L5 "invoke a second pre-mortem on the spec, which holds no risk" "cookie:$login" \
   "$(jq -cn --arg on "$spec" '{on: $on, kind: "pre-mortem"}')"
 readonly bare_premortem="$lens" bare_premortem_id="$lens_id"
 lenses_on L5 "read the lenses on the spec" "$spec"
@@ -370,7 +303,7 @@ cmp -s "$work/kept-with-risk.json" "$work/body" ||
     "with a risk: $(<"$work/kept-with-risk.json"); with none: $(body)"
 pass L5 "the two refusals answer the same body, byte for byte: $(body)"
 for address in "$premortem" "$bare_premortem"; do
-  held_kinds L5 "$address"
+  held_kinds L5 "$address" "$work/held.json"
   [[ "$kinds" == pre-mortem && "$kind_count" == 1 ]] ||
     fail L5 "$address keeps its one kind, pre-mortem" "it holds $kind_count has_kind tuples: $kinds"
   pass L5 "$address keeps its one kind, pre-mortem"
@@ -394,7 +327,7 @@ pointer R1 "assert a second kind of the BOTEC" "lens/$botec_id" \
   '{"kind": "has_kind", "action": "append", "to": "inversion"}'
 cp "$work/body" "$work/refusal.json"
 refused_status="$status"
-held_kinds R1 "$botec"
+held_kinds R1 "$botec" "$work/botec-after.json"
 [[ "$kind_count" == 1 ]] ||
   fail R1 "the BOTEC holds one kind after a second has_kind is asked for" \
     "$botec holds $kind_count has_kind tuples: $kinds (the write answered HTTP $refused_status: $(<"$work/refusal.json"))"
@@ -403,7 +336,6 @@ cp "$work/refusal.json" "$work/body"
 status="$refused_status"
 want_status 409 R1 "the second has_kind tuple is refused"
 expect R1 "the refusal is POINTER_ALREADY_ASSERTED" '"POINTER_ALREADY_ASSERTED"' '.code'
-tuples_out R1 "$botec" "$work/botec-after.json"
 cmp -s "$work/botec-before.json" "$work/botec-after.json" ||
   fail R1 "the BOTEC's tuples are as they were" "before: $(<"$work/botec-before.json"); after: $(<"$work/botec-after.json")"
 pass R1 "the BOTEC's tuples are as they were"
@@ -438,7 +370,7 @@ pointer R2 "retarget the BOTEC's kind at the word $unheld_kind" "lens/$botec_id"
   "$(jq -cn --arg k "$unheld_kind" '{kind: "has_kind", action: "retarget", from: "botec", to: $k}')"
 cp "$work/body" "$work/refusal.json"
 refused_status="$status"
-held_kinds R2 "$botec"
+held_kinds R2 "$botec" "$work/botec-after.json"
 [[ "$kinds" == botec && "$kind_count" == 1 ]] ||
   fail R2 "the BOTEC keeps its kind when its has_kind is retargeted at $unheld_kind" \
     "the word was accepted: $botec holds $kind_count has_kind tuples: $kinds (HTTP $refused_status: $(<"$work/refusal.json"))"
@@ -447,7 +379,6 @@ cp "$work/refusal.json" "$work/body"
 status="$refused_status"
 want_status 400 R2 "the has_kind tuple at the word $unheld_kind is refused"
 expect R2 "the refusal is INVALID_POINTER" '"INVALID_POINTER"' '.code'
-tuples_out R2 "$botec" "$work/botec-after.json"
 cmp -s "$work/botec-before.json" "$work/botec-after.json" ||
   fail R2 "the BOTEC's tuples are as they were" "before: $(<"$work/botec-before.json"); after: $(<"$work/botec-after.json")"
 pass R2 "the BOTEC's tuples are as they were"
@@ -467,7 +398,7 @@ cmp -s "$work/spec-before.json" "$work/spec-after.json" ||
 pass R3 "no lens of no kind is stored on the spec"
 cp "$work/refusal.json" "$work/body"
 status="$refused_status"
-[[ "$status" == 4?? ]] || fail R3 "a lens with no kind is refused with a 4xx status" "HTTP $status: $(body)"
+want_status 400 R3 "a lens with no kind is refused with HTTP 400"
 pass R3 "a lens with no kind is refused with HTTP $status"
 expect R3 "the refusal carries a code, LENS_KIND_REQUIRED" '"LENS_KIND_REQUIRED"' '.code'
 
@@ -476,17 +407,16 @@ pointer R3 "retract the one kind of the inversion on the comment" "lens/${on_com
   '{"kind": "has_kind", "action": "retract", "to": "inversion"}'
 cp "$work/body" "$work/refusal.json"
 refused_status="$status"
-held_kinds R3 "$on_comment"
+held_kinds R3 "$on_comment" "$work/comment-lens-after.json"
 [[ "$kinds" == inversion && "$kind_count" == 1 ]] ||
   fail R3 "the inversion keeps its one kind when it is retracted alone" \
     "$on_comment holds $kind_count has_kind tuples: $kinds (HTTP $refused_status: $(<"$work/refusal.json"))"
 pass R3 "the inversion keeps its one kind, inversion, when it is retracted alone"
 cp "$work/refusal.json" "$work/body"
 status="$refused_status"
-[[ "$status" == 4?? ]] || fail R3 "a lens left with no kind is refused with a 4xx status" "HTTP $status: $(body)"
+want_status 400 R3 "a lens left with no kind is refused with HTTP 400"
 pass R3 "a lens left with no kind is refused with HTTP $status"
 expect R3 "the refusal carries a code, INVALID_POINTER" '"INVALID_POINTER"' '.code'
-tuples_out R3 "$on_comment" "$work/comment-lens-after.json"
 cmp -s "$work/comment-lens-before.json" "$work/comment-lens-after.json" ||
   fail R3 "the inversion's tuples are as they were" \
     "before: $(<"$work/comment-lens-before.json"); after: $(<"$work/comment-lens-after.json")"

@@ -228,10 +228,9 @@ function heldNodes(
 }
 
 /** The rows that take their place from the fixture rather than from the tree read: a row the
- *  answer holds no node for, which is a decision of today's decisions read (a section of
- *  `decisions.md`, until the page draws decisions from the tree read's nodes), and a row drawn
- *  under such a decision, a Change, which the read places under its decision only once the
- *  decision is a node (`decisionNodesGate`). */
+ *  answer holds no node for, which is a decision of today's decisions read (until the page draws
+ *  decisions from the tree read's nodes), and a row drawn under such a decision, a Change, which
+ *  the read places under its decision only once the decision is a node (`decisionNodesGate`). */
 function placedByFixture(
   readings: readonly RowReading[],
   held: ReadonlyMap<string, HeldNode>
@@ -488,7 +487,7 @@ function expectDecisionsFromNodes(outline: OutlineRead, recorded: SeedFixture): 
     const decision = node.parent === null ? undefined : nodes.get(node.parent);
     if (
       node.supertag !== "comment" ||
-      node.author?.kind !== "user" ||
+      node.author[0]?.kind !== "user" ||
       decision?.supertag !== "decision"
     ) {
       return [];
@@ -900,6 +899,8 @@ test("each filter draws its view read's rows, and each decision that shaped a st
       ).toBeGreaterThan(0);
       const missing: string[] = [];
       for (const { statement, words } of lines) {
+        // The Spec rows held still across two readings in `pressFilter` above, with the page
+        // quiet, so one reading of a drawn row's text is the line that row settled on.
         const text = ((await nodeRow(page, statement).first().textContent()) ?? "")
           .replace(/\s+/g, " ")
           .trim();
@@ -995,6 +996,8 @@ test("a write is drawn without a reload", async ({ browser }) => {
     });
 
     const status = headerStatus(page);
+    // The header draws only from the answered issue read, and the load above was waited out, so
+    // the Status control's value once attached is the status the row starts from, before a pick.
     const was = await status.inputValue();
     const next = was === "testing" ? "todo" : "testing";
     const picked = traffic.requests.length;

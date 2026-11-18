@@ -1133,6 +1133,23 @@ const refusals: readonly RefusalCase[] = [
     call: "all beside limit and offset",
     args: { project: "PROJ", all: true, limit: 50, offset: 100 },
   },
+  {
+    tool: "dispatch_pointer",
+    call: "retarget with no from",
+    args: { issue: ISSUE, node: LENS, kind: "has_kind", action: "retarget", to: "botec" },
+  },
+  {
+    tool: "dispatch_pointer",
+    call: "from beside an append",
+    args: {
+      issue: ISSUE,
+      node: LENS,
+      kind: "has_kind",
+      action: "append",
+      from: "trade-off",
+      to: "botec",
+    },
+  },
 ];
 
 function compare(left: RecordedRun, right: RecordedRun): number {

@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
+	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
@@ -132,6 +133,12 @@ var schemaNames = map[reflect.Type]string{
 	reflect.TypeOf(delivery.UnownedIssue{}):              "DeliveryUnownedIssue",
 	reflect.TypeOf(delivery.DeliveryWaitingPRView{}):     "DeliveryWaitingPR",
 	reflect.TypeOf(itemblocks.Carried{}):                 "CarriedBlock",
+
+	// The Legion daemon setting's shape, whose Go package carries the word `Legion` in its import
+	// path and not in its type name: `Settings` is what legion calls it, and `LegionSetting` is
+	// what a client imports. The board's own types (legionBoardResponse and its members) already
+	// carry the word and take their Go names.
+	reflect.TypeOf(legion.Settings{}): "LegionSetting",
 }
 
 // rawFieldKeyOf names one field of one Go type: the owner by its reflect.Type rather than by an
@@ -179,6 +186,14 @@ var rawFieldSchemas = map[rawFieldKeyOf]rawField{
 	// inheriting, an object the mode and what it needs.
 	{reflect.TypeOf(createIssueInput{}), "components"}: rawField{GoType: issueComponentsInput{}, Nullable: true},
 	{reflect.TypeOf(updateIssueInput{}), "components"}: rawField{GoType: issueComponentsInput{}, Nullable: true},
+	// resolveDuplicateOf (issue_relations.go) reads create and update alike: null is no
+	// duplicate_of, a string the key of an issue of the issue's own project.
+	{reflect.TypeOf(createIssueInput{}), "duplicate_of"}: rawField{Fragment: openAPIIssueKey, Nullable: true},
+	{reflect.TypeOf(updateIssueInput{}), "duplicate_of"}: rawField{Fragment: openAPIIssueKey, Nullable: true},
+	// resolveFiledFrom (issue_relations.go) reads create and update alike: null is no filed_from,
+	// a string the canonical reference of a public ask, comment or message of the issue's project.
+	{reflect.TypeOf(createIssueInput{}), "filed_from"}: rawField{Fragment: openAPIConversationItemRef, Nullable: true},
+	{reflect.TypeOf(updateIssueInput{}), "filed_from"}: rawField{Fragment: openAPIConversationItemRef, Nullable: true},
 	// parseIssueParent (issue_parent.go): null is no parent, a string the parent's issue key.
 	{reflect.TypeOf(updateIssueInput{}), "parent"}: rawField{Fragment: openAPIIssueKey, Nullable: true},
 	// parseIssuePriority (issue_create.go), read by create and update alike.
@@ -222,6 +237,11 @@ var (
 	openAPIIssueKey = map[string]any{
 		"type":        "string",
 		"description": "an issue key, such as CORE-123",
+	}
+	openAPIConversationItemRef = map[string]any{
+		"type": "string",
+		"description": "the canonical reference of an ask, a comment or a message, dispatch://<KEY>/<ask|comment|message>/<uuid> " +
+			"or dispatch://<PROJECT>/artifact/<slug>/<ask|comment>/<uuid>",
 	}
 	openAPIIssuePriority = map[string]any{
 		"type": "integer", "minimum": 0, "maximum": 3,

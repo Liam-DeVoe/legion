@@ -116,10 +116,11 @@ type Deps struct {
 // its preflight load, and only while its head is still the one that load read. Load, ygo's, is a
 // room's load. Head is the version Load would fold up to now, which says whether a state loaded
 // earlier is still the stored one. DocumentStamp names the stored state a read of the document
-// meets now, and LoadDocument is that state decoded once with the stamp it was read under, which
-// a read of a document no room holds caches its rendering by (coldRead). compactRoom is the
-// compaction every path Dispatch compacts a document on runs (a room's close, the compaction
-// queue, the compaction sweep), under the tail rule; Compact, ygo's, is the keep-N rule only.
+// meets now, beside the room the document is edited in, and LoadDocument is that state decoded
+// once with the stamp it was read under, which a read of a document no room holds caches its
+// rendering by (coldRead). compactRoom is the compaction every path Dispatch compacts a document
+// on runs (a room's close, the compaction queue, the compaction sweep), under the tail rule;
+// Compact, ygo's, is the keep-N rule only.
 // pgVersioned is the PgVersioned the store is or wraps, which New hands the Service's
 // per-process values: its process id (Service.ProcessID), which every content-changing write's
 // announcement names (announceDocumentHead), and its note of each append and load
@@ -134,7 +135,7 @@ type VersionedStore interface {
 	AppendUpdateTx(ctx context.Context, tx pgx.Tx, room string, update []byte, contentChanged bool) (persistence.Version, error)
 	RebuildTx(ctx context.Context, tx pgx.Tx, room string, loaded persistence.Version, seed []byte) (RebuildReport, error)
 	Head(ctx context.Context, room string) (persistence.Version, error)
-	DocumentStamp(ctx context.Context, room string) (DocumentStamp, error)
+	DocumentStamp(ctx context.Context, artifactID string) (room string, stamp DocumentStamp, err error)
 	LoadDocument(ctx context.Context, room string) (LoadedDocument, error)
 	compactRoom(ctx context.Context, room string, rule compactRule, wait bool) (compactResult, error)
 	pgVersioned() *PgVersioned
@@ -373,6 +374,23 @@ type Service struct {
 	// at 849c00dd - left a load counted for good, and the either-order test held here fails on
 	// that order.
 	beforeUnloadEndsLoad func(room string)
+	// retireEntered runs once a retirement of the room a late departure's settlement loaded is
+	// inside the room (its own Server.Apply), before it takes the room's close gate
+	// (retireSettlementRoom). Nil outside tests; tests use it to hold two retirements inside one
+	// room at once.
+	retireEntered func(room string)
+	// afterRetireReserved runs once a retirement of the room a late departure's settlement loaded
+	// has taken its reservation on the room's record (reserveRetirement), before ygo's close of the
+	// room. Nil outside tests; tests use it to open a write in that window.
+	afterRetireReserved func(room string)
+	// afterRetireLeft runs once a retirement that reserved the room's record has left the room
+	// (its Server.Apply returned), before it ends the reservation (endRetirement). Nil outside
+	// tests; tests use it to hold a second retirement against that reservation.
+	afterRetireLeft func(room string)
+	// awaitingRetirement runs as a writer, a settlement or another retirement finds a retirement's
+	// reservation on the room's record and is about to wait for it (awaitRetirement). Nil outside
+	// tests; tests use it to see the wait.
+	awaitingRetirement func(room string)
 	// bootstrapping runs as a room's load hook decodes state, the stored state its load read, into
 	// the room's document (bootstrapLoadedState). Nil outside tests; tests use it to count the
 	// decodes a room's load makes and to see which state each decodes.
@@ -961,6 +979,8 @@ func New(deps Deps) *Service {
 	srv.OnInject = service.allowInject
 	srv.OnPeerUpdate = service.onPeerUpdate
 	srv.OnLoadDocument = service.onLoadDocument
+	// ygo calls it as a room's first browser joins it, after the browser is in the room.
+	srv.OnFirstPeer = service.takeUpSettlementRoom
 	srv.OnLastPeer = service.settleLastPeer
 	// ygo calls it once for every room it retires, whichever way: the idle sweep, CloseRoom.
 	srv.OnUnloadDocument = service.releaseUnloadedRoom
@@ -1419,10 +1439,12 @@ func (s *Service) scheduleSettleAfterLocked(room string, state *roomState, delay
 		}
 		defer s.settleWG.Done()
 		// An armed timer holds its state (unusedLocked), so the state can go only once the timer
-		// has left the register.
+		// has left the register, and so can a room a late departure's settlement loaded, which
+		// this settlement may be a retry of (retireSettlementRoom).
 		defer func() {
 			s.unregisterSettleTimer(timerID)
 			s.releaseIfUnused(room)
+			s.retireSettlementRoom(room)
 		}()
 		state := record.Value()
 		if current, _ := s.rooms.Load(room); state == nil || current != state {

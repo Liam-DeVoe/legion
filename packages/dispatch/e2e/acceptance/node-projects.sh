@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Drives the project of every node (dispatch://INFRA-3862, slice N of its plan): every issue,
+# Drives the project of every node, which a read limited to a project depends on: every issue,
 # document, ask, message, comment and block a create writes is a node of the store that names its
 # project, written by its kind's own writer in the create's transaction.
 #
@@ -27,7 +27,7 @@
 #
 # Under e2e/acceptance/with-harness.sh, which exports DISPATCH_E2E_PORT, FAKE_ENVOY_PORT and
 # DATABASE_URL and none of the other inputs, the driver is its own caller, so the check that runs
-# it (dispatch://INFRA-3882/artifact/verification-md#b-c-a-node-projects) is one command: it
+# it (c-a-node-projects) is one command: it
 # addresses the harness's server with the agent bearer the harness pins (`e2e-token`), signs in
 # `alice`, whom the harness seeds, creates a project of its own, adds an agent session of its own
 # to the fake Envoy's session list and puts the list back when it ends, and builds

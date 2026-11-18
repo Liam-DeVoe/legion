@@ -135,7 +135,7 @@ function node(
   const text = `Words of ${id}.`;
   return {
     attributes: {},
-    author: null,
+    author: [],
     id,
     made_at: "2026-11-05T00:00:00Z",
     parent,
@@ -295,7 +295,7 @@ function linkTo(ref: string): DecisionLink {
 
 /** A person's comment the read hangs under `parent`, made at `madeAt`. */
 function personsComment(id: string, parent: string, madeAt: string): TreeAnswerNode {
-  return node(id, "comment", parent, { author: { id: "alice", kind: "user" }, made_at: madeAt });
+  return node(id, "comment", parent, { author: [{ id: "alice", kind: "user" }], made_at: madeAt });
 }
 
 // R1, R2: each node stands under the parent the read answers, and siblings stand in the read's
@@ -347,6 +347,23 @@ test("a node's words come from its text_tree", () => {
     ["Draw the tree from one read. Then the rest.", "Draw the tree from one read."],
     ["Agreed, ship it.", "Agreed, ship it."],
   ]);
+});
+
+// A node's `author` lists every author of its first version, whoever made it first ahead of the
+// rest, and a row draws one name: a comment two authors wrote draws the first of them, and a
+// message whose list is empty draws none.
+test("a node draws the first author its list names, and none where the list is empty", () => {
+  const alice = { id: "alice", kind: "user" };
+  const planner = { id: "planner", kind: "session" };
+  const { drafts, root } = drawn(
+    answer([
+      node("c1", "comment", KEY, { author: [alice, planner] }),
+      node("m1", "message", KEY, { author: [] }),
+    ])
+  );
+
+  expect(["c1", "m1"].map((id) => drafts.get(id)?.author)).toEqual([alice, undefined]);
+  expect(["c1", "m1"].map((id) => nodeOf(root, id)?.author)).toEqual([alice, undefined]);
 });
 
 // R1, R2: on an issue that has not converted, a typed block stands under the parent the read
@@ -581,7 +598,7 @@ test("a Change is the comment the read hangs under its decision", () => {
     decision,
     personsComment("c-older", "d1", "2026-11-04T00:00:00Z"),
     node("c-agent", "comment", "d1", {
-      author: { id: "planner", kind: "session" },
+      author: [{ id: "planner", kind: "session" }],
       made_at: "2026-11-07T00:00:00Z",
     }),
   ];

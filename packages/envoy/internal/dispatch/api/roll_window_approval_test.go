@@ -14,19 +14,50 @@ import (
 
 // registerTwoBuilds registers, in the registry the document service reads the fleet from
 // (processes.Live), a process of each of two builds, live for the rest of the test, as a roll
-// serves them: the document service then keeps every ask block in step with its asks row
-// (docs' rollWindowAskAttributes), the release before's second copy of the answer. Both read and
-// create this build's schema, as docs' serveTwoBuilds registers them: a process with no schema
-// numbers counts as reading version 0 (docs' schemaFleet), and its document sockets would then
-// admit a browser read-only, dropping every edit it sends.
+// serves them: one of the release before, with the schema numbers a process of it registers
+// (baseSchemaVersion, baseSchemaCreatable), and one of this build, with its own. The document
+// service's fleet guard reads a process below this build's schema version as a build whose pages
+// read an ask's state from its block (docs' anotherBuildServes), so it then keeps every ask block
+// in step with its asks row (docs' rollWindowAskAttributes), the release before's second copy of
+// the answer. A test's editor presents no schema_creatable, so its creatable version is 1, at most
+// the lowest version the fleet reads, and its document socket stays writable beside the release
+// before (docs' schemaFleet.admits), as a page creating nothing past version 4 is in a roll.
 func registerTwoBuilds(t *testing.T, database *store.Store) {
 	t.Helper()
 	if _, err := database.Pool.Exec(context.Background(), `
 		insert into server_processes (instance, commit, schema_version, schema_creatable, heartbeat_at)
 		values (gen_random_uuid(), 'the-release-before', $1, $2, now() + interval '1 hour'),
-		       (gen_random_uuid(), 'this-release', $1, $2, now() + interval '1 hour')
-	`, pmdoc.SchemaVersion(), pmdoc.SchemaCreatable()); err != nil {
+		       (gen_random_uuid(), 'this-release', $3, $4, now() + interval '1 hour')
+	`, baseSchemaVersion, baseSchemaCreatable, pmdoc.SchemaVersion(), pmdoc.SchemaCreatable()); err != nil {
 		t.Fatalf("register a process of each of two builds: %v", err)
+	}
+}
+
+// baseSchemaVersion and baseSchemaCreatable are the schema numbers a process of the release
+// before registers: legion/INFRA-1149's pmdoc/schema/blocks.json is version 4, and creates nothing
+// past it.
+const (
+	baseSchemaVersion   = 4
+	baseSchemaCreatable = 4
+)
+
+// whileTheReleaseBeforeServes runs write with a live process of the release before registered
+// beside this build (baseSchemaVersion), and removes that process once write returns, leaving
+// the fleet one build again. It is how a test writes a version that holds server-owned ask
+// attributes: on a fleet of one build a version written before settlement takes them off (docs'
+// storableVersionTree), and one written while the release before serves keeps them for its pages.
+func whileTheReleaseBeforeServes(t *testing.T, database *store.Store, write func()) {
+	t.Helper()
+	var instance string
+	if err := database.Pool.QueryRow(context.Background(), `
+		insert into server_processes (instance, commit, schema_version, schema_creatable, heartbeat_at)
+		values (gen_random_uuid(), 'the-release-before', $1, $2, now() + interval '1 hour') returning instance::text
+	`, baseSchemaVersion, baseSchemaCreatable).Scan(&instance); err != nil {
+		t.Fatalf("register a process of the release before: %v", err)
+	}
+	write()
+	if _, err := database.Pool.Exec(context.Background(), `delete from server_processes where instance = $1::uuid`, instance); err != nil {
+		t.Fatalf("remove the release before's process: %v", err)
 	}
 }
 

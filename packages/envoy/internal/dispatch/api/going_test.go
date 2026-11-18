@@ -276,8 +276,8 @@ func TestTheGoingSweepEndsARunPastItsWindowOnce(t *testing.T) {
 	}
 }
 
-// TestARunAndItsFramesAreKeptPastTheHour is c-run-kept: R4 keeps a run and its frames, where
-// main's sweep deletes them after one hour (contracts.GoingRequestTTL, which this build reads
+// TestARunAndItsFramesAreKeptPastTheHour is c-run-kept: a run and its frames are kept past the hour
+// after which the release before deleted them (contracts.GoingRequestTTL, which this build reads
 // nowhere). It records two runs of one person, appends one frame to each and ends neither, dates
 // the first two hours back, and sweeps once. The first run's row, its frame and its interaction
 // node all stand, the node at no state gone, and the run now holds a terminal frame, because the
@@ -379,52 +379,119 @@ func TestTheGoingSweepEndsTheRunsOfItsWindowAndLeavesAnOlderOneToItsReader(t *te
 	}
 }
 
-// TestTheGoingSweepReadsItsWindowThroughTheEndsAtIndex holds the sweep's read (goingOverdueRuns)
-// to going_requests_ends_at (migration 20261116232634): under the plan Postgres builds for the
-// values the sweep sends, and under the generic plan a prepared statement settles on, it reads
-// going_requests through that index alone, never a scan of the table, and the index condition
-// carries both bounds of the window - ends_at at or before now, and after now less the window -
-// so the read is that index's range for the last day and not every run ever kept. A condition
-// holding the upper bound alone would read the index from its first entry, every run kept, which
-// is the cost the window is there to bound.
-func TestTheGoingSweepReadsItsWindowThroughTheEndsAtIndex(t *testing.T) {
+// TestTheOverdueReadsGoThroughTheEndsAtIndex holds each pass's read of the runs it ends to
+// going_requests_ends_at (migration 20261116232634): under the plan Postgres builds for the values
+// the pass sends, and under the generic plan a prepared statement settles on, it reads
+// going_requests through that index alone, never a scan of the table, with its bounds in the
+// index condition. The sweep's read (goingOverdueRuns) carries both bounds of its window - ends_at
+// at or before now, and after now less the window - so it is that index's range for the last day
+// and not every run ever kept: a condition holding the upper bound alone would read the index from
+// its first entry, every run kept, which is the cost the window is there to bound. The boot pass's
+// read (goingEveryOverdueRun) carries that upper bound alone, every run whose deadline has passed,
+// which is why the pass runs once a boot and not once a maintenance pass.
+func TestTheOverdueReadsGoThroughTheEndsAtIndex(t *testing.T) {
 	rig := newGoingRig(t)
 	ctx := context.Background()
 	const index = "going_requests_ends_at"
-	custom := planWithoutSeqScans(t, rig.database, goingOverdueRuns, goingTerminalNames, goingSweepWindow.Seconds())
+	terminal := "'{" + strings.Join(goingTerminalNames, ",") + "}'"
 	connection, err := rig.database.Pool.Acquire(ctx)
 	if err != nil {
-		t.Fatalf("acquire a connection for the generic plan: %v", err)
+		t.Fatalf("acquire a connection for the generic plans: %v", err)
 	}
 	defer connection.Release()
-	generic := explaintest.GenericPlan(t, ctx, connection, "going_overdue_runs", goingOverdueRuns,
-		[]string{"text[]", "double precision"},
-		[]string{"'{" + strings.Join(goingTerminalNames, ",") + "}'", fmt.Sprint(goingSweepWindow.Seconds())},
-		"set local enable_seqscan = off")
 	firstKeys := explaintest.NewIndexKeys(rig.database.Pool)
 	for _, read := range []struct {
-		name string
-		plan json.RawMessage
-	}{{"the sweep's read", custom}, {"the sweep's read under a generic plan", generic}} {
-		if explaintest.SeqScansRelation(t, read.plan, "going_requests") {
-			t.Errorf("%s scans going_requests:\n%s", read.name, read.plan)
-		}
-		firstKeys.RequireIndexKeyed(t, read.plan, index, read.name, explaintest.CondRequired)
-		for _, scan := range explaintest.IndexScans(t, read.plan) {
-			if scan.Index != index {
-				continue
+		name, prepared, statement string
+		args                      []any
+		types, literals           []string
+		bounds                    []string
+	}{
+		{
+			name: "the sweep's read", prepared: "going_overdue_runs", statement: goingOverdueRuns,
+			args:  []any{goingTerminalNames, goingSweepWindow.Seconds()},
+			types: []string{"text[]", "double precision"}, literals: []string{terminal, fmt.Sprint(goingSweepWindow.Seconds())},
+			bounds: []string{"ends_at <=", "ends_at >"},
+		},
+		{
+			name: "the boot pass's read", prepared: "going_every_overdue_run", statement: goingEveryOverdueRun,
+			args: []any{goingTerminalNames}, types: []string{"text[]"}, literals: []string{terminal},
+			bounds: []string{"ends_at <="},
+		},
+	} {
+		custom := planWithoutSeqScans(t, rig.database, read.statement, read.args...)
+		generic := explaintest.GenericPlan(t, ctx, connection, read.prepared, read.statement, read.types, read.literals,
+			"set local enable_seqscan = off")
+		for _, planned := range []struct {
+			name string
+			plan json.RawMessage
+		}{{read.name, custom}, {read.name + " under a generic plan", generic}} {
+			if explaintest.SeqScansRelation(t, planned.plan, "going_requests") {
+				t.Errorf("%s scans going_requests:\n%s", planned.name, planned.plan)
 			}
-			if !strings.Contains(scan.Cond, "ends_at <=") || !strings.Contains(scan.Cond, "ends_at >") {
-				t.Errorf("%s reads %s on `%s`, want both bounds of the window in the index condition, ends_at <= now() and ends_at > now() less the window:\n%s",
-					read.name, scan, scan.Cond, read.plan)
+			firstKeys.RequireIndexKeyed(t, planned.plan, index, planned.name, explaintest.CondRequired)
+			for _, scan := range explaintest.IndexScans(t, planned.plan) {
+				for _, bound := range read.bounds {
+					if scan.Index == index && !strings.Contains(scan.Cond, bound) {
+						t.Errorf("%s reads %s on `%s`, want its bound `%s` in the index condition:\n%s",
+							planned.name, scan, scan.Cond, bound, planned.plan)
+					}
+				}
 			}
 		}
 	}
 }
 
-// TestABootEndsARunOverdueByMoreThanADay is the boot pass (D16 of dispatch://INFRA-1950): a run
-// whose ends_at passed more than a day ago with no terminal frame stored - one whose window passed
-// while every process was down for longer than goingSweepWindow - is read by no periodic pass,
+// TestTheNextFrameReadsTwoIndexProbes holds the read every frame of a run makes once it holds the
+// run's node (goingNextFrame) to two probes of an index each, under the plan Postgres builds for
+// the values a frame sends and under the generic plan a prepared statement settles on: the run's
+// newest sequence, read on the (request_id, sequence) key, and whether it has stored its ending,
+// read on going_events_terminal, each keyed by the run. Neither reads going_events by a scan of the
+// table, and no aggregate runs over the run's frames, so a frame costs the same however many frames
+// its run already holds.
+func TestTheNextFrameReadsTwoIndexProbes(t *testing.T) {
+	rig := newGoingRig(t)
+	ctx := context.Background()
+	run := rig.record(t, "how many frames does this read?")
+	custom := planWithoutSeqScans(t, rig.database, goingNextFrame, run.ID, contracts.GoingEventText, []byte(`{"text":"a"}`))
+	connection, err := rig.database.Pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire a connection for the generic plan: %v", err)
+	}
+	defer connection.Release()
+	generic := explaintest.GenericPlan(t, ctx, connection, "going_next_frame", goingNextFrame,
+		[]string{"text", "text", "jsonb"}, []string{"'" + run.ID + "'", "'" + contracts.GoingEventText + "'", `'{"text":"a"}'`},
+		"set local enable_seqscan = off")
+	for _, planned := range []struct {
+		name string
+		plan json.RawMessage
+	}{{"the next frame's read", custom}, {"the next frame's read under a generic plan", generic}} {
+		for _, relation := range []string{"going_events", "going_requests"} {
+			if explaintest.SeqScansRelation(t, planned.plan, relation) {
+				t.Errorf("%s scans %s:\n%s", planned.name, relation, planned.plan)
+			}
+		}
+		probed := map[string]bool{}
+		for _, scan := range explaintest.IndexScans(t, planned.plan) {
+			if scan.Relation == "going_events" && strings.Contains(scan.Cond, "request_id") {
+				probed[scan.Index] = true
+			}
+		}
+		for _, index := range []string{"going_events_request_id_sequence_key", "going_events_terminal"} {
+			if !probed[index] {
+				t.Errorf("%s reads no probe of %s keyed by the run:\n%s", planned.name, index, planned.plan)
+			}
+		}
+		for _, node := range explaintest.Nodes(t, planned.plan) {
+			if node.Type == "Aggregate" {
+				t.Errorf("%s runs %s over the run's frames:\n%s", planned.name, node, planned.plan)
+			}
+		}
+	}
+}
+
+// TestABootEndsARunOverdueByMoreThanADay is the boot pass: a run whose ends_at passed more than a
+// day ago with no terminal frame stored - one whose window passed while every process was down for
+// longer than goingSweepWindow - is read by no periodic pass,
 // and the boot pass ends it with the deadline's error, once. The run holds one frame of its own
 // and is dated an hour past the window. A periodic pass (sweepGoingRequests, which each tick of
 // RunMaintenanceSweep calls) leaves it holding that frame alone; the boot pass
@@ -484,45 +551,6 @@ func TestABootEndsARunOverdueByMoreThanADay(t *testing.T) {
 	}
 	if lines := bootLines(); len(lines) != 2 || !strings.Contains(lines[1], " ended=0 ") {
 		t.Fatalf("the two boot passes logged %q, want the second saying it ended 0 runs", lines)
-	}
-}
-
-// TestTheBootPassReadsTheOverdueRunsThroughTheEndsAtIndex holds the boot pass's read
-// (goingEveryOverdueRun) to going_requests_ends_at, as
-// TestTheGoingSweepReadsItsWindowThroughTheEndsAtIndex holds the sweep's: under the plan Postgres
-// builds for the value the pass sends, and under the generic plan a prepared statement settles
-// on, it reads going_requests through that index alone, never a scan of the table, with its one
-// bound, ends_at at or before now, the index condition. That bound reads the index from its
-// first entry, every run whose deadline has passed, which is why the pass runs once a boot and
-// not once a maintenance pass.
-func TestTheBootPassReadsTheOverdueRunsThroughTheEndsAtIndex(t *testing.T) {
-	rig := newGoingRig(t)
-	ctx := context.Background()
-	const index = "going_requests_ends_at"
-	custom := planWithoutSeqScans(t, rig.database, goingEveryOverdueRun, goingTerminalNames)
-	connection, err := rig.database.Pool.Acquire(ctx)
-	if err != nil {
-		t.Fatalf("acquire a connection for the generic plan: %v", err)
-	}
-	defer connection.Release()
-	generic := explaintest.GenericPlan(t, ctx, connection, "going_every_overdue_run", goingEveryOverdueRun,
-		[]string{"text[]"}, []string{"'{" + strings.Join(goingTerminalNames, ",") + "}'"},
-		"set local enable_seqscan = off")
-	firstKeys := explaintest.NewIndexKeys(rig.database.Pool)
-	for _, read := range []struct {
-		name string
-		plan json.RawMessage
-	}{{"the boot pass's read", custom}, {"the boot pass's read under a generic plan", generic}} {
-		if explaintest.SeqScansRelation(t, read.plan, "going_requests") {
-			t.Errorf("%s scans going_requests:\n%s", read.name, read.plan)
-		}
-		firstKeys.RequireIndexKeyed(t, read.plan, index, read.name, explaintest.CondRequired)
-		for _, scan := range explaintest.IndexScans(t, read.plan) {
-			if scan.Index == index && !strings.Contains(scan.Cond, "ends_at <=") {
-				t.Errorf("%s reads %s on `%s`, want its bound, ends_at <= now(), in the index condition:\n%s",
-					read.name, scan, scan.Cond, read.plan)
-			}
-		}
 	}
 }
 
@@ -643,8 +671,7 @@ func requireNoFrameOf(t *testing.T, database *store.Store, run, what string) {
 }
 
 // jsonEqual reports whether got and want are the same JSON value, whatever order their keys were
-// written in. It lived beside the delivery hub's own tests on main (api/delivery_live_events_test.go),
-// which this branch replaced, so it sits with its one caller now.
+// written in.
 func jsonEqual(t *testing.T, got json.RawMessage, want string) bool {
 	t.Helper()
 	var a, b any

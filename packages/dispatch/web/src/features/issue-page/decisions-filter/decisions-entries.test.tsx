@@ -129,18 +129,11 @@ function idsOf(parts: DecisionsParts): Record<keyof DecisionsParts, string[]> {
 
 const D = (block: string) => decisionNode(block).id;
 
-// The seam gives the view's four parts from the reads the page's tree already made and the
-// decisions view the page holds. Bob's answers stand under the reader's decisions, newest first
-// among the reader's own. Two answers of one moment stand in the order their nodes first stand
-// in the tree, read depth first: Bob's is under the statement at the tree's top and the reader's
-// is the issue's last ask, so Bob's stands first, which neither the reader's entries first nor a
-// walk level by level gives. The tree read places a Change:
-// two decisions that wait open with the same words, and the read hangs the reader's Change
-// under the second, so the second leaves the review list for her decisions and the first still
-// waits. No quote is matched for it, which would have put the Change on the first.
-test("the seam gives four parts from today's reads and makes no request", async () => {
+/** Two decisions that wait open with one paragraph, the reader's Change was asked on the second,
+ *  and answers of the reader, of Bob and of one moment stand around them: the reads of the
+ *  page's tree for the two cases below, with the Change's anchor quoting `quote`. */
+async function seamOf(quote: string) {
   const tie = "2026-11-11T09:00:00Z";
-  // Two decisions that wait, each opening with the same paragraph.
   const opening = "The rail stays 56 px wide.";
   const reviewWords = `${opening}\n\nThe outline needs the room.`;
   const askedWords = `${opening}\n\nA phone draws it over the body.`;
@@ -162,9 +155,9 @@ test("the seam gives four parts from today's reads and makes no request", async 
     decision("asked", { links: [shaped(specRef("s1"))], text: askedWords }),
     decision("minor"),
   ];
-  // The reader's Change on the second decision, made after both last changed: its anchor quotes
-  // the decision's first paragraph, as the page's Change does, which the first decision holds
-  // too. The comments read holds it, and the tree read hangs it under the second decision.
+  // The reader's Change on the second decision, made after both last changed, anchored on the
+  // spec with its anchor quoting `quote`. The comments read holds it, and the tree read hangs it
+  // under the second decision.
   const change: Comment = {
     ...commentDeliveryFields(),
     anchor: {
@@ -172,7 +165,7 @@ test("the seam gives four parts from today's reads and makes no request", async 
       block_id: null,
       mark_id: "mark-asked",
       orphaned: false,
-      quote: opening,
+      quote,
       version: 1,
     },
     ask_id: null,
@@ -196,6 +189,27 @@ test("the seam gives four parts from today's reads and makes no request", async 
     closing("a-late", { at: "2026-11-14T09:00:00Z", kind: "answered" }),
     closing("a-tie-mine", { at: tie, kind: "answered" }),
   ];
+  const parts = await entriesOf(
+    children,
+    treeAnswer(made),
+    asks,
+    [change],
+    treeAnswer([
+      ...made,
+      changeComment(change.id, "asked", change.created_at, change.body, change.author),
+    ])
+  );
+  return { change, parts };
+}
+
+// The seam gives the view's four parts from the reads the page's tree already made and the
+// decisions view the page holds. Bob's answers stand under the reader's decisions, newest first
+// among the reader's own. Two answers of one moment stand in the order their nodes first stand
+// in the tree, read depth first: Bob's is under the statement at the tree's top and the reader's
+// is the issue's last ask, so Bob's stands first, which neither the reader's entries first nor a
+// walk level by level gives. The tree read hangs the reader's Change under the second decision,
+// so the second leaves the review list for her decisions and the first still waits.
+test("the seam gives four parts from today's reads and makes no request", async () => {
   const getIssueDecisions = spyOn(api, "getIssueDecisions");
   const getIssueTree = spyOn(api, "getIssueTree");
   const listIssueAsks = spyOn(api, "listIssueAsks");
@@ -203,16 +217,7 @@ test("the seam gives four parts from today's reads and makes no request", async 
   // Any request at all, past the reads the page's tree makes.
   const request = spyOn(globalThis, "fetch");
   try {
-    const parts = await entriesOf(
-      children,
-      treeAnswer(made),
-      asks,
-      [change],
-      treeAnswer([
-        ...made,
-        changeComment(change.id, "asked", change.created_at, change.body, change.author),
-      ])
-    );
+    const { change, parts } = await seamOf("A phone draws it over the body.");
     const ids = idsOf(parts);
     expect(ids.yours).toEqual([
       D("asked"),
@@ -227,8 +232,7 @@ test("the seam gives four parts from today's reads and makes no request", async 
     expect(ids.review).toEqual([D("review")]);
     expect(ids.agents).toEqual([D("minor")]);
     expect(ids.named).toEqual([]);
-    // The second decision carries the reader's Change, and the first, whose words hold the same
-    // quote, carries none.
+    // The second decision carries the reader's Change, and the first carries none.
     expect(parts.yours[0]).toMatchObject({
       change: { id: change.id },
       kind: "decision",
@@ -248,6 +252,18 @@ test("the seam gives four parts from today's reads and makes no request", async 
     listComments.mockRestore();
     request.mockRestore();
   }
+});
+
+// A Change stands under the decision it was asked on, though another decision holds its quote
+// too: here the Change quotes the paragraph both decisions open with, as the page's Change
+// quotes a decision's first paragraph. The tree read hangs the Change under the decision it was
+// asked on, so no quote is matched, and the first decision, whose words hold the same quote,
+// carries none.
+test("a Change stands under the decision it was asked on, where another decision holds its quote too", async () => {
+  const { change, parts } = await seamOf("The rail stays 56 px wide.");
+  expect(idsOf(parts).yours[0]).toBe(D("asked"));
+  expect(parts.yours[0]).toMatchObject({ change: { id: change.id }, kind: "decision" });
+  expect(parts.review[0]).not.toHaveProperty("change");
 });
 
 // A decisions view that holds no decision gives no decision and no error, and the view draws

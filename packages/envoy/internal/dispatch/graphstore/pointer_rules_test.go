@@ -115,7 +115,7 @@ func newPointerFixture(t *testing.T) pointerFixture {
 	writeInOneTransaction(t, ctx, database.Pool, nodes, tuples, "the nodes the pointer rules are tried over")
 	for _, block := range []struct{ id, blockID, blockType string }{
 		{fixture.requirement, "req", blockTypeRequirement},
-		{fixture.check, "chk", blockTypeCheck},
+		{fixture.check, "chk", BlockTypeCheck},
 		{fixture.paragraph, "para", "paragraph"},
 	} {
 		if _, err := database.Pool.Exec(ctx, `
@@ -128,7 +128,7 @@ func newPointerFixture(t *testing.T) pointerFixture {
 	if _, err := database.Pool.Exec(ctx, `
 		insert into document_blocks (artifact_id, block_id, node_id, type, text_sha256, excerpt, changed_version, changed_at)
 		values ($1::uuid, 'chk-old', $2, $3, '', '', 1, now())
-	`, artifact, fixture.legacyCheck, blockTypeCheck); err != nil {
+	`, artifact, fixture.legacyCheck, BlockTypeCheck); err != nil {
 		t.Fatalf("write the row of the check that names no node: %v", err)
 	}
 	return fixture

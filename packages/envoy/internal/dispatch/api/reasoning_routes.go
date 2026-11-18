@@ -1,12 +1,12 @@
 package api
 
-// reasoning_routes.go serves the writes of the nodes dispatch://INFRA-1950 adds to record how a
-// piece of work was reasoned about, and the list of an issue's constraints: a lens invoked on a
-// node of the issue with its findings (POST /api/v1/issues/{key}/lenses), a finding added to a
-// lens later (POST .../nodes/{id}/findings), a risk under a pre-mortem (POST .../risks), a
-// constraint under the issue (POST .../constraints), one pointer tuple appended, retracted or
-// retargeted out of a node (POST .../nodes/{id}/pointers), and the constraints under the issue
-// (GET .../constraints).
+// reasoning_routes.go serves the writes of the nodes that record how a piece of work was reasoned
+// about - a lens, its findings, a risk, a constraint - and the list of an issue's constraints: a
+// lens invoked on a node of the issue with its findings (POST /api/v1/issues/{key}/lenses), a
+// finding added to a lens later (POST .../nodes/{id}/findings), a risk under a pre-mortem (POST
+// .../risks), a constraint under the issue (POST .../constraints), one pointer tuple appended,
+// retracted or retargeted out of a node (POST .../nodes/{id}/pointers), and the constraints under
+// the issue (GET .../constraints).
 //
 // Each write goes through the one write path of these kinds (writeReasoningNodes, or
 // writeReasoningPointer for a tuple out of a node that exists already), in one transaction of the
@@ -42,21 +42,34 @@ import (
 // id the catalogue does not hold names.
 const lensCatalogueRead = "GET /api/v1/schema/blocks lists the catalogue's kinds under lens_kinds"
 
-// reasoningAuthor is the node a reasoning node's authored_by tuple names: the person a
-// credential proved, by canonical login, or the session it proved. A node written on a
-// credential that proves no author - the deployment's shared bearer - has none.
+// Codes of the reasoning routes' refusals of a body, and INVALID_POINTER, a far end of the wrong
+// type, which a route answers as the store's pointer rules answer it (writeHandlerError).
+const (
+	codeLensKindRequired = "LENS_KIND_REQUIRED"
+	codeLensInput        = "LENS_INPUT"
+	codeFindingInput     = "FINDING_INPUT"
+	codeRiskInput        = "RISK_INPUT"
+	codeConstraintInput  = "CONSTRAINT_INPUT"
+	codePointerInput     = "POINTER_INPUT"
+	codeInvalidPointer   = "INVALID_POINTER"
+)
+
+// reasoningAuthor is the writer a reasoning node's authored_by tuple names, the one
+// graphstore.AuthorOf names of its made_by: a person, by canonical login, or a session - on the
+// deployment's shared bearer, and on a pod's write, the session the request's body names, which
+// that credential does not prove (spec v46 R12). A node whose write names only a workload, or
+// nobody AuthorOf names, has none.
 type reasoningAuthor struct {
 	Kind string `json:"kind" enum:"person,session"`
 	ID   string `json:"id"`
 }
 
-// writtenAuthor is the author writeReasoningNodes stated of node, written by the proving
-// credential: the one graphstore.AuthorOf names of its made_by where that credential proves an
-// author and the author's id is one the store can key (graphstore.AuthorFacts), and nil otherwise.
-func writtenAuthor(proving model.Actor, node graphstore.Node) *reasoningAuthor {
-	if !graphstore.ProvesAuthor(proving) {
-		return nil
-	}
+// writtenAuthor is the writer writeReasoningNodes stated of node through its authored_by tuple:
+// the one graphstore.AuthorOf names of its made_by, where the store can key that writer's id
+// (graphstore.AuthorFacts), and nil otherwise. It is attribution, whichever credential proved the
+// caller, as every read of the node answers it from that tuple; the author the one rule compares
+// is the one made_by proves (graphstore.SameAuthor).
+func writtenAuthor(node graphstore.Node) *reasoningAuthor {
 	kind, id, ok := graphstore.AuthorOf(node.MadeBy)
 	if !ok || !graphstore.AddressFits(id) {
 		return nil
@@ -78,36 +91,47 @@ func (c reasoningCaller) reader() model.Actor { return c.proving.Recorded() }
 
 // reasoningCallerOf resolves the caller of a reasoning write, answering the refusal itself and
 // false where it does not resolve: a caller with no credential is 401, and a bearer that names
-// no session in actor is 400 ACTOR_KIND, as every write that records its actor answers.
+// no session in actor is 400 ACTOR_KIND, as every write that records its actor answers. The
+// credential is verified once (resolveCaller), and the recorded actor read off that resolution.
 func (s *server) reasoningCallerOf(w http.ResponseWriter, r *http.Request, supplied *model.Actor) (reasoningCaller, bool) {
-	recorded, ok := s.requireActor(w, r, supplied)
+	proving, resolved, ok := s.resolveCaller(w, r)
 	if !ok {
 		return reasoningCaller{}, false
 	}
-	proving, _, err := s.optionalActor(r)
-	if err != nil {
-		s.writeAuthenticationError(w, err)
+	recorded, ok := s.requireActor(w, resolved, supplied)
+	if !ok {
 		return reasoningCaller{}, false
 	}
 	return reasoningCaller{proving: proving, recorded: recorded}, true
 }
 
+// resolveCaller resolves the request's caller once and answers it with the request that carries
+// it (resolvedCallerKey), so requireActor and actingPerson read that caller off the request rather
+// than verify the credential again: a personal token costs a read and an update each time it is
+// verified. A caller that does not resolve is answered here, and false.
+func (s *server) resolveCaller(w http.ResponseWriter, r *http.Request) (model.Actor, *http.Request, bool) {
+	actor, human, err := s.optionalActor(r)
+	if err != nil {
+		s.writeAuthenticationError(w, err)
+		return model.Actor{}, nil, false
+	}
+	return actor, r.WithContext(context.WithValue(r.Context(), resolvedCallerKey{}, resolvedCaller{actor: actor, human: human})), true
+}
+
 // storedEnd is a node as one end of a tuple names it: a kind and an id.
 type storedEnd struct{ kind, id string }
 
-// findStoredNodeUnderIssue is FindNodeUnderIssue's node for address, with the kind and the id
-// the store keys it by (storedEndOf), which the node's own tuples carry as their near end.
-func findStoredNodeUnderIssue(ctx context.Context, q refs.Queryer, who model.Actor, key, address string) (model.GraphNode, storedEnd, error) {
-	node, err := FindNodeUnderIssue(ctx, q, who, key, address)
-	if err != nil {
-		return model.GraphNode{}, storedEnd{}, err
-	}
-	return node, storedEndOf(node, address), nil
+// stored is the end as the store keys its node, the near end the node's own tuples carry: the end
+// itself, but for a finding of a lens, which a tuple names lens_block and the store holds as a node
+// of kind block at its own id (refs.StoredKindOf).
+func (e storedEnd) stored() storedEnd {
+	e.kind = refs.StoredKindOf(e.kind)
+	return e
 }
 
-// findFarEndUnderIssue is FindNodeUnderIssue's node for address, with the kind and the id a tuple
+// findEndUnderIssue is FindNodeUnderIssue's node for address, with the kind and the id a tuple
 // whose far end it is names it by (farEndOf).
-func findFarEndUnderIssue(ctx context.Context, q refs.Queryer, who model.Actor, key, address string) (model.GraphNode, storedEnd, error) {
+func findEndUnderIssue(ctx context.Context, q refs.Queryer, who model.Actor, key, address string) (model.GraphNode, storedEnd, error) {
 	node, err := FindNodeUnderIssue(ctx, q, who, key, address)
 	if err != nil {
 		return model.GraphNode{}, storedEnd{}, err
@@ -139,17 +163,6 @@ func farEndOf(node model.GraphNode, address string) storedEnd {
 	return end
 }
 
-// storedEndOf is the kind and the id the store keys node by, where address is what named it, the
-// near end the node's own tuples carry: its far end (farEndOf), but for a finding of a lens, which
-// the store holds as a node of kind block at its own id (graphstore.AddressKind).
-func storedEndOf(node model.GraphNode, address string) storedEnd {
-	end := farEndOf(node, address)
-	if node.Kind == graphstore.KindLensBlock {
-		end.kind = refs.BlockNodeKind
-	}
-	return end
-}
-
 // lensKindNamed is the lens_kind node of the catalogue id names - the bare id (`pre-mortem`), its
 // store address (`lens_kind/pre-mortem`) or its whole address (`dispatch://lens_kind/pre-mortem`)
 // - read for who through refs.Node. A kind of the catalogue stands under no issue and every
@@ -162,7 +175,7 @@ func lensKindNamed(ctx context.Context, q refs.Queryer, who model.Actor, id stri
 		return model.GraphNode{}, err
 	}
 	if !found {
-		return model.GraphNode{}, errorf(http.StatusBadRequest, "INVALID_POINTER",
+		return model.GraphNode{}, errorf(http.StatusBadRequest, codeInvalidPointer,
 			"no lens_kind node holds the id %q: a lens's kind is one of the catalogue's, and %s", id, lensCatalogueRead)
 	}
 	return node, nil
@@ -236,7 +249,7 @@ type lensInvoked struct {
 }
 
 // lensAddress is the address of the lens whose id is id.
-func lensAddress(id string) string { return "dispatch://" + graphstore.KindLens + "/" + id }
+func lensAddress(id string) string { return refs.StoreRef(graphstore.KindLens, id) }
 
 // newFinding is a finding of the lens whose id is lens, holding text, at the visibility asked
 // for: a block node at a random block id, under the lens, whose text is its `text` value tuple.
@@ -253,11 +266,11 @@ func newFinding(lens, visibility, text string) reasoningNode {
 }
 
 // findingWritten is the answer for a finding the write wrote as node, holding text.
-func findingWritten(proving model.Actor, node graphstore.Node, text string) lensFinding {
-	lens, blockID, _ := strings.Cut(node.ID, "#")
+func findingWritten(node graphstore.Node, text string) lensFinding {
+	lens, blockID, _ := strings.Cut(strings.TrimPrefix(node.ID, graphstore.KindLens+"/"), "#")
 	return lensFinding{
-		Address: refs.BlockRef("dispatch://"+lens, blockID), ID: node.ID, BlockID: blockID,
-		Lens: "dispatch://" + lens, Text: text, Author: writtenAuthor(proving, node),
+		Address: refs.StoreRef(graphstore.KindLensBlock, node.ID), ID: node.ID, BlockID: blockID,
+		Lens: lensAddress(lens), Text: text, Author: writtenAuthor(node),
 		CreatedAt: node.MadeAt, State: node.State, Visibility: node.Visibility,
 	}
 }
@@ -280,18 +293,18 @@ func (s *server) invokeLens(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if blankText(input.Kind) {
-		writeError(w, "LENS_KIND_REQUIRED", http.StatusBadRequest,
+		writeError(w, codeLensKindRequired, http.StatusBadRequest,
 			"a lens carries exactly one kind: name the id of a lens_kind node in kind; "+lensCatalogueRead)
 		return
 	}
 	if blankText(input.On) {
-		writeError(w, "LENS_INPUT", http.StatusBadRequest,
+		writeError(w, codeLensInput, http.StatusBadRequest,
 			"on is required: the dispatch:// address of the node under the issue the lens is invoked on")
 		return
 	}
 	for index, text := range input.Findings {
 		if blankText(text) {
-			writeError(w, "LENS_INPUT", http.StatusBadRequest, fmt.Sprintf("finding %d holds no text", index+1))
+			writeError(w, codeLensInput, http.StatusBadRequest, fmt.Sprintf("finding %d holds no text", index+1))
 			return
 		}
 	}
@@ -311,7 +324,7 @@ func (s *server) invokeLens(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	on, onEnd, err := findFarEndUnderIssue(ctx, tx, reader, key, input.On)
+	on, onEnd, err := findEndUnderIssue(ctx, tx, reader, key, input.On)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -337,7 +350,7 @@ func (s *server) invokeLens(w http.ResponseWriter, r *http.Request) {
 	}
 	var triggeredBy *string
 	if input.TriggeredBy != nil {
-		trigger, triggerEnd, err := findFarEndUnderIssue(ctx, tx, reader, key, *input.TriggeredBy)
+		trigger, triggerEnd, err := findEndUnderIssue(ctx, tx, reader, key, *input.TriggeredBy)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -353,7 +366,7 @@ func (s *server) invokeLens(w http.ResponseWriter, r *http.Request) {
 		nodes = append(nodes, newFinding(id, input.Visibility, text))
 	}
 	written, err := writeReasoningNodes(ctx, tx, reasoningWrite{
-		issue: key, proving: caller.proving, recorded: caller.recorded, at: at, nodes: nodes,
+		reasoningCaller: caller, issue: key, at: at, nodes: nodes,
 	})
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -366,12 +379,12 @@ func (s *server) invokeLens(w http.ResponseWriter, r *http.Request) {
 	invoked := written[0]
 	answer := lensInvoked{
 		Address: lensAddress(id), ID: id, Kind: kind.ID, On: cmp.Or(on.Ref, input.On),
-		Verdict: verdict, TriggeredBy: triggeredBy, Author: writtenAuthor(caller.proving, invoked),
+		Verdict: verdict, TriggeredBy: triggeredBy, Author: writtenAuthor(invoked),
 		CreatedAt: invoked.MadeAt, State: invoked.State, Visibility: invoked.Visibility,
 		Findings: make([]lensFinding, 0, len(input.Findings)),
 	}
 	for index, text := range input.Findings {
-		answer.Findings = append(answer.Findings, findingWritten(caller.proving, written[index+1], text))
+		answer.Findings = append(answer.Findings, findingWritten(written[index+1], text))
 	}
 	WriteJSON(w, http.StatusCreated, answer)
 }
@@ -383,8 +396,8 @@ type lensFindingInput struct {
 	Actor *model.Actor `json:"actor"`
 	// Text is the finding's text.
 	Text string `json:"text" required:"true"`
-	// Visibility is author to keep the finding to its author; anything else, or nothing, gives
-	// the finding its lens's visibility.
+	// Visibility is author to keep the finding to its author; project, or nothing, gives the
+	// finding its lens's visibility, and any other word is 400 INVALID_ATTRIBUTE_VALUE.
 	Visibility string `json:"visibility" enum:"project,author"`
 }
 
@@ -405,7 +418,7 @@ func (s *server) addLensFinding(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if blankText(input.Text) {
-		writeError(w, "FINDING_INPUT", http.StatusBadRequest, "text is required: the finding's text")
+		writeError(w, codeFindingInput, http.StatusBadRequest, "text is required: the finding's text")
 		return
 	}
 	if _, err := graphstore.VisibilityFor(input.Visibility, caller.proving); err != nil {
@@ -424,14 +437,14 @@ func (s *server) addLensFinding(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	lens, _, err := findStoredNodeUnderIssue(ctx, tx, caller.reader(), key, r.PathValue("id"))
+	lens, _, err := findEndUnderIssue(ctx, tx, caller.reader(), key, r.PathValue("id"))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	if lens.Kind != graphstore.KindLens {
-		writeError(w, "INVALID_POINTER", http.StatusBadRequest, fmt.Sprintf(
-			"a finding stands under a lens, and %s is %s", cmp.Or(lens.Ref, r.PathValue("id")), withArticle(lens.Kind)))
+		writeError(w, codeInvalidPointer, http.StatusBadRequest, fmt.Sprintf(
+			"a finding stands under a lens, and %s is %s", cmp.Or(lens.Ref, r.PathValue("id")), graphstore.WithArticle(lens.Kind)))
 		return
 	}
 	visibility := lens.Visibility
@@ -439,7 +452,7 @@ func (s *server) addLensFinding(w http.ResponseWriter, r *http.Request) {
 		visibility = graphstore.VisibilityAuthor
 	}
 	written, err := writeReasoningNodes(ctx, tx, reasoningWrite{
-		issue: key, proving: caller.proving, recorded: caller.recorded, at: at,
+		reasoningCaller: caller, issue: key, at: at,
 		nodes: []reasoningNode{newFinding(lens.ID, visibility, input.Text)},
 	})
 	if err != nil {
@@ -450,15 +463,7 @@ func (s *server) addLensFinding(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	WriteJSON(w, http.StatusCreated, findingWritten(caller.proving, written[0], input.Text))
-}
-
-// withArticle is a kind with the article it is read with: "a lens", "an issue".
-func withArticle(kind string) string {
-	if kind != "" && strings.ContainsRune("aeiou", rune(kind[0])) {
-		return "an " + kind
-	}
-	return "a " + kind
+	WriteJSON(w, http.StatusCreated, findingWritten(written[0], input.Text))
 }
 
 // --- POST /api/v1/issues/{key}/risks ------------------------------------------------------------
@@ -517,7 +522,7 @@ func (s *server) writeRisk(w http.ResponseWriter, r *http.Request) {
 		{"early_warning", input.EarlyWarning}, {"prevention", input.Prevention},
 	} {
 		if blankText(required.value) {
-			writeError(w, "RISK_INPUT", http.StatusBadRequest, required.name+" is required: a risk names the pre-mortem lens it stands under (lens), the failure (heading), the sign it is seen coming by (early_warning) and what keeps it from happening (prevention)")
+			writeError(w, codeRiskInput, http.StatusBadRequest, required.name+" is required: a risk names the pre-mortem lens it stands under (lens), the failure (heading), the sign it is seen coming by (early_warning) and what keeps it from happening (prevention)")
 			return
 		}
 	}
@@ -537,7 +542,7 @@ func (s *server) writeRisk(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	lens, lensEnd, err := findFarEndUnderIssue(ctx, tx, reader, key, input.Lens)
+	lens, lensEnd, err := findEndUnderIssue(ctx, tx, reader, key, input.Lens)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -554,7 +559,7 @@ func (s *server) writeRisk(w http.ResponseWriter, r *http.Request) {
 	}
 	preventedBy := []string{}
 	if input.PreventedBy != nil {
-		check, checkEnd, err := findFarEndUnderIssue(ctx, tx, reader, key, *input.PreventedBy)
+		check, checkEnd, err := findEndUnderIssue(ctx, tx, reader, key, *input.PreventedBy)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -566,7 +571,7 @@ func (s *server) writeRisk(w http.ResponseWriter, r *http.Request) {
 		preventedBy = append(preventedBy, check.Ref)
 	}
 	written, err := writeReasoningNodes(ctx, tx, reasoningWrite{
-		issue: key, proving: caller.proving, recorded: caller.recorded, at: at, nodes: []reasoningNode{risk},
+		reasoningCaller: caller, issue: key, at: at, nodes: []reasoningNode{risk},
 	})
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -578,9 +583,9 @@ func (s *server) writeRisk(w http.ResponseWriter, r *http.Request) {
 	}
 	node := written[0]
 	WriteJSON(w, http.StatusCreated, riskWritten{
-		Address: "dispatch://" + graphstore.KindRisk + "/" + id, ID: id, Lens: cmp.Or(lens.Ref, input.Lens),
+		Address: refs.StoreRef(graphstore.KindRisk, id), ID: id, Lens: cmp.Or(lens.Ref, input.Lens),
 		Heading: input.Heading, EarlyWarning: input.EarlyWarning, Prevention: input.Prevention,
-		PreventedBy: preventedBy, Author: writtenAuthor(caller.proving, node),
+		PreventedBy: preventedBy, Author: writtenAuthor(node),
 		CreatedAt: node.MadeAt, State: node.State, Visibility: node.Visibility,
 	})
 }
@@ -640,7 +645,8 @@ func missingFields(fields map[string]string) string {
 
 // constraintRead is one constraint of an issue: its address, `dispatch://constraint/<uuid>`, the
 // fields of its shape (each null where it holds none), the person or session its authored_by
-// tuple names (none on the shared bearer), when it was written, and its state and visibility.
+// tuple names (the session its body names for one written on the shared bearer, and none where
+// the write named only a workload), when it was written, and its state and visibility.
 type constraintRead struct {
 	Address     string           `json:"address"`
 	ID          string           `json:"id"`
@@ -700,7 +706,7 @@ func (s *server) writeConstraint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if refusal := input.constraintShape(); refusal != "" {
-		writeError(w, "CONSTRAINT_INPUT", http.StatusBadRequest, refusal)
+		writeError(w, codeConstraintInput, http.StatusBadRequest, refusal)
 		return
 	}
 	if _, err := graphstore.VisibilityFor(input.Visibility, caller.proving); err != nil {
@@ -721,7 +727,7 @@ func (s *server) writeConstraint(w http.ResponseWriter, r *http.Request) {
 	}
 	id := uuid.NewString()
 	written, err := writeReasoningNodes(ctx, tx, reasoningWrite{
-		issue: key, proving: caller.proving, recorded: caller.recorded, at: at,
+		reasoningCaller: caller, issue: key, at: at,
 		nodes: []reasoningNode{{
 			kind: graphstore.KindConstraint, id: id, visibility: input.Visibility,
 			parentKind: graphstore.KindIssue, parentID: key, attributes: input.constraintAttributes(),
@@ -742,28 +748,26 @@ func (s *server) writeConstraint(w http.ResponseWriter, r *http.Request) {
 	}
 	node := written[0]
 	WriteJSON(w, http.StatusCreated, constraintRead{
-		Address: constraintAddress(id), ID: id,
+		Address: refs.StoreRef(graphstore.KindConstraint, id), ID: id,
 		Standard: namedOrNull(input.Standard), Reference: namedOrNull(input.Reference),
 		Measurement: namedOrNull(input.Measurement), Value: namedOrNull(input.Value),
-		TakenWhere: namedOrNull(input.TakenWhere), Author: writtenAuthor(caller.proving, node),
+		TakenWhere: namedOrNull(input.TakenWhere), Author: writtenAuthor(node),
 		CreatedAt: node.MadeAt, State: node.State, Visibility: node.Visibility,
 	})
 }
 
-// constraintAddress is the address of the constraint whose id is id.
-func constraintAddress(id string) string { return "dispatch://" + graphstore.KindConstraint + "/" + id }
-
 // issueConstraintsQuery reads the constraints under one issue ($1) for a reader ($3): each
 // constraint whose current part_of tuple points at the issue's node, in the order those tuples
 // were appended, that is not gone ($2) and that the reader may see through the predicate of its
-// kind (refs.VisibleKindRow). Beside each ride its fields, its stored state and visibility
-// (refs.StoredNodeOf) and the far end of its current authored_by tuple.
+// kind (refs.VisibleKindRow). Beside each ride its fields, its stored state and visibility, read
+// off the row the read joins (refs.StoredRowOf), and the far end of its current authored_by tuple
+// (refs.CurrentFarEndSQL).
 var issueConstraintsQuery = `
 	select held.id, held.made_at,
 	       held.attributes->>'` + graphstore.AttributeStandard + `', held.attributes->>'` + graphstore.AttributeReference + `',
 	       held.attributes->>'` + graphstore.AttributeMeasurement + `', held.attributes->>'` + graphstore.AttributeValue + `',
 	       held.attributes->>'` + graphstore.AttributeTakenWhere + `',
-	       ` + refs.StoredNodeOf(`'`+graphstore.KindConstraint+`'`, `held.id`) + `,
+	       ` + refs.StoredRowOf(`held`) + `,
 	       author.to_kind, author.to_id
 	from (
 		` + graphstore.CurrentTupleRead(`t.from_id`, `t.from_id, t.seq, t.asserted`,
@@ -772,14 +776,7 @@ var issueConstraintsQuery = `
 	) placed
 	join graph_nodes held on held.kind = '` + graphstore.KindConstraint + `' and held.id = placed.from_id
 	left join lateral (
-		select newest.to_kind, newest.to_id from (
-			` + graphstore.CurrentTupleRead(`t.to_kind, t.to_id`, `t.to_kind, t.to_id, t.asserted`,
-	`t.from_kind = held.kind and t.from_id = held.id and t.kind = '`+graphstore.TupleAuthoredBy+`'
-				and t.to_kind <> '`+graphstore.KindValue+`'`) + `
-		) newest
-		where newest.asserted
-		order by newest.to_kind, newest.to_id
-		limit 1
+		` + refs.CurrentFarEndSQL(`newest.to_kind, newest.to_id`, `held.kind`, `held.id`, graphstore.TupleAuthoredBy) + `
 	) author on true
 	where placed.asserted and held.state <> $2 and ` + refs.VisibleKindRow(graphstore.KindConstraint, "held", "$3") + `
 	order by placed.seq`
@@ -787,19 +784,20 @@ var issueConstraintsQuery = `
 // listIssueConstraints is GET /api/v1/issues/{key}/constraints: the constraints under the issue
 // the caller may see, in the order they were written there, each with its fields, its author, its
 // state and its visibility. A constraint reserved for its author is in its author's list alone,
-// and an issue nobody holds is 404 NOT_FOUND.
+// and an issue nobody holds is 404 NOT_FOUND. An issue that holds a constraint exists, so only an
+// empty list asks whether the issue does.
 func (s *server) listIssueConstraints(w http.ResponseWriter, r *http.Request) {
-	actor, _, err := s.optionalActor(r)
-	if err != nil {
-		s.writeAuthenticationError(w, err)
+	reader, ok := s.actingReader(w, r)
+	if !ok {
 		return
 	}
 	ctx, key := r.Context(), r.PathValue("key")
-	if err := s.requireIssueExists(ctx, key); err != nil {
+	pool, err := s.readyPool()
+	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	rows, err := s.deps.Store.Pool.Query(ctx, issueConstraintsQuery, key, graphstore.StateGone, refs.VisibilityArg(actor.Recorded()))
+	rows, err := pool.Query(ctx, issueConstraintsQuery, key, graphstore.StateGone, refs.VisibilityArg(reader))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -815,13 +813,13 @@ func (s *server) listIssueConstraints(w http.ResponseWriter, r *http.Request) {
 			s.writeHandlerError(w, fmt.Errorf("scan a constraint of %s: %w", key, err))
 			return
 		}
-		state, visibility, ok := refs.StoredStateAndVisibility(stored)
-		if !ok {
+		constraint.State, constraint.Visibility, err = refs.StoredStateOf(graphstore.KindConstraint+" "+constraint.ID, stored)
+		if err != nil {
 			rows.Close()
-			s.writeHandlerError(w, fmt.Errorf("the constraint %s holds a stored state and visibility of %d values", constraint.ID, len(stored)))
+			s.writeHandlerError(w, err)
 			return
 		}
-		constraint.Address, constraint.State, constraint.Visibility = constraintAddress(constraint.ID), state, visibility
+		constraint.Address = refs.StoreRef(graphstore.KindConstraint, constraint.ID)
 		constraint.CreatedAt = constraint.CreatedAt.UTC()
 		if authorKind != nil && authorID != nil {
 			constraint.Author = &reasoningAuthor{Kind: *authorKind, ID: *authorID}
@@ -831,6 +829,12 @@ func (s *server) listIssueConstraints(w http.ResponseWriter, r *http.Request) {
 	if err := rows.Err(); err != nil {
 		s.writeHandlerError(w, fmt.Errorf("read the constraints of %s: %w", key, err))
 		return
+	}
+	if len(read.Constraints) == 0 {
+		if err := s.requireIssueExists(ctx, key); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	WriteJSON(w, http.StatusOK, read)
 }
@@ -886,30 +890,26 @@ type pointerWritten struct {
 // pointerEnd is the far end address names for a tuple of kind out of a node of the issue key,
 // read for who, with the kind and the id the tuple names it by (farEndOf). A has_kind's far end
 // is a lens_kind of the catalogue (lensKindNamed). Every other far end stands under the issue
-// (FindNodeUnderIssue), but for a constrained_by at a constraint of the catalogue, which stands
-// under no issue and is read through refs.Node; a constraint of another issue is no far end of
-// this one, and answers as one that does not exist.
+// (FindNodeUnderIssue), but for a constrained_by at a constraint, which stands under the issue or,
+// one of the catalogue, under none: it is read once through refs.Node and placed by its IssueKey,
+// and a constraint of another issue is no far end of this one, answering FindNodeUnderIssue's 404
+// as one that does not exist.
 func pointerEnd(ctx context.Context, q refs.Queryer, who model.Actor, key, kind, address string) (model.GraphNode, storedEnd, error) {
 	if kind == graphstore.TupleHasKind {
 		node, err := lensKindNamed(ctx, q, who, address)
 		return node, storedEnd{kind: graphstore.KindLensKind, id: node.ID}, err
 	}
-	node, end, err := findFarEndUnderIssue(ctx, q, who, key, address)
-	if err == nil || kind != graphstore.TupleConstrainedBy {
-		return node, end, err
+	if decoded, id, ok := decodeNodeAddress(address); ok && kind == graphstore.TupleConstrainedBy && decoded == graphstore.KindConstraint {
+		node, found, err := refs.Node(ctx, q, who, graphstore.KindConstraint, id, true)
+		if err != nil {
+			return model.GraphNode{}, storedEnd{}, err
+		}
+		if !found || (node.IssueKey != nil && *node.IssueKey != key) {
+			return model.GraphNode{}, storedEnd{}, nodeNotFound(key, address)
+		}
+		return node, storedEnd{kind: graphstore.KindConstraint, id: node.ID}, nil
 	}
-	decoded, id, ok := decodeNodeAddress(address)
-	if !ok || decoded != graphstore.KindConstraint {
-		return model.GraphNode{}, storedEnd{}, err
-	}
-	catalogued, found, readErr := refs.Node(ctx, q, who, graphstore.KindConstraint, id, false)
-	if readErr != nil {
-		return model.GraphNode{}, storedEnd{}, readErr
-	}
-	if !found || catalogued.IssueKey != nil {
-		return model.GraphNode{}, storedEnd{}, err
-	}
-	return catalogued, storedEnd{kind: graphstore.KindConstraint, id: catalogued.ID}, nil
+	return findEndUnderIssue(ctx, q, who, key, address)
 }
 
 // writePointer is POST /api/v1/issues/{key}/nodes/{id}/pointers: one has_kind, triggered_by,
@@ -933,25 +933,25 @@ func (s *server) writePointer(w http.ResponseWriter, r *http.Request) {
 	}
 	switch {
 	case input.Kind == graphstore.TuplePartOf:
-		writeError(w, "POINTER_INPUT", http.StatusBadRequest,
+		writeError(w, codePointerInput, http.StatusBadRequest,
 			"this route writes no part_of tuple: a part_of tuple is a node's place under its parent, which moves through its parent route")
 		return
 	case !slices.Contains(pointerKinds, input.Kind):
-		writeError(w, "POINTER_INPUT", http.StatusBadRequest, fmt.Sprintf(
+		writeError(w, codePointerInput, http.StatusBadRequest, fmt.Sprintf(
 			"kind %q is no pointer this route writes: one of %s", input.Kind, strings.Join(pointerKinds, ", ")))
 		return
 	case input.Action != pointerAppend && input.Action != pointerRetract && input.Action != pointerRetarget:
-		writeError(w, "POINTER_INPUT", http.StatusBadRequest, fmt.Sprintf(
+		writeError(w, codePointerInput, http.StatusBadRequest, fmt.Sprintf(
 			"action %q is none of %s, %s, %s", input.Action, pointerAppend, pointerRetract, pointerRetarget))
 		return
 	case blankText(input.To):
-		writeError(w, "POINTER_INPUT", http.StatusBadRequest, "to is required: the address of the tuple's far end")
+		writeError(w, codePointerInput, http.StatusBadRequest, "to is required: the address of the tuple's far end")
 		return
 	case input.Action == pointerRetarget && (input.From == nil || blankText(*input.From)):
-		writeError(w, "POINTER_INPUT", http.StatusBadRequest, "a retarget names from, the far end the node's tuple is at now, beside to, the far end it moves to")
+		writeError(w, codePointerInput, http.StatusBadRequest, "a retarget names from, the far end the node's tuple is at now, beside to, the far end it moves to")
 		return
 	case input.Action != pointerRetarget && input.From != nil:
-		writeError(w, "POINTER_INPUT", http.StatusBadRequest, "from goes with a retarget alone: an "+input.Action+" names its far end in to")
+		writeError(w, codePointerInput, http.StatusBadRequest, "from goes with a retarget alone: an "+input.Action+" names its far end in to")
 		return
 	}
 	ctx, key, reader := r.Context(), r.PathValue("key"), caller.reader()
@@ -966,7 +966,7 @@ func (s *server) writePointer(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	node, nodeEnd, err := findStoredNodeUnderIssue(ctx, tx, reader, key, r.PathValue("id"))
+	node, nodeEnd, err := findEndUnderIssue(ctx, tx, reader, key, r.PathValue("id"))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -977,7 +977,7 @@ func (s *server) writePointer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	write := reasoningPointer{issue: key, action: input.Action, pointer: graphstore.Tuple{
-		FromKind: nodeEnd.kind, FromID: nodeEnd.id, Kind: input.Kind, ToKind: toEnd.kind, ToID: toEnd.id,
+		FromKind: refs.StoredKindOf(nodeEnd.kind), FromID: nodeEnd.id, Kind: input.Kind, ToKind: toEnd.kind, ToID: toEnd.id,
 		At: at, Who: caller.recorded, SourceEvent: graphstore.NoEvent, Asserted: true,
 	}}
 	answer := pointerWritten{Node: endOf(node), Kind: input.Kind, Action: input.Action, To: endOf(to)}

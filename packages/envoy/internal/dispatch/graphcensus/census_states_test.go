@@ -195,10 +195,10 @@ func requireStatesHeld(t *testing.T, database *store.Store, document preStoreDoc
 }
 
 // requireTheCensusCountsEveryBlockNotGone takes the store census and fails unless it read zero
-// differences in both directions over every kind; its block line checked exactly the rows
-// document_blocks holds, which the test counts with its own select and which are four or more,
-// and as many present nodes; no difference names any block of present; and the spec's gone block
-// holds no projection row.
+// differences in both directions over every kind, each difference named with where it is; its
+// block line checked exactly the rows document_blocks holds, which the test counts with its own
+// select and which are as many as present or more, and as many present nodes; and the spec's gone
+// block holds no projection row.
 func requireTheCensusCountsEveryBlockNotGone(t *testing.T, database *store.Store, document preStoreDocument, what string, present []string) {
 	t.Helper()
 	ctx := context.Background()
@@ -208,11 +208,6 @@ func requireTheCensusCountsEveryBlockNotGone(t *testing.T, database *store.Store
 			what, kind.Kind, kind.Rows, kind.Nodes, kind.RowDifferences, kind.NodeDifferences)
 		for _, difference := range append(append([]Difference{}, kind.ReportedRows...), kind.ReportedNodes...) {
 			t.Errorf("%s reads a difference of kind %s at %s: %s", what, kind.Kind, difference.At, difference.Cause)
-			for _, id := range present {
-				if address := document.refKey + "#" + id; strings.Contains(difference.At, address) {
-					t.Errorf("%s names block %s, which the store holds present, in a difference: %s", what, address, difference.Cause)
-				}
-			}
 		}
 	}
 	if report.Differences() != 0 {

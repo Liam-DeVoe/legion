@@ -144,9 +144,10 @@ const issueUploadRoute = http.MethodPost + " /api/v1/issues/{key}/artifacts"
 // (drainBeforeAnswer), so a client that sends it whole before it reads the answer gets the
 // answer. register mounts it ahead of the keyed layer, so the refusal claims no key. The handler's
 // locked check still decides an issue that closes meanwhile; this one only spares the spool. A
-// caller that resolves to nobody is left to the route's own 401, and a malformed Idempotency-Key
-// to the keyed layer's 400, which spools no body either and refuses the request's form before
-// anything is looked up.
+// caller that resolves to nobody is left to the 401 written further in (the keyed layer's for a
+// keyed upload, the handler's for an unkeyed one), and a malformed Idempotency-Key to the keyed
+// layer's 400, which spools no body either and refuses the request's form before anything is
+// looked up.
 //
 // The refusal stands in for the handler, so it answers only a request whose handler would run. A
 // repeat under a key the keyed layer answers itself (requestKeyAnswersItself) - its first upload's
@@ -466,6 +467,17 @@ func statedVersionBytes(ctx context.Context, tx pgx.Tx, artifactID, mime string,
 		graphstore.ArtifactBytes(nil, *address, mime, int64(size), digest, who, time.Now().UTC()))
 }
 
+// personScoped reports whether a bearer's document write is the person's own, its credential
+// holding the person scope, so the write's context is marked as theirs (docs.WithPersonScope): an
+// agent's write may not drop or retype an answered ask's block (docs.ErrAnsweredAskKept), and a
+// person's may. A browser's actor is the person already, so only a bearer's credential is read,
+// whose recorded actor, the session it names, cannot say. It is read before the write's
+// transaction opens: resolving a personal token reads the pool, which a request holding the
+// transaction's connection may not (store.Pool's guard).
+func (s *server) personScoped(r *http.Request, actor model.Actor) bool {
+	return actor.Kind != "user" && s.callerHoldsScope(r, model.ScopePerson)
+}
+
 func (s *server) storeArtifact(
 	w http.ResponseWriter,
 	r *http.Request,
@@ -481,6 +493,7 @@ func (s *server) storeArtifact(
 	if !s.putUploadedFile(w, r, kind, sha, input, target) {
 		return
 	}
+	personScoped := kind == "doc" && s.personScoped(r, actor)
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -538,6 +551,10 @@ func (s *server) storeArtifact(
 			s.writeHandlerError(w, refusal)
 			return
 		}
+		if refusal := decisionsAreNodes(target, input.name); refusal != nil {
+			s.writeHandlerError(w, refusal)
+			return
+		}
 		slug, err := s.nextArtifactSlug(r.Context(), tx, target, input.name)
 		if err != nil {
 			s.writeHandlerError(w, err)
@@ -570,10 +587,8 @@ func (s *server) storeArtifact(
 			if kind != "doc" {
 				facts = graphstore.ArtifactBytes(facts, refKey, input.contentType, int64(len(input.content)), sha, actor, at)
 			}
-			// The document is the node this create makes, so it is marked changed
-			// (graphstore.Node's Changed): a create made for a run names it as changed by it.
-			node := graphstore.ArtifactNode(refKey, deref(project), deref(session), actor, at)
-			node.Changed = true
+			// The document is the node this create makes (graphstore.Created).
+			node := graphstore.Created(graphstore.ArtifactNode(refKey, deref(project), deref(session), actor, at))
 			documentNode, err = graphstore.WriteUncaused(r.Context(), tx, []graphstore.Node{node}, facts)
 			if err != nil {
 				s.writeHandlerError(w, err)
@@ -595,7 +610,12 @@ func (s *server) storeArtifact(
 		s.writeHandlerError(w, err)
 		return
 	} else if artifact.Retired {
-		s.writeHandlerError(w, documentRetiredRefusal(artifact))
+		// A retired decisions document is refused as a new one is: decisions are nodes now.
+		refusal := decisionsAreNodes(target, input.name)
+		if refusal == nil {
+			refusal = documentRetiredRefusal(artifact)
+		}
+		s.writeHandlerError(w, refusal)
 		return
 	} else if artifact.Kind != kind {
 		s.writeHandlerError(w, artifactKindMismatch(input.name, artifact, kind))
@@ -647,6 +667,9 @@ func (s *server) storeArtifact(
 	}
 	documentCtx, ledger := s.deps.Docs.Join(r.Context(), tx)
 	defer ledger.Discard()
+	if personScoped {
+		documentCtx = docs.WithPersonScope(documentCtx)
+	}
 	var documentMarkdown string
 	// documentReadBack is the rendering this write stored, read back by its own parse (docs'
 	// Ledger.ReadBackOf), which the task count and the advice's blocks read in place of parsing
@@ -767,8 +790,9 @@ func (s *server) storeArtifact(
 		}
 		// It carries the document's newest approval as every version the document service writes
 		// does (docs.carryApproval): when its text is the approved text again, or when every
-		// difference from it is a carry case - the server-owned ask attributes an upload drops
-		// among them - and its decision blocks agree with their nodes.
+		// difference from it is a carry case - the readings of its decisions and answered asks, and
+		// the server-owned ask attributes an upload drops - and its ask blocks agree with
+		// their nodes.
 		carried, err := docs.CarryUploadedApproval(
 			r.Context(), tx, s.deps.Events, artifact.ID, version.Number, documentMarkdown, documentReadBack, s.deps.ServerURL,
 		)
@@ -1345,6 +1369,7 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	personScoped := s.personScoped(r, actor)
 	artifact, err := s.loadArtifactForRequest(r.Context(), s.deps.Store.Pool, r)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -1359,7 +1384,7 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// release ends the conditional edit gate once: right after the commit, which is all a later
-	// conditional edit of this document waits on, so the checks of this edit's new decision blocks
+	// conditional edit of this document waits on, so the checks of this edit's new ask blocks
 	// never hold it; on every earlier return, here.
 	release := func() {}
 	if input.Precondition != nil {
@@ -1385,6 +1410,9 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 	documentCtx, ledger := s.deps.Docs.Join(r.Context(), tx)
 	defer ledger.Discard()
+	if personScoped {
+		documentCtx = docs.WithPersonScope(documentCtx)
+	}
 	edit, err := s.deps.Docs.ApplyOps(documentCtx, artifact.ID, input.Ops, actor, input.Precondition)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -2173,13 +2201,12 @@ func artifactSlug(name string) string {
 // spellings are written. Everything that asks what part a document plays is built from it —
 // documentRole, which writes the role on a new row, the SQL predicates that hold a row to a role
 // (documentRolePredicate), documentPlays, which asks the same of a row already read, and
-// documentRoleOf, which names the part one row plays.
+// documentRoleOf, which names the part one row plays. The `decisions` role is gone from every
+// write (dispatch://INFRA-1150 R11): a decisions document is found through decisions_documents(),
+// and a new one is refused (decisionsAreNodes).
 var roleSlugs = map[string]string{
 	model.ArtifactRoleVerification: model.ArtifactSlugVerification,
 	model.ArtifactRolePlan:         model.ArtifactSlugPlan,
-	// The Decisions view already spells the decisions document's slug, which a reference to it
-	// names, so the role takes that constant rather than a second copy of the same word.
-	model.ArtifactRoleDecisions: decisionsDocumentSlug,
 }
 
 // documentRole is the role a document takes when its row is created: an issue's markdown
@@ -2262,12 +2289,27 @@ func documentRolePredicate(alias, role string) string {
 // that names no alias, since the queries that hold a row to it are written as string literals.
 var verificationRolePredicate = documentRolePredicate("", model.ArtifactRoleVerification)
 
-// aliasedVerificationRole, aliasedPlanRole and aliasedDecisionsRole are the same predicate for a
-// query whose artifacts table is aliased `a`: the issue read, the coverage read and the check
-// resolver all join it that way.
+// aliasedVerificationRole and aliasedPlanRole are the same predicate for a query whose artifacts
+// table is aliased `a`: the issue read, the coverage read and the check resolver all join it that
+// way.
 var aliasedVerificationRole = documentRolePredicate("a", model.ArtifactRoleVerification)
 var aliasedPlanRole = documentRolePredicate("a", model.ArtifactRolePlan)
-var aliasedDecisionsRole = documentRolePredicate("a", model.ArtifactRoleDecisions)
+
+// decisionsAreNodes is the 409 refusing an upload or a create named name, on an issue, whose slug
+// is the slug of a decisions document (dispatch://INFRA-1150 R11, ruling D12): a decision is a
+// `decision` block of the spec, and a document of that name would be stored where nothing reads
+// it. The refusal stays: a route keeps a thing it stops taking declared and refuses it by name.
+// It reads the name and not the issue, so a document of any other name is taken. An upload that
+// finds an issue's decisions document that still stands is that document's next version, which
+// the decisions step converts, and is never refused.
+func decisionsAreNodes(target artifactTarget, name string) error {
+	if target.IssueKey == nil || artifactSlug(name) != refs.RetiredDecisionsSlug {
+		return nil
+	}
+	return errorf(http.StatusConflict, codeDecisionsAreNodes,
+		"%q names a decisions document, and decisions are nodes now: write each decision as a `decision` block in the `## Decisions` part of the issue's spec (dispatch://%s/spec), with shaped, from_ask and uncertainty as it needs",
+		name, *target.IssueKey)
+}
 
 // documentRetiredRefusal is the 409 refusing a write of new text to artifact, a retired document
 // (docs.RetireDocument): an upload or a create under its name or slug, and an edit by its id or

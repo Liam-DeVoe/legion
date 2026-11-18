@@ -480,7 +480,7 @@ function answerNode(
 ): TreeAnswerNode {
   return {
     attributes: {},
-    author: null,
+    author: [],
     id,
     made_at: "2026-11-05T00:00:00Z",
     parent,
@@ -606,7 +606,7 @@ function answered(fixture: Fixture): IssueTreeReads {
           document: { artifact_id: document.artifactId, position, slug },
           text: words.text,
           ...(words.tree === undefined ? {} : { text_tree: words.tree }),
-          ...(ask === undefined ? {} : { author: ask.author, made_at: ask.created_at }),
+          ...(ask === undefined ? {} : { author: [ask.author], made_at: ask.created_at }),
         }),
         place: statement === undefined ? rank + position / document.blocks.length : 2000 + at,
       });
@@ -643,7 +643,7 @@ function answered(fixture: Fixture): IssueTreeReads {
     (check.results ?? []).forEach((result, at) => {
       written.push({
         node: answerNode(result.id, "result", check.block_id, {
-          author: result.actor,
+          author: [result.actor],
           made_at: result.created_at,
           text: result.observed,
         }),
@@ -662,7 +662,7 @@ function answered(fixture: Fixture): IssueTreeReads {
     if (asBlock.has(ask.id)) continue;
     written.push({
       node: answerNode(ask.id, "ask", key, {
-        author: ask.author,
+        author: [ask.author],
         made_at: ask.created_at,
         text: ask.question,
         ...(ask.question_tree === undefined ? {} : { text_tree: ask.question_tree }),
@@ -684,7 +684,7 @@ function answered(fixture: Fixture): IssueTreeReads {
       (anchored?.document?.artifact_id === comment.anchor?.artifact_id ? anchored?.id : undefined);
     written.push({
       node: answerNode(comment.id, "comment", parent ?? key, {
-        author: comment.author,
+        author: [comment.author],
         made_at: comment.created_at,
         text: comment.body,
         ...(comment.body_tree === undefined ? {} : { text_tree: comment.body_tree }),
@@ -695,7 +695,7 @@ function answered(fixture: Fixture): IssueTreeReads {
     if (history.has(message.id)) continue;
     written.push({
       node: answerNode(message.id, "message", message.in_reply_to ?? key, {
-        author: message.author,
+        author: [message.author],
         made_at: message.created_at,
         text: message.body,
         ...(message.body_tree === undefined ? {} : { text_tree: message.body_tree }),
@@ -2442,7 +2442,7 @@ test("a Change is drawn under its decision, which then waits on its agent", () =
       nodes: [
         ...nodes,
         answerNode(change.id, "comment", reviewed.block_id, {
-          author: change.author,
+          author: [change.author],
           made_at: createdAt,
           text: change.body,
           ...(change.body_tree === undefined ? {} : { text_tree: change.body_tree }),
