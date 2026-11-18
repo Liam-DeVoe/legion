@@ -13903,6 +13903,51 @@ console.log(JSON.stringify(args));
         rmSync(directory, { recursive: true, force: true });
       }
     });
+
+    // Every Legion workflow session runs Oh My Pi with OMP_SESSION_STORAGE=sql
+    // (packages/daemon/internal/podsafety/podsafety.go): the session is rows in a database, and
+    // the path `getSessionFile()` names is never written to disk. The host still holds the stored
+    // card's entry in the session (`getBranch`), and keeps it in the database. A frame that is never
+    // settled holds one of the session consumer's ack-pending places for the life of the process,
+    // and keeps the resume point below it (dispatch://INFRA-3686/spec R5: every other card is
+    // delivered as today).
+    test("is recorded shown once the session holds its entry, under SQL session storage too", async () => {
+      const directory = mkdtempSync(join(tmpdir(), "envoy-low-sql-"));
+      // The path the host names; SQL storage never writes a file there.
+      const sessionFile = join(directory, "session.jsonl");
+      const branch: unknown[] = [];
+      try {
+        const { agent, context, delivered, fixture } = await bootDirectSession("low-sql", {
+          idle: () => true,
+          pending: () => false,
+          branch,
+          sessionFile,
+        });
+        const recorded = () =>
+          fixture.entries.filter(
+            (entry) =>
+              entry.customType === REPLAY_DELIVERED_ENTRY &&
+              JSON.stringify(entry).includes("evt-low-sql")
+          );
+
+        agent.push(daemonEnvelope("stored notice", "low-sql", { urgency: "low" }));
+        await delivered(1);
+        await drainTimers();
+        const { options: _options, ...stored } = fixture.deliveries[0] ?? {};
+        // The host stored the card, and the session has had its first reply since: the session
+        // store holds every entry of the branch.
+        branch.push({ type: "custom_message", ...stored });
+        branch.push({
+          type: "message",
+          message: { role: "assistant", content: [], stopReason: "stop" },
+        });
+        await fixture.handlers.get("agent_end")?.({ messages: [] }, context);
+        await drainTimers();
+        expect(recorded()).toHaveLength(1);
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    });
   });
 
   // A person's Send or Aside from the Agents page is the user's own turn, as if typed at the
@@ -21451,6 +21496,11 @@ describe("consumer delivery", () => {
        *  does: the frame fails, and its third delivery is given up on, which is when the
        *  session is told what it was never shown (`@legion/envoy-client/consumer-delivery`). */
       readonly refuseCard?: (message: SentCard) => boolean;
+      /** The session file the host names (`getSessionFile`). With `storesNextTurn`, an idle host
+       *  appends a `nextTurn` card with no turn to the session and emits nothing for it, as Oh My
+       *  Pi's `sendCustomMessage` does (its idle `nextTurn` branch). */
+      readonly sessionFile?: string;
+      readonly storesNextTurn?: boolean;
     } = {}
   ) {
     process.env.ENVOY_RESUBSCRIBE_DELAY_MS = "10";
@@ -21546,7 +21596,18 @@ describe("consumer delivery", () => {
         if (options.refuseCard?.(message) === true) throw new Error("the host refused the card");
         fixture.pi.sendMessage(message, sendOptions);
         events.push(`handed ${message.details?.event_id ?? message.content}`);
-        if (turn === "idle") void write(message);
+        const stores =
+          options.storesNextTurn === true &&
+          typeof sendOptions === "object" &&
+          sendOptions !== null &&
+          "deliverAs" in sendOptions &&
+          sendOptions.deliverAs === "nextTurn" &&
+          !("triggerTurn" in sendOptions && sendOptions.triggerTurn === true);
+        if (turn === "idle" && stores) {
+          const { content, customType, display, details } = message;
+          written.push({ type: "custom_message", customType, content, display, details });
+          events.push(`stored ${details?.event_id ?? content}`);
+        } else if (turn === "idle") void write(message);
         else held.push(message);
       },
     });
@@ -21559,6 +21620,7 @@ describe("consumer delivery", () => {
         getBranch: () => [...prior, ...fixture.entries, ...written],
         getEntries: () => [...prior, ...fixture.entries, ...written],
         ...(options.hostSessionID !== undefined && { getSessionId: options.hostSessionID }),
+        ...(options.sessionFile !== undefined && { getSessionFile: () => options.sessionFile }),
       },
       setInterval: (callback) => {
         intervals.push(callback);
@@ -21749,6 +21811,51 @@ describe("consumer delivery", () => {
     expect(first.cards("evt-restart")).toHaveLength(1);
     expect(second.cards("evt-restart")).toHaveLength(0);
   });
+
+  // A `low` card's frame is settled once the session holds the card's entry. Under
+  // OMP_SESSION_STORAGE=sql, every Legion workflow session's store
+  // (packages/daemon/internal/podsafety/podsafety.go), the session is rows in a database and the
+  // file the host names is never on disk. The file case is the control.
+  for (const storage of ["file", "sql"] as const) {
+    test(`a low card stored on an idle session is answered done and the resume point passes it (${storage} storage)`, async () => {
+      const directory = mkdtempSync(join(tmpdir(), "envoy-low-consumer-"));
+      const sessionFile = join(directory, "session.jsonl");
+      if (storage === "file") writeFileSync(sessionFile, "");
+      try {
+        const session = await bootConsumer(`consumer-low-${storage}`, {
+          storesNextTurn: true,
+          sessionFile,
+          // The session has had its first reply: its store holds every entry from here on.
+          entries: [
+            {
+              type: "message",
+              message: { role: "assistant", content: [], stopReason: "stop" },
+            },
+          ],
+        });
+        const low = session.relay(
+          5,
+          daemonEnvelope("stored notice", `consumer-low-${storage}`, { urgency: "low" })
+        );
+        await until(
+          () => session.events.includes(`stored evt-consumer-low-${storage}`),
+          "the stored card"
+        );
+        const later = session.relay(6, peer(`after-low-${storage}`));
+        await until(() => session.replies(later).includes("done"), "the later card's done");
+        await session.tick();
+        await session.tick();
+
+        expect(session.replies(low)).toEqual(["received", "done"]);
+        expect(session.registrations.at(-1)?.delivery?.resume).toEqual({
+          stream_id: STREAM,
+          seq: 6,
+        });
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    });
+  }
 
   test("the session file carries the follows map only when it changes, and either shape restores", async () => {
     const issueTopic = legacyDispatchIssueSubject("INFRA-7", ">");
