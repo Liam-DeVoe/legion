@@ -21,12 +21,13 @@ const (
 	askedText  = "The daemon must replace the pod that runs this issue's roles. The reasons are: image a, now b."
 )
 
-// The three lines the executor writes, one for each way a row ends without an error. The first
-// is the line the production check reads (requirement R8).
+// The lines the executor writes for some of the ways a row ends without an error. The first is
+// the line the production check reads (requirement R8).
 const (
-	askPublishedLine = "outbox update ask published to the role topic"
-	askNoHolderLine  = "outbox update ask finished undelivered: no live session holds the role"
-	askLeftLine      = "outbox update ask finished without a publish: the claim no longer records its round"
+	askPublishedLine  = "outbox update ask published to the role topic"
+	askNoHolderLine   = "outbox update ask finished undelivered: no live session holds the role"
+	askLeftLine       = "outbox update ask finished without a publish: the claim no longer records its round"
+	askNotRunningLine = "outbox update ask finished without a publish: the claim's agent is not running"
 )
 
 // askRunner is an outbox runner as phase_ended_test.go's unit case builds one — a project, a
@@ -95,7 +96,7 @@ func TestPodUpdateAskReachesEachRoleOnItsOwnTopic(t *testing.T) {
 	}
 }
 
-// A role no live session holds — its pod was released, or its session has not registered — is
+// A role no live session holds — its session has not registered or not yet claimed its topic — is
 // not woken to be asked: the round ends at its bound whether or not the role answers. The row
 // finishes with one Info line and writes no published line. The claim here records no ask mark,
 // and an undelivered ask writes none; podupdate_undelivered_ask_test.go holds the sweep's ask again.
@@ -201,10 +202,11 @@ func (w *wakeCountingTrees) taken() int {
 // lapsed, so a publish to a role whose pod an idle release took would bring the pod back to be
 // asked. The row finishes with nothing published and nothing marked, so the sweep asks the claim
 // again once its agent is ready: no pod wake is taken, no process is resumed, and the claim stays
-// released. The publisher here would take the ask, as a listener that answers the publish does,
-// so the control is the check removed (supervise.Machine.PublishUpdateAsk): the ask is then
-// published and the claim marked asked. c-one-channel's control is the other half: an executor
-// that called wakeForDelivery first, as phaseEnded does, takes a wake and resumes the claim here.
+// released. One line says why, with the claim's state and its suspension. The publisher here
+// would take the ask, as a listener that answers the publish does, so the control is the check
+// removed (supervise.Machine.PublishUpdateAsk): the ask is then published and the claim marked
+// asked. c-one-channel's control is the other half: an executor that called wakeForDelivery
+// first, as phaseEnded does, takes a wake and resumes the claim here.
 func TestPodUpdateAskWakesNoReleasedPod(t *testing.T) {
 	rig := newIdleRig(t)
 	ctx := context.Background()
@@ -220,6 +222,8 @@ func TestPodUpdateAskWakesNoReleasedPod(t *testing.T) {
 	rig.runner.trees = trees
 	publisher := &outboxPublisher{}
 	rig.runner.notices = publisher
+	logs := &syncBuffer{}
+	rig.runner.log = jsonLogger(logs)
 	resumes := len(rig.rt.CallsOf("Resume"))
 
 	row := mustOutboxRow(t, rig.issue.Key, record.UpdateAsk{Role: claim.RoleImplementer, Round: askedRound, Pod: askedPod, Text: askedText}, time.Now())
@@ -230,6 +234,10 @@ func TestPodUpdateAskWakesNoReleasedPod(t *testing.T) {
 
 	if published := publisher.publishes(); len(published) != 0 {
 		t.Errorf("the ask published %+v to the released role, want nothing: a publish raises the role's wake", published)
+	}
+	lines := loggedLines(t, logs.String(), `"msg":"`+askNotRunningLine+`"`)
+	if len(lines) != 1 || lines[0]["state"] != "suspended" || lines[0]["suspendedBy"] != "released" {
+		t.Errorf("lines %q = %v in\n%s\nwant one line naming the claim suspended by its release", askNotRunningLine, lines, logs.String())
 	}
 	if got := rig.machine.Claim(); got.UpdateTaskedAt != nil {
 		t.Errorf("the claim is marked asked at %v, want no mark: the ask reached nobody, and the sweep asks again once the agent is ready", got.UpdateTaskedAt)

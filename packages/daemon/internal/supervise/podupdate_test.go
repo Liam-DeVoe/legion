@@ -76,7 +76,7 @@ func (h *harness) openUpdate(round, reasons string) {
 
 // leftAsk is the claim as this daemon restores it from an older daemon's record when that daemon
 // asked round with a task and sent it: a delivery under an id of the round's own (updateTaskID),
-// UpdateTaskedAt stamped as that daemon stamped it when it queued the task (markAsked), and the
+// UpdateTaskedAt stamped as that daemon stamped it when it queued the task, and the
 // prompt on the claim's connection, which is that daemon's send. This daemon queues no such task
 // and sends none (sendPending drops it). The deploy then replaces the daemon (restart), so the
 // claim comes back holding the ask pending and unconfirmed, with the question a restart arms for
@@ -339,11 +339,10 @@ func (h *harness) markAsked(round string) {
 // dispatch://INFRA-4131 R4), and the mark is written where the publish is (PublishUpdateAsk).
 // An ask that reached a session marks the claim at the clock, durably, and the next ask of the
 // round publishes nothing; an ask no session took marks nothing and the next ask publishes again;
-// a round the claim is not in is published nothing; a suspended or failed claim, whose agent is
-// not running, is published nothing and marked nothing, since a publish to its topic raises the listener's role
-// wake; a publish that fails marks nothing; and a mark the store does not take stays in memory,
-// owed, so the next ask writes it and publishes nothing, and answers an error until the write
-// lands.
+// a round the claim is not in is published nothing; a suspended or failed claim is published
+// nothing and marked nothing (UpdateAskNotRunning); a publish that fails marks nothing; and a
+// mark the store does not take stays in memory, owed, so the next ask writes it and publishes
+// nothing, and answers an error until the write lands.
 func TestPodUpdatePublishUpdateAskMarksOnlyAnAskThatReachedASession(t *testing.T) {
 	t.Run("a delivered ask marks the claim once, and a later ask of the round publishes nothing", func(t *testing.T) {
 		h := updateHarness(t, PodUpdateContract)
@@ -402,7 +401,7 @@ func TestPodUpdatePublishUpdateAskMarksOnlyAnAskThatReachedASession(t *testing.T
 		}
 	})
 
-	for _, by := range []SuspendSource{SuspendedByDaemon, SuspendedByOperator} {
+	for _, by := range []SuspendSource{SuspendedByReleased, SuspendedByDaemon, SuspendedByOperator} {
 		t.Run("a claim suspended by "+string(by)+" is published nothing and marked nothing", func(t *testing.T) {
 			h := updateHarness(t, PodUpdateContract)
 			h.reach(StateIdle)

@@ -38,9 +38,7 @@ func ghDescription(req Request) string {
 }
 
 // ghSchema is the JSON schema of the gh tool's input for req: gh's arguments as an array of
-// strings, whose description gives the description's example (ghtool.Usage.Example). The schema
-// is one Go value marshalled once, so no text is joined into JSON by hand; its fields are structs
-// rather than maps so the keys keep the order the model has always been offered.
+// strings, whose description gives the description's example (ghtool.Usage.Example).
 func ghSchema(req Request) json.RawMessage {
 	example, _ := json.Marshal(req.Agent.GHUsage.Example())
 	var schema ghArgsSchema
@@ -55,7 +53,9 @@ func ghSchema(req Request) json.RawMessage {
 }
 
 // ghArgsSchema is the shape of the gh tool's input schema (ghSchema): one property, args, an array
-// of strings, required, and no other property.
+// of strings, required, and no other property. Its fields are structs rather than maps so the keys
+// keep the order the model has always been offered, and the schema is one Go value marshalled
+// once, so no text is joined into JSON by hand.
 type ghArgsSchema struct {
 	Type       string `json:"type"`
 	Properties struct {

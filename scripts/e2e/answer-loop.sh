@@ -1740,7 +1740,7 @@ a3_conversation_page() {
   # the signed-in person's own messages with that session, and refuses the agents' bearer 403):
   # the delivery it recorded for the stopped tester, which the listener's hand-off makes `sent`,
   # and the tester's reply to it.
-  record=$(dispatch_human GET "agents/$session/messages" | jq -c --arg b "$body" 'first(.[] | select(.message.body == $b)) // {}') || record='{}'
+  record=$(message_record "$session" "$body") || record='{}'
   note "the record the page reads (GET agents/$session/messages): deliveries $(jq -c '[.message.deliveries[]? | {state, session_id, delivery}]' <<<"$record")"
   api_answer=$(record_reply_by "$record" "$session")
   note "that record holds as the tester's reply: $(head -c 400 <<<"$api_answer" | tr '\n' ' ')"
@@ -2410,22 +2410,27 @@ comment_request() {
 }
 
 # person_message ISSUE SESSION BODY sends BODY as the proof person's targeted Dispatch message to
-# SESSION on ISSUE, the way a person asks a stopped agent (A17: "A person asks"), and notes a
-# message Dispatch did not take; message_reply_by reads the reply.
+# SESSION on ISSUE, the way a person asks a stopped agent (A17: "A person asks"), and notes and
+# fails on a message Dispatch did not take; message_reply_by reads the reply.
 person_message() {
   dispatch_human POST "issues/$1/messages" \
-    "$(jq -cn --arg t "session:$2" --arg b "$3" '{body: $b, target: $t, delivery: "steer"}')" >/dev/null ||
-    note "the proof person's message to $2 on $1 was not taken"
+    "$(jq -cn --arg t "session:$2" --arg b "$3" '{body: $b, target: $t, delivery: "steer"}')" >/dev/null && return 0
+  note "the proof person's message to $2 on $1 was not taken"
+  return 1
+}
+
+# message_record SESSION BODY prints the proof person's record of their targeted message to SESSION
+# whose body is BODY (GET agents/<session>/messages, which serves the signed-in person's own
+# messages and refuses the agents' bearer), {} for none.
+message_record() {
+  dispatch_human GET "agents/$1/messages" | jq -c --arg b "$2" 'first(.[]? | select(.message.body == $b)) // {}'
 }
 
 # message_reply_by SESSION BODY prints SESSION's reply to the proof person's targeted message whose
-# body is BODY, from the record Dispatch keeps of that person's messages to SESSION (GET
-# agents/<session>/messages, which serves the signed-in person's own messages and refuses the
-# agents' bearer), and fails while it holds none.
+# body is BODY, from that person's record of it (message_record), and fails while it holds none.
 message_reply_by() {
-  local record reply
-  record=$(dispatch_human GET "agents/$1/messages" | jq -c --arg b "$2" 'first(.[]? | select(.message.body == $b)) // {}') || return 1
-  reply=$(record_reply_by "$record" "$1")
+  local reply
+  reply=$(record_reply_by "$(message_record "$1" "$2")" "$1")
   [ -n "$reply" ] && printf '%s\n' "$reply"
 }
 
@@ -2444,9 +2449,9 @@ check_a17() {
   # proof person's Dispatch message, as the criterion's person asks, and so is the reviewer's.
   local impl_issue=${agent[$store:implementer.issue]} impl_session=${agent[$store:implementer.session]} impl_body
   impl_body="$(comment_request "$marker") (run $run_tag, $store)"
-  person_message "$impl_issue" "$impl_session" "$impl_body"
   impl_reply() { message_reply_by "$impl_session" "$impl_body"; }
-  if soft_wait 300 "the implementer's reply to the proof person's message" impl_reply; then
+  if person_message "$impl_issue" "$impl_session" "$impl_body" &&
+    soft_wait 300 "the implementer's reply to the proof person's message" impl_reply; then
     comments=$(pr_comments "${agent[$store:implementer.pr]}" "$marker")
     for id in $(jq -r '.[].id' <<<"$comments"); do github_writes+=("comment:$id"); done
     reply=$(impl_reply)
@@ -2454,7 +2459,7 @@ check_a17() {
     note "comments: $(jq -c 'map({id, user, footer: (.body | [capture("legion: (?<f>\\{[^}]*\\})").f] | first // null)})' <<<"$comments")"
     note "the implementer's answer's gh lines: $lines"
     note "reply: $(head -c 300 <<<"$reply" | tr '\n' ' ')"
-    one_comment_by "$comments" "$implement_app_login" "${agent[$store:implementer.session]}" &&
+    one_comment_by "$comments" "$implement_app_login" "$impl_session" &&
       first_line_where "$lines" gh_line_is implement sjawhar 0 >/dev/null && ok_impl=1
   fi
   # The same implementer and the same pull request, asked for a comment whose body is the run's
@@ -2468,8 +2473,8 @@ check_a17() {
   # The daemon's own line for it is read beside them: one refusal line naming the issue, the role,
   # the repository and that reason.
   impl_body="$(comment_request "$leak_marker") If a tool refuses the call, quote what it answered word for word. (run $run_tag, $store)"
-  person_message "$impl_issue" "$impl_session" "$impl_body"
-  if soft_wait 300 "the implementer's reply about the refused comment" impl_reply; then
+  if person_message "$impl_issue" "$impl_session" "$impl_body" &&
+    soft_wait 300 "the implementer's reply about the refused comment" impl_reply; then
     listing=$(pr_comment_listing "${agent[$store:implementer.pr]}")
     refused_comments=$(jq -c --arg m "$leak_marker" \
       '(if type == "array" then . else [] end) | [.[] | select((.body // "") | contains($m)) | {id, user: .user.login}]' <<<"$listing")
@@ -2480,7 +2485,7 @@ check_a17() {
     note "the guard's refusals of the implementer's answer: $lines"
     note "reply: $(head -c 300 <<<"$reply" | tr '\n' ' ')"
     refused_write_absent "$listing" "$marker" "$leak_marker" && leak_reason_quoted "$reply" "$leak_reason" &&
-      first_line_where "$lines" leak_refusal_is "${agent[$store:implementer.issue]}" implementer "$repo" "$leak_reason" >/dev/null && ok_leak=1
+      first_line_where "$lines" leak_refusal_is "$impl_issue" implementer "$repo" "$leak_reason" >/dev/null && ok_leak=1
   fi
   # The write is a workflow file because the review App's lease holds no `workflows` permission
   # (appauth's writePermissions): every gh directory of a bundle holds the role's own lease on that
@@ -2493,10 +2498,10 @@ check_a17() {
   # is expected to refuse, so the agent knows what it is asked to show.
   local review_body review_issue=${agent[$store:pre_change.issue]} review_session=${agent[$store:pre_change.session]}
   review_body="I am testing that GitHub refuses this write (run $run_tag, $store). Using your gh tool, create the file .github/workflows/answer-loop-$marker.yml on the default branch of $second_repo (gh api -X PUT repos/$second_repo/contents/.github/workflows/answer-loop-$marker.yml -f message=proof -f content=cHJvb2YK). GitHub is expected to refuse it; tell me exactly what GitHub answered."
-  person_message "$review_issue" "$review_session" "$review_body"
-  person_reply() { message_reply_by "$review_session" "$review_body"; }
-  if soft_wait 300 "the reviewer's reply to the proof person's message" person_reply; then
-    reply=$(person_reply)
+  review_reply() { message_reply_by "$review_session" "$review_body"; }
+  if person_message "$review_issue" "$review_session" "$review_body" &&
+    soft_wait 300 "the reviewer's reply to the proof person's message" review_reply; then
+    reply=$(review_reply)
     lines=$(question_gh_lines "$(answer_question_id "$reply")") || lines='[]'
     note "the reviewer's answer's gh lines: $lines"
     note "reviewer's reply: $(head -c 300 <<<"$reply" | tr '\n' ' ')"
