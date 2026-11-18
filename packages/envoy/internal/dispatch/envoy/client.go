@@ -761,6 +761,25 @@ const (
 	publishRoute = "/v1/messages/publish"
 )
 
+// sendSource is the source every delivery Dispatch makes through the listener names itself by.
+const sendSource = "dispatch"
+
+// EnvelopeMessage is the message the listener's send route stores for input
+// (contracts.AgentSendEnvelope): from Dispatch, with the frame as its payload whole, an empty one
+// included, and the delivery's urgency and expects_reply. Send writes its body from it, and
+// Dispatch's own queued copy of a send for a session no store of the listener's holds is built
+// from it, so the copy carries what the send would have.
+func (input SendInput) EnvelopeMessage() contracts.Message {
+	payload := string(input.Payload)
+	return contracts.Message{
+		Source:       sendSource,
+		Text:         input.Message,
+		Payload:      &payload,
+		Urgency:      input.Urgency,
+		ExpectsReply: input.ExpectsReply,
+	}
+}
+
 // Send delivers a Dispatch frame to an already-resolved session. The answer says what that
 // session was when the listener stored the message: connected, or stopped and stored for its own
 // consumer (SendResult). A send that set ConnectedOnly and met a stopped session is refused
@@ -769,6 +788,7 @@ const (
 // session under the target, knows no record of it and handed it off to no daemon is an error
 // carrying the listener's text that matches ErrNotFound; every other refusal is not.
 func (c *Client) Send(ctx context.Context, input SendInput) (SendResult, error) {
+	message := input.EnvelopeMessage()
 	response, err := c.post(ctx, sendRoute, struct {
 		TargetSession string `json:"target_session"`
 		deliveryBody
@@ -776,12 +796,12 @@ func (c *Client) Send(ctx context.Context, input SendInput) (SendResult, error) 
 	}{
 		TargetSession: input.TargetSession,
 		deliveryBody: deliveryBody{
-			Source:         "dispatch",
-			Message:        input.Message,
-			Payload:        string(input.Payload),
+			Source:         message.Source,
+			Message:        message.Text,
+			Payload:        *message.Payload,
 			IdempotencyKey: input.IdempotencyKey,
-			Urgency:        input.Urgency,
-			ExpectsReply:   input.ExpectsReply,
+			Urgency:        message.Urgency,
+			ExpectsReply:   message.ExpectsReply,
 		},
 		ConnectedOnly: input.ConnectedOnly,
 	})
@@ -854,7 +874,7 @@ func (c *Client) PublishToRole(ctx context.Context, input RolePublishInput) (Rol
 	}{
 		Topic: contracts.RoleTopicPrefix + input.Role,
 		deliveryBody: deliveryBody{
-			Source:         "dispatch",
+			Source:         sendSource,
 			Message:        input.Message,
 			Payload:        string(input.Payload),
 			IdempotencyKey: input.IdempotencyKey,

@@ -120,7 +120,7 @@ func TestAGhCommandRunsWithTheOneDirectoryEveryRepositoryItNamesRoutesTo(t *test
 			refuse: []string{"cybermonklabs (--repo sjawhar/legion)", "sjawhar (--owner sjawhar)"}},
 		{argv: []string{"search", "issues", "--repo", "sjawhar/ygo", "--repo", "other/thing"}, refuse: []string{`the role's GitHub App is not installed on "other"`}},
 	} {
-		target, err := ghroute.TargetOf(tc.argv, nil, savedGhHelp, noGitRepository, routed)
+		target, err := ghTargetOfKept(t, tc.argv, nil, savedGhHelp, noGitRepository, routed)
 		if tc.refuse != nil {
 			if err == nil {
 				t.Errorf("ghroute.TargetOf(%q) = %+v, want a refusal", tc.argv, target)
@@ -151,11 +151,11 @@ func TestAGhCommandRunsWithTheOneDirectoryEveryRepositoryItNamesRoutesTo(t *test
 	}
 	routedMissing := func(owner, name string) (string, error) { return ghroute.DirFor(missing, owner, name) }
 	argv := []string{"search", "issues", "--repo", "sjawhar/ygo", "--repo", "sjawhar/legion"}
-	if target, err := ghroute.TargetOf(argv, nil, savedGhHelp, noGitRepository, routedMissing); err == nil || !strings.Contains(err.Error(), "sjawhar/legion -> cybermonklabs/legion") {
+	if target, err := ghTargetOfKept(t, argv, nil, savedGhHelp, noGitRepository, routedMissing); err == nil || !strings.Contains(err.Error(), "sjawhar/legion -> cybermonklabs/legion") {
 		t.Errorf("ghroute.TargetOf(%q) = %+v, %v; want a refusal naming the pair", argv, target, err)
 	}
 	argv = []string{"search", "issues", "--repo", "sjawhar/ygo", "--repo", "sjawhar/other"}
-	if target, err := ghroute.TargetOf(argv, nil, savedGhHelp, noGitRepository, routedMissing); err != nil || target.Dir != ghconfig.Dir(missing, "sjawhar") {
+	if target, err := ghTargetOfKept(t, argv, nil, savedGhHelp, noGitRepository, routedMissing); err != nil || target.Dir != ghconfig.Dir(missing, "sjawhar") {
 		t.Errorf("ghroute.TargetOf(%q) = %+v, %v; want sjawhar's directory", argv, target, err)
 	}
 }

@@ -165,8 +165,10 @@ type sendOutcome struct {
 // resolution of the route (target.listenerAnswer) as refused, and its resolve error as the
 // failure. The caller records that resolution's session on the attempt in place of the
 // registry's, so the attempt reads exactly as it did before the registry existed: a role's
-// listener answer with no session, a session's "no live session <id>". A send to such a session
-// that the listener only stores (dispatchenvoy.SendStateStopped) settles the same way.
+// listener answer with no session, a session's "no live session <id>", which the caller then
+// queues itself for a targeted message to that session (mayQueueForUnknownSession). A send to
+// such a session that the listener only stores (dispatchenvoy.SendStateStopped) settles the same
+// way.
 //
 // A role kept for its next holder (target.keepForRole) is published on the role's topic rather
 // than sent (publishForRole).
@@ -183,19 +185,9 @@ func (s *server) sendResolvedDelivery(
 	if target.SessionID == nil {
 		return sendOutcome{failure: contracts.NoLiveSession}
 	}
-	// Message is the body a second time, beside the frame, and the listener puts it on the
-	// envelope: it takes the part an event carries (model.EventBody), as the frame's own copy
-	// does, so one send never carries a body twice at two lengths.
-	carried, _ := model.EventBody(body)
-	send, err := s.deps.Envoy.Send(ctx, dispatchenvoy.SendInput{
-		TargetSession:  *target.SessionID,
-		Message:        carried,
-		Payload:        frame,
-		IdempotencyKey: idempotencyKey,
-		Urgency:        deref(urgency),
-		ExpectsReply:   deliveryExpectsReply(target, wanted),
-		ConnectedOnly:  connectedOnly,
-	})
+	send, err := s.deps.Envoy.Send(ctx, listenerSendInput(
+		*target.SessionID, target.Delivery, body, idempotencyKey, urgency, wanted, frame, connectedOnly,
+	))
 	if errors.Is(err, dispatchenvoy.ErrReceiptTimeout) {
 		return sendOutcome{failure: receiptTimeoutText}
 	}
@@ -213,12 +205,12 @@ func (s *server) sendResolvedDelivery(
 	// (registeredAgent), and a send the listener hands to that daemon answers no state, never
 	// stopped (sendResponse.State in cmd/listener/api.go). Stopped is the listener storing the
 	// message for a session it still knows (#2643) because it handed it to no daemon - the
-	// project said it stopped answering after the registry was read, say. A stopped agent's
-	// session does not run again to read it, so recording it queued would tell the person it
-	// reached the agent while it sits unread until it expires. It settles as the 404 above does,
-	// with the listener's own answer for the route, so the attempt reads exactly as it did before
-	// the registry existed. The check comes before the duplicate's, since a take-over's retry of
-	// this send is a duplicate of the copy the first try stored.
+	// project said it stopped answering after the registry was read, say. It settles as the 404
+	// above does, with the listener's own answer for the route, as with no registry: a mention
+	// fails with it, and a targeted message to a session takes it to Dispatch's own queueing
+	// (deliverMessageResuming, queueForUnknownSession), which the stream answers as a duplicate of
+	// the copy the listener stored. The check comes before the duplicate's, since a take-over's
+	// retry of this send is a duplicate of the copy the first try stored.
 	if target.listenerAnswer != nil && queued {
 		return sendOutcome{failure: target.listenerAnswer.ResolveError, refused: target.listenerAnswer}
 	}
@@ -229,13 +221,35 @@ func (s *server) sendResolvedDelivery(
 	return sendOutcome{envelopeID: &send.EnvelopeID, queued: queued}
 }
 
+// listenerSendInput is the listener send of one delivery to sessionID in mode delivery, carrying
+// frame. A targeted message Dispatch queues itself, for a session no store of the listener's
+// holds, is the envelope this send would have stored (queuedEnvelope), so both are built here.
+func listenerSendInput(
+	sessionID, delivery, body, idempotencyKey string, urgency *string,
+	wanted contracts.ExpectsReply, frame []byte, connectedOnly bool,
+) dispatchenvoy.SendInput {
+	// Message is the body a second time, beside the frame, and the listener puts it on the
+	// envelope: it takes the part an event carries (model.EventBody), as the frame's own copy
+	// does, so one send never carries a body twice at two lengths.
+	carried, _ := model.EventBody(body)
+	return dispatchenvoy.SendInput{
+		TargetSession:  sessionID,
+		Message:        carried,
+		Payload:        frame,
+		IdempotencyKey: idempotencyKey,
+		Urgency:        deref(urgency),
+		ExpectsReply:   deliveryExpectsReply(delivery, wanted),
+		ConnectedOnly:  connectedOnly,
+	}
+}
+
 // deliveryExpectsReply is what the delivered thing wants back, except in btw mode, which
 // interrupts the session it reaches to ask something of it and so always waits on an answer,
 // whatever the thing delivered says. The mode is read on every try, because a try after a
 // listener take-over resolves the target again and sends in the mode that resolution names
 // (mentionResolutionFor).
-func deliveryExpectsReply(target ResolvedMention, wanted contracts.ExpectsReply) contracts.ExpectsReply {
-	if target.Delivery == "btw" {
+func deliveryExpectsReply(delivery string, wanted contracts.ExpectsReply) contracts.ExpectsReply {
+	if delivery == "btw" {
 		return contracts.ExpectsReplyRequired
 	}
 	return wanted
@@ -272,7 +286,7 @@ func (s *server) publishForRole(
 		Payload:        frame,
 		IdempotencyKey: idempotencyKey,
 		Urgency:        deref(urgency),
-		ExpectsReply:   deliveryExpectsReply(target, wanted),
+		ExpectsReply:   deliveryExpectsReply(target.Delivery, wanted),
 	})
 	if errors.Is(err, dispatchenvoy.ErrReceiptTimeout) {
 		return sendOutcome{failure: receiptTimeoutText}

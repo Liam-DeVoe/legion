@@ -124,8 +124,9 @@ func resolveThenLock[R, T any](
 //
 // Only ErrNotFound - no entry and no record under that id - and a record the registry calls
 // gone are "no live session <id>" (contracts.NoLiveSession, then the id), the text
-// comment_delivery.go tests the prefix of and the dashboard prints verbatim. Every other failure
-// takes the error path, so an unreachable listener never reads as an ended session.
+// comment_delivery.go tests the prefix of, Dispatch's own queueing reads
+// (mayQueueForUnknownSession) and the dashboard prints verbatim. Every other failure takes the
+// error path, so an unreachable listener never reads as an ended session.
 //
 // A session the listener holds no record of or calls gone, and a role whose issue has finished
 // and that it holds no live holder for, may still be a stopped Legion agent whose daemon answers
@@ -140,10 +141,10 @@ func resolveThenLock[R, T any](
 // The registry names such a session only while its project last said it answers
 // (dispatchenvoy.LegionAgent.Answering), the condition the listener's hand-off reads too. A
 // project whose daemon runs without `answers`, or that never stated anything, has no daemon the
-// listener hands the send to, and the listener stores a send to a session it still knows for when
-// that session runs again, which a stopped agent's never does: redirected, the message would be
-// recorded queued for nobody. So the route keeps the listener's own answer - a role's no-holder
-// failure, a session's "no live session" - exactly as before the registry existed.
+// listener hands the send to, so a redirect gains nothing over the listener's own answer: the
+// route keeps it - a role's no-holder failure, a session's "no live session", which a targeted
+// message then takes to Dispatch's own queueing (mayQueueForUnknownSession) - exactly as with no
+// registry.
 //
 // A role whose issue is still in the workflow is never resolved to a registry entry, whatever
 // the registry names: its next worker claims the role and is handed what Envoy kept for it, so

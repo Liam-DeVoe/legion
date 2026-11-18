@@ -1,10 +1,15 @@
 // Package ghroutetest holds what the tests of internal/ghroute and the tests of `legion gh`
 // (cmd/legion) both read of gh calls: gh's saved help, answered as the real gh answers it
-// (SavedHelp); the routing of a bundle that holds every owner's directory and no rename
-// (OwnersOwnDirectories); the calls that write nothing and the calls that do (calls.go), which
-// ghroute's tests hold its read rule (ghroute.Target.WritesNothing) to and `legion gh`'s tests
-// run end to end; and a port of the pinned shared check's own read of a call (PinnedCheckReads),
-// which ghroute's tests prove the rule against and `legion gh`'s stand-in check answers with.
+// (SavedHelp), and that help edited as another gh would print it (EditedHelp); the routing of a
+// bundle that holds every owner's directory and no rename (OwnersOwnDirectories); the git remotes
+// of a working directory that is no repository (NoGitRepository); the resolver tables that read no
+// git remote (targets.go), which ghroute's tests hold TargetOf to and `legion gh`'s tests resolve
+// through its keep of gh's help; the calls that write nothing and the calls that do (calls.go),
+// which ghroute's tests hold its read rule (ghroute.Target.WritesNothing) to and `legion gh`'s
+// tests run end to end; a port of the pinned shared check's own read of a call
+// (PinnedCheckReads), which ghroute's tests prove the rule against and `legion gh`'s stand-in
+// check answers with; and the helper processes both packages' help-read rows hold their work with
+// (process.go).
 //
 // It is an ordinary package rather than a _test.go file of one of them because cmd/legion is
 // package main, which can import no other package's test-only helpers (internal/leakguard's

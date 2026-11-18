@@ -50,7 +50,7 @@ func stateAnswering(t *testing.T, agents *legionagents.Store, answering bool) {
 // so a test can write the entry or the project's flag again.
 func withLegionAgent(t *testing.T, d *listenerDeps, entry legionagents.Entry) *legionagents.Store {
 	t.Helper()
-	agents, err := legionagents.Open(d.client.Conn, legionagents.WithReplicas(1))
+	agents, err := legionagents.Open(t.Context(), d.client.Conn, legionagents.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the legion agent registry: %v", err)
 	}

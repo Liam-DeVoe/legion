@@ -48,7 +48,7 @@ func newHandoffRig(t *testing.T, liveWindow time.Duration) *handoffRig {
 		t.Fatalf("connect the bus: %v", err)
 	}
 	t.Cleanup(client.Close)
-	registry, err := store.Open(client.Conn, store.WithReplicas(1))
+	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the interest registry: %v", err)
 	}
@@ -56,7 +56,7 @@ func newHandoffRig(t *testing.T, liveWindow time.Duration) *handoffRig {
 	if liveWindow > 0 {
 		options = append(options, session.WithSessionLiveWindow(liveWindow), session.WithSessionGoneHorizon(time.Hour))
 	}
-	sessions, err := session.OpenSessionRegistry(client.Conn, options...)
+	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, options...)
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}
@@ -65,7 +65,7 @@ func newHandoffRig(t *testing.T, liveWindow time.Duration) *handoffRig {
 	if err := sessions.WaitForCacheReady(ctx); err != nil {
 		t.Fatalf("warm the session cache: %v", err)
 	}
-	agents, err := legionagents.Open(client.Conn, legionagents.WithReplicas(1))
+	agents, err := legionagents.Open(t.Context(), client.Conn, legionagents.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the legion agent registry: %v", err)
 	}
@@ -337,17 +337,18 @@ func TestHandOffToLegionLeavesTheseAsTheyWere(t *testing.T) {
 // The counterpart of TestAMessageToAStoppedAgentWhoseInterestNamesThisListenerIsHandedToItsDaemon
 // (stopped_agent_thread_reply_test.go): the same interest-path miss - a stored row naming this
 // listener, no session entry behind it - for a session the Legion agent registry does not hold is
-// refused exactly as it was before the hand-off was offered on that path. Nothing is handed off,
-// the delivery_failed exception goes out, and the message is NAKed for the stream to redeliver
-// it. Every session that is not a Legion agent's is in this shape, which is why the hand-off is
-// offered and not assumed: what it does not take keeps the answer it always had.
-func TestAnInterestPathMissForASessionTheLegionRegistryDoesNotHoldIsRefusedAsBefore(t *testing.T) {
+// answered exactly as it is with no hand-off, the give-up of a session with no record
+// (unplaceableAgentDelivery): nothing is handed off, the no_holder exception goes out and the
+// agent wake is reported. Every session that is not a Legion agent's is in this shape, which is
+// why the hand-off is offered and not assumed: what it does not take keeps the answer it has
+// without it.
+func TestAnInterestPathMissForASessionTheLegionRegistryDoesNotHoldIsGivenUpAsWithoutTheHandoff(t *testing.T) {
 	harness := newListenerDeliveryHarness(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	const sessionID = "ses-not-a-legion-agent"
 
-	agents, err := legionagents.Open(harness.client.Conn, legionagents.WithReplicas(1))
+	agents, err := legionagents.Open(t.Context(), harness.client.Conn, legionagents.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the legion agent registry: %v", err)
 	}
@@ -364,6 +365,10 @@ func TestAnInterestPathMissForASessionTheLegionRegistryDoesNotHoldIsRefusedAsBef
 		client: cfg.client, registry: cfg.registry, sessions: cfg.sessions,
 		agents: newLegionAgentRegistry(agents), logger: logging.NewWithWriter("test", harness.logs),
 	}
+	lifetime, stop := context.WithCancel(context.Background())
+	t.Cleanup(stop)
+	cfg.wakes = newWakeReporter(lifetime, harness.client)
+	wakes := subscribeWakes(t, harness.client.Conn)
 	handler := durableTestHandler(t, cfg)
 
 	if _, err := harness.registry.Upsert(store.Interest{
@@ -371,8 +376,9 @@ func TestAnInterestPathMissForASessionTheLegionRegistryDoesNotHoldIsRefusedAsBef
 	}, nil); err != nil {
 		t.Fatalf("record the interest row the stopped session left: %v", err)
 	}
-	// No session entry is written: the delivery resolves session.ErrNoSessionRecord, as it does
-	// for the stopped Legion agent.
+	// No session entry is written: the delivery finds the session gone, as it does for the
+	// stopped Legion agent. The message is a core one, which nothing redelivers, so it is given up
+	// on this first delivery.
 
 	item := envelopeFor(contracts.AgentTopicPrefix+sessionID, "dispatch-17", "dispatch")
 	probe, err := harness.client.Conn.SubscribeSync("notifications.envoy.exceptions." + item.Topic)
@@ -383,12 +389,15 @@ func TestAnInterestPathMissForASessionTheLegionRegistryDoesNotHoldIsRefusedAsBef
 
 	handler(&nats.Msg{Data: marshalListenerEnvelope(t, item)})
 
-	assertDeliveryException(t, probe, item, "delivery_failed")
-	if records := deliveryRecords(t, harness.logs.String(), "listener agent delivery failed"); len(records) != 1 || records[0].SessionID != sessionID {
-		t.Fatalf("%d lines report the delivery failed, want one naming %s:\n%s", len(records), sessionID, harness.logs.String())
+	assertDeliveryException(t, probe, item, "no_holder")
+	if records := deliveryRecords(t, harness.logs.String(), "listener agent delivery given up"); len(records) != 1 || records[0].SessionID != sessionID {
+		t.Fatalf("%d lines report the delivery given up, want one naming %s:\n%s", len(records), sessionID, harness.logs.String())
 	}
-	if naked := counterValue(t, metricsBody(t, harness), nakedCounter); naked != 1 {
-		t.Fatalf("the NAK counter reads %d, want 1: an interest-path failure nothing took is retried, not acknowledged", naked)
+	if failures := deliveryRecords(t, harness.logs.String(), "listener agent delivery failed"); len(failures) != 0 {
+		t.Fatalf("%d lines fail the delivery as delivery_failed, want none: a session with no record is unplaceable whatever its interest row names:\n%s", len(failures), harness.logs.String())
+	}
+	if woken := agentWakesFor(t, wakes, sessionID, 5*time.Second, 500*time.Millisecond); woken != 1 {
+		t.Fatalf("%d agent wakes were reported for %s, want one beside the give-up:\n%s", woken, sessionID, harness.logs.String())
 	}
 	if count, data := handoffs(t, harness.client, sessionID); count != 0 {
 		t.Fatalf("the stream holds %d hand-offs for %s, want none: the registry names no such agent; the last: %s", count, sessionID, data)
@@ -474,7 +483,7 @@ func TestAGiveUpForAReleasedLegionAgentReachesItsWake(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	const released, stopped = "ses_released_giveup", "ses_stopped_giveup"
-	agents, err := legionagents.Open(harness.client.Conn, legionagents.WithReplicas(1))
+	agents, err := legionagents.Open(t.Context(), harness.client.Conn, legionagents.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the legion agent registry: %v", err)
 	}

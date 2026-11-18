@@ -18,7 +18,7 @@ const auditLegionRole = "legion-infra-infra-204-tester"
 // auditLegionRole and states that the project answers for it, exactly as the daemon does.
 func withAuditHandoff(t *testing.T, d *listenerDeps) {
 	t.Helper()
-	agents, err := legionagents.Open(d.client.Conn, legionagents.WithReplicas(1))
+	agents, err := legionagents.Open(t.Context(), d.client.Conn, legionagents.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the legion agent registry: %v", err)
 	}

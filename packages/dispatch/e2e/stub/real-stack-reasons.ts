@@ -114,7 +114,7 @@ export const realStackReasons: Record<string, string> = {
   "delivery-kept-role.e2e.ts":
     "a kept attempt is what Dispatch stores from the fake Envoy's answer to its publish on a released role's topic, read back on a message and a mention; the registry read that decides it and the no-holder failure of a role not released are the server's",
   "delivery-queued.e2e.ts":
-    "a queued attempt is what Dispatch stores from the fake Envoy's answer to a send for a stopped session, read back on a message, a mention and a broadcast; the refusal of an unknown session is the server's",
+    "a queued attempt is what Dispatch stores from the fake Envoy's answer to a send for a stopped session, read back on a message, a mention and a broadcast; a message to a session no store holds is queued by the server's own publish",
   "delivery.e2e.ts":
     "facet counts come from the server; a reconcile error must arrive from the server mid-gesture; the title says it: the server narrows",
   "doc-reload-line.e2e.ts": "the read-only admission is decided at socket open",

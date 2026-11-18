@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"os"
 	"os/exec"
 	"slices"
 	"strconv"
@@ -20,6 +21,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 )
 
 // Target is what TargetOf reads off a gh command: Dir, the gh directory every selector of the
@@ -217,6 +219,9 @@ func TargetOf(argv []string, env map[string]string, help func(path []string) (st
 		// call that writes nothing (writesNothing), and a caller's guard reads it whole.
 		return Target{Command: cmd.path}, nil
 	}
+	if why, refused := refusedLeaves[strings.Join(cmd.path, " ")]; refused {
+		return Target{}, fmt.Errorf("`gh %s` %s, so it sends nothing", strings.Join(cmd.path, " "), why)
+	}
 	sel := selectors{api: cmd.isAPI()}
 	if err := sel.fromCommand(cmd, parsed); err != nil {
 		return Target{}, err
@@ -348,9 +353,19 @@ func (c *ghCommand) parse(args []string) (ghArgs, error) {
 	return parsed, nil
 }
 
+// unreadUploads are the options, by long name, whose value names a file gh uploads to GitHub
+// that the leak guard does not read: gh 2.104.0's --attach, of `gh issue` and `gh pr` comment,
+// create and edit and of `gh issue artifact create`, which uploads an image or a video, an SVG's
+// text among them, as an asset GitHub then serves. A call giving one is refused, naming the
+// option, before anything runs, rather than let a file through that no check has read.
+var unreadUploads = map[string]bool{"attach": true}
+
 // set records value given the option name: --help's as a boolean, any other's taking a value in
-// the order given.
+// the order given, and refuses an option of unreadUploads.
 func (p *ghArgs) set(name string, flag ghFlag, value, arg string, api bool) error {
+	if unreadUploads[name] {
+		return fmt.Errorf("%q uploads the file it names to GitHub, which the leak guard does not read, so it sends nothing; write the text in --body or --body-file, which the guard reads", arg)
+	}
 	switch {
 	case name == "help":
 		help, err := strconv.ParseBool(value)
@@ -364,19 +379,48 @@ func (p *ghArgs) set(name string, flag ghFlag, value, arg string, api bool) erro
 	return nil
 }
 
+// helpTimeout bounds one ReadHelp.
+var helpTimeout = 30 * time.Second
+
 // ReadHelp is the real gh's help of the command path, `gh <path> --help` (`gh --help` for
-// gh's own), refused when gh answers it with an error.
-func ReadHelp(gh string, path []string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+// gh's own), refused when gh answers it with an error. `legion gh` reads it through its keep of
+// the helps gh printed (cmd/legion's ghHelpKeep), which keeps what gh printed for the calls
+// after, and never a read that ctx ended. gh runs in a process group of its own, which is
+// stopped whole when the read outlives helpTimeout or ctx ends (procgroup.Configure): a stop
+// that killed gh alone would leave whatever gh started running, reparented and unwaited for.
+// That group is not the terminal's, so none of the terminal's signals reach it, and ctx is how
+// they do: `legion gh`'s, which main cancels on a SIGINT or a SIGTERM and hangupCancels on a
+// SIGHUP. It runs under leakguard.RunByRealGhVar, so a gh that leads back to `legion gh` is
+// refused there.
+func ReadHelp(ctx context.Context, gh string, path []string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, helpTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, gh, append(slices.Clone(path), "--help")...)
+	killed := procgroup.Configure(cmd)
+	cmd.Env = append(os.Environ(), leakguard.RunByRealGhVar+"="+gh)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
+		switch {
+		case killed() && errors.Is(ctx.Err(), context.DeadlineExceeded):
+			return "", fmt.Errorf("gh did not answer its help within %s, and its process group was stopped", helpTimeout)
+		case killed():
+			return "", fmt.Errorf("gh's help read was stopped, with its process group: %v", context.Cause(ctx))
+		}
 		return "", fmt.Errorf("gh answered its help with %v: %s", err, strings.TrimSpace(stderr.String()))
 	}
 	if stdout.Len() == 0 {
 		return "", errors.New("gh printed no help")
 	}
 	return stdout.String(), nil
+}
+
+// refusedLeaves are the gh commands TargetOf refuses whatever their arguments, each with why.
+// `gh config set` writes the gh directory the call runs with, and gh 2.104.0 sends every API
+// request for github.com, with its token, to the host its `api_host` key names; its
+// `http_unix_socket` sends them through a socket; and gh writes a key it does not know all the
+// same, a token's `oauth_token` among them. No Legion role, skill or prompt runs it, and the
+// daemon is the one writer of these directories (ghconfig.WriteBundle).
+var refusedLeaves = map[string]string{
+	"config set": "writes the gh directory's configuration, where api_host or http_unix_socket would send the token's requests somewhere other than github.com and any other key is written all the same; the daemon writes that directory, and no Legion role runs this command",
 }

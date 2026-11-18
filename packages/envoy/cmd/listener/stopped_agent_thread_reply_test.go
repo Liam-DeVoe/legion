@@ -19,25 +19,25 @@ import (
 // through, and that row outlives its session entry, so this is the shape every stopped phase
 // worker is in: interest here, no session record.
 //
-// On that shape session.HandleAgentMessage takes its interest path
-// (internal/session/handler.go:47-51), where Resolve's ErrNoSessionRecord comes back as Err with
-// ShouldNAK, and agentSubjectDelivery answers it with the delivery_failed exception
-// (cmd/listener/delivery.go:778-790) and never reaches the hand-off, which sits behind
-// `result.Err == nil` at :809-811. The no-owner path swallows the same error on purpose
-// (handler.go:66-72) and does reach it. So the message is refused for as long as the interest row
-// stands, and the agent answers nobody.
+// On that shape session.HandleAgentMessage takes its interest path and finds the session gone
+// (internal/session/handler.go), which it answers as it answers a session no interest names: the
+// message is held for the retry window and then given up, and the give-up offers the hand-off
+// before its no_holder notice and its wake (unplaceableAgentDelivery). The message here is a core
+// one, which nothing redelivers, so its first delivery is that give-up.
 //
-// Measured on the live proof at 0df41561 (scripts/e2e/answer-loop.sh, A1): the parked architect's
-// ask reply logged `listener agent delivery failed ... no session record for session
-// 01a1bc71-e988-7523-8558-5cdf2bc62cf9` twice, the daemon logged no question at all, and A1 failed
-// with "no answer in ask 9d743249-1da3-45d6-b18d-405b214830eb's thread within four minutes".
+// Before, the interest path answered the same shape session.ErrNoSessionRecord and the
+// delivery_failed exception, for as long as the interest row stood. Measured on the live proof at
+// 0df41561 (scripts/e2e/answer-loop.sh, A1): the parked architect's ask reply logged `listener
+// agent delivery failed ... no session record for session 01a1bc71-e988-7523-8558-5cdf2bc62cf9`
+// twice, the daemon logged no question at all, and A1 failed with "no answer in ask
+// 9d743249-1da3-45d6-b18d-405b214830eb's thread within four minutes".
 func TestAMessageToAStoppedAgentWhoseInterestNamesThisListenerIsHandedToItsDaemon(t *testing.T) {
 	harness := newListenerDeliveryHarness(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	const sessionID = "ses-stopped-architect"
 
-	agents, err := legionagents.Open(harness.client.Conn, legionagents.WithReplicas(1))
+	agents, err := legionagents.Open(t.Context(), harness.client.Conn, legionagents.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the legion agent registry: %v", err)
 	}

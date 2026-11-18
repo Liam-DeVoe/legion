@@ -168,8 +168,8 @@ func (h *legionHandoff) handOffToLegion(ctx context.Context, target legionHandof
 // released that session's idle issue pod and keeps its claim to resume, so the message is a wake
 // for that very session, not a question its daemon answers in its name. Naming no agent leaves
 // each caller where it was before the hand-off existed: the send route's 404 beside the wake it
-// reported first, the give-up's no_holder notice and its wake, the interest path's refusal, and a
-// role's message kept on its kept lane for the resumed worker.
+// reported first, the give-up's no_holder notice and its wake, and a role's message kept on its
+// kept lane for the resumed worker.
 func (h *legionHandoff) answeringAgent(ctx context.Context, target legionHandoffTarget) (*legionagents.Entry, error) {
 	agents := h.agents.store()
 	if agents == nil {
@@ -214,22 +214,21 @@ func (h *legionHandoff) answeringAgent(ctx context.Context, target legionHandoff
 }
 
 // offerAgentDeliveryToLegion offers one agent-subject delivery this listener found no session
-// record for (session.ErrNoSessionRecord) to the stopped Legion agent's daemon, and reports
-// whether that offer was the message's whole outcome. Both paths that end with no record to
-// deliver through reach it: the interest path, whose stored row names this listener and outlives
-// the session entry it was written beside, which is the shape every Legion agent that ran here
-// leaves behind (agentSubjectDelivery), and the unplaceable path's give-up, once its deferrals
-// are spent (unplaceableAgentDelivery). It records the outcome and finalizes the message itself
-// for the two answers it owns, so one line, one counter and one disposal serve both callers:
+// record for to the stopped Legion agent's daemon, and reports whether that offer was the
+// message's whole outcome. The unplaceable path's give-up reaches it once its deferrals are spent
+// (unplaceableAgentDelivery), and so does a session whose interest row names this listener and
+// outlives the session entry it was written beside, which is the shape every Legion agent that
+// ran here leaves behind: session.HandleAgentMessage answers its gone record as it answers a
+// session no interest names. It records the outcome and finalizes the message itself for the two
+// answers it owns, so one line, one counter and one disposal serve the give-up:
 //
 //   - a hand-off that was published is the whole answer: handed_off, the dedupe key recorded and
-//     the message ACKed, with neither caller's exception - the daemon answers it from the agent's
-//     own conversation;
-//   - a hand-off whose publish failed is NAKed and tried again rather than answered, since each
-//     caller's own answer would report as refused a message the next attempt may well hand off,
-//     and the unplaceable path's would publish the very notice the hand-off replaces. Its
-//     attempt-cache entry is cleared with it, or the redelivery this NAK asks for is swallowed as
-//     an attempt-dedupe skip before the handler runs again.
+//     the message ACKed, with no exception - the daemon answers it from the agent's own
+//     conversation;
+//   - a hand-off whose publish failed is NAKed and tried again rather than answered, since the
+//     give-up's own answer would publish the very notice the hand-off replaces. Its attempt-cache
+//     entry is cleared with it, or the redelivery this NAK asks for is swallowed as an
+//     attempt-dedupe skip before the handler runs again.
 //
 // It answers false when nothing was handed off - no registry entry for the session, a project
 // that does not answer, a session that is not gone, a message that opted out, a registry that

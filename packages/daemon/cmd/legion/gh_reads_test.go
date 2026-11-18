@@ -11,7 +11,6 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/sjawhar/legion/daemon/internal/ghroute"
 	"github.com/sjawhar/legion/daemon/internal/ghroute/ghroutetest"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
@@ -46,7 +45,7 @@ func TestGhCallModeDecidesTheUncheckedCallsBeforeTheReadGrammar(t *testing.T) {
 		leakguard.VisibilityReadWithHeadersArgs("acme/widgets"),
 		leakguard.VisibilityGraphQLArgs("acme/widgets"),
 	} {
-		if target, err := ghroute.TargetOf(argv, nil, savedGhHelp, noGitRepository, ghroutetest.OwnersOwnDirectories); err != nil || target.WritesNothing {
+		if target, err := ghTargetOfKept(t, argv, nil, savedGhHelp, noGitRepository, ghroutetest.OwnersOwnDirectories); err != nil || target.WritesNothing {
 			t.Errorf("ghroute.TargetOf(%q) = %+v, %v; want a visibility read outside every read grammar", argv, target, err)
 		}
 	}
@@ -186,7 +185,7 @@ func TestLegionGhChecksAReadAndReadsNoVisibility(t *testing.T) {
 			if want := "gh " + strings.Join(args, " ") + "\n" + ghRigReadEnv + "stdin " + strings.TrimSuffix(stdin, "\n") + "\n"; got.gh != want {
 				t.Errorf("gh recorded %q, want %q", got.gh, want)
 			}
-			target, err := ghroute.TargetOf(args, nil, savedGhHelp, noGitRepository, ghroutetest.OwnersOwnDirectories)
+			target, err := ghTargetOfKept(t, args, nil, savedGhHelp, noGitRepository, ghroutetest.OwnersOwnDirectories)
 			if err != nil {
 				t.Fatalf("ghroute.TargetOf(%q) = %v", args, err)
 			}
@@ -214,7 +213,7 @@ func TestLegionGhRefusesAReadThatCarriesACredential(t *testing.T) {
 		{"api", "-H", "Authorization: token " + ghFakeToken, "repos/acme/widgets/pulls"},
 	} {
 		t.Run(strings.Join(args[:2], " "), func(t *testing.T) {
-			if target, err := ghroute.TargetOf(args, nil, savedGhHelp, noGitRepository, ghroutetest.OwnersOwnDirectories); err != nil || !target.WritesNothing {
+			if target, err := ghTargetOfKept(t, args, nil, savedGhHelp, noGitRepository, ghroutetest.OwnersOwnDirectories); err != nil || !target.WritesNothing {
 				t.Fatalf("ghroute.TargetOf(%q) = %+v, %v; want a call that writes nothing", args, target, err)
 			}
 			got := run(t, ghCheckAt(t, ghCheckRefusesACredential), "", args...)
@@ -260,13 +259,14 @@ func TestLegionGhRefusesAReadWhoseGuardCannotRun(t *testing.T) {
 	}
 }
 
-// A read whose shared check is stopped before it answers is refused, exit 2 with the guard's
-// setup error, and never reaches gh. `legion gh` gives the check no bound of its own, as it gives
-// a write's none; what ends a check that hangs is this process's own end, a SIGTERM to its pid,
-// which cancels the context the check runs under (main's signal.NotifyContext), and the guard
-// kills the check's process group (procgroup). The bound the guard reads a check's stop against
-// is leakguard's own test of a read past its bound
-// (TestAGhCallThatWritesNothingRunsTheSharedCheckAlone).
+// A read whose shared check is stopped before it answers never reaches gh, and `legion gh` ends
+// with the status of the signal that stopped it, 143 for a SIGTERM, as for any signal that comes
+// before gh starts (runGh), rather than with the setup error the stopped check would otherwise be
+// refused with. `legion gh` gives the check no bound of its own, as it gives a write's none; what
+// ends a check that hangs is this process's own end, a SIGTERM to its pid, which cancels the
+// context the check runs under (main's signal.NotifyContext), and the guard kills the check's
+// process group (procgroup). The bound the guard reads a check's stop against is leakguard's own
+// test of a read past its bound (TestAGhCallThatWritesNothingRunsTheSharedCheckAlone).
 func TestLegionGhRefusesAReadWhoseGuardIsStopped(t *testing.T) {
 	root, defaultDir := gitCredentialBundle(t)
 	help, err := filepath.Abs(ghHelpDir)
@@ -306,11 +306,11 @@ func TestLegionGhRefusesAReadWhoseGuardIsStopped(t *testing.T) {
 	}
 	waited := command.Wait()
 	exit, ok := waited.(*exec.ExitError)
-	if !ok || exit.ExitCode() != 2 {
-		t.Fatalf("legion gh under a stopped check = %v, want exit 2: %s", waited, readRecord(t, printed.Name()))
+	if !ok || exit.ExitCode() != 128+int(syscall.SIGTERM) {
+		t.Fatalf("legion gh under a stopped check = %v, want exit %d: %s", waited, 128+int(syscall.SIGTERM), readRecord(t, printed.Name()))
 	}
-	if out := readRecord(t, printed.Name()); !strings.Contains(out, "LEAK CHECK SETUP ERROR") {
-		t.Errorf("legion gh printed %q, want the guard's setup error", out)
+	if out := readRecord(t, printed.Name()); out != "" {
+		t.Errorf("legion gh printed %q, want nothing: a stopped check is no refusal", out)
 	}
 	if ran := readRecord(t, ghRecord); ran != "" {
 		t.Errorf("gh ran for a call whose check was stopped: %q", ran)

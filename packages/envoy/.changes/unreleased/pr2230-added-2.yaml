@@ -13,12 +13,15 @@ body: |-
   capability check is skipped), the send goes to it through the listener, which hands it to the
   agent's daemon, so the attempt is `sent`, and the reply the daemon posts as that session on
   that attempt is accepted. A target the registry does not name, or names for a project that
-  does not answer (its daemon runs without `answers`, or it never said it does), still fails
-  `no live session <id>` (or the listener's no-holder text, naming no session) and is sent
-  nothing, a registry read that does not answer is logged and changes nothing, and a send the
-  listener refuses because no daemon answers for that agent, or answers `state: stopped`
-  because it only stored the message for the stopped session, records the listener's own answer
-  and session, exactly as before the registry existed, never `queued`. The Dispatch Envoy
+  does not answer (its daemon runs without `answers`, or it never said it does), keeps the
+  listener's own answer and is sent nothing: a mention fails `no live session <id>`, a role
+  message gets the listener's no-holder text naming no session, and a targeted message to a
+  session is queued by Dispatch on the session's own subject. A registry read that does not
+  answer is logged and changes nothing, and a send the listener refuses because no daemon
+  answers for that agent, or answers `state: stopped` because it only stored the message for the
+  stopped session, records the listener's own answer and session, as with no registry: a mention
+  fails, and a targeted message to the session is queued by Dispatch, whose copy the listener
+  hands to the agent's daemon at its give-up when that daemon answers by then. The Dispatch Envoy
   client's `Role` reports the listener's 404 as an error matching `ErrNoHolder`, and `Send`'s 404
   as one matching `ErrNotFound`, each carrying the listener's own text.
 

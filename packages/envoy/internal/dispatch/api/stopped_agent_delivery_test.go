@@ -389,9 +389,11 @@ func TestMentionOfAStoppedRegisteredAgentIsSentToItsSessionAndTakesItsReply(t *t
 // handed it to no daemon - a target whose entry is released - its daemon released the idle issue
 // pod and resumes the session on the message's wake, so the listener hands it to no daemon - and
 // a target whose project does not answer - the listener hands it to no daemon and only stores a
-// send for a session that will not run again, so no send is made - are refused exactly as before
-// the registry existed: the listener's own failure recorded, with the session it recorded then.
-func TestTargetTheRegistryDoesNotNameKeepsTheListenersFailure(t *testing.T) {
+// send for a session that will not run again, so no send is made - are answered exactly as with
+// no registry, with the session they recorded then: a message to the session, whose listener
+// answer is no live session, is queued by Dispatch itself on the session's own subject
+// (queueForUnknownSession), and a role message and both mentions keep the listener's failure.
+func TestTargetTheRegistryDoesNotNameKeepsTheListenersAnswer(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
 		registryDown bool
@@ -437,11 +439,18 @@ func TestTargetTheRegistryDoesNotNameKeepsTheListenersFailure(t *testing.T) {
 					t.Fatalf("%s: deliveries = %#v, want failed %q", name, got, failure)
 				}
 			}
+			queued := func(name string, message model.Message, sessionID string) {
+				t.Helper()
+				if got := message.Deliveries; len(got) != 1 || got[0].State != "queued" || got[0].SessionID != sessionID ||
+					got[0].Error != nil || got[0].EnvelopeID == nil {
+					t.Fatalf("%s: deliveries = %#v, want queued for %s by Dispatch, naming its envelope and no error", name, got, sessionID)
+				}
+			}
 			noLive := contracts.NoLiveSession + " " + tc.session
 			noHolder := "no holder for role " + tc.role
-			failed("an issue message", createIssueMessage(t, handler, issue.Key, map[string]any{
+			queued("an issue message", createIssueMessage(t, handler, issue.Key, map[string]any{
 				"body": "Anyone?", "target": "session:" + tc.session, "delivery": "btw",
-			}, "alice"), tc.session, noLive)
+			}, "alice"), tc.session)
 
 			created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/agents/"+tc.session+"/messages", map[string]any{
 				"body": "Anyone here?", "delivery": "btw",
@@ -449,7 +458,7 @@ func TestTargetTheRegistryDoesNotNameKeepsTheListenersFailure(t *testing.T) {
 			if created.Code != http.StatusCreated {
 				t.Fatalf("issue-less message: status=%d body=%s", created.Code, created.Body.String())
 			}
-			failed("an issue-less message", decodeBody[model.Message](t, created), tc.session, noLive)
+			queued("an issue-less message", decodeBody[model.Message](t, created), tc.session)
 
 			failed("a role message", createIssueMessage(t, handler, issue.Key, map[string]any{
 				"body": "Who holds this?", "target": "role:" + tc.role, "delivery": "btw",

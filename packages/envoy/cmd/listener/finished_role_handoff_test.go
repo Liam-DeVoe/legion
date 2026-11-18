@@ -23,7 +23,7 @@ const finishedRoleSession = "ses-old-reviewer"
 // of finishedLegionRole whose entry is finished, and the project answers for it.
 func withFinishedHandoff(t *testing.T, d *listenerDeps) {
 	t.Helper()
-	agents, err := legionagents.Open(d.client.Conn, legionagents.WithReplicas(1))
+	agents, err := legionagents.Open(t.Context(), d.client.Conn, legionagents.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the legion agent registry: %v", err)
 	}

@@ -66,8 +66,8 @@ type Entry struct {
 	//
 	// Every hand-off reads it (answeringAgent): a released session is never handed off, on the
 	// session path or the role path, so its message gets exactly what it got before the hand-off
-	// existed - the send route's 404 beside its wake, the give-up's no_holder notice beside its
-	// wake, the interest path's refusal - and the wake reaches the worker. The routes decode an
+	// existed - the send route's 404 beside its wake, and the give-up's no_holder notice beside its
+	// wake, on the interest path too - and the wake reaches the worker. The routes decode an
 	// entry leniently (decodeLegionAgentBody), so a listener older than this field ignores it and
 	// hands such a session off as it did before.
 	Released bool `json:"released,omitempty"`
