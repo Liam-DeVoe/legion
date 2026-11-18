@@ -2951,6 +2951,68 @@ test("/activity read cold opens Details with the history's heading at the top of
   });
 });
 
+// `t v` from a load with Details shut opens Details at the history and puts the focus there. The
+// log is unread when the key is pressed, so the history first stands at the end of what Details
+// holds, its list still the loading line, and the landing brings the heading to the top of
+// Details' view once the list is drawn, as a load of `/activity` does. The hold of the place a
+// key lands the focus at (`details-more.tsx`) took the history's top as the focus found it, at
+// the end of Details, and put it back there when the list drew, undoing the landing. Found by
+// the tester on a running build of 52f5803d with a copy of a large real issue: `t v` left the
+// heading at 860 of 900 px at 1440 px, 984 of 1,024 at 768 and 804 of 844 at 390, in every run;
+// a frame trace shows the heading reach 53 px as the list drew and go back to 860 px a frame
+// later. Round 3 found the same place for `t v` and a load of `/activity`; this row holds the
+// key, as the row above holds the load.
+test("t v from a load with Details shut opens Details with the history's heading at the top of its view", async ({
+  browser,
+}) => {
+  await phase(browser, seedAgentsThread, async (page, seeded) => {
+    await page.setViewportSize({ height: 520, width: 1280 });
+    await page.route(new RegExp(`/api/v1/issues/${seeded.key}/events`), async (route) => {
+      const held = Promise.withResolvers<void>();
+      setTimeout(held.resolve, 1_500);
+      await held.promise;
+      await route.continue();
+    });
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expect(tree(page)).toBeVisible();
+    await expect(marginShell(page)).toBeHidden();
+    await focusThePage(page);
+    await page.keyboard.press("t");
+    await page.keyboard.press("v");
+    await expect(page, "t v did not open the history").toHaveURL(
+      new RegExp(`/issues/${seeded.key}/activity$`)
+    );
+    await expect(marginShell(page), "t v did not open Details").toBeVisible();
+    await expect(historyEntries(page).first(), "the history drew no entry").toBeAttached();
+    await nextFrames(page);
+    const heading = historyPanel(page).getByRole("heading", {
+      exact: true,
+      name: CONTROL_LABELS.history,
+    });
+    await expect
+      .poll(
+        async () => {
+          const view = await historyViewport(page);
+          const box = await heading.boundingBox();
+          return box === null ? Number.POSITIVE_INFINITY : Math.round(box.y - view.top);
+        },
+        { message: "t v left the history's heading below the top of Details' view" }
+      )
+      .toBeLessThanOrEqual(24);
+    // The heading held there: a hold of the place the key landed the focus at moves it back a
+    // frame after the list draws, so the place is read again once that frame has passed.
+    await nextFrames(page);
+    const view = await historyViewport(page);
+    const after = Math.round(
+      ((await heading.boundingBox())?.y ?? Number.POSITIVE_INFINITY) - view.top
+    );
+    expect(
+      after,
+      "t v's heading went back down Details' view after the list drew"
+    ).toBeLessThanOrEqual(24);
+  });
+});
+
 // The address of an agents' turn opens Details with that turn marked
 // and on screen. The marked turn is drawn whole (`CutWords whole`), so a long one is taller than
 // Details' view: its head - the author and the time that is its address - must be what the
