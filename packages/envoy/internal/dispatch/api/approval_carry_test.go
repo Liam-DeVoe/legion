@@ -19,8 +19,8 @@ import (
 // A human's approval is what a request to approve again follows. A request opened on a document
 // with an earlier approval names that approval's version, time and approver in its approval
 // (approval.approved: version, at, by), so the human reads what he is approving since the version
-// he approved rather than from nothing; a first request names none. A person's answer to a
-// decision block is held once, on the ask's node, and changes no byte of the document
+// he approved rather than from nothing; a first request names none. A person's answer to an
+// ask block is held once, on the ask's node, and changes no byte of the document
 // (dispatch://INFRA-1150 R3), so it writes no version and an approval stands through it; the
 // carries that remain are those of a version restoring the approved text, of R2's readings
 // (reading_approval_test.go) and of R10's case (docs.carryApproval).
@@ -37,7 +37,7 @@ type carriedAsk struct {
 }
 
 // approvalCarryHandler serves documents that version on an agent's edit in the edit's own
-// transaction and settle a human's live write - an answer to a decision block, a resolution - in
+// transaction and settle a human's live write - an answer to an ask block, a resolution - in
 // milliseconds, so a test waits for the version that write settles into rather than racing it.
 func approvalCarryHandler(t *testing.T) http.Handler {
 	t.Helper()
@@ -225,7 +225,7 @@ func TestAVersionMoveKeepsTheCarriedApproval(t *testing.T) {
 	requireCarriedApproval(t, moved, review)
 }
 
-// The decision blocks the carry tests write: each a block id, a question and two options.
+// The ask blocks the carry tests write: each a block id, a question and two options.
 const (
 	waveAsk   = ":::ask{#wave urgency=\"med\" multiple=\"false\"}\nHow many regions take the first wave?\n\n- Two: The two with the fewest tenants.\n- Five: Half of them.\n:::\n"
 	regionAsk = ":::ask{#region urgency=\"low\" multiple=\"false\"}\nWhich region goes first?\n\n- East: The quiet one.\n- West: The busy one.\n:::\n"
@@ -250,7 +250,7 @@ func insertDecisionMarkdown(t *testing.T, handler http.Handler, artifactID, mark
 		"ops":   []map[string]string{{"op": "insert", "after": "end", "markdown": markdown}},
 	})
 	if inserted.Code != http.StatusOK {
-		t.Fatalf("insert the decision blocks: status=%d body=%s", inserted.Code, inserted.Body.String())
+		t.Fatalf("insert the ask blocks: status=%d body=%s", inserted.Code, inserted.Body.String())
 	}
 	waitForArtifactVersion(t, handler, artifactID, number)
 }
@@ -281,7 +281,7 @@ func answerDecisionBlock(t *testing.T, handler http.Handler, askID, login string
 	}
 	answered := dispatchRequest(t, handler, http.MethodPost, "/api/v1/asks/"+askID+"/answer", body, login)
 	if answered.Code != http.StatusOK {
-		t.Fatalf("%s answers the decision block: status=%d body=%s", login, answered.Code, answered.Body.String())
+		t.Fatalf("%s answers the ask block: status=%d body=%s", login, answered.Code, answered.Body.String())
 	}
 }
 

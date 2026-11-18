@@ -47,7 +47,7 @@ func TestBaseAttributeFactsHoldEachAttributesOwnValue(t *testing.T) {
 }
 
 // A node's project and the parties it is between are base attributes of the store, as its
-// visibility and state are (dispatch://INFRA-3862, slice N of its plan): each is a value tuple the
+// visibility and state are, so a read can be limited to a project: each is a value tuple the
 // write that stores the node appends, and graph_nodes.project_key and graph_nodes.parties are
 // their projection. The tests below read the store as a reader does - CurrentValue and History,
 // which answer the tuples alone - beside the row, which is what the census and the read rule

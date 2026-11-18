@@ -41,8 +41,9 @@ func runOf(ctx context.Context) string {
 
 // MadeForRun is whether ctx carries a run (WithRun). A writer asks it only where it writes a node
 // for no other reason than to name what a run changed - the issue PATCH, whose own write reaches
-// no node of the store (api's patchIssue) - so that a write made for no run sends nothing more
-// than it did.
+// no node of the store (api's patchIssue), and the edit of an ask's or a comment's words, whose
+// own write reaches no node of the store either (api's editAsk and editComment) - so that a write
+// made for no run sends nothing more than it did.
 func MadeForRun(ctx context.Context) bool { return runOf(ctx) != "" }
 
 // changedByRunMarks is the TupleChangedByRun each node a write marks changed owes the run ctx

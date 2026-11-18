@@ -452,13 +452,13 @@ export const DISPATCH_ITEM_BLOCKS = 32768;
 export const DISPATCH_EVENT_BODY_MAX = 32000;
 
 /** What a tool that writes a body says about the two bounds the server holds it to and about the
- *  decision block it refuses in one, written once so every such tool says it the same way. */
+ *  ask block it refuses in one, written once so every such tool says it the same way. */
 const BODY_BLOCK_RULE =
   `Each block (a paragraph, list, quote, table or code block) holds at most ${DISPATCH_BLOCK_UNITS} ` +
   `characters and a body at most ${DISPATCH_ITEM_BLOCKS} blocks; Dispatch refuses a longer one and ` +
-  "names it, and `dispatch limits` prints the bounds. A body holding a decision block (`:::ask`) " +
+  "names it, and `dispatch limits` prints the bounds. A body holding an ask block (`:::ask`) " +
   "is refused however short it is, since nobody can answer a question put in a comment or a " +
-  "message: ask the question in the issue's own document, as a decision block there, or open an " +
+  "message: ask the question in the issue's own document, as an ask block there, or open an " +
   "ask with `dispatch ask`.";
 
 /** What dispatch_ask and dispatch_edit_ask say about the bound on a question. It carries no
@@ -1040,7 +1040,7 @@ export const dispatchToolSpecs = [
       `${ASK_IS_FOR_A_PERSON} ${ASK_WAITS_ON_THE_ASSIGNEE} ` +
       "Open a to-do or permission only a human can give, or a decision that has no document to " +
       "live in. A question about the design an issue's document records is not this tool: write " +
-      "it into that document as a decision block (dispatch doc-edit inserting an ask block at the " +
+      "it into that document as an ask block (dispatch doc-edit inserting an ask block at the " +
       "end of the section it concerns), at every phase, approved spec or not; the block reaches " +
       "the Inbox and its answer lands next to its context. Never give an ask an Approve option: a " +
       "document is approved through dispatch request-approval. Do not use this tool for a status " +
@@ -1340,7 +1340,8 @@ export const dispatchToolSpecs = [
     description:
       "Post a note humans must read now: a reply to a human's message or a deliverable that landed. A to-do only a human can " +
       "complete is an ask (dispatch ask), so it reaches their inbox. Never progress or status updates - Dispatch is a high-signal " +
-      "record, not a log. Not a design decision (write it as a decision block in the document) or document feedback (dispatch comment). " +
+      "record, not a log. Not a design question (write it as an ask block in the document), a design decision you made (write it as a " +
+      "`decision` block in the spec's `## Decisions` part), or document feedback (dispatch comment). " +
       "To answer a human's direct message to this session - one sent from the Agents page, which names no issue - pass that message's bare id as " +
       "in_reply_to and no issue; the reply lands in that conversation. Another call with the same in_reply_to and new text posts a follow-up, " +
       "threaded under this session's first reply; the same text again posts nothing. dispatch read --message <id> reads " +
@@ -1444,7 +1445,7 @@ export const dispatchToolSpecs = [
       "A batch that leaves the document exactly as it was mints no version, named or not, and the result says nothing changed and names each operation that did nothing. " +
       "A change a browser removes while the edit is in flight is never reported as applied: EDIT_LOST_TO_CONCURRENT_CHANGE means the write was refused and nothing was written, so re-read the document and decide again, as with PRECONDITION_FAILED; lost_ops on a successful result names operations whose text the live document no longer has, because the deletion landed after the version was written. " +
       "Several paragraphs, or a list, go in one replace, since with writes the blocks its markdown names; blocks beside a block go in one insert, since two inserts at one anchor come out reversed. The result prints the markdown of each block the edit wrote, so read that rather than the document again. " +
-      "Each decision block the edit adds gets the related-item check dispatch ask gets, waiting at most five seconds for all of them together: the result prints, after its first line, `Decision block <id>:` and what that check found, that it found nothing, or that it was not made and why. " +
+      "Each ask block the edit adds gets the related-item check dispatch ask gets, waiting at most five seconds for all of them together: the result prints, after its first line, `Ask block <id>:` and what that check found, that it found nothing, or that it was not made and why. " +
       "A block id written as {#id} longer than 256 bytes is stored, but its block is no graph node, so no reference reaches it. " +
       `The spec holds requirements, design, and decisions - never progress, status, or timestamps; a record of open items or progress is a document of its own. ${OWNER_REFERENCE} ${SPEC_WRITING_POINTER}`,
     arguments: (z) => ({
@@ -1613,20 +1614,19 @@ export const dispatchToolSpecs = [
       "nothing, and a different one is refused, since it would rewrite the card the human is " +
       "reading. Approve and Request changes each close the request, so the next call opens a new " +
       "one. Call it once per revision, when the revision is complete, never after each edit. An " +
-      "approval goes stale when the document changes outside its decision blocks after it, until " +
+      "approval goes stale when the document changes outside its ask blocks after it, until " +
       "a later version's text is exactly the approved version's again, as when an accidental " +
-      "edit is undone exactly, and no decision block in it was decided since: that version " +
+      "edit is undone exactly, and no ask block in it was decided since: that version " +
       "carries the approval and the document reads approved at it, so nothing is requested for " +
       "it. When the document does not read approved, request approval again once that revision " +
       "is complete and " +
       HUMAN_AGREED_TO_DOCUMENT +
       ", with a one-sentence summary naming what changed since the earlier approval: the card " +
       "names that approval (version, date, reviewer) and its Show diff control carries the detail. " +
-      "A human's own answer to a decision block carries the approval to the version it writes when " +
-      "that answer is the whole change since the approved version, so nothing is requested for " +
-      "it. A new version of a Legion root spec closes its armed design gate until a human " +
-      "approves it; a carried approval reopens it too. " +
-      "Refused, with nothing sent, while the document holds an open decision block, even when a " +
+      "A human's answer to an ask block writes no version and carries no approval. A new " +
+      "version of a Legion root spec closes its armed design gate until a human approves it; a " +
+      "carried approval reopens it too. " +
+      "Refused, with nothing sent, while the document holds an open ask block, even when a " +
       "human asked for approval: the refusal names each block; ask the human to answer or waive " +
       "it first. " +
       "Refused 409 PLAN_APPROVED_BY_REVIEW on an issue's plan, which its plan review approves " +
@@ -2059,7 +2059,7 @@ export const dispatchToolSpecs = [
     name: "dispatch_related",
     example: { project: "CORE", title: "Retry failed webhook deliveries" },
     description:
-      "Run the related-item check that dispatch issue, dispatch ask and a new decision block in " +
+      "Run the related-item check that dispatch issue, dispatch ask and a new ask block in " +
       "dispatch doc-edit run on their own write, and write nothing: it lists the three items of " +
       "one project most like a title and a text (at most one per issue or document, open ones " +
       "first), each ask with whether it is answered. Use it to check a draft before filing it. " +

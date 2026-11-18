@@ -3,7 +3,6 @@ package docs
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/jackc/pgx/v5"
 
@@ -73,7 +72,7 @@ func (r *settlementReconciliation) reconcileDecisionBlocks(ctx context.Context, 
 	}
 	addresses := make([]string, len(decisions))
 	for index, decision := range decisions {
-		addresses[index] = refKey + "#" + strings.ReplaceAll(decision.id, "\x00", "\uFFFD")
+		addresses[index] = storeBlockAddress(refKey, decision.id)
 	}
 	kinds := make([]string, len(server))
 	for index, attribute := range server {

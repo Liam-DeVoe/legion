@@ -15,11 +15,12 @@ import (
 )
 
 // The two shapes of the restore of dispatch://INFRA-1150 R6, which returns each answered ask to
-// the spec it came from. In the main shape, RestoreReturns, the ask's block left its spec and its
-// row still names that spec, so the restore writes the block back under its old address. In the
-// second, RestoreMoves, the ask's block sits in the issue's decisions document, and the restore
-// moves it into the spec, which changes its address: that move is the one a moved_to tuple records
-// (graphstore.TupleMovedTo).
+// the spec it came from and moves every ask block of a decisions document into its spec. In the
+// main shape, RestoreReturns, the answered ask's block left its spec and its row still names that
+// spec, so the restore writes the block back under its old address. In the second, RestoreMoves,
+// an ask's block sits in the issue's decisions document, whatever the ask's state (D1), and the
+// restore moves it into the spec, which changes its address: that move is the one a moved_to
+// tuple records (graphstore.TupleMovedTo).
 const (
 	RestoreReturns = "returns"
 	RestoreMoves   = "moves"
@@ -47,9 +48,15 @@ type RestoreWork struct {
 // issue_key, ref_key): the catalog function decisions_documents()
 // (20261117093337_decisions_documents.up.sql), the one place a decisions document is spelled, by
 // its role or, for one stored before the role existed, by its slug. A retired document is none of
-// them (artifacts.retired_at): it holds nothing the restore owes, and each block address of it a
-// citation can still name is a moved_to source the conversion wrote, which the moved set reads.
+// them (artifacts.retired_at): it holds nothing the restore owes. The dangling-citation counter
+// reads the retired ones too (decisionsDocumentsEver), since an address one of them held stays
+// cited after the retirement.
+// kept for one release: decisions-documents-fn
 const decisionsDocuments = `decisions_documents()`
+
+// decisionsDocumentsEver is decisionsDocuments with every retired decisions document among them
+// (decisions_documents(include_retired => true)), found by the slug the retirement leaves it.
+const decisionsDocumentsEver = `decisions_documents(include_retired => true)`
 
 // owesBlockIndex is true of the document whose uuid is the SQL expression artifact while it still
 // owes its block index (document_block_versions.version null, as typedNodeOwed reads it): its
@@ -92,8 +99,7 @@ var restoreWorkRead = `
 		join document_blocks d on d.artifact_id = decisions.id and d.type = 'ask'
 		join asks k on k.block_artifact_id = decisions.id and block_id_key(k.block_id) = block_id_key(d.block_id)
 		join artifacts spec on spec.issue_key = decisions.issue_key and spec.is_primary
-		where ` + answeredAsk + `
-		  and not ` + owesBlockIndex("decisions.id") + `
+		where not ` + owesBlockIndex("decisions.id") + `
 		  and not ` + owesBlockIndex("spec.id") + `
 	) work
 	join artifacts spec on spec.id = work.spec_id
@@ -107,14 +113,16 @@ var restoreWorkRead = `
 //   - RestoreReturns: an answered `question` ask whose row names its issue's spec
 //     (asks.block_artifact_id is the issue's primary document) and whose block the spec does not
 //     hold as an ask block - no document_blocks row of type ask holds the ask's block id in it.
-//     Address is the spec's old address of that block.
-//   - RestoreMoves: an answered ask block a decisions document holds (decisionsDocuments): a
+//     Address is the spec's old address of that block. An ask is answered as its node holds it
+//     (answeredAsk).
+//   - RestoreMoves: an ask block a decisions document holds (decisionsDocuments), open, answered,
+//     declined, resolved or withdrawn alike (D1: "an ask block present in decisions.md moves"): a
 //     document_blocks row of type ask of that document, whose asks row names the document and
 //     that block id. Address is the block's address there.
 //
 // A document that still owes its block index is left out, both the spec and the decisions
 // document, until the index catches up: its rows are not current, so neither what it holds nor
-// what collides with it is known. An ask is answered as its node holds it (answeredAsk).
+// what collides with it is known.
 func ReadRestoreWork(ctx context.Context, q graphstore.Queryer) ([]RestoreWork, error) {
 	rows, err := q.Query(ctx, restoreWorkRead)
 	if err != nil {
@@ -152,12 +160,13 @@ func CollisionsOf(work []RestoreWork) []Collision {
 
 // The two sets of the dangling-citation counter (dispatch://INFRA-1150 R8, E4).
 const (
-	// DanglingMoved is the citations whose target is a moved_to source, or a block address of a
-	// decisions document that stands - the document a move of the second shape and the conversion
-	// empty - and that resolve to no block. It reads zero before the first restore,
-	// while each such block stands where it is, and zero after the last one, while every address
-	// a move left resolves through its tuple: a move that wrote no tuple leaves its citations
-	// dangling in the decisions document, and they count here.
+	// DanglingMoved is the citations whose target is a moved_to source, or a block address a
+	// decisions document held - the document a move of the second shape and the conversion empty,
+	// standing or retired since - and that resolve to no block. It reads zero before the first
+	// restore, while each such block stands where it is, and zero after the last one, while every
+	// address a move left resolves through its tuple: a move that wrote no tuple leaves its
+	// citations dangling in the decisions document, before its retirement and after it, and they
+	// count here.
 	DanglingMoved = "moved"
 	// DanglingReturning is the citations whose target is the old spec address of an ask the
 	// restore writes back (RestoreReturns), and that resolve to no block: it reads their count
@@ -193,17 +202,16 @@ func (r DanglingReport) Count(set string) int64 {
 // addresses of the returns (ReadRestoreWork).
 //
 // A target is a block address: the moved_to sources the store states now, read through
-// graph_tuples_store_only; each block address a decisions document that stands
-// (decisionsDocuments) held at a version the block index recorded (document_block_texts, keyed by
-// the document); and the addresses the returns name. One that resolves, through block_moved_to,
-// to a block a document_blocks row holds is no dangling target, and neither is one in a document
-// that still owes its block index, whose rows are not current. The counter reads no other target:
-// a `#b-` citation in prose is free text nothing validates, and a block of a document past the
-// deferral bound resolves to no block until the index catches up, so a count of every unresolved
-// citation of the instance is non-zero on a healthy one. A decisions document's address its
-// versions never held is such a prose citation too, and so is an address of a retired one that no
-// move left: the conversion wrote a moved_to from each section's heading it took out, which the
-// first part reads.
+// graph_tuples_store_only; each block address a decisions document held at a version the block
+// index recorded (document_block_texts, keyed by the document), whether the document stands or
+// was retired since (decisionsDocumentsEver), since the restore and the conversion retire it in
+// the transaction that moves its blocks out; and the addresses the returns name. One that
+// resolves, through block_moved_to, to a block a document_blocks row holds is no dangling target,
+// and neither is one in a document that still owes its block index, whose rows are not current.
+// The counter reads no other target: a `#b-` citation in prose is free text nothing validates,
+// and a block of a document past the deferral bound resolves to no block until the index catches
+// up, so a count of every unresolved citation of the instance is non-zero on a healthy one. A
+// decisions document's address its versions never held is such a prose citation too.
 //
 // A citation is the node whose text cites a target, read off the five tables a citation of a block
 // is stored in, each through its index on (to_kind, to_id): refs, by its source, and block_refs,
@@ -220,7 +228,7 @@ var danglingRead = `
 		) moved where moved.asserted
 		union
 		select distinct decisions.ref_key || '#' || held.block_id, '` + DanglingMoved + `'
-		from ` + decisionsDocuments + ` decisions join document_block_texts held on held.artifact_id = decisions.id
+		from ` + decisionsDocumentsEver + ` decisions join document_block_texts held on held.artifact_id = decisions.id
 		union
 		select unnest($1::text[]), '` + DanglingReturning + `'
 	),
@@ -306,23 +314,24 @@ func writeMoves(w io.Writer, dangling DanglingReport, collisions []Collision, ve
 
 // DecisionsCensus is what the census prints of the decisions step's third phase
 // (dispatch://INFRA-1150 R6, R9): the decisions documents that stand (decisions_documents()), the
-// sections they still hold, each one no rule has converted yet, and each spec whose answered asks
-// left it, with those asks. docs' ReadDecisionsCensus reads it, since only docs reads a decisions
+// sections they still hold, each one no rule has converted yet, and each spec the restore owes an
+// ask - an answered ask that left it, or an ask block of the decisions document, which moves into
+// it - with those asks. docs' ReadDecisionsCensus reads it, since only docs reads a decisions
 // document's sections; the census command sets it on the report it prints (StoreReport.Decisions).
 type DecisionsCensus struct {
 	Documents, UnconvertedSections int64
 	SpecsWithMovedAnswers          []SpecWithMovedAnswers
 }
 
-// SpecWithMovedAnswers is one spec whose answered asks left it: its issue, and the id of each ask
-// the restore owes it, in the restore's order (ReadRestoreWork).
+// SpecWithMovedAnswers is one spec the restore owes an ask: its issue, and the id of each ask the
+// restore owes it, in the restore's order (ReadRestoreWork).
 type SpecWithMovedAnswers struct {
 	Issue string
 	Asks  []string
 }
 
-// SpecsWithMovedAnswersOf is each spec the restore owes an answered ask over work, in work's
-// order, each once: the issue whose spec an ask of either shape returns to, with its asks.
+// SpecsWithMovedAnswersOf is each spec the restore owes an ask over work, in work's order, each
+// once: the issue whose spec an ask of either shape returns or moves to, with its asks.
 func SpecsWithMovedAnswersOf(work []RestoreWork) []SpecWithMovedAnswers {
 	var specs []SpecWithMovedAnswers
 	for _, ask := range work {

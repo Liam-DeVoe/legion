@@ -323,7 +323,7 @@ const (
 	// AnsweredByAsk is a person's answer, resolution or reply on the ask the root waits on.
 	AnsweredByAsk Answer = "ask"
 	// AnsweredByRetraction is Dispatch's settlement retracting the last ask of the root's wait still
-	// with the person, whose decision block left the spec: no person can answer it any more.
+	// with the person, whose ask block left the spec: no person can answer it any more.
 	AnsweredByRetraction Answer = "retracted"
 	// AnsweredByClosed is a close, by anyone who is not a person, of the last ask of the root's wait
 	// still with the person: the question is gone, so nobody will answer it.
@@ -1111,9 +1111,9 @@ const (
 )
 
 // DesignStep names one document of the root issue, and a deployment's design gate is the list of
-// steps it holds the tree's work on. DesignStepDecisions names the issue's decisions document,
-// DesignStepCriteria its Verification document, and DesignStepSpec its primary document. The
-// record keeps one DesignGate for each step a deployment gates, keyed by the issue and the step.
+// steps it holds the tree's work on. DesignStepCriteria names the issue's Verification document,
+// and DesignStepSpec its primary document. The record keeps one DesignGate for each step a
+// deployment gates, keyed by the issue and the step.
 //
 // The type lives in this package rather than beside the `gates.design` list that declares it,
 // because internal/classify answers the questions the steps raise and may import no package of
@@ -1122,8 +1122,6 @@ const (
 type DesignStep string
 
 const (
-	// DesignStepDecisions is the root issue's decisions document.
-	DesignStepDecisions DesignStep = "decisions"
 	// DesignStepCriteria is the root issue's Verification document.
 	DesignStepCriteria DesignStep = "criteria"
 	// DesignStepSpec is the root issue's primary document, the one document the gate held before a
@@ -1131,9 +1129,10 @@ const (
 	DesignStepSpec DesignStep = "spec"
 )
 
-// DesignSteps is every step, in the order a deployment that gates all three takes them: the
-// decisions first, then the criteria they are judged by, then the spec built on both.
-var DesignSteps = []DesignStep{DesignStepDecisions, DesignStepCriteria, DesignStepSpec}
+// DesignSteps is every step, in the order a deployment that gates both takes them: the criteria
+// first, then the spec they judge. The `decisions` step is gone, since a person's decisions are
+// nodes of the spec (`gates.design` refuses it by name, config's readDesignSteps).
+var DesignSteps = []DesignStep{DesignStepCriteria, DesignStepSpec}
 
 // OrSpec is step itself, and DesignStepSpec when step is empty. A fact, a request or a row built
 // with no step is of the spec step: spec is the step every deployment requires — `root-issues`
@@ -1147,22 +1146,20 @@ func (step DesignStep) OrSpec() DesignStep {
 	return step
 }
 
-// Valid says whether step is one of the three steps. The stored column admits those three names
-// alone, so a value this refuses is one no record can hold.
+// Valid says whether step is one of DesignSteps. The stored columns admit `decisions` as well, a
+// step this refuses: the store keeps the rows an earlier release wrote of it and hands none of them
+// to a reader (Postgres.GatesOf).
 func (step DesignStep) Valid() bool {
 	return slices.Contains(DesignSteps, step)
 }
 
 // Document is the document of its issue the step records, as a refusal or a task names it: the
-// words the architect's own guide uses for the three (skill://legion-architect/references/
+// words the architect's own guide uses for the steps (skill://legion-architect/references/
 // design-gate.md, "The steps"). The caller supplies the possessive it needs - the issue's, or the
 // architect's own.
 func (step DesignStep) Document() string {
-	switch step {
-	case DesignStepCriteria:
+	if step == DesignStepCriteria {
 		return "Verification document"
-	case DesignStepDecisions:
-		return "decisions document"
 	}
 	return "primary document"
 }
@@ -1178,10 +1175,10 @@ func StepNames(steps []DesignStep) []string {
 	return names
 }
 
-// StepWords is the three step names as a refusal spells them: each quoted, the last after "or".
+// StepWords is the step names as a refusal spells them: each quoted, the last after "or".
 // Every refusal of a value that is not one of them - the `gates.design` list a config file names,
-// the step list a daemon answers the controller with - says this, so no refusal spells the three
-// names of its own.
+// the step list a daemon answers the controller with - says this, so no refusal spells the names
+// of its own.
 func StepWords() string {
 	quoted := StepNames(DesignSteps)
 	for i, name := range quoted {
@@ -1677,12 +1674,16 @@ type Store interface {
 	DropReadmittedApproval(ctx context.Context, tx pgx.Tx, root string) error
 	// ReadmittedApproval is the pair root keeps, in any state, zeros when it keeps none.
 	ReadmittedApproval(ctx context.Context, tx pgx.Tx, root string) (approved, latest int, err error)
-	// TellChildrenFirst marks that issue's architect has been told, for the run generation of
-	// tree, that the issue's own first phase waits for the Dispatch children under it, and
-	// reports whether this call is the telling. The wait itself is never stored, so that a stale
-	// mirror row costs one pass; the telling is, so that the pass every fact, tick, hold release
-	// and boot runs does not tell it again. A re-admission opens a new generation of the tree and
-	// so tells it anew, and so does a hand-over, which gives the issue a tree of its own.
+	// TellChildrenFirst marks that the architect that owns issue has been told, for the run
+	// generation of tree, that the issue's own first phase waits for the Dispatch children under
+	// it, and reports whether this call is the telling. That architect is the root's own for a
+	// root. For a child it is the architect above it, since the child's own starts only with that
+	// first phase, unless a person set the child back to todo while it ran or was held: that
+	// re-entry starts and stops nothing (workflow's ReenterChild), so a child's own architect that
+	// held its role still holds it and is the one told. The wait itself is never stored, so that a
+	// stale mirror row costs one pass; the telling is, so that the pass every fact, tick, hold
+	// release and boot runs does not tell it again. A re-admission opens a new generation of the
+	// tree and so tells it anew, and so does a hand-over, which gives the issue a tree of its own.
 	TellChildrenFirst(ctx context.Context, tx pgx.Tx, issue, tree string, generation uint64, at time.Time) (bool, error)
 	// TellArchitectsStalled marks that the project's controller has been told each of stalls,
 	// for the run its generation names of its tree, and answers, at each index of stalls,
@@ -1925,6 +1926,9 @@ type Store interface {
 	// NextDue is the earliest next_at after now among issue's rows of kinds no live lease holds;
 	// false is none. Kinds nil is every kind.
 	NextDue(ctx context.Context, tx pgx.Tx, issue string, kinds []OutboxKind, now time.Time) (time.Time, bool, error)
+	// BranchQueued says whether the outbox still holds an issue_branch row of issue, whatever its
+	// lease or its next_at: the branch the row creates may not exist on GitHub yet.
+	BranchQueued(ctx context.Context, tx pgx.Tx, issue string) (bool, error)
 	// UnfinishedLanes is each (issue, lane) with a row of project still in the outbox, by issue
 	// then lane.
 	UnfinishedLanes(ctx context.Context, tx pgx.Tx, project string) ([]LaneKey, error)
@@ -1998,7 +2002,9 @@ type Store interface {
 	// TreeIssues is every issue of tree, the root included, by key.
 	TreeIssues(ctx context.Context, tx pgx.Tx, tree string) ([]Issue, error)
 	// EarlierNotices is every unfinished notice row of tree's issues written before row id, oldest
-	// first: the notices a later one of the tree must not overtake for the architect they share.
+	// first: the rows the fence reads, from which the daemon keeps those that go to the same
+	// architect as the later one (its earlierNoticeFor), since a child's own architect and the
+	// root's each take notices of the one tree.
 	// Each row comes whole, its next_at among it, so the holder can wait for the moment the row it
 	// waits behind is due rather than climb a backoff to it (the daemon's deliverNotice, whose
 	// fence waits with wait.Until for a catch-up the wake pacing holds).

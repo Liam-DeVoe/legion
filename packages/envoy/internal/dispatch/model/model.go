@@ -283,18 +283,17 @@ type Project struct {
 	CreatedAt  time.Time `json:"created_at"`
 }
 
-// GatedStepDecisions, GatedStepCriteria and GatedStepSpec are the three design-gate steps
-// Project.GatedSteps names, each one a document of the root issue: the issue's decisions
-// document, its Verification document, and its primary document. GatedStepsKnown is the set in
-// the order the gate runs them, which the route checks a published list against and the
-// database's own check on projects.gated_steps repeats.
+// GatedStepCriteria and GatedStepSpec are the two design-gate steps Project.GatedSteps names,
+// each one a document of the root issue: its Verification document and its primary document.
+// GatedStepsKnown is the set in the order the gate runs them, which the route checks a published
+// list against. The `decisions` step is gone (dispatch://INFRA-1150 R11): no write of this build
+// stores it, and a stored list that holds it reads without it (api's gatedStepsWithout).
 const (
-	GatedStepDecisions = "decisions"
-	GatedStepCriteria  = "criteria"
-	GatedStepSpec      = "spec"
+	GatedStepCriteria = "criteria"
+	GatedStepSpec     = "spec"
 )
 
-var GatedStepsKnown = []string{GatedStepDecisions, GatedStepCriteria, GatedStepSpec}
+var GatedStepsKnown = []string{GatedStepCriteria, GatedStepSpec}
 
 // Priority is one thing the whole deployment is working towards: a node that belongs to no
 // project, which work in any project advances (internal/dispatch/prioritystore). Rank is the
@@ -595,14 +594,17 @@ type Issue struct {
 	UpdatedAt         time.Time  `json:"updated_at"`
 	ClosedAt          *time.Time `json:"closed_at"`
 	PrimaryArtifactID string     `json:"primary_artifact_id"`
-	// VerificationArtifactID, PlanArtifactID and DecisionsArtifactID are the issue's documents
-	// by role (Artifact.Role): the one created as verification.md, the one created as plan.md
-	// and the one created as decisions.md, each "" when the issue holds none. They are resolved
-	// on read, as PrimaryArtifactID is.
+	// VerificationArtifactID and PlanArtifactID are the issue's documents by role
+	// (Artifact.Role): the one created as verification.md and the one created as plan.md, each ""
+	// when the issue holds none. They are resolved on read, as PrimaryArtifactID is.
 	VerificationArtifactID string `json:"verification_artifact_id"`
 	PlanArtifactID         string `json:"plan_artifact_id"`
-	DecisionsArtifactID    string `json:"decisions_artifact_id"`
-	LastSeq                int    `json:"last_seq"`
+	// DecisionsArtifactID is the id of the issue's decisions document while it stands
+	// (decisions_documents()), "" once it is retired or where the issue holds none. A page of the
+	// release before reads it (dispatch://INFRA-1150 R11).
+	// kept for one release: compat-objects
+	DecisionsArtifactID string `json:"decisions_artifact_id"`
+	LastSeq             int    `json:"last_seq"`
 }
 
 // Route statuses: whether an issue's route reaches a running session right now.
@@ -962,7 +964,7 @@ type WriteSuggestion struct {
 // Related is always an array, never null.
 //
 // OtherProjects rides beside Related, never inside it: a write that asks a person a question -
-// an ask create, a new decision block, and `dispatch related` - also carries the answered
+// an ask create, a new ask block, and `dispatch related` - also carries the answered
 // questions of the other projects that stand closest to it in meaning. Each item is one such
 // answered question, and its Owner.Project names the project that holds it. Every other write
 // leaves it empty.
@@ -1212,9 +1214,10 @@ type Artifact struct {
 	Primary   bool    `json:"primary"`
 	// Role is the part an issue's document plays beside its spec: ArtifactRoleVerification for
 	// the document created as verification.md, ArtifactRolePlan for the one created as plan.md,
-	// ArtifactRoleDecisions for the one created as decisions.md, "" for every other document.
-	// It is set from the document's slug when the row is created, as Primary is, and no request
-	// field sets it; the one write that clears it is the document's retirement.
+	// "" for every other document. It is set from the document's slug when the row is created, as
+	// Primary is, and no request field sets it; the one write that clears it is the document's
+	// retirement. A decisions document an earlier release stored answers its stored role,
+	// `decisions`, until the decisions step retires it (dispatch://INFRA-1150 R11).
 	Role      string    `json:"role,omitempty"`
 	CreatedBy Actor     `json:"created_by"`
 	CreatedAt time.Time `json:"created_at"`
@@ -1229,13 +1232,11 @@ type Artifact struct {
 	Approval *ArtifactApproval `json:"approval,omitempty"`
 }
 
-// ArtifactRoleVerification, ArtifactRolePlan and ArtifactRoleDecisions are the three parts
-// Artifact.Role names, the values the contract's union declares (dispatch-api.ts). A document
-// that plays none of them holds "".
+// ArtifactRoleVerification and ArtifactRolePlan are the parts Artifact.Role names that this build
+// writes. A document that plays none of them holds "".
 const (
 	ArtifactRoleVerification = "verification"
 	ArtifactRolePlan         = "plan"
-	ArtifactRoleDecisions    = "decisions"
 )
 
 // ArtifactSlugVerification and ArtifactSlugPlan are the slugs that name an issue's Verification
@@ -1974,7 +1975,7 @@ type AskLastReply struct {
 // itself, flat, plus what the write moved in the reference graph. NewAskEventPayload is the only
 // way to build one, and it takes the changes, so a producer whose question text can cite
 // something cannot append an event that stays silent about it. Restored marks the `ask.opened` or
-// `ask.answered` settlement appends when a person's edit restores a decision block it retracted:
+// `ask.answered` settlement appends when a person's edit restores an ask block it retracted:
 // the ask returns to the state it had, and the event records no new answer (an `ask.answered`
 // restore carries the answer given before the retraction, credited to the editor who restored it).
 type AskEventPayload struct {
@@ -3427,14 +3428,14 @@ type DecisionKeep struct {
 	TextSHA256 string `json:"-"`
 }
 
-// DecisionLink is one link from a decision to a block it shaped: the decision's own block that
-// holds it, the block it names, when and in which version the link was first written, and whether
-// that block is out of date. A link of the decisions document's view reads stale when the
-// decision changed after it first linked that block and that block has not changed since; a link
-// of a decision node (internal/dispatch/decisionread) is its `shaped` tuple, Event the event that
-// wrote the tuple, TextChangedEvent and TextChangedAt the event and the time that wrote the version
-// the block's text last changed in, and Stale true when the block's text changed after the tuple
-// was written (dispatch://INFRA-1150 R5). The three are absent where the store holds none.
+// DecisionLink is one link from a decision to a spec node it shaped: its `shaped` tuple
+// (internal/dispatch/decisionread). FromBlock is the decision's own block, To the node it names,
+// CreatedVersion and CreatedAt when the tuple was written, Event the event that wrote it,
+// TextChangedEvent and TextChangedAt the event and the time that wrote the version the node's text
+// last changed in, and Stale true when that text changed after the tuple was written
+// (dispatch://INFRA-1150 R5). The three are absent where the store holds none.
+//
+// kept for one release: compat-objects
 type DecisionLink struct {
 	FromBlock        string     `json:"from_block"`
 	To               GraphNode  `json:"to"`
@@ -3446,13 +3447,15 @@ type DecisionLink struct {
 	TextChangedAt    *time.Time `json:"text_changed_at,omitempty"`
 }
 
-// Decision is one decision of an issue's decisions.md: its heading block and every block after
-// it up to the next heading of its level or higher. Kind is "person" when its blocks mention an
-// ask (a person's decision links the answered ask) and "agent" otherwise; Unsure is set by a
-// paragraph that starts "Unsure:"; Replaced is set by sitting under the section headed exactly
-// "## Replaced". ChangedVersion and ChangedAt are the greatest of its blocks'. TextSHA256 is the
-// sum of Text, which a Keep carries back to say which text it agreed with. WaitingReview is an
-// agent's decision, not replaced, whose text nobody has kept as it stands.
+// Decision is one decision node of an issue in the shape the release before's Decisions read
+// answered (decisionread.Decisions): an agent's `decision` block, Kind "agent", or a person's
+// answered ask, Kind "person". Heading is the ask's question or the decision's first paragraph;
+// Unsure is true where its uncertainty is `high`; Replaced, Kept and WaitingReview are read from the
+// node. ChangedVersion and ChangedAt are the version that last changed its own words. TextSHA256 is
+// the sum of Text, which a Keep carries back to say which text it agreed with. The Decisions read's
+// old `decisions` member answers it for one release (dispatch://INFRA-1150 R11).
+//
+// kept for one release: compat-objects
 type Decision struct {
 	BlockID string `json:"block_id"`
 	Heading string `json:"heading"`

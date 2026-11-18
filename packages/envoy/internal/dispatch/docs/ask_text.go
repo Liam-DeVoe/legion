@@ -274,11 +274,8 @@ func (s *Service) askAnswersShown(ctx context.Context, artifactID string, tree *
 			}
 			copied := *node
 			copied.Attrs = written.Attrs
-			for _, name := range answerWords {
-				if _, holds := copied.Attrs[name]; holds {
-					answered = append(answered, &copied)
-					break
-				}
+			if holdsAnswerWords(&copied) {
+				answered = append(answered, &copied)
 			}
 			return &copied, true
 		})

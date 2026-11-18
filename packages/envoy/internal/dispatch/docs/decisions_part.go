@@ -1,14 +1,10 @@
 package docs
 
 import (
-	"context"
-	"fmt"
 	"maps"
 	"reflect"
 	"slices"
 	"strings"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -136,20 +132,38 @@ func withoutBlocks(tree *pmdoc.Node, drop func(*pmdoc.Node) bool) (*pmdoc.Node, 
 	return &copied, true
 }
 
-// withoutAnsweredAskTies is a copy of tree with the `shaped` pointers taken off each ask block
-// decided names, an ask holding an answer, and whether it took one off.
-func withoutAnsweredAskTies(tree *pmdoc.Node, decided map[string]bool) (*pmdoc.Node, bool) {
-	if len(decided) == 0 {
+// withoutAddedShapedPointers is a copy of tree with the `shaped` pointers added names taken off
+// the ask block each names by block id, an ask holding an answer (decided), every other pointer
+// of that block kept, and whether it took one off: the pointers the conversion's write gave an
+// answered ask block a document held already (decisionStepCases.shaped). A block left holding no
+// pointer loses the attribute, which it held none of before that write.
+func withoutAddedShapedPointers(tree *pmdoc.Node, added map[string][]string, decided map[string]bool) (*pmdoc.Node, bool) {
+	if len(added) == 0 {
 		return tree, false
 	}
 	return withAskBlocksChanged(tree, func(node *pmdoc.Node) (*pmdoc.Node, bool) {
 		id, _ := node.Attrs[pmdoc.BlockIDAttr].(string)
-		if _, holds := node.Attrs[shapedAttribute]; !holds || !decided[id] {
+		taken := added[id]
+		if len(taken) == 0 || !decided[id] {
+			return node, false
+		}
+		held := shapedPointersOf(node)
+		kept := make([]string, 0, len(held))
+		for _, pointer := range held {
+			if !slices.Contains(taken, pointer) {
+				kept = append(kept, pointer)
+			}
+		}
+		if len(kept) == len(held) {
 			return node, false
 		}
 		shown := *node
 		shown.Attrs = maps.Clone(node.Attrs)
-		delete(shown.Attrs, shapedAttribute)
+		if len(kept) == 0 {
+			delete(shown.Attrs, shapedAttribute)
+		} else {
+			shown.Attrs[shapedAttribute] = kept
+		}
 		return &shown, true
 	})
 }
@@ -157,6 +171,24 @@ func withoutAnsweredAskTies(tree *pmdoc.Node, decided map[string]bool) (*pmdoc.N
 // shapedAttribute is the `block[]` attribute of a decision and of an ask that names each spec
 // node it shaped (dispatch://INFRA-1150 R5).
 const shapedAttribute = "shaped"
+
+// shapedPointersOf is the pointers node's `shaped` attribute holds, in their order, as a parse
+// leaves them (a list of strings) or as a write sets them (a []string).
+func shapedPointersOf(node *pmdoc.Node) []string {
+	switch held := node.Attrs[shapedAttribute].(type) {
+	case []string:
+		return slices.Clone(held)
+	case []any:
+		pointers := make([]string, 0, len(held))
+		for _, value := range held {
+			if pointer, isString := value.(string); isString {
+				pointers = append(pointers, pointer)
+			}
+		}
+		return pointers
+	}
+	return nil
+}
 
 // decidedAskBlocks is each ask block of a version, as asksAgreeWithTheirNodes read it (shown),
 // whose ask holds an answer, by block id: its own document's row, or the source of a copy, read
@@ -175,12 +207,15 @@ func decidedAskBlocks(shown versionAsks) map[string]bool {
 	return decided
 }
 
-// restoredAskBlocks is each answered ask block (decided) that stands in version's `## Decisions`
-// part and that restoreCase takes out of both versions: one the approved version does not hold
+// restoredAskBlocks is each ask block that stands in version's `## Decisions` part, that the
+// restore's write added (written, decisionStepCases.restored), and that restoreCase takes out of
+// both versions, whatever its ask's state - an answered ask returned, or an ask block of the
+// decisions document moved, open ones among them (D1): one the approved version does not hold
 // under its id, and one it holds under that id with the words the person approved - the question,
-// the options, multiple and urgency (sameAskWording). A block whose words moved since is not
-// among them, so the restore that returns it is a difference no case carries (R7).
-func restoredAskBlocks(approved, version *pmdoc.Node, decided map[string]bool) map[string]bool {
+// the options, multiple and urgency (sameAskWording). A block whose words moved since is not among
+// them, so the restore that returns it is a difference no case carries (R7), and neither is a
+// block an agent wrote there.
+func restoredAskBlocks(approved, version *pmdoc.Node, written map[string]bool) map[string]bool {
 	start, end := decisionsPart(version)
 	if start < 0 {
 		return nil
@@ -189,7 +224,7 @@ func restoredAskBlocks(approved, version *pmdoc.Node, decided map[string]bool) m
 	restored := map[string]bool{}
 	for _, child := range version.Children[start+1 : end] {
 		id, _ := child.Attrs[pmdoc.BlockIDAttr].(string)
-		if child.Type != "ask" || !decided[id] {
+		if child.Type != "ask" || !written[id] {
 			continue
 		}
 		if held, approvedHeld := before[id]; approvedHeld && !sameAskWording(held, child) {
@@ -212,61 +247,30 @@ func sameAskWording(a, b *pmdoc.Node) bool {
 		first.multiple == second.multiple && first.urgency == second.urgency
 }
 
-// decisionsDocumentRefs is the ref_key of each decisions document of the issue document
-// artifactID belongs to that stands (decisions_documents()), the documents a pointer line of its
-// `## Decisions` part names; none for a project's document.
-func decisionsDocumentRefs(ctx context.Context, tx pgx.Tx, artifactID string) (map[string]bool, error) {
-	rows, err := tx.Query(ctx, `
-		select d.ref_key from decisions_documents() d
-		join artifacts a on a.issue_key = d.issue_key
-		where a.id = $1
-	`, artifactID)
-	if err != nil {
-		return nil, fmt.Errorf("read the decisions documents of the issue of %s: %w", artifactID, err)
-	}
-	refKeys, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		return nil, fmt.Errorf("read the decisions documents of the issue of %s: %w", artifactID, err)
-	}
-	documents := make(map[string]bool, len(refKeys))
-	for _, refKey := range refKeys {
-		documents[refKey] = true
-	}
-	return documents, nil
+// blockMarkdown is node's markdown as a document holding it alone renders it: what a pointer line
+// the decisions step takes out of a spec is named by (decisionStepCases.pointerLines), since a
+// paragraph's block id is minted afresh by every read of a stored version and its text is the
+// paragraph.
+func blockMarkdown(node *pmdoc.Node) (string, error) {
+	return pmdoc.Render(&pmdoc.Node{Type: "doc", Children: []*pmdoc.Node{node}})
 }
 
-// pointsAtDecisions reports whether node is a pointer line of a `## Decisions` part: a paragraph
-// citing one of input's decisions documents (carryInput.decisions), as that document or one of
-// its blocks.
-func (input carryInput) pointsAtDecisions(node *pmdoc.Node) bool {
-	return pointsAtDocuments(node, input.decisions, input.serverURL)
-}
-
-// pointsAtDocuments reports whether node is a paragraph citing one of documents, by ref_key, as
-// the document or as one of its blocks, read from the paragraph's markdown as every reader of a
-// citation reads it (text.Extract).
-func pointsAtDocuments(node *pmdoc.Node, documents map[string]bool, serverURL string) bool {
+// citesDocument reports whether node is a paragraph citing one of documents, by ref_key, as the
+// document itself (a reference to one of its blocks is not one), read from the paragraph's
+// markdown as every reader of a citation reads it (text.Extract): a pointer line of a spec's
+// `## Decisions` part to the issue's decisions document. A paragraph that cites a section of that
+// document is the person's prose, which the step keeps.
+func citesDocument(node *pmdoc.Node, documents map[string]bool, serverURL string) bool {
 	if node.Type != "paragraph" || len(documents) == 0 {
 		return false
 	}
-	markdown, err := pmdoc.Render(&pmdoc.Node{Type: "doc", Children: []*pmdoc.Node{node}})
+	markdown, err := blockMarkdown(node)
 	if err != nil {
 		return false
 	}
 	for _, ref := range text.Extract(markdown, serverURL) {
-		switch ref.Kind {
-		case "artifact":
-			if documents[text.TargetID(ref)] {
-				return true
-			}
-		case "block":
-			if ref.Item == "" {
-				document := ref
-				document.Kind, document.Block, document.Pin = "artifact", "", 0
-				if documents[text.TargetID(document)] {
-					return true
-				}
-			}
+		if ref.Kind == "artifact" && documents[text.TargetID(ref)] {
+			return true
 		}
 	}
 	return false

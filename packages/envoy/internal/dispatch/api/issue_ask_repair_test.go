@@ -232,7 +232,7 @@ func captureLogs(t *testing.T) *storetest.LockedLog {
 	return logs
 }
 
-// A closed issue still holding a plain ask, a decision block and an approval request has each
+// A closed issue still holding a plain ask, an ask block and an approval request has each
 // withdrawn by the repair, naming the issue's latest closer with every field the close event
 // stores, dated when the repair ran. A second repair changes nothing, and a later reopen restores
 // them.
@@ -585,8 +585,8 @@ func TestAnIntervalRepairSweepsOnlyTheDocumentsMarkedSinceItsLastPass(t *testing
 
 // A repair pass that finds nothing to change writes nothing, so the interval passes' bound keeps
 // what it swept out of the next sweep. One issue is closed by this release, its document owing
-// the settlement its close's own block-state write left and its decision block reading resolved;
-// another is closed by an older release, holding a plain ask and a decision block a browser wrote
+// the settlement its close's own block-state write left and its ask block reading resolved;
+// another is closed by an older release, holding a plain ask and an ask block a browser wrote
 // that no settlement indexed, which the first pass withdraws and sweeps. A second full pass, and
 // then an interval pass bounded one interval back, each change nothing, append no update to
 // either document, and leave each document's owed settlement marked when it was. The close and
@@ -751,7 +751,7 @@ func TestARepairPassThatFailsOneIssueStillMovesTheWindowAndRetriesIt(t *testing.
 // The deploy of the block index: migration 0121 marks every document owed a block index, with no
 // block indexed, and the boot repairs the asks (RepairIssueAsks, bounded as the boot bounds it)
 // before the block-index loop starts (RunBlockIndexReconciliation), as cmd/dispatch's main runs
-// them. An issue an older release closed without withdrawing still holds an open decision block,
+// them. An issue an older release closed without withdrawing still holds an open ask block,
 // which the repair withdraws, writing its state into the live document and no version - while
 // another build serves, for that build's pages (docs.WriteIssueAskStates), so the test registers
 // a process of each of two builds. That write leaves the document owing a settlement, which runs
@@ -791,7 +791,7 @@ func TestTheBlockIndexAfterTheBootRepairIndexesAClosedIssuesDocument(t *testing.
 		t.Fatalf("boot repair: %v", err)
 	}
 	if repair.Withdrawn != 1 {
-		t.Fatalf("boot repair = %+v, want the decision block's ask withdrawn", repair)
+		t.Fatalf("boot repair = %+v, want the ask block's ask withdrawn", repair)
 	}
 	requireWithdrawn(t, f.handler, issue.Key, ask, closer)
 	requireLiveText(t, f.handler, issue.PrimaryArtifactID, `#close-decision urgency="med" multiple="false" state="resolved"`)

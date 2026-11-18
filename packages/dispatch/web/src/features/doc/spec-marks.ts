@@ -6,6 +6,7 @@ import { api, documentReadRequest } from "../../api/client";
 import type {
   Artifact,
   ArtifactBlock,
+  DecisionEntry,
   DecisionLink,
   GraphReferences,
   IssueDecisions,
@@ -52,7 +53,7 @@ export function shapedNodeChanged(link: DecisionLink): boolean {
 /** Whether an entry of the Decisions read is a decision: an agent's, or an ask a person answered.
  *  An open ask is a question, and a declined one decided nothing, so neither is drawn beside the
  *  spec nodes its `shaped` tuples reach, as the old `decisions` member never held them. */
-export function isDecisionEntry(entry: NonNullable<IssueDecisions["entries"]>[number]): boolean {
+export function isDecisionEntry(entry: DecisionEntry): boolean {
   return entry.kind === "agent" || entry.answer_state === "answered";
 }
 

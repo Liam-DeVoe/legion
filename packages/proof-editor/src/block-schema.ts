@@ -263,9 +263,11 @@ function parseAttribute(typeName: string, name: string, attribute: BlockAttribut
  * `version`, as the document service's writtenDefault reads it: the attribute's default, with two
  * exceptions that hold none. A server attribute: the server writes it into a block or nobody does,
  * and a block it is not written into - an ask's `state` once the fleet keeps an answer on the ask's
- * node alone - is read without it, so an edit inside the block never writes it into the live
- * document (y-prosemirror writes every attribute the editor's node holds into the shared one). And
- * an attribute this editor may not create yet, which is left out so the editor never writes it.
+ * node alone - is read without it, so an edit inside the block never writes a value for it into the
+ * live document (y-prosemirror writes every attribute the editor's node holds into the shared one;
+ * a node the editor creates, as a paste does, carries it as null, which the server reads as absent:
+ * pmdoc's nullReadsAbsent). And an attribute this editor may not create yet, which is left out so
+ * the editor never writes it.
  */
 function writtenDefault(attribute: BlockAttributeSchema, version: number): string | boolean | readonly string[] | undefined {
   return attribute.server || !creatable(version, attribute) ? undefined : attribute.default;

@@ -1,4 +1,4 @@
-import { GATED_STEPS, LEGION_ROLES, type LegionRole } from "@legion/contracts";
+import { DESIGN_GATE_STEPS, LEGION_ROLES, type LegionRole } from "@legion/contracts";
 import {
   LEGION_PHASES,
   LegionGateRegisterRequest,
@@ -225,14 +225,14 @@ function toolSchema(pi: PiApi): unknown {
       )
       .optional(),
     version: z.number().optional(),
-    // The steps are `GATED_STEPS`, the one tuple the contracts package holds them in, so this
-    // schema and the daemon's own (`LegionGateRegisterRequest.shape.step`) admit the same words
-    // and a step added to the contract reaches both. The tuple is what crosses, not a zod
+    // The steps are `DESIGN_GATE_STEPS`, the one tuple the contracts package holds them in, so
+    // this schema and the daemon's own (`LegionGateRegisterRequest.shape.step`) admit the same
+    // words and a step added to the contract reaches both. The tuple is what crosses, not a zod
     // schema: this schema is built with the host's own zod instance (`pi.zod`).
     step: z
-      .enum(GATED_STEPS)
+      .enum(DESIGN_GATE_STEPS)
       .describe(
-        "register_gate's design-gate step: decisions for the issue's decisions document, criteria for its Verification document, spec for its primary document. A deployment that gates one step takes the registration without it"
+        "register_gate's design-gate step: criteria for the issue's Verification document, spec for its primary document. A deployment that gates one step takes the registration without it"
       )
       .optional(),
     issues: z.array(z.string()).optional(),
@@ -289,9 +289,10 @@ function assertOperationInput(parameters: Record<string, unknown>, operation: st
 /** The daemon's role-local workflow surface: no operation can schedule a worker. Every operation
  * that writes mints its own grant in-process and posts it with the request; nothing is written
  * to the pane. The phase ops run on the executor every harness shares (`executePhaseOp`):
- * `handoff_complete` belongs to every session but the root architect's (a phase worker, and a
- * sub-architect: an architect whose issue is not its tree), and finds what it reports in the pane
- * first (`handoffReport`); `read_state` and `set_status` belong to the controller. */
+ * `handoff_complete` is refused here only for the root architect's session, and finds what it
+ * reports in the pane first (`handoffReport`); the daemon refuses an architect's completion
+ * (ACCEPTANCE_IS_SIGN_OFF where nothing else refuses it first), so it is a phase worker's
+ * operation. `read_state` and `set_status` belong to the controller. */
 export function createLegionTool(deps: {
   readonly pi: PiApi;
   readonly daemon: () => LegionDaemonClient;
@@ -514,7 +515,7 @@ export function createLegionTool(deps: {
             // registration without it, and one that gates several refuses it.
             const named = LegionGateRegisterRequest.shape.step.safeParse(parameters.step);
             if (!named.success) {
-              throw new Error(`register_gate's step is one of ${GATED_STEPS.join(", ")}`);
+              throw new Error(`register_gate's step is one of ${DESIGN_GATE_STEPS.join(", ")}`);
             }
             const step = named.data;
             // The fact is keyed by the gate's issue, generation, step, document, version and

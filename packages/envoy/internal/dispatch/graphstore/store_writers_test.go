@@ -134,6 +134,14 @@ var storeWriteCallSites = []string{
 	// steps.
 	"api/issue_relations.go#stateFiledFromNode",
 	"api/issue_relations.go#stateIssueRelations",
+	// An edit of an ask's or a comment's words made for a run (api/asks.go, api/comment_actions.go),
+	// which names the ask or the comment changed: the owner row of the ask or the comment, its row
+	// `for no key update` or `for update` and then its update, then, on a context that carries a
+	// run alone, its node through WriteUncaused, its own event, and what the node states with its
+	// changed_by_run under that event through Caused. api's
+	// TestEveryApiStoreWriterTakesTheStoreLockOrder holds each to those steps.
+	"api/asks.go#editAsk",
+	"api/comment_actions.go#editComment",
 	// A run of the command bar (api/going.go), which takes no owner row: its record writes the
 	// interaction node, its author's node and their tuples in one Write before the going_requests
 	// row, and each frame, in a transaction of its own, takes the run's interaction node row
@@ -155,7 +163,7 @@ var storeWriteCallSites = []string{
 	"graphcensus/backfill.go#writeGoneRun",
 	"graphcensus/backfill.go#writeRunFrames",
 	// The node of every issue, document, ask and message a request creates, in the project or
-	// between the parties it belongs to (dispatch://INFRA-3862): written before its row, and
+	// between the parties it belongs to: written before its row, and
 	// caused by the event the create appends after it. createIssue, storeArtifact and
 	// createAskFor are listed above for their block index and follow; these are the others. Their
 	// order - the owner row their path already takes, the node before the row, the event before
@@ -234,15 +242,14 @@ var storeWriteCallSites = []string{
 	"graphcensus/backfill.go#writeCommentBatch",
 	"graphcensus/backfill.go#writeRoleBatch",
 	"graphcensus/backfill.go#writeSessionBatch",
-	// The backfill's passes over the project of every node (dispatch://INFRA-3862): the nodes of
-	// the issues, documents, asks and messages written before their writers wrote one, and the
-	// project of the comment and block nodes written before a node named one
-	// (graphstore.FillScopes), the block batch under the revision fence (lockBlockDocuments).
-	// graphcensus' TestTheBackfillGivesEveryRowItsNodeAndProject runs both. An issue's or a
-	// document's batch takes the owner rows it stands under first, then its node rows, then, for an
-	// issue, the child_of claim of the parent its row names under that lock through WriteArms,
-	// which appends at the sentinel, outside every repeat key, and so waits on no row, then names
-	// each node on its row (dispatch://INFRA-1253), which graphcensus'
+	// The backfill's passes over the project of every node: the nodes of the issues, documents,
+	// asks and messages written before their writers wrote one, and the project of the comment and
+	// block nodes written before a node named one (graphstore.FillScopes), the block batch under the
+	// revision fence (lockBlockDocuments). graphcensus' TestTheBackfillGivesEveryRowItsNodeAndProject
+	// runs both. An issue's or a document's batch takes the owner rows it stands under first, then
+	// its node rows, then, for an issue, the child_of claim of the parent its row names under that
+	// lock through WriteArms, which appends at the sentinel, outside every repeat key, and so waits
+	// on no row, then names each node on its row (dispatch://INFRA-1253), which graphcensus'
 	// TestTheObjectBatchTakesTheStoreLockOrder proves; an ask's or a message's takes no other row.
 	"graphcensus/projects.go#writeObjectBatch",
 	"graphcensus/projects.go#writeScopeBatch",

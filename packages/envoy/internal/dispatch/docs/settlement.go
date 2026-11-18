@@ -182,7 +182,14 @@ func skipUnreadableSettlement(room string, err error) bool {
 // reconciles the ask blocks (planRepairs), writes the repairs into the room and stores what it
 // wrote (commitRepairs), and commits, with the document's version when the document reads
 // differently from the latest one (commitVersion).
+//
+// A settlement is made for no run of the command bar (graphstore.WithRun): it saves what the
+// room's writers left in it, whoever they were, so it carries no run even when a request's context
+// starts it - an issue's close settles its documents first on the closer's (api's
+// settleIssueBeforeClose) - and none of its writes appends a changed_by_run tuple, as the room
+// timer's settlement on a background context appends none.
 func (s *Service) settleRoomWithin(parent context.Context, room string, generation uint64, mayLoad bool) settleOutcome {
+	parent = graphstore.WithRun(parent, "")
 	// A room entry point that takes a document's id resolves it first: a document converted into
 	// its issue's room settles as that room, whose settlement this one arms - outside a shutdown,
 	// which has stopped every timer and arms none (Shutdown) - and its own room's rows stay as they

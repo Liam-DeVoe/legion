@@ -1139,12 +1139,12 @@ func (r *projectionRun) relations(t *testing.T, ctx context.Context, kind string
 // requireOnlyTheMovedKindsReachedTheStore fails on a node of any kind but the three this change
 // moves - the kinds the three projected tables of migration 20261109022248 name - less the
 // kinds the store holds of people and agents and the two its block schema writes, which no
-// projection backs, the four kinds whose nodes name the project a read is limited by
-// (dispatch://INFRA-3862): an issue, a document, an ask and a message, each written at its own
-// create site, beside the rows it writes. An issue's and a document's row names its node in the
-// node columns migration 20261116092210 added (dispatch://INFRA-1253); an ask's and a message's
-// carries none. Beside them stands the node of every version a write inserts (dispatch://INFRA-1253),
-// which artifact_versions projects with no node column of its own, and the two kinds of the lens
+// projection backs, and the four kinds whose nodes name the project a read is limited by - an
+// issue, a document, an ask and a message, each written at its own create site, beside the rows it
+// writes. An issue's and a document's row names its node in the node columns migration
+// 20261116092210 added (dispatch://INFRA-1253); an ask's and a message's carries none. Beside them
+// stands the node of every version a write inserts (dispatch://INFRA-1253), which
+// artifact_versions projects with no node column of its own, and the two kinds of the lens
 // catalogue its migrations seed (20261116123354), a lens kind and the constraint that holds its
 // source.
 func requireOnlyTheMovedKindsReachedTheStore(t *testing.T, ctx context.Context, run *projectionRun) {

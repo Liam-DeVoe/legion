@@ -55,8 +55,10 @@ import (
 // the conversion of an issue's decisions document writes into that part, and the links it gives
 // an answered ask as `shaped` pointers, are R9's (conversionCase): a decision and its ties are
 // outside what a spec's approval covers (dispatch://INFRA-1098 R4). Those two hold for the
-// decisions step's own write alone (decisionStepCases): an agent's upload or edit that makes the
-// same change carries nothing by them.
+// decisions step's own write alone (decisionStepCases), and take out only what that write added:
+// an agent's upload or edit that makes the same change carries nothing by them, and neither does
+// an agent's change the step's version keeps - a decision whose words it rewrote, a pointer it gave
+// an ask, a block it wrote into the part.
 //
 // A version whose text is the approved text carries that approval too, byte for byte and before
 // any case is weighed (restoresApprovedText). The document's newest review approves version A; a
@@ -103,11 +105,13 @@ var askServerAttributeNames = [...]string{"state", "answered_by", "answered_at",
 // case may change taken out of it, with whether it took anything out. Two versions that differ by
 // such changes alone are the same once both are taken through it. neutral reads the tree beside
 // what carryNewestApproval read of the two versions (carryInput): each ask block of the version
-// whose ask holds an answer, the pointer lines of the issue's decisions document, and the asks the
-// restore returned.
+// whose ask holds an answer, the asks the restore returned, and what the decisions step's write
+// added (decisionStepCases); approved says whether the tree is the approved version's, A's, or the
+// new one's, N's, since the restore and the conversion take out of each only what their write
+// changed in it.
 type carryCase struct {
 	change  string
-	neutral func(tree *pmdoc.Node, input carryInput) (*pmdoc.Node, bool)
+	neutral func(tree *pmdoc.Node, input carryInput, approved bool) (*pmdoc.Node, bool)
 }
 
 // readingCase is R2's: the readings a version's decisions and its answered asks close with,
@@ -118,7 +122,7 @@ type carryCase struct {
 // its ask block, which then agrees with no node.
 var readingCase = carryCase{
 	change: "the readings of its decisions and of its answered asks, which change no decision",
-	neutral: func(tree *pmdoc.Node, input carryInput) (*pmdoc.Node, bool) {
+	neutral: func(tree *pmdoc.Node, input carryInput, _ bool) (*pmdoc.Node, bool) {
 		return withoutReadings(tree, input.answered)
 	},
 }
@@ -128,22 +132,25 @@ var readingCase = carryCase{
 // which a write while two builds serve keeps in step with an answer given since.
 var attributeRemovalCase = carryCase{
 	change: "the server-owned attributes of its ask blocks, which hold no answer",
-	neutral: func(tree *pmdoc.Node, _ carryInput) (*pmdoc.Node, bool) {
+	neutral: func(tree *pmdoc.Node, _ carryInput, _ bool) (*pmdoc.Node, bool) {
 		return withoutAskServerAttributes(tree)
 	},
 }
 
-// restoreCase is R7's (D1): the answered ask blocks the restore writes into the spec's
-// `## Decisions` part, in place of its pointer line, with the `## Decisions` heading it adds to a
-// spec holding no such part, a block under a new id included. Where the approved version held the
-// ask's block already, under the id it stands at now, the block is taken out of both versions only
-// where its words are the words the person approved (restoredAskBlocks), so a restore that returns
-// other words than the approved ones is a difference no case carries. It holds for the restore's
-// own write alone (decisionStepCases.restore): an agent's write that makes the same change carries
-// nothing by it.
+// restoreCase is R7's (D1): the ask blocks the restore writes into the spec's `## Decisions` part
+// - each answered ask it returns, and each ask block of the decisions document it moves, whatever
+// its ask's state - in place of its pointer line, with the `## Decisions` heading it adds to a
+// spec holding no such part, a block under a new id included. It takes out of N only the blocks
+// the restore's own write added (decisionStepCases.restored), and out of A only the pointer line
+// that write took out (pointerLinesTaken); a block an agent wrote into the part is no part of it.
+// Where the approved version held the ask's block already, under the id it stands at now, the
+// block is taken out of both versions only where its words are the words the person approved
+// (restoredAskBlocks), so a restore that returns other words than the approved ones is a
+// difference no case carries. It holds for the restore's own write alone
+// (decisionStepCases.restore): an agent's write that makes the same change carries nothing by it.
 var restoreCase = carryCase{
-	change: "the answered asks its Decisions part holds again, which changed where they stand and not their words",
-	neutral: func(tree *pmdoc.Node, input carryInput) (*pmdoc.Node, bool) {
+	change: "the ask blocks its Decisions part holds again, which changed where they stand and not their words",
+	neutral: func(tree *pmdoc.Node, input carryInput, approved bool) (*pmdoc.Node, bool) {
 		if !input.steps.restore {
 			return tree, false
 		}
@@ -151,7 +158,7 @@ var restoreCase = carryCase{
 			id, _ := node.Attrs[pmdoc.BlockIDAttr].(string)
 			return node.Type == "ask" && input.restored[id]
 		})
-		restored, restoredTook := withoutDecisionsPartBlocks(tree, input.pointsAtDecisions)
+		restored, restoredTook := withoutDecisionsPartBlocks(tree, input.pointerLinesTaken(approved))
 		return restored, took || restoredTook
 	},
 }
@@ -161,20 +168,28 @@ var restoreCase = carryCase{
 // document, and the `shaped` pointers an answered ask's restored or present block takes from the
 // section that restated it. A decision, and an answered ask's ties, are outside what an approval
 // of a spec covers (dispatch://INFRA-1098 R4); the readings the conversion writes inside answered
-// asks are readingCase's. A `## Decisions` heading the part holds nothing else under is taken out
-// with them, since the conversion adds it to a spec that holds no such part. It holds for the
-// conversion's own write alone (decisionStepCases.conversion): an agent's upload that adds the same
-// `shaped` pointers to an answered ask supersedes the approval as any other change does.
+// asks are readingCase's. It takes out of N only the decisions and the pointers the conversion's
+// own write added (decisionStepCases.decisions, decisionStepCases.shaped), and out of A only the
+// pointer line that write took out (pointerLinesTaken): a decision A held, whose words an agent
+// changed since, and a pointer an agent gave an ask, stay differences. A `## Decisions` heading the
+// part holds nothing else under is taken out with them, since the conversion adds it to a spec
+// that holds no such part. It holds for the conversion's own write alone
+// (decisionStepCases.conversion): an agent's upload that adds the same `shaped` pointers to an
+// answered ask supersedes the approval as any other change does.
 var conversionCase = carryCase{
 	change: "the decisions its Decisions part holds in place of the pointer line to the issue's decisions document, " +
 		"and the spec nodes its answered asks shaped, which an approval of a spec does not cover",
-	neutral: func(tree *pmdoc.Node, input carryInput) (*pmdoc.Node, bool) {
+	neutral: func(tree *pmdoc.Node, input carryInput, approved bool) (*pmdoc.Node, bool) {
 		if !input.steps.conversion {
 			return tree, false
 		}
-		tree, took := withoutAnsweredAskTies(tree, input.decided)
+		if approved {
+			return withoutDecisionsPartBlocks(tree, input.pointerLinesTaken(true))
+		}
+		tree, took := withoutAddedShapedPointers(tree, input.steps.shaped, input.decided)
 		converted, convertedTook := withoutDecisionsPartBlocks(tree, func(node *pmdoc.Node) bool {
-			return node.Type == decisionType || input.pointsAtDecisions(node)
+			id, _ := node.Attrs[pmdoc.BlockIDAttr].(string)
+			return node.Type == decisionType && input.steps.decisions[id]
 		})
 		return converted, took || convertedTook
 	},
@@ -183,13 +198,22 @@ var conversionCase = carryCase{
 // carryCases are the cases carryVerdict composes, in the order their reasons are named.
 var carryCases = [...]carryCase{readingCase, attributeRemovalCase, restoreCase, conversionCase}
 
-// decisionStepCases names the phases of the decisions step whose own write a version is: the
-// restore (restoreCase) and the conversion (conversionCase). Only the step sets it, through a mark
-// on its write's context no route can put there (withDecisionStepWrite), and SnapshotVersion
-// carries it on the version's write (versionWrite.steps); every other version write leaves it zero,
-// and its carry weighs the reading case and the attribute-removal case alone.
+// decisionStepCases names the phases of the decisions step whose own write a version is - the
+// restore (restoreCase) and the conversion (conversionCase) - and what that write added to the
+// document, which is all those two cases take out of a version: the block id of each answered ask
+// block the restore wrote (restored), of each decision the conversion wrote (decisions), the
+// `shaped` pointers it gave an answered ask block the document held already, by that block's id
+// (shaped), and the markdown of each pointer line the write took out of the document's
+// `## Decisions` part (pointerLines, blockMarkdown), which is what those cases take out of the
+// approved version. Only the step sets it, through a mark on its write's context no route can put
+// there (withDecisionStepWrite), and SnapshotVersion carries it on the version's write
+// (versionWrite.steps); every other version write leaves it zero, and its carry weighs the reading
+// case and the attribute-removal case alone.
 type decisionStepCases struct {
 	restore, conversion bool
+	restored, decisions map[string]bool
+	shaped              map[string][]string
+	pointerLines        []string
 }
 
 // any reports whether the version is the decisions step's own write.
@@ -200,12 +224,14 @@ func (steps decisionStepCases) any() bool {
 // decisionStepWriteKey marks a context as the decisions step's own write (withDecisionStepWrite).
 type decisionStepWriteKey struct{}
 
-// withDecisionStepWrite marks ctx as the decisions step's own write, of the phases steps names.
+// withDecisionStepWrite marks ctx as the decisions step's own write, of the phases steps names and
+// with what it added.
 func withDecisionStepWrite(ctx context.Context, steps decisionStepCases) context.Context {
 	return context.WithValue(ctx, decisionStepWriteKey{}, steps)
 }
 
-// decisionStepCasesOf is the phases ctx's mark names, zero for a context the step did not mark.
+// decisionStepCasesOf is the phases ctx's mark names, and what their write added, zero for a
+// context the step did not mark.
 func decisionStepCasesOf(ctx context.Context) decisionStepCases {
 	steps, _ := ctx.Value(decisionStepWriteKey{}).(decisionStepCases)
 	return steps
@@ -214,11 +240,10 @@ func decisionStepCasesOf(ctx context.Context) decisionStepCases {
 // carryInput is what carryVerdict decides on: A's tree and the markdown it is stored with, and
 // N's tree, each as its own read gives it, whether every ask block of N agrees with its node
 // (asksAgreeWithTheirNodes), which of N's ask blocks show an ask that holds an answer among those
-// closing with readings (answeredAskBlocks) and among them all (decided), the documents of N's
-// issue that are its decisions documents, by ref_key (decisionsDocumentRefs), whose pointer lines
-// conversionCase and restoreCase take out, the answered ask blocks of N's `## Decisions` part
-// that restoreCase takes out of both versions (restoredAskBlocks), and the decisions step's phases
-// whose own write N is (steps), the only writes those two cases reach.
+// closing with readings (answeredAskBlocks) and among them all (decided), the answered ask blocks
+// of N's `## Decisions` part the restore's write added that restoreCase takes out of both
+// versions (restoredAskBlocks), and the decisions step's phases whose own write N is, with what
+// that write added (steps), the only writes those two cases reach.
 type carryInput struct {
 	approved     *pmdoc.Node
 	approvedText string
@@ -226,10 +251,42 @@ type carryInput struct {
 	agrees       bool
 	answered     map[string]bool
 	decided      map[string]bool
-	decisions    map[string]bool
-	serverURL    string
 	restored     map[string]bool
 	steps        decisionStepCases
+	// pointersLeft is, within one pass of the cases over the two versions (neutral), the pointer
+	// lines of the step's write that no case has taken out of A yet (pointerLinesTaken).
+	pointersLeft *[]string
+}
+
+// pointerLinesTaken is what restoreCase and conversionCase take out of the `## Decisions` part of
+// one of the two versions beside the blocks the step's write added: of A (approved), each pointer
+// line that write took out of the document (decisionStepCases.pointerLines), as the first
+// paragraph of the part whose markdown is that line's, once each in a pass of the cases between
+// the two of them (pointersLeft), however many paragraphs of A are that line; of N, none, since
+// the write left none of them there. A paragraph a person approved that the write did not take
+// out - one citing a block of the decisions document, which the restore keeps, or a second copy of
+// the pointer line - stays in A. The answer is a drop for one call of withoutDecisionsPartBlocks,
+// which it walks in order.
+func (input carryInput) pointerLinesTaken(approved bool) func(*pmdoc.Node) bool {
+	if !approved || input.pointersLeft == nil || len(*input.pointersLeft) == 0 {
+		return func(*pmdoc.Node) bool { return false }
+	}
+	left := input.pointersLeft
+	return func(node *pmdoc.Node) bool {
+		if node.Type != "paragraph" || len(*left) == 0 {
+			return false
+		}
+		markdown, err := blockMarkdown(node)
+		if err != nil {
+			return false
+		}
+		index := slices.Index(*left, markdown)
+		if index < 0 {
+			return false
+		}
+		*left = slices.Delete(*left, index, index+1)
+		return true
+	}
 }
 
 // carryApproval carries the document's newest approval to version, just written from rendered,
@@ -288,9 +345,9 @@ func CarryUploadedApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker
 // carry cases (carryVerdict). It appends nothing otherwise. A is read only for a version holding an
 // ask block or a decision: every case is a difference in one of those blocks, and a version
 // holding neither either holds A's text or holds none of A's decisions and ask blocks, which
-// still have to stand. steps names the decisions step's phases whose own write the version is,
-// whose cases (restoreCase, conversionCase) it weighs beside the other two; zero for every other
-// write.
+// still have to stand. steps names the decisions step's phases whose own write the version is, and
+// what that write added, whose cases (restoreCase, conversionCase) it weighs beside the other two;
+// zero for every other write.
 func carryNewestApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, number int, markdown string, tree *pmdoc.Node, newest model.ArtifactReview, serverURL string, steps decisionStepCases) ([]model.Event, error) {
 	shown, agrees, err := asksAgreeWithTheirNodes(ctx, tx, artifactID, tree)
 	if err != nil || !agrees {
@@ -320,13 +377,10 @@ func carryNewestApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker, 
 	}
 	input := carryInput{
 		approved: approved, approvedText: approvedText, version: tree, agrees: agrees, answered: answered,
-		decided: decidedAskBlocks(shown), serverURL: serverURL, steps: steps,
+		decided: decidedAskBlocks(shown), steps: steps,
 	}
-	if steps.any() && (hasDecisionsPart(tree) || hasDecisionsPart(approved)) {
-		if input.decisions, err = decisionsDocumentRefs(ctx, tx, artifactID); err != nil {
-			return nil, err
-		}
-		input.restored = restoredAskBlocks(approved, tree, input.decided)
+	if steps.restore {
+		input.restored = restoredAskBlocks(approved, tree, steps.restored)
 	}
 	change, carried, err := carryVerdict(input)
 	if err != nil {
@@ -571,60 +625,25 @@ func attributesOf(node *pmdoc.Node) *pmdoc.Node {
 // withoutAskServerAttributes is attributeRemovalCase's neutral: a copy of tree with every ask
 // block's server-owned attributes (askServerAttributeNames) taken off, and whether any block held
 // one. Each container on the way and each such block is a fresh node; every other node is the
-// tree's own, which nothing here changes.
+// tree's own, which nothing here changes (withAskBlocksChanged).
 func withoutAskServerAttributes(tree *pmdoc.Node) (*pmdoc.Node, bool) {
-	if tree.Type == "ask" {
+	return withAskBlocksChanged(tree, func(node *pmdoc.Node) (*pmdoc.Node, bool) {
 		var stripped pmdoc.Attrs
 		for _, name := range askServerAttributeNames {
-			if _, held := tree.Attrs[name]; held {
+			if _, held := node.Attrs[name]; held {
 				if stripped == nil {
-					stripped = maps.Clone(tree.Attrs)
+					stripped = maps.Clone(node.Attrs)
 				}
 				delete(stripped, name)
 			}
 		}
-		children, took := withoutAskServerAttributesBelow(tree)
-		if stripped == nil && !took {
-			return tree, false
+		if stripped == nil {
+			return node, false
 		}
-		shown := *tree
-		if stripped != nil {
-			shown.Attrs = stripped
-		}
-		shown.Children = children
+		shown := *node
+		shown.Attrs = stripped
 		return &shown, true
-	}
-	children, took := withoutAskServerAttributesBelow(tree)
-	if !took {
-		return tree, false
-	}
-	copied := *tree
-	copied.Children = children
-	return &copied, true
-}
-
-// withoutAskServerAttributesBelow is the children of tree each taken through
-// withoutAskServerAttributes, and whether any held a server-owned ask attribute: tree's own
-// children where none did.
-func withoutAskServerAttributesBelow(tree *pmdoc.Node) ([]*pmdoc.Node, bool) {
-	if tree.Type == "text" || len(tree.Children) == 0 {
-		return tree.Children, false
-	}
-	var children []*pmdoc.Node
-	for index, child := range tree.Children {
-		next, took := withoutAskServerAttributes(child)
-		if !took {
-			continue
-		}
-		if children == nil {
-			children = slices.Clone(tree.Children)
-		}
-		children[index] = next
-	}
-	if children == nil {
-		return tree.Children, false
-	}
-	return children, true
+	})
 }
 
 // withoutReadings is readingCase's neutral: a copy of tree with the readings left out that each
@@ -839,16 +858,20 @@ func carryVerdict(input carryInput) (string, bool, error) {
 }
 
 // neutral is input's two trees, A's and N's, each taken through every carry case in carryCases'
-// order but those skipped names, and whether any of those cases took something out of either.
+// order but those skipped names, and whether any of those cases took something out of either. The
+// pass takes each pointer line of the step's write out of A once, whichever of restoreCase and
+// conversionCase takes it (pointersLeft).
 func (input carryInput) neutral(skipped []bool) (approved, version *pmdoc.Node, took bool) {
+	left := slices.Clone(input.steps.pointerLines)
+	input.pointersLeft = &left
 	approved, version = input.approved, input.version
 	for index, carried := range carryCases {
 		if skipped[index] {
 			continue
 		}
 		var tookApproved, tookVersion bool
-		approved, tookApproved = carried.neutral(approved, input)
-		version, tookVersion = carried.neutral(version, input)
+		approved, tookApproved = carried.neutral(approved, input, true)
+		version, tookVersion = carried.neutral(version, input, false)
 		took = took || tookApproved || tookVersion
 	}
 	return approved, version, took

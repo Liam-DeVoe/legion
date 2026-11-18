@@ -31,7 +31,7 @@ const SECOND_TREE = "GATEB";
 /** The second sentence of a superseded-approval line for a person's approval of any document but
  *  a plan, printed whether a gate records the document or not. */
 const NEXT_STEP =
-  "Meant to change the approved design? Request approval with `dispatch request-approval`. Meant a correction beside it? Tell the tree's architect, and keep the next one in a comment or in the plan.";
+  "Meant to change the approved design? Request approval with `dispatch request-approval`. Meant a correction beside it? Tell the issue's architect, and keep the next one in a comment or in the plan.";
 
 /** The second sentence for a plan, whoever approved it: Dispatch refuses a request for a person's
  *  approval of any plan, so it names the command that records a plan review's approval of the
@@ -42,7 +42,7 @@ function planNextStep(issue: string, version: number): string {
 
 /** The first sentence: the version this write stored and the approval it staled. */
 function storedSentence(version: number, approvedBy: string): string {
-  return `Stored version ${version}, superseding version ${version - 1}, which ${approvedBy} approved. That approval is stale until someone approves version ${version} or a later write stores the text of version ${version - 1} again exactly, with no decision block in it decided since.`;
+  return `Stored version ${version}, superseding version ${version - 1}, which ${approvedBy} approved. That approval is stale until someone approves version ${version} or a later write stores the text of version ${version - 1} again exactly, with no ask block in it decided since.`;
 }
 
 /** The clause between them, for the issues whose design gates record the document written. */
@@ -99,7 +99,7 @@ describe.skipIf(!dispatchStackEnabled)(
         // and which the advice reads: a gate row on a step the deployment does not gate holds
         // no READY back and prints no clause.
         await asMachine("PUT", `/api/v1/projects/${key}/gated-steps`, {
-          steps: ["decisions", "criteria", "spec"],
+          steps: ["criteria", "spec"],
           actor: { kind: "session", id: SESSION },
         });
       }

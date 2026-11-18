@@ -5,9 +5,10 @@ import { MemoryRouter } from "react-router-dom";
 
 import { displayTree } from "../../__tests__/display-trees";
 import { renderWithQueries as render } from "../../__tests__/query-provider";
+import type { DecisionEntry } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { DecisionCard } from "./DecisionCard";
-import type { DecisionEntry, DecisionMarginItem } from "./useMarginItems";
+import type { DecisionMarginItem } from "./useMarginItems";
 
 beforeAll(async () => {
   await warmMarkdownRenderer();

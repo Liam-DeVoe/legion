@@ -28,15 +28,17 @@ const storeStepWait = 20 * time.Second
 // TestEveryApiStoreWriterTakesTheStoreLockOrder is this package's half of dispatch://INFRA-1149's
 // c-lock-order. graphstore's TestEveryStoreWriteCallSiteIsListed lists every call site of the node
 // and tuple store's writers and leaves the proof of each site's lock steps to the package the site
-// lives in. Ten of them live here, on eight write paths: the comment path (createCommentFor, with
+// lives in. Twelve of them live here, on ten write paths: the comment path (createCommentFor, with
 // the node its writeNode writes and the tuples its caused appends, then graphstore.Authored), run
 // on an issue and on a project document; a session's reply to a mention (replyComment, through
 // the same three); the settle of a comment mention's delivery (completeCommentDelivery) and of
 // a targeted message's (completeMessageDelivery), each of which records the session it reached
 // through graphstore.Reached inside its own transaction; a run of the command bar, its record
 // (recordGoingRequest) and one frame of it (appendGoingEvent), which takes no owner row; an
-// issue's own field write made for a run (patchIssue), which writes the issue's node; and the
-// removal of an untouched document (removeArtifact), which states the document's node gone.
+// issue's own field write made for a run (patchIssue), which writes the issue's node; an edit of
+// an ask's words and of a comment's words made for a run (editAsk, editComment), which write the
+// ask's and the comment's node; and the removal of an untouched document (removeArtifact), which
+// states the document's node gone.
 //
 // The order they are held to is the one written on api/inbox_read.go's markInboxReadThreads, which
 // graphstore's TestEveryStoreWriteTakesOneLockOrder reads: the owner row comes first; a node's
@@ -65,6 +67,7 @@ func TestEveryApiStoreWriterTakesTheStoreLockOrder(t *testing.T) {
 			ownerRowStep(documentOwnerStatement, "artifacts", `select 1 from artifacts where id = $1::uuid for no key update`, rig.document)),
 		rig.mentionReply(), rig.commentDeliverySettle(), rig.messageDeliverySettle(),
 		rig.goingRecord(), rig.goingFrame(), rig.issuePatchForRun(), rig.issuePatchRelations(), rig.issuePatchFiledFrom(), rig.artifactRemoval(),
+		rig.askEditForRun(), rig.commentEditForRun(),
 	} {
 		t.Run(writer.name, func(t *testing.T) {
 			requireTheWrittenOrderAdmits(t, writer)
@@ -708,6 +711,142 @@ func holdNextEventsClaim(t *testing.T, ctx context.Context, holder pgx.Tx, issue
 		cross join lateral generate_series(seq.last_value + 1, seq.last_value + $5) as next (id)
 	`, issue, kind, toKind, toID, claimHeldEvents); err != nil {
 		t.Fatalf("hold the %s claim of %s under the next events: %v", kind, issue, err)
+	}
+}
+
+// askRowLockStatement is lockAskForTransition's lock of the ask an edit writes, and
+// askWordsStatement the edit's update of that row (editAsk).
+var askRowLockStatement = "select " + askRowColumns + " " + askRowFrom + " where a.id = $1 for no key update of a"
+
+const askWordsStatement = "update asks set question = $2"
+
+// askEditForRun is an edit of an ask's words made for a run (editAsk), through its route, with
+// the run named in its header: a PATCH of the question of an ask a session opened on the rig's
+// issue, by the person whose run it is. It takes the issue's row as its owner row
+// (requireOpenOwner), then the ask's row `for no key update` (lockAskForTransition), updates that
+// row, writes the ask's node (graphstore.WriteUncaused) after it, appends ask.edited, and then
+// appends what the node states under that event with the node's changed_by_run to the run
+// (graphstore.Caused). The ask's node exists from its create, so the node step is held as the
+// table it is written to, and the row's update as its table too, since the write holds the row
+// itself from its lock. Each run edits an ask of its own, opened for it, to words no run has
+// written, under a run of its own, its window moved an hour ahead, by a person no write has
+// recorded.
+func (r *storeWriterRig) askEditForRun() storeWriter {
+	return storeWriter{
+		name: "editAsk under a run",
+		steps: []storeStep{
+			r.issueOwnerStep(issueOwnerStatement),
+			{
+				name: "the ask's row", order: projectionStep,
+				hold: func(t *testing.T, ctx context.Context, holder pgx.Tx, run storeWriterRun) {
+					holdRow(t, ctx, holder, `select 1 from asks where id = $1::uuid for no key update`, run.made.ID)
+				},
+				at:    askRowLockStatement,
+				takes: []tableLock{{"asks", rowShareMode}},
+			},
+			{
+				name: "the ask's words", order: projectionStep,
+				hold: holdTableWrites("asks"), at: askWordsStatement,
+				takes: []tableLock{{"asks", rowExclusiveMode}},
+			},
+			{
+				name: "the ask's node", order: nodeStep,
+				hold: holdTableWrites("graph_nodes"), at: nodeWriteStatement,
+				takes: []tableLock{{"graph_nodes", rowExclusiveMode}},
+			},
+			eventAppendStep(),
+			tupleAppendStep(),
+		},
+		ready: func(t *testing.T, ctx context.Context) storeWriterRun {
+			ask := createIssueAsk(t, r.handler, r.issue, r.fresh("Which words do the lock steps hold"))
+			login := r.fresh("lockasker")
+			run, err := r.direct.recordGoingRequest(ctx, model.Actor{Kind: "user", ID: login}, "LOCK", "Which words of the ask do the lock steps hold?")
+			if err != nil {
+				t.Fatalf("record the run the ask's edit is made for: %v", err)
+			}
+			runWindowAhead(t, r.database, run.ID)
+			question := r.fresh("Which words does the edit hold")
+			return storeWriterRun{
+				made: graphstore.Node{Kind: graphstore.KindAsk, ID: ask},
+				write: func() error {
+					response := requestForRun(t, r.call, http.MethodPatch, "/api/v1/asks/"+ask,
+						map[string]any{"question": question}, login, run.ID)
+					if response.Code != http.StatusOK {
+						return fmt.Errorf("status=%d body=%s", response.Code, response.Body.String())
+					}
+					return nil
+				},
+			}
+		},
+	}
+}
+
+// commentWordsStatement is an edit's update of the comment's row (editComment).
+const commentWordsStatement = "update comments set body = $2"
+
+// commentEditForRun is an edit of a comment's words made for a run (editComment), through its
+// route, with the run named in its header: a PATCH of the body of a comment on the rig's issue by
+// its author, the person whose run it is. It takes the issue's row as its owner row
+// (lockOwnerOfComment), then the comment's row `for update` (loadCommentForUpdate), updates that
+// row, writes the comment's node (graphstore.WriteUncaused) after it, appends comment.edited,
+// and then appends what the node states under that event with the node's changed_by_run to the
+// run (graphstore.Caused). The comment's node exists from its create, so the node step is held
+// as the table it is written to, and the row's update as its table too, since the write holds
+// the row itself from its lock. Each run edits a comment of its own, written for it, to words no
+// run has written, under a run of its own, its window moved an hour ahead, by a person no write
+// has recorded.
+func (r *storeWriterRig) commentEditForRun() storeWriter {
+	return storeWriter{
+		name: "editComment under a run",
+		steps: []storeStep{
+			r.issueOwnerStep(issueOwnerStatement),
+			{
+				name: "the comment's row", order: projectionStep,
+				hold: func(t *testing.T, ctx context.Context, holder pgx.Tx, run storeWriterRun) {
+					holdRow(t, ctx, holder, `select 1 from comments where id = $1::uuid for update`, run.made.ID)
+				},
+				at:    answeredRowStatement,
+				takes: []tableLock{{"comments", rowShareMode}},
+			},
+			{
+				name: "the comment's words", order: projectionStep,
+				hold: holdTableWrites("comments"), at: commentWordsStatement,
+				takes: []tableLock{{"comments", rowExclusiveMode}},
+			},
+			{
+				name: "the comment's node", order: nodeStep,
+				hold: holdTableWrites("graph_nodes"), at: nodeWriteStatement,
+				takes: []tableLock{{"graph_nodes", rowExclusiveMode}},
+			},
+			eventAppendStep(),
+			tupleAppendStep(),
+		},
+		ready: func(t *testing.T, ctx context.Context) storeWriterRun {
+			login := r.fresh("lockcommenter")
+			written := dispatchRequest(t, r.handler, http.MethodPost, "/api/v1/issues/"+r.issue+"/comments",
+				map[string]any{"body": "A remark whose words the lock steps edit."}, login)
+			if written.Code != http.StatusCreated {
+				t.Fatalf("write the comment the edit is made of: status=%d body=%s", written.Code, written.Body.String())
+			}
+			comment := decodeBody[writtenRecord](t, written).ID
+			run, err := r.direct.recordGoingRequest(ctx, model.Actor{Kind: "user", ID: login}, "LOCK", "Which words of the comment do the lock steps hold?")
+			if err != nil {
+				t.Fatalf("record the run the comment's edit is made for: %v", err)
+			}
+			runWindowAhead(t, r.database, run.ID)
+			body := r.fresh("The words the edit holds")
+			return storeWriterRun{
+				made: graphstore.Node{Kind: graphstore.KindComment, ID: comment},
+				write: func() error {
+					response := requestForRun(t, r.call, http.MethodPatch, "/api/v1/comments/"+comment,
+						map[string]any{"body": body}, login, run.ID)
+					if response.Code != http.StatusOK {
+						return fmt.Errorf("status=%d body=%s", response.Code, response.Body.String())
+					}
+					return nil
+				},
+			}
+		},
 	}
 }
 

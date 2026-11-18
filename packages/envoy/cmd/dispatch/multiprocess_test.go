@@ -5941,12 +5941,12 @@ func (p *dispatchProcess) readVersionMarkdown(t *testing.T, artifactID string, n
 // closingAskSpec is the spec of the issues below: a paragraph to type into and an open decision.
 const closingAskSpec = "Context\n\n:::ask{#ship-it urgency=\"med\" multiple=\"false\"}\nShip it?\n\n- Yes: Now.\n- No: Later.\n:::\n"
 
-// closingAskResolved is the decision block of closingAskSpec as the close of its issue writes it
+// closingAskResolved is the ask block of closingAskSpec as the close of its issue writes it
 // while another build serves.
 const closingAskResolved = `#ship-it urgency="med" multiple="false" state="resolved"`
 
 // closedSettlementWithin is how long a closed issue's owed document is given to settle on the
-// running servers. The close's own write of the decision block arms the settlement a settle delay
+// running servers. The close's own write of the ask block arms the settlement a settle delay
 // later on the process that made it (docs' publishLiveWrite), unless that process's close of the
 // document's room stops the timer first (closeRecordLocked). Then nothing need open the document:
 // the resumption arms a pending row once it is a minute old, a pass runs once a
@@ -5956,7 +5956,7 @@ const closingAskResolved = `#ship-it urgency="med" multiple="false" state="resol
 const closedSettlementWithin = 4 * time.Minute
 
 // closingAskIssue is an issue whose spec is closingAskSpec, as the rows below have it before the
-// issue closes: A's settlement made the ask of its decision block and left nothing owed, and
+// issue closes: A's settlement made the ask of its ask block and left nothing owed, and
 // bob's writable tab on B holds the spec with his keystroke " late" stored.
 type closingAskIssue struct {
 	key, artifactID, askID string
@@ -5965,7 +5965,7 @@ type closingAskIssue struct {
 
 // openClosingAskIssue creates a closingAskIssue titled title in project through A, with a process
 // of another build registered beside the pair's for the rest of the test (registerOtherBuild). The
-// rows below are about the close's write of the decision block and the settlement of it, and an
+// rows below are about the close's write of the ask block and the settlement of it, and an
 // ask's state is written into its block only while another build serves, whose pages read it
 // there: A's settlement writes the block open (docs' rollWindowAskAttributes), the close writes it
 // resolved and the reopen open again (WriteIssueAskStates). On a fleet of one build none of them
@@ -5980,7 +5980,7 @@ func openClosingAskIssue(t *testing.T, pair *dispatchPair, project, title string
 		if ask, found := pair.a.askOfBlock(t, issueKey, "ship-it"); found {
 			askID = ask.ID
 		} else if time.Now().After(deadline) {
-			t.Fatalf("A's settlement never made an ask of the spec's decision block:\nA:\n%s", pair.a.Output.String())
+			t.Fatalf("A's settlement never made an ask of the spec's ask block:\nA:\n%s", pair.a.Output.String())
 		}
 	}
 	waitForSettlementOwed(t, pair.database, artifactID, false)
@@ -6032,7 +6032,7 @@ func decodeAuthors(t *testing.T, version int, authors string) []model.Actor {
 //
 // A process of another build is registered beside the pair (openClosingAskIssue), so the ask's
 // state is kept in its block as the release before keeps it (dispatch://INFRA-1150 R10). Bob's
-// tab on B holds the spec, whose decision block is an open ask, and his keystroke there is
+// tab on B holds the spec, whose ask block is an open ask, and his keystroke there is
 // stored, which arms B's settlement of it. The issue closes through A, which settles the issue's
 // documents before it closes the issue (settleIssueBeforeClose, in the api package), so the
 // keystroke is saved before the close, by that settlement or by B's own, in a version that
@@ -6067,7 +6067,7 @@ func TestClosingAnIssueOnOneProcessWithdrawsItsAskAndFreezesTheOtherProcessesRoo
 	requireClosedText := func(what, text string) {
 		t.Helper()
 		if !strings.Contains(text, "Context late") || !strings.Contains(text, closingAskResolved) {
-			t.Fatalf("%s of the closed issue does not hold bob's keystroke and the decision block resolved:\n%s", what, text)
+			t.Fatalf("%s of the closed issue does not hold bob's keystroke and the ask block resolved:\n%s", what, text)
 		}
 	}
 	room, err := roomRendering(bob, 5*time.Second)
@@ -6095,7 +6095,7 @@ func TestClosingAnIssueOnOneProcessWithdrawsItsAskAndFreezesTheOtherProcessesRoo
 	requireEndsWithin(t, bob, liveWithin, "reopening the issue through B left bob's read-only tab on B connected", pair.b)
 	bob = reconnectWithScope(t, pair.b, "bob", artifactID, "read-write", "bob's tab on B, reconnected after the reopen")
 	if reopened, err := roomRendering(bob, 5*time.Second); err != nil || !strings.Contains(reopened, `#ship-it urgency="med" multiple="false" state="open"`) {
-		t.Fatalf("B's room of the reopened issue does not hold the decision block open (%v):\n%s", err, reopened)
+		t.Fatalf("B's room of the reopened issue does not hold the ask block open (%v):\n%s", err, reopened)
 	}
 	if err := typeAtEnd(bob, " again"); err != nil {
 		t.Fatalf("bob's keystroke on the reopened issue: %v", err)
@@ -6150,7 +6150,7 @@ func TestTheRunningServersSettleAClosedIssuesDocument(t *testing.T) {
 		t.Fatalf("the closed issue's spec owes no settlement, yet A reads version %d as its newest, the close having left %d", newest, before)
 	}
 	if markdown := pair.a.readVersionMarkdown(t, issue.artifactID, newest); !strings.Contains(markdown, "Context late") || !strings.Contains(markdown, closingAskResolved) {
-		t.Fatalf("version %d of the closed issue's spec, as A reads it, does not hold bob's keystroke and the decision block resolved:\n%s",
+		t.Fatalf("version %d of the closed issue's spec, as A reads it, does not hold bob's keystroke and the ask block resolved:\n%s",
 			newest, markdown)
 	}
 	requireAskWithdrawn(t, pair.a, issue.key, issue.askID, "once the closed issue's spec settled")

@@ -25,10 +25,10 @@ import (
 
 // Document approval: a human review pinned to a document version. Approve, or
 // request changes with a reason. A later version makes an approval stale, unless
-// it is the version a human's own answer to a decision block writes and that
-// answer is the whole change since the version he approved, or a version whose
-// text is byte for byte the approved version's with no decision block in it
-// decided since; then Dispatch carries the approval to it (docs writes that carry).
+// a carry case of docs takes the change since the version he approved - a version
+// whose text is byte for byte the approved version's with no ask block in it
+// decided since, among others; then Dispatch carries the approval to it (docs
+// writes that carry). A person's answer to an ask writes no version.
 // A request for approval is an ask of kind "approval" with fixed options, so it reaches the
 // human through the Inbox like any question; one opened on a document with an
 // earlier approval carries that approval's version, time and approver
@@ -907,7 +907,7 @@ func (s *server) renewApprovalAsk(
 	switch {
 	case waitingOn == "human" && changed:
 		return nil, errorf(http.StatusConflict, "APPROVAL_WAITS_ON_HUMAN",
-			"the approval request already waits on the human, asking %q, and a different summary or another document would rewrite the card they are reading, so nothing was changed; raise what changed with the human first, in the request's thread or as a decision block in the document, and once they have agreed to every point in it and a reply or a new version leaves the request waiting on you, hand it back with the new summary",
+			"the approval request already waits on the human, asking %q, and a different summary or another document would rewrite the card they are reading, so nothing was changed; raise what changed with the human first, in the request's thread or as an ask block in the document, and once they have agreed to every point in it and a reply or a new version leaves the request waiting on you, hand it back with the new summary",
 			open.Question)
 	case waitingOn == "agent":
 		if changed {

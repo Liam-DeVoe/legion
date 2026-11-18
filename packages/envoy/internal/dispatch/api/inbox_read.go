@@ -535,12 +535,14 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 // it reads - the node's row, or the owner row a pointer's write takes first - so the second reads
 // the tuple the first committed and appends none.
 //
-// An issue's own field write made for a run (patchIssue) is the one writer that writes a node only
-// because a run asked it to name what it changed. It takes the issue's row as its owner row first
-// (lockPatchRows), writes the issue's row, and then, after every row and document it writes, the
-// issue's node (graphstore.WriteUncaused), the last node row its transaction takes; it appends
-// the issue's own event, and then what that node states with its changed_by_run under that event
-// (graphstore.Caused).
+// Three writers write a node only because a run asked them to name what they changed: an issue's
+// own field write made for a run (patchIssue), and an edit of an ask's or a comment's words made
+// for one (editAsk, editComment). Each takes its owner row first - the issue's row for the PATCH
+// (lockPatchRows), the owner of the ask or the comment for an edit - writes its row (the issue's,
+// or the ask's or the comment's, which an edit takes `for no key update` or `for update` first),
+// and then, after every row and document it writes, the node (graphstore.WriteUncaused), the last
+// node row its transaction takes; it appends its own event, and then what that node states with
+// its changed_by_run under that event (graphstore.Caused).
 func (s *server) markInboxReadThreads(
 	ctx context.Context, actor model.Actor, readThrough string, scope inboxReadScope,
 ) (int, []model.Event, error) {

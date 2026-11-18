@@ -2052,18 +2052,19 @@ func healthzHandler(database *store.Store, natsClient *bus.Client, publisher *ou
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
 		_ = json.NewEncoder(w).Encode(struct {
-			OK                bool    `json:"ok"`
-			DB                bool    `json:"db"`
-			NATS              *bool   `json:"nats"`
-			Files             *bool   `json:"files"`
-			SignIn            *bool   `json:"signin"`
-			ServiceTokens     *bool   `json:"service_tokens"`
-			Commit            *string `json:"commit"`
-			FleetCommit       *string `json:"fleet_commit"`
-			SchemaVersion     *int    `json:"schema_version"`
-			OutboxPublisher   bool    `json:"outbox_publisher"`
-			IdempotencyKeys   bool    `json:"idempotency_keys"`
-			DecisionsStepOwed *int64  `json:"decisions_step_owed,omitempty"`
+			OK              bool    `json:"ok"`
+			DB              bool    `json:"db"`
+			NATS            *bool   `json:"nats"`
+			Files           *bool   `json:"files"`
+			SignIn          *bool   `json:"signin"`
+			ServiceTokens   *bool   `json:"service_tokens"`
+			Commit          *string `json:"commit"`
+			FleetCommit     *string `json:"fleet_commit"`
+			SchemaVersion   *int    `json:"schema_version"`
+			OutboxPublisher bool    `json:"outbox_publisher"`
+			IdempotencyKeys bool    `json:"idempotency_keys"`
+			// kept for one release: decisions-step
+			DecisionsStepOwed *int64 `json:"decisions_step_owed,omitempty"`
 		}{
 			OK: ok, DB: databaseOK, NATS: natsOK, Files: filesOK, SignIn: signInOK, ServiceTokens: serviceTokensOK,
 			Commit: reportedCommit, FleetCommit: announcer.FleetCommit(), SchemaVersion: schemaVersion,

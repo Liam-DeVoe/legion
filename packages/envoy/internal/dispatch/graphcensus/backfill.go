@@ -1924,6 +1924,10 @@ func writeAskFollowerBatch(ctx context.Context, database *store.Store, batch []a
 	return int64(len(askIDs)), int64(len(nodes)), int64(len(tuples)) + 2*int64(len(nodes)), nil
 }
 
+// askPasses are the asks pass and the follower pass, in the order Backfill and BackfillAsks both
+// run them.
+var askPasses = []func(context.Context, *store.Store) (KindBackfill, error){backfillAsks, backfillAskFollowers}
+
 // BackfillAsks is the boot step's first phase (docs' decision step): the object nodes of every
 // issue, document, ask and message written before their writers wrote one (backfillObjectNodes),
 // so every ask a build before this release wrote has its node before a mark names it, then the
@@ -1935,7 +1939,7 @@ func BackfillAsks(ctx context.Context, database *store.Store) ([]KindBackfill, e
 	if err != nil {
 		return done, err
 	}
-	for _, write := range []func(context.Context, *store.Store) (KindBackfill, error){backfillAsks, backfillAskFollowers} {
+	for _, write := range askPasses {
 		report, err := write(ctx, database)
 		done = append(done, report)
 		if err != nil {

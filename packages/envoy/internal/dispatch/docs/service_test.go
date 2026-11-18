@@ -2316,7 +2316,7 @@ func followEmptyQuestionStep(
 // build, so the decision and its ask row are read for them afterwards.
 const askRepairQuestion = "Which way now?"
 
-// emptyQuestionStep is why an ask edit of the decision blockID is refused while no paragraph of
+// emptyQuestionStep is why an ask edit of the ask blockID is refused while no paragraph of
 // it holds text: the one step that repairs it, this same ask edit again carrying a question,
 // which the route writes into the block whatever its content rule says.
 func emptyQuestionStep(blockID string) string {
@@ -2324,7 +2324,7 @@ func emptyQuestionStep(blockID string) string {
 		"which writes it into the block", blockID)
 }
 
-// askEditRefusal is err, the refusal of an ask edit of the decision blockID, as the caller reads
+// askEditRefusal is err, the refusal of an ask edit of the ask blockID, as the caller reads
 // it, held to what no refusal may do: send the caller to edit something else before this decision
 // (sendsTheCallerOn), or name a decision of before that already reads as one, which would send a
 // caller nowhere. A decision it names that is not the one being edited must break the content

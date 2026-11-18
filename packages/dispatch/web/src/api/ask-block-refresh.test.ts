@@ -6,7 +6,7 @@ import { refreshQueries } from "./query-refresh";
 import type { DispatchEvent } from "./types";
 
 /**
- * What refreshes the read a document's decision blocks take their answer state, answer, answerer,
+ * What refreshes the read a document's ask blocks take their answer state, answer, answerer,
  * time and a copy's source from: the asks of the document's owner, `["asks", <issue>]` for an
  * issue's documents and `["artifact", <id>, "asks"]` for a project document's, and, for a copy on
  * a project document, whose source no route lists, the document's live text
@@ -45,7 +45,7 @@ test.each([
   "ask.answered",
   "ask.resolved",
   "ask.opened",
-])("%s refreshes the asks an issue document's decision blocks read", (type) => {
+])("%s refreshes the asks an issue document's ask blocks read", (type) => {
   expect(refreshes(askEvent(type, "artifact-1", "CORE-1"), ["asks", "CORE-1"])).toBe(true);
 });
 
@@ -53,7 +53,7 @@ test.each([
   "ask.answered",
   "ask.resolved",
   "ask.opened",
-])("%s refreshes the asks a project document's decision blocks read", (type) => {
+])("%s refreshes the asks a project document's ask blocks read", (type) => {
   expect(refreshes(askEvent(type, "artifact-2", null), ["artifact", "artifact-2", "asks"])).toBe(
     true
   );

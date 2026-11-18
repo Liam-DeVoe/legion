@@ -469,9 +469,14 @@ func documentRefs(t *testing.T, database *store.Store, document string) string {
 // question that tells a writer from a repair.
 var indexPasses = map[string]string{
 	"api/comment_actions.go#commentAction":   "the request naming the action and the comment it acts on",
-	"api/comment_actions.go#editComment":     "the edit request's own body",
 	"api/comment_actions.go#reopenComment":   "the reopen request",
 	"api/comment_create.go#createCommentFor": "the create request's own body",
+	// An edit of a comment's words writes its row from the request's body, and, made for a run,
+	// restates the comment's node from that row it locked and caused by its own event, so the
+	// run's change of the comment is named (changed_by_run), as an edit of an ask's words names
+	// the ask's. Neither reads a row of either side to decide what the other says.
+	"api/comment_actions.go#editComment": "the edit request's own body, the comment's row it locked and the comment's own event",
+	"api/asks.go#editAsk":                "the edit request's own body, the ask's row it locked and the ask's own event",
 	// The comment path's two halves of one store write, split at its event (commentStoreWrite):
 	// the node and facts of the comment the request stores, then the same facts under the event
 	// that stored it. Neither reads a row of either side.
@@ -768,7 +773,8 @@ var projectedWrite = regexp.MustCompile(`(?is)\b(insert into|update|delete from)
 // the same use as one. The names are every exported function of graphstore that writes the store
 // or builds the statement that does, the list that test holds as storeWriteFunctions:
 // SessionRecorded writes a session's node through arms of its own, and a pass that wrote the
-// store through it alone would otherwise be read as no writer at all.
+// store through it alone would otherwise be read as no writer at all, and FillScopes is the
+// backfill's fill of the project of a node stored with none.
 var storeWriterCall = regexp.MustCompile(`\bgraphstore\.(Write|WriteUncaused|Caused|Authored|Reached|SessionRecorded|WriteArms|WriteArmsUncaused|EraseNode|RedactValues|FillScopes|Retarget|QueueFrameTuple)\b`)
 
 // projectionRead matches one read of either side of a projection: a projected table or the

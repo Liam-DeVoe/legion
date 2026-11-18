@@ -164,9 +164,10 @@ type workflowRuntime struct {
 	// under recoveringMu. silenced is, by the same repository, each issue whose apply said nothing
 	// because the repository was unread (noteUnread), which the repository's recovery takes into its
 	// scope whatever the issue resolves to by then; releaseWaits is, by repository, each child a
-	// release_children left unrecorded on it (awaitRecovery), whose tree's architect the recovery
-	// tells of each it did not record; recoveryHeldSince is when a recovery's listing was first
-	// found held with waits to tell (zero for none), so a hold past recoveryHoldBound tells them.
+	// release_children left unrecorded on it (awaitRecovery), whose architect the recovery tells
+	// of each it did not record (tellReleaseWaits); recoveryHeldSince is when a recovery's listing
+	// was first found held with waits to tell (zero for none), so a hold past recoveryHoldBound
+	// tells them.
 	// recheckAfter is refreshOnMappingChange's wait before a read of its own, time.After when nil;
 	// a test sees each wait through it.
 	repositories      *repositories
@@ -806,6 +807,12 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 		return "", nil, fmt.Errorf("decode what the task held for %s names: %w", c.Token, err)
 	}
 	stays := record.KeptDecisions{KeptApproval: named.KeptApproval}
+	// A pair a task of an earlier release kept of its `decisions` step names a document no step of
+	// this release records, so the rewrite names no approval, as the record's read of the pair
+	// leaves it (record.Store.UnclaimedKept).
+	if stays.Step != "" && !stays.Step.Valid() {
+		stays.KeptApproval = record.KeptApproval{} // kept for one release: design-gate-rows
+	}
 	// The record the rewrite reads where the task is of an entry and so carries the first-task
 	// instruction (workflow.NarrowRootTask): the tree's root as the record holds it at the
 	// narrowing, and what its first task is derived from, read by the reader every start of a
@@ -1382,7 +1389,7 @@ func (w *workflowRuntime) claimDurableState(c supervise.Claim, state supervise.C
 //
 // The ready carries the sentence the claim's untold record of what its last let-go ended is told
 // in (supervise.RelaunchSentence, intake.ClaimReady.Relaunch), read from the claim the ready
-// wrote, so a root architect's catch-up opens with it (workflow's QueueCatchUp). A record that
+// wrote, so an architect's catch-up opens with it (workflow's QueueCatchUp). A record that
 // still tells here beside an abandoned session still to tell is one of the fresh session's own
 // processes (supervise's forgetSession), and the catch-up opens with its sentence as it would for
 // any claim. The boot's replay of a ready reads the stored claim, whose record is persisted, and

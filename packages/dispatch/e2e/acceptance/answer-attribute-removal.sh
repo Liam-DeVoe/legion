@@ -281,8 +281,9 @@ body_text="$(tr -d '[:space:]' <"$work/body.md")"
   fail body "read the pull request body" "$body_source holds no body: a reading nobody recorded is not a reading that passed"
 pass body "read the body from $body_source"
 
-# body_line SECTION WHAT LEAD SHAPE: the one line of the body that begins LEAD, which must match
-# the extended regular expression SHAPE; its groups are left in BASH_REMATCH.
+# body_line SECTION WHAT LEAD FORM SHAPE: the one line of the body that begins LEAD, which must
+# match the extended regular expression SHAPE; FORM is the line's form as a failure names it. The
+# groups of SHAPE are left in BASH_REMATCH.
 body_line() {
   local -a lines
   mapfile -t lines < <(grep -E -- "^[[:space:]]*$3" "$work/body.md" || true)

@@ -508,8 +508,9 @@ func storeKinds() []StoreKind {
 	}, {
 		Name: "decision", MovedBy: movedWithAsks, Tuples: 5, Assumed: 10 * sizingWindowDays,
 		Driver: "assumed at 10 a day, since production writes no agent's decision before dispatch://INFRA-1150 and a" +
-			" decisions.md section, today's form of one, is no row: its uncertainty and uncertainty_reason values, one" +
-			" shaped, its from_ask and its decided_by, its node and placement being a block's, which the block terms count",
+			" section of an issue's decisions document, the form an earlier release wrote one in, is no row: its" +
+			" uncertainty and uncertainty_reason values, one shaped, its from_ask and its decided_by, its node and" +
+			" placement being a block's, which the block terms count",
 	}, {
 		Name: "reading", MovedBy: movedWithAsks, Tuples: 1, Assumed: 10 * sizingWindowDays,
 		Driver: "assumed at one under each assumed decision, 10 a day, since production writes no reading before" +
