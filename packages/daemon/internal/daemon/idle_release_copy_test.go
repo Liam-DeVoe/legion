@@ -157,7 +157,7 @@ func TestAReleaseAWakeCancelsAfterItsSaveLeavesItsWorkForThePodAfterAnEndToResto
 	// A notice runs on a lane of its own and wakes the released implementer between the release's
 	// role stop and its teardown, which then cancels the release under the pod lock.
 	rig.rt.beforeAuthorize = func() {
-		if woken, err := rig.runner.wakeForDelivery(ctx, rig.token, "a notice of "+rig.issue.Key); err != nil || !woken {
+		if woken, _, err := rig.runner.wakeForDelivery(ctx, rig.token, "a notice of "+rig.issue.Key); err != nil || !woken {
 			t.Errorf("the notice's wake = %t, %v; want the released implementer woken", woken, err)
 		}
 	}
