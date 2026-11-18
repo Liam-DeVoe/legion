@@ -129,6 +129,7 @@ jobs:
         run: .github/scripts/dispatch-browser-wait-for-store.sh
       - name: Browser-test dispatch dashboard (shard ${{ matrix.shard }} of 4)
         # why: .github/ci-notes/dispatch-browser.md#why-the-shard-job-calls-playwright-directly-and-what-its-browser-steps-budget-is
+        # 419 x 1.15 = 482 s -> 9 min.
         timeout-minutes: 9
         run: |
           "$GITHUB_WORKSPACE/.github/scripts/dispatch-browser-shard-suite.sh" "${{ matrix.shard }}" "${{ inputs.lane }}" \
@@ -206,6 +207,7 @@ jobs:
         run: .github/scripts/dispatch-browser-postgres.sh 1
       - name: Browser-test dispatch dashboard (${{ matrix.project }})
         # why: .github/ci-notes/dispatch-browser.md#why-the-alone-job-runs-one-stack-and-no-file-store-and-what-its-browser-steps-budget-is
+        # 141 x 1.15 = 162 s -> 3 min.
         timeout-minutes: 3
         run: |
           "$GITHUB_WORKSPACE/.github/scripts/dispatch-browser-alone-suite.sh" "${{ matrix.project }}" \
@@ -292,11 +294,13 @@ jobs:
       - name: Browser-test dispatch dashboard against two server processes
         # Builds the dashboard twice (A's and B's, with distinct build ids) and runs the
         # multiprocess specs through the round-robin proxy.
+        # 202 s x 1.15 = 232 s -> 4 min.
         timeout-minutes: 4
         run: bun run e2e:multiprocess
         working-directory: packages/dispatch
       - name: Browser-test a sign-in across two server processes
         # why: .github/ci-notes/dispatch-browser.md#what-the-sign-in-row-across-two-processes-reads
+        # 13 s x 1.15 = 15 s -> the two-minute floor.
         timeout-minutes: 2
         run: DISPATCH_E2E_PROCESSES=2 DISPATCH_E2E_SIGNIN=oidc bunx playwright test --config e2e/playwright.config.ts
         working-directory: packages/dispatch
@@ -422,6 +426,7 @@ jobs:
           echo "connections=$connections" >> "$GITHUB_OUTPUT"
         working-directory: packages/envoy
       - name: Browser-test dispatch dashboard against its baselines
+        # 183 x 1.15 = 211 s -> 4 min.
         timeout-minutes: 4
         run: |
           "$GITHUB_WORKSPACE/.github/scripts/dispatch-browser-visual-suite.sh" "${{ steps.connections.outputs.connections }}"
