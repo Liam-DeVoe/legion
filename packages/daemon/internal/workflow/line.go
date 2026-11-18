@@ -42,13 +42,12 @@ type Walk struct {
 	Version record.PlanVersion
 }
 
-// builtinDeployment is the roles a step of this release runs as (plan.BuiltinRoles): the one
-// Deployment the walk reads a stored step's phase from.
+// builtinDeployment is Legion's own roles of a step (plan.BuiltinRoles).
 var builtinDeployment = plan.Deployment{Roles: plan.BuiltinRoles()}
 
-// walk is the walk of issue's run: its plan rows, or today's line with Stored false. A run whose
-// rows hold no task or more than one, or a step whose role runs as no phase, is an error: no plan
-// this release takes writes one (plan.Validate, plan.Supported).
+// walk is the walk of issue's run: its plan rows, or today's line with Stored false. Each step
+// runs as the phase of its role (plan.RunsAs). A run whose rows hold no task or more than one is
+// an error: no plan this release takes writes one (plan.Validate, plan.Supported).
 func (e *Engine) walk(ctx context.Context, tx pgx.Tx, issue record.Issue) (Walk, error) {
 	stored, err := e.store.Plan(ctx, tx, issue.Key, issue.Generation)
 	if err != nil || stored == nil {
@@ -63,10 +62,7 @@ func (e *Engine) walk(ctx context.Context, tx pgx.Tx, issue record.Issue) (Walk,
 	for i, step := range steps {
 		named[i] = plan.Step{Role: step.Role, Key: step.AgentKey}
 	}
-	line := plan.Line(named, builtinDeployment)
-	if at := slices.Index(line, ""); at >= 0 {
-		return Walk{}, fmt.Errorf("walk %s at generation %d: step %d of task %s names the role %q, which runs as no phase", issue.Key, issue.Generation, at+1, task.Task, steps[at].Role)
-	}
+	line := plan.Line(named)
 	return Walk{Stored: true, Task: task.Task, Text: task.BlockText, Steps: steps, Line: line, State: task.State, Place: task.Place,
 		Version: stored.Version}, nil
 }

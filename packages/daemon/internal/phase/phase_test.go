@@ -130,15 +130,17 @@ func TestADeploymentRoleLeavesTheStepPhase(t *testing.T) {
 	}
 }
 
-// MovePairs is every move between two different phases of Order the daemon counts: a task in
-// another order than today's moves back by its own order (workflow's Walk.MovesBack), so a move
-// back of one task, testing-reviewing, is a forward pair of Order. It holds BackwardPairs first,
-// in their order, then the 21 forward pairs, each phase of Order paired with every phase after it.
-// No pair holds one phase two times, and a phase outside Order is in no pair.
-func TestMovePairsHoldsEveryPairOfTwoDifferentPhases(t *testing.T) {
+// MovePairs is every move the daemon counts: each pair of two different phases of Order and step,
+// and step-step. A task in another order than today's moves back by its own order (workflow's
+// Walk.MovesBack), so a move back of one task, testing-reviewing, is a forward pair of Order; a
+// task whose steps name two roles of the deployment runs both as step, so one moves back to the
+// other by step-step. It holds BackwardPairs first, in their order, then the 21 forward pairs of
+// Order, then the pairs of step. No other pair holds one phase two times, and a phase outside
+// Order and step is in no pair.
+func TestMovePairsTakeTheStepPairs(t *testing.T) {
 	pairs := MovePairs()
-	if len(pairs) != 42 {
-		t.Fatalf("MovePairs has %d pairs, want 42: %q", len(pairs), pairs)
+	if len(pairs) != 57 {
+		t.Fatalf("MovePairs has %d pairs, want 57: %q", len(pairs), pairs)
 	}
 	if !slices.Equal(pairs[:21], BackwardPairs()) {
 		t.Fatalf("MovePairs begins %q, want BackwardPairs %q in their order", pairs[:21], BackwardPairs())
@@ -149,19 +151,37 @@ func TestMovePairsHoldsEveryPairOfTwoDifferentPhases(t *testing.T) {
 			forward = append(forward, Pair(from, to))
 		}
 	}
-	if !slices.Equal(pairs[21:], forward) {
-		t.Fatalf("MovePairs ends %q, want the forward pairs %q", pairs[21:], forward)
+	if !slices.Equal(pairs[21:42], forward) {
+		t.Fatalf("MovePairs goes on %q, want the forward pairs %q", pairs[21:42], forward)
+	}
+	for _, pair := range pairs[42:] {
+		from, to, ok := ParsePair(pair)
+		if !ok || (from != Step && to != Step) || (from != Step && !slices.Contains(Order, from)) || (to != Step && !slices.Contains(Order, to)) {
+			t.Fatalf("MovePairs ends with %q, which is no pair of step and a phase of Order, nor step-step", pair)
+		}
+	}
+	seen := map[string]bool{}
+	for _, pair := range pairs {
+		if seen[pair] {
+			t.Fatalf("MovePairs repeats %q", pair)
+		}
+		seen[pair] = true
 	}
 	for _, tc := range []struct {
 		from, to Phase
 		want     bool
 	}{
+		{Step, Implementing, true}, {Implementing, Step, true}, {Step, Step, true}, {Step, Merging, true}, {Planning, Step, true},
 		{Testing, Reviewing, true}, {Reviewing, Testing, true}, {Implementing, Planning, true}, {Retro, Merging, true},
 		{Testing, Testing, false}, {Held, Planning, false}, {Merging, Done, false}, {Admitted, Planning, false},
+		{Step, Held, false}, {Done, Step, false},
 	} {
 		if got := IsMovePair(tc.from, tc.to); got != tc.want {
 			t.Fatalf("IsMovePair(%s, %s) = %t, want %t", tc.from, tc.to, got, tc.want)
 		}
+	}
+	if from, to, ok := ParsePair("step-step"); !ok || from != Step || to != Step {
+		t.Fatalf("ParsePair(step-step) = %q, %q, %t, want step, step, true", from, to, ok)
 	}
 	pairs[0] = "rubbish"
 	if MovePairs()[0] == "rubbish" {

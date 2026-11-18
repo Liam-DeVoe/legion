@@ -71,6 +71,33 @@ func TestAWalkWithNoRowsIsTodaysLine(t *testing.T) {
 	}
 }
 
+// A step of a role the deployment defines runs as the phase step, whatever its type: the walk of
+// the stored steps `implementer checker linter`, whose checker does review work and whose linter
+// does work of a type of the deployment's own, is the implementer's phase, step two times, then
+// Legion's own retro and merge. The line is read from each step's role, never from its type.
+func TestAWalkOfDeploymentStepsRunsThemAsStep(t *testing.T) {
+	pool := migratedPool(t)
+	engine := stepEngine(nil)
+	root := stepRoot(t, pool, phase.Implementing)
+	v := record.PlanVersion{Issue: root.Key, Generation: root.Generation, Version: 2, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
+		GivenBy: claim.Token(token(t, root.Key, claim.RoleArchitect)), GivenAt: stepClock}
+	task := record.PlanTask{Issue: root.Key, Generation: root.Generation, Task: "a", PlanVersion: 2, BlockText: "Build the widget.", State: record.TaskWaiting}
+	steps := []record.PlanStep{
+		{Issue: root.Key, Generation: root.Generation, Task: "a", Position: 1, Role: "implementer", Type: "implementation"},
+		{Issue: root.Key, Generation: root.Generation, Task: "a", Position: 2, Role: "checker", Type: "review"},
+		{Issue: root.Key, Generation: root.Generation, Task: "a", Position: 3, Role: "linter", Type: "security"},
+	}
+	seedRecord(t, pool, func(tx pgx.Tx) error {
+		return record.NewStore().PutPlan(t.Context(), tx, v, []record.PlanTask{task}, steps)
+	})
+
+	w := walkOf(t, pool, engine, root.Key)
+	want := []phase.Phase{phase.Implementing, phase.Step, phase.Step, phase.Retro, phase.Merging}
+	if !w.Stored || !slices.Equal(w.Line, want) || len(w.Steps) != 3 {
+		t.Fatalf("the walk of %s with the steps implementer checker linter = %+v, want the line %v", root.Key, w, want)
+	}
+}
+
 // taskStands says why key's task does not stand at place in state with issues.phase the phase
 // that place derives, nil when it does. The phase and the task's row are read in one select, so
 // the two are the store's at one moment; want is the phase the move should have reached, which

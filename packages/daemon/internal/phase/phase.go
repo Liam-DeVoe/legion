@@ -77,26 +77,29 @@ func BackwardPairs() []string {
 	return slices.Clone(backwardPairs)
 }
 
-// MovePairs is every move the daemon counts, each written "<from>-<to>": each pair of two
-// different phases of Order, BackwardPairs first, in their order, then the 21 forward pairs, each
-// phase of Order paired with every phase after it. A task in another order than today's moves
-// back by its own order (workflow's Walk.MovesBack), so the move back of one task, testing to
-// reviewing, is a forward pair of Order. It is the whole vocabulary the readers named on Order
-// share: the engine counts a move back under its pair, the config loader refuses a hook naming a
-// pair outside it, and the outbox refuses a hook prompt of a move outside it (record.HookPrompt).
-// The answer is a fresh slice.
+// MovePairs is every move the daemon counts, each written "<from>-<to>": BackwardPairs first, in
+// their order, then the 21 forward pairs, each phase of Order paired with every phase after it,
+// then the pairs of step: step to each phase of Order, each phase of Order to step, and step-step.
+// A task in another order than today's moves back by its own order (workflow's Walk.MovesBack),
+// so the move back of one task, testing to reviewing, is a forward pair of Order. A step of a role
+// the deployment defines runs as step wherever it stands in its task, so a move back may leave or
+// reach step, and one from such a step to an earlier one is step-step, the one pair of a phase
+// with itself. It is the whole vocabulary the readers of a move share: the engine counts a move
+// back under its pair, the config loader refuses a hook naming a pair outside it, and the outbox
+// refuses a hook prompt of a move outside it (record.HookPrompt). The answer is a fresh slice.
 func MovePairs() []string {
 	return slices.Clone(movePairs)
 }
 
-// IsMovePair says whether from-to is a pair MovePairs holds: two different phases of Order.
+// IsMovePair says whether from-to is a pair MovePairs holds: two different phases of Order and
+// step, or step-step.
 func IsMovePair(from, to Phase) bool {
 	return movePairSet[Pair(from, to)]
 }
 
 // ParsePair reads one "<from>-<to>" pair and answers ok only for a pair MovePairs holds: two
-// different phases of Order. Phase words hold "_" and never "-", so the one "-" of a pair in the
-// set splits it.
+// different phases of Order and step, or step-step. Phase words hold "_" and never "-", so the
+// one "-" of a pair in the set splits it.
 func ParsePair(text string) (from, to Phase, ok bool) {
 	if !movePairSet[text] {
 		return "", "", false
@@ -121,7 +124,7 @@ func Pair(from, to Phase) string {
 var backwardPairs = buildBackwardPairs()
 
 // movePairs is built once: backwardPairs, then each phase of Order paired with every phase after
-// it, 42 pairs.
+// it, then step to each phase of Order, each phase of Order to step, and step-step, 57 pairs.
 var movePairs = buildMovePairs()
 
 // movePairSet is movePairs keyed for the lookups ParsePair and IsMovePair make.
@@ -138,14 +141,20 @@ func buildBackwardPairs() []string {
 }
 
 func buildMovePairs() []string {
-	pairs := make([]string, 0, len(Order)*(len(Order)-1))
+	pairs := make([]string, 0, len(Order)*(len(Order)-1)+2*len(Order)+1)
 	pairs = append(pairs, backwardPairs...)
 	for fromIndex, from := range Order {
 		for _, to := range Order[fromIndex+1:] {
 			pairs = append(pairs, Pair(from, to))
 		}
 	}
-	return pairs
+	for _, to := range Order {
+		pairs = append(pairs, Pair(Step, to))
+	}
+	for _, from := range Order {
+		pairs = append(pairs, Pair(from, Step))
+	}
+	return append(pairs, Pair(Step, Step))
 }
 
 func buildMovePairSet() map[string]bool {

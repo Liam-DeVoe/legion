@@ -1543,7 +1543,7 @@ func TestLoadRefuses(t *testing.T) {
 		{
 			name: "a hook naming a move the daemon does not count",
 			body: aHook("{name: stuck, on: work_back, every: 1, moves: [testing-testing], roles: [tester], prompt: Words.}"),
-			want: `hooks[0].moves names "testing-testing", which is no move the daemon counts: a move is written "<from>-<to>", two different workflow phases`,
+			want: `hooks[0].moves names "testing-testing", which is no move the daemon counts: a move is written "<from>-<to>", two workflow phases, which differ but in step-step`,
 		},
 		{
 			name: "a hook with both prompt and prompt_file",

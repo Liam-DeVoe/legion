@@ -1816,7 +1816,8 @@ func validateOutboxPayload(payload OutboxPayload) error {
 			return fmt.Errorf("a hook prompt goes to a phase worker of the issue, never to an architect, whose own wake the daemon writes as a notice; %q is neither", value.Role)
 		}
 		// A move back is one by the order of the issue's task (workflow's Walk.MovesBack), which need
-		// not be today's, so the pair is any of two different workflow phases (phase.MovePairs).
+		// not be today's, so the pair is any pair the daemon counts (phase.MovePairs): two different
+		// workflow phases, or step-step.
 		if !phase.IsMovePair(value.From, value.To) {
 			return fmt.Errorf("a hook prompt names the move back that fired it; %q to %q is no move back", value.From, value.To)
 		}

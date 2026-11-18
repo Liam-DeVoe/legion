@@ -181,12 +181,14 @@ func readHookRoles(value *yaml.Node, field string) ([]claim.Role, error) {
 }
 
 // readHookMoves is a hook's `moves`: the moves back it selects, each written "<from>-<to>" as the
-// daemon counts them (phase.MovePairs): two different workflow phases. A task moves back by its
-// own order, which need not be today's, so the move back of one task (testing-reviewing, where its
-// review comes before its test) is a forward move of another; a phase paired with itself is no
-// move. The key left out, and the word `any`, each select every move back, which is the empty list
-// this answers. The empty list in the file is refused instead: it selects nothing, so the hook
-// could never fire, and the operator meant `any` or meant to name a move.
+// daemon counts them (phase.MovePairs): two workflow phases, which differ but in step-step. A task
+// moves back by its own order, which need not be today's, so the move back of one task
+// (testing-reviewing, where its review comes before its test) is a forward move of another. A step
+// of a role the deployment defines runs as step, so a move may leave or reach step, and the move
+// back from one such step to another is step-step; any other phase paired with itself is no move.
+// The key left out, and the word `any`, each select every move back, which is the empty list this
+// answers. The empty list in the file is refused instead: it selects nothing, so the hook could
+// never fire, and the operator meant `any` or meant to name a move.
 func readHookMoves(value *yaml.Node, field string) ([]string, error) {
 	key := field + ".moves"
 	if value == nil {
@@ -207,7 +209,7 @@ func readHookMoves(value *yaml.Node, field string) ([]string, error) {
 	}
 	for _, move := range moves {
 		if _, _, ok := phase.ParsePair(move); !ok {
-			return nil, fmt.Errorf("%s names %q, which is no move the daemon counts: a move is written \"<from>-<to>\", two different workflow phases", key, move)
+			return nil, fmt.Errorf("%s names %q, which is no move the daemon counts: a move is written \"<from>-<to>\", two workflow phases, which differ but in step-step", key, move)
 		}
 	}
 	return moves, nil
