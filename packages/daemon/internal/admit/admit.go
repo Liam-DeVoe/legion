@@ -2807,16 +2807,16 @@ func (a *Admission) OwesEntryWork(ctx context.Context, tx pgx.Tx) (bool, error) 
 // size of it on every pass, while the rule asked here costs two map lookups for each issue
 // past its review, of which a healthy project has a handful.
 //
-// Only the role of each candidate's current phase is read (workflow.OpenPhaseRole, in the
-// selection both repairs over phase workers make, phaseWorkerOf), and a root's own architect
-// (rootArchitectOf), so a role the issue's phase has left is no part of the answer: its phases
-// row keeps the entry it was last handed work on, and nothing here would ever send that work
-// again. The phase's own worker is held where a worker of that issue has work where it stands
-// (readSlotHolders, record.AtWork).
+// Only the role of each candidate's current phase is read (workflow.OpenRoleOf, which at step is
+// the role of the running step, in the selection both repairs over phase workers make,
+// phaseWorkerOf), and a root's own architect (rootArchitectOf), so a role the issue's phase has
+// left is no part of the answer: its phases row keeps the entry it was last handed work on, and
+// nothing here would ever send that work again. The phase's own worker is held where a worker of
+// that issue has work where it stands (readSlotHolders, record.AtWork).
 //
 // The per-issue tests of the shared selection (phaseWorkerOf) bound the phase workers it names,
 // and they are what keeps it from starting a worker the cap has not admitted:
-// workflow.OpenPhaseRole answers no worker role for accepting, the tree's architect's own phase,
+// workflow.OpenRoleOf answers no worker role for accepting, the tree's architect's own phase,
 // so the selection passes over it, and record.AtWork is false for accepting. So the widening
 // reaches the worker of a retro and of a merging, where the merger's own work ends the phase, and
 // no other phase worker. An issue at work that holds no row because it waits in the line is not

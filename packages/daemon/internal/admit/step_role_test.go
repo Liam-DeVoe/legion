@@ -82,7 +82,8 @@ func standInFinishingTree(t *testing.T, pool *pgxpool.Pool, key string, held boo
 //     of one held from it, after Legion's six, so a checker that has run on a held member comes
 //     back with no task, as each role of Legion's that has run on a held member does;
 //   - the tick's silent list (silentWorkers, through phaseWorkerOf) names a silent checker of an
-//     issue at step;
+//     issue at step, and the entry repair (owedEntryRoles, through the same selection) sends the
+//     checker of a slotted issue at step the work of the entry its phases row names;
 //   - the stalled-tree notice (stalledTreeReason) gives the checker the turn of a member at step
 //     and of one held from it, as it gives the tester the turn of a member at testing.
 //
@@ -148,6 +149,36 @@ func TestTheAdmissionReadsTheRunningDeploymentRole(t *testing.T) {
 		silent := tickNotice(t, pool).Silent
 		if len(silent) != 1 || silent[0].Issue != key || silent[0].Role != checker || !silent[0].LastStep.Equal(silentStep) {
 			t.Fatalf("the tick names %#v as silent, want %s's checker, last stepped at %s: the role that runs the issue's step", silent, key, silentStep)
+		}
+	})
+
+	t.Run("the entry repair sends the checker its entry's work", func(t *testing.T) {
+		pool := migratedPool(t)
+		const root, key = "LEGION-740", "LEGION-741"
+		seedTreeAndMember(t, pool, root, key, phase.Step, 1, false)
+		takeSlot(t, pool, key)
+		runAtCheckerStep(t, pool, key, 1)
+		project, err := claim.ProjectToken(testProject)
+		if err != nil {
+			t.Fatal(err)
+		}
+		token, err := claim.NewToken(project, key, checker)
+		if err != nil {
+			t.Fatal(err)
+		}
+		inTx(t, pool, func(tx pgx.Tx) {
+			if err := record.NewStore().PutPhase(context.Background(), tx, record.PhaseRow{Issue: key, Role: checker, Claim: token,
+				Entry: seededEntry, EntryTask: seededEntryTask(key), EntryRaisedAt: fixedNow}); err != nil {
+				t.Fatalf("record the checker's phases row of %s: %v", key, err)
+			}
+		})
+
+		tick(t, pool, quiet(t, 1), "converge-pass-1")
+
+		starts := convergeStarts(t, pool, key)
+		if want := (convergeStart{role: checker, task: seededEntryTask(key), entry: seededEntry}); len(starts) != 1 ||
+			(convergeStart{role: starts[0].role, task: starts[0].task, entry: starts[0].entry}) != want {
+			t.Fatalf("the start rows of %s = %+v, want the one start of its checker carrying the work of entry %d: the checker holds no claim, so it was given nothing", key, starts, seededEntry)
 		}
 	})
 
