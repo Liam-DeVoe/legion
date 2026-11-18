@@ -210,6 +210,58 @@ function physicalCode(key: string): string | undefined {
   return /^[0-9]$/.test(key) ? `Digit${key}` : undefined;
 }
 
+/** Presses that name no key a binding can hold: a key that only changes the next press (a dead
+ *  key, a lock), one the browser cannot name, and `+`, which the key text writes between a
+ *  modifier and its key. */
+const UNNAMED_KEYS: Record<string, true> = {
+  "+": true,
+  CapsLock: true,
+  Dead: true,
+  Fn: true,
+  FnLock: true,
+  NumLock: true,
+  Process: true,
+  ScrollLock: true,
+  Unidentified: true,
+};
+
+/**
+ * The key text of one press, as a binding writes it and `parseCombo` reads it back: `Shift+B`,
+ * `$mod+k`, `?`, `Space`. A modifier pressed alone, and a key that names nothing a binding can
+ * hold (`UNNAMED_KEYS`, a space other than the space bar), is no press, and gives null. The
+ * platform's command key is `$mod` (Cmd on a Mac, Ctrl elsewhere) and the other one is named. A
+ * letter is lower case, and upper case with Shift; a character with no case already says whether
+ * Shift was held (`?` is Shift+/), so its text leaves Shift out, as `matchesCombo` does. On a Mac
+ * a press with Alt names its letter or digit by the key's place, as `matchesCombo` matches it,
+ * because Option changes the character: Option+M types `µ`, and is `Alt+m`.
+ */
+export function comboOf(
+  press: Pick<KeyboardEvent, "altKey" | "code" | "ctrlKey" | "key" | "metaKey" | "shiftKey">,
+  isMac: boolean = IS_MAC
+): string | null {
+  if (MODIFIER_KEYS[press.key] === true || UNNAMED_KEYS[press.key] === true) return null;
+  let key = press.key === " " ? "Space" : press.key;
+  if (/\s/.test(key)) return null;
+  if (press.altKey && isMac) {
+    // The letter or digit the key's place names on a US keyboard (`KeyM` is `m`), which is
+    // `physicalCode` read the other way.
+    key =
+      /^Key([A-Z])$/.exec(press.code)?.[1]?.toLowerCase() ??
+      /^Digit([0-9])$/.exec(press.code)?.[1] ??
+      key;
+  }
+  const cased = key.length === 1 && key.toLowerCase() !== key.toUpperCase();
+  if (cased) key = press.shiftKey ? key.toUpperCase() : key.toLowerCase();
+  const modifiers = [
+    (isMac ? press.metaKey : press.ctrlKey) ? "$mod" : undefined,
+    isMac && press.ctrlKey ? "Control" : undefined,
+    !isMac && press.metaKey ? "Meta" : undefined,
+    press.altKey ? "Alt" : undefined,
+    press.shiftKey && (cased || key.length > 1) ? "Shift" : undefined,
+  ];
+  return [...modifiers.filter((part) => part !== undefined), key].join("+");
+}
+
 function matchesCombo(combo: KeyCombo, press: KeyPress, isMac: boolean): boolean {
   const sameCharacter =
     press.key.length === 1

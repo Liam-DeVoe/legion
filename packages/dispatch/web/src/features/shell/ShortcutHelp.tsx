@@ -1,4 +1,5 @@
 import { type ReactNode, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 
 import { SearchBox } from "../../components/SearchBox";
 import {
@@ -6,9 +7,12 @@ import {
   borderDefault,
   card,
   kbdHint,
+  linkHoverText,
+  linkText,
   textMutedOnSurface,
   textPrimaryOnSurface,
 } from "../../theme/classes";
+import { isPlainClick } from "../refs/picture-lightbox";
 import {
   ALT_KEY_LABEL,
   ariaKeyshortcuts,
@@ -17,6 +21,10 @@ import {
   MOD_KEY_LABEL,
 } from "./keymap";
 import { useCloseOnNavigation, useDialog } from "./useDialog";
+
+/** The id of Settings' Keyboard shortcuts section, where a person changes these keys (R14): the
+ *  help links to it, and the section takes the focus when the address names it. */
+export const SHORTCUTS_SECTION_ID = "keyboard-shortcuts";
 
 const KEY_GLYPHS: Record<string, string> = {
   Alt: ALT_KEY_LABEL,
@@ -30,7 +38,7 @@ const KEY_GLYPHS: Record<string, string> = {
 };
 
 /** Each step of a chord as shown (`$mod+k` → `⌘+k`), keyed by its position so `g g` renders twice. */
-function keyTokens(keys: string): { key: string; token: string }[] {
+export function keyTokens(keys: string): { key: string; token: string }[] {
   return keys
     .trim()
     .split(/\s+/)
@@ -82,7 +90,8 @@ export const SCOPE_ORDER: readonly KeymapScope[] = [
  * Every registered shortcut, grouped by scope and live-filtered. `snapshot` is the registry as
  * it stood when `?` was pressed — with focus still on the row the user was on, so per-row
  * bindings report the right availability — and `null` while closed. Inactive rows are greyed.
- * A route change closes it, like the search palette.
+ * A route change closes it, like the search palette. Its foot links to Settings' Keyboard
+ * shortcuts, where the person changes these keys.
  */
 export function ShortcutHelp({
   onClose,
@@ -176,6 +185,20 @@ export function ShortcutHelp({
               ))
             )}
           </div>
+          <p className={`border-t px-5 py-1 text-sm ${borderDefault}`}>
+            {/* A plain click closes the help before the move to Settings, so the focus the help
+                hands back as it closes lands before the section takes it; a click that opens a
+                new tab leaves the help open here. */}
+            <Link
+              className={`inline-flex min-h-11 items-center font-medium ${linkText} ${linkHoverText}`}
+              onClick={(event) => {
+                if (isPlainClick(event.nativeEvent)) onClose();
+              }}
+              to={`/settings#${SHORTCUTS_SECTION_ID}`}
+            >
+              Change these keys in Settings
+            </Link>
+          </p>
         </div>
       </div>
     </>

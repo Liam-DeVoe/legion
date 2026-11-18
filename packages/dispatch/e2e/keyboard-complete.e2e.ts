@@ -80,6 +80,7 @@ import {
 import { openIssue } from "./keyboard-issue";
 import type { KeyedWrite } from "./keyed-writes";
 import { type BrowserContext, expect, type Locator, type Page, test } from "./test";
+import { asUser } from "./users";
 
 // ---------------------------------------------------------------------------
 // Where the Inbox draws a question and its controls.
@@ -3914,4 +3915,353 @@ test("k-pane-head: no control drawn before Next change moves when Next change ap
     below > 1 || (Math.abs(below) <= 1 && appeared.left > copy.right),
     step("Next change comes after Copy reference")
   ).toBe(true);
+});
+
+// ---------------------------------------------------------------------------
+// k-remap (R14): Settings' Keyboard shortcuts lists every action with its keys, changes them for
+// the signed-in person, and every open page of the browser takes the change at once.
+// ---------------------------------------------------------------------------
+
+/** Snooze's label, as Settings, `?` and ⌘K write it. */
+const SNOOZE_LABEL = "Snooze the focused ask, or every selected ask";
+
+/** The Inbox's Copy reference, as Settings, `?` and ⌘K write it. */
+const COPY_REFERENCE_LABEL = "Copy the row's reference";
+
+/** The labels of the actions whose first press is `g`, of which the refusal of `g` names one. */
+const FIRST_PRESS_G =
+  /Go to (Inbox|Agents|Settings|Documents|project…)|Scroll the open document to its top/;
+
+/** Settings' Keyboard shortcuts section. */
+function shortcutsSection(page: Page): Locator {
+  return page.getByRole("region", { exact: true, name: "Keyboard shortcuts" });
+}
+
+/** The line of the action `label` under `scope` in Settings' Keyboard shortcuts. */
+function shortcutLine(page: Page, scope: string, label: string): Locator {
+  return shortcutsSection(page)
+    .getByRole("region", { exact: true, name: scope })
+    .getByRole("listitem", { exact: true, name: label });
+}
+
+/** Each action Settings lists, with the keys it draws for it: `inbox.snooze: b h`. */
+function settingsKeys(page: Page): Promise<string[]> {
+  return shortcutsSection(page)
+    .locator("li[data-keymap-action]")
+    .evaluateAll((items) =>
+      items.map(
+        (item) =>
+          `${item.getAttribute("data-keymap-action")}: ${[...item.querySelectorAll("kbd")]
+            .map((kbd) => kbd.textContent)
+            .join(" ")}`
+      )
+    );
+}
+
+/** The line of the action `label` under `scope` in the open `?` help. */
+function helpLine(page: Page, scope: string, label: string): Locator {
+  return page
+    .getByRole("dialog", { name: "Keyboard shortcuts" })
+    .getByRole("region", { exact: true, name: scope })
+    .getByRole("listitem")
+    .filter({ hasText: label });
+}
+
+/** Opens the `?` help over the focused row, holds it to `check`, and closes it again. */
+async function inHelp(page: Page, check: () => Promise<void>): Promise<void> {
+  const help = page.getByRole("dialog", { name: "Keyboard shortcuts" });
+  await page.keyboard.press("?");
+  await expect(help).toBeVisible();
+  await check();
+  await page.keyboard.press("Escape");
+  await expect(help).toHaveCount(0);
+}
+
+/** Selects the ask `askId` on the Inbox `page` shows, and focuses its row, where the Inbox's keys
+ *  act on it. */
+async function selectAsk(page: Page, askId: string): Promise<Locator> {
+  const row = page.locator(`[data-inbox-row="${askId}"]`);
+  await row.locator("time").first().click();
+  await expect(row).toHaveAttribute("data-inbox-selected", "true");
+  await row.focus();
+  return row;
+}
+
+// SLOW(>=2s): two pages of one browser, six keys recorded on one (each waiting out the second
+// press), and each read on the other through its keys, `?`, ⌘K and the rail, then both reloaded.
+test("k-remap: a key changed in Settings works at once on the Inbox in another page, a key another action holds is refused, and Reset all puts every key back", async ({
+  browser,
+}) => {
+  const step = (text: string) => `k-remap: ${text}`;
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Ledger rollout" });
+  const ask = await createAsk(issue.key, { question: "Ship the ledger rollout?" }, asker);
+  const context = await asUser(browser, "alice", { viewport: WIDE });
+  try {
+    const settings = await context.newPage();
+    const inbox = await context.newPage();
+    const copied = await recordClipboard(inbox);
+
+    // On Settings: every action, by its scope, whether or not its page is open.
+    await settings.goto("/settings");
+    await expect(
+      shortcutsSection(settings),
+      step("Settings has a Keyboard shortcuts section")
+    ).toBeVisible();
+    const snooze = shortcutLine(settings, "Inbox", SNOOZE_LABEL);
+    await expect(snooze.locator("kbd"), step("Settings lists Snooze with b and h")).toHaveText([
+      "b",
+      "h",
+    ]);
+    await expect(
+      shortcutLine(settings, "Board", "Move card down").locator("kbd"),
+      step("Settings lists the Board's actions, though no Board is open")
+    ).toHaveText(["Shift+J"]);
+    const agentsSearch = shortcutLine(settings, "Agents", "Search agents");
+    await expect(
+      agentsSearch.locator("kbd"),
+      step("Settings lists the Agents page's actions, though no Agents page is open")
+    ).toHaveText(["/"]);
+    await expect(
+      agentsSearch,
+      step("the Agents page's own / says that Search does not work there")
+    ).toContainText("Search does not work on the Agents page.");
+    const defaults = await settingsKeys(settings);
+    expect(defaults.length, step("Settings lists every action of the keymap")).toBeGreaterThan(100);
+
+    // On the Inbox, before any change: y copies the ask's reference.
+    await inbox.goto("/");
+    let row = await selectAsk(inbox, ask.id);
+    await inbox.keyboard.press("y");
+    await expect
+      .poll(async () => (await copied()).length, { message: step("y copies before the change") })
+      .toBe(1);
+
+    // b becomes Shift+B on Settings, and the Inbox takes it with no reload.
+    await snooze.getByRole("button", { exact: true, name: "Change b" }).click();
+    const recorder = settings.getByRole("button", { name: "Press the new key" });
+    await expect(recorder, step("Change b waits for the new key")).toBeFocused();
+    await settings.keyboard.press("Shift+B");
+    // The recorder draws a press it holds as a key too, so the change is read once it is kept.
+    await expect(
+      snooze.getByRole("button", { exact: true, name: "Change Shift+B" }),
+      step("b changes to Shift+B")
+    ).toBeVisible();
+    await expect(snooze.locator("kbd"), step("Snooze's keys are Shift+B and h")).toHaveText([
+      "Shift+B",
+      "h",
+    ]);
+    // The Inbox takes the change when the browser tells it, with no reload; the pane head's
+    // Snooze shows it as it does.
+    const headSnooze = paneHead(inbox).getByRole("button", { name: /^Snooze / });
+    await expect(
+      headSnooze.locator("kbd"),
+      step("the pane head's Snooze shows Shift+B")
+    ).toHaveText("Shift+B");
+    const menu = inbox.getByRole("menu");
+    await row.focus();
+    await inbox.keyboard.press("Shift+B");
+    await expect(menu, step("on the Inbox Shift+B opens the snooze menu")).toBeVisible();
+    await inbox.keyboard.press("Escape");
+    await expect(menu).toHaveCount(0);
+    await expect(row, step("Escape puts the focus back on the row")).toBeFocused();
+    await inbox.keyboard.press("b");
+    await expect(menu, step("on the Inbox b opens nothing")).toHaveCount(0);
+    await inbox.keyboard.press("h");
+    await expect(menu, step("on the Inbox h still opens the snooze menu")).toBeVisible();
+    await inbox.keyboard.press("Escape");
+    await expect(menu).toHaveCount(0);
+    await inHelp(inbox, async () => {
+      await expect(
+        helpLine(inbox, "Inbox", SNOOZE_LABEL).locator("kbd"),
+        step("? lists Shift+B and h for Snooze")
+      ).toHaveText(["Shift+B", "h"]);
+    });
+    const squeezed = (text: string) => text.replace(/\s+/g, "");
+    expect(await commandBarRows(inbox), step("⌘K shows Shift+B beside Snooze")).toContain(
+      squeezed(`${SNOOZE_LABEL} Shift+B or h`)
+    );
+
+    // Keys another action holds are refused, each naming it; c is taken, with a notice.
+    await snooze.getByRole("button", { exact: true, name: "Add key" }).click();
+    await expect(recorder, step("Add key waits for the new key")).toBeFocused();
+    const refusal = snooze.getByRole("alert");
+    await settings.keyboard.press("e");
+    await expect(refusal, step("e is refused, and the refusal names Dismiss")).toContainText(
+      "Dismiss"
+    );
+    await settings.keyboard.press("g");
+    await expect(
+      refusal,
+      step("g is refused, and the refusal names an action whose first press is g")
+    ).toHaveText(FIRST_PRESS_G);
+    await settings.keyboard.press("1");
+    await expect(refusal, step("1 is refused")).toHaveText(/^1 /);
+    await settings.keyboard.press("c");
+    await expect(
+      snooze.getByRole("button", { exact: true, name: "Change c" }),
+      step("c is taken")
+    ).toBeVisible();
+    await expect(refusal, step("c is taken, and no refusal shows")).toHaveCount(0);
+    await expect(snooze.locator("kbd"), step("c is one more key of Snooze")).toHaveText([
+      "Shift+B",
+      "h",
+      "c",
+    ]);
+    await expect(
+      snooze,
+      step("c is taken, and Settings says that Create issue does not work on the Inbox")
+    ).toContainText("Create issue does not work on the Inbox.");
+
+    // Go to Priorities takes g then r, two presses within one second.
+    const priorities = shortcutLine(settings, "Global", "Go to Priorities");
+    await priorities.getByRole("button", { exact: true, name: "Add key" }).click();
+    await expect(recorder, step("Go to Priorities' Add key waits for the new key")).toBeFocused();
+    await settings.keyboard.press("g");
+    await settings.keyboard.press("r");
+    await expect(
+      priorities.getByRole("button", { exact: true, name: "Change g then r" }),
+      step("g then r within one second is one key of two presses")
+    ).toBeVisible();
+    await expect(priorities.locator("kbd"), step("Go to Priorities' key is g then r")).toHaveText([
+      "g",
+      "r",
+    ]);
+    await row.focus();
+    await inHelp(inbox, async () => {
+      await expect(
+        helpLine(inbox, "Global", "Go to Priorities").locator("kbd"),
+        step("on the Inbox ? lists g r for Go to Priorities")
+      ).toHaveText(["g", "r"]);
+    });
+    await inbox.keyboard.press("g");
+    await inbox.keyboard.press("r");
+    await expect(inbox, step("on the Inbox g then r opens the Priorities page")).toHaveURL(
+      /\/priorities$/
+    );
+    await inbox.goto("/");
+    row = await selectAsk(inbox, ask.id);
+
+    // Create issue takes n.
+    const create = shortcutLine(settings, "Global", "Create issue");
+    await create.getByRole("button", { exact: true, name: "Change c" }).click();
+    await expect(recorder, step("Change c waits for the new key")).toBeFocused();
+    await settings.keyboard.press("n");
+    await expect(
+      create.getByRole("button", { exact: true, name: "Change n" }),
+      step("Create issue's c changes to n")
+    ).toBeVisible();
+    const newIssue = inbox.getByRole("button", { name: /^New issue/ });
+    await expect(newIssue.locator("kbd"), step("the rail's New issue shows n")).toHaveText("n");
+    await expect(newIssue, step("the rail's New issue is pressed with N")).toHaveAttribute(
+      "aria-keyshortcuts",
+      "N"
+    );
+    const createDialog = inbox.getByRole("dialog", { name: "Create issue" });
+    await row.focus();
+    await inbox.keyboard.press("n");
+    await expect(createDialog, step("on the Inbox n opens the create dialog")).toBeVisible();
+    await inbox.keyboard.press("Escape");
+    await expect(createDialog).toHaveCount(0);
+
+    // Copy reference loses its only key: y does nothing, and ⌘K still lists the action.
+    const copyReference = shortcutLine(settings, "Inbox", COPY_REFERENCE_LABEL);
+    await copyReference.getByRole("button", { exact: true, name: "Remove y" }).click();
+    await expect(copyReference.locator("kbd"), step("Copy reference has no key")).toHaveCount(0);
+    await expect(
+      paneHead(inbox)
+        .getByRole("button", { name: /^Copy reference / })
+        .locator("kbd"),
+      step("the pane head's Copy reference shows no key")
+    ).toHaveCount(0);
+    // The recorder starts again on each page load, so it is read just before the press.
+    const copiedBefore = (await copied()).length;
+    await row.focus();
+    await inbox.keyboard.press("y");
+    expect(await copied(), step("on the Inbox y copies nothing")).toHaveLength(copiedBefore);
+    expect(await commandBarRows(inbox), step("⌘K still lists Copy reference")).toContain(
+      squeezed(COPY_REFERENCE_LABEL)
+    );
+
+    // A reload of both pages keeps each change.
+    await settings.reload();
+    await expect(snooze.locator("kbd"), step("a reload keeps Snooze's keys")).toHaveText([
+      "Shift+B",
+      "h",
+      "c",
+    ]);
+    await expect(
+      priorities.locator("kbd"),
+      step("a reload keeps Go to Priorities' g r")
+    ).toHaveText(["g", "r"]);
+    await expect(create.locator("kbd"), step("a reload keeps Create issue's n")).toHaveText(["n"]);
+    await expect(
+      copyReference.locator("kbd"),
+      step("a reload keeps Copy reference with no key")
+    ).toHaveCount(0);
+    await inbox.reload();
+    row = await selectAsk(inbox, ask.id);
+    await inHelp(inbox, async () => {
+      await expect(
+        helpLine(inbox, "Inbox", SNOOZE_LABEL).locator("kbd"),
+        step("after a reload ? lists Shift+B, h and c for Snooze")
+      ).toHaveText(["Shift+B", "h", "c"]);
+      await expect(
+        helpLine(inbox, "Global", "Go to Priorities").locator("kbd"),
+        step("after a reload ? lists g r for Go to Priorities")
+      ).toHaveText(["g", "r"]);
+      await expect(
+        helpLine(inbox, "Global", "Create issue").locator("kbd"),
+        step("after a reload ? lists n for Create issue")
+      ).toHaveText(["n"]);
+      await expect(
+        helpLine(inbox, "Inbox", COPY_REFERENCE_LABEL),
+        step("after a reload ? lists no key for Copy reference")
+      ).toHaveCount(0);
+    });
+
+    // Reset all puts back each key, on Settings and on the Inbox.
+    await shortcutsSection(settings)
+      .getByRole("button", { exact: true, name: "Reset all" })
+      .click();
+    await expect
+      .poll(() => settingsKeys(settings), { message: step("Reset all puts back each key") })
+      .toEqual(defaults);
+    await expect(newIssue.locator("kbd"), step("after Reset all the rail shows c")).toHaveText("c");
+    await inHelp(inbox, async () => {
+      await expect(
+        helpLine(inbox, "Inbox", SNOOZE_LABEL).locator("kbd"),
+        step("after Reset all ? lists b and h for Snooze")
+      ).toHaveText(["b", "h"]);
+      await expect(
+        helpLine(inbox, "Global", "Create issue").locator("kbd"),
+        step("after Reset all ? lists c for Create issue")
+      ).toHaveText(["c"]);
+      await expect(
+        helpLine(inbox, "Global", "Go to Priorities"),
+        step("after Reset all ? lists no key for Go to Priorities")
+      ).toHaveCount(0);
+      await expect(
+        helpLine(inbox, "Inbox", COPY_REFERENCE_LABEL).locator("kbd"),
+        step("after Reset all ? lists y for Copy reference")
+      ).toHaveText(["y"]);
+    });
+    await inbox.keyboard.press("b");
+    await expect(menu, step("after Reset all b opens the snooze menu")).toBeVisible();
+    await inbox.keyboard.press("Escape");
+    await expect(menu).toHaveCount(0);
+
+    // The help has a link that opens the section.
+    await inbox.keyboard.press("?");
+    const help = inbox.getByRole("dialog", { name: "Keyboard shortcuts" });
+    await help.getByRole("link", { name: /Settings/ }).click();
+    await expect(inbox, step("the help's link opens Settings at the section")).toHaveURL(
+      /\/settings#keyboard-shortcuts$/
+    );
+    await expect(help, step("the help closes on the move")).toHaveCount(0);
+    await expect(shortcutsSection(inbox), step("the section is in view")).toBeInViewport();
+    await expect(shortcutsSection(inbox), step("the section has the focus")).toBeFocused();
+  } finally {
+    await context.close();
+  }
 });

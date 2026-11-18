@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { render, screen, within } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+import userEvent from "@testing-library/user-event";
+import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { actionBinding, createKeymap, type KeyBindingDescription } from "./keymap";
 import { catalogueEntry, KEYMAP_ACTIONS, keysOfAction, NO_PERSON_KEYS } from "./keymap-catalogue";
@@ -39,6 +40,36 @@ test("every scope has a section: `?` draws only the scopes `SCOPE_ORDER` lists",
   // array nothing holds to it, and a scope left out of it is drawn in no section at all.
   const ordered: string[] = [...SCOPE_ORDER];
   expect(ordered.sort()).toEqual(Object.keys(SCOPE_LABELS).sort());
+});
+
+/** Where the router is, as a test reads it. */
+function LocationProbe() {
+  const location = useLocation();
+  return <output data-testid="location">{`${location.pathname}${location.hash}`}</output>;
+}
+
+// R14: the help names where its keys are changed, and following the link closes it.
+test("the help links to Settings' Keyboard shortcuts, and a click on the link closes it", async () => {
+  const user = userEvent.setup();
+  let closed = 0;
+  const view = render(
+    <MemoryRouter initialEntries={["/"]}>
+      <ShortcutHelp onClose={() => (closed += 1)} snapshot={snapshot} />
+      <LocationProbe />
+    </MemoryRouter>
+  );
+  try {
+    const link = within(screen.getByRole("dialog", { name: "Keyboard shortcuts" })).getByRole(
+      "link",
+      { name: "Change these keys in Settings" }
+    );
+    expect(link.getAttribute("href")).toBe("/settings#keyboard-shortcuts");
+    await user.click(link);
+    expect(screen.getByTestId("location").textContent).toBe("/settings#keyboard-shortcuts");
+    expect(closed).toBeGreaterThan(0);
+  } finally {
+    view.unmount();
+  }
 });
 
 // R13: every page's actions are the catalogue's, and `?` draws each scope that has one

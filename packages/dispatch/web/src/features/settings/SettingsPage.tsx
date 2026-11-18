@@ -40,6 +40,7 @@ import {
   settingsSectionGap,
   settingsSubmitButton,
 } from "./classes";
+import { KeyboardShortcutsSection } from "./KeyboardShortcutsSection";
 import { ProjectSelect } from "./ProjectSelect";
 import { ProjectsSection } from "./ProjectsSection";
 
@@ -347,6 +348,7 @@ export function SettingsPage(): ReactNode {
           <DeliverySettingsForm />
         </section>
         <IssuePagePreference />
+        <KeyboardShortcutsSection />
       </div>
     </section>
   );
