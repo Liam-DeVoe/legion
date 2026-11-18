@@ -3998,11 +3998,11 @@ const ASSIGNEE_BADGE = 32;
 
 /** The issue header's `Repository:` line in its details rail from `md`, around the shared list
  *  trigger's wrapper: the 28 px of that wrapper (`badgeSelectRailWrapper`'s `md:min-h-7`), which
- *  the trigger overhangs below 1280 px (`badgeSelectRailTrigger`). The reference is the shared
- *  trigger's box, not the base's: at 6ef60ff0, the merge base when that line was read, the line
- *  holds main's visible text box, which this change replaces with the shared list's trigger, and
- *  the same read of that line, this row's run over that commit's build, measured 44 px at
- *  1024x768. */
+ *  the trigger overhangs below 1280 px (`badgeSelectRailTrigger`). The reference is the head's own
+ *  shared trigger box, not a reading at the base: R3's intended difference from main's visible
+ *  text box, which this change replaces with the shared list's trigger. At 6ef60ff0, the merge
+ *  base when that line was read, the line holds that text box, and the same read of that line,
+ *  this row's run over that commit's build, measured 44 px at 1024x768. */
 const REPOSITORY_LINE = 28;
 
 // R8: "The rows, the cards, the reading pane and the panes' widths do not change." The Inbox's
@@ -4204,7 +4204,7 @@ test.describe("R8's rows and cards", () => {
     }
     expect(
       changed,
-      "a card or row draws other parts, or a box of another size, than it drew at the base"
+      "a card or row draws other parts, or a box of another size, than it drew at the base, or the Repository line is not the shared trigger's box"
     ).toEqual([]);
   });
 });
