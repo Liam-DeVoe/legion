@@ -566,30 +566,35 @@ func TestARatingIsWrittenOnceInEitherOrder(t *testing.T) {
 	}
 }
 
-// An issue that ran three times has three plans and three retros. The third run's plan is its
+// An issue that ran three times has three plans and three retros. The second run's plan is its
 // owner's, with the document, a version that is no generation of the issue, and three tasks in
 // the order the owner gave them, which is neither order of their ids; the plan write answers it
-// whole. The plans were written in the order of generations 1, 3 and 2, so the owner's plan is
+// whole. The first and the third run's plans are default plans, of runs whose owner gave none. The
+// plans were written in the order of generations 1, 3 and 2, so the newest, generation 3, is
 // neither the first nor the last made, and its id is neither the least nor the greatest of the
-// three. The read lists that plan, the highest generation, and the three ratings whole, in the
-// order the retros ran: each its own score, reason, record and end. The scores (3, 1, 4) and the
-// reasons ("The review…", "The plan…", "Two tasks…") are each in neither ascending nor descending
-// order as the retros ran, so a sort of the ratings by either, in either direction, is seen; with
-// two retros one direction of each always matches the order they ran in.
+// three; and the owner's plan is not the newest, so a read that took an owner's plan over a default
+// one lists another. The read lists the newest plan, the highest generation, and the three ratings
+// whole, in the order the retros ran: each its own score, reason, record and end. The scores (3, 1,
+// 4) and the reasons ("The review…", "The plan…", "Two tasks…") are each in neither ascending nor
+// descending order as the retros ran, so a sort of the ratings by either, in either direction, is
+// seen; with two retros one direction of each always matches the order they ran in.
 func TestAnIssueWithThreeRetrosHasThreeRatings(t *testing.T) {
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	daemon := daemonSession("LEG")
 	document, version := uuid.NewString(), 7
-	owners := model.PlanRecord{ID: "50000000-0000-4000-8000-000000000000", Issue: issue, Generation: 3, Source: "owner", ArtifactID: &document, Version: &version,
+	owners := model.PlanRecord{ID: "10000000-0000-4000-8000-000000000000", Issue: issue, Generation: 2, Source: "owner", ArtifactID: &document, Version: &version,
 		Tasks: []model.PlanTask{
 			{ID: "web", Steps: []string{"planner", "implementer"}},
 			{ID: "api", Steps: []string{"implementer", "reviewer:security", "tester"}},
 			{ID: "docs", Steps: []string{"writer"}},
 		}}
+	newest := model.PlanRecord{ID: "50000000-0000-4000-8000-000000000000", Issue: issue, Generation: 3, Source: "default",
+		Tasks: []model.PlanTask{{ID: "default", Steps: defaultStepLine}}}
 	putPlanRecordOK(t, handler, issue, "90000000-0000-4000-8000-000000000000", defaultPlanBody(daemon, 1))
+	putPlanRecordOK(t, handler, issue, newest.ID, defaultPlanBody(daemon, 3))
 	written := putPlanRecordOK(t, handler, issue, owners.ID, map[string]any{
-		"actor": daemon, "generation": 3, "source": "owner", "artifact_id": document, "version": version,
+		"actor": daemon, "generation": 2, "source": "owner", "artifact_id": document, "version": version,
 		"tasks": []map[string]any{
 			{"id": "web", "steps": []string{"planner", "implementer"}},
 			{"id": "api", "steps": []string{"implementer", "reviewer:security", "tester"}},
@@ -597,9 +602,8 @@ func TestAnIssueWithThreeRetrosHasThreeRatings(t *testing.T) {
 		},
 	})
 	if !reflect.DeepEqual(written, owners) {
-		t.Fatalf("the owner's plan write answers %+v, want %+v", written, owners)
+		t.Fatalf("the owner's plan write answers %s, want %s", asJSON(t, written), asJSON(t, owners))
 	}
-	putPlanRecordOK(t, handler, issue, "10000000-0000-4000-8000-000000000000", defaultPlanBody(daemon, 2))
 	retros := map[int]struct {
 		started time.Time
 		rating  int
@@ -623,8 +627,8 @@ func TestAnIssueWithThreeRetrosHasThreeRatings(t *testing.T) {
 	if len(read.Issues) != 1 {
 		t.Fatalf("the read lists %d issues, want %s", len(read.Issues), issue)
 	}
-	if plan := read.Issues[0].Plan; plan == nil || !reflect.DeepEqual(*plan, owners) {
-		t.Fatalf("the read lists the plan %+v, want the owner's plan of generation 3, %+v", plan, owners)
+	if plan := read.Issues[0].Plan; plan == nil || !reflect.DeepEqual(*plan, newest) {
+		t.Fatalf("the read lists the plan %s, want the default plan of generation 3, %s", asJSON(t, plan), asJSON(t, newest))
 	}
 	want := []model.PlanRating{
 		{Rating: 3, Reason: "The review came late.", StepID: ids[1], EndedAt: new(at(11))},

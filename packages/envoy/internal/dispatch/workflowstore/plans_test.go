@@ -504,11 +504,11 @@ func TestProjectPlansListsTwoIssuesClosedAtOneMomentWhole(t *testing.T) {
 	}
 }
 
-// The plan is the newest node of the issue, the one of the highest generation, whatever order the
-// plans were made and written in and however their generations sort as text and their ids sort,
-// and every retro's rating is listed, in the order the retros ran: three, whose scores and reasons
-// are each in neither ascending nor descending order that way, so no sort of the ratings by either
-// is the run order.
+// The plan is the newest node of the issue, the one of the highest generation, whatever its source,
+// whatever order the plans were made and written in and however their generations sort as text and
+// their ids sort, and every retro's rating is listed, in the order the retros ran: three, whose
+// scores and reasons are each in neither ascending nor descending order that way, so no sort of
+// the ratings by either is the run order.
 func TestProjectPlansTakesTheNewestPlanAndEveryRating(t *testing.T) {
 	pool := storetest.Open(t).Pool
 	closed := t0.Add(5 * time.Hour)
@@ -518,24 +518,24 @@ func TestProjectPlansTakesTheNewestPlanAndEveryRating(t *testing.T) {
 	// (75, 50, 100, 0) and their ids are each in neither ascending nor descending order, and the
 	// newest, generation 40, is the first or the last of none of these orders but its generation's,
 	// so a read that took the plan made first or last, the least or the greatest id, or the first
-	// or the last generation as text lists another plan. Each plan has tasks of its own, and the
-	// newest's three are in neither order of their ids.
-	newestID, document := "50000000-0000-4000-8000-000000000000", uuid.NewString()
+	// or the last generation as text lists another plan. The newest is the issue's one default
+	// plan, of a run whose owner gave none, and the three older plans are its owner's, each with
+	// tasks of its own, so a read that took an owner's plan over a default one lists another too.
+	newestID := "50000000-0000-4000-8000-000000000000"
 	putPlan(t, pool, PlanWrite{
 		ID: "30000000-0000-4000-8000-000000000000", Issue: "LEG-1", Generation: new(int64(10)), Source: new(PlanSourceOwner),
 		Document: &PlanDocument{ArtifactID: uuid.NewString(), Version: 3}, Tasks: []PlanTask{{ID: "docs", Steps: []string{"writer"}}},
 	}, minute(75))
-	putPlan(t, pool, PlanWrite{
-		ID: newestID, Issue: "LEG-1", Generation: new(int64(40)), Source: new(PlanSourceOwner), Document: &PlanDocument{ArtifactID: document, Version: 4},
-		Tasks: []PlanTask{
-			{ID: "ui", Steps: []string{"implementer", "reviewer"}}, {ID: "api", Steps: []string{"implementer"}}, {ID: "docs", Steps: []string{"writer", "implementer"}},
-		},
-	}, minute(50))
+	putPlan(t, pool, defaultPlan(newestID, "LEG-1", 40), minute(50))
 	putPlan(t, pool, PlanWrite{
 		ID: "90000000-0000-4000-8000-000000000000", Issue: "LEG-1", Generation: new(int64(2)), Source: new(PlanSourceOwner),
 		Document: &PlanDocument{ArtifactID: uuid.NewString(), Version: 1}, Tasks: []PlanTask{{ID: "api", Steps: []string{"implementer"}}},
 	}, minute(100))
-	putPlan(t, pool, defaultPlan("10000000-0000-4000-8000-000000000000", "LEG-1", 9), minute(0))
+	putPlan(t, pool, PlanWrite{
+		ID: "10000000-0000-4000-8000-000000000000", Issue: "LEG-1", Generation: new(int64(9)), Source: new(PlanSourceOwner),
+		Document: &PlanDocument{ArtifactID: uuid.NewString(), Version: 2},
+		Tasks:    []PlanTask{{ID: "ui", Steps: []string{"implementer", "reviewer"}}, {ID: "api", Steps: []string{"implementer"}}},
+	}, minute(0))
 	third := ratedRetro(t, pool, "LEG-1", 9, minute(200), minute(201), 4, "Two tasks were one.")
 	second := ratedRetro(t, pool, "LEG-1", 2, minute(120), minute(121), 1, "The plan was late.")
 	first := ratedRetro(t, pool, "LEG-1", 1, minute(20), minute(22), 3, "The review came late.")
@@ -547,12 +547,9 @@ func TestProjectPlansTakesTheNewestPlanAndEveryRating(t *testing.T) {
 	if len(read) != 1 || read[0].Plan == nil {
 		t.Fatalf("the read lists %d issues, want LEG-1 with a plan", len(read))
 	}
-	newest := Plan{ID: newestID, Issue: "LEG-1", Source: PlanSourceOwner, Document: &PlanDocument{ArtifactID: document, Version: 4}, Generation: 40,
-		Tasks: []PlanTask{
-			{ID: "ui", Steps: []string{"implementer", "reviewer"}}, {ID: "api", Steps: []string{"implementer"}}, {ID: "docs", Steps: []string{"writer", "implementer"}},
-		}}
+	newest := defaultPlanRead(newestID, "LEG-1", 40)
 	if plan := read[0].Plan; planText(*plan) != planText(newest) {
-		t.Fatalf("the plan of LEG-1 is\n%s\nwant the owner's plan of generation 40\n%s", planText(*plan), planText(newest))
+		t.Fatalf("the plan of LEG-1 is\n%s\nwant the default plan of generation 40\n%s", planText(*plan), planText(newest))
 	}
 	want := IssuePlan{Issue: "LEG-1", Title: "Title of LEG-1", ClosedAt: closed, Plan: &newest,
 		Ratings: []Rating{
@@ -615,19 +612,22 @@ func TestProjectPlansTakesThePlanMadeLastThenTheGreatestID(t *testing.T) {
 
 // A plan is newer than one of a lower generation, then, of one generation, than one made earlier,
 // then, made at one moment, than one of a lesser id, whatever the keys after the first that differs
-// say. Of these plans, listed oldest first, each is newer than every plan before it, than none after
-// it and not than itself, and newer than nil, the read's plan before its first row; so the read
-// takes one plan of an issue whatever order its rows come in.
+// say and whatever the plans' sources. Of these plans, listed oldest first, each is newer than
+// every plan before it, than none after it and not than itself, and newer than nil, the read's plan
+// before its first row; so the read takes one plan of an issue whatever order its rows come in. The
+// oldest plan and the one of generation 2 made at minute 30 with the lesser id are owners' plans,
+// the rest default plans, so a rule that took an owner's plan over a default one, before the
+// generation or as a tie of it, finds an owner's plan newer than a plan after it.
 func TestAPlanIsNewerByGenerationThenMadeThenID(t *testing.T) {
 	plans := []madePlan{
-		{plan: Plan{ID: "9c000000-0000-4000-8000-000000000000", Generation: 1}, made: minute(50)},
-		{plan: Plan{ID: "5c000000-0000-4000-8000-000000000000", Generation: 2}, made: minute(10)},
-		{plan: Plan{ID: "1c000000-0000-4000-8000-000000000000", Generation: 2}, made: minute(30)},
-		{plan: Plan{ID: "3c000000-0000-4000-8000-000000000000", Generation: 2}, made: minute(30)},
-		{plan: Plan{ID: "2c000000-0000-4000-8000-000000000000", Generation: 3}, made: minute(0)},
+		{plan: Plan{ID: "9c000000-0000-4000-8000-000000000000", Generation: 1, Source: PlanSourceOwner}, made: minute(50)},
+		{plan: Plan{ID: "5c000000-0000-4000-8000-000000000000", Generation: 2, Source: PlanSourceDefault}, made: minute(10)},
+		{plan: Plan{ID: "1c000000-0000-4000-8000-000000000000", Generation: 2, Source: PlanSourceOwner}, made: minute(30)},
+		{plan: Plan{ID: "3c000000-0000-4000-8000-000000000000", Generation: 2, Source: PlanSourceDefault}, made: minute(30)},
+		{plan: Plan{ID: "2c000000-0000-4000-8000-000000000000", Generation: 3, Source: PlanSourceDefault}, made: minute(0)},
 	}
 	text := func(plan madePlan) string {
-		return fmt.Sprintf("generation %d made %s id %s", plan.plan.Generation, plan.made.Format(time.RFC3339), plan.plan.ID)
+		return fmt.Sprintf("generation %d made %s id %s source %s", plan.plan.Generation, plan.made.Format(time.RFC3339), plan.plan.ID, plan.plan.Source)
 	}
 	for older := range plans {
 		if !plans[older].newerThan(nil) {
