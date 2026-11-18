@@ -22,7 +22,7 @@ on:
 
 jobs:
   dispatch-ui:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 15
     # The server the database cases of e2e/__tests__/psql-session.test.ts, harness-stacks.test.ts
     # and replace-blocks-guard.test.ts make their own databases on, through LEGION_TEST_PG_DSN in
