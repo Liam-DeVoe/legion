@@ -286,7 +286,7 @@ EXCEPTIONS = (
             "so on such a change envoy-go does not run and the seed corpus would run nowhere. Its "
             "own two steps are the corpus comparison and the 120-second fuzz, which seeds from "
             "that same corpus, so both name the function. envoy-go's step \"Count the database "
-            "broker suites' skips\" runs ./internal/broker/... whole through "
+            "broker suites' skips\" runs every broker package but the race lane's through "
             "packages/envoy/scripts/database-skips.sh, so a listing counts the function run there "
             "too, but it skips there for want of AIRLOCK_MODEL, as that script's EXPECTED_SKIPS "
             "records, so the corpus runs only in airlock-lean."
@@ -303,11 +303,11 @@ EXCEPTIONS = (
             "The same reason as FuzzAirlock above: airlock-lean's corpus comparison runs the host "
             "shapes a rules file may hold through both the Go validation and the Lean model's, "
             "with AIRLOCK_MODEL set, and runs on changes that do not start envoy-go. envoy-go's "
-            "step \"Count the database broker suites' skips\" runs ./internal/broker/... whole "
-            "through packages/envoy/scripts/database-skips.sh, so a listing counts the function "
-            "run there too, but it skips there for want of AIRLOCK_MODEL, as that script's "
-            "EXPECTED_SKIPS records, so the comparison runs only in airlock-lean. The fuzz step "
-            "runs FuzzAirlock alone and does not name it."
+            "step \"Count the database broker suites' skips\" runs every broker package but the "
+            "race lane's through packages/envoy/scripts/database-skips.sh, so a listing counts "
+            "the function run there too, but it skips there for want of AIRLOCK_MODEL, as that "
+            "script's EXPECTED_SKIPS records, so the comparison runs only in airlock-lean. The fuzz "
+            "step runs FuzzAirlock alone and does not name it."
         ),
     ),
 )
@@ -337,13 +337,16 @@ class AuditedScript:
 # one `go test` it runs.
 AUDITED_SCRIPTS = {
     # It moves into packages/envoy (`cd "$(dirname "$0")/.."`) and, called with no argument, runs
-    # `go test -json -count=1 -timeout "${GO_TEST_TIMEOUT:-15m}" ./internal/broker/...` once, with
-    # no -tags, -race, -run or -skip, then counts the skips in its report. With `--report FILE` it
-    # reads a report and runs no test; a step that passes an argument is not read through here.
+    # `go list ./internal/broker/... | grep -Ev '/internal/broker/natscallout$' | xargs go test
+    # -json -count=1 -timeout "${GO_TEST_TIMEOUT:-15m}"` once, with no -tags, -race, -run or -skip:
+    # the broker's packages less the race lane's under them (ci_job_reads.DATABASE_SKIPS_PATTERN),
+    # then counts the skips in its report. With `--report FILE` it reads a report and runs no
+    # test; a step that passes an argument is not read through here.
     "packages/envoy/scripts/database-skips.sh": AuditedScript(
         module="packages/envoy",
-        command="go test -json -count=1 -timeout 15m ./internal/broker/...",
-        sha256="6e12e18c93e264884b9de33e3ce66de956a5f5b31d6270cbac52a383c1e9146d",
+        command="go list ./internal/broker/... | grep -Ev '/internal/broker/natscallout$' | "
+                "xargs go test -json -count=1 -timeout 15m",
+        sha256="04de3fe6bf954c96083bd89c81ece349ce28a18c7492fd506862ffb3192368ff",
     ),
 }
 # A variable a step sets before its command, as the steps write it: GODEBUG=checkfinalizers=1.

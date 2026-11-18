@@ -7,11 +7,16 @@
 # which go test counts as a pass, when that variable is unset, and a t.Skip left in one skips it
 # with the variable set. With no argument it runs, from packages/envoy,
 #
-#   go test -json -count=1 -timeout "${GO_TEST_TIMEOUT:-15m}" ./internal/broker/...
+#   go list ./internal/broker/... | grep -Ev '/internal/broker/natscallout$' |
+#     xargs go test -json -count=1 -timeout "${GO_TEST_TIMEOUT:-15m}"
 #
-# and reads that report; the -timeout bounds each package's test binary, not the run, since the
-# packages run several at a time, so a caller that must bound the run sets a limit of its own (CI's
-# step does). `--report FILE` reads FILE instead and runs nothing, which a control
+# and reads that report. The grep leaves out the broker's packages the race lane runs (each a
+# package of ENVOY_RACE_LANE in .github/scripts/ci_job_reads.py, which derives the same pattern as
+# DATABASE_SKIPS_PATTERN and refuses this script when its grep says otherwise): the auth service's
+# natscallout opens no database, and envoy-go-race runs it under the detector, so a run here would
+# be its second in the same CI run. The -timeout bounds each package's test binary, not the run,
+# since the packages run several at a time, so a caller that must bound the run sets a limit of its
+# own (CI's step does). `--report FILE` reads FILE instead and runs nothing, which a control
 # uses. It prints each skipped test as `SKIP PACKAGE TEST`, then `database_skips=N`, and for a run
 # of its own `go_test_exit=E`. A report that is missing, empty or holds no test of a broker
 # package is no count at all: it prints `database_skips=UNKNOWN` and names what it could not read,
@@ -48,7 +53,8 @@ case "${1:-}" in
   "")
     report="$work/report.json"
     go_test_exit=0
-    go test -json -count=1 -timeout "${GO_TEST_TIMEOUT:-15m}" ./internal/broker/... >"$report" 2>"$work/stderr" || go_test_exit=$?
+    { go list ./internal/broker/... | grep -Ev '/internal/broker/natscallout$' |
+      xargs go test -json -count=1 -timeout "${GO_TEST_TIMEOUT:-15m}"; } >"$report" 2>"$work/stderr" || go_test_exit=$?
     ;;
   *)
     echo "database-skips.sh: unknown argument $1 (run it with none, or with --report FILE)" >&2
