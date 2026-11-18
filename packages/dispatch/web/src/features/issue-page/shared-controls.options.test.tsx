@@ -4037,6 +4037,60 @@ test("inside NoTooltips Request changes opens no dialog while Approve's write is
   }
 });
 
+/** The chip as a header that draws its actions only while its request waits draws it, as the new
+ *  page's header does: the read after a review then removes Approve and Request changes. */
+function ReadWaitingApprovalChip({ id }: { id: string }): ReactNode {
+  const read = useQuery({ queryFn: () => api.getArtifact(id), queryKey: ["artifact", id] });
+  return read.data === undefined ? null : (
+    <ApprovalChip
+      artifact={read.data}
+      showActions={read.data.approval?.state === "awaiting"}
+      variant="header"
+    />
+  );
+}
+
+// Where the read after a change request removes Request changes, the dialog has no opener to give
+// the focus back to. Inside `NoTooltips` the chip's one hand-over then goes to the chip, as it does
+// once an approval removes Approve, and not to the body. Outside `NoTooltips` the chip moves no
+// focus, as on `main`.
+test("inside NoTooltips a change request whose read removes Request changes hands the focus to the chip", async () => {
+  const user = userEvent.setup();
+  const changesRequested = doc(SPEC_ID, "spec.md", {
+    latest_version: 2,
+    state: "changes_requested",
+    version: 2,
+  });
+  for (const surface of ["inside", "outside"] as const) {
+    let read = awaitingSpec();
+    stubs.getArtifact.mockImplementation(async () => read);
+    const createArtifactReview = spyOn(api, "createArtifactReview").mockImplementation(async () => {
+      read = changesRequested;
+      return specReview("changes_requested", "The plan names no owner");
+    });
+    const view = draw(<ReadWaitingApprovalChip id={SPEC_ID} />, surface);
+    try {
+      const scope = within(view.container);
+      const requestChanges = await scope.findByRole("button", { name: "Request changes" });
+      requestChanges.focus();
+      await user.keyboard("{Enter}");
+      const dialog = within(await scope.findByRole("dialog", { name: "Request changes" }));
+      await user.type(dialog.getByRole("textbox", { name: "Reason" }), "The plan names no owner");
+      dialog.getByRole("button", { name: "Request changes" }).focus();
+      await user.keyboard("{Enter}");
+      const chip = await scope.findByRole("button", { name: "Changes requested" });
+      await waitFor(() => expect(scope.queryByRole("dialog")).toBeNull());
+      await settleReads();
+      expect(createArtifactReview).toHaveBeenCalledTimes(1);
+      expect(scope.queryByRole("button", { name: "Request changes" })).toBeNull();
+      expect(document.activeElement).toBe(surface === "inside" ? chip : document.body);
+    } finally {
+      createArtifactReview.mockRestore();
+      undraw(view);
+    }
+  }
+});
+
 /** Runs `run` with `copyText`'s fallback as a browser runs it: `document.execCommand` copies, and
  *  each command it is given is recorded in `copied`; the temporary text box's `select()` takes the
  *  focus. The clipboard a case sets (`setClipboard`) is put back after. */
@@ -4164,6 +4218,55 @@ test("inside NoTooltips a copy leaves a focus the reader moved elsewhere where i
       }
     }
   });
+});
+
+// A copy's write to the clipboard is the button's write: inside `NoTooltips` a press while it is
+// out does nothing, so a second Enter makes no second write and draws no "Copied" before the first
+// write lands, and the focus stays on the button. Once the write lands, a press made while "Copied"
+// shows copies again. Outside `NoTooltips` each press writes, as on `main`.
+test("inside NoTooltips a copy pressed again by Enter while its write is out makes no second write", async () => {
+  const user = userEvent.setup();
+  const originalClipboard = navigator.clipboard;
+  const writes: { resolve: () => void }[] = [];
+  setClipboard({
+    writeText: () => {
+      const write = Promise.withResolvers<void>();
+      writes.push(write);
+      return write.promise;
+    },
+  });
+  try {
+    for (const surface of ["inside", "outside"] as const) {
+      writes.length = 0;
+      const view = draw(<CopyButton value="CORE-1" what="issue key" />, surface);
+      try {
+        const scope = within(view.container);
+        const button = scope.getByRole("button", { name: "Copy issue key CORE-1" });
+        button.focus();
+        await user.keyboard("{Enter}");
+        await waitFor(() => expect(writes).toHaveLength(1));
+        await user.keyboard("{Enter}");
+        await settleReads();
+        expect(writes).toHaveLength(surface === "inside" ? 1 : 2);
+        if (surface === "inside") {
+          expect(scope.queryByText("Copied")).toBeNull();
+          expect(document.activeElement).toBe(button);
+        }
+        for (const write of writes) write.resolve();
+        await scope.findByText("Copied");
+        if (surface === "inside") {
+          await user.keyboard("{Enter}");
+          await waitFor(() => expect(writes).toHaveLength(2));
+          expect(document.activeElement).toBe(button);
+        }
+      } finally {
+        for (const write of writes) write.resolve();
+        undraw(view);
+      }
+    }
+  } finally {
+    setClipboard(originalClipboard);
+  }
 });
 
 /** CORE-1's priority line on the issue as `read` answers it: a write of what the issue advances

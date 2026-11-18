@@ -426,22 +426,29 @@ export function ApprovalChip({
     },
   });
 
-  // Inside `NoTooltips` a press of Approve is remembered until its write stops pending, which is
-  // once the new approval is read (`onSuccess` returns its reads). Approve is never `disabled`
-  // there, so while it is drawn it keeps the focus and nothing moves it. Once an approval that
-  // reads approved has taken Approve off the page, a focus that fell with it to the document
-  // (`focusOnDocument`) goes to the chip; a focus anywhere else is left where it is. The press is
-  // forgotten whenever the write stops pending, approved or not. It is state, not a ref, so the
-  // render the press makes reads the write pending, and a write that ends before its own pending
-  // render is drawn still ends the press.
-  const [approvePressed, setApprovePressed] = useState(false);
+  // Inside `NoTooltips` the review sent, by a press of Approve or by the Request changes dialog's
+  // submit, is remembered until its write stops pending, which is once the new approval is read
+  // (`onSuccess` returns its reads, and closes a change request's dialog before the write stops
+  // pending). Approve and Request changes are never `disabled` there, so while they are drawn they
+  // keep the focus, and the dialog gives it back to Request changes as it closes. Once the read
+  // has taken the sent review's own button off the page, Approve for an approval and Request
+  // changes for a change request, a focus that fell with it to the document (`focusOnDocument`)
+  // goes to the chip; a focus anywhere else is left where it is. A refused change request keeps
+  // its dialog open with its error, and the focus in it. The review is forgotten whenever the
+  // write stops pending, landed or not. It is state, not a ref, so the render the press makes
+  // reads the write pending, and a write that ends before its own pending render is drawn still
+  // ends it.
+  const [sentReview, setSentReview] = useState<CreateArtifactReviewInput["state"] | null>(null);
   const approveButton = useRef<HTMLButtonElement>(null);
+  const requestChangesButton = useRef<HTMLButtonElement>(null);
   const chipButton = useRef<HTMLButtonElement>(null);
   useEffect(() => {
-    if (!approvePressed || review.isPending) return;
-    setApprovePressed(false);
-    if (approveButton.current === null && focusOnDocument()) chipButton.current?.focus();
-  }, [approvePressed, review.isPending]);
+    if (sentReview === null || review.isPending) return;
+    setSentReview(null);
+    if (requestChangesOpen) return;
+    const sentButton = sentReview === "approved" ? approveButton : requestChangesButton;
+    if (sentButton.current === null && focusOnDocument()) chipButton.current?.focus();
+  }, [sentReview, review.isPending, requestChangesOpen]);
 
   if (approval === undefined || approval.state === "draft") {
     return null;
@@ -506,7 +513,7 @@ export function ApprovalChip({
                   return;
                 }
                 submitGuard.guard(() => {
-                  if (page !== null) setApprovePressed(true);
+                  if (page !== null) setSentReview("approved");
                   review.mutate({ state: "approved" });
                 });
               }}
@@ -536,6 +543,7 @@ export function ApprovalChip({
               }
               setRequestChangesOpen(true);
             }}
+            ref={requestChangesButton}
             type="button"
           >
             {requestChangesLabel}
@@ -558,7 +566,10 @@ export function ApprovalChip({
             setRequestChangesOpen(false);
           }}
           onSubmit={(reason) =>
-            submitGuard.guard(() => review.mutate({ reason, state: "changes_requested" }))
+            submitGuard.guard(() => {
+              if (page !== null) setSentReview("changes_requested");
+              review.mutate({ reason, state: "changes_requested" });
+            })
           }
           saving={review.isPending}
         />
