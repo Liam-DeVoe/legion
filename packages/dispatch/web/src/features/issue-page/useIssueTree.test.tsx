@@ -5305,6 +5305,34 @@ function eventWhileCommentsOut(latency: number): RuleWay {
   };
 }
 
+/** A write naming another issue (`writeKeyOf(OTHER_KEY)`) pressed on the page, so a write of this
+ *  issue too; the reader leaves; a second write under the same key, pressed on another page while
+ *  the first is out, which names no issue of the page and began with no tree drawn; the first
+ *  settles; the reader comes back; an event of the issue while the second is out, read at once,
+ *  since no write of this issue is out; the second then settles. */
+const EVENT_DURING_OTHER_WRITE_UNDER_OWN_KEY: RuleWay = {
+  words:
+    "a write naming another issue pressed on the page, a second under its key pressed on another page while it is out, the first settling, the reader back and an event of the issue while the second is out",
+  does: async (rig) => {
+    const settleFirst = holdKeyedWrite(rig, writeKeyOf(OTHER_KEY));
+    await tick(500, 10);
+    leave(rig);
+    await tick(500, 10);
+    const settleSecond = holdKeyedWrite(rig, writeKeyOf(OTHER_KEY));
+    await tick(500, 10);
+    act(() => settleFirst());
+    await tick(500, 10);
+    comeBack(rig);
+    await quiet(rig);
+    const before = ruleReads(rig);
+    await commentsEvent(rig);
+    await tick(1_500, 10);
+    expect(ruleReads(rig) - before, "the reads while the second write is out").toBe(1);
+    act(() => settleSecond());
+    await tick(50, 10);
+  },
+};
+
 const WAYS = {
   mount: {
     words: "a new surface mounting",
@@ -5506,6 +5534,7 @@ const WAYS = {
   eventSoonAfterCommentsRead: EVENT_SOON_AFTER_COMMENTS_READ,
   eventWhileCommentsOut600: eventWhileCommentsOut(600),
   eventWhileCommentsOut1500: eventWhileCommentsOut(1_500),
+  eventDuringOtherWriteUnderOwnKey: EVENT_DURING_OTHER_WRITE_UNDER_OWN_KEY,
 } satisfies Record<string, RuleWay>;
 
 /** How many reads of a query a way starts: a count, or the least and the most. */
@@ -6282,6 +6311,14 @@ const READ_RULES: readonly ReadRule[] = [
   { read: "tree", state: "answered", observed: true, way: "eventWhileCommentsOut600", now: 1 },
   { read: "spec", state: "answered", observed: true, way: "eventWhileCommentsOut600", now: 1 },
   { read: "tree", state: "answered", observed: true, way: "eventWhileCommentsOut1500", now: 1 },
+  // A write of another issue is no write of this one, whatever key it shares with one.
+  {
+    read: "tree",
+    state: "answered",
+    observed: true,
+    way: "eventDuringOtherWriteUnderOwnKey",
+    now: 1,
+  },
 ];
 
 describe("the rule for when a read of the tree or of a view starts", () => {
