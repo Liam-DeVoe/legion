@@ -106,7 +106,7 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 		if err != nil {
 			return err
 		}
-		if err := e.moveTask(ctx, tx, &issue, &w, phase.Done, leaveState(w, status)); err != nil {
+		if err := e.moveTask(ctx, tx, &issue, &w, phase.Done, w.Place, leaveState(w, status)); err != nil {
 			return err
 		}
 		issue.Hold = nil
@@ -353,7 +353,7 @@ func (e *Engine) beginLinger(ctx context.Context, tx pgx.Tx, root record.Issue, 
 	if err != nil {
 		return err
 	}
-	if err := e.moveTask(ctx, tx, &root, &w, phase.Done, leaveState(w, status)); err != nil {
+	if err := e.moveTask(ctx, tx, &root, &w, phase.Done, w.Place, leaveState(w, status)); err != nil {
 		return err
 	}
 	root.Hold, root.Awaiting = nil, nil

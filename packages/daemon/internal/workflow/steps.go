@@ -215,11 +215,13 @@ func recordsSteps(issue record.Issue) bool { return claim.IsIssueKey(issue.Key) 
 
 // upgradedStart is the agent and the moment of the start of a step at that no start of this
 // release counted, which ran under the release before: the agent its start would have named
-// (startAgent), and the moment its phase worker's entry was raised. Accepting's architect raises
-// no entry, and so the moment is unknown there. A merge whose merger's entry was never raised is
-// one GitHub had already made when the issue reached merging, which started no merger.
+// (startAgent), and the moment its phase worker's entry was raised. The worker is the role that
+// works issue at at (record.Issue.RoleAt), the role of its running step at step. Accepting's
+// architect raises no entry, and so the moment is unknown there. A merge whose merger's entry was
+// never raised is one GitHub had already made when the issue reached merging, which started no
+// merger.
 func (e *Engine) upgradedStart(ctx context.Context, tx pgx.Tx, issue record.Issue, at phase.Phase) (claim.Token, time.Time, error) {
-	worker := phase.RoleFor(at)
+	worker := issue.RoleAt(at)
 	if worker == claim.RoleArchitect {
 		agent, err := e.startAgent(ctx, tx, issue, at)
 		return agent, time.Time{}, err

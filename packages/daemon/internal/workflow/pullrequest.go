@@ -526,7 +526,7 @@ func (e *Engine) closeMerged(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	if err := e.endStep(ctx, tx, issue, StepEnd{Result: "passed"}); err != nil {
 		return nil, err
 	}
-	if err := e.moveTask(ctx, tx, &issue, &w, row.To, record.TaskDone); err != nil {
+	if err := e.moveTask(ctx, tx, &issue, &w, row.To, row.ToPlace, record.TaskDone); err != nil {
 		return nil, err
 	}
 	issue.Hold = nil

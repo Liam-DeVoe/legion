@@ -1646,9 +1646,10 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// does not answer for that however its commit reads (record.PhaseRow.EntryMovedBack,
 	// api/handoff.go). It is read here and not below because issue.Phase is moved onto row.To a
 	// few lines down, which would leave the start comparing a phase with itself. A move back is one
-	// by the order of the walk's task (Walk.MovesBack), so a task in another order than today's
-	// counts its own moves back, and an issue with no plan rows counts by today's line.
-	movedBack := w.MovesBack(issue.Phase, row.To)
+	// by the order of the walk's task (Walk.MovesBack), its places for an issue with plan rows, so a
+	// task in another order than today's counts its own moves back, a move from one step that runs
+	// as step back to another counts as one, and an issue with no plan rows counts by today's line.
+	movedBack := w.MovesBack(row)
 	if movedBack {
 		if err := e.recordPass(ctx, tx, issue, w.Task, issue.Phase, row.To, pr); err != nil {
 			return err
@@ -1687,7 +1688,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if row.To == phase.Done {
 		state = record.TaskDone
 	}
-	if err := e.moveTask(ctx, tx, &issue, &w, row.To, state); err != nil {
+	if err := e.moveTask(ctx, tx, &issue, &w, row.To, row.ToPlace, state); err != nil {
 		return err
 	}
 	issue.Hold = nil

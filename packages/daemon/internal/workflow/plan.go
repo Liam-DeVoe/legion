@@ -519,7 +519,7 @@ func (e *Engine) restartTask(ctx context.Context, tx pgx.Tx, issue record.Issue,
 			return nil, err
 		}
 	}
-	if err := e.moveTask(ctx, tx, &issue, &w, first, record.TaskRunning); err != nil {
+	if err := e.moveTask(ctx, tx, &issue, &w, first, record.TaskPlace{Kind: record.PlaceStep, Position: 1}, record.TaskRunning); err != nil {
 		return nil, err
 	}
 	issue.Hold = nil

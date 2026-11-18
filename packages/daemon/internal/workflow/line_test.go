@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"maps"
 	"slices"
 	"testing"
 
@@ -116,10 +117,15 @@ func TestAMoveOfTheTaskSetsTheRoleOfItsStep(t *testing.T) {
 			return err
 		}
 		for _, move := range []struct {
-			to   phase.Phase
-			role claim.Role
-		}{{phase.Implementing, "implementer"}, {phase.Reviewing, "reviewer"}, {phase.Retro, ""}} {
-			if err := engine.moveTask(ctx, tx, issue, &w, move.to, record.TaskRunning); err != nil {
+			to    phase.Phase
+			place record.TaskPlace
+			role  claim.Role
+		}{
+			{phase.Implementing, record.TaskPlace{Kind: record.PlaceStep, Position: 1}, "implementer"},
+			{phase.Reviewing, record.TaskPlace{Kind: record.PlaceStep, Position: 2}, "reviewer"},
+			{phase.Retro, record.TaskPlace{Kind: record.PlaceRetro}, ""},
+		} {
+			if err := engine.moveTask(ctx, tx, issue, &w, move.to, move.place, record.TaskRunning); err != nil {
 				return err
 			}
 			read, err := engine.store.Issue(ctx, tx, root.Key)
@@ -427,4 +433,52 @@ func TestATaskInAnyOrderGoesBackToAStepBeforeIt(t *testing.T) {
 	if got := issueOf(t, todays, engine, today.Key); got.Phase != phase.Testing {
 		t.Fatalf("after the refused move %s stands in %s, want testing", today.Key, got.Phase)
 	}
+}
+
+// seedTwoDeploymentSteps writes the plan `implementer checker linter` of key's run, checker of the
+// type testing and linter of the type review, with its task running at step at, which runs as
+// step, and the issue standing there.
+func seedTwoDeploymentSteps(t *testing.T, pool *pgxpool.Pool, key string, generation uint64, at int) {
+	t.Helper()
+	seedStepsPlan(t, pool, key, generation, "implementer", "checker", "linter")
+	for role, typ := range map[string]string{"checker": "testing", "linter": "review"} {
+		if _, err := pool.Exec(t.Context(), "update plan_steps set type = $3 where issue = $1 and task = 'a' and role = $2", key, role, typ); err != nil {
+			t.Fatalf("store the type of %s: %v", role, err)
+		}
+	}
+	seedRecord(t, pool, func(tx pgx.Tx) error {
+		return record.NewStore().MoveTask(t.Context(), tx, key, generation, "a", record.TaskPlace{Kind: record.PlaceStep, Position: at}, record.TaskRunning)
+	})
+}
+
+// A task moves to the place of the row it takes, not to the first place whose step runs as the
+// row's phase: in `implementer checker linter` both checker and linter run as step, so the
+// checker's pass moves the task from step 2 to step 3, still in step, and the linter's pass moves
+// it on to its retro. A move back from step 3 to step 2 stays in step and is a move back all the
+// same: it counts the task a pass under its pair, step-step.
+func TestATaskMovesToItsRowsPlaceAndCountsItsReturn(t *testing.T) {
+	t.Run("two passes", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine := returnEngine()
+		root := stepRoot(t, pool, phase.Step)
+		seedTwoDeploymentSteps(t, pool, root.Key, root.Generation, 2)
+
+		move(t, pool, engine, root.Key, TriggerStepPassed, "", record.PhaseRow{})
+		assertWalksAt(t, pool, engine, root.Key, phase.Step, record.TaskPlace{Kind: record.PlaceStep, Position: 3})
+		move(t, pool, engine, root.Key, TriggerStepPassed, "", record.PhaseRow{})
+		assertWalksAt(t, pool, engine, root.Key, phase.Retro, record.TaskPlace{Kind: record.PlaceRetro})
+	})
+
+	t.Run("a move back from step 3 to step 2", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine := returnEngine()
+		root := stepRoot(t, pool, phase.Step)
+		seedTwoDeploymentSteps(t, pool, root.Key, root.Generation, 3)
+
+		move(t, pool, engine, root.Key, TriggerBackward, phase.Step, record.PhaseRow{})
+		assertWalksAt(t, pool, engine, root.Key, phase.Step, record.TaskPlace{Kind: record.PlaceStep, Position: 2})
+		if counts := taskCounts(t, pool, root.Key, root.Generation); counts.Pass != 1 || !maps.Equal(counts.BackwardMoves, map[string]int{"step-step": 1}) {
+			t.Fatalf("after the move back from step 3 to step 2 the task counts %+v, want pass 1 and step-step 1", counts)
+		}
+	})
 }
