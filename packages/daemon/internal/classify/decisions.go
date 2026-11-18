@@ -1312,7 +1312,7 @@ func RecordChangesTold(gate record.DesignGate, version int, reason string, mark 
 // (record.EventMark.After). Such an approval is the person's decision in the review's place,
 // whichever approval request carried it, so nothing of the review is left to tell or to act on.
 // Every sender of a task or a notice about a person's review reaches it through one predicate,
-// workflow's DecisionStands, which holds every guard that chooses whether to ask it — the kind of
+// workflow's SupersedingApproval, which holds every guard that chooses whether to ask it — the kind of
 // decision, the gate of the document reviewed, whether the deployment gates that step, and an
 // approval that is the gate's own — and is asked from the gates as the record holds them at that
 // moment: the changes notice (workflow's applyArtifact, tellChanges and gateRegistered), the
@@ -1329,7 +1329,7 @@ func RecordChangesTold(gate record.DesignGate, version int, reason string, mark 
 // approved version and that event's mark. So when two requests are made for one version and the
 // approval lands on the second, the first, still open on the mirror, is answered by it. A kept
 // decision records no version either, and is asked the same way, at the approved version and its
-// own place in Dispatch's log, which the daemon keeps from its notice (workflow's DecisionStands).
+// own place in Dispatch's log, which the daemon keeps from its notice (workflow's SupersedingApproval).
 func ReviewSuperseded(gate record.DesignGate, version int, mark record.EventMark) bool {
 	if gate.ApprovedVersion == nil {
 		return false

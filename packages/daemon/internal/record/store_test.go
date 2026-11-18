@@ -1068,8 +1068,8 @@ func sameInstant(got, want *time.Time) bool {
 // column and reads back with none. A new generation clears it with the rest of the generation's
 // facts, for one issue (ClearGeneration: the rerun of a child, an adoption) and for a whole tree
 // (ClearTreeGeneration: the re-admission of a root), so the first review of a new generation is
-// told no commit. The issue keeps no decision, so the rule each clear is required to be handed
-// (KeptStands) is asked of nothing.
+// told no commit. The issue keeps no decision, so the forget each clear is required to be handed
+// (KeptForget) is run over nothing.
 func TestAPhaseRowKeepsTheReviewedCommitUntilANewGeneration(t *testing.T) {
 	ctx := context.Background()
 	const reviewed = "aaa111"
@@ -1123,18 +1123,18 @@ func TestAPhaseRowKeepsTheReviewedCommitUntilANewGeneration(t *testing.T) {
 		}
 	})
 
-	stands := func(map[DesignStep]DesignGate, DecisionMark) bool { return true }
+	forget := func(context.Context, pgx.Tx, string, KeptDecisions) error { return nil }
 	for _, tc := range []struct {
 		name  string
 		key   string
 		clear func(tx pgx.Tx, issue Issue) error
 	}{
 		{name: "a new generation of the issue clears it", key: "LEGION-290", clear: func(tx pgx.Tx, issue Issue) error {
-			_, err := NewStore().ClearGeneration(ctx, tx, issue, stands)
+			_, err := NewStore().ClearGeneration(ctx, tx, issue, forget)
 			return err
 		}},
 		{name: "a new generation of the tree clears it", key: "LEGION-291", clear: func(tx pgx.Tx, issue Issue) error {
-			_, err := NewStore().ClearTreeGeneration(ctx, tx, issue.Tree, stands)
+			_, err := NewStore().ClearTreeGeneration(ctx, tx, issue.Tree, forget)
 			return err
 		}},
 	} {

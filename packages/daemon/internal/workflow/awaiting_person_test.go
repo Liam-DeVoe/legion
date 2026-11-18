@@ -406,7 +406,7 @@ func TestAnUnsequencedChangesReadThenItsLiveEventTellsTheReviewOnce(t *testing.T
 	}
 }
 
-// The resume task asks the one rule (DecisionStands) about the changes request that answered the
+// The resume task asks the one rule (SupersedingApproval) about the changes request that answered the
 // wait at the version the answer recorded with it, not at a version read back out of the detail's
 // words: the detail is display text, and a rewording of it, or a row that holds it in another
 // shape, must not turn a review the person's approval followed back into a request to revise.

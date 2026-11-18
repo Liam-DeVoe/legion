@@ -113,7 +113,7 @@ func (r *outbox) parkDecision(ctx context.Context, issue, root string, notice re
 }
 
 // decisionSuperseded says whether the spec decision notice carries on issue is no longer the
-// person's word, by the one predicate (workflow.DecisionStands) over the gate of issue as the
+// person's word, by the one predicate (workflow.SupersedingApproval) over the gate of issue as the
 // record holds it now: the gate of the step whose document notice.Ref names
 // (workflow.RefSuperseded), at the version the notice carries and at Dispatch's mark of the review
 // (record.Notice.Review), which this release puts on every design decision's notice. A notice an

@@ -19,14 +19,15 @@ import (
 //
 // It and ClearTreeGeneration are the only callers that clear a generation: one issue's, for an
 // adopted member and a re-entered child, or a whole tree's, for a re-admitted root. The record
-// owns the statements, and each takes the one rule as an input it requires (keptStands), which it
-// asks of every decision kept on a cleared issue while the issue's gates still stand, and
-// deletes each one a later approval superseded before the clear deletes the gate that records
-// that approval. Asked after the clear, a gate that is gone or new would make the decision read
-// as the person's word again: a person who requested changes and then approved the latest
-// version as their hand-over would send the new architect to revise the spec they approved.
+// owns the statements, and each takes the one forget as an input it requires (forgetSuperseded,
+// which is ForgetSuperseded, the forget every start and catch-up runs), which it runs over every
+// decision kept on a cleared issue while the issue's gates still stand, so each one a later
+// approval superseded is deleted before the clear deletes the gate that records that approval.
+// Asked after the clear, a gate that is gone or new would make the decision read as the person's
+// word again: a person who requested changes and then approved the latest version as their
+// hand-over would send the new architect to revise the spec they approved.
 func (e *Engine) ClearGeneration(ctx context.Context, tx pgx.Tx, issue record.Issue, now time.Time) error {
-	emptied, err := e.store.ClearGeneration(ctx, tx, issue, e.keptStands)
+	emptied, err := e.store.ClearGeneration(ctx, tx, issue, e.forgetSuperseded)
 	if err != nil {
 		return err
 	}
@@ -41,7 +42,7 @@ func (e *Engine) ClearGeneration(ctx context.Context, tx pgx.Tx, issue record.Is
 // carried the old one's pull request, gate and handoffs into it — a child re-entered at the new
 // generation read a handoff of the last.
 func (e *Engine) ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree string, now time.Time) error {
-	emptied, err := e.store.ClearTreeGeneration(ctx, tx, tree, e.keptStands)
+	emptied, err := e.store.ClearTreeGeneration(ctx, tx, tree, e.forgetSuperseded)
 	if err != nil {
 		return err
 	}
@@ -51,12 +52,12 @@ func (e *Engine) ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree string
 	return nil
 }
 
-// keptStands is the rule a clear asks of each decision kept on a cleared issue
-// (record.KeptStands), against the gates of the issue it was made on and the steps the
-// deployment gates: whether it is still the person's word, as every start and catch-up asks it
-// (keptSuperseded, DecisionStands).
-func (e *Engine) keptStands(gates map[record.DesignStep]record.DesignGate, decision record.DecisionMark) bool {
-	return keptSuperseded(gates, e.cfg.Steps, decision) == nil
+// forgetSuperseded is ForgetSuperseded over the engine's store and gated steps, in the shape a
+// clear is handed (record.KeptForget). A clear names nothing to an architect, so the gates
+// ForgetSuperseded read for a task's text are dropped.
+func (e *Engine) forgetSuperseded(ctx context.Context, tx pgx.Tx, tree string, owed record.KeptDecisions) error {
+	_, err := ForgetSuperseded(ctx, tx, e.store, e.cfg.Steps, tree, owed)
+	return err
 }
 
 // publishEmptied queues in tx, due at now, one publication of the empty set of design-gate

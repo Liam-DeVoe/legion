@@ -260,7 +260,7 @@ func ArchitectRelaunchOf(run record.RoleRun, root record.Issue) ArchitectRelaunc
 // (dispatch://INFRA-2614/comment/03dd9487-b44d-4508-bc0e-268fe951b17e). So it writes the start the
 // resume wrote: the wait it answers, no text, and the entry. The daemon renders that start's task
 // at its send from the record as it stands then (ResumeTask, through its rootTask), which asks
-// whether the person's review the answer names is still their word (DecisionStands). The text the
+// whether the person's review the answer names is still their word (SupersedingApproval). The text the
 // row keeps is not sent: it was rendered at the raise, and a person who approved the reviewed
 // version since has answered the changes request it names (dispatch://INFRA-3136/spec R2). The
 // sweep sends it while the claim has not been given it, whether the root stands at admitted or

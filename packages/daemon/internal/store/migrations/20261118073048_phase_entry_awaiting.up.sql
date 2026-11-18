@@ -10,7 +10,7 @@
 -- (workflow.Engine.SendArchitectStart), builds the start the resume queued from it: the wait and
 -- no text, which the send renders from the record as it stands then (workflow.ResumeTask, through
 -- the daemon's rootTask), asking whether the person's review the wait names is still their word
--- (workflow.DecisionStands). And the admission pass reads whether it is set (record's
+-- (workflow.SupersedingApproval). And the admission pass reads whether it is set (record's
 -- PhaseEntries) for the sweep's reach over a root the answer's own pass promoted past admitted
 -- (workflow.ArchitectAtWork).
 --

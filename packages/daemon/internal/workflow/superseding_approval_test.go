@@ -6,7 +6,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// DecisionStands asks the gate it is handed only when that gate is of the step the review is of
+// SupersedingApproval asks the gate it is handed only when that gate is of the step the review is of
 // (Decision.Step). A person's changes request on the decisions document, answered by an approval
 // of a later version, is superseded by that approval where the gate is the decisions step's. The
 // same approval on a gate of another step is no word of the person's on the document reviewed:
@@ -34,9 +34,9 @@ func TestADecisionIsAskedOnlyOfTheGateOfItsOwnStep(t *testing.T) {
 			superseded: &Approval{Version: 3}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := DecisionStands(tc.gate, true, tc.d)
+			got := SupersedingApproval(tc.gate, true, tc.d)
 			if (got == nil) != (tc.superseded == nil) || got != nil && *got != *tc.superseded {
-				t.Fatalf("DecisionStands(gate of step %q, review of step %q) = %+v, want %+v", tc.gate.Step, tc.d.Step, got, tc.superseded)
+				t.Fatalf("SupersedingApproval(gate of step %q, review of step %q) = %+v, want %+v", tc.gate.Step, tc.d.Step, got, tc.superseded)
 			}
 		})
 	}

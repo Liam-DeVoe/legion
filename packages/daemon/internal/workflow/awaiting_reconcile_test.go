@@ -260,7 +260,7 @@ func TestTheResumeTaskNamesEveryItemStillWithThePerson(t *testing.T) {
 			// Round 2, adversarial P3-2: the person approved the version after asking for changes,
 			// before the resume, so the resume asks for no revision of an approved document. The
 			// marks place the approval after the wait the review answered, which is what
-			// DecisionStands reads (answeredReview).
+			// SupersedingApproval reads (answeredReview).
 			name: "a changes request a later approval superseded",
 			waiting: record.Awaiting{Ask: "ask-q", AnsweredAt: &answered, AnsweredBy: record.AnsweredByChanges, AnsweredDetail: "version 3: \"split it\"", AnsweredVersion: 3,
 				Since: record.EventMark{Seq: 5}},

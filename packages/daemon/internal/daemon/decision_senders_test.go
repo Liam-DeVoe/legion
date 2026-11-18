@@ -20,13 +20,13 @@ import (
 const senderModule = "github.com/sjawhar/legion/daemon/internal/"
 
 // decisionPredicate is the one predicate that decides whether a person's recorded review of a
-// design document is still their word (workflow.DecisionStands), and decisionRule the rule it asks
+// design document is still their word (workflow.SupersedingApproval), and decisionRule the rule it asks
 // (classify.ReviewSuperseded), each as go/types names it (types.Func.FullName). resumeSend is the
 // daemon's render of a start that carries a person's answered wait (record.SuperviseRequest's
 // Awaiting) at each send of its task, and resumeSendCaller the send of a held task that asks it
 // for such a delivery.
 const (
-	decisionPredicate = senderModule + "workflow.DecisionStands"
+	decisionPredicate = senderModule + "workflow.SupersedingApproval"
 	decisionRule      = senderModule + "classify.ReviewSuperseded"
 	resumeSend        = "(*" + senderModule + "daemon.workflowRuntime).resumeTaskNow"
 	resumeSendCaller  = "(*" + senderModule + "daemon.workflowRuntime).rootTask"
@@ -87,7 +87,7 @@ var decisionReviewSentences = []struct{ phrase, renderer string }{
 }
 
 // Every sender of a person's design decision asks the one predicate whether that decision is still
-// the person's word (workflow.DecisionStands), so no sender decides it for itself and no sender
+// the person's word (workflow.SupersedingApproval), so no sender decides it for itself and no sender
 // chooses for itself whether to ask the rule (dispatch://INFRA-3136/spec R2).
 // A sender is a function of internal/workflow, internal/daemon or internal/admit, outside its
 // tests, whose body
@@ -258,7 +258,7 @@ type decisionFunc struct {
 
 func (f *decisionFunc) short() string { return short(f.name) }
 
-// short is a function's FullName without the module's path: workflow.DecisionStands,
+// short is a function's FullName without the module's path: workflow.SupersedingApproval,
 // (*workflow.Engine).tellChanges.
 func short(name string) string { return strings.ReplaceAll(name, senderModule, "") }
 

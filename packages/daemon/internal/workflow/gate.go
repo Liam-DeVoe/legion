@@ -162,10 +162,10 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 	tell := false
 	if changesRequested && !unplaceable(*issue, fact.ChangesRequestedMark) {
 		// The gates as the record held them before this registration are asked whether an
-		// approval of this document followed the review (DecisionStands): one did, and the
+		// approval of this document followed the review (SupersedingApproval): one did, and the
 		// person's word is that approval, so the request is recorded and told to nobody.
 		tell = !classify.DesignGateChangesTold(gate, gate.LatestVersion, fact.ChangesReason, fact.ChangesRequestedMark) &&
-			DecisionStands(gateOf(gates, step), e.gatesStep(step), Decision{Kind: record.DecisionDesignChangesRequested, Step: step,
+			SupersedingApproval(gateOf(gates, step), e.gatesStep(step), Decision{Kind: record.DecisionDesignChangesRequested, Step: step,
 				Artifact: fact.ArtifactID, Version: fact.ChangesRequestedVersion, Mark: fact.ChangesRequestedMark}) == nil
 		gate = classify.RecordChangesTold(gate, gate.LatestVersion, fact.ChangesReason, fact.ChangesRequestedMark)
 	}
@@ -252,7 +252,7 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 // parkDecision), which needs to know who made it.
 //
 // Before anything is marked or sent, the gates as the record holds them now are asked whether an
-// approval of the document followed the review (DecisionStands), whichever path carried the review
+// approval of the document followed the review (SupersedingApproval), whichever path carried the review
 // here: one did, and the review is not the person's word any more, so it is neither told nor
 // marked; the processed mark stays the second guard, against telling one review twice.
 func (e *Engine) tellChanges(ctx context.Context, tx pgx.Tx, key string, step record.DesignStep, artifact string, version int, reason, reviewer string, mark record.EventMark, notify bool) error {
@@ -264,7 +264,7 @@ func (e *Engine) tellChanges(ctx context.Context, tx pgx.Tx, key string, step re
 	if err != nil {
 		return err
 	}
-	if superseded := DecisionStands(gateOf(gates, step), e.gatesStep(step), Decision{Kind: record.DecisionDesignChangesRequested, Step: step,
+	if superseded := SupersedingApproval(gateOf(gates, step), e.gatesStep(step), Decision{Kind: record.DecisionDesignChangesRequested, Step: step,
 		Artifact: artifact, Version: version, Mark: mark}); superseded != nil {
 		e.logOnCommit(ctx, "workflow: a changes request an approval followed is not told", "issue", key, "version", version,
 			"approved", superseded.Version)
@@ -828,7 +828,7 @@ func copyTakes(gate record.DesignGate, fact intake.DispatchArtifact) bool {
 // otherwise close it; and an approval or changes request of an older version, which would
 // otherwise clear the told record or close a gate open at the newer one. A stale changes request
 // is still the person's words: it is told, with its own version and reason, unless an approval came
-// after it (DecisionStands, asked of the gate as the event found it, since the review applied
+// after it (SupersedingApproval, asked of the gate as the event found it, since the review applied
 // clears the approval that would answer it), which the person gave in its place. Every changes
 // notice asks that same function, here, at a registration and where it is sent (tellChanges).
 //
@@ -870,7 +870,7 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 		if fact.Kind != intake.DispatchArtifactChangesRequested {
 			return nil
 		}
-		if stale && DecisionStands(&gate, e.gatesStep(gate.Step), artifactReview(gate.Step, fact)) != nil {
+		if stale && SupersedingApproval(&gate, e.gatesStep(gate.Step), artifactReview(gate.Step, fact)) != nil {
 			return nil
 		}
 		if !ungated {
@@ -902,7 +902,7 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 	}
 	tell := fact.Kind == intake.DispatchArtifactChangesRequested && placeable &&
 		!classify.DesignGateChangesTold(gate, fact.Version, fact.Reason, fact.Mark) &&
-		DecisionStands(&gate, e.gatesStep(gate.Step), artifactReview(gate.Step, fact)) == nil
+		SupersedingApproval(&gate, e.gatesStep(gate.Step), artifactReview(gate.Step, fact)) == nil
 	if fact.Kind == intake.DispatchArtifactChangesRequested && placeable {
 		updated = classify.RecordChangesTold(updated, fact.Version, fact.Reason, fact.Mark)
 	}
@@ -965,7 +965,7 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 	return nil
 }
 
-// artifactReview is the changes request fact carries, on the document of step, as DecisionStands
+// artifactReview is the changes request fact carries, on the document of step, as SupersedingApproval
 // asks it.
 func artifactReview(step record.DesignStep, fact intake.DispatchArtifact) Decision {
 	return Decision{Kind: record.DecisionDesignChangesRequested, Step: step, Artifact: fact.ArtifactID, Version: fact.Version, Mark: fact.Mark}

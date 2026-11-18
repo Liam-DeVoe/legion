@@ -344,7 +344,7 @@ const HoldEscalated HoldReason = "escalated"
 // AnsweredVersion is 0 for every other answer, and for a changes request a daemon of an earlier
 // release answered after this release's migration gave every older answer its version
 // (20261112215432_delivery_resume): such a review is asked as a kept decision is, at the version
-// the gate holds approved (workflow.DecisionStands).
+// the gate holds approved (workflow.SupersedingApproval).
 type Awaiting struct {
 	Ask             string
 	GateVersion     int
@@ -406,9 +406,8 @@ const (
 // back to KEPT, and a fresh catch-up names it at once while its tree has an architect to tell, so
 // a release never leaves it kept with nobody to name it again. A design decision that a later
 // approval superseded is deleted unnamed, by the task that asks it or by the clear of a
-// generation, before it deletes the approval's gate (workflow.ForgetSuperseded,
-// Store.ClearGeneration, which the workflow's one rule is handed to): nothing of it is left to
-// tell.
+// generation, before it deletes the approval's gate (workflow.ForgetSuperseded, the one forget,
+// which Store.ClearGeneration is handed): nothing of it is left to tell.
 type ParkedDecision struct {
 	// Issue is where in Dispatch the decision was made: the issue of the ask, comment or spec it
 	// was made on. It is the row's key with Ref, and what says whose debt the row is: the
@@ -422,7 +421,7 @@ type ParkedDecision struct {
 	// At and Seq place the decision: for a spec decision, where Dispatch recorded the person's
 	// review (the notice's Review: Dispatch's time of it and its event's sequence, Seq 0 when
 	// Dispatch gave none), so it is judged against the gate's approval mark by Dispatch's own order
-	// (workflow.DecisionStands); the daemon's clock at keep time only where the notice carried
+	// (workflow.SupersedingApproval); the daemon's clock at keep time only where the notice carried
 	// no time of the review. For an answer, resolution or reply on an ask, the daemon's clock at
 	// keep time and no sequence: those are never judged against a gate. At is also the row's
 	// identity with Ref (DecisionMark).
@@ -1853,23 +1852,24 @@ type Store interface {
 	// (workflow.Engine.ClearGeneration, the daemon's projectRecords). issue is the record as tx
 	// holds it: the decisions asked first are those its tree keeps on it.
 	//
-	// Before it clears, it asks stands of every decision the tree keeps on a cleared issue,
-	// against that issue's gates as they stand, and deletes each one that does not stand
-	// (ForgetKeptDecisions). The clear deletes those gates, and a gate is the only record of the
-	// approval that superseded a decision kept for the tree: a start or catch-up that names the
-	// decision after the clear asks a gate that is gone or new, and the decision would read as the
+	// Before it clears, it runs forget over every decision the tree keeps on a cleared issue,
+	// while that issue's gates stand, and forget deletes each one a later approval superseded.
+	// The clear deletes those gates, and a gate is the only record of the approval that
+	// superseded a decision kept for the tree: a start or catch-up that names the decision after
+	// the clear asks a gate that is gone or new, and the decision would read as the
 	// person's word again. A person who requested changes and then approved the latest version as
 	// their hand-over would send the new architect to revise the spec they approved. A row a queued
 	// task holds is deleted too, since that task is asked again at its send and its gates are gone
 	// by then; a row an outbox row claims stays, since its text is already written and that row
-	// settles it. stands is required, so no clear can skip the forget: a nil stands is refused
-	// before anything is written. The workflow passes its one rule (workflow.Engine.ClearGeneration,
-	// the only caller).
-	ClearGeneration(ctx context.Context, tx pgx.Tx, issue Issue, stands KeptStands) ([]string, error)
-	// ClearTreeGeneration empties them for every issue of tree, and asks stands of every decision
-	// the tree keeps first, as ClearGeneration does, answering the issues whose gates it emptied
-	// in the same way (workflow.Engine.ClearTreeGeneration, the only caller).
-	ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree string, stands KeptStands) ([]string, error)
+	// settles it (ForgetKeptDecisions). forget is required, so no clear can skip it: a nil forget
+	// is refused before anything is written. The workflow passes the forget every start and
+	// catch-up runs (workflow.ForgetSuperseded, through workflow.Engine.ClearGeneration, the only
+	// caller), so the clear asks its one rule.
+	ClearGeneration(ctx context.Context, tx pgx.Tx, issue Issue, forget KeptForget) ([]string, error)
+	// ClearTreeGeneration empties them for every issue of tree, and runs forget over every
+	// decision the tree keeps first, as ClearGeneration does, answering the issues whose gates it
+	// emptied in the same way (workflow.Engine.ClearTreeGeneration, the only caller).
+	ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree string, forget KeptForget) ([]string, error)
 	// GatesOf is every design gate issue holds, by step: one entry for each step the issue's
 	// architect has registered. An issue with no gate at all gives an empty map, and a step with
 	// no row has no entry.

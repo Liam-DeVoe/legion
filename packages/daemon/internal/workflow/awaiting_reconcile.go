@@ -716,9 +716,9 @@ func resumeTask(key string, waiting record.Awaiting, step record.DesignStep, gat
 	case record.AnsweredByChanges:
 		// A review the gate's own approval followed is not named: the person's word is that
 		// approval, and the sentences after this one say how the document stands. The review is
-		// asked of the gate in question alone (DecisionStands), filed under step; armed says the
+		// asked of the gate in question alone (SupersedingApproval), filed under step; armed says the
 		// deployment gates step, since gateInQuestion takes step from the steps it gates.
-		if superseded := DecisionStands(gate, armed, answeredReview(step, waiting, gate)); superseded != nil {
+		if superseded := SupersedingApproval(gate, armed, answeredReview(step, waiting, gate)); superseded != nil {
 			fmt.Fprintf(&task, "A person's review answered your wait on %s, and the %s was approved at version %d after it, so the review "+
 				"asks for no revision now.", key, document, superseded.Version)
 		} else {
@@ -775,7 +775,7 @@ func resumeTask(key string, waiting record.Awaiting, step record.DesignStep, gat
 		fmt.Fprintf(&task, " Your %s is not approved at version %d.", document, gate.LatestVersion)
 	}
 	if gate != nil && gate.ToldChangesVersion != nil && !(waiting.Since.Seq > 0 && gate.ToldChangesMark.Seq == 0) &&
-		gate.ToldChangesMark.After(waiting.Since) && DecisionStands(gate, armed, Decision{Kind: record.DecisionDesignChangesRequested,
+		gate.ToldChangesMark.After(waiting.Since) && SupersedingApproval(gate, armed, Decision{Kind: record.DecisionDesignChangesRequested,
 		Step: step, Version: *gate.ToldChangesVersion, Mark: gate.ToldChangesMark}) == nil {
 		detail := changesDetail(*gate.ToldChangesVersion, gate.ToldChangesReason)
 		if waiting.AnsweredBy != record.AnsweredByChanges || waiting.AnsweredDetail != detail {
@@ -831,7 +831,7 @@ func resumeTask(key string, waiting record.Awaiting, step record.DesignStep, gat
 	return task.String()
 }
 
-// answeredReview is the changes request that answered waiting as the resume asks DecisionStands
+// answeredReview is the changes request that answered waiting as the resume asks SupersedingApproval
 // about it: of step's document, at the version the answer recorded beside its detail
 // (record.Awaiting.AnsweredVersion; 0 for an answer a daemon of an earlier release wrote, which is
 // then asked at the version the gate holds approved, as a kept decision is), and at a mark of its

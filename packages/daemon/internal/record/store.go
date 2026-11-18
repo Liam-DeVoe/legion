@@ -1478,12 +1478,12 @@ func (s *Postgres) ClaimSession(ctx context.Context, tx pgx.Tx, token claim.Toke
 }
 
 // ClearGeneration empties one issue's generation-scoped facts: a merged or closed pull request,
-// the counters of one still open, its design gates and its recorded handoffs, once the decisions
-// kept on it that do not stand are forgotten (forgetSuperseded), and answers the issues whose
-// gates it emptied (clearGates): issue itself where it held a gate, else none.
-func (s *Postgres) ClearGeneration(ctx context.Context, tx pgx.Tx, issue Issue, stands KeptStands) ([]string, error) {
+// the counters of one still open, its design gates and its recorded handoffs, once forget has
+// been run over the decisions kept on it (forgetKept), and answers the issues whose gates it
+// emptied (clearGates): issue itself where it held a gate, else none.
+func (s *Postgres) ClearGeneration(ctx context.Context, tx pgx.Tx, issue Issue, forget KeptForget) ([]string, error) {
 	describe := fmt.Sprintf("clear the generation of %s", issue.Key)
-	if err := s.forgetSuperseded(ctx, tx, issue.Tree, issue.Key, stands, describe); err != nil {
+	if err := s.forgetKept(ctx, tx, issue.Tree, issue.Key, forget, describe); err != nil {
 		return nil, err
 	}
 	return s.clearGeneration(ctx, tx, "issue = $1", issue.Key, describe)
@@ -1492,58 +1492,40 @@ func (s *Postgres) ClearGeneration(ctx context.Context, tx pgx.Tx, issue Issue, 
 // ClearTreeGeneration empties them for every issue of the tree. A root set back to todo starts a
 // new generation of the whole tree, and its children carried the old one's pull request, gate and
 // handoffs into it — a child re-entered at the new generation read a handoff of the last.
-func (s *Postgres) ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree string, stands KeptStands) ([]string, error) {
+func (s *Postgres) ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree string, forget KeptForget) ([]string, error) {
 	describe := fmt.Sprintf("clear the generation of tree %s", tree)
-	if err := s.forgetSuperseded(ctx, tx, tree, "", stands, describe); err != nil {
+	if err := s.forgetKept(ctx, tx, tree, "", forget, describe); err != nil {
 		return nil, err
 	}
 	return s.clearGeneration(ctx, tx, "issue in (select key from issues where tree = $1)", tree, describe)
 }
 
-// forgetSuperseded deletes in tx each decision tree keeps on issue that does not stand, asked of
-// stands against the gates of the issue it was made on, or each one it keeps on any of its
-// issues when issue is "". Only the cleared issues' decisions are asked: a decision is asked of
-// the gates of the issue it was made on, and every other issue keeps its gates. The gates of
-// every issue a decision is asked on are read in one read (Gates), and none are read when no
-// decision is asked. A nil stands is refused before anything is read or written, so a clear
-// handed no rule clears nothing.
-func (s *Postgres) forgetSuperseded(ctx context.Context, tx pgx.Tx, tree, issue string, stands KeptStands, describe string) error {
-	if stands == nil {
-		return fmt.Errorf("%s: no rule to ask the decisions kept on it by, which the clear must ask before it deletes the gates the rule reads", describe)
+// forgetKept runs forget in tx over what the clear owes it, before the clear deletes the gates
+// forget's rule reads: the decisions tree keeps on issue, or on any of its issues when issue is
+// "", whoever claims or holds them, as one KeptDecisions. Only the cleared issues' decisions are
+// handed over: a decision is asked of the gates of the issue it was made on, and every other issue
+// keeps its gates. The set carries no kept approval. The forget deletes no approval, and reads the
+// tree's gates for one only so that a task can name it (workflow.ReadKeptGates), so with or
+// without it the forget asks each decision what a start or catch-up asks it, and the approval
+// would only cost a read. The approval a re-admission keeps is read from the gates its clear then
+// deletes (admit's keepStaleApproval), and the start that names it asks it of the gates the new
+// generation registers. A nil forget is refused before anything is read or written, so a clear
+// handed no forget clears nothing.
+func (s *Postgres) forgetKept(ctx context.Context, tx pgx.Tx, tree, issue string, forget KeptForget, describe string) error {
+	if forget == nil {
+		return fmt.Errorf("%s: no forget to run over the decisions kept on it, which the clear must run before it deletes the gates the forget's rule reads", describe)
 	}
 	decisions, err := s.ParkedDecisions(ctx, tx, tree)
 	if err != nil {
 		return fmt.Errorf("%s: %w", describe, err)
 	}
-	var asked []DecisionMark
-	var issues []string
+	var owed KeptDecisions
 	for _, d := range decisions {
-		if issue != "" && d.Issue != issue {
-			continue
-		}
-		asked = append(asked, d.Mark())
-		if !slices.Contains(issues, d.Issue) {
-			issues = append(issues, d.Issue)
+		if issue == "" || d.Issue == issue {
+			owed.Decisions = append(owed.Decisions, d.Mark())
 		}
 	}
-	if len(asked) == 0 {
-		return nil
-	}
-	gates, err := s.Gates(ctx, tx, issues)
-	if err != nil {
-		return fmt.Errorf("%s: %w", describe, err)
-	}
-	var spent []DecisionMark
-	for _, mark := range asked {
-		// Gates gives no entry for an issue with no gate, and the nil map reads as an empty one.
-		if !stands(gates[mark.Issue], mark) {
-			spent = append(spent, mark)
-		}
-	}
-	if len(spent) == 0 {
-		return nil
-	}
-	if err := s.ForgetKeptDecisions(ctx, tx, tree, KeptDecisions{Decisions: spent}, 0); err != nil {
+	if err := forget(ctx, tx, tree, owed); err != nil {
 		return fmt.Errorf("%s: forget what a later approval superseded: %w", describe, err)
 	}
 	return nil

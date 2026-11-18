@@ -122,7 +122,7 @@ func TestARootArchitectEntryIsHeldOnItsPhasesRowAsAPhaseWorkersIs(t *testing.T) 
 // send. The record holds it as it holds the task: written with the row and read back with it,
 // each moment as the same instant, and taken away by a put that carries none. A re-admission
 // clears it with the task (Store.ClearGeneration and ClearTreeGeneration, which the workflow
-// engine calls with its rule for the kept decisions), and workflow's clear tests read it.
+// engine calls with its forget for the kept decisions), and workflow's clear tests read it.
 func TestTheArchitectEntryWaitRoundTrips(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)

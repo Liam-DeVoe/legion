@@ -150,15 +150,16 @@ type DecisionMark struct {
 	Decision DecisionKind `json:"decision,omitempty"`
 	Actor    string       `json:"actor,omitempty"`
 	// Seq is Dispatch's sequence of the spec decision's review (ParkedDecision.Seq), which a send
-	// asks the gate with (workflow.DecisionStands); it is no part of the row's identity.
+	// asks the gate with (workflow.SupersedingApproval); it is no part of the row's identity.
 	Seq int64 `json:"seq,omitempty"`
 }
 
-// KeptStands says whether decision, a decision kept on an issue whose design gates are gates, is
-// still the person's word. The record holds no rule of its own for that: the workflow's is the one
-// rule (workflow.DecisionStands), and a clear of a generation is handed it (Store.ClearGeneration),
-// because the clear deletes the gates the rule reads.
-type KeptStands func(gates map[DesignStep]DesignGate, decision DecisionMark) bool
+// KeptForget deletes in tx the row of each decision of owed, decisions kept on issues of tree,
+// that a later approval superseded. The record holds no rule of its own for that: the workflow's
+// forget is the one rule (workflow.ForgetSuperseded), which a start, a ready and a send each run
+// before they name what a tree is owed, and a clear of a generation is handed it
+// (Store.ClearGeneration), because the clear deletes the gates the rule reads.
+type KeptForget func(ctx context.Context, tx pgx.Tx, tree string, owed KeptDecisions) error
 
 // KeptApproval is the approval a root's re-admission kept for its next architect start
 // (Store.KeepReadmittedApproval): the design-gate step whose document a person approved, the

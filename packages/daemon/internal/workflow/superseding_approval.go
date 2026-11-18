@@ -8,7 +8,7 @@ import (
 )
 
 // Decision is a person's review of a design document as a sender holds it when it asks whether
-// the review is still the person's word (DecisionStands): what the person did (Kind), on which
+// the review is still the person's word (SupersedingApproval): what the person did (Kind), on which
 // step's document (Step), the document itself when the sender knows it (Artifact, "" when it does
 // not), the version reviewed when the sender knows it (Version, 0 when it does not: a kept
 // decision's row records none), and where Dispatch recorded the review (Mark, empty where the
@@ -23,13 +23,13 @@ type Decision struct {
 }
 
 // Approval is a person's approval a gate records (record.DesignGate.ApprovedVersion): the one
-// that superseded a review, as DecisionStands answers it, by the version approved, which is what
+// that superseded a review, as SupersedingApproval answers it, by the version approved, which is what
 // a sender names of it.
 type Approval struct {
 	Version int
 }
 
-// DecisionStands is the one place that decides whether a person's recorded review of a design
+// SupersedingApproval is the one place that decides whether a person's recorded review of a design
 // document is still their word, so a task or a notice may name it. Every sender asks it, of the
 // gate the issue holds for d.Step as the record holds it when it asks (gate, nil where the issue
 // holds none) and of whether the deployment gates that step (gated): the changes notice
@@ -61,7 +61,7 @@ type Approval struct {
 // (awaiting_reconcile.go). It is no sender of a task or notice about a person's recorded decision.
 // It asks whether an architect's approval request of a document still waits on the person, a
 // different question that the same classifier answers, so it does not go through this predicate.
-func DecisionStands(gate *record.DesignGate, gated bool, d Decision) (superseded *Approval) {
+func SupersedingApproval(gate *record.DesignGate, gated bool, d Decision) (superseded *Approval) {
 	if d.Kind != record.DecisionDesignChangesRequested && d.Kind != record.DecisionDesignApproved {
 		return nil
 	}
@@ -82,9 +82,9 @@ func DecisionStands(gate *record.DesignGate, gated bool, d Decision) (superseded
 	return &Approval{Version: *gate.ApprovedVersion}
 }
 
-// RefSuperseded is DecisionStands for a sender that holds only the review's Dispatch reference,
+// RefSuperseded is SupersedingApproval for a sender that holds only the review's Dispatch reference,
 // ref on issue (record.ParkedDecision.Ref, record.Notice.Ref): the step whose document ref names
-// (refStep) is resolved once here and set as d.Step, and DecisionStands is asked of that step's
+// (refStep) is resolved once here and set as d.Step, and SupersedingApproval is asked of that step's
 // gate in gates, the gates of issue, and of whether steps, the steps the deployment gates, holds
 // it. A reference that names no step's document (an ask's or a comment's) is asked of no gate,
 // and stands: nil.
@@ -94,10 +94,10 @@ func RefSuperseded(gates map[record.DesignStep]record.DesignGate, steps []record
 		return nil
 	}
 	d.Step = step
-	return DecisionStands(gateOf(gates, step), slices.Contains(steps, step), d)
+	return SupersedingApproval(gateOf(gates, step), slices.Contains(steps, step), d)
 }
 
-// gateOf is the gate gates holds for step, nil where it holds none: the gate DecisionStands asks
+// gateOf is the gate gates holds for step, nil where it holds none: the gate SupersedingApproval asks
 // of a decision on step's document.
 func gateOf(gates map[record.DesignStep]record.DesignGate, step record.DesignStep) *record.DesignGate {
 	gate, ok := gates[step]

@@ -138,7 +138,7 @@ func ReadKeptGates(ctx context.Context, tx pgx.Tx, store record.Store, tree stri
 }
 
 // ForgetSuperseded reads the gates owed is asked of (ReadKeptGates) and deletes in tx the row of
-// every decision of owed that a later approval superseded (keptSuperseded, DecisionStands), and
+// every decision of owed that a later approval superseded (keptSuperseded, SupersedingApproval), and
 // returns the gates it read, for the caller to render the task from (KeptDecisionsTask). It is the
 // write half of a kept-decisions task, and every caller that renders one at a start, a ready or a
 // send calls it first; the delivery of a catch-up, whose read is read-only, renders from
@@ -151,8 +151,10 @@ func ReadKeptGates(ctx context.Context, tx pgx.Tx, store record.Store, tree stri
 // the person's word again. A row another tree's claim still holds is not this tree's to delete,
 // and it stays (Store.ForgetKeptDecisions). A superseded approval stays in its row as it always
 // has (Store.KeepReadmittedApproval replaces it at the next re-admission). The gates a decision is
-// asked of go when a generation is cleared, so each clear first forgets what they show was
-// superseded, asking the same rule (Engine.ClearGeneration, record.Store.ClearGeneration).
+// asked of go when a generation is cleared, so each clear runs this forget first, over the
+// decisions kept on the issues it clears (Engine.ClearGeneration hands it to
+// record.Store.ClearGeneration, which builds that set), and asks what every start and catch-up
+// asks.
 func ForgetSuperseded(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, tree string,
 	owed record.KeptDecisions) (KeptGates, error) {
 	gates, err := ReadKeptGates(ctx, tx, store, tree, owed)
@@ -181,7 +183,7 @@ func ForgetSuperseded(ctx context.Context, tx pgx.Tx, store record.Store, steps 
 // names nothing is "", which is retired rather than sent.
 //
 // Each decision is asked in the loop that writes it whether it is still the person's word
-// (DecisionStands), so no task can name a kept decision that nobody asked about. A kept decision
+// (SupersedingApproval), so no task can name a kept decision that nobody asked about. A kept decision
 // records no version, so it is asked at the version its gate holds approved and at its own place
 // in Dispatch's log (record.DecisionMark.Seq and At, which the outbox's parkDecision keeps from
 // the notice's Review). The approval is the root's own, and it is named only while steps gates its
@@ -203,7 +205,7 @@ func KeptDecisionsTask(gates KeptGates, steps []record.DesignStep, tree string, 
 		named = append(named, fmt.Sprintf("%s (%s by %s)", d.Ref, d.Decision, d.Actor))
 	}
 	step := owed.Step.OrSpec()
-	if owed.Approved > 0 && slices.Contains(steps, step) && DecisionStands(gateOf(gates[tree], step), true,
+	if owed.Approved > 0 && slices.Contains(steps, step) && SupersedingApproval(gateOf(gates[tree], step), true,
 		Decision{Kind: record.DecisionDesignApproved, Step: step, Version: owed.Approved}) == nil {
 		kept.KeptApproval = owed.KeptApproval
 	}
@@ -220,7 +222,7 @@ func KeptDecisionsTask(gates KeptGates, steps []record.DesignStep, tree string, 
 	return strings.Join(parts, " "), kept
 }
 
-// keptSuperseded is the approval that superseded the kept decision mark (DecisionStands), nil
+// keptSuperseded is the approval that superseded the kept decision mark (SupersedingApproval), nil
 // when it stands, asked of gates, the gates of the issue it was made on, under steps, the steps
 // the deployment gates. It is asked of the step whose document its reference names
 // (RefSuperseded), at no version, since a kept row records none, and at the review's place in
@@ -380,7 +382,7 @@ func stepRef(key string, step record.DesignStep) string {
 // refStep is the design-gate step whose document ref names on issue key, the one stepRef gives
 // it, and false for a reference that names no step's document (an ask's or a comment's). It is
 // how a sender that holds only a decision's reference (record.ParkedDecision.Ref,
-// record.Notice.Ref) finds the step DecisionStands asks of (RefSuperseded).
+// record.Notice.Ref) finds the step SupersedingApproval asks of (RefSuperseded).
 func refStep(key, ref string) (record.DesignStep, bool) {
 	for _, step := range record.DesignSteps {
 		if stepRef(key, step) == ref {

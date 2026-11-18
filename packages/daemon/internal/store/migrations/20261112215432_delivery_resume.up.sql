@@ -24,14 +24,14 @@
 -- parked_decisions.seq is Dispatch's sequence of a kept spec decision's review, beside at, which
 -- for such a decision is now Dispatch's time of the review (record.ParkedDecision.At and Seq,
 -- from the notice's Review). A held task is narrowed at each send by asking the gate whether a
--- later approval superseded each decision it names (workflow.DecisionStands), and the
+-- later approval superseded each decision it names (workflow.SupersedingApproval), and the
 -- question is answered by Dispatch's order on both sides: the sequences when both carry one,
 -- else Dispatch's times. It is null where Dispatch gave no sequence, for an answer on an ask, and
 -- for every row kept before this migration; a daemon of an earlier release writes none.
 --
 -- issues.awaiting_answered_version is the version of the changes request that answered a root's
 -- wait (record.Awaiting.AnsweredVersion), written beside the detail by the same answer, so the
--- resume asks whether the person's approval followed that review (workflow.DecisionStands) of a
+-- resume asks whether the person's approval followed that review (workflow.SupersedingApproval) of a
 -- number rather than of the detail, which is display text. awaiting_answered_version_at is the
 -- answer's moment (awaiting_answered_at) the version was written with, and the version is read
 -- only while the two are equal (record's issueColumns): a daemon of an earlier release names

@@ -298,7 +298,7 @@ func TestACatchUpPublishesAndSettlesTheKeptDecisionsItNamedWhenItWasQueued(t *te
 // A kept changes request a catch-up was queued naming, which the person's approval of that version
 // followed while the row waited (on its wake pacing, or behind a failed forward), is not named by
 // the catch-up the architect is delivered: Decided is written again at the delivery from the row's
-// Kept, each decision asked of the gates the delivery's own read holds (workflow.DecisionStands),
+// Kept, each decision asked of the gates the delivery's own read holds (workflow.SupersedingApproval),
 // as the tree beside it is. What the row claimed is still the row's to settle, so Kept stays the
 // row's and the publish forgets that row as it would have. The control is the same row delivered
 // with no approval, which names the request.

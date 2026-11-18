@@ -1,6 +1,8 @@
 package workflow
 
 import (
+	"context"
+	"slices"
 	"testing"
 	"time"
 
@@ -179,6 +181,96 @@ func TestClearGenerationClearsTheWaitTheArchitectsEntryKept(t *testing.T) {
 			if got.Entry != 3 || !got.EntryRaisedAt.Equal(raised) {
 				t.Fatalf("the architect's row after %s = entry %d raised at %s, want the entry 3 raised at %s it stood on",
 					tc.name, got.Entry, got.EntryRaisedAt, raised)
+			}
+		})
+	}
+}
+
+// A clear of a generation forgets exactly the kept decisions a start forgets, because both run the
+// one forget (ForgetSuperseded): the engine hands it to the record's clear (forgetSuperseded,
+// record.KeptForget), and the start task's read runs it before it names anything
+// (ParkedDecisionTask). The same decisions, kept on two issues of one tree, go through each path
+// on a record of their own: a changes request on the root that the root's gate's later approval
+// superseded, and one on the child made after the child's gate's approval, which is still the
+// person's word. The start, the clear of the tree and the clear of each issue in turn all forget
+// the first and keep the second, so a clear that asked another rule, or none, would differ.
+func TestAClearForgetsTheKeptDecisionsAStartForgets(t *testing.T) {
+	approvedAt := time.Date(2026, 9, 22, 9, 0, 0, 0, time.UTC)
+	approved := record.EventMark{Seq: 10, At: approvedAt}
+	superseded := record.ParkedDecision{Issue: "LEGION-1", Ref: "dispatch://LEGION-1/spec", Decision: record.DecisionDesignChangesRequested,
+		Actor: "user:alice", At: approvedAt.Add(-time.Hour), Seq: 8}
+	stands := record.ParkedDecision{Issue: "LEGION-2", Ref: "dispatch://LEGION-2/spec", Decision: record.DecisionDesignChangesRequested,
+		Actor: "user:bob", At: approvedAt.Add(time.Hour), Seq: 12}
+	engine := testEngine(config.DesignGateRootIssues, nil)
+	records := record.NewStore()
+	// keptAfter runs path over a fresh record of the tree, its two gates approved and its two
+	// decisions kept, and answers the references the tree keeps after it.
+	keptAfter := func(t *testing.T, path func(ctx context.Context, tx pgx.Tx, tree string) error) []string {
+		t.Helper()
+		pool := migratedPool(t)
+		root := seedAdmittedTree(t, pool, 1)
+		version := 2
+		seedRecord(t, pool, func(tx pgx.Tx) error {
+			for _, d := range []record.ParkedDecision{superseded, stands} {
+				if err := records.PutGate(t.Context(), tx, record.DesignGate{Issue: d.Issue, Step: record.DesignStepSpec, ArtifactID: "artifact-" + d.Issue,
+					LatestVersion: version, ApprovedVersion: &version, ApprovedMark: approved, EverOpened: true}); err != nil {
+					return err
+				}
+				if err := records.AddParkedDecision(t.Context(), tx, d); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+		applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error { return path(ctx, tx, root.Tree) })
+		var refs []string
+		seedRecord(t, pool, func(tx pgx.Tx) error {
+			kept, err := records.ParkedDecisions(t.Context(), tx, root.Tree)
+			for _, d := range kept {
+				refs = append(refs, d.Ref)
+			}
+			return err
+		})
+		slices.Sort(refs)
+		return refs
+	}
+
+	start := keptAfter(t, func(ctx context.Context, tx pgx.Tx, tree string) error {
+		root, err := records.Issue(ctx, tx, tree)
+		if err != nil {
+			return err
+		}
+		_, _, err = engine.ParkedDecisionTask(ctx, tx, *root)
+		return err
+	})
+	if want := []string{stands.Ref}; !slices.Equal(start, want) {
+		t.Fatalf("the tree keeps %v after the start's read, want %v: the root's changes request came before its gate's approval, "+
+			"and the child's after its own", start, want)
+	}
+	for _, tc := range []struct {
+		name  string
+		clear func(ctx context.Context, tx pgx.Tx, tree string) error
+	}{
+		{name: "the clear of the tree", clear: func(ctx context.Context, tx pgx.Tx, tree string) error {
+			return engine.ClearTreeGeneration(ctx, tx, tree, engine.now())
+		}},
+		{name: "the clear of each issue", clear: func(ctx context.Context, tx pgx.Tx, tree string) error {
+			for _, key := range []string{superseded.Issue, stands.Issue} {
+				issue, err := records.Issue(ctx, tx, key)
+				if err != nil {
+					return err
+				}
+				if err := engine.ClearGeneration(ctx, tx, *issue, engine.now()); err != nil {
+					return err
+				}
+			}
+			return nil
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := keptAfter(t, tc.clear); !slices.Equal(got, start) {
+				t.Fatalf("the tree keeps %v after %s and %v after the start's read of the same decisions, want the same: "+
+					"both run the one forget (ForgetSuperseded)", got, tc.name, start)
 			}
 		})
 	}

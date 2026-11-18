@@ -464,7 +464,7 @@ func gatedDocuments(steps []record.DesignStep) string {
 // and one a later approval superseded). decided is the decisions' own text, written again from
 // what stays by the wording it always was (KeptDecisionsTask), which the caller renders in its own
 // transaction from the gates as they stand at the narrowing, so every decision it names is asked
-// again whether it is still the person's word (DecisionStands). Where the task it rewrites carried
+// again whether it is still the person's word (SupersedingApproval). Where the task it rewrites carried
 // the first-task instruction that instruction is written again with it: a decision leaving the
 // tree says nothing about whether the tree has been taken up, and a rewrite that dropped the
 // instruction would hand a fresh architect the empty task the instruction exists to replace.
