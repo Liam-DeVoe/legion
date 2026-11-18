@@ -381,6 +381,22 @@ test("the time the Slack channels last changed shows beside them, and nothing wh
   }
 });
 
+// A list the owner emptied changed too: the secrets broker stops releasing the token for the
+// channels taken off from that time, so the tab shows it beside the empty field, as it does beside
+// a list. The break it catches: the time shown only beside a list that names a channel.
+test("the time the Slack channels last changed shows beside a list the owner emptied", async () => {
+  const panel = renderPanel({
+    answer: access({ slack_channels: [], slack_channels_changed_at: "2026-11-17T10:00:00Z" }),
+  });
+  try {
+    const changed = await screen.findByTestId("access-slack-channels-changed");
+    expect(changed.textContent).toStartWith("Changed ");
+    expect(changed.querySelector("time")).toHaveAttribute("datetime", "2026-11-17T10:00:00Z");
+  } finally {
+    panel.restore();
+  }
+});
+
 test("a person who is not the owner cannot name the Slack channels", async () => {
   const user = userEvent.setup();
   const panel = renderPanel({ answer: access({ slack_channels: ["C012345678"] }), login: "bob" });

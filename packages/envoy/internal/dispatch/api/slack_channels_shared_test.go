@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -227,5 +228,24 @@ func TestTheSharedChannelRefusalReadsTheCallersCredential(t *testing.T) {
 			t.Errorf("%s writes C0SHARED001 on PRIV2 = %d %s, want 409 SLACK_CHANNEL_SHARED reading %q", row.who, response.Code, response.Body.String(), row.want)
 		}
 		wantChannelsUnwritten(t, rig.database, "PRIV2", before)
+	}
+}
+
+// TestAPrivateProjectKeepsItsOwnSlackChannels: the shared-channel check compares a private
+// project's list with every OTHER private project's, never with its own, so the owner of a private
+// project that already names a channel can save that list again and add a channel beside it. The
+// break it catches: SharedSlackChannel losing `key <> $1`, which refuses every later write of a
+// private project's own list with "C0OWN000001 is listed by PRIV, a private project", its own name.
+func TestAPrivateProjectKeepsItsOwnSlackChannels(t *testing.T) {
+	handler, database := newAccessServer(t)
+	createAccessProject(t, handler, "PRIV", "alice")
+	makePrivate(t, database, "PRIV", "C0OWN000001")
+	for _, channels := range [][]string{{"C0OWN000001"}, {"C0OWN000001", "C0SECOND001"}} {
+		response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/projects/PRIV/access",
+			map[string]any{"slack_channels": channels}, "alice")
+		if got := decodeBody[model.ProjectAccess](t, response); response.Code != http.StatusOK || !slices.Equal(got.SlackChannels, channels) {
+			t.Fatalf("alice saves private PRIV's own list as %v = %d %s, want 200 with that list: a project's own channels are never shared with itself",
+				channels, response.Code, response.Body.String())
+		}
 	}
 }
