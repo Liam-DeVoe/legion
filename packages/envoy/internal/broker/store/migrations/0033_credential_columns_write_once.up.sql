@@ -43,10 +43,14 @@
 --       (exchange.MachineSubject, exchange.PersonSubject), so their key never moves, but the
 --       upsert still moves their operator, host and expiry.
 --   oauth_device_codes
---     request, status  replaced while the code is new (status 0) by its decision
---       (oauthstore.Store.UpdateDeviceCodeSession). Once it is decided, its request changes in
---       nothing but its top-level last_checked (a poll of the decided code), and its status
---       never goes back to new; an invalidation (InvalidateDeviceCodeSession) moves it to -1.
+--     request  replaced while the code is new (status 0) by its decision
+--       (oauthstore.Store.UpdateDeviceCodeSession). Once it is decided, it changes in nothing
+--       but its top-level last_checked (a poll of the decided code).
+--     status  new (0) -> a decision, approved (1) or denied (2), by that same writer; any
+--       status -> invalidated (-1), by InvalidateDeviceCodeSession when the code is exchanged.
+--       Never back to new, never from one decision to the other, and never out of invalidated:
+--       oauthstore.Store.GetDeviceCodeSession answers "not found" only for an invalidated code,
+--       so a code moved out of it would be exchanged again.
 --
 -- Each before-update trigger fires only when one of its columns moves as no writer moves it (its
 -- `when`), so a writer's statement costs nothing, and its function refuses every row it is
@@ -209,11 +213,13 @@ create trigger launcher_credentials_credential_columns before update on launcher
 
 -- A decided code's request is compared without its top-level last_checked, the one key a poll of
 -- it writes. A request that is not a JSON object, which no writer stores, is compared whole, so
--- the comparison itself never raises an error of its own in place of the refusal.
+-- the comparison itself never raises an error of its own in place of the refusal. The statuses
+-- are the library's (authelia.com/provider/oauth2: new 0, approved 1, denied 2) and the store's
+-- own invalidated (-1, oauthstore's deviceInvalidated).
 create function broker_refuse_device_code_change() returns trigger language plpgsql as $$
 begin
-  if new.status = 0 then
-    raise exception 'oauth_device_codes.status of a decided code never goes back to new (0): a device code is decided once'
+  if new.status <> old.status and new.status <> -1 and not (old.status = 0 and new.status in (1, 2)) then
+    raise exception 'oauth_device_codes.status moves only from new (0) to a decision (1 or 2) and from any status to invalidated (-1): a code is decided once, and an invalidated code is never exchanged again'
       using errcode = 'check_violation';
   end if;
   raise exception 'oauth_device_codes.request of a decided code holds its decision, and changes in nothing but its last_checked (a poll)'
@@ -223,13 +229,11 @@ $$;
 
 create trigger oauth_device_codes_decision_kept before update on oauth_device_codes
   for each row when (
-    old.status <> 0 and (
-      new.status = 0
-      or case
-        when jsonb_typeof(old.request) = 'object' and jsonb_typeof(new.request) = 'object'
-          then (old.request - 'last_checked') is distinct from (new.request - 'last_checked')
-        else old.request is distinct from new.request
-      end
-    )
+    (new.status <> old.status and new.status <> -1 and not (old.status = 0 and new.status in (1, 2)))
+    or (old.status <> 0 and case
+      when jsonb_typeof(old.request) = 'object' and jsonb_typeof(new.request) = 'object'
+        then (old.request - 'last_checked') is distinct from (new.request - 'last_checked')
+      else old.request is distinct from new.request
+    end)
   )
   execute function broker_refuse_device_code_change();

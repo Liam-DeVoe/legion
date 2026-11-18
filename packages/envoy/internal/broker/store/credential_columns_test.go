@@ -181,12 +181,18 @@ var credentialRefusals = slices.Concat([]credentialRefusal{
 	{"oauth_device_codes.request", "a decided code's request replaced by a value that is not an object",
 		[]string{columnsDecidedDeviceCode},
 		`update oauth_device_codes set request = '"approved"'`, deviceDecisionGuard},
-	{"oauth_device_codes.status", "a decided code set back to new",
+	{"oauth_device_codes.status", "approved -> new: a decided code set back to new",
 		[]string{columnsDecidedDeviceCode},
 		`update oauth_device_codes set status = 0`, deviceDecisionGuard},
-	{"oauth_device_codes.status", "an invalidated code set back to new",
+	{"oauth_device_codes.status", "invalidated -> new",
 		[]string{columnsDecidedDeviceCode, `update oauth_device_codes set status = -1`},
 		`update oauth_device_codes set status = 0`, deviceDecisionGuard},
+	{"oauth_device_codes.status", "invalidated -> approved: an exchanged code is exchanged again",
+		[]string{columnsDecidedDeviceCode, `update oauth_device_codes set status = -1`},
+		`update oauth_device_codes set status = 1`, deviceDecisionGuard},
+	{"oauth_device_codes.status", "approved -> denied: a decision moved to the other",
+		[]string{columnsDecidedDeviceCode},
+		`update oauth_device_codes set status = 2`, deviceDecisionGuard},
 })
 
 // The six columns that say who a machine login acts for and which key presents it, each with a
@@ -371,7 +377,7 @@ var credentialTransitions = []credentialTransition{
 				pod_uid=excluded.pod_uid, expires_at=excluded.expires_at
 			returning id`, 1},
 
-	{"oauthstore.Store.UpdateDeviceCodeSession", "a new code's decision",
+	{"oauthstore.Store.UpdateDeviceCodeSession", "new -> approved: a new code's approval",
 		[]string{columnsNewDeviceCode},
 		`update oauth_device_codes set
 			user_code_signature = case when status = 0 then 'user-1' else user_code_signature end,
@@ -389,7 +395,16 @@ var credentialTransitions = []credentialTransition{
 			expires_at = case when status = 0 then now() + interval '10 minutes' else expires_at end,
 			status = case when status = 0 then 0 else status end
 			where signature = 'device-1'`, 1},
-	{"oauthstore.Store.InvalidateDeviceCodeSession", "a decided code exchanged",
+	{"oauthstore.Store.UpdateDeviceCodeSession", "new -> denied: a new code's denial",
+		[]string{columnsNewDeviceCode},
+		`update oauth_device_codes set
+			user_code_signature = case when status = 0 then 'user-1' else user_code_signature end,
+			request = case when status = 0 then '{"client_id":"agent-secrets","session":{}}'::jsonb
+				else request || jsonb_build_object('last_checked', '"2026-11-18T00:01:00Z"'::jsonb) end,
+			expires_at = case when status = 0 then now() + interval '10 minutes' else expires_at end,
+			status = case when status = 0 then 2 else status end
+			where signature = 'device-1'`, 1},
+	{"oauthstore.Store.InvalidateDeviceCodeSession", "approved -> invalidated: an approved code exchanged",
 		[]string{columnsDecidedDeviceCode},
 		`update oauth_device_codes set status = -1 where signature = 'device-1' and status <> -1`, 1},
 }
