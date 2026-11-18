@@ -1,19 +1,18 @@
-//go:build e2e
-
 // The live proof of what a provider error does to a worker's task (dispatch://INFRA-956 R2) and
 // of the operator's hand on the claims it leaves (R3), driven against real Oh My Pi panes under
-// the real daemon. scripts/e2e/provider-error-retry.sh builds this driver with `-tags e2e` and
-// owns the nats-server and the PostgreSQL it runs against.
+// the real daemon. CI's agent-harness job runs it by name
+// (.github/workflows/ci-job-agent-harness.yaml), over the PostgreSQL that job gives it and the
+// package's test NATS server.
 //
 // The daemon is the whole daemon: run, the function `legion start` calls, through this package's
 // own whole-daemon harness (startDaemonWithin) over the live-proof fixture (live_proof_test.go),
 // so the proof exercises the real configuration, the real store and its migrations, the real HTTP
 // API, the real claim supervision and its worker stream, and the real workflow. Each worker is a
 // real `omp --mode rpc` under the real `legion worker-shim`, started by localruntime_live_test.go
-// — this pod carries no tmux, so the pane is a child process group instead of a window — with this
-// checkout's `@sjawhar/pi-envoy` and `@sjawhar/pi-legion` installed into an Oh My Pi profile of the
-// run's own. The agents register, report ready and take their tasks over the daemon's own routes
-// and stream, as they do in production.
+// — a Legion pod carries no tmux, so the pane is a child process group instead of a window —
+// with this checkout's `@sjawhar/pi-envoy` and `@sjawhar/pi-legion` installed into an Oh My Pi
+// profile of the run's own. The agents register, report ready and take their tasks over the
+// daemon's own routes and stream, as they do in production.
 //
 // What stands in is the model endpoint and nothing else. Three HTTP stand-ins of the test's own
 // answer the panes' provider requests, over the live-proof base this proof shares with the
@@ -42,9 +41,8 @@
 // How long it takes. The ladder's first ladderWaitedOut rungs are waited out where they are real:
 // 30 s, 60 s and 120 s of wall clock, measured between the daemon's sends. Every rung above them
 // is driven on the daemon's own clock (ladderDriven, ladderClock), because waiting the fourth and
-// fifth out would add twelve minutes and measure the same ladder twice. With the pod's Oh My Pi
-// the whole driver runs in about eight minutes, inside the twenty-minute bound
-// scripts/e2e/lib/live-daemon-proof.sh gives it.
+// fifth out would add twelve minutes and measure the same ladder twice. The whole driver ran in
+// about five minutes in a Legion worker pod.
 //
 // What the daemon already holds when it boots. Each issue is seeded holding its tree's admission
 // slot, in a worker phase, with that worker's claim mid-launch and the task that phase's start
@@ -88,7 +86,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -161,7 +158,6 @@ type providerErrorLive struct {
 // the sixth turn, a content filter's refusal that carries no status, an error that cannot clear,
 // and the operator's commands over the claims the first and the fourth leave.
 func TestAProviderErrorKeepsTheTaskAndTheOperatorRetriesWhatItLeavesLive(t *testing.T) {
-	fixtureenv.Live(t)
 	r := newProviderErrorLive(t)
 	r.step("step1-a-529-keeps-the-task-and-walks-the-30-60-120-ladder", r.ladderWalks)
 	r.step("step2-the-sixth-turn-in-a-row-tells-the-controller", r.controllerIsTold)
@@ -176,10 +172,7 @@ func TestAProviderErrorKeepsTheTaskAndTheOperatorRetriesWhatItLeavesLive(t *test
 // worker's task pending on its claim (seed), and the daemon booted over the local runtime.
 func newProviderErrorLive(t *testing.T) *providerErrorLive {
 	t.Helper()
-	omp := os.Getenv(liveOmpPathEnv)
-	if omp == "" {
-		t.Skipf("%s is unset, so there is no Oh My Pi for a pane to run; scripts/e2e/provider-error-retry.sh requires it", liveOmpPathEnv)
-	}
+	omp := paneOMP(t)
 	takeOwnDatabase(t)
 	proof := newLiveProof(t)
 	r := &providerErrorLive{
@@ -204,8 +197,7 @@ func newProviderErrorLive(t *testing.T) *providerErrorLive {
 	if err != nil {
 		t.Fatalf("read the Oh My Pi version of %s: %v", omp, err)
 	}
-	r.note("Oh My Pi %s at %s (the pod's build, which is the fleet's pin and not this branch's fetch)",
-		strings.TrimSpace(string(version)), omp)
+	r.note("Oh My Pi %s at %s, the binary LEGION_TEST_OMP names", strings.TrimSpace(string(version)), omp)
 
 	root := proofCheckoutRoot(t)
 	work := t.TempDir()

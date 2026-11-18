@@ -201,7 +201,6 @@ const knownPins = [
   "packages/claude-envoy/README.md",
   "packages/claude-envoy/scripts/smoke-session-title.sh",
   "docs/solutions/testing/the-daemons-nats-tests-run-in-a-docker-less-pod-against-a-local-nats-server-named-by-two-variables-INFRA-388.md",
-  "scripts/e2e/lib/live-daemon-proof.sh",
   "scripts/e2e/dispatch-session-settings.sh",
 ];
 

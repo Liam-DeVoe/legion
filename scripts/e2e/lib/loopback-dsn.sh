@@ -18,17 +18,13 @@
 # NAME is the environment variable the caller read DSN from, and it starts that line. WHAT is
 # what the run does on that server, in a few words.
 #
-# Ten call sites read a DSN with this guard before they start anything, because the server must
+# Eight call sites read a DSN with this guard before they start anything, because the server must
 # be this machine's. Seven are proofs of their own: plan-pointer-drive.sh,
 # verification-results.sh, dispatch-claimant-delivery.sh, clean-session-stop-tmux.sh,
 # envoy-session-states.sh, envoy-session-delivery.sh and dispatch-session-settings.sh. The
 # eighth is lib/two-builds.sh, the harness the two two-builds proofs share, which reads
-# DATABASE_URL once for dispatch-two-builds.sh and dispatch-search-two-builds.sh. The ninth is
-# lib/live-daemon-proof.sh, whose prerequisites check
-# reads LEGION_TEST_PG_DSN for each proof that makes that run, which is every entry script that
-# sources it. The tenth call site is busy-relaunch-delivery.sh's negative control, which reads
-# LEGION_TEST_PG_DSN with this guard before it builds the base commit's tree, through the copy
-# lib/live-daemon-proof.sh sources. Eight of the ten call sites call this function.
+# DATABASE_URL once for dispatch-two-builds.sh and dispatch-search-two-builds.sh. Six of the
+# eight call sites call this function.
 # envoy-session-delivery.sh and dispatch-session-settings.sh read their DSN with
 # run_database_url alone, which begins with this guard's own check. Every proof that writes a
 # server its caller's DSN names reads that DSN with this guard before it starts anything.
@@ -71,11 +67,11 @@
 # (lib/loopback-dsn.test.ts) and that check's own cases
 # (packages/daemon/internal/testpg/testdb/testdb_test.go) again.
 #
-# The ninth call site's binary rewrites that DSN itself, and this guard reaches no further than
-# the shell. That rewrite, and the check that keeps it on the host this guard read, are written
-# once, on DatabaseURL in packages/daemon/internal/testpg/testdb/testdb.go. The two frames divide
-# this way: this guard reads the caller's DSN with libpq in the shell, before anything starts,
-# and the binary reads every DSN it builds from that one back with pgx inside itself.
+# The daemon's live proofs that drive real Oh My Pi panes
+# (packages/daemon/internal/daemon/live_agent_proof_test.go) rewrite the DSN they are given into
+# one that names a database of their own, and no shell guard reads that DSN first. That rewrite,
+# and the check that keeps it on the host the DSN names, are written once, on DatabaseURL in
+# packages/daemon/internal/testpg/testdb/testdb.go, which reads every DSN it builds back with pgx.
 #
 # The call runs after the caller's own tool check, because it is python3 that runs the guard.
 # The caller clears PGHOSTADDR, PGSERVICE and PGSERVICEFILE before its first connection, in its

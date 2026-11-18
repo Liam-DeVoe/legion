@@ -7,7 +7,7 @@
 //
 // Everything below the pane is the real thing: the command is the one a pane runs,
 // `legion worker-shim --connect unix://<the daemon's stream socket> --boot-token-file <file> --
-// <omp argv>`, built from this checkout's `legion` and the Oh My Pi LEGION_OMP_PATH names; the
+// <omp argv>`, built from this checkout's `legion` and the Oh My Pi LEGION_TEST_OMP names; the
 // environment is `internal/runtime/tmux`'s own (tmux.PaneVariables over tmux.PaneInputs), which is
 // the function that package exports for exactly this — a process it does not start that must be
 // told what a pane is told. The agent therefore registers over the daemon's own HTTP routes,

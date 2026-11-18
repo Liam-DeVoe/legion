@@ -193,8 +193,7 @@ func RandomName(prefix string) (string, error) {
 // A rewrite pgx reads another host, port or user from than dsn is refused, and so is one pgx
 // reads another database from than database. Go's net/url ends the user name at the last `@` and
 // it starts the query at the first `?`. libpq and pgx do neither. So a DSN whose host libpq reads
-// as loopback, which is the only DSN the live proofs' shell guard admits
-// (scripts/e2e/lib/loopback-dsn.sh), can rewrite into a URL pgx connects to another machine with.
+// as loopback can rewrite into a URL pgx connects to another machine with.
 //
 // A refusal names which of host, port, user and database pgx reads from the rewrite other than
 // the connection the rewrite was asked for. It prints no value and no text of either parser,
@@ -206,11 +205,9 @@ func RandomName(prefix string) (string, error) {
 // What that costs a reader of a refusal: they learn which fields moved, and not what they moved
 // to. The DSN is the caller's own, and the caller can read it.
 //
-// This check is the second of the two frames that hold a live proof to the server its caller
-// named, and it is the one place the Go half of those frames is written. The first frame is that
-// shell guard: it reads the caller's DSN with libpq before anything starts, and it reaches no
-// further than the shell. The comment above require_loopback_dsn is the one place the shell half
-// is written. testdb_test.go drives the cases of this check.
+// No shell guard reads a test binary's DSN before it starts: the live proofs are Go tests a CI
+// job runs by name, so this check is the one thing that holds each rewrite to the server the
+// caller named, and it is written here alone. testdb_test.go drives the cases of this check.
 func DatabaseURL(dsn, database string) (string, error) {
 	return rewriteDSN("LEGION_TEST_PG_DSN", dsn, rewrite{database: database})
 }

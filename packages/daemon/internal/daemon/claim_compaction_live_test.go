@@ -1,11 +1,10 @@
-//go:build e2e
-
 // The live proof of the two operations dispatch://INFRA-956 R3 gives an operator and a project's
 // controller over a claim whose provider keeps refusing its session: `legion claims compact` and
 // the controller's `compact`, and `legion claims retry --fresh-session` and the controller's
 // `fresh_session`. Each is driven through both of its doors against real `omp --mode rpc` panes
-// under the real daemon. scripts/e2e/claim-compaction.sh builds this driver with `-tags e2e` and
-// owns the nats-server and the PostgreSQL it runs against.
+// under the real daemon. CI's agent-harness job runs it by name
+// (.github/workflows/ci-job-agent-harness.yaml), over the PostgreSQL that job gives it and the
+// package's test NATS server.
 //
 // It is a sibling of provider_error_retry_live_test.go and role_prompt_rule_live_test.go, and
 // what the three share is the live-proof
@@ -13,8 +12,8 @@
 // of the daemon's own log, the recording log handler, the model stand-in, the overlay writers,
 // the run's own database and the two plugins packed from this checkout. The local runtime that
 // starts a pane where there is no tmux is localruntime_live_test.go's. What it proves is the
-// other half of R3, so it is a script of its own rather than more steps of that one: the two
-// runs would otherwise share a wall clock, and this one starts four panes and waits out a
+// other half of R3, so it is a test of its own rather than more steps of that one: the two
+// would otherwise share a wall clock, and this one starts four panes and waits out a
 // compaction the endpoint holds for over half a minute.
 //
 // The overlays are this deployment's rendered shape, which is what makes the compaction's form
@@ -59,7 +58,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -152,7 +150,6 @@ type compactPane struct {
 // fresh sessions both doors start, and the fresh session that starts a worker whose process is
 // gone, which runs last because it kills the panes the steps before it drive.
 func TestTheOperatorAndTheControllerCompactAClaimsSessionAndStartItFreshLive(t *testing.T) {
-	fixtureenv.Live(t)
 	r := newClaimCompactionLive(t)
 	r.step("step1-the-panes-run-the-deployments-overlays-and-a-short-session-can-be-compacted", r.overlaysAreTheDeployments)
 	r.step("step2-the-operator-compacts-a-phase-worker-the-ladder-holds", r.operatorCompactsAPhaseWorker)
@@ -170,10 +167,7 @@ func TestTheOperatorAndTheControllerCompactAClaimsSessionAndStartItFreshLive(t *
 // over the local runtime, and the project's controller registered.
 func newClaimCompactionLive(t *testing.T) *claimCompactionLive {
 	t.Helper()
-	omp := os.Getenv(liveOmpPathEnv)
-	if omp == "" {
-		t.Skipf("%s is unset, so there is no Oh My Pi for a pane to run; scripts/e2e/claim-compaction.sh requires it", liveOmpPathEnv)
-	}
+	omp := paneOMP(t)
 	takeOwnDatabase(t)
 	proof := newLiveProof(t)
 	r := &claimCompactionLive{
@@ -188,8 +182,8 @@ func newClaimCompactionLive(t *testing.T) *claimCompactionLive {
 	// The backends map is the one the API server reads through cfg.BackendFor, and it is empty
 	// while the daemon boots: boot resolves Claude Code's binary, its bun and its plugin
 	// directory for every backend the configuration names (the daemon's resolveClaude), and this
-	// pod has no Claude Code to resolve. The role is put on that backend once the daemon is up,
-	// because the refusal under test reads that map and nothing else (api's compact, over
+	// run gives the daemon no Claude Code to resolve. The role is put on that backend once the
+	// daemon is up, because the refusal under test reads that map and nothing else (api's compact, over
 	// Options.Backend, which the daemon fills from config.Config.BackendFor); the alternative
 	// would put some other binary on a real resolver's path and claim it is Claude Code. The
 	// map is written after the boot that read it because a Config's WorkerBackends is a map and
@@ -200,8 +194,7 @@ func newClaimCompactionLive(t *testing.T) *claimCompactionLive {
 	if err != nil {
 		t.Fatalf("read the Oh My Pi version of %s: %v", omp, err)
 	}
-	r.note("Oh My Pi %s at %s (the pod's build, which is the fleet's pin and not this branch's fetch)",
-		strings.TrimSpace(string(version)), omp)
+	r.note("Oh My Pi %s at %s, the binary LEGION_TEST_OMP names", strings.TrimSpace(string(version)), omp)
 
 	root := proofCheckoutRoot(t)
 	work := t.TempDir()

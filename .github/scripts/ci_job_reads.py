@@ -312,9 +312,9 @@ def biome(where):
     )
 
 
-def install_jj(job):
+def install_jj(job, workflow=""):
     return reads(
-        (".github/actions/install-jj/**", at(job, "./.github/actions/install-jj")),
+        (".github/actions/install-jj/**", at(job, "./.github/actions/install-jj", workflow)),
         (f"{DAEMON}/docker/worker.Dockerfile", ".github/actions/install-jj/action.yml:60 reads ARG JJ_TOOL, the tool spec mise installs"),
         (".github/ci-tools.yaml", ".github/actions/install-jj/action.yml:42-43 installs the mise row's archive, and "
                                   ":74,83 hold the jj binary to the jj row's digest, whichever source served it"),
@@ -324,9 +324,9 @@ def install_jj(job):
     )
 
 
-def install_omp(job):
+def install_omp(job, workflow=""):
     return reads(
-        (".github/actions/install-omp/**", at(job, "./.github/actions/install-omp")),
+        (".github/actions/install-omp/**", at(job, "./.github/actions/install-omp", workflow)),
         (".omp-pin", ".github/actions/install-omp/action.yml:16 pin=$(<.omp-pin)"),
     )
 
@@ -500,29 +500,6 @@ RULES = {
         (f"{FIX}/daemon-api/*", "internal/config/stalldefaults_test.go:72 (the :67 write is under -update, which CI never passes)")),
     f"{DAEMON}/internal/daemon/capability_reports_test.go": reads((f"{FIX}/capability-redaction.json", "internal/daemon/capability_reports_test.go:318")),
     f"{DAEMON}/internal/daemon/daemon_test.go": reads((f"{DAEMON}/internal/intake/testdata/dispatch/issue-updated.json", "internal/daemon/daemon_test.go:1331")),
-    # What the five live proofs that drive real Oh My Pi panes do through the harness main's
-    # #2780 added for them (live_agent_proof_test.go): build the `legion` their panes run and pack
-    # both Oh My Pi plugins into the run's own profile. The row is keyed on the five drivers, whose
-    # tests make those reads (buildProofLegion and installProofPlugins, which no other test
-    # calls), and not on the harness file: that file carries no build tag, since the daemon-live
-    # job's untagged tests share its package, so every job that runs internal/daemon's tests
-    # compiles it, and keyed there the row would put the lockfile, the two plugin packages and
-    # skills/ on daemon-go's and daemon-live's filters, whose tests read none of them. The five
-    # still carry the e2e tag, and no job of ci.yaml applies this row today - the daemon's e2e tag
-    # is vetted (ci-job-typecheck.yaml's `go vet -tags e2e ./...`) and never tested, and a vet run
-    # compiles a test file without applying its rules - so it is what a `go test -tags e2e
-    # ./internal/daemon/` reads the day a job runs one.
-    **{f"{DAEMON}/internal/daemon/{driver}": [
-        legion_build(f"internal/daemon/{driver} calls live_agent_proof_test.go:289-295 buildProofLegion, which runs go build "
-                     "./cmd/legion in packages/daemon"),
-        Read("scripts/e2e/lib/pack-plugin.sh", f"internal/daemon/{driver} calls live_agent_proof_test.go:306-314 "
-                                               "installProofPlugins, which runs it in bash, once per plugin"),
-        *[Read(g, f"internal/daemon/{driver} calls live_agent_proof_test.go:306-314 installProofPlugins, which packs "
-                  "packages/pi-envoy and packages/pi-legion through scripts/e2e/lib/pack-plugin.sh, whose `bun pm pack` "
-                  "runs their prepack")
-          for g in PACK_READS],
-    ] for driver in ("busy_relaunch_live_test.go", "claim_compaction_live_test.go", "late_completion_live_test.go",
-                     "provider_error_retry_live_test.go", "role_prompt_rule_live_test.go")},
     f"{DAEMON}/internal/daemon/nats_permissions_test.go": reads(
         (f"{DAEMON}/internal/intake/testdata/dispatch/issue-updated.json", "internal/daemon/nats_permissions_test.go:77"),
         (f"{DAEMON}/internal/intake/testdata/github/pr-opened.json", "internal/daemon/nats_permissions_test.go:78")),
@@ -1333,6 +1310,57 @@ def hold_plugin_pack_tests():
 hold_plugin_pack_tests()
 
 
+# ---------------------------------------------------------------- tests jobs of their own take whole by file
+def hold_whole_files(job, package, files, tests, files_name, tests_name):
+    """Refuse a list of tests that is no longer the truth about the test files of `package` a job
+    of its own takes whole and runs by name, and that the daemon-go race step skips by the same
+    names: a file of `files` that is gone or carries a //go:build line, a name `tests` holds that
+    none of those files declares, and a test one of them declares that `tests` does not name.
+    `files_name` and `tests_name` are the two lists' names here, which a refusal names. Held to
+    nothing, each passes every other check green while a test leaves that job: the job's -run
+    matches the names that are left and the race step's -skip stops naming the test, so the race
+    step runs it with none of the job's own reads on its filter, and a renamed test runs in
+    neither step. Every file of the list is taken whole, so the job's gate's reads are all of the
+    files' reads only while the list names every test of them. A test is what
+    hold_plugin_pack_tests() reads one as: every top-level Test, Fuzz or Example of GO_TEST_FUNC
+    over go_code_only, TestMain apart. A file carrying a //go:build line is refused rather than
+    read as declaring nothing, since neither step passes -tags and a test behind the constraint is
+    one neither the -run nor the -skip reaches. The skip belongs to the step that would otherwise
+    run these tests, as the plugin-pack tests' does: the daemon-go plain step leaves the race
+    step's packages to it, so the race step is the one other step that runs them, and a package
+    moved out of it while these tests stayed would run them in a step with no skip of theirs.
+    What this guard does not see is a new test of the job's kind in a file the list does not name:
+    it runs in the daemon-go race step until a reader adds the file here."""
+    if package not in DAEMON_RACE_PACKAGES:
+        raise ValueError(f"the {job} tests are in {package}, which the race step does not run, so nothing "
+                         f"skips them there; name that package's step here, or move the -skip to the step that "
+                         f"runs them")
+    declared = []
+    for name in files:
+        path = Path(DAEMON) / package / name
+        if not path.is_file():
+            raise ValueError(f"{files_name} names {path.as_posix()}, which is not there to read; follow the "
+                             f"file here, or take it out of the list and its tests out of {tests_name}")
+        text = path.read_text()
+        if GO_BUILD_LINE.search(text):
+            raise ValueError(f"{path.as_posix()} carries a //go:build line, so neither the {job} step, which "
+                             f"passes no -tags, nor the daemon-go race step's -skip reaches a test of it; take the "
+                             f"constraint off the file, or take it out of {files_name}")
+        declared += [m.group(1) for m in GO_TEST_FUNC.finditer(go_code_only(text)) if m.group(1) != "TestMain"]
+    gone = ", ".join(name for name in sorted(tests) if name not in declared)
+    if gone:
+        raise ValueError(f"{tests_name} names {gone}, which no file of {files_name} declares as a test "
+                         f"`go test` runs (a top-level `func Test…`, `func Fuzz…` or `func Example…`, TestMain "
+                         f"apart): the {job} step's -run matches nothing of that name and passes, and the "
+                         f"daemon-go race step's -skip skips nothing. Follow the rename, or take the name out")
+    unnamed = ", ".join(name for name in sorted(declared) if name not in tests)
+    if unnamed:
+        raise ValueError(f"{files_name} declare {unnamed}, which {tests_name} does not name: the {job} job "
+                         f"takes each of those files whole, so a test of one that this list leaves out runs in the "
+                         f"daemon-go race step instead, whose filter names none of that job's own reads. Add the "
+                         f"name to this list, or move the test to a file of its own outside {files_name}")
+
+
 # ---------------------------------------------------------------- the daemon's whole-daemon live tests
 # The seven live proofs of internal/daemon that boot the whole daemon through startDaemonWithin and
 # drive it with no agent, which the daemon-live job runs (.github/workflows/ci-job-daemon-live.yaml):
@@ -1343,9 +1371,9 @@ hold_plugin_pack_tests()
 # CLI loads are that job's inputs and not the daemon's whole Go suite's, and the daemon-go race
 # step, which runs their package, skips them by name (DAEMON_RACE_SKIP below). Each file of
 # DAEMON_LIVE_FILES is taken whole, so DAEMON_LIVE_TESTS names every test of each of them, and
-# hold_daemon_live_tests() is what holds that rather than a reader noticing. Both step texts are
-# built from this one list, and check-ci-filters.sh pins each step's whole script, so the -run and
-# the -skip cannot come to name different tests.
+# hold_whole_files() is what holds that rather than a reader noticing. Both step texts are built
+# from this one list, and check-ci-filters.sh pins each step's whole script, so the -run and the
+# -skip cannot come to name different tests.
 DAEMON_LIVE_FILES = ["behind_entry_fence_live_test.go", "child_adoption_live_test.go", "conflict_no_takeover_live_test.go",
                      "handoff_records_live_test.go", "merge_wait_readable_live_test.go",
                      "phase_entry_converge_live_test.go", "sub_architect_live_test.go"]
@@ -1357,68 +1385,56 @@ DAEMON_LIVE_TESTS = ["TestABehindCompletionIsDecidedByItsHeadAndTheMoveThatRaise
                      "TestAPhaseEntryConvergesOnARunningDaemonLive",
                      "TestEveryChildThatStartsRunsUnderItsOwnArchitectLive"]
 DAEMON_LIVE_PACKAGE = "internal/daemon"
-DAEMON_LIVE_SOURCE = f"{DAEMON}/{DAEMON_LIVE_PACKAGE}"
 DAEMON_LIVE_JOB = "daemon-live"
 DAEMON_LIVE_STEP = "Run the whole-daemon live tests"
 DAEMON_LIVE_PATTERN = f"'^({'|'.join(sorted(DAEMON_LIVE_TESTS))})$'"
 DAEMON_LIVE_SCRIPT = f"go test -v -count=1 -timeout 20m -run {DAEMON_LIVE_PATTERN} ./{DAEMON_LIVE_PACKAGE}/"
-# The skip belongs to the step that would otherwise run these tests, as the plugin-pack tests'
-# does: the daemon-go plain step leaves internal/daemon to the race step, so the race step is the
-# one other step that runs them, and a package moved out of it while these tests stayed would run
-# them in a step with no skip of theirs.
-if DAEMON_LIVE_PACKAGE not in DAEMON_RACE_PACKAGES:
-    raise ValueError(f"the daemon-live tests are in {DAEMON_LIVE_PACKAGE}, which the race step does not run, so "
-                     f"nothing skips them there; name that package's step here, or move the -skip to the step that "
-                     f"runs them")
+hold_whole_files(DAEMON_LIVE_JOB, DAEMON_LIVE_PACKAGE, DAEMON_LIVE_FILES, DAEMON_LIVE_TESTS,
+                 "DAEMON_LIVE_FILES", "DAEMON_LIVE_TESTS")
 
 
-def hold_daemon_live_tests():
-    """Refuse a DAEMON_LIVE_TESTS that is no longer the truth about DAEMON_LIVE_FILES: a file of the
-    list that is gone or carries a //go:build line, a name this list holds that none of those files
-    declares, and a test one of them declares that this list does not name. Held to nothing, each
-    passes every other check green while a test leaves the daemon-live job: the -run matches the
-    names that are left and the -skip stops naming the test, so the daemon-go race step runs a
-    whole-daemon proof under the detector - handoff_records_live_test.go's with no bun install to
-    run its CLI on - and a renamed test runs in neither step. Every file of the list is taken whole,
-    so the gate's reads are all of the files' reads only while this list names every test of them.
-    A test is what hold_plugin_pack_tests() reads one as: every top-level Test, Fuzz or Example of
-    GO_TEST_FUNC over go_code_only, TestMain apart. A file carrying a //go:build line is refused
-    rather than read as declaring nothing, since neither step passes -tags and a test behind the
-    constraint is one neither the -run nor the -skip reaches. What this guard does not see is a
-    new whole-daemon test in a file the list does not name: it runs in the daemon-go race step
-    until a reader adds the file here."""
-    declared = []
-    for name in DAEMON_LIVE_FILES:
-        path = Path(DAEMON_LIVE_SOURCE) / name
-        if not path.is_file():
-            raise ValueError(f"DAEMON_LIVE_FILES names {path.as_posix()}, which is not there to read; follow the "
-                             f"file here, or take it out of the list and its tests out of DAEMON_LIVE_TESTS")
-        text = path.read_text()
-        if GO_BUILD_LINE.search(text):
-            raise ValueError(f"{path.as_posix()} carries a //go:build line, so neither the daemon-live step, which "
-                             f"passes no -tags, nor the daemon-go race step's -skip reaches a test of it; take the "
-                             f"constraint off the file, or take it out of DAEMON_LIVE_FILES")
-        declared += [m.group(1) for m in GO_TEST_FUNC.finditer(go_code_only(text)) if m.group(1) != "TestMain"]
-    gone = ", ".join(name for name in sorted(DAEMON_LIVE_TESTS) if name not in declared)
-    if gone:
-        raise ValueError(f"DAEMON_LIVE_TESTS names {gone}, which no file of DAEMON_LIVE_FILES declares as a test "
-                         f"`go test` runs (a top-level `func Test…`, `func Fuzz…` or `func Example…`, TestMain "
-                         f"apart): the daemon-live step's -run matches nothing of that name and passes, and the "
-                         f"daemon-go race step's -skip skips nothing. Follow the rename, or take the name out")
-    unnamed = ", ".join(name for name in sorted(declared) if name not in DAEMON_LIVE_TESTS)
-    if unnamed:
-        raise ValueError(f"DAEMON_LIVE_FILES declare {unnamed}, which DAEMON_LIVE_TESTS does not name: the "
-                         f"daemon-live job takes each of those files whole, so a test of one that this list leaves "
-                         f"out runs in the daemon-go race step instead, whose filter names none of that job's bun "
-                         f"reads. Add the name to this list, or move the test to a file of its own outside "
-                         f"DAEMON_LIVE_FILES")
+# ---------------------------------------------------------------- the daemon's pane drivers
+# The five live proofs of internal/daemon that boot the whole daemon and drive real Oh My Pi panes
+# on it through the package's local runtime, which the agent-harness job's pane-drivers part runs
+# (.github/workflows/ci-job-agent-harness.yaml): each builds the `legion` its panes run from this
+# checkout (live_agent_proof_test.go's buildProofLegion), packs both Oh My Pi plugins with
+# `bun pm pack` over the installed workspace and skills/ and installs them on the pinned Oh My Pi
+# (installProofPlugins), and late_completion_live_test.go starts the real Dispatch too. They run
+# once per run of the router, in that job, by name, so the lockfile, the plugin packages and
+# skills/ are that job's inputs and not the daemon's whole Go suite's, and the daemon-go race step,
+# which runs their package, skips them by name (DAEMON_RACE_SKIP below). Each file of
+# AGENT_HARNESS_FILES is taken whole, as DAEMON_LIVE_FILES are, and hold_whole_files() holds
+# AGENT_HARNESS_TESTS to them. Both step texts are built from this one list, and
+# check-ci-filters.sh pins each step's whole script, so the -run and the -skip cannot come to name
+# different tests. The called file holds the job's parts as literal jobs of their own, and these
+# tests are the part AGENT_HARNESS_PANE_DRIVERS names, where every citation of its steps points.
+AGENT_HARNESS_FILES = ["busy_relaunch_live_test.go", "claim_compaction_live_test.go", "late_completion_live_test.go",
+                       "provider_error_retry_live_test.go", "role_prompt_rule_live_test.go"]
+AGENT_HARNESS_TESTS = ["TestABusyAgentIsSentItsTaskOnceAndARelaunchSaysWhatItEndedLive",
+                       "TestTheOperatorAndTheControllerCompactAClaimsSessionAndStartItFreshLive",
+                       "TestLateCompletionsThroughTheRealLegionToolLive",
+                       "TestAProviderErrorKeepsTheTaskAndTheOperatorRetriesWhatItLeavesLive",
+                       "TestEveryRoleIsLaunchedWithTheRulesItsOwnPromptCarriesLive"]
+AGENT_HARNESS_PACKAGE = "internal/daemon"
+AGENT_HARNESS_JOB = "agent-harness"
+AGENT_HARNESS_WORKFLOW = job_file(AGENT_HARNESS_JOB)
+AGENT_HARNESS_PANE_DRIVERS = "pane-drivers"
+AGENT_HARNESS_STEP = "Run the pane drivers on the pinned Oh My Pi"
+AGENT_HARNESS_PATTERN = f"'^({'|'.join(sorted(AGENT_HARNESS_TESTS))})$'"
+AGENT_HARNESS_SCRIPT = f"go test -v -count=1 -timeout 20m -run {AGENT_HARNESS_PATTERN} ./{AGENT_HARNESS_PACKAGE}/"
+hold_whole_files(AGENT_HARNESS_JOB, AGENT_HARNESS_PACKAGE, AGENT_HARNESS_FILES, AGENT_HARNESS_TESTS,
+                 "AGENT_HARNESS_FILES", "AGENT_HARNESS_TESTS")
 
 
-hold_daemon_live_tests()
+def at_pane_drivers(step):
+    """A citation of a step of the agent-harness job's pane-drivers part."""
+    return at(AGENT_HARNESS_PANE_DRIVERS, step, AGENT_HARNESS_WORKFLOW)
+
 
 # The daemon-go race step's -skip: the tests of its package that jobs of their own run, the
-# plugin-pack job's and the daemon-live job's, in one pattern built from both lists.
-DAEMON_RACE_SKIP = f"'^({'|'.join(sorted(PLUGIN_PACK_TESTS + DAEMON_LIVE_TESTS))})$'"
+# plugin-pack job's, the daemon-live job's and the agent-harness job's, in one pattern built from
+# the three lists.
+DAEMON_RACE_SKIP = f"'^({'|'.join(sorted(PLUGIN_PACK_TESTS + DAEMON_LIVE_TESTS + AGENT_HARNESS_TESTS))})$'"
 DAEMON_RACE_SCRIPT = f"go test -v -count=1 -race -timeout 30m -skip {DAEMON_RACE_SKIP} " + " ".join(DAEMON_RACE_PKGS)
 
 
@@ -2320,11 +2336,12 @@ GATES = [
     # checks, the race step over those three, and the Stage 1 proof, which builds ./cmd/legion
     # and boots it. The filter is daemon_go_tests, the list that already stood for exactly this
     # closure while it was aliased into the test filter and gated nothing of its own. The tests
-    # the race step does not run are the plugin-pack job's (PLUGIN_PACK_TESTS) and the
-    # daemon-live job's (DAEMON_LIVE_TESTS), whose gates are below: with them goes the Bun
-    # install, which no other test of this module needs, and with that the lockfile and the
-    # workspace manifests, and with them skills/ and the prepack script that stages each plugin's
-    # partition of it, and the `dispatch` CLI's sources, which no other test of this module reads.
+    # the race step does not run are the plugin-pack job's (PLUGIN_PACK_TESTS), the daemon-live
+    # job's (DAEMON_LIVE_TESTS) and the agent-harness job's (AGENT_HARNESS_TESTS), whose gates are
+    # below: with them goes the Bun install, which no other test of this module needs, and with
+    # that the lockfile and the workspace manifests, and with them skills/ and the prepack script
+    # that stages each plugin's partition of it, and the `dispatch` CLI's sources, which no other
+    # test of this module reads.
     # The plain step leaves two tests out as well, internal/supervise's table pins
     # (SUPERVISE_TABLE_TESTS), which the text-check job runs by name: they read that package's
     # source and the source of everything it imports, which their type-checker reads from source
@@ -2356,10 +2373,10 @@ GATES = [
         # its script is pinned too. What it compiles is every test file of the three packages,
         # the skipped tests' included: -skip leaves a test out of the run, never out of the
         # build, so the closure here is the step's whole closure and only those tests' own reads
-        # (the plugin-pack and daemon-live gates below) leave this job.
+        # (the plugin-pack, daemon-live and agent-harness gates below) leave this job.
         pinned_step("daemon-go", DAEMON_RACE_STEP, DAEMON, DAEMON_RACE_SCRIPT, [
-            (DAEMON, DAEMON_RACE_PKGS, "go test -race over the three concurrent packages, the plugin-pack and "
-                                       "daemon-live tests skipped by name", {"race": True}),
+            (DAEMON, DAEMON_RACE_PKGS, "go test -race over the three concurrent packages, the plugin-pack, "
+                                       "daemon-live and agent-harness tests skipped by name", {"race": True}),
         ]),
         # The race step's packages' tests the race build does not compile or runs smaller
         # (DAEMON_RACE_IMPOSSIBLE_*), one go test per package, each selecting that package's own
@@ -2453,6 +2470,48 @@ GATES = [
                          "scripts/e2e/completion-head.ts:25 and packages/pi-shared/src/handoff-record.ts:5-10 import "
                          "@legion/envoy-client/*")
       + install_jj(DAEMON_LIVE_JOB) + setup_go(DAEMON_LIVE_JOB, f"{DAEMON}/go.mod") + bun_job(DAEMON_LIVE_JOB)),
+
+    # The agent-harness job's pane-drivers part: the five live proofs of internal/daemon in
+    # AGENT_HARNESS_TESTS, which drive real Oh My Pi panes and which the daemon-go race step skips
+    # by name. The step runs those tests alone, and compiles the package they are in to do it, so
+    # this filter is that package's whole test closure - the Dispatch server
+    # outbox_scratch_dispatch_test.go's RULES row builds among it, which
+    # late_completion_live_test.go starts too - as well as what the five read beyond it: the
+    # `legion` every pane runs, which buildProofLegion builds from this checkout (the Run below),
+    # and the two plugins installProofPlugins packs through scripts/e2e/lib/pack-plugin.sh, whose
+    # `bun pm pack` runs each plugin's prepack over the installed workspace and skills/, then
+    # installs on the Oh My Pi .omp-pin names. Those reads are declared here, keyed on these
+    # tests, rather than in a RULES row of their files, which every job compiling
+    # internal/daemon's tests would apply: the daemon-go race step, the plugin-pack job and the
+    # daemon-live job compile those files and run none of them. The called file's jobs carry ids
+    # of their own, one per part, so this gate keeps `workflow=CI`, the file that holds a job named
+    # agent-harness, as the dispatch_browser gate does, and declares the pair of files it reads
+    # itself.
+    gate("agent_harness", AGENT_HARNESS_JOB, runs=[
+        script_run(f"{DAEMON}/internal/daemon/live_agent_proof_test.go",
+                   'build := exec.Command("go", "build", "-o", binary, "./cmd/legion")',
+                   f"buildProofLegion, which the five tests {at_pane_drivers(AGENT_HARNESS_STEP)} runs call",
+                   DAEMON, [LEGION_BUILD], mode="build"),
+    ], exact=[
+        pinned_step(AGENT_HARNESS_PANE_DRIVERS, AGENT_HARNESS_STEP, DAEMON, AGENT_HARNESS_SCRIPT, [
+            (DAEMON, [f"./{AGENT_HARNESS_PACKAGE}/"], "go test -run over the package the five tests are in", {}),
+        ], workflow=AGENT_HARNESS_WORKFLOW),
+    ], reads=reads(
+        ("scripts/e2e/lib/pack-plugin.sh", f"{at_pane_drivers(AGENT_HARNESS_STEP)}: "
+                                           "internal/daemon/live_agent_proof_test.go:321 runs it in bash, once per plugin"),
+    ) + [
+        Read(g, f"{at_pane_drivers(AGENT_HARNESS_STEP)}: internal/daemon/live_agent_proof_test.go:321 packs "
+                "packages/pi-envoy and packages/pi-legion through scripts/e2e/lib/pack-plugin.sh, whose `bun pm pack` "
+                "runs their prepack")
+        for g in PACK_READS
+    ] + reads(
+        (".github/actions/pull-test-images/**", at_pane_drivers("Pull the NATS test container image")),
+        (f"{DAEMON}/internal/testnats/nats.go", f"{at_pane_drivers('Pull the NATS test container image')} const Image"),
+    ) + install_jj(AGENT_HARNESS_PANE_DRIVERS, AGENT_HARNESS_WORKFLOW)
+      + install_omp(AGENT_HARNESS_PANE_DRIVERS, AGENT_HARNESS_WORKFLOW)
+      + setup_go(AGENT_HARNESS_PANE_DRIVERS, f"{DAEMON}/go.mod", AGENT_HARNESS_WORKFLOW)
+      + bun_job(AGENT_HARNESS_PANE_DRIVERS, AGENT_HARNESS_WORKFLOW)
+      + CI_SELF + job_self(AGENT_HARNESS_JOB), workflow=CI),
 
     # The private-name port harness, in a job of its own: one step, which builds the `legion`
     # binary of this head and holds the rules that binary carries to the frozen shell script's

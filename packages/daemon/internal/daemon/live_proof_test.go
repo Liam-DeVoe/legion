@@ -1,12 +1,12 @@
 // The harness this package's whole-daemon live proofs share: every *_live_test.go of this package
 // that embeds liveProof, directly or through live_issue_proof_test.go's liveIssueProof, those that
-// drive real Oh My Pi panes through liveAgentProof among them. The proofs that drive no agent
-// carry no build tag: CI's daemon-live job (.github/workflows/ci-job-daemon-live.yaml) runs seven
-// of them by name, the ones .github/scripts/ci_job_reads.py's DAEMON_LIVE_TESTS names, and
+// drive real Oh My Pi panes through liveAgentProof among them. None carries a build tag. CI's
+// daemon-live job (.github/workflows/ci-job-daemon-live.yaml) runs seven of the proofs that drive
+// no agent by name, the ones .github/scripts/ci_job_reads.py's DAEMON_LIVE_TESTS names, and
 // admission_issues_live_test.go runs in the daemon-go job's `go test ./internal/daemon/` with the
-// package's other tests. The five that drive real Oh My Pi panes still carry the `e2e` build tag,
-// and each is built by a script of its own under scripts/e2e, which makes the same run around it
-// through scripts/e2e/lib/live-daemon-proof.sh. This file carries no build tag of its own.
+// package's other tests. CI's agent-harness job (.github/workflows/ci-job-agent-harness.yaml) runs
+// the five that drive real Oh My Pi panes by name, the ones AGENT_HARNESS_TESTS names in the same
+// file.
 //
 // A driver embeds liveProof, which holds what every such proof needs before and around the daemon
 // it boots: the configuration it boots with (newLiveProof takes the broker the package's other
@@ -46,14 +46,15 @@ import (
 
 // liveLogDirEnv names the directory the logs of what a live proof runs go to, in a directory of
 // each test's own (liveLogDir): the booted daemon's own log at debug, the real Dispatch a driver
-// starts, and each real pane's output. CI's daemon-live job sets it under the runner's temporary
-// directory and uploads it when the job fails; scripts/e2e/lib/live-daemon-proof.sh sets it to the
-// run's evidence directory. Unset, the daemon's log is dropped, as every other test in this
-// package drops it.
+// starts, and each real pane's output. CI's daemon-live and agent-harness jobs set it under the
+// runner's temporary directory and upload it when the job fails. Unset, the daemon's log is
+// dropped, as every other test in this package drops it.
 const liveLogDirEnv = "LEGION_TEST_DAEMON_LOG_DIR"
 
-// liveJob is the ci.yaml job that runs the untagged proofs newLiveProof readies, and so the job a
-// missing prerequisite of theirs names on GitHub Actions (testprereq.Require).
+// liveJob is the ci.yaml job that runs the proofs newLiveProof readies that drive no agent, and so
+// the job a missing prerequisite of theirs names on GitHub Actions (testprereq.Require). The five
+// that drive panes read the same prerequisites first and name agentHarnessJob
+// (live_agent_proof_test.go).
 const liveJob = "daemon-live"
 
 // liveSettle is how long a step that must see nothing happen watches for it: what it must not see
