@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, expect, test } from "bun:test";
+import { afterAll, beforeAll, expect, onTestFinished, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -1188,15 +1188,89 @@ test.skipIf(skip)("a broadcast runs no command", async () => {
   ).toBe(false);
 });
 
+/** One file of process `pid`'s own `/proc` directory, or undefined once the process is gone. */
+async function procFile(pid: number, name: "cmdline" | "stat"): Promise<string | undefined> {
+  try {
+    return await readFile(`/proc/${pid}/${name}`, "utf8");
+  } catch (error) {
+    // ENOENT: the process is gone; ESRCH: it ended while its file was read.
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ESRCH") return undefined;
+    throw error;
+  }
+}
+
+/** One process's state, parent and process group, as its `/proc/<pid>/stat` holds them. */
+interface ProcessStat {
+  readonly state: string;
+  readonly parent: number;
+  readonly group: number;
+}
+
+/** Process `pid`'s `ProcessStat`, read after the command name's last `) ` in its
+ *  `/proc/<pid>/stat`, since that name may itself hold spaces and parentheses (docs/testing.md,
+ *  "A test that looks for a process it started"); undefined once the process is gone. */
+async function processStat(pid: number): Promise<ProcessStat | undefined> {
+  const stat = await procFile(pid, "stat");
+  if (stat === undefined) return undefined;
+  const [state = "", parent = "", group = ""] = stat.slice(stat.lastIndexOf(") ") + 2).split(" ");
+  return { state, parent: Number(parent), group: Number(group) };
+}
+
+/**
+ * Ends a `!command` that polls for `release`, whatever the row's outcome. Without it a row that
+ * fails before it writes `release` leaves the command polling for good: the session's own cleanup
+ * kills Oh My Pi with SIGKILL, which runs none of its exit handlers and leaves the command's
+ * detached group to init, then removes the directory `release` would be written in.
+ *
+ * It writes `release` first, so a command that has not started yet ends as it starts. A command
+ * that started wrote its pid to `pidFile` as its first act (`echo $$ >FILE`). While that pid still
+ * runs the command (its command line names `release`; a pid that ended may be another program's
+ * by now), this kills the command's process group where that group is the command's own (its id
+ * is the command's pid, and it is neither this test process's group nor that of the command's
+ * parent, the Oh My Pi that started it), and the pid alone otherwise. Then it waits until the
+ * process is gone or a zombie.
+ */
+async function endCommand(pidFile: string, release: string): Promise<void> {
+  await Bun.write(release, "");
+  if (!(await Bun.file(pidFile).exists())) return;
+  // The shell creates the file before it writes the pid into it.
+  const pid = await waitUntil("the pid the command writes as its first act", async () => {
+    const written = Number((await readFile(pidFile, "utf8")).trim());
+    return Number.isInteger(written) && written > 0 ? written : undefined;
+  });
+  const command = await processStat(pid);
+  if (command === undefined || command.state === "Z") return;
+  if ((await procFile(pid, "cmdline"))?.includes(release) !== true) return;
+  const ours = await processStat(process.pid);
+  const parent = await processStat(command.parent);
+  const own =
+    command.group === pid && command.group !== ours?.group && command.group !== parent?.group;
+  try {
+    process.kill(own ? -pid : pid, "SIGKILL");
+  } catch (error) {
+    // ESRCH: it ended since it was read.
+    if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+  }
+  await waitUntil(`the command ${pid} to end`, async () => {
+    const now = await processStat(pid);
+    return now === undefined || now.state === "Z";
+  });
+}
+
 // A `!command` runs on its own promise, never inside the queued delivery task (D11): a command
 // that runs for minutes must not hold the session's other Dispatch messages behind it. This
 // session's limit is the default two minutes, and the command ends when the case says so, so the
-// second message is answered with the first command demonstrably still running.
+// second message is answered with the first command demonstrably still running. The command
+// writes its pid as its first act, so the row's end, pass or fail, ends it (`endCommand`) before
+// the file's `afterAll` tears the session down.
 test.skipIf(skip)("a `!sleep` holds none of the session's other Dispatch messages", async () => {
   const session = await startSession();
   const release = path.join(session.workspace, "release");
+  const pidFile = path.join(session.workspace, "pid");
+  onTestFinished(() => endCommand(pidFile, release));
   const waiting = await session.send(
-    `!while [ ! -f ${release} ]; do sleep 0.05; done; printf released`
+    `!echo $$ >${pidFile}; while [ ! -f ${release} ]; do sleep 0.05; done; printf released`
   );
 
   const prompt = await session.send("Are you still taking messages?");
