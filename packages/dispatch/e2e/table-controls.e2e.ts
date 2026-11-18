@@ -1179,8 +1179,9 @@ test("a thread dismissed from the selection bar, or moved back to the Inbox from
       );
     }
 
-    // Move to Inbox, from the dismissed view: the thread leaves that view with the bar, so the
-    // focus goes to the first row left there, or to the search box when none is.
+    // Move to Inbox, from the dismissed view: the thread leaves that view with the bar, and it is
+    // the one thread the turn dismissed, so the view is left empty and the focus goes to the
+    // search box.
     await page.goto("/?show=dismissed");
     const back = main.locator(`[data-inbox-row="${thread}"]`);
     await expect(back, `${where}: the dismissed thread is not listed`).toHaveCount(1);
@@ -1193,13 +1194,8 @@ test("a thread dismissed from the selection bar, or moved back to the Inbox from
     await page.keyboard.press("Enter");
     await expect(back).toHaveCount(0);
     await expect(bar, `${where}: Move to Inbox left the bar up`).toHaveCount(0);
-    // The restored row and the bar were both waited gone above, so the count is the view's own.
-    const left = await rows.count();
-    let target = "Search asks";
-    if (left > 0) {
-      // The rows counted above are drawn, and `getAttribute` waits for the first one's checkbox.
-      target = (await rows.first().getByRole("checkbox").first().getAttribute("aria-label")) ?? "";
-    }
+    await expect(rows, `${where}: the dismissed view still lists a thread`).toHaveCount(0);
+    const target = "Search asks";
     const afterRestore = await settled(target);
     if (afterRestore !== target) {
       wrong.push(
@@ -1287,8 +1283,11 @@ test("the Agents page, the Delivery page and the project List keep the keyboard 
     await expect(clear).toHaveCount(0);
     await after(`Agents page at ${at}`, "Enter on Clear selection");
 
-    // The Delivery page's Window control: a new preset remounts it under a new key. The seeded
-    // window is a custom range, the last option, so ArrowUp picks the last preset.
+    // The Delivery page's Window control: a new preset changes the window under the select the
+    // reader is on, which stays mounted (`WindowControl.tsx`). The seeded window is a custom
+    // range, the last option, so ArrowUp picks the last preset. The focus never leaves the
+    // select, so `after`'s poll ends at once; the read still sees the press's result, because
+    // `toHaveURL` waits for the commit that wrote the new window.
     await page.goto(`/delivery?${DELIVERY_WINDOW}&mode=list`);
     const windowSelect = main.getByRole("combobox", { name: "Window" });
     await windowSelect.focus();
@@ -4195,28 +4194,21 @@ test("no press in the shared controls drops the keyboard focus onto the page, at
     const at = `${size.width}x${size.height}`;
 
     // The Inbox's Mark all read, a page control in the row, goes once nothing is left unread:
-    // the focus goes to the next control in its slot, Blocked on you, else to the trigger. A
-    // thread of its own at each width, since the press at the first marks the first one read.
+    // the focus goes to the next control in its slot, Blocked on you, which `seedSurfaces`' six
+    // asks waiting on the reader draw. A thread of its own at each width, since the press at the
+    // first marks the first one read.
     let where = `Inbox at ${at}`;
     const thread = await createIssue({ project: "CORE", title: `Nightly mirror at ${at}` });
     await seedCommentThread(thread.key, "Is the nightly job still at 02:00?", "It moved to 03:00.");
     await page.goto("/");
     const markAll = row.getByRole("button", { exact: true, name: "Mark all read" });
     const blocked = row.getByRole("button", { name: /^Blocked on you/ });
-    const trigger = control(row, CONTROL.panelTrigger);
     await expect(markAll, `${where}: Mark all read is not drawn`).toBeVisible();
-    // The Inbox draws this row only once its asks have answered, and this row seeds no credential
-    // request, so Blocked on you is drawn with Mark all read, waited for above, or not at all.
-    const besideMarkAll = (await blocked.count()) > 0;
+    await expect(blocked, `${where}: Blocked on you is not drawn`).toBeVisible();
     await markAll.focus();
     await page.keyboard.press("Enter");
     await expect(markAll, `${where}: Enter on Mark all read left it drawn`).toHaveCount(0);
-    await focusOn(
-      where,
-      "Enter on Mark all read",
-      besideMarkAll ? blocked : trigger,
-      besideMarkAll ? "Blocked on you" : "the filter trigger"
-    );
+    await focusOn(where, "Enter on Mark all read", blocked, "Blocked on you");
 
     // A scroll button of the chips line, pressed by a pointer while a chip holds the focus: the
     // press takes no focus, and the button that goes at the strip's end takes none with it.
@@ -5120,10 +5112,12 @@ test("a filter panel cut to a short window scrolls to its last control @firefox 
   expect(measured.cut, "the window is not short enough to cut the Filter panel").not.toBe("");
   const wrong: string[] = [];
 
-  // The wheel over the panel, more steps than it has room to move.
+  await panel.scrollIntoViewIfNeeded();
+  // `scrollIntoViewIfNeeded` waited above for the panel to be visible and stable, so it has a box.
   const area = await panel.boundingBox();
   if (area === null) throw new Error("the Filter panel is not on screen");
   await page.mouse.move(area.x + area.width / 2, area.y + area.height / 2);
+  // The wheel over the panel, more steps than it has room to move.
   for (let step = 0; step < 8; step++) await page.mouse.wheel(0, 100);
   // `settledScrollTop` waits until the panel held still for three frames: that is the reading.
   const top = await settledScrollTop(panel, WHEEL_STILL_FRAMES);
@@ -5132,9 +5126,9 @@ test("a filter panel cut to a short window scrolls to its last control @firefox 
   if (top < end - 1) wrong.push(`the wheel left the panel at ${top} px of the ${end} it scrolls`);
 
   // Tab from the control the panel opened on to its last, the Assignee filter, which is then in
-  // sight inside the panel. The control is held by its handle, in case a Tab closes the panel.
+  // sight inside the panel. The control is held by its handle, in case a Tab closes the panel;
+  // `elementHandle` waits for the filter to attach in the panel opened above.
   const last = await panel.getByRole("button", { name: "Filter by assignee" }).elementHandle();
-  if (last === null) throw new Error("the Filter panel has no Assignee filter");
   let reached = false;
   for (let press = 0; press < 30 && !reached; press++) {
     await page.keyboard.press("Tab");
