@@ -1638,7 +1638,7 @@ prepare_env() {
 #   form                            rows  what it is
 #   &&                               203  runs the next pipeline when this one exits 0
 #   ||                                 7  runs the next pipeline when this one fails
-#   |                                440  joins the commands of a pipeline
+#   |                                441  joins the commands of a pipeline
 #   ;                                 56  ends a pipeline
 #   newline                            3  an unquoted newline, ending a pipeline as ; does
 #   >                                  8  writes the output to a file
@@ -1652,8 +1652,8 @@ prepare_env() {
 #   in                                17  comes before a for loop's words
 #   do                                17  comes before a for loop's body
 #   done                              17  closes a for loop
-#   simple command                   629  a command word and its arguments
-#   pipeline                         440  two or more commands joined by |
+#   simple command                   630  a command word and its arguments
+#   pipeline                         441  two or more commands joined by |
 #   list                             229  two or more pipelines joined by ;, &&, || or newline
 #   group                             26  { list; }, whose status is its last command's
 #   subshell                           2  ( list ), whose status is its last command's
@@ -1685,7 +1685,7 @@ prepare_env() {
 #   program dispatch                  76  wrapped in a function that records its status
 #   program echo                      12  wrapped in a function that records its status
 #   program gh                         4  wrapped in a function that records its status
-#   program git                      358  wrapped in a function that records its status
+#   program git                      359  wrapped in a function that records its status
 #   program go                         2  wrapped in a function that records its status
 #   program grep                     229  wrapped in a function that records its status
 #   program jq                        61  wrapped in a function that records its status
@@ -1694,7 +1694,7 @@ prepare_env() {
 #   program printf                    12  wrapped in a function that records its status
 #   program python3                   36  wrapped in a function that records its status
 #   program rm                         2  wrapped in a function that records its status
-#   program sed                      297  wrapped in a function that records its status
+#   program sed                      298  wrapped in a function that records its status
 #   program sh                         1  wrapped in a function that records its status
 #   program sha256sum                  8  wrapped in a function that records its status
 #   program sort                      30  wrapped in a function that records its status
@@ -1719,7 +1719,7 @@ prepare_env() {
 #   uv run python                      4  uv run's python, whose status uv run exits with
 #   sh running a script file           1  the script's status reaches the row as sh's
 #   true                               7  a command whose status is no read
-#   $NAME or ${NAME}                 428  a parameter, its name in braces or not
+#   $NAME or ${NAME}                 429  a parameter, its name in braces or not
 #   $?                                 9  the status of the last command
 #   $( )                              12  a command substitution
 #   a literal $                        2  a $ that starts no expansion, left as it stands
