@@ -107,7 +107,13 @@ type idleRigAdoption struct {
 // the issue's branch set to that commit and pushed. StayInTurn has the next prompt's turn begin and
 // last while the plan says so, as a role still working when the release's bound comes: a plan set
 // without it ends that turn within a second (idleRigRoleProcess.watchActivity), as a long turn
-// ends on its own.
+// ends on its own. WithholdRole has the process leave its claim's role topic untaken while the
+// plan says so, as a session that said ready holds none until its first turn or the first-turn
+// bound (supervise.SaidReady): a message published to the topic meanwhile finds no holder, and the
+// process takes the topic at the first reading of its plan that no longer withholds it, within a
+// second (idleRigRoleProcess.watchActivity). The listener keeps a role claim once taken, and a
+// resumed process registers under the session id it had, so a test withholds the topic on the
+// seed's plan (idleRigSeed.plan), which the first process of the role reads as it starts.
 type idleRigPlan struct {
 	TakeTurn      bool             `json:"takeTurn"`
 	Topics        []string         `json:"topics"`
@@ -117,6 +123,7 @@ type idleRigPlan struct {
 	AnswerRelease bool             `json:"answerRelease,omitempty"`
 	PushOnRelease bool             `json:"pushOnRelease,omitempty"`
 	StayInTurn    bool             `json:"stayInTurn,omitempty"`
+	WithholdRole  bool             `json:"withholdRole,omitempty"`
 }
 
 // idleRigUnpushed is a workspace's unpushed work as a shim's read answers it.
@@ -518,10 +525,13 @@ type idleRigRoleProcess struct {
 	// turns both send. reported is the background work the last report sent named, and taken
 	// whether the daemon took it: a report it did not take is sent again at the watch's next
 	// reading whatever that reads, as the extension forgets a report that did not reach the
-	// daemon (lastActivity in packages/pi-legion/extensions/legion.ts).
+	// daemon (lastActivity in packages/pi-legion/extensions/legion.ts). roleHeld is whether the
+	// process has taken its claim's role topic (idleRigPlan.WithholdRole), which the watch reads
+	// and sets under reportMu too.
 	reportMu sync.Mutex
 	reported []string
 	taken    bool
+	roleHeld bool
 }
 
 func newIdleRigRoleProcess(rig string) (*idleRigRoleProcess, error) {
@@ -587,8 +597,9 @@ func newIdleRigRoleProcess(rig string) (*idleRigRoleProcess, error) {
 	return p, nil
 }
 
-// run connects, registers, claims the role, reports ready, and then serves the daemon's frames
-// until it is shut down, dialling the worker stream again whenever the daemon goes.
+// run connects, registers, claims the role unless its plan withholds it (idleRigPlan.WithholdRole),
+// reports ready, and then serves the daemon's frames until it is shut down, dialling the worker
+// stream again whenever the daemon goes.
 func (p *idleRigRoleProcess) run() error {
 	bootToken, err := p.bootToken()
 	if err != nil {
@@ -613,8 +624,11 @@ func (p *idleRigRoleProcess) run() error {
 	if err := p.subscribe(plan.Topics); err != nil {
 		return err
 	}
-	if err := p.claimRole(); err != nil {
-		return err
+	if !plan.WithholdRole {
+		if err := p.claimRole(); err != nil {
+			return err
+		}
+		p.roleHeld = true
 	}
 	if err := p.ready(); err != nil {
 		return err
@@ -1052,7 +1066,8 @@ const idleRigActivityPeriod = time.Second
 // reading is made under reportMu, as reportActivity's is, so the report the daemon holds last is
 // always of the latest reading: none read before a change lands after one read since. A reading
 // whose plan no longer stays in a turn ends the turn StayInTurn began (endTurn), and reports as
-// every turn's end does.
+// every turn's end does. A reading whose plan no longer withholds the role topic takes it
+// (claimRole) if the process holds it not yet, and a take that fails is made at the next reading.
 func (p *idleRigRoleProcess) watchActivity() {
 	ticker := time.NewTicker(idleRigActivityPeriod)
 	defer ticker.Stop()
@@ -1069,6 +1084,13 @@ func (p *idleRigRoleProcess) watchActivity() {
 		if planErr == nil && endErr == nil && (ended || !p.taken || !slices.Equal(plan.Background, p.reported)) {
 			if err := p.report(plan.Background); err != nil {
 				fmt.Fprintf(os.Stderr, "idle rig role process: report the activity of %s: %v\n", p.session, err)
+			}
+		}
+		if planErr == nil && !plan.WithholdRole && !p.roleHeld {
+			if err := p.claimRole(); err != nil {
+				fmt.Fprintf(os.Stderr, "idle rig role process: take the role topic of %s: %v\n", p.session, err)
+			} else {
+				p.roleHeld = true
 			}
 		}
 		p.reportMu.Unlock()

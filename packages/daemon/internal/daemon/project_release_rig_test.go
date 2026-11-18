@@ -756,9 +756,9 @@ func TestProjectReleaseWritesAgainAnAskItCouldNotWrite(t *testing.T) {
 // dispatch://INFRA-3583 R6, R8: an ask the store refuses until the bound is written again until
 // it lands at the bound, the last try, which leaves the asked role no time to push. So the release
 // does not give the pod's work up, as it does not for an ask it could not write: it leaves the pod
-// with its disk. The pod's line gives that reason, names its role asked with the bound passed and
-// keeps the read's count, and the pod's claim is held for an operator, which the next boot does
-// not start.
+// with its disk. The pod's line gives that reason, names no asked role, since no session can have
+// had an ask written at the bound by then, and keeps the read's count, and the pod's claim is held
+// for an operator, which the next boot does not start.
 func TestProjectReleaseLeavesAPodWhoseAskLandedAtTheBound(t *testing.T) {
 	rig := newIdleWakeRig(t, "late")
 	late := rig.issue("late")
@@ -773,12 +773,83 @@ func TestProjectReleaseLeavesAPodWhoseAskLandedAtTheBound(t *testing.T) {
 	}
 	line := releaseLine(t, release, late.pod)
 	if line.Outcome != api.ReleaseLeft || line.Reason != releaseAskAtBound {
-		t.Fatalf("the pod's line is %s, want it left because its ask reached its role only at the bound: %q", lineJSON(line), releaseAskAtBound)
+		t.Fatalf("the pod's line is %s, want it left because its ask was written only at the bound: %q", lineJSON(line), releaseAskAtBound)
 	}
-	if len(line.Asked) != 1 || line.Asked[0].Role != late.role || !line.Asked[0].Bound || line.Commits == nil || *line.Commits != 1 {
-		t.Errorf("the pod's line is %s, want its implementer asked with the bound passed, and its 1 commit", lineJSON(line))
+	if len(line.Asked) != 0 || line.Commits == nil || *line.Commits != 1 {
+		t.Errorf("the pod's line is %s, want no asked role, since the ask reached no session by the bound, and its 1 commit", lineJSON(line))
 	}
 	rig.assertLeftForOperator(release, late)
+}
+
+// releaseAskWaitsLine is the outbox's line for an ask of the running project release whose role's
+// topic no live session holds before the release's bound, which keeps the row to publish again
+// (updateAsk).
+const releaseAskWaitsLine = "outbox update ask of the running project release waits: no live session holds the role yet"
+
+// dispatch://INFRA-3583 R6: a role that said ready holds its Envoy topic only from its session's
+// first turn, and the release holds every delivery that would start that turn, so the release's
+// ask can find no session on the topic. The ask waits for one until the bound: once the session
+// takes its topic the ask reaches it, once, the role answers, and the pod is deleted after that
+// answer, before the bound, its line naming its role asked and answered. The plan that withholds
+// the topic is the seed's, set before the daemon's boot starts the role process, which reads it
+// as it starts.
+func TestProjectReleaseAsksARoleWhoseSessionTakesItsTopicLate(t *testing.T) {
+	plan := idleRigPlan{TakeTurn: true, Unpushed: &idleRigUnpushed{Commits: 1}, AnswerRelease: true, WithholdRole: true}
+	rig := newIdleRigWith(t, idleRigOptions{}, idleRigSeed{name: "slow", roles: []claim.Role{claim.RoleImplementer}, plan: &plan})
+	slow := rig.issue("slow")
+	rig.launchAll()
+
+	rig.startRelease("60s")
+	idleRigEventually(t, idleRigRecordWait, "the release's ask finding no session on the role's topic", func() bool {
+		on := map[string]string{"issue": slow.key}
+		return rig.logged(releaseAskWaitsLine, on)+rig.logged(askNoHolderLine, on) > 0
+	})
+	plan.WithholdRole = false
+	rig.agents.setPlan(slow.key, string(slow.role), plan)
+	release, _ := rig.awaitReleaseFinished()
+	line := releaseLine(t, release, slow.pod)
+	if len(line.Asked) != 1 || line.Asked[0].Role != slow.role || line.Asked[0].AnsweredAt == nil || line.Asked[0].Bound {
+		t.Fatalf("the pod's line is %s, want its implementer asked and answered before the bound; the role processes said:\n%s",
+			lineJSON(line), idleRigProcessLines(rig.pods.log()))
+	}
+	if line.Outcome != api.ReleaseDeletedLost || line.Reason != "" || line.Commits == nil || *line.Commits != 1 {
+		t.Errorf("the pod's line is %s, want deleted_lost with its 1 commit and no reason", lineJSON(line))
+	}
+	if asks := rig.releaseAsks(slow.key, slow.role); len(asks) != 1 {
+		t.Errorf("the pod's role was given %d asks, want one", len(asks))
+	}
+	if release.FinishedAt.After(release.BoundAt) {
+		t.Errorf("the release finished at %s, after the bound %s: the pod waited out the bound rather than for its answer", release.FinishedAt, release.BoundAt)
+	}
+}
+
+// dispatch://INFRA-3583 R6, R8: an ask that reached no session of the pod's role by the bound
+// asked nobody to push the pod's work, so the release does not give that work up: the ask waits
+// for a session on the role's topic until the bound, and then the release leaves the pod with its
+// disk. The pod's line gives that reason, names no asked role and keeps the read's count, and the
+// pod's claim is held for an operator, which the next boot does not start.
+func TestProjectReleaseLeavesAPodWhoseAskReachedNoSession(t *testing.T) {
+	rig := newIdleRigWith(t, idleRigOptions{}, idleRigSeed{name: "unheld", roles: []claim.Role{claim.RoleImplementer},
+		plan: &idleRigPlan{TakeTurn: true, Unpushed: &idleRigUnpushed{Commits: 1}, AnswerRelease: true, WithholdRole: true}})
+	unheld := rig.issue("unheld")
+	rig.launchAll()
+
+	rig.startRelease("15s")
+	release, _ := rig.awaitReleaseFinished()
+	line := releaseLine(t, release, unheld.pod)
+	if line.Outcome != api.ReleaseLeft || line.Reason != releaseAskUnreached {
+		t.Fatalf("the pod's line is %s, want it left because its ask reached no session by the bound: %q", lineJSON(line), releaseAskUnreached)
+	}
+	if len(line.Asked) != 0 || line.Commits == nil || *line.Commits != 1 {
+		t.Errorf("the pod's line is %s, want no asked role, since the ask reached no session, and its 1 commit", lineJSON(line))
+	}
+	rig.assertLeftForOperator(release, unheld)
+	if waited := rig.logged(releaseAskWaitsLine, map[string]string{"issue": unheld.key}); waited < 2 {
+		t.Errorf("the outbox published the release's ask to a topic no session held %d times before the bound, want it published again while the bound had not passed", waited)
+	}
+	if asks := rig.releaseAsks(unheld.key, unheld.role); len(asks) != 0 {
+		t.Errorf("the pod's role was given %d asks, want none", len(asks))
+	}
 }
 
 // idleRigProcessLines is every line a rig role process wrote of its own, out of the launchers'

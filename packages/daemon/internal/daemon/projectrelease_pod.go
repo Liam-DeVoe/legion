@@ -95,10 +95,12 @@ func asks(read releaseRead, claims []supervise.ClaimView) bool {
 // Then its last read, its stop and its delete. A pod whose ask, the first or the one after the
 // last read, could not be written by the bound is left instead, its claims held for an operator:
 // nobody asked its roles to push, so the work on its disk is not given up (R6, R8). So is a pod
-// whose ask was written only at or after the bound, since its roles then had no time to push. A
-// pod whose every role stopped running after a try of its ask failed and before the next try is
-// not left: a pod with no running role is asked by no one (ask), so it goes on to its stop and
-// its delete unasked.
+// whose ask was written only at or after the bound, since its roles then had no time to push, and
+// one whose ask reached no session of any of its roles by the bound (wait), since no session was
+// asked to push: a role that said ready holds its Envoy topic only from its session's first turn
+// or the first-turn bound. A pod whose every role stopped running after a try of its ask failed
+// and before the next try is not left: a pod with no running role is asked by no one (ask), so it
+// goes on to its stop and its delete unasked.
 func (r *projectReleaser) takePod(ctx context.Context, run *releaseRun, pod *releasePod) {
 	switch pod.class {
 	case releaseLeaves:
@@ -117,8 +119,9 @@ func (r *projectReleaser) takePod(ctx context.Context, run *releaseRun, pod *rel
 			r.leave(ctx, run, pod, err.Error())
 			return
 		}
-		if asked {
-			r.wait(ctx, run, pod)
+		if asked && r.wait(ctx, run, pod) {
+			r.leave(ctx, run, pod, releaseAskUnreached)
+			return
 		}
 	}
 	last := r.read(ctx, pod.sandbox.Issue)
@@ -131,7 +134,10 @@ func (r *projectReleaser) takePod(ctx context.Context, run *releaseRun, pod *rel
 		}
 		if asked {
 			r.noteRead(run, pod, last)
-			r.wait(ctx, run, pod)
+			if r.wait(ctx, run, pod) {
+				r.leave(ctx, run, pod, releaseAskUnreached)
+				return
+			}
 			last = r.read(ctx, pod.sandbox.Issue)
 		}
 	}
@@ -148,16 +154,19 @@ func (r *projectReleaser) takePod(ctx context.Context, run *releaseRun, pod *rel
 // retry after the first try and up to projectReleaseRetryMax apart, each try to the roles running
 // then, until the bound: one that could not be written at the try at the bound reached no role,
 // and its last error is answered after releaseAskUnwritten. An ask written only at or after the
-// bound, at any try, left its roles no time to answer: each role it reached stays asked on the
-// pod's line, with the bound passed (passBound), and releaseAskAtBound is answered. Either error
-// is the reason the pod is left for (takePod). A release whose context ends meanwhile asks none.
+// bound, at any try, left its roles no time to answer, and the bound is passed on the pod's line
+// at once (atBound): a role the ask reached by the bound stays asked with the bound passed, and
+// every other one is taken off the line, which takes every role of rows written at or after the
+// bound, since no session can have had those by it. releaseAskAtBound is answered then. Either
+// error is the reason the pod is left for (takePod). A release whose context ends meanwhile asks
+// none.
 func (r *projectReleaser) ask(ctx context.Context, run *releaseRun, pod *releasePod) (bool, error) {
 	wait := r.retry
 	for {
 		asked, err := r.askOnce(ctx, run, pod)
 		if err == nil {
 			if asked && time.Until(run.bound) <= 0 {
-				run.passBound(pod)
+				r.atBound(run, pod)
 				r.log.Error("project release: enqueue the ask to the pod's roles; it was written only at the bound, which left its roles no time to answer, so the release leaves the pod",
 					"release", run.id, "sandbox", pod.sandbox.Name, "bound", run.bound.Format(time.RFC3339))
 				return false, errors.New(releaseAskAtBound)
@@ -189,7 +198,9 @@ func (r *projectReleaser) ask(ctx context.Context, run *releaseRun, pod *release
 // written, so an answer that comes at once finds it. It answers whether any role was asked: none
 // where no role runs or the deployment has no outbox. Rows that could not be written are answered
 // by their error, and their roles are taken off the line and out of run.asked again, so no role
-// they never reached reads as asked.
+// they never reached reads as asked. A role whose row was written counts as reached once the
+// outbox's publish of it reached a session of the role, or the role answered (reach, Answer); one
+// the ask reached no session of by the bound is taken off the line then (atBound).
 func (r *projectReleaser) askOnce(ctx context.Context, run *releaseRun, pod *releasePod) (bool, error) {
 	running := runningClaims(r.issueViews(pod.sandbox.Issue))
 	if len(running) == 0 {
@@ -230,24 +241,28 @@ func (r *projectReleaser) askOnce(ctx context.Context, run *releaseRun, pod *rel
 
 // wait holds an asked pod until each asked role answered and no role of the pod is in a turn, or
 // until the bound, on a wall-clock timer, so a test whose machines run on a clock that never fires
-// still sees the bound: the pod is read again every reread and at once on an answer. At the bound
-// each role that has not answered is recorded as the bound.
-func (r *projectReleaser) wait(ctx context.Context, run *releaseRun, pod *releasePod) {
+// still sees the bound: the pod is read again every reread and at once on an answer. A role whose
+// ask reached no session of it yet has nothing to answer, so the pod waits for it until the bound:
+// the outbox publishes that role's ask again until then, and the session may take its topic
+// meanwhile. At the bound the bound is passed on the pod's line (atBound), and wait answers
+// whether the ask reached none of the pod's roles by then, which leaves the pod (takePod). A wait
+// that ends before the bound, on answers or on the context's end, answers false.
+func (r *projectReleaser) wait(ctx context.Context, run *releaseRun, pod *releasePod) (unreached bool) {
 	bound := time.NewTimer(time.Until(run.bound))
 	defer bound.Stop()
 	reread := time.NewTicker(r.reread)
 	defer reread.Stop()
 	for {
 		if run.answeredAll(pod) && !inTurn(r.issueViews(pod.sandbox.Issue)) {
-			return
+			return false
 		}
 		select {
 		case <-ctx.Done():
-			return
+			return false
 		case <-bound.C:
-			run.passBound(pod)
+			reached := r.atBound(run, pod)
 			r.record(ctx, run)
-			return
+			return !reached
 		case <-reread.C:
 		case <-pod.nudge:
 		}
@@ -266,16 +281,66 @@ func (run *releaseRun) answeredAll(pod *releasePod) bool {
 	return true
 }
 
-// passBound records the bound on each asked role of pod's line that has not answered.
-func (run *releaseRun) passBound(pod *releasePod) {
+// reach records that the ask to token's claim reached a session of its role at now, the hook the
+// outbox calls once its publish of the ask did (releaseAskHook). A reach at or after the bound
+// counts for nothing: it left the role no time to answer, and the pod's line names only the roles
+// the ask reached by the bound (passBound). A claim the release has not asked, or has taken off
+// its pod's line, is passed over.
+func (run *releaseRun) reach(token claim.Token, now time.Time) {
 	run.mu.Lock()
 	defer run.mu.Unlock()
-	line := &run.result.Sandboxes[pod.line]
-	for i := range line.Asked {
-		if line.Asked[i].AnsweredAt == nil {
-			line.Asked[i].Bound = true
+	asked, ok := run.asked[token]
+	if !ok || !now.Before(run.bound) {
+		return
+	}
+	asked.reached = true
+	run.asked[token] = asked
+}
+
+// atBound passes the bound on pod's line (passBound) and logs each role it took off the line, one
+// line each, and answers whether the ask reached any role of the pod by the bound.
+func (r *projectReleaser) atBound(run *releaseRun, pod *releasePod) bool {
+	dropped, reached := run.passBound(pod)
+	for _, token := range dropped {
+		r.log.Warn("project release: the ask reached no session of the role by the bound, so the pod's line does not name it asked",
+			"release", run.id, "sandbox", pod.sandbox.Name, "claim", token)
+	}
+	return reached
+}
+
+// passBound passes the bound on pod's line: each asked role whose ask reached no session of it by
+// then, and that did not answer (releaseAsk.reached), is taken off the line and out of run.asked,
+// since no session of it was asked, and each other one that has not answered records the bound.
+// It answers the claims it took off, in the line's order, and whether any asked role is left on
+// the line, which is whether the ask reached any role of the pod.
+func (run *releaseRun) passBound(pod *releasePod) (dropped []claim.Token, reached bool) {
+	run.mu.Lock()
+	defer run.mu.Unlock()
+	onLine := map[int]claim.Token{}
+	for token, asked := range run.asked {
+		if asked.line == pod.line {
+			onLine[asked.ask] = token
 		}
 	}
+	line := &run.result.Sandboxes[pod.line]
+	kept := line.Asked[:0]
+	for i, ask := range line.Asked {
+		token := onLine[i]
+		asked := run.asked[token]
+		if !asked.reached {
+			delete(run.asked, token)
+			dropped = append(dropped, token)
+			continue
+		}
+		if ask.AnsweredAt == nil {
+			ask.Bound = true
+		}
+		asked.ask = len(kept)
+		run.asked[token] = asked
+		kept = append(kept, ask)
+	}
+	line.Asked = kept
+	return dropped, len(kept) > 0
 }
 
 // stopAndDelete ends one issue pod after its last read: each claim of the stop set in it is asked

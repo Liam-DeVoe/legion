@@ -1720,9 +1720,9 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 //
 // It wakes nothing, where phaseEnded, hookPrompt and mergeQueueRemoval call wakeForDelivery
 // first. A role whose pod an idle release took is not brought back to be asked: its topic has no
-// holder, so its ask is lost as every ask that reached no session is (below), the sweep asks the
-// claim again once its agent is ready again, and the round ends at its bound whether or not the
-// role answers.
+// holder, so its ask is lost as every pod update round's ask that reached no session is (below),
+// the sweep asks the claim again once its agent is ready again, and the round ends at its bound
+// whether or not the role answers.
 //
 // An outbox row cannot be withdrawn, and the round it names can end while the row waits. So the
 // row reads the claim before it publishes, through the machine's view as every other read of a
@@ -1757,10 +1757,18 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 // writes no round column and no ask mark of a claim, so no pod update round reads it as its own.
 // So an ask whose round is that of the release this process runs (projectRelease.askRound) is
 // published without the machine's step: no claim's round is read and no claim is marked asked. A
-// topic with no live holder ends such a row with the same line, and every other failure keeps the
-// ordinary retry. One of that release once it finished, and one an earlier process left once the
-// boot that ended its release lets it run, meets the claim-round read like any other, and since no
-// claim records that round it finishes without a publish: no release would take the role's answer.
+// publish that reached a session tells the release so (projectRelease.askHook), which counts the
+// role as asked only then, and only before its bound. A topic no live session holds is a wait
+// until the release's bound, and the row is published again on its backoff: a role that said
+// ready takes its topic only at its session's first turn or at the first-turn bound
+// (supervise.SaidReady), and the release holds every delivery that would start that turn, so such
+// an ask ended at once would leave the pod's work to be deleted with no session asked to push it.
+// At or after the bound such a row finishes with its own line, and the release, which names no
+// role its ask reached no session of by then, leaves a pod whose ask reached none of its roles
+// (takePod). Every other failure keeps the ordinary retry. One of that release once it finished,
+// and one an earlier process left once the boot that ended its release lets it run, meets the
+// claim-round read like any other, and since no claim records that round it finishes without a
+// publish: no release would take the role's answer.
 func (r *outbox) updateAsk(ctx context.Context, row record.OutboxRow, payload record.UpdateAsk) error {
 	if r.notices == nil {
 		return errors.New("update ask executor has no Envoy publisher")
@@ -1773,16 +1781,33 @@ func (r *outbox) updateAsk(ctx context.Context, row record.OutboxRow, payload re
 		return err
 	}
 	topic := notify.RoleTopicPrefix + string(token)
+	message := payload.Message(row.Issue)
 	fields := []any{"row", row.ID, "issue", row.Issue, "round", payload.Round, "pod", payload.Pod, "claim", string(token), "role", payload.Role, "topic", topic}
+	// publish is the row's one publish of the ask to the role's topic, which logs noHolder for a
+	// topic no live session holds (publishToRole).
+	publish := func(noHolder string) func(context.Context) (bool, error) {
+		return func(ctx context.Context) (bool, error) {
+			return r.publishToRole(ctx, row, topic, message, noHolder, fields...)
+		}
+	}
 	if releaseRound := r.release.askRound(); releaseRound != "" && payload.Round == releaseRound {
 		r.log.Info("outbox update ask of the running project release; it is published without the claim's round", fields...)
-		published, err := r.publishToRole(ctx, row, topic, payload.Message(row.Issue),
-			"outbox update ask finished undelivered: no live session holds the role", fields...)
-		if err != nil {
-			return fmt.Errorf("publish the ask of round %s for %s to its %s: %w", payload.Round, row.Issue, payload.Role, err)
+		asks := r.release.askHook()
+		waits := !asks.bound.IsZero() && r.now().Before(asks.bound)
+		noHolder := "outbox update ask of the running project release finished undelivered: no live session held the role by the release's bound"
+		if waits {
+			noHolder = "outbox update ask of the running project release waits: no live session holds the role yet"
 		}
-		if published {
+		published, err := publish(noHolder)(ctx)
+		switch {
+		case err != nil:
+			return fmt.Errorf("publish the ask of round %s for %s to its %s: %w", payload.Round, row.Issue, payload.Role, err)
+		case published:
+			asks.reach(token)
 			r.log.Info("outbox update ask published to the role topic", fields...)
+		case waits:
+			return wait.Errorf("the ask of round %s for %s waits for a session to hold its %s's topic, until the release's bound %s",
+				payload.Round, row.Issue, payload.Role, asks.bound.UTC().Format(time.RFC3339))
 		}
 		return nil
 	}
@@ -1791,10 +1816,7 @@ func (r *outbox) updateAsk(ctx context.Context, row record.OutboxRow, payload re
 		r.updateAskLeftRound(row, payload, token, current)
 		return nil
 	}
-	outcome, err := machine.PublishUpdateAsk(ctx, payload.Round, func(ctx context.Context) (bool, error) {
-		return r.publishToRole(ctx, row, topic, payload.Message(row.Issue),
-			"outbox update ask finished undelivered: no live session holds the role", fields...)
-	})
+	outcome, err := machine.PublishUpdateAsk(ctx, payload.Round, publish("outbox update ask finished undelivered: no live session holds the role"))
 	switch {
 	case errors.Is(err, supervise.ErrMachineBusy):
 		return wait.Errorf("the ask of round %s for %s waits for its %s's machine, whose lock is held; nothing is published yet: %w",
@@ -1851,10 +1873,11 @@ func roleToken(project string, row record.OutboxRow, role claim.Role) (claim.Tok
 // failure (merge_queue_removal.go). So whoever changes the rule for a topic with no holder must
 // read all six executors, not this function alone.
 //
-// A topic with no live holder (notify.ErrNoHolder) ends the row: noHolder is logged at Info with
-// fields, and the answer is false with no error. Every other failure is returned as the
-// publisher gave it, and the row keeps its retry. The answer is true when the publisher took the
-// message.
+// A topic with no live holder (notify.ErrNoHolder) is logged as noHolder at Info with fields, and
+// the answer is false with no error: phaseEnded, hookPrompt and a pod update round's ask end the
+// row on it, and the running project release's ask waits for a holder until the release's bound
+// (updateAsk). Every other failure is returned as the publisher gave it, and the row keeps its
+// retry. The answer is true when the publisher took the message.
 func (r *outbox) publishToRole(ctx context.Context, row record.OutboxRow, topic, message, noHolder string, fields ...any) (bool, error) {
 	err := r.notices.Publish(ctx, topic, message, message, record.OutboxKey(row.ID))
 	if errors.Is(err, notify.ErrNoHolder) {

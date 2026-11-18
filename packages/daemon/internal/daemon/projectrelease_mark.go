@@ -46,6 +46,9 @@ type projectRelease struct {
 	// id is the release's record id once its record has committed (recorded), 0 before: what the
 	// release's own ask round is named by (ownRound).
 	id atomic.Int64
+	// asks is the running release's side of its asks (releaseAskHook), which the outbox reads as
+	// it publishes one: installed once, before id names the release (asking), nil before.
+	asks atomic.Pointer[releaseAskHook]
 	// finishedActs is set once the release finished its acts (finish, finished): its round is then
 	// no round the outbox publishes an ask under without the claim-round read (askRound), while
 	// the mark itself stays held.
@@ -67,6 +70,42 @@ func (r *projectRelease) mark() bool {
 // that release's own asks through (ownRound, askRound).
 func (r *projectRelease) recorded(id int64) {
 	r.id.Store(id)
+}
+
+// releaseAskHook is what the outbox needs of the running release as it publishes one of its asks
+// (outbox.updateAsk): the release's bound, until which an ask whose role's topic no live session
+// holds waits for one, and reached, which tells the release that its ask to a claim reached a
+// session of the claim's role (releaseRun.reach).
+type releaseAskHook struct {
+	bound   time.Time
+	reached func(claim.Token)
+}
+
+// reach tells the release that its ask to token's claim reached a session of the claim's role. The
+// zero hook tells nobody.
+func (h releaseAskHook) reach(token claim.Token) {
+	if h.reached != nil {
+		h.reached(token)
+	}
+}
+
+// asking installs hook, the running release's side of its asks. The release installs it once,
+// before its record names its round (recorded), so every ask the outbox publishes under that
+// round finds it.
+func (r *projectRelease) asking(hook releaseAskHook) {
+	r.asks.Store(&hook)
+}
+
+// askHook is the running release's side of its asks (asking), and the zero hook on a nil mark and
+// on one no release installed it on: its bound is the zero time, long past, and it tells nobody.
+func (r *projectRelease) askHook() releaseAskHook {
+	if r == nil {
+		return releaseAskHook{}
+	}
+	if hook := r.asks.Load(); hook != nil {
+		return *hook
+	}
+	return releaseAskHook{}
 }
 
 // finish records that the release finished its acts: from then on an ask of its round is
