@@ -1377,8 +1377,10 @@ type supervision struct {
 	// reach is the daemon's reading of which claims Envoy cannot reach, and what it tells and does
 	// about them (R5): swept with the orphan sweep, asked by the `relaunch` route, and holding the
 	// one R6 writer the worker stream writes its lock-out line through as well, so one case opens
-	// one line. Never nil once openSupervision returns.
-	reach *reachKeeper
+	// one line. lockOuts keeps the controller's notices of R3's lock-outs, resent at the same
+	// sweep. Neither is nil once openSupervision returns.
+	reach    *reachKeeper
+	lockOuts *lockOutNotices
 
 	cancel context.CancelFunc
 	// draining is the worker stream's life and what the API's routes run their decisions on
@@ -1642,7 +1644,8 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 	supervisionOf.reach.relaunchController = supervisionOf.relaunchOwnController
 	supervisionOf.reach.step = st.ClaimStep
 	supervisionOf.reach.notices = st
-	supervisionOf.reach.lockedOut = listener.LockedOut
+	supervisionOf.lockOuts = newLockOutNotices(lockOutOptions{log: log, project: cfg.Project, records: st,
+		lockedOut: listener.LockedOut, alerts: alerts})
 	sup.deps.SessionGone = cleanSessionStop(supervising, cfg.EnvoyURL, p.secrets["ENVOY_TOKEN"], log, supervisionOf.reach.registrationRead)
 	reporting.Store(supervisionOf)
 	return supervisionOf, nil
@@ -2322,7 +2325,9 @@ func (s *supervision) reconcileOrphans(ctx context.Context) {
 		s.reconcilePodUpdates(ctx, claims)
 		s.backstopStalledTurns(ctx, claims)
 		s.tellSilentPhaseWorkers(ctx, claims)
-		// Once a minute, as the requirement asks, over the claims this tick already read (R5).
+		// Once a minute, as the requirement asks, over the claims this tick already read (R5), and
+		// the lock-out notices the controller's lane has not queued yet (R3).
+		s.lockOuts.resend(ctx)
 		s.reach.sweep(ctx, claims)
 	}
 }

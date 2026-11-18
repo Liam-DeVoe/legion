@@ -27,6 +27,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/fleetalert"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -225,6 +226,9 @@ func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
 		enqueue:         w.enqueueOutbox,
 		applySweepFacts: w.applySweepFacts,
 		refreshGate:     supervise.NewRefreshGate(0),
+		// The orphan sweep resends the lock-out notices at each tick; the rig's stream holds none.
+		lockOuts: newLockOutNotices(lockOutOptions{log: quietLogger(), project: podUpdateProject,
+			alerts: fleetalert.New(quietLogger(), podUpdateProject)}),
 	}
 	sup.deps = supervise.Deps{
 		Runtime: rt, Conns: conns, Store: st, Specs: outboxSpecs{}, Clock: clock, Log: quietLogger(),

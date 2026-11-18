@@ -104,13 +104,9 @@ func putReachMarks(ctx context.Context, tx pgx.Tx, marks []reachMark) error {
 // per lock-out, on a goroutine of its own, so the notice is written here with a budget of its own.
 // It is told once whatever the daemon's restarts, and one the controller's lane did not queue is
 // kept and told again at each sweep for as long as the stream still refuses that newer process
-// (reachKeeper.tellLockOut). A claim the daemon does not supervise, and a deployment with no
-// workflow, tell nobody, and the stream's own R6 line stands for it.
+// (lockOutNotices). A claim the daemon does not supervise, and a deployment with no workflow,
+// tell nobody, and the stream's own R6 line stands for it.
 func (s *supervision) reportLockOut(out stream.LockOut) {
-	if s.reach == nil || s.reach.tell == nil {
-		s.log.Warn("worker stream: a lock-out has nobody to tell it to", "claim", out.Claim, "newer", out.Newer, "older", out.Older)
-		return
-	}
 	m, ok := s.supervisor.Machine(out.Claim)
 	if !ok {
 		s.log.Warn("worker stream: a lock-out of a claim this daemon does not supervise tells nobody", "claim", out.Claim)
@@ -120,7 +116,7 @@ func (s *supervision) reportLockOut(out stream.LockOut) {
 	ctx, cancel := context.WithTimeout(context.Background(), reachNoticeBudget)
 	defer cancel()
 	notice := record.ControllerNotice{Kind: record.WorkerLockedOutNotice, Role: c.Role, Claim: string(out.Claim), Reason: out.Reason()}
-	s.reach.tellLockOut(ctx, out, notice, c.Issue)
+	s.lockOuts.report(ctx, out, notice, c.Issue)
 }
 
 // relaunchOwnController is the daemon's relaunch of its own controller at at (reachKeeper's

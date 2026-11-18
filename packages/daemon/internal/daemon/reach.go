@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -16,7 +15,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
-	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/timewords"
 )
@@ -109,23 +107,14 @@ type reachKeeper struct {
 	noLiveTold             bool
 	// relaunching is the controller's claim while the daemon's relaunch of it is in flight.
 	relaunching claim.Token
-	// lockOuts is each lock-out notice the controller's lane has not queued yet, by claim
-	// (tellLockOut).
-	lockOuts map[claim.Token]untoldLockOut
 
-	// notices is the store of the project's own notice records (store.ReachProjectNotice): the
-	// notice that Envoy lists no live session and each claim's lock-out notice, each with whether
-	// it was told, which a notice's told record is written beside in its own transaction; nil
-	// keeps them in this daemon's memory alone. lockedOut is the worker stream's open lock-out of
-	// a claim (stream.Listener.LockedOut); nil reads none open.
-	notices   reachNotices
-	lockedOut func(claim.Token) (stream.LockOut, bool)
-	// loaded is whether this daemon has read the project's notice records yet (loadNotices).
-	// lockOutTold is the two generations of the lock-out each claim's told notice named, and
-	// noLiveUncleared whether the record of a no-live run that was told still waits for its
-	// delete, a read having found a live session since.
+	// notices is the store of the project's own notice records (store.ReachProjectNotice), which
+	// holds whether the notice that Envoy lists no live session was told, written beside that
+	// notice in its own transaction; nil keeps it in this daemon's memory alone. loaded is whether
+	// this daemon has read it yet (loadNotices), and noLiveUncleared whether the record of a no-live
+	// run that was told still waits for its delete, a read having found a live session since.
+	notices         reachNotices
 	loaded          bool
-	lockOutTold     map[claim.Token][2]uint64
 	noLiveUncleared bool
 }
 
@@ -144,15 +133,6 @@ type reachMark struct {
 	token   claim.Token
 	reach   supervise.Reach
 	project *store.ReachProjectNotice
-}
-
-// untoldLockOut is a lock-out notice the controller's lane did not queue, of the lock-out that
-// names generations newer and older, told again at each sweep while the worker stream still
-// refuses that newer process for that older one (tellLockOut).
-type untoldLockOut struct {
-	notice       record.ControllerNotice
-	issue        string
-	newer, older uint64
 }
 
 // reachKeeperOptions are what a keeper is built from (reachKeeper says what each is).
@@ -175,7 +155,6 @@ func newReachKeeper(o reachKeeperOptions) *reachKeeper {
 		log: o.log, project: o.project, boot: o.boot, daemonController: o.daemonController, now: o.now,
 		list: o.list, put: o.put, tell: o.tell, enqueue: o.enqueue, alerts: o.alerts, relaunchController: o.relaunchController,
 		records: map[claim.Token]supervise.Reach{}, dirty: map[claim.Token]bool{}, seen: map[string]time.Time{},
-		lockOuts: map[claim.Token]untoldLockOut{}, lockOutTold: map[claim.Token][2]uint64{},
 	}
 }
 
@@ -303,41 +282,18 @@ func (k *reachKeeper) marked(marks []reachMark) {
 	}
 }
 
-// projectTold takes in the project's own record of a notice, as the store holds it: the no-live
-// run it says was told, or the lock-out of a claim its notice named. The caller holds mu.
+// projectTold takes in the project's own record of the no-live notice, as the store holds it: the
+// no-live run it says was told. The caller holds mu.
 func (k *reachKeeper) projectTold(n store.ReachProjectNotice) {
-	if !n.Told {
-		return
-	}
-	switch record.NoticeKind(n.Kind) {
-	case record.EnvoyNoLiveSessionNotice:
+	if n.Told && record.NoticeKind(n.Kind) == record.EnvoyNoLiveSessionNotice {
 		k.noLiveTold, k.noLiveUncleared = true, false
-	case record.WorkerLockedOutNotice:
-		k.lockOutTold[n.Claim] = [2]uint64{n.Newer, n.Older}
-		delete(k.lockOuts, n.Claim)
 	}
 }
 
-// projectRecord is the project's own record of notice, a notice that speaks for no claim's reach
-// record, told or kept untold: of claim token ("" for the no-live notice), naming the lock-out of
-// generations newer and older (none for the no-live notice), and queued on issue. It is nil, and
-// marks nothing, for a notice that does not encode.
-func (k *reachKeeper) projectRecord(notice record.ControllerNotice, issue string, token claim.Token, newer, older uint64, told bool) []reachMark {
-	encoded, err := json.Marshal(notice)
-	if err != nil {
-		k.log.Error("reach: a notice did not encode, so its record is not written with it", "kind", notice.Kind, "error", err)
-		return nil
-	}
-	return []reachMark{{project: &store.ReachProjectNotice{Project: k.project, Kind: string(notice.Kind), Claim: token,
-		Newer: newer, Older: older, Issue: issue, Notice: encoded, Told: told}}}
-}
-
-// loadNotices reads the project's own notice records, once, and answers whether they are read:
-// the no-live run the last daemon told, the lock-out each claim's told notice named, and each
-// lock-out notice kept untold, which this daemon tells while its worker stream still refuses the
-// same newer process (retellLockOuts). Until the records are read, no notice they mark is told,
-// since whether one was told is not known; a read that fails is made again at the next sweep.
-// The caller holds mu.
+// loadNotices reads the project's own record of the no-live notice, once, and answers whether it
+// is read: the no-live run the last daemon told. Until it is read, the no-live notice is not told,
+// since whether it was told is not known; a read that fails is made again at the next sweep. The
+// caller holds mu.
 func (k *reachKeeper) loadNotices(ctx context.Context) bool {
 	if k.loaded {
 		return true
@@ -354,21 +310,7 @@ func (k *reachKeeper) loadNotices(ctx context.Context) bool {
 		return false
 	}
 	for _, n := range records {
-		if n.Told {
-			k.projectTold(n)
-			continue
-		}
-		if record.NoticeKind(n.Kind) != record.WorkerLockedOutNotice {
-			continue
-		}
-		var notice record.ControllerNotice
-		if err := json.Unmarshal(n.Notice, &notice); err != nil {
-			k.log.Error("reach: a kept lock-out notice did not decode; it is told no more", "claim", n.Claim, "error", err)
-			continue
-		}
-		if _, kept := k.lockOuts[n.Claim]; !kept {
-			k.lockOuts[n.Claim] = untoldLockOut{notice: notice, issue: n.Issue, newer: n.Newer, older: n.Older}
-		}
+		k.projectTold(n)
 	}
 	k.loaded = true
 	return true
@@ -402,24 +344,16 @@ func (k *reachKeeper) clearNoLive(ctx context.Context) {
 // (record.EnvoyNoLiveSessionNotice, fleetalert.NoLiveSession). A read that finds a live session
 // ends the run and deletes its record.
 //
-// The project's notice records are read first, at the first sweep that can, and each lock-out
-// notice the controller's lane has not queued yet is told again, whatever the list answers, since
-// it is no reading of the list (tellLockOut). R6's line of each lock-out the worker stream no
-// longer holds is ended too: a line the last daemon opened names a connection that ended with it,
-// and this daemon's stream tells that older process to stop at its hello rather than binding it.
-// The record of a claim the sweep no longer reads is forgotten (forgetGone).
+// The project's notice record of the no-live run is read first, at the first sweep that can, and
+// the record of a claim the sweep no longer reads is forgotten (forgetGone). The lock-out notices
+// the minute sweep resends are no reading of the list and are kept apart (lockOutNotices.resend).
 func (k *reachKeeper) sweep(ctx context.Context, claims []supervise.Claim) {
 	if k == nil {
 		return
 	}
 	k.mu.Lock()
 	k.forgetGone(claims)
-	k.retellLockOuts(ctx)
 	k.mu.Unlock()
-	k.alerts.CloseEnded(fleetalert.NewerProcessRefused, func(token string) bool {
-		_, locked := k.lockOutHeld(claim.Token(token))
-		return locked
-	})
 	if k.list == nil {
 		return
 	}
@@ -481,7 +415,7 @@ func (k *reachKeeper) sweep(ctx context.Context, claims []supervise.Claim) {
 				notice := record.ControllerNotice{Kind: record.EnvoyNoLiveSessionNotice,
 					Reason: fmt.Sprintf("Envoy's session list has held no live session since %s, %s, so no agent of the fleet can hear anything; the daemon marks no claim out of reach while it holds none",
 						stamp(k.noLiveSince), timewords.Words(silentListFor))}
-				k.tellController(ctx, notice, k.project, k.projectRecord(notice, k.project, "", 0, 0, true)...)
+				k.tellController(ctx, notice, k.project, projectNoticeRecord(k.log, k.project, notice, k.project, "", 0, 0, true)...)
 			}
 		}
 	}
@@ -775,112 +709,14 @@ func (k *reachKeeper) claimNotice(kind record.NoticeKind, c supervise.Claim, rea
 }
 
 // tellController queues notice on issue, with the records marks says it marks told written in the
-// same transaction, and answers whether it queued it: false for a deployment with no workflow, a
-// controller not registered, a notice of the same kind still waiting, and a store that refused
-// either write, each of which marks nothing and which the caller tells again at a later sweep.
-// The caller holds mu.
+// same transaction, and answers whether it queued it (tellQueued), taking the marks in where it
+// did. The caller holds mu.
 func (k *reachKeeper) tellController(ctx context.Context, notice record.ControllerNotice, issue string, marks ...reachMark) bool {
-	if k.tell == nil {
-		return false
-	}
-	told, err := k.tell(ctx, notice, issue, marks)
-	if err != nil {
-		if ctx.Err() == nil {
-			k.log.Error("reach: a controller notice was not written; telling it again at the next sweep", "kind", notice.Kind, "error", err)
-		}
-		return false
-	}
+	told := tellQueued(ctx, k.log, k.tell, notice, issue, marks...)
 	if told {
 		k.marked(marks)
 	}
 	return told
-}
-
-// tellLockOut tells the project's controller of the lock-out out (supervision.reportLockOut),
-// written with the project's record that it was told, so no daemon tells the same lock-out — the
-// same newer process refused for the same older one — twice: the next daemon's worker stream
-// reports it again when the older process binds first again after a restart. A notice its lane did
-// not queue — no controller registered, a notice of the same claim still waiting unsent, a store
-// that refused it — is kept, in this daemon's memory and in the project's record, and told again
-// at each sweep until it is queued or the lock-out has ended (retellLockOuts): the worker stream
-// reports a lock-out once, so a notice not kept would be lost, and one of a lock-out that has
-// ended names a process that is gone.
-func (k *reachKeeper) tellLockOut(ctx context.Context, out stream.LockOut, notice record.ControllerNotice, issue string) {
-	k.mu.Lock()
-	defer k.mu.Unlock()
-	untold := untoldLockOut{notice: notice, issue: issue, newer: out.Newer, older: out.Older}
-	k.lockOuts[out.Claim] = untold
-	if !k.loadNotices(ctx) {
-		// Whether it was told is not known until the records are read: a sweep tells it then.
-		return
-	}
-	k.tellLockOutNow(ctx, out.Claim, untold, true)
-}
-
-// tellLockOutNow tells untold, the kept notice of token's lock-out, written with its told record.
-// A notice of a lock-out already told is forgotten, and one the lane did not queue stays kept,
-// written to the project's record as kept where keep says so. The caller holds mu.
-func (k *reachKeeper) tellLockOutNow(ctx context.Context, token claim.Token, untold untoldLockOut, keep bool) {
-	if k.lockOutTold[token] == [2]uint64{untold.newer, untold.older} {
-		k.log.Info("reach: the controller was told of this lock-out already; it is not told again", "claim", token,
-			"newer", untold.newer, "older", untold.older)
-		delete(k.lockOuts, token)
-		return
-	}
-	if k.tellController(ctx, untold.notice, untold.issue, k.projectRecord(untold.notice, untold.issue, token, untold.newer, untold.older, true)...) {
-		return
-	}
-	if !keep || k.notices == nil {
-		return
-	}
-	kept := k.projectRecord(untold.notice, untold.issue, token, untold.newer, untold.older, false)
-	if len(kept) == 0 {
-		return
-	}
-	if err := k.notices.PutReachProjectNotice(ctx, *kept[0].project); err != nil && ctx.Err() == nil {
-		k.log.Error("reach: a lock-out notice the controller's lane did not queue was not kept in the project's record; this daemon still keeps it",
-			"claim", token, "error", err)
-	}
-}
-
-// retellLockOuts tells each kept lock-out notice again, once the project's records are read, and
-// forgets each that is queued now or whose lock-out has ended: the worker stream no longer refuses
-// that newer process for that older one (lockedOut), which is how a daemon that restarted finds a
-// notice the last one kept, since every connection of the last daemon ended with it. The record
-// of one that ended untold is deleted, since there is nothing to keep. The caller holds mu.
-func (k *reachKeeper) retellLockOuts(ctx context.Context) {
-	if !k.loadNotices(ctx) {
-		return
-	}
-	for token, untold := range k.lockOuts {
-		if !k.lockOutOpen(token, untold) {
-			k.log.Info("reach: a lock-out ended before the controller's notice of it was queued; it is told no more", "claim", token)
-			delete(k.lockOuts, token)
-			if k.notices != nil {
-				if err := k.notices.DeleteReachProjectNotice(ctx, k.project, string(record.WorkerLockedOutNotice), token); err != nil && ctx.Err() == nil {
-					k.log.Error("reach: the record of a lock-out that ended untold was not deleted", "claim", token, "error", err)
-				}
-			}
-			continue
-		}
-		k.tellLockOutNow(ctx, token, untold, false)
-	}
-}
-
-// lockOutOpen is whether the worker stream still refuses the newer process untold names for the
-// older one it names.
-func (k *reachKeeper) lockOutOpen(token claim.Token, untold untoldLockOut) bool {
-	open, locked := k.lockOutHeld(token)
-	return locked && open.Newer == untold.newer && open.Older == untold.older
-}
-
-// lockOutHeld is the worker stream's open lock-out of token, if it holds one (stream's
-// Listener.LockedOut); a keeper with no stream reads none open.
-func (k *reachKeeper) lockOutHeld(token claim.Token) (stream.LockOut, bool) {
-	if k.lockedOut == nil {
-		return stream.LockOut{}, false
-	}
-	return k.lockedOut(token)
 }
 
 // guardRefused records that the relaunch guard refused token's relaunch at at: the first refusal

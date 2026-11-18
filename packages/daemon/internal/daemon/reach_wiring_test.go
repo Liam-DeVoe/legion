@@ -146,8 +146,8 @@ func TestTheControllersRelaunchRefusesAPodWhoseEveryClaimIsOutOfReach(t *testing
 	}
 }
 
-// lockOutRig is a supervisor holding worker, and the reach rig's keeper the lock-out is told
-// through, whose worker stream reads the worker's lock-out of generation 4 by 3 as open while
+// lockOutRig is a supervisor holding worker, and the reach rig's lock-out notices the lock-out is
+// told through, whose worker stream reads the worker's lock-out of generation 4 by 3 as open while
 // locked holds.
 func lockOutRig(t *testing.T, locked *atomic.Bool) (*supervision, *reachRig, supervise.Claim) {
 	t.Helper()
@@ -157,10 +157,10 @@ func lockOutRig(t *testing.T, locked *atomic.Bool) (*supervision, *reachRig, sup
 		t.Fatal(err)
 	}
 	r := newReachRig(t, false)
-	r.k.lockedOut = func(token claim.Token) (stream.LockOut, bool) {
+	r.lockOuts.lockedOut = func(token claim.Token) (stream.LockOut, bool) {
 		return stream.LockOut{Claim: token, Newer: 4, Older: 3, Since: reachBoot}, token == worker.Token && locked.Load()
 	}
-	return &supervision{log: quietLogger(), supervisor: sup, reach: r.k}, r, worker
+	return &supervision{log: quietLogger(), supervisor: sup, reach: r.k, lockOuts: r.lockOuts}, r, worker
 }
 
 // The worker stream reports a lock-out once, so a notice of it the controller's lane did not queue

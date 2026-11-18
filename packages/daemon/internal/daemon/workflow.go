@@ -1238,11 +1238,14 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 	supervision.supervisor.OnDurableState(w.claimDurableState)
 	supervision.enqueue = w.enqueueOutbox
 	supervision.applySweepFacts = w.applySweepFacts
-	// The reach keeper's notices are the controller's and the architects', which only the workflow
-	// can write (R5).
+	// The reach keeper's notices are the controller's and the architects', and the lock-out
+	// notices the controller's, which only the workflow can write (R5, R3).
 	if supervision.reach != nil {
 		supervision.reach.tell = w.tellControllerQueued
 		supervision.reach.enqueue = w.enqueueReachNotice
+	}
+	if supervision.lockOuts != nil {
+		supervision.lockOuts.tell = w.tellControllerQueued
 	}
 	w.attachIdleRelease(supervision)
 }

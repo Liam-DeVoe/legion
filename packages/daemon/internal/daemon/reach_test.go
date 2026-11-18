@@ -38,9 +38,11 @@ type toldNotice struct {
 }
 
 type reachRig struct {
-	t      *testing.T
-	k      *reachKeeper
-	logged *bytes.Buffer
+	t *testing.T
+	k *reachKeeper
+	// lockOuts is the lock-out notices the minute sweep resends, told through the same outbox.
+	lockOuts *lockOutNotices
+	logged   *bytes.Buffer
 
 	mu       sync.Mutex
 	now      time.Time
@@ -105,6 +107,7 @@ func newReachRig(t *testing.T, daemonController bool) *reachRig {
 			return c, nil
 		},
 	})
+	r.lockOuts = newLockOutNotices(lockOutOptions{log: log, project: "LEGION", tell: r.k.tell, alerts: r.k.alerts})
 	return r
 }
 
@@ -141,9 +144,11 @@ func (r *reachRig) listing(seen map[string]time.Duration) {
 	}
 }
 
-// sweep is one minute's pass over claims, with the controller's relaunch it may start finished.
+// sweep is one minute's pass over claims, the lock-out notices' resend first as the orphan sweep
+// runs it, with the controller's relaunch it may start finished.
 func (r *reachRig) sweep(claims ...supervise.Claim) {
 	r.t.Helper()
+	r.lockOuts.resend(context.Background())
 	r.k.sweep(context.Background(), claims)
 	r.k.wait()
 }

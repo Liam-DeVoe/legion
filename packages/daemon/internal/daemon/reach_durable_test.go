@@ -639,6 +639,8 @@ func TestALineIsWrittenOnceUntilItsCaseEndsAcrossARestart(t *testing.T) {
 	}
 
 	next := d.booted(logged)
+	// The next daemon's minute sweep resends its lock-out notices, whose stream holds no lock-out.
+	newLockOutNotices(lockOutOptions{log: quietLogger(), project: "LEGION", alerts: next.alerts}).resend(context.Background())
 	d.sweepEach(26, 50, noLiveSession, next)
 	next.wait()
 	if got := lines(fleetalert.NoLiveSession.Word); got != 1 {
@@ -664,6 +666,30 @@ func lockOutOf(out stream.LockOut) func(claim.Token) (stream.LockOut, bool) {
 	return func(token claim.Token) (stream.LockOut, bool) { return out, token == out.Claim }
 }
 
+// lockOutsOf is one daemon's lock-out notices over the database, told through w, whose worker
+// stream reads out as open, and the supervision that reports out to them.
+func (d *durableReach) lockOutsOf(w *workflowRuntime, out stream.LockOut, claims ...supervise.Claim) (*lockOutNotices, *supervision) {
+	d.t.Helper()
+	l := newLockOutNotices(lockOutOptions{log: quietLogger(), project: "LEGION", tell: w.tellControllerQueued, records: d.st,
+		lockedOut: lockOutOf(out), alerts: fleetalert.New(quietLogger(), "legion")})
+	s := d.daemon(d.projectNotifying(w), nil, claims...)
+	s.lockOuts = l
+	return l, s
+}
+
+// resendEach runs the minute sweep's resend of l once a minute from minute from to minute to, both
+// included, and counts the notices of notice's kind it left in the outbox.
+func (d *durableReach) resendEach(from, to int, notice record.OutboxPayload, l *lockOutNotices) int {
+	d.t.Helper()
+	told := 0
+	for minute := from; minute <= to; minute++ {
+		d.at(time.Duration(minute) * time.Minute)
+		l.resend(context.Background())
+		told += d.delivered(notice)
+	}
+	return told
+}
+
 // A lock-out's notice is told once across a restart: the next daemon's worker stream reports the
 // same lock-out when the older process binds first again, and its told mark is a record of the
 // project's, written with it.
@@ -674,9 +700,8 @@ func TestALockOutNoticeIsToldOnceAcrossARestart(t *testing.T) {
 	d.put(worker)
 	out := stream.LockOut{Claim: worker.Token, Newer: 4, Older: 3, Since: reachBoot}
 	reported := func() int {
-		k := d.projectNotifying(w)
-		k.lockedOut = lockOutOf(out)
-		d.daemon(k, nil, d.claim(worker.Token)).reportLockOut(out)
+		_, s := d.lockOutsOf(w, out, d.claim(worker.Token))
+		s.reportLockOut(out)
 		return d.delivered(lockedOut)
 	}
 	if told := reported(); told != 1 {
@@ -697,26 +722,22 @@ func TestAKeptLockOutNoticeIsToldOnceByTheNextDaemon(t *testing.T) {
 	d.put(worker)
 	out := stream.LockOut{Claim: worker.Token, Newer: 4, Older: 3, Since: reachBoot}
 
-	first := d.projectNotifying(w)
+	first, s := d.lockOutsOf(w, out, d.claim(worker.Token))
 	first.tell = func(context.Context, record.ControllerNotice, string, []reachMark) (bool, error) { return false, nil }
-	first.lockedOut = lockOutOf(out)
-	d.daemon(first, nil, d.claim(worker.Token)).reportLockOut(out)
+	s.reportLockOut(out)
 	if told := d.delivered(lockedOut); told != 0 {
 		t.Fatalf("the first daemon told %d notices its controller's lane refused, want none", told)
 	}
 
-	next := d.projectNotifying(w)
-	next.lockedOut = lockOutOf(out)
-	s := d.daemon(next, nil, d.claim(worker.Token))
-	if told := d.sweepEach(1, 1, lockedOut, next); told != 1 {
+	next, s := d.lockOutsOf(w, out, d.claim(worker.Token))
+	if told := d.resendEach(1, 1, lockedOut, next); told != 1 {
 		t.Fatalf("the next daemon's first sweep told %d notices of the lock-out the first kept, want 1", told)
 	}
 	s.reportLockOut(out)
-	told := d.delivered(lockedOut) + d.sweepEach(2, 3, lockedOut, next)
-	third := d.projectNotifying(w)
-	third.lockedOut = lockOutOf(out)
-	d.daemon(third, nil, d.claim(worker.Token)).reportLockOut(out)
-	if told += d.delivered(lockedOut) + d.sweepEach(4, 5, lockedOut, third); told != 0 {
+	told := d.delivered(lockedOut) + d.resendEach(2, 3, lockedOut, next)
+	third, s := d.lockOutsOf(w, out, d.claim(worker.Token))
+	s.reportLockOut(out)
+	if told += d.delivered(lockedOut) + d.resendEach(4, 5, lockedOut, third); told != 0 {
 		t.Fatalf("the lock-out was told %d more times after the next daemon told it, want none", told)
 	}
 }
