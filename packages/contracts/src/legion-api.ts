@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { DISPATCH_KEY_PATTERN, GATED_STEPS, LEGION_ROLES } from "./legion-roles";
+import { legionStepRole as stepRole } from "./legion-claim-recovery";
+import { DISPATCH_KEY_PATTERN, GATED_STEPS } from "./legion-roles";
 
 /**
  * The Legion daemon's HTTP API, as its readers see it.
@@ -625,7 +626,7 @@ const legionPendingStatusWrite = z.object({
  * ("no session-facing response carries suspendedBy" in legion-api.test.ts). */
 const legionStrandedClaim = z.object({
   issue: issueKey,
-  role: z.enum(LEGION_ROLES),
+  role: stepRole,
   state: z.enum(["suspended", "failed", "retired"]),
 });
 
@@ -656,7 +657,7 @@ const legionHeldOutboxRow = z.object({
 const legionWakeWaiting = z.object({
   claim: nonEmptyString,
   issue: issueKey,
-  role: z.enum(LEGION_ROLES),
+  role: stepRole,
   kind: nonEmptyString,
   dueAt: timestamp,
 });
@@ -1156,7 +1157,7 @@ export const LegionRegisterResponse = z.object({
   claimToken: nonEmptyString,
   tree: nonEmptyString,
   issue: nonEmptyString,
-  role: z.enum(LEGION_ROLES),
+  role: stepRole,
   generation: z.number().int().positive(),
   secret: nonEmptyString,
   promptAgents: z.array(nonEmptyString),
@@ -1466,7 +1467,7 @@ export const LegionOperatorClaimResponse = z.object({
   token: nonEmptyString,
   tree: nonEmptyString,
   issue: nonEmptyString,
-  role: z.enum(LEGION_ROLES),
+  role: stepRole,
   generation: z.number().int().nonnegative(),
   state: z.enum(LEGION_CLAIM_STATES),
   session: z.string(),

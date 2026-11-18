@@ -1437,6 +1437,11 @@ test("every request the plugin sends parses and names its required fields", () =
       { grantId: "grant-208", issue: "LEGION-209", role: "implementer" },
     ],
     [
+      "claim recovery of a deployment role",
+      LegionClaimRequest,
+      { grantId: "grant-208", issue: "LEGION-209", role: "checker" },
+    ],
+    [
       "gate register",
       LegionGateRegisterRequest,
       {
@@ -2441,4 +2446,38 @@ test("a claim's registration and the controller's are told apart by their schema
   expect(LegionControllerRegisterResponse.safeParse(controller).success).toBeTrue();
   expect(LegionRegisterResponse.safeParse(controller).success).toBeFalse();
   expect(LegionControllerRegisterResponse.safeParse(claim).success).toBeFalse();
+});
+
+// A role of the deployment (contract 161): a claim of it registers, an operator acts on it, and
+// the state names it among the claims nothing will wake and the wakes the pacing holds. The
+// controller's claim holds no issue, so no request of a claim recovery may name it.
+test("a claim, a registration and an operator's claim take a role of the deployment", () => {
+  const registration = { ...fixtureBody("register.json"), role: "checker" };
+  expect(LegionRegisterResponse.safeParse(registration).error?.issues ?? []).toEqual([]);
+
+  const operatorClaim = { ...fixtureBody("operator-claim.json"), role: "checker" };
+  expect(LegionOperatorClaimResponse.safeParse(operatorClaim).error?.issues ?? []).toEqual([]);
+
+  const stranded = LegionStateResponse.shape.strandedClaims.element;
+  expect(
+    stranded.safeParse({ issue: "LEGION-241", role: "checker", state: "failed" }).success
+  ).toBeTrue();
+  const waking = LegionStateResponse.shape.wakesWaiting.unwrap().element;
+  expect(
+    waking.safeParse({
+      claim: "legion-legion-legion-241-checker",
+      issue: "LEGION-241",
+      role: "checker",
+      kind: "launch",
+      dueAt: "2026-11-17T12:00:00Z",
+    }).success
+  ).toBeTrue();
+
+  expect(
+    LegionClaimRequest.safeParse({ grantId: "grant-208", issue: "LEGION-209", role: "controller" })
+      .success
+  ).toBeFalse();
+  expect(
+    LegionRegisterResponse.safeParse({ ...registration, role: "Checker" }).success
+  ).toBeFalse();
 });
