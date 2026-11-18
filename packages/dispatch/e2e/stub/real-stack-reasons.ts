@@ -199,6 +199,8 @@ export const realStackReasons: Record<string, string> = {
     "label writes and a server-filtered list; writes labels, then reloads and measures",
   "landing-reads.e2e.ts":
     "it measures the reads and waves of a cold landing against the real server, whose answers decide when each read can start, which a recording cannot answer for",
+  "legion.e2e.ts":
+    "the Settings page's Legion daemon field: naming a project's daemon, refusing a state URL that is not a daemon's in the server's own words, and removing it",
   "live-socket.e2e.ts": "the `/ws/live` socket's own behaviour",
   "live.e2e.ts": "live delivery of writes made after the page loaded",
   "machine-login.e2e.ts": "device grants decided on the real broker",

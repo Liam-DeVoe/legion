@@ -205,6 +205,7 @@ export type {
   LandingShell,
   LandingViewer,
   LauncherCredentialResp,
+  LegionSetting,
   LiveAgentFrame,
   LiveClientFrame,
   LiveEnded,
