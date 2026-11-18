@@ -3731,3 +3731,315 @@ test("what references the focused row opens from its facts, and each row leads t
     }
   );
 });
+
+// The history's anchor keeps the place of the entry the reader's pointer rests on in Details' box
+// (`ViewportAnchor.tsx`), as the browser's own scroll anchoring would, with that anchoring off
+// there while it does, and only an act of the reader's records another place. A hand that comes
+// to rest moves a few pixels on inside the entry it reached, which raises a pointer move and no
+// boundary event. Blocked by, wholly above Details' view, then grows as the titles of the issues
+// it names land, which takes the entry from under the resting pointer; Chromium raises that
+// move's boundary events at the start of the next frame, at the point the pointer rests at, and
+// observes the growth only after them. The two rows below hold that.
+
+/** An issue whose Blocked by names five issues with titles long enough to wrap
+ *  (`seedHeldRows`), and whose history holds thirty notes of the agents', so Details scrolls past
+ *  every one of its sections to the history's entries. */
+async function seedHeldHistory(): Promise<string> {
+  const key = await seedHeldRows({ waiting: false });
+  for (let index = 0; index < 30; index += 1) {
+    await createMessage(key, { body: `A note of the agents' ${index}.` }, attentionSession);
+  }
+  return key;
+}
+
+/** Every row of Details that lies in the view of the box it scrolls in, wholly or in part, by a
+ *  name of its own, with its top: the history's heading, its entries by id, and each section's
+ *  rows by the words they start with. */
+function rowsInDetailsView(page: Page): Promise<Record<string, number>> {
+  return page.evaluate(() => {
+    const history = document.querySelector('[data-testid="issue-history"]');
+    let box = history?.parentElement ?? null;
+    while (box !== null && !/^(auto|scroll)$/.test(getComputedStyle(box).overflowY)) {
+      box = box.parentElement;
+    }
+    const view = box?.getBoundingClientRect() ?? { bottom: window.innerHeight, top: 0 };
+    const named: [string, Element][] = [];
+    const heading = history?.querySelector("h2");
+    if (heading) named.push(["the history's heading", heading]);
+    for (const entry of document.querySelectorAll("[data-history-entry]")) {
+      named.push([`entry ${entry.getAttribute("data-history-entry")}`, entry]);
+    }
+    for (const row of document.querySelectorAll("[data-margin-section] > div > div")) {
+      named.push([`the row "${row.textContent?.trim().slice(0, 24)}"`, row]);
+    }
+    const seen: Record<string, number> = {};
+    for (const [name, element] of named) {
+      const { bottom, top } = element.getBoundingClientRect();
+      if (bottom > view.top && top < view.bottom) seen[name] = Math.round(top);
+    }
+    return seen;
+  });
+}
+
+/** Details' rows in view once they have stood still for two frames (`rowsInDetailsView`): what a
+ *  growth moved, and what put them back, have both run by then. */
+async function settledRows(page: Page): Promise<Record<string, number>> {
+  let settled: Record<string, number> = {};
+  await expect
+    .poll(
+      async () => {
+        const first = await rowsInDetailsView(page);
+        await nextFrames(page);
+        settled = await rowsInDetailsView(page);
+        return JSON.stringify(settled) === JSON.stringify(first);
+      },
+      { message: "Details' rows kept moving" }
+    )
+    .toBe(true);
+  return settled;
+}
+
+/** Each row of `before` that does not stand within a pixel of its top there in `after`, said with
+ *  where it went. */
+function movedRows(before: Record<string, number>, after: Record<string, number>): string[] {
+  return Object.entries(before).flatMap(([name, top]) => {
+    const now = after[name];
+    if (now !== undefined && Math.abs(now - top) <= 1) return [];
+    return [`${name} from ${top} px to ${now === undefined ? "out of the view" : `${now} px`}`];
+  });
+}
+
+/** The reader's pointer coming to rest at `point`: it reaches the point, then moves on a few
+ *  pixels, as a hand that stops does, which is a move inside what it reached and raises no
+ *  boundary event. */
+async function restThePointer(page: Page, point: { x: number; y: number }): Promise<void> {
+  await page.mouse.move(point.x, point.y);
+  await page.mouse.move(point.x + 3, point.y + 1);
+  await nextFrames(page);
+}
+
+/** A reader's page on `key` at 1440 px, loaded with Details shut, then `opener`: `t o`, as
+ *  `afterTo` has it, or `t v`, which opens Details at the history with the focus on it. The
+ *  titles of the issues Blocked by names are held until `titles` settles. */
+async function afterOpener(
+  browser: Browser,
+  key: string,
+  opener: "t o" | "t v",
+  titles: Promise<void>
+): Promise<{ context: BrowserContext; page: Page }> {
+  if (opener === "t o") return afterTo(browser, key, DESKTOP, { titles });
+  const context = await reader(browser, "alice");
+  const page = await context.newPage();
+  await page.setViewportSize(DESKTOP);
+  await page.route("**/api/v1/reference-targets?**", async (route) => {
+    await titles;
+    await route.continue();
+  });
+  await gotoIssue(page, `/issues/${key}`);
+  await expectIssuePageDrawn(page);
+  await expect(marginShell(page)).toBeHidden();
+  await focusThePage(page);
+  await page.keyboard.press("t");
+  await page.keyboard.press("v");
+  await expect(page).toHaveURL(new RegExp(`/issues/${key}/activity$`));
+  await expect(historyPanel(page), "t v did not focus the history").toBeFocused();
+  return { context, page };
+}
+
+// The tester's case. After `t o` the reader turns the wheel until the history's newest entry
+// stands at 500 px, and rests the pointer 12 px below that entry's top, so a growth of more than
+// 12 px above takes the entry from under it. Blocked by, wholly above the view, grows as the
+// titles land, by 500 px at 1440 px here. The anchor read the entry's `pointerout` as the hand
+// moving, let its place go, and the growth's observation found nothing to put back. Found by the
+// tester on a running build at 1440 px with a copy of a large real issue: the entry under the
+// pointer went from 500 to 800 px in three runs of three, and every row in view with it.
+test("t o, a wheel to the history and the pointer coming to rest on its newest entry: Blocked by growing wholly above Details' view moves no row in the view", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  const key = await seedHeldHistory();
+  const titles = Promise.withResolvers<void>();
+  const { context, page } = await afterTo(browser, key, DESKTOP, { titles: titles.promise });
+  try {
+    const entry = historyEntries(page).first();
+    await expect(entry, "the history drew no entry").toBeAttached();
+    await nextFrames(page);
+    // One read of where `t o` left the newest entry: Details has drawn the history and stood
+    // still for two frames, and the titles, which alone move it next, are still held.
+    const landed = await boxOf(entry, "the history's newest entry");
+    await wheelOverDetails(page, Math.round(landed.y - 500));
+    // One read of Details' view, which no act of the row's moves from here on.
+    const view = await historyViewport(page);
+    const blockedBy = detailsRow(page, PROPERTY_LABELS.blocked_by);
+    // One read of the place the wheel left: the box has stood still for two frames, and the
+    // titles, which alone move it next, are still held.
+    const blocked = await boxOf(blockedBy, "Blocked by");
+    expect(
+      blocked.y + blocked.height <= view.top,
+      `the wheel left Blocked by's foot at ${Math.round(blocked.y + blocked.height)} px, in the view from ${Math.round(view.top)}`
+    ).toBe(true);
+    // The same settled place, read for the entry the pointer comes to rest on.
+    const resting = await boxOf(entry, "the history's newest entry");
+    expect(
+      wholly(resting, view),
+      `the wheel left the newest entry at ${Math.round(resting.y)} px, out of Details' view`
+    ).toBe(true);
+    await restThePointer(page, { x: resting.x + 60, y: resting.y + 12 });
+    // One read of every row in view with the pointer at rest: nothing has moved since the wheel.
+    const before = await rowsInDetailsView(page);
+
+    const grew = await grows(page, blockedBy, "Blocked by", titles.resolve, "Blocker 4:");
+    const moved = movedRows(before, await settledRows(page));
+    expect(
+      moved,
+      `Blocked by grew ${Math.round(grew)} px above Details' view and moved ${moved.join(", ")}`
+    ).toEqual([]);
+  } finally {
+    titles.resolve();
+    await context.close();
+  }
+});
+
+/** One place the sweep below puts the reader at before Blocked by grows. */
+interface ReaderPlace {
+  /** What the reader did after the key and before the wheel brought the history to its place:
+   *  nothing, Shift, or Tab. */
+  readonly act: "nothing" | "Shift" | "Tab";
+  /** Where the focus is: where the key left it in Details' box, or on the page outside it. */
+  readonly focus: "Details" | "page";
+  /** Where the wheel brought the history's top, as a share of Details' view down from its top. */
+  readonly historyTop: number;
+  /** The keys that opened Details. */
+  readonly opener: "t o" | "t v";
+}
+
+/** The places of the sweep below: each key and each focus at each of the three places of the
+ *  history's top, the act going round the three so that each key with each focus, and each
+ *  place of the history's top, meets each act. The first is the tester's case: `t o`, the focus
+ *  left on the Collaborators control, and a wheel that brings the history's newest entry to some
+ *  500 px. */
+const READER_PLACES: readonly ReaderPlace[] = (["t o", "t v"] as const).flatMap((opener, o) =>
+  [0.45, 0.1, 0.75].flatMap((historyTop, t) =>
+    (["Details", "page"] as const).map((focus, f) => ({
+      act: (["nothing", "Shift", "Tab"] as const)[(o + t * 2 + f) % 3] ?? "nothing",
+      focus,
+      historyTop,
+      opener,
+    }))
+  )
+);
+
+/** How many of the history's entries, from its newest, the pointer comes to rest on at each
+ *  place, at the upper and at the lower part of each: the entries the view holds wholly, up to
+ *  this many. */
+const RESTED_ENTRIES = 6;
+
+// The sweep. One issue, seeded once, whose history runs past every section of Details. At each
+// place of `READER_PLACES` - opened by `t o` or by `t v`; the focus left in Details' box, on the
+// Collaborators control or the history, or moved to the page outside it; then nothing, Shift, or
+// Tab, which can move the focus and bring the control it reaches into view; then the wheel,
+// which brings the history's top to 45 %, 10 % or 75 % of Details' view, Blocked by wholly above
+// it at each - the reader's pointer comes to rest on each of the history's entries the view holds
+// wholly, from the newest, up to six, at its upper part and at its lower part, a few pixels on
+// from where it arrived. For each rest Blocked by grows above the view, and every row in the view
+// stands where it stood, within a pixel. At the first rest at each place the titles' read lands,
+// which grows the row by 500 px at 1440 px here; that read lands once per load, so each later
+// rest grows the row by 300 px more of its own, as a second read would. Twelve loads, each well
+// under a quarter of a minute here.
+test("wherever the reader is in Details and wherever their pointer rests on the history, Blocked by growing above the view moves no row in it", async ({
+  browser,
+}) => {
+  test.setTimeout(420_000);
+  const key = await seedHeldHistory();
+  // Each combination that moved a row, so one run names every one of them.
+  const moved: string[] = [];
+  for (const place of READER_PLACES) {
+    const focused = place.focus === "Details" ? "left in Details" : "moved to the page";
+    const named = `${place.opener}, the focus ${focused}, then ${place.act}, then the wheel to the history's top at ${place.historyTop * 100} % of the view`;
+    const titles = Promise.withResolvers<void>();
+    const { context, page } = await afterOpener(browser, key, place.opener, titles.promise);
+    try {
+      const history = historyPanel(page);
+      await expect(historyEntries(page).first(), "the history drew no entry").toBeAttached();
+      await nextFrames(page);
+      if (place.focus === "page") await focusThePage(page);
+      if (place.act !== "nothing") {
+        await page.keyboard.press(place.act);
+        // Tab can bring the control it focuses into Details' view: the box stands still first.
+        await expect
+          .poll(
+            async () => {
+              const at = await historyScrollTop(page);
+              await nextFrames(page);
+              return (await historyScrollTop(page)) - at;
+            },
+            { message: `Details' box kept scrolling after ${place.act}` }
+          )
+          .toBe(0);
+      }
+      // One read of Details' view, which no act of the row's moves.
+      const view = await historyViewport(page);
+      // One read of where the key and the act left the history: Details has drawn it and stood
+      // still for two frames, and the titles, which alone move it next, are still held.
+      const landed = await boxOf(history, "the history");
+      const target = view.top + place.historyTop * (view.bottom - view.top);
+      await wheelOverDetails(page, Math.round(landed.y - target));
+      const blockedBy = detailsRow(page, PROPERTY_LABELS.blocked_by);
+      // One read of the place the reader's acts left: the box has stood still for two frames,
+      // and the titles, which alone move it next, are still held.
+      const blocked = await boxOf(blockedBy, "Blocked by");
+      expect(
+        blocked.y + blocked.height <= view.top,
+        `${named}: Blocked by's foot stood at ${Math.round(blocked.y + blocked.height)} px, in the view from ${Math.round(view.top)}`
+      ).toBe(true);
+      // The same settled place, read for the entries the view holds wholly: the rests below walk
+      // them, and a rest moves nothing unless a growth does.
+      const entries = await historyEntries(page).evaluateAll(
+        (all, shown) =>
+          all
+            .map((entry) => ({
+              box: entry.getBoundingClientRect(),
+              id: entry.getAttribute("data-history-entry") ?? "",
+            }))
+            .filter(({ box }) => box.top >= shown.top && box.bottom <= shown.bottom)
+            .map(({ id }) => id),
+        view
+      );
+      expect(entries.length, `${named}: no entry lies wholly in Details' view`).toBeGreaterThan(0);
+      let growths = 0;
+      for (const id of entries.slice(0, RESTED_ENTRIES)) {
+        for (const part of ["upper", "lower"] as const) {
+          const entry = history.locator(`[data-history-entry="${id}"]`);
+          // One read of the entry the pointer is to rest on: the rows have stood still since the
+          // last growth, which `settledRows` waited out.
+          const at = await boxOf(entry, `entry ${id}`);
+          await restThePointer(page, {
+            x: at.x + 60,
+            y: part === "upper" ? at.y + 8 : at.y + at.height - 8,
+          });
+          // One read of every row in view with the pointer at rest: nothing has moved since.
+          const before = await rowsInDetailsView(page);
+          let grew = 300;
+          if (growths === 0) {
+            grew = await grows(page, blockedBy, "Blocked by", titles.resolve, "Blocker 4:");
+          } else {
+            await blockedBy.evaluate((row, padding) => {
+              (row as HTMLElement).style.paddingBottom = `${padding}px`;
+            }, growths * 300);
+          }
+          growths += 1;
+          const shifted = movedRows(before, await settledRows(page));
+          if (shifted.length > 0) {
+            moved.push(
+              `${named}, the pointer on entry ${entries.indexOf(id)}'s ${part} part: Blocked by grew ${Math.round(grew)} px above the view and moved ${shifted.join(", ")}`
+            );
+          }
+        }
+      }
+    } finally {
+      titles.resolve();
+      await context.close();
+    }
+  }
+  expect(moved, moved.join("\n")).toEqual([]);
+});

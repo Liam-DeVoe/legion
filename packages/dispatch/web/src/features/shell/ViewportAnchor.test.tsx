@@ -1455,6 +1455,8 @@ test("a scroll the reader made lets the row a host kept go, and one that moved n
     fireEvent.scroll(scroller);
     expect(chosen()).toEqual({ id: "r5", via: "kept" });
 
+    // The reader turns the wheel over the box, which makes the scroll that follows theirs; user-event has no wheel.
+    fireEvent.wheel(scroller, { deltaY: 150 });
     // The reader scrolls the box, and the browser says so with a scroll event, which user-event
     // has no form for.
     scroller.scrollTop = 250;
@@ -1687,3 +1689,315 @@ for (const then of [
     }
   });
 }
+
+// The cases below hold a host that takes its box over (`ownsScrollAnchoring`) to the rule its
+// place is kept by: only an act of the reader's records another place, and each event the
+// browser raises for a change of the page records nothing. One case per such event.
+
+// The reader's pointer comes to rest on r10 near its top, moving a few pixels on inside the row
+// after reaching it, which raises a `pointermove` and no boundary event. Content above the rows
+// then grows by 300 px in no commit of the anchor's, which takes r10 from under the pointer, and
+// Chromium raises that move's boundary events at the start of the next frame, at the point the
+// pointer rests at, before the frame observes the new size. Read as the hand moving, the
+// `pointerout` let the place go, the observation found nothing kept, and every row in view went
+// down by the growth. Found by the tester on a running build with a copy of a large real issue:
+// Blocked by, above Details' view, grew by 300 px as the titles it names landed, and the entry
+// under the pointer went from 500 to 800 px in three runs of three.
+test("a row moved from under a pointer resting where its last move left it keeps its place, and so does every row in view", () => {
+  const box = drawFrameByFrame(ids(30), { ownsScrollAnchoring: true });
+  try {
+    box.scroller.scrollTop = 300;
+    const row = rowOf("r10");
+    // The pointer reaches r10 at a point of its own, and comes to rest a few pixels on inside
+    // it: user-event's hover sets no point, and sends no move inside the row it is on.
+    fireEvent.pointerOver(row, { clientX: 20, clientY: 262 });
+    fireEvent.pointerMove(row, { clientX: 20, clientY: 262 });
+    fireEvent.pointerMove(row, { clientX: 23, clientY: 263 });
+    expect(chosen()).toEqual({ id: "r10", via: "pointer" });
+    const seen = rowsInView();
+    expect(seen.r10).toBe(250);
+
+    // Content above the rows grows by 300 px, which leaves r4 under the pointer.
+    listTop += 300;
+    // The browser's own boundary events at the point the pointer rests at, which user-event
+    // cannot raise, ahead of the frame's resize observations.
+    fireEvent.pointerOut(row, { clientX: 23, clientY: 263, relatedTarget: rowOf("r4") });
+    fireEvent.pointerOver(rowOf("r4"), { clientX: 23, clientY: 263 });
+    expect(viewportTop("r10"), "the boundary events read the growth as the hand moving").toBe(250);
+    box.resized();
+    expect(rowsInView(), "the growth above the rows moved the rows in view").toEqual(seen);
+    expect(chosen()).toEqual({ id: "r10", via: "pointer" });
+  } finally {
+    box.unmount();
+  }
+});
+
+// A host keeps r8's place (`keepRow`), as Details' history keeps the entry beside Load older,
+// while the reader's pointer rests over the box's content above the rows: it left r1 for that
+// content and moved a pixel on. That content then shrinks by 100 px, which brings r2 under the
+// resting pointer, and the browser raises a `pointerover` for r2 at the pointer's point before the
+// frame observes the change. Read as the hand moving onto r2, it took r2 for the reader's place,
+// in the host's stead, where the shrink had already moved r8 up by 100 px; r8 stayed there.
+test("a row moved under a pointer resting where its last move left it is no place of the reader's, and the row a host keeps stays", () => {
+  listTop = 400;
+  const box = drawFrameByFrame(ids(30), { ownsScrollAnchoring: true });
+  try {
+    box.scroller.scrollTop = 300;
+    // The pointer reaches r1 at a point of its own, then leaves it for the content above the
+    // rows and comes to rest a pixel on: user-event's hover and unhover set no point, and send
+    // no move of their own.
+    fireEvent.pointerOver(rowOf("r1"), { clientX: 20, clientY: 120 });
+    fireEvent.pointerMove(rowOf("r1"), { clientX: 20, clientY: 120 });
+    fireEvent.pointerOut(rowOf("r1"), { clientX: 20, clientY: 60, relatedTarget: box.scroller });
+    fireEvent.pointerMove(box.scroller, { clientX: 20, clientY: 60 });
+    fireEvent.pointerMove(box.scroller, { clientX: 21, clientY: 61 });
+    anchor.current?.keepRow(rowOf("r8"));
+    expect(chosen()).toEqual({ id: "r8", via: "kept" });
+    expect(viewportTop("r8")).toBe(450);
+
+    // The content above the rows shrinks by 100 px, which leaves r2 under the pointer.
+    listTop -= 100;
+    // The browser's own boundary event at the point the pointer rests at, which user-event
+    // cannot raise, ahead of the frame's resize observations.
+    fireEvent.pointerOver(rowOf("r2"), { clientX: 21, clientY: 61 });
+    box.resized();
+    expect(viewportTop("r8"), "the pointer's row took the host's place").toBe(450);
+    expect(chosen()).toEqual({ id: "r8", via: "kept" });
+
+    // r5 grows by 50 px in a commit of its own.
+    heights = { r5: 100 };
+    box.resized();
+    expect(viewportTop("r8")).toBe(450);
+  } finally {
+    box.unmount();
+  }
+});
+
+// The focus is on a control at the foot of a tall row, and the reader presses Enter on it, which
+// lets the control go: what the key opens opens below the row's head (`readerPressed`). A row
+// below is then cut by more than the room below the view, and the browser pulls the box back to
+// its new end, which moves the row down where no scroll can put it back. Recorded at the
+// pull-back's scroll event as an act of the reader's, the place took the focused control again,
+// and the row's own words above the control growing then pushed the row's head up by as much.
+test("a pull-back of the box to its end records nothing: a focused control a key let go stays let go", async () => {
+  const user = userEvent.setup();
+  heights = { r18: 200, r20: 350 };
+  const box = drawInBox(ids(20), { ownsScrollAnchoring: true });
+  try {
+    // The reader scrolls to 100 px short of the box's end (1,550 - 600 = 950 px), and the focus
+    // moves to r18's control.
+    box.scroller.scrollTop = 850;
+    box.settle();
+    const focused = rowOf("r18").querySelector<HTMLElement>("button");
+    if (focused === null) throw new Error("r18 button missing");
+    focused.focus();
+    expect(viewportTop("r18")).toBe(100);
+    expect(controlTop("r18")).toBe(280);
+    await user.keyboard("{Enter}");
+
+    // r20 is cut by 300 px, three times the room below the view: the browser pulls the box back
+    // 200 px to its new end, which moves r18 down by as much.
+    heights = { r18: 200 };
+    box.settle();
+    expect(box.scroller.scrollTop).toBe(650);
+    expect(viewportTop("r18")).toBe(300);
+
+    // r18's own words above its control grow by 100 px.
+    heights = { r18: 300 };
+    box.settle();
+    expect(viewportTop("r18"), "the pull-back took the control the key let go again").toBe(300);
+    expect(controlTop("r18")).toBe(580);
+  } finally {
+    box.unmount();
+  }
+});
+
+// The reader's pointer left the rows for the box's content above them, so no place is kept and
+// the box's own scroll anchoring is on. That content shrinks by 50 px, which brings r1 under the
+// resting pointer, and the browser scrolls the box by as much to keep a node of its own choosing.
+// Neither the `pointerover` that move raises nor the scroll is an act of the reader's: recorded at
+// the scroll's event, r1 became the place to keep, and the box's anchoring went off for a place
+// the reader never chose.
+test("the browser's own anchoring scroll records nothing, and the box keeps its own anchoring", () => {
+  listTop = 400;
+  const view = render(<List ownsScrollAnchoring rows={ids(12)} scroller={scrollerRef} />);
+  try {
+    const scroller = scrollerRef.current;
+    if (scroller === null) throw new Error("scroller missing");
+    scroller.style.setProperty("overflow-anchor", "auto");
+    scroller.scrollTop = 300;
+    // The pointer reaches r1 at a point of its own, then leaves it for the content above the
+    // rows: user-event's hover and unhover set no point, and send no move of their own.
+    fireEvent.pointerOver(rowOf("r1"), { clientX: 20, clientY: 120 });
+    fireEvent.pointerMove(rowOf("r1"), { clientX: 20, clientY: 120 });
+    fireEvent.pointerOut(rowOf("r1"), { clientX: 20, clientY: 60, relatedTarget: scroller });
+    fireEvent.pointerMove(scroller, { clientX: 20, clientY: 60 });
+    expect(scroller.style.getPropertyValue("overflow-anchor")).toBe("auto");
+
+    // The content above the rows shrinks by 50 px, which leaves r1 under the pointer.
+    listTop -= 50;
+    // The browser's own boundary event at the point the pointer rests at, which user-event
+    // cannot raise; then its anchoring's scroll and that scroll's event, which it has no form for.
+    fireEvent.pointerOver(rowOf("r1"), { clientX: 20, clientY: 60 });
+    scroller.scrollTop = 250;
+    fireEvent.scroll(scroller);
+    expect(
+      scroller.style.getPropertyValue("overflow-anchor"),
+      "the browser's own anchoring scroll took a place for the reader's"
+    ).toBe("auto");
+  } finally {
+    view.unmount();
+  }
+});
+
+// A host keeps r8's place (`keepRow`). Content above the rows grows by 100 px, and the anchor
+// puts r8 back in its frame's resize observation; another hold of the page's, Details' hold of
+// the place a key landed the focus at (`details-more.tsx`), scrolls the box 60 px more in its own
+// observation after the anchor's. The next frame's scroll event reports that scroll, which no act
+// of the reader's made: taken for the reader's, it let the host's place go with no row under the
+// hand, and the next growth above moved r8 and every row in view down by as much.
+test("a scroll another script made records nothing, and the row a host keeps stays kept where it left it", () => {
+  const box = drawFrameByFrame(ids(30), { ownsScrollAnchoring: true });
+  try {
+    box.scroller.scrollTop = 100;
+    anchor.current?.keepRow(rowOf("r8"));
+    expect(viewportTop("r8")).toBe(350);
+    listTop += 100;
+    box.resized();
+    expect(viewportTop("r8")).toBe(350);
+    // The other hold's scroll, in its observation after the anchor's.
+    box.scroller.scrollTop = 260;
+    // The next frame reports it with the box's own scroll event, which user-event has no form for.
+    fireEvent.scroll(box.scroller);
+    box.frameEnds();
+    expect(chosen(), "another script's scroll let the host's place go").toEqual({
+      id: "r8",
+      via: "kept",
+    });
+    const seen = rowsInView();
+    expect(seen.r8).toBe(290);
+
+    // Content above the rows grows by 100 px more, in no commit of the anchor's.
+    listTop += 100;
+    box.resized();
+    expect(rowsInView(), "the growth above the rows moved the rows in view").toEqual(seen);
+  } finally {
+    box.unmount();
+  }
+});
+
+/** `List` with the host taking its box over, every row's control drawn but `bare`'s. */
+function ListWithout({ bare, rows: drawn }: { bare: string; rows: string[] }): ReactNode {
+  return (
+    <div data-scroller="" ref={scrollerRef}>
+      <ViewportAnchor
+        group="data-group"
+        item="data-row"
+        ownsScrollAnchoring
+        ref={anchor}
+        scroller={scrollerRef}
+      >
+        {drawn.map((id) => (
+          <div data-group="one" data-row={id} key={id} tabIndex={-1}>
+            {id === bare ? id : <button type="button">{id}</button>}
+          </div>
+        ))}
+      </ViewportAnchor>
+    </div>
+  );
+}
+
+// The focus is on r10's control, which a commit then takes away, as a turn drawn whole drops its
+// "more": Chromium raises `focusout` on the control as it removes it, and the focus goes to the
+// page. That is no act of the reader's, who still reads r10. A commit then draws a row between
+// r10 and the row at the middle of the view: keeping that middle row, as with no place kept,
+// moved r10 up by the new row's height.
+test("a focusout because the focused node went records nothing, and the next commit keeps the place it left", () => {
+  const view = render(<ListWithout bare="" rows={ids(30)} />);
+  try {
+    const scroller = scrollerRef.current;
+    if (scroller === null) throw new Error("scroller missing");
+    scroller.scrollTop = 300;
+    const control = rowOf("r10").querySelector<HTMLElement>("button");
+    if (control === null) throw new Error("r10 button missing");
+    control.focus();
+    expect(viewportTop("r10")).toBe(250);
+
+    // Chromium's `focusout` as it removes the focused control, raised while the control is still
+    // in the list, which user-event has no form for; then the commit that removes it.
+    fireEvent.focusOut(control, { relatedTarget: null });
+    view.rerender(<ListWithout bare="r10" rows={ids(30)} />);
+    expect(document.activeElement).not.toBe(control);
+    expect(viewportTop("r10")).toBe(250);
+
+    // A row arrives between r10 and the row at the middle of the view.
+    view.rerender(<ListWithout bare="r10" rows={[...ids(10), "new", ...ids(20, 11)]} />);
+    expect(viewportTop("r10"), "the focus's loss let the place go to the middle row").toBe(250);
+    expect(chosen()).toEqual({ id: "r10", via: "kept" });
+  } finally {
+    view.unmount();
+  }
+});
+
+// Where the box's one child holds the content above and below the rows as well as the rows, as
+// Details' one child holds its sections and the history, a section above that grows while another
+// shrinks by as much in the same frame leaves that child's height as it was, and moves the rows.
+// While a place is kept, the anchor watches each element between its root and the box and each
+// one beside them, and lets them go once none is.
+test("while a place is kept in a named box, the anchor watches the content around its root at every depth", () => {
+  const RealResizeObserver = globalThis.ResizeObserver;
+  const watched = new Set<Element>();
+  globalThis.ResizeObserver = class {
+    disconnect() {
+      watched.clear();
+    }
+    observe(target: Element) {
+      watched.add(target);
+    }
+    unobserve(target: Element) {
+      watched.delete(target);
+    }
+  } as unknown as typeof ResizeObserver;
+  const view = render(
+    <div data-scroller="" ref={scrollerRef}>
+      <div data-content="">
+        <section data-above="">Above the rows</section>
+        <ViewportAnchor item="data-row" ownsScrollAnchoring ref={anchor} scroller={scrollerRef}>
+          {ids(12).map((id) => (
+            <div data-row={id} key={id}>
+              {id}
+            </div>
+          ))}
+        </ViewportAnchor>
+        <section data-below="">Below the rows</section>
+      </div>
+      <footer data-foot="">At the box's foot</footer>
+    </div>
+  );
+  try {
+    const around = ["[data-content]", "[data-above]", "[data-below]", "[data-foot]"];
+    /** The content around the root, by selector, that is watched (`true`) or not (`false`). */
+    const watching = (is: boolean) =>
+      around.filter((selector) => {
+        const element = document.querySelector(selector);
+        if (element === null) throw new Error(`${selector} missing`);
+        return watched.has(element) === is;
+      });
+    const root = document.querySelector("[data-above]")?.nextElementSibling ?? null;
+    if (root === null) throw new Error("the anchor's root missing");
+    expect(watching(true)).toEqual([]);
+
+    // The pointer comes to rest on r3 at a point of its own, which user-event's hover cannot set.
+    fireEvent.pointerOver(rowOf("r3"), { clientX: 20, clientY: 220 });
+    expect(watching(false), "content around the root left unwatched").toEqual([]);
+    expect(watched.has(root)).toBe(true);
+
+    // A pointerout to a relatedTarget outside the rows, at a place of the pointer's own, neither of which user-event's unhover can set.
+    fireEvent.pointerOut(rowOf("r3"), { clientX: 20, clientY: 900, relatedTarget: document.body });
+    expect(watching(true)).toEqual([]);
+    expect(watched.has(root)).toBe(true);
+  } finally {
+    view.unmount();
+    globalThis.ResizeObserver = RealResizeObserver;
+  }
+});
