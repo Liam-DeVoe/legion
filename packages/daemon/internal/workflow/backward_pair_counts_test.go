@@ -230,9 +230,9 @@ func TestAReturnInAnyOrderCountsItsPair(t *testing.T) {
 	engine := stepEngine(nil)
 	root := stepRoot(t, pool, phase.Admitted)
 	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "reviewer", "tester")
-	move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
-	move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
-	move(t, pool, engine, root.Key, TriggerReviewApproved, "", record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerReviewApproved, record.TaskPlace{}, record.PhaseRow{})
 	if counts := taskCounts(t, pool, root.Key, root.Generation); counts.Pass != 0 || len(counts.BackwardMoves) != 0 {
 		t.Fatalf("after the approval of reviewing into testing the task counts %+v, want nothing: the approval moves it on", counts)
 	}
@@ -240,8 +240,8 @@ func TestAReturnInAnyOrderCountsItsPair(t *testing.T) {
 	if counts := taskCounts(t, pool, root.Key, root.Generation); counts.Pass != 1 || !maps.Equal(counts.BackwardMoves, map[string]int{"testing-reviewing": 1}) {
 		t.Fatalf("after the tester's move back to reviewing the task counts %+v, want pass 1 and testing-reviewing 1", counts)
 	}
-	move(t, pool, engine, root.Key, TriggerReviewApproved, "", record.PhaseRow{})
-	move(t, pool, engine, root.Key, TriggerTesterFailed, "", record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerReviewApproved, record.TaskPlace{}, record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerTesterFailed, record.TaskPlace{}, record.PhaseRow{})
 	if counts := taskCounts(t, pool, root.Key, root.Generation); counts.Pass != 2 ||
 		!maps.Equal(counts.BackwardMoves, map[string]int{"testing-reviewing": 1, "testing-implementing": 1}) {
 		t.Fatalf("after the tester's fail the task counts %+v, want pass 2, testing-reviewing 1 and testing-implementing 1", counts)
@@ -250,8 +250,8 @@ func TestAReturnInAnyOrderCountsItsPair(t *testing.T) {
 	// The twin: an issue with no plan rows counts by today's line.
 	todays := migratedPool(t)
 	seedWorkBackIssue(t, todays, headOne)
-	move(t, todays, engine, "LEGION-208", TriggerImplementationReady, "", record.PhaseRow{})
-	move(t, todays, engine, "LEGION-208", TriggerTesterPassed, "", record.PhaseRow{})
+	move(t, todays, engine, "LEGION-208", TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
+	move(t, todays, engine, "LEGION-208", TriggerTesterPassed, record.TaskPlace{}, record.PhaseRow{})
 	if moves := backwardMoves(t, todays); len(moves) != 0 {
 		t.Fatalf("with no plan rows the tester's pass into reviewing counted %v, want nothing", moves)
 	}
@@ -270,15 +270,15 @@ func TestAHookNamesAMoveOfAnyOrderAtItsFifthReturn(t *testing.T) {
 	engine := returnEngine()
 	root := stepRoot(t, pool, phase.Admitted)
 	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "reviewer", "tester")
-	move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
-	move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
-	move(t, pool, engine, root.Key, TriggerReviewApproved, "", record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerReviewApproved, record.TaskPlace{}, record.PhaseRow{})
 	testerMovesBack(t, pool, engine, root.Key, phase.Reviewing)
-	move(t, pool, engine, root.Key, TriggerReviewApproved, "", record.PhaseRow{})
-	move(t, pool, engine, root.Key, TriggerTesterFailed, "", record.PhaseRow{})
-	move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerReviewApproved, record.TaskPlace{}, record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerTesterFailed, record.TaskPlace{}, record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
 	for range 3 {
-		move(t, pool, engine, root.Key, TriggerReviewApproved, "", record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerReviewApproved, record.TaskPlace{}, record.PhaseRow{})
 		if prompts := hookPrompts(t, pool); len(prompts) != 0 {
 			t.Fatalf("the hook fired %+v before the fifth move back", prompts)
 		}

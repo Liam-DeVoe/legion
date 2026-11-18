@@ -201,7 +201,7 @@ func TestTheTaskPlaceAndThePhaseMoveInOneWrite(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, m := range moves {
-			move(t, pool, engine, key, m.trigger, "", record.PhaseRow{})
+			move(t, pool, engine, key, m.trigger, record.TaskPlace{}, record.PhaseRow{})
 			if err := taskStands(t, pool, engine, key, m.place, record.TaskRunning, m.phase); err != nil {
 				t.Fatalf("after %s: %v", m.trigger, err)
 			}
@@ -252,7 +252,7 @@ func TestTheTaskPlaceAndThePhaseMoveInOneWrite(t *testing.T) {
 		engine := stepEngine(nil)
 		issue := child(t, pool)
 		seedOwnersPlan(t, pool, issue.Key, issue.Generation)
-		move(t, pool, engine, issue.Key, TriggerGateOpened, "", record.PhaseRow{})
+		move(t, pool, engine, issue.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
 		leaveAs(t, pool, engine, issue.Key, "backlog")
 		if err := taskStands(t, pool, engine, issue.Key, stepOne, record.TaskLeft, phase.Done); err != nil {
 			t.Fatal(err)
@@ -264,7 +264,7 @@ func TestTheTaskPlaceAndThePhaseMoveInOneWrite(t *testing.T) {
 		engine := stepEngine(nil)
 		root := stepRoot(t, pool, phase.Admitted)
 		seedOwnersPlan(t, pool, root.Key, root.Generation)
-		move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
 		leaveAs(t, pool, engine, root.Key, "backlog")
 		if err := taskStands(t, pool, engine, root.Key, stepOne, record.TaskLeft, phase.Done); err != nil {
 			t.Fatal(err)
@@ -277,7 +277,7 @@ func TestTheTaskPlaceAndThePhaseMoveInOneWrite(t *testing.T) {
 		pool := migratedPool(t)
 		engine := stepEngine(nil)
 		issue := child(t, pool)
-		move(t, pool, engine, issue.Key, TriggerGateOpened, "", record.PhaseRow{})
+		move(t, pool, engine, issue.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
 		leaveAs(t, pool, engine, issue.Key, "backlog")
 		var got string
 		var tasks int
@@ -350,8 +350,8 @@ func TestABackwardMoveReachesOnlyThePhasesOfTheTasksLine(t *testing.T) {
 	engine := stepEngine(nil)
 	root := stepRoot(t, pool, phase.Admitted)
 	seedOwnersPlan(t, pool, root.Key, root.Generation)
-	move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
-	move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
 	reviewing := record.TaskPlace{Kind: record.PlaceStep, Position: 2}
 	if err := taskStands(t, pool, engine, root.Key, reviewing, record.TaskRunning, phase.Reviewing); err != nil {
 		t.Fatal(err)
@@ -398,11 +398,11 @@ func TestATaskInAnyOrderGoesBackToAStepBeforeIt(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
 	stands(record.TaskPlace{Kind: record.PlaceStep, Position: 1}, phase.Implementing)
-	move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
 	stands(record.TaskPlace{Kind: record.PlaceStep, Position: 2}, phase.Reviewing)
-	move(t, pool, engine, root.Key, TriggerReviewApproved, "", record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerReviewApproved, record.TaskPlace{}, record.PhaseRow{})
 	stands(record.TaskPlace{Kind: record.PlaceStep, Position: 3}, phase.Testing)
 
 	result, err := intake.ApplyFact(t.Context(), pool, "api", "tester-back-to-reviewing",
@@ -414,9 +414,9 @@ func TestATaskInAnyOrderGoesBackToAStepBeforeIt(t *testing.T) {
 		t.Fatalf("the tester's move back to reviewing was refused: %+v", result.Refusal)
 	}
 	stands(record.TaskPlace{Kind: record.PlaceStep, Position: 2}, phase.Reviewing)
-	move(t, pool, engine, root.Key, TriggerReviewApproved, "", record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerReviewApproved, record.TaskPlace{}, record.PhaseRow{})
 	stands(record.TaskPlace{Kind: record.PlaceStep, Position: 3}, phase.Testing)
-	move(t, pool, engine, root.Key, TriggerTesterPassed, "", record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerTesterPassed, record.TaskPlace{}, record.PhaseRow{})
 	stands(record.TaskPlace{Kind: record.PlaceRetro}, phase.Retro)
 
 	// The twin: an issue with no plan rows, in testing, is refused the same move.
@@ -440,15 +440,7 @@ func TestATaskInAnyOrderGoesBackToAStepBeforeIt(t *testing.T) {
 // step, and the issue standing there.
 func seedTwoDeploymentSteps(t *testing.T, pool *pgxpool.Pool, key string, generation uint64, at int) {
 	t.Helper()
-	seedStepsPlan(t, pool, key, generation, "implementer", "checker", "linter")
-	for role, typ := range map[string]string{"checker": "testing", "linter": "review"} {
-		if _, err := pool.Exec(t.Context(), "update plan_steps set type = $3 where issue = $1 and task = 'a' and role = $2", key, role, typ); err != nil {
-			t.Fatalf("store the type of %s: %v", role, err)
-		}
-	}
-	seedRecord(t, pool, func(tx pgx.Tx) error {
-		return record.NewStore().MoveTask(t.Context(), tx, key, generation, "a", record.TaskPlace{Kind: record.PlaceStep, Position: at}, record.TaskRunning)
-	})
+	seedStepsAt(t, pool, key, generation, at, map[string]string{"checker": "testing", "linter": "review"}, "implementer", "checker", "linter")
 }
 
 // A task moves to the place of the row it takes, not to the first place whose step runs as the
@@ -463,9 +455,9 @@ func TestATaskMovesToItsRowsPlaceAndCountsItsReturn(t *testing.T) {
 		root := stepRoot(t, pool, phase.Step)
 		seedTwoDeploymentSteps(t, pool, root.Key, root.Generation, 2)
 
-		move(t, pool, engine, root.Key, TriggerStepPassed, "", record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerStepPassed, record.TaskPlace{}, record.PhaseRow{})
 		assertWalksAt(t, pool, engine, root.Key, phase.Step, record.TaskPlace{Kind: record.PlaceStep, Position: 3})
-		move(t, pool, engine, root.Key, TriggerStepPassed, "", record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerStepPassed, record.TaskPlace{}, record.PhaseRow{})
 		assertWalksAt(t, pool, engine, root.Key, phase.Retro, record.TaskPlace{Kind: record.PlaceRetro})
 	})
 
@@ -475,7 +467,7 @@ func TestATaskMovesToItsRowsPlaceAndCountsItsReturn(t *testing.T) {
 		root := stepRoot(t, pool, phase.Step)
 		seedTwoDeploymentSteps(t, pool, root.Key, root.Generation, 3)
 
-		move(t, pool, engine, root.Key, TriggerBackward, phase.Step, record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerBackward, stepPlace(2), record.PhaseRow{})
 		assertWalksAt(t, pool, engine, root.Key, phase.Step, record.TaskPlace{Kind: record.PlaceStep, Position: 2})
 		if counts := taskCounts(t, pool, root.Key, root.Generation); counts.Pass != 1 || !maps.Equal(counts.BackwardMoves, map[string]int{"step-step": 1}) {
 			t.Fatalf("after the move back from step 3 to step 2 the task counts %+v, want pass 1 and step-step 1", counts)

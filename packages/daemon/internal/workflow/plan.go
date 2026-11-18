@@ -403,7 +403,7 @@ func (e *Engine) stopTask(ctx context.Context, tx pgx.Tx, issue record.Issue, w 
 // of kind task-stopped whose reason names the task and the step. No return happened, so no pass,
 // pair, round or hook is counted.
 func (e *Engine) stopUnreturned(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, end StepEnd) error {
-	place, _ := w.PlaceOf(issue.Phase)
+	place := w.Place
 	why := fmt.Sprintf("step %d (%s) failed and no earlier step of the type implementation can take the work", place.Position, w.Steps[place.Position-1].Role)
 	said := fmt.Sprintf("task %s of %s was stopped: %s", w.Task, issue.Key, why)
 	if err := e.stopTask(ctx, tx, issue, w, why, said, end); err != nil {

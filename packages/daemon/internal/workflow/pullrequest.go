@@ -507,13 +507,13 @@ func (e *Engine) closeMerged(ctx context.Context, tx pgx.Tx, issue record.Issue,
 				"pullRequest", pr.Number, "waitingFor", strings.Join(waiting, ", "))
 			return waiting, nil
 		}
-		return nil, e.transition(ctx, tx, issue, TriggerPullRequestMerged, "", record.PhaseRow{}, pr, "")
+		return nil, e.transition(ctx, tx, issue, TriggerPullRequestMerged, record.TaskPlace{}, record.PhaseRow{}, pr, "")
 	}
 	w, err := e.walk(ctx, tx, issue)
 	if err != nil {
 		return nil, err
 	}
-	row, ok := w.row(issue.Phase, TriggerPullRequestMerged, "", Snapshot{Phase: issue.Phase})
+	row, ok := w.row(issue.Phase, TriggerPullRequestMerged, record.TaskPlace{}, Snapshot{Phase: issue.Phase})
 	if !ok {
 		return nil, nil
 	}

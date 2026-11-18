@@ -927,14 +927,20 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	}
 	// A failed step's report can name the earlier step of its task that the task returns to (R7,
 	// returnTo). The step it names is judged here, before anything is written, so a refusal
-	// records nothing, its handoff record among it, and the agent reports again (returnStep).
-	var returnTo phase.Phase
+	// records nothing, its handoff record among it, and the agent reports again (returnStep). It is
+	// judged against the place of the step that reports: where the task stands for a current
+	// completion, and the place of the role's own step for a role that has left it.
+	var returnTo record.TaskPlace
 	if fact.ReturnTo > 0 {
 		w, err := e.walk(ctx, tx, *issue)
 		if err != nil {
 			return intake.Result{}, err
 		}
-		target, why, err := returnStep(*issue, w, reported, fact.ReturnTo)
+		at := w.Place
+		if !current {
+			at, _ = w.placeOfRole(fact.Role)
+		}
+		target, why, err := returnStep(*issue, w, at, fact.ReturnTo, failReport)
 		if err != nil {
 			return intake.Result{}, err
 		}
@@ -990,7 +996,7 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	}
 	switch issue.Phase {
 	case phase.Planning:
-		return intake.Result{}, e.transition(ctx, tx, *issue, TriggerPlannerCompleted, "", row, pr, "")
+		return intake.Result{}, e.transition(ctx, tx, *issue, TriggerPlannerCompleted, record.TaskPlace{}, row, pr, "")
 	case phase.Implementing:
 		if pr == nil {
 			return intake.Result{}, nil
@@ -1001,13 +1007,13 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 			return intake.Result{}, e.transition(ctx, tx, *issue, TriggerTesterFailed, returnTo, row, pr, "")
 		}
 		if fact.Verdict == "pass" {
-			return intake.Result{}, e.transition(ctx, tx, *issue, TriggerTesterPassed, "", row, pr, "")
+			return intake.Result{}, e.transition(ctx, tx, *issue, TriggerTesterPassed, record.TaskPlace{}, row, pr, "")
 		}
 	case phase.Reviewing:
 		_, err := e.settleRound(ctx, tx, *issue, row, pr, found, byCompletion)
 		return intake.Result{}, err
 	case phase.Retro:
-		if err := e.transition(ctx, tx, *issue, TriggerRetroCompleted, "", row, pr, ""); err != nil {
+		if err := e.transition(ctx, tx, *issue, TriggerRetroCompleted, record.TaskPlace{}, row, pr, ""); err != nil {
 			return intake.Result{}, err
 		}
 		// The completion that ends the retro carries the rating its agent gave the plan (the
@@ -1503,7 +1509,13 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 	if err != nil {
 		return intake.Result{}, err
 	}
-	_, served := w.row(issue.Phase, TriggerBackward, fact.To, Snapshot{Phase: issue.Phase})
+	// The move reaches the one earlier place of its task that runs as its target (backwardPlace);
+	// where none or more than one does, no row serves it.
+	target, found := w.backwardPlace(fact.To)
+	served := false
+	if found {
+		_, served = w.row(issue.Phase, TriggerBackward, target, Snapshot{Phase: issue.Phase})
+	}
 	if why := backwardRefusal(*issue, fact, served); why != "" {
 		return refused("BACKWARD_REFUSED", why), nil
 	}
@@ -1522,7 +1534,7 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 	if err != nil {
 		return intake.Result{}, err
 	}
-	return intake.Result{}, e.transition(ctx, tx, *issue, TriggerBackward, fact.To, row, pr, fact.Reason)
+	return intake.Result{}, e.transition(ctx, tx, *issue, TriggerBackward, target, row, pr, fact.Reason)
 }
 
 // parkRule is the condition dispatch://INFRA-2971 sets on each move of an issue to backlog,
@@ -1576,7 +1588,7 @@ func (e *Engine) signOff(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (i
 	if err != nil {
 		return intake.Result{}, err
 	}
-	return intake.Result{}, e.transition(ctx, tx, *issue, TriggerSignOff, "", report, pr, "")
+	return intake.Result{}, e.transition(ctx, tx, *issue, TriggerSignOff, record.TaskPlace{}, report, pr, "")
 }
 
 // acceptedRole is the role of the step the owner's acceptance of issue accepts: the step before
@@ -1595,7 +1607,7 @@ func (e *Engine) acceptedRole(ctx context.Context, tx pgx.Tx, issue record.Issue
 	return claim.Role(w.Steps[place.Position-2].Role), nil
 }
 
-func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, trigger TriggerKind, target phase.Phase, handoff record.PhaseRow, pr *record.PullRequest, reason string) error {
+func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, trigger TriggerKind, target record.TaskPlace, handoff record.PhaseRow, pr *record.PullRequest, reason string) error {
 	// The row comes from the table of the issue's walk: the line of its plan's task, or today's
 	// line for a run with no plan rows (Walk).
 	w, err := e.walk(ctx, tx, issue)
@@ -1604,23 +1616,25 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	}
 	snapshot := Snapshot{Phase: issue.Phase, HasOpenOrMergedPR: record.LetsImplementationMove(pr)}
 	row, ok := w.row(issue.Phase, trigger, target, snapshot)
-	if !ok {
+	// A failed step of a task with plan rows that names no step to return to returns its work to
+	// the step its plan reads from the steps' recorded types (R7, returnTarget), and where no step
+	// before it can take the work, the task stops instead (stopUnreturned). A step with no step
+	// before it has no row of its fail at all, and stops the same way. An issue with no plan rows
+	// returns to implementing, the row's own target, as today.
+	returns := w.Stored && returnsWork(trigger) && target == (record.TaskPlace{}) && failsIn(issue.Phase, trigger)
+	if !ok && !returns {
 		return nil
 	}
 	if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
 		return err
 	}
-	// A failed step of a task with plan rows that names no step to return to returns its work to
-	// the step its plan reads from the steps' recorded types (R7, returnTarget), and where no step
-	// before it can take the work, the task stops instead (stopUnreturned). An issue with no plan
-	// rows returns to implementing, the row's own target, as today.
-	if w.Stored && returnsWork(trigger) && target == "" {
-		to, found := w.returnTarget(issue.Phase)
+	if returns {
+		to, found := w.returnTarget()
 		if !found {
 			return e.stopUnreturned(ctx, tx, issue, w, endOfTransition(w, trigger, issue.Phase, "", handoff))
 		}
 		if row, ok = w.row(issue.Phase, trigger, to, snapshot); !ok {
-			return fmt.Errorf("return the work of %s from %s to %s: its line %v holds no such return", issue.Key, issue.Phase, to, w.Line)
+			return fmt.Errorf("return the work of %s from %+v to %+v: its line %v holds no such return", issue.Key, w.Place, to, w.Line)
 		}
 	}
 	// Two counters move here, and they count different things. Every move back to an earlier phase
@@ -1926,7 +1940,7 @@ func (e *Engine) gateOpened(ctx context.Context, tx pgx.Tx, issue record.Issue) 
 	if err := e.enqueue(ctx, tx, issue.Key, record.IssueBranch{Generation: issue.Generation}); err != nil {
 		return err
 	}
-	return e.transition(ctx, tx, issue, TriggerGateOpened, "", record.PhaseRow{}, nil, "")
+	return e.transition(ctx, tx, issue, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{}, nil, "")
 }
 
 // everyClaim enqueues op for every claim an issue can hold but except's: its architect, which

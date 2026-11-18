@@ -79,7 +79,7 @@ func TestTheWorkStartsWithTheDefaultPlan(t *testing.T) {
 	pool := migratedPool(t)
 	root := stepRoot(t, pool, phase.Admitted)
 	engine := stepEngine(nil)
-	move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{Issue: root.Key, Role: claim.RoleArchitect})
+	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{Issue: root.Key, Role: claim.RoleArchitect})
 
 	namespace := uuid.NewSHA1(uuid.NameSpaceOID, []byte("legion-plan-record"))
 	want := record.PlanRecord{ID: uuid.NewSHA1(namespace, []byte("LEGION-208/1")).String(), Generation: 1, Source: "default",
@@ -91,7 +91,7 @@ func TestTheWorkStartsWithTheDefaultPlan(t *testing.T) {
 		t.Fatalf("the plan of run 2 has the id %s of run 1's", other)
 	}
 
-	move(t, pool, engine, root.Key, TriggerPlannerCompleted, "", record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerPlannerCompleted, record.TaskPlace{}, record.PhaseRow{})
 	if plans := planWrites(t, pool, root.Key); len(plans) != 1 {
 		t.Fatalf("the move out of planning left %d plan records, want the one the start wrote", len(plans))
 	}
@@ -117,7 +117,7 @@ func TestTheRetrosRatingReachesItsRecord(t *testing.T) {
 			root := stepRoot(t, pool, phase.Accepting)
 			seedPhase(t, pool, record.PhaseRow{Issue: root.Key, Role: claim.RoleImplementer, Claim: "implement-claim"})
 			engine := stepEngine(nil)
-			move(t, pool, engine, root.Key, TriggerSignOff, "", record.PhaseRow{})
+			move(t, pool, engine, root.Key, TriggerSignOff, record.TaskPlace{}, record.PhaseRow{})
 			applyRefusingNothing(t, pool, engine, intake.HandoffComplete{Generation: 1, Issue: root.Key, Role: claim.RoleImplementer,
 				Claim: "implement-claim", Summary: "retro done", Commit: "head", PlanRating: tc.rating, PlanReason: tc.reason})
 			assertPhase(t, pool, phase.Merging)
