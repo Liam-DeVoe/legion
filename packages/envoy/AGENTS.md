@@ -463,6 +463,7 @@ Each item below names a task and where its code is, then notes on it.
   With its opening line at column 0, such a block keeps every line as written; an opening line four spaces or a tab in opens no typed block, so that text answers its whole stored text.
   `GET /api/v1/reference-targets` answers the same for every member that names a block, a plan task among them, whose `name` is the stored excerpt and so holds the directive line and stops at 480 runes: the block's whole text is read in one statement per kind of block (`refs.BlockTexts`), a typed block's is cut to its own content by that rule (`blockTextContent`), and no document is loaded; the read's ETag hashes each tree.
   A block of a document, a comment or an ask has its text read from the block index; no table records the texts of a message's blocks, so a message block's text is split again from its message's body (`messageBlockTexts` in `internal/dispatch/refs/target_texts.go`).
+  A finding of a lens (`lens_block`) has its text read from the store, the newest value of its `text` tuple, through the predicate of a finding for the caller (`refs.VisibleKindRow`), and its tree is of its whole text, never passed to `blockTextContent`.
   Shapes: `RequirementCoverage`, `CheckBlock`, `ReferenceTarget` in `packages/contracts/src/dispatch-api.ts`
 
 - **Load test**: `loadtest/`

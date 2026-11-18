@@ -332,7 +332,11 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 	}
 	// Nodes is Node over a batch, ExcerptedNodes is Nodes with each node's excerpt, and
 	// TargetNames is Nodes with each node's name: one target of every kind, so each kind's loader
-	// issues its statement in the one call.
+	// issues its statement in the one call. BlockTexts reads each kind of block among them in a
+	// statement of its own and passes every other kind over. A finding's statement binds the
+	// predicate of its kind over the row it reads; a document's block and an item's bind none,
+	// since a caller reads those only once TargetNames has answered them to the reader. So that
+	// read is held to the registry as a whole.
 	everyKind := make([]Target, len(nodeKinds))
 	for index, kind := range nodeKinds {
 		everyKind[index] = Target{Kind: kind, ID: "no-such-node"}
@@ -349,19 +353,8 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 		_, err := TargetNames(ctx, recorder, who, everyKind)
 		return err
 	})
-	// BlockTexts reads each kind of block in a statement of its own, one target of every kind of
-	// block at once here. A finding's statement binds the predicate of its kind over the row it
-	// reads; a document's block and an item's bind none, since a caller reads those only once
-	// TargetNames has answered them to the reader. So the read is held to the registry as a whole.
-	everyBlockKind := []Target{
-		{Kind: BlockNodeKind, ID: "no-such-node"},
-		{Kind: graphstore.KindLensBlock, ID: graphstore.KindLens + "/no-such-node#b1"},
-	}
-	for _, item := range itemKinds {
-		everyBlockKind = append(everyBlockKind, Target{Kind: item.BlockKind(), ID: "no-such-node"})
-	}
-	record("BlockTexts", "BlockTexts of every kind of block at once", func() error {
-		_, err := BlockTexts(ctx, recorder, who, everyBlockKind)
+	record("BlockTexts", "BlockTexts of every kind at once", func() error {
+		_, err := BlockTexts(ctx, recorder, who, everyKind)
 		return err
 	})
 	record("ReferencedBy", "ReferencedBy of CORE-1/spec", func() error {

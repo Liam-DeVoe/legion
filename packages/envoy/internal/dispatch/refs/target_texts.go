@@ -21,11 +21,12 @@ import (
 // is the block TargetNames answers nothing for either.
 //
 // A finding's text is read off its own node in the store, whose row says who may see it, so its
-// statement binds the predicate of its kind for who over that row (VisibleKindRow), as the
-// finding's loader does (loadReasoningNodes): a finding the store holds gone, or one reserved for
-// an author who is not who, has no entry, whatever the caller resolved first. A block of a
-// document or of an item is read for a caller that has already resolved it for who through
-// TargetNames, which binds each block kind's predicate, so its statement binds none.
+// statement holds each row to the condition the finding's loader (loadReasoningNodes) holds it to
+// (heldNodesWhere), the predicate of its kind for who over that row (VisibleKindRow) among it: a
+// finding the store holds gone, or one reserved for an author who is not who, has no entry,
+// whatever the caller resolved first. A block of a document or of an item is read for a caller
+// that has already resolved it for who through TargetNames, which binds each block kind's
+// predicate, so its statement binds none.
 //
 // It is TargetNames' companion for a reader that draws a block whole rather than by its name,
 // which stops at the block's stored excerpt: each kind is read in one statement whatever the
@@ -90,8 +91,7 @@ func BlockTexts(ctx context.Context, q Queryer, who model.Actor, targets []Targe
 		rows, err := q.Query(ctx, `
 			select held.id, `+standingText[graphstore.KindLensBlock]("held", "$4")+`
 			from graph_nodes held
-			where held.kind = $1 and held.id = any($2) and held.id like '`+graphstore.KindLens+`/%#%' and held.state <> $3
-				and `+VisibleKindRow(graphstore.KindLensBlock, "held", "$4"),
+			where `+heldNodesWhere(graphstore.KindLensBlock),
 			StoredKindOf(graphstore.KindLensBlock), nodes, graphstore.StateGone, VisibilityArg(who))
 		if err != nil {
 			return nil, fmt.Errorf("read the texts of findings: %w", err)

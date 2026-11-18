@@ -48,7 +48,8 @@ body: |-
   `envoy-dispatch premortem-convert` and
   `POST /api/v1/issues/{key}/artifacts/{slug}/premortem-convert` turn a pre-mortem document into a
   lens with one risk for risk 0 and for each numbered risk, each with `prevented_by` pointers to the
-  checks that a map names. It then retires the document: the document leaves its issue's document
-  list, takes no new text, and holds one `document.retired` event whose reason names the lens. Its
+  checks that a map names, in one transaction. The conversion first retires the document and moves
+  its address to the lens it is about to write: the document leaves its issue's document list,
+  takes no new text, and holds one `document.retired` event whose reason names the lens, and its
   old address answers that lens on `GET /api/v1/references?to=` and in the reference closure of any
-  issue that cites it.
+  issue that cites it. Then it writes the lens, its risks and their `prevented_by` pointers.

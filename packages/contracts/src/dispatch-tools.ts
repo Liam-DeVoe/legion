@@ -2689,14 +2689,15 @@ export const dispatchToolSpecs = [
       preview: true,
     },
     description:
-      "Convert a pre-mortem document of an issue into nodes, once: one lens of kind pre-mortem " +
-      "under the issue, whose verdict is the document's verdict followed by its two closing " +
-      'sections, "What a world-class implementation looks like" and "The smallest first slice ' +
-      'that proves the model", word for word, and under it one risk for risk 0 and each ' +
-      "numbered risk, each with its heading, its early warning and its prevention and a " +
-      "prevented_by pointer to each check its entry names. The document is then retired: it " +
-      "leaves the issue's document list and takes no new text, its address answers the lens, " +
-      "and each prevented_by at a check it holds is removed, since nobody runs its checks. " +
+      "Convert a pre-mortem document of an issue into nodes, once, in one transaction. It first " +
+      "retires the document: it leaves the issue's document list and takes no new text, its " +
+      "address answers the lens the conversion then writes, and each prevented_by at a check " +
+      "it holds is removed, since nobody runs its checks. Then it writes one lens of kind " +
+      "pre-mortem under the issue, whose verdict is the document's verdict followed by its two " +
+      'closing sections, "What a world-class implementation looks like" and "The smallest ' +
+      'first slice that proves the model", word for word, and under it one risk for risk 0 ' +
+      "and each numbered risk, each with its heading, its early warning and its prevention, " +
+      "and a prevented_by pointer to each check its entry names. " +
       "prevented_by holds one entry for each risk the document holds: its number as the " +
       "document numbers it, the dispatch:// addresses of the check blocks that prevent it, of " +
       "any issue of the issue's project ([] for none), and why. An entry for a number the " +

@@ -79,18 +79,25 @@ func (c *credentialReads) credential(request *http.Request) {
 	}
 }
 
+// serve answers request with the credential, logging the answer and keeping its body.
+func (c *credentialReads) serve(request *http.Request) *httptest.ResponseRecorder {
+	c.t.Helper()
+	c.credential(request)
+	response := httptest.NewRecorder()
+	c.handler.ServeHTTP(response, request)
+	read := request.Method + " " + request.URL.String()
+	if wantsDisplayTrees(request) {
+		read += " with " + displayTreesHeader + ": 1"
+	}
+	c.t.Logf("%s: %s: status=%d body=%s", c.name, read, response.Code, response.Body.String())
+	c.bodies = append(c.bodies, response.Body.String())
+	return response
+}
+
 // get reads target with the credential.
 func (c *credentialReads) get(target string) *httptest.ResponseRecorder {
 	c.t.Helper()
-	var response *httptest.ResponseRecorder
-	if c.token != "" {
-		response = agentRequest(c.t, c.handler, http.MethodGet, target, nil, c.token)
-	} else {
-		response = dispatchRequest(c.t, c.handler, http.MethodGet, target, nil, c.login)
-	}
-	c.t.Logf("%s: GET %s: status=%d body=%s", c.name, target, response.Code, response.Body.String())
-	c.bodies = append(c.bodies, response.Body.String())
-	return response
+	return c.serve(httptest.NewRequest(http.MethodGet, target, nil))
 }
 
 // ok reads target with the credential, failing on anything but 200.
@@ -136,36 +143,23 @@ func (c *credentialReads) node(address string) model.GraphNode {
 }
 
 // targets is what GET /api/v1/reference-targets answers for addresses, one member each in their
-// order, failing on anything but 200 or on a member count that is not theirs.
-func (c *credentialReads) targets(addresses ...string) []model.ReferenceTarget {
+// order, failing on anything but 200 or on a member count that is not theirs. With trees it is
+// read as the dashboard reads it, with `Dispatch-Trees: 1`, so that each member of kind block the
+// read answers the credential carries its text_tree.
+func (c *credentialReads) targets(trees bool, addresses ...string) []model.ReferenceTarget {
 	c.t.Helper()
-	query := url.Values{"ref": addresses}
-	answered := decodeBody[model.ReferenceTargets](c.t, c.ok("/api/v1/reference-targets?"+query.Encode())).Targets
-	if len(answered) != len(addresses) {
-		c.t.Fatalf("%s: the reference targets of %v answer %d members, want one each", c.name, addresses, len(answered))
-	}
-	return answered
-}
-
-// treeTargets is targets read as the dashboard reads it, with `Dispatch-Trees: 1`, so that each
-// member of kind block the read answers the credential carries its text_tree. The answer is logged
-// and kept as every answer get reads is.
-func (c *credentialReads) treeTargets(addresses ...string) []model.ReferenceTarget {
-	c.t.Helper()
-	target := "/api/v1/reference-targets?" + url.Values{"ref": addresses}.Encode()
+	target := referenceTargetsOf(addresses...)
 	request := httptest.NewRequest(http.MethodGet, target, nil)
-	c.credential(request)
-	request.Header.Set(displayTreesHeader, "1")
-	response := httptest.NewRecorder()
-	c.handler.ServeHTTP(response, request)
-	c.t.Logf("%s: GET %s with %s: 1: status=%d body=%s", c.name, target, displayTreesHeader, response.Code, response.Body.String())
-	c.bodies = append(c.bodies, response.Body.String())
+	if trees {
+		request.Header.Set(displayTreesHeader, "1")
+	}
+	response := c.serve(request)
 	if response.Code != http.StatusOK {
-		c.t.Fatalf("%s: GET %s with %s: 1 answers %d %s, want 200", c.name, target, displayTreesHeader, response.Code, response.Body.String())
+		c.t.Fatalf("%s: GET %s (trees %t) answers %d %s, want 200", c.name, target, trees, response.Code, response.Body.String())
 	}
 	answered := decodeBody[model.ReferenceTargets](c.t, response).Targets
 	if len(answered) != len(addresses) {
-		c.t.Fatalf("%s: the reference targets of %v with trees answer %d members, want one each", c.name, addresses, len(answered))
+		c.t.Fatalf("%s: the reference targets of %v (trees %t) answer %d members, want one each", c.name, addresses, trees, len(answered))
 	}
 	return answered
 }
@@ -779,7 +773,7 @@ func TestAnAuthorOnlyNodeIsAnsweredToItsAuthorAndToNobodyElse(t *testing.T) {
 	// of them, and her personal token each of the four whose kind compares the author it proved.
 	for _, node := range hidden {
 		for _, reads := range []*credentialReads{aliceCookie, aliceToken, bobCookie, bobToken} {
-			answered := reads.targets(node.address, node.nobodys)
+			answered := reads.targets(false, node.address, node.nobodys)
 			held, nobodys := answered[0], answered[1]
 			switch {
 			case reads == aliceCookie || reads == aliceToken && node.authorCompared:
@@ -804,7 +798,7 @@ func TestAnAuthorOnlyNodeIsAnsweredToItsAuthorAndToNobodyElse(t *testing.T) {
 			continue
 		}
 		for _, reads := range []*credentialReads{aliceCookie, aliceToken, bobCookie, bobToken} {
-			answered := reads.treeTargets(node.address, node.nobodys)
+			answered := reads.targets(true, node.address, node.nobodys)
 			held, nobodys := answered[0], answered[1]
 			if !nobodys.Gone || nobodys.Name != "" || len(nobodys.TextTree) != 0 {
 				t.Errorf("%s: GET /api/v1/reference-targets with trees answers %s, which nobody holds, as %+v, want it gone with no tree",

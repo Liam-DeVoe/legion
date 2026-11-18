@@ -222,12 +222,12 @@ type placedNode struct {
 // loadReasoningNodes resolves the nodes of kind - lenses, the findings of lenses (lens_block) or
 // risks - whose store ids are ids, for who, in one statement over graph_nodes, under the kind the
 // store keys them by (StoredKindOf): each row through its kind's predicate over the row the read
-// holds (VisibleKindRow), with its state and visibility, its project, its text (standingText), the
-// far end of its current part_of tuple with that end's own predicate (VisibleNode), so a node
-// standing on one the reader may not see names no parent, and the issue it stands under. That is
-// the issue its parent stands under or belongs to, so the walk of StandingIssueSQL starts at that
-// far end, the row placed has already read, rather than reading the node's part_of a second time.
-// Its address is the store's (StoreRef).
+// holds (VisibleKindRow, in heldNodesWhere), with its state and visibility, its project, its text
+// (standingText), the far end of its current part_of tuple with that end's own predicate
+// (VisibleNode), so a node standing on one the reader may not see names no parent, and the issue
+// it stands under. That is the issue its parent stands under or belongs to, so the walk of
+// StandingIssueSQL starts at that far end, the row placed has already read, rather than reading
+// the node's part_of a second time. Its address is the store's (StoreRef).
 //
 // A finding is stored as a block, and of the store's blocks only one whose id names its lens,
 // `lens/<uuid>#<block id>`, is one. A finding is no block of any document, so it answers no
@@ -240,10 +240,6 @@ type placedNode struct {
 // the address that loader answers - an artifact's uuid, a block's node id - and a parent no loader
 // answers, a block no version holds now, names none.
 func loadReasoningNodes(ctx context.Context, q Queryer, who model.Actor, kind string, _ bool, ids []string, nodes map[[2]string]resolvedNode) error {
-	where := `held.kind = $1 and held.id = any($2) and held.state <> $3`
-	if kind == graphstore.KindLensBlock {
-		where += ` and held.id like '` + graphstore.KindLens + `/%#%'`
-	}
 	rows, err := q.Query(ctx, `
 		select held.id, held.made_by, held.made_at, state, visibility, held.project_key, `+standingText[kind]("held", "$4")+`,
 		       placed.to_kind, placed.to_id, placed.seen, `+StandingIssueSQL(`placed.to_kind`, `placed.to_id`)+`
@@ -252,7 +248,7 @@ func loadReasoningNodes(ctx context.Context, q Queryer, who model.Actor, kind st
 			`+CurrentFarEndSQL(`newest.to_kind, newest.to_id, `+VisibleNode(`newest.to_kind`, `newest.to_id`, `$4`)+` as seen`,
 		`held.kind`, `held.id`, graphstore.TuplePartOf)+`
 		) placed on true
-		where `+where+` and `+VisibleKindRow(kind, "held", "$4"),
+		where `+heldNodesWhere(kind),
 		StoredKindOf(kind), ids, graphstore.StateGone, VisibilityArg(who))
 	if err != nil {
 		return fmt.Errorf("load %s nodes: %w", kind, err)
@@ -293,6 +289,21 @@ func loadReasoningNodes(ctx context.Context, q Queryer, who model.Actor, kind st
 		return fmt.Errorf("load %s nodes: %w", kind, err)
 	}
 	return placeReasoningNodes(ctx, q, who, placed, nodes)
+}
+
+// heldNodesWhere is the condition a read of the nodes of kind, whose store ids are a batch, holds
+// each row of graph_nodes to, the row aliased held: of the kind the store keys kind by ($1,
+// StoredKindOf), at one of the ids ($2), not in the state $3 (graphstore.StateGone), and seen by
+// the reader $4 (VisibilityArg) through its kind's predicate over the row (VisibleKindRow). Of
+// the store's blocks only one whose id names its lens, `lens/<uuid>#<block id>`, is a finding.
+// loadReasoningNodes binds it, and so does BlockTexts for a finding's whole text, so the text of a
+// finding is read off the same rows its name is.
+func heldNodesWhere(kind string) string {
+	where := `held.kind = $1 and held.id = any($2) and held.state <> $3`
+	if kind == graphstore.KindLensBlock {
+		where += ` and held.id like '` + graphstore.KindLens + `/%#%'`
+	}
+	return where + ` and ` + VisibleKindRow(kind, "held", "$4")
 }
 
 // placeReasoningNodes gives each node its parent, as loadReasoningNodes says, and adds it to nodes.

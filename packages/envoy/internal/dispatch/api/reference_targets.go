@@ -240,17 +240,14 @@ func (s *server) blockTrees(ctx context.Context, who model.Actor, answers []mode
 	if err != nil {
 		return err
 	}
-	contents := make(map[refs.Target]string, len(texts))
 	for target, whole := range texts {
-		if target.Kind == graphstore.KindLensBlock {
-			contents[target] = whole
-			continue
+		if target.Kind != graphstore.KindLensBlock {
+			texts[target] = blockTextContent(whole, target.Kind == "block")
 		}
-		contents[target] = blockTextContent(whole, target.Kind == "block")
 	}
 	for index, target := range named {
 		if answers[index].Kind == "block" && !answers[index].Gone {
-			trees.text(&answers[index].TextTree, contents[target])
+			trees.text(&answers[index].TextTree, texts[target])
 		}
 	}
 	return nil
