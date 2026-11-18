@@ -20,9 +20,11 @@ export function askResolutionReason(resolution: AskResolution): string | undefin
 }
 
 /**
- * The word for each way an ask is closed: the badge the card draws, the verb of its resolution
- * line, and - through `NODE_STATE_WORDS.ask` - the word the issue page's tree draws on the ask's
- * own row. One table, so the three surfaces cannot drift into three spellings of one state.
+ * The word for each way an ask is closed, as `askResolutionBadge` below spells it: the badge the
+ * card draws and the verb of its resolution line. Both lists of the issue page's words read this
+ * table (`NODE_STATE_WORDS.ask`, in `features/issue/page-words.ts` and in the new issue page's
+ * `features/issue-page/page-words.ts`), so an ask's row in the page's tree says of a closed ask
+ * what its card says: one table, so the surfaces cannot drift into spellings of one state.
  */
 export const ASK_RESOLUTION_WORDS = {
   declined: "Declined",

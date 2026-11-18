@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
+	"github.com/sjawhar/envoy/internal/fold"
 )
 
 const (
@@ -140,9 +141,10 @@ const issueUploadRoute = http.MethodPost + " /api/v1/issues/{key}/artifacts"
 // (drainBeforeAnswer), so a client that sends it whole before it reads the answer gets the
 // answer. register mounts it ahead of the keyed layer, so the refusal claims no key. The handler's
 // locked check still decides an issue that closes meanwhile; this one only spares the spool. A
-// caller that resolves to nobody is left to the route's own 401, and a malformed Idempotency-Key
-// to the keyed layer's 400, which spools no body either and refuses the request's form before
-// anything is looked up.
+// caller that resolves to nobody is left to the 401 written further in (the keyed layer's for a
+// keyed upload, the handler's for an unkeyed one), and a malformed Idempotency-Key to the keyed
+// layer's 400, which spools no body either and refuses the request's form before anything is
+// looked up.
 //
 // The refusal stands in for the handler, so it answers only a request whose handler would run. A
 // repeat under a key the keyed layer answers itself (requestKeyAnswersItself) - its first upload's
@@ -658,9 +660,11 @@ func (s *server) storeArtifact(
 	var diff *string
 	if !created && kind == "doc" {
 		// This route writes its version itself rather than through the document service, so its
-		// open approval request follows that version just as every other version write does.
+		// open approval request follows that version just as every other version write does. An
+		// upload is no settlement's version, so the request moves to its agent whatever text it
+		// stores (docs.MoveApprovalAsk).
 		movedEvents, err = docs.MoveApprovalAsk(
-			r.Context(), tx, s.deps.Events, artifact.ID, version, actor, s.deps.ServerURL,
+			r.Context(), tx, s.deps.Events, artifact.ID, version, documentMarkdown, actor, false, s.deps.ServerURL,
 		)
 		if err != nil {
 			s.writeHandlerError(w, err)
@@ -1695,11 +1699,11 @@ func documentsNearest(reference string, documents []model.Artifact) []model.Arti
 // letters are folded because Go and JavaScript lowercase other letters differently, and
 // envoy-client's documentCloseness must rank alike.
 func documentCloseness(reference, slug, name string) (int, bool) {
-	wanted := []rune(asciiLower(reference))
+	wanted := []rune(fold.ASCII(reference))
 	limit := max(2, len(wanted)/3)
 	distance := -1
 	for _, candidate := range []string{slug, name} {
-		label := []rune(asciiLower(candidate))
+		label := []rune(fold.ASCII(candidate))
 		edits := boundedEditDistance(wanted, label, limit)
 		if (len(wanted) >= 4 && strings.Contains(string(label), string(wanted))) ||
 			(len(label) >= 4 && strings.Contains(string(wanted), string(label))) {
@@ -1715,16 +1719,6 @@ func documentCloseness(reference, slug, name string) (int, bool) {
 		return limit + 1, false
 	}
 	return distance, true
-}
-
-// asciiLower lowercases the ASCII letters of text and leaves every other character as it is.
-func asciiLower(text string) string {
-	return strings.Map(func(r rune) rune {
-		if 'A' <= r && r <= 'Z' {
-			return r + ('a' - 'A')
-		}
-		return r
-	}, text)
 }
 
 // boundedEditDistance is the Levenshtein distance between a and b in characters, or limit+1 once

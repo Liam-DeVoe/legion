@@ -742,11 +742,11 @@ registerText(
 // registered against it, and `text-on-background.test.ts` reads a composite's token through it.
 // ---------------------------------------------------------------------------------------------
 
-export const PAGE_COLORS: Readonly<Record<string, ColorPair>> = {
-  "icon-rail": pair(P.ICON_RAIL, P.ICON_RAIL),
-  "icon-rail-accent": pair(P.ICON_RAIL_ACCENT, P.ICON_RAIL_ACCENT),
-  "icon-rail-active": pair(P.ICON_RAIL_ACTIVE, P.ICON_RAIL_ACTIVE),
-  "icon-rail-text": pair(P.ICON_RAIL_TEXT, P.ICON_RAIL_TEXT),
+export const PAGE_COLORS = {
+  "icon-rail": railFixed(P.ICON_RAIL),
+  "icon-rail-accent": railFixed(P.ICON_RAIL_ACCENT),
+  "icon-rail-active": railFixed(P.ICON_RAIL_ACTIVE),
+  "icon-rail-text": railFixed(P.ICON_RAIL_TEXT),
   "page-bullet": pair(P.PAGE_BULLET, P.SLATE_500),
   "page-agent": pair(P.PAGE_AGENT, P.SLATE_400),
   "page-check": pair(P.PAGE_CHECK, P.INDIGO_400),
@@ -784,14 +784,11 @@ export const PAGE_COLORS: Readonly<Record<string, ColorPair>> = {
   "page-waiting-text": pair(P.PAGE_WAITING_TEXT, P.ORANGE_300),
   "page-waiting-tint": pair(P.PAGE_WAITING_TINT, P.ORANGE_950),
   "page-words": pair(P.PAGE_WORDS, P.SLATE_200),
-  white: pair(P.WHITE, P.WHITE),
-};
+} as const satisfies Readonly<Record<string, ColorPair>>;
 
 /** The colour pair a page token renders, by its name in `PAGE_COLORS`. */
-function pageColor(name: string): ColorPair {
-  const found = PAGE_COLORS[name];
-  if (found === undefined) throw new Error(`classes.ts names no page colour "${name}"`);
-  return found;
+function pageColor(name: keyof typeof PAGE_COLORS): ColorPair {
+  return PAGE_COLORS[name];
 }
 
 /** The page itself: its white paper, its ink and the two greys under it, and its rules. */
@@ -819,11 +816,15 @@ export const pageIssueBg = "bg-page-issue";
 export const pageWaitingBg = "bg-page-waiting";
 
 /** The header's small bordered control (the prototype's `.hbtn`): Details, the overflow menu and
- *  the phone's `☰`, and the filter row's node menu, words filter, version control and Keys, 22 px
- *  tall from the phone's width up and 24 px below it, the least a touch target may be (WCAG
- *  2.5.8), because the header at 390 px is held to eight lines and 250 px, nine and 280 px while
- *  an approval request waits on the reader, which leaves no room for more (dispatch://INFRA-1196
- *  R13, ruling 8 of its build-rulings-md). */
+ *  the phone's `☰`, and the filter row's node menu, words filter, version control and Keys. From
+ *  `md` up its 20 px line, `md:py-px` and its border make it 24 px tall, and below `md`,
+ *  `min-h-6` lifts it to 24 px; but below 1280 px the 44 px floor that `styles.css` gives every
+ *  control outranks those classes, so the control is 24 px tall from 1280 px up and 44 px below,
+ *  until the header's own rule lowers that floor. 24 px is the least a touch target may be (WCAG
+ *  2.5.8), and ruling 3 gives the header's controls that size at 390 px because the header there
+ *  is held to eight lines and 250 px, nine and 280 px while an approval request waits on the
+ *  reader, which leaves no room for more (dispatch://INFRA-1196 R13, rulings 3 and 8 of its
+ *  build-rulings-md). */
 export const pageHeaderControl = `inline-flex min-h-6 min-w-6 shrink-0 items-center justify-center gap-1.5 rounded-[7px] border px-2.5 text-xs leading-5 font-medium md:min-h-0 md:min-w-0 md:py-px border-page-line bg-page-paper text-page-muted ${focusVisibleRing}`;
 /** The filter row's box for words, opened from its control (`IssuePresets.tsx`): the page's
  *  hairline rule, its paper and its ink, the rule in the ink while it holds the caret. */
@@ -867,7 +868,7 @@ export const pageDecisionText = "text-page-decision";
  *  in the margin; the faint guide each level hangs from (`.tn > .kids`); and the focused row,
  *  on the pane's grey inside a hairline, with the muted rule at its leading edge
  *  (`.card.focused`). The prototype's `#F5F5F4` is the pane's `#FAFAF9` here, because its
- *  quiet grey margin reads 4.42:1 on the darker one and 4.59:1 on this, AA's 4.5:1 for 12 px. */
+ *  quiet grey margin reads 4.40:1 on the darker one and 4.59:1 on this, AA's 4.5:1 for 12 px. */
 export const pageWordsText = "text-page-words";
 export const pageGuideLineBg = "bg-page-line";
 export const pageFocusedRow =
@@ -908,13 +909,16 @@ export const pageKindTag = {
   statement: "text-page-statement",
   step: "text-page-step",
 } as const;
-/** A node's state in the margin's second line (`.ms`): what waits on the reader in the waiting
- *  orange, a decision waiting for review in the decisions' violet, a check that passed in the
- *  passed green and one that failed in the failed red, every other state quiet. Each is a word
- *  and a shape as well (R6, R17). */
+/** A node's state and a check's result, each in its own colour. In the margin's second line
+ *  (`.ms`), what waits on the reader is in the waiting orange, a decision waiting for review in
+ *  the decisions' violet, and every other state quiet. In a check's result (`.res`), one that
+ *  passed is in the passed green, one that failed in the failed red, and one not run or out of
+ *  date in the not-run grey (`.res.not_run, .res.stale`). Each is a word and a shape as well
+ *  (R6, R17). */
 export const pageStateText = {
   decision: "text-page-decision",
   failed: "text-page-failed",
+  notRun: "text-page-not-run",
   passed: "text-page-passed",
   quiet: "text-page-quiet",
   waiting: "text-page-waiting-text",
@@ -927,15 +931,16 @@ export const pageStateText = {
  * question (`.cbox.answering`, `.tgt.ans`). Its foot fades the outline into the paper above it.
  * The line is one row of text that grows to 150 px; the kinds it writes are chips in their
  * kind's colour, filled while pressed (`.ck`), and on a phone they are drawn only while the
- * caret is in the box. Send is the ink, the waiting colour's text shade while it sends an
- * answer, and the hairline grey while it refuses (`#csend`). Every word in it says what it is,
- * so the colours repeat what is written (R6).
+ * caret is in the box. Every word in it says what it is, so the colours repeat what is written
+ * (R6). A phone here is a window 760 px wide or narrower, the prototype's breakpoint; Tailwind
+ * builds `max-[761px]:` as a width under 761 px, so it holds 760 px (decision 72 of
+ * dispatch://INFRA-1196/artifact/part-decisions-md).
  */
 export const pageComposer = {
   answering:
     "border-page-waiting shadow-[0_0_0_1px_var(--color-page-waiting),0_2px_12px_rgba(28,25,23,0.07)] focus-within:border-page-waiting",
   box: "group flex min-w-0 flex-col gap-[3px] rounded-[10px] border border-page-hair bg-page-paper py-[5px] pr-1.5 pl-3 shadow-[0_2px_12px_rgba(28,25,23,0.07)] focus-within:border-page-ink",
-  chip: "inline-flex items-center gap-1 rounded-full border px-2 text-xs leading-5 font-semibold max-[760px]:hidden max-[760px]:group-focus-within:inline-flex",
+  chip: "inline-flex items-center gap-1 rounded-full border px-2 text-xs leading-5 font-semibold max-[761px]:hidden max-[761px]:group-focus-within:inline-flex",
   chipOff: {
     ask: "border-page-question bg-page-paper text-page-question",
     comment: "border-page-ink bg-page-paper text-page-ink",
@@ -951,9 +956,9 @@ export const pageComposer = {
   // On a phone the field takes the line's whole width once the box holds the caret, and the
   // kinds and Send stand under it (the prototype's `.cbox:focus-within .crow1`).
   field:
-    "block max-h-[150px] min-h-[26px] min-w-0 flex-1 resize-none border-0 bg-transparent py-px text-[15px] leading-6 text-page-ink outline-none placeholder:truncate placeholder:text-page-bullet max-[760px]:group-focus-within:basis-full",
-  foot: "bg-[linear-gradient(transparent,var(--color-page-paper)_8px)] pt-2 pb-2 max-[760px]:pt-2.5",
-  line: "flex min-w-0 items-end gap-2 max-[760px]:group-focus-within:flex-wrap",
+    "block max-h-[150px] min-h-[26px] min-w-0 flex-1 resize-none border-0 bg-transparent py-px text-[15px] leading-6 text-page-ink outline-none placeholder:truncate placeholder:text-page-quiet max-[761px]:group-focus-within:basis-full",
+  foot: "bg-[linear-gradient(transparent,var(--color-page-paper)_8px)] pt-2 pb-2 max-[761px]:pt-2.5",
+  line: "flex min-w-0 items-end gap-2 max-[761px]:group-focus-within:flex-wrap",
   option:
     "inline-flex items-center gap-1 rounded-full border border-page-waiting px-2 text-xs leading-5 font-semibold text-page-waiting-text aria-pressed:bg-page-waiting-tint aria-pressed:text-page-ink",
   target:
@@ -979,8 +984,16 @@ export const pageRowAct = "hover:text-page-ink hover:underline";
 export const pageRowOption =
   "-ml-1.5 flex w-[calc(100%+6px)] items-baseline gap-2 rounded-[5px] px-1.5 text-left hover:bg-page-waiting-tint aria-pressed:bg-page-waiting-tint aria-pressed:font-semibold aria-pressed:text-page-ink";
 
-for (const ground of ["page-paper", "page-pane"]) {
-  for (const ink of ["page-ink", "page-words", "page-muted", "page-quiet"]) {
+/** The one shape both menus of the filter row wear, the prototype's `#menu`: the presets' own at
+ *  1024 px and below, and the node menu's at every width. The caller says which edge it hangs
+ *  from (`left-0` or `right-0`). */
+export const pageMenu = `absolute top-full z-30 mt-1 flex min-w-[260px] flex-col rounded-[10px] border p-1.5 shadow-[0_12px_30px_rgba(28,25,23,0.18)] ${pageHairBorder} ${pagePaperBg}`;
+/** One item of those menus, the prototype's `.mi`: 14 px in the ink, the mark grey under the
+ *  pointer. */
+export const pageMenuItem = `min-h-11 rounded-[7px] px-2 py-[7px] text-left text-sm font-medium md:min-h-0 ${pageInkText} ${pageRowHoverBg}`;
+
+for (const ground of ["page-paper", "page-pane"] as const) {
+  for (const ink of ["page-ink", "page-words", "page-muted", "page-quiet"] as const) {
     registerText(`${ink} text on ${ground}`, pageColor(ink), pageColor(ground));
   }
 }
@@ -1003,7 +1016,7 @@ for (const kind of [
   "page-question",
   "page-statement",
   "page-step",
-]) {
+] as const) {
   registerText(`${kind} text on page-paper`, pageColor(kind), pageColor("page-paper"));
 }
 for (const [kind, tint] of [
@@ -1033,6 +1046,22 @@ registerText(
   pageColor("page-ink"),
   pageColor("page-waiting-tint")
 );
+// The waiting colour's words on the paper: a state that waits on the reader in the margin
+// (`pageStateText.waiting`) and a waiting question's options in the composer
+// (`pageComposer.option`). The quiet grey on the waiting tint: the control that clears the
+// composer's target while it answers a question (`pageComposer.targetClear` inside
+// `targetAnswering`), and under the pointer an option of an open question that does not wait on
+// the reader (`pageRowOption`'s hover).
+registerText(
+  "page-waiting-text text on page-paper",
+  pageColor("page-waiting-text"),
+  pageColor("page-paper")
+);
+registerText(
+  "page-quiet text on page-waiting-tint",
+  pageColor("page-quiet"),
+  pageColor("page-waiting-tint")
+);
 // The words a row draws in its kind's colour - its tag, its state, a waiting question's
 // options - on the focused row's ground, and the marks of a Contents entry on the pane and on
 // its marked row: text, so 4.5:1 wherever it is drawn, the focused row included (WCAG 1.4.3).
@@ -1048,7 +1077,7 @@ for (const kind of [
   "page-statement",
   "page-step",
   "page-waiting-text",
-]) {
+] as const) {
   registerText(`${kind} text on page-pane`, pageColor(kind), pageColor("page-pane"));
 }
 registerText(
@@ -1056,7 +1085,7 @@ registerText(
   pageColor("page-child-text"),
   pageColor("page-paper")
 );
-for (const kind of ["page-statement", "page-decision", "page-child-text", "page-failed"]) {
+for (const kind of ["page-statement", "page-decision", "page-child-text", "page-failed"] as const) {
   registerText(`${kind} text on page-mark`, pageColor(kind), pageColor("page-mark"));
 }
 // A bullet and a waiting dot are shapes beside the words that name them (WCAG 1.4.11).
@@ -1069,8 +1098,8 @@ for (const kind of ["page-statement", "page-decision", "page-child-text", "page-
 // (R1). The same holds for a context row's `page-hair` bullet, whose row is marked by its quiet
 // words. A kind whose bullet were the only thing telling it apart would have to be registered
 // here and pass.
-for (const ground of ["page-paper", "page-pane"]) {
-  for (const bullet of ["page-question", "page-person", "page-issue", "page-waiting"]) {
+for (const ground of ["page-paper", "page-pane"] as const) {
+  for (const bullet of ["page-question", "page-person", "page-issue", "page-waiting"] as const) {
     registerText(`${bullet} bullet on ${ground}`, pageColor(bullet), pageColor(ground), 3);
   }
 }
@@ -1085,7 +1114,7 @@ export const iconRailActive =
   "bg-icon-rail-active text-white shadow-[inset_3px_0_0_var(--color-icon-rail-accent)]";
 export const iconRailAccentBg = "bg-icon-rail-accent";
 registerText("icon rail text", pageColor("icon-rail-text"), pageColor("icon-rail"));
-registerText("icon rail current entry", pageColor("white"), pageColor("icon-rail-active"));
+registerText("icon rail current entry", railFixed(P.WHITE), pageColor("icon-rail-active"));
 registerText("icon rail text on hover", pageColor("icon-rail-text"), pageColor("icon-rail-active"));
 registerText("icon rail accent", pageColor("icon-rail-accent"), pageColor("icon-rail"), 3);
 

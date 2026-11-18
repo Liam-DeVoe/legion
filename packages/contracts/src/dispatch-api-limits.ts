@@ -179,8 +179,9 @@ export const IDEMPOTENCY_ANSWER_NOT_KEPT = "ANSWER_NOT_KEPT";
  * anything runs, its key untouched, when the request's caller is another person or no person at
  * all, so a write one person pressed never runs under another's session - another tab signs in
  * in place, and this tab's retry goes out on the new cookie before it learns of it. A caller that
- * resolves to nobody (a lapsed cookie) is answered by the route's own `401`. A write without the
- * header (the `dispatch` command, an agent) is not checked.
+ * resolves to nobody (a lapsed cookie) is answered by the `401` written further in: the keyed
+ * layer's for a keyed write, the handler's for any other. A write without the header (the
+ * `dispatch` command, an agent) is not checked.
  */
 export const DISPATCH_LOGIN_HEADER = "Dispatch-Login";
 
@@ -196,6 +197,17 @@ export const DISPATCH_LOGIN_CHANGED = "LOGIN_CHANGED";
  * the refusal is whoever must run it.
  */
 export const DISPATCH_SIGN_IN_REQUIRED = "SIGN_IN_REQUIRED";
+
+/**
+ * The code of the `403` for a request by an access token the secrets broker issued that holds
+ * only the OAuth scope `read`, to a route the read list does not name. Such a token names a
+ * service and a session, no person and no project, and Dispatch serves it on the routes its read
+ * list (`readScopeRoutes`) names and refuses it on every other one, before the route's handler
+ * runs and before its idempotency key is read, so the refused request claims no key and writes
+ * nothing but the row that records its DPoP proof as spent. No sign-in and no other scope makes
+ * the request possible for that token.
+ */
+export const DISPATCH_READ_ONLY_TOKEN = "READ_ONLY_TOKEN";
 
 /** The codes of a write Dispatch made and has no answer to give for: `409 KEY_COMMITTED`, or a
  *  replayed 2xx reading `ANSWER_NOT_KEPT`. A client treats either as landed. */

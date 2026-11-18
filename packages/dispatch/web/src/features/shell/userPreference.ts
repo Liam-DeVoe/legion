@@ -18,6 +18,7 @@ export type UserPreference =
   | "issue.conversation-state"
   /** Which of the issue panel's property sections this reader has collapsed. */
   | "issue.margin-sections"
+  | "issue.page"
   | "priorities.margin"
   | "project.board-edges"
   | "project.board-lanes"

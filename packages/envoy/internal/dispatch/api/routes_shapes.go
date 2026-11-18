@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/cireconcile"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -399,6 +400,20 @@ type relatedChecksQuery struct {
 	To string `query:"to"`
 }
 
+// nearCopyChecksQuery is GET /api/v1/near-copy-checks's query.
+type nearCopyChecksQuery struct {
+	// Project is the project whose rows are listed; the handler refuses a request without one.
+	Project string `query:"project"`
+	// From is the window's start, RFC3339.
+	From string `query:"from"`
+	// To is the window's end, RFC3339, exclusive.
+	To string `query:"to"`
+	// After is the id of the row the page starts after: the last page's next_after.
+	After string `query:"after"`
+	// Limit is the page size, 1 to 1000, default 1000.
+	Limit int `query:"limit"`
+}
+
 // sessionAnswersQuery is GET /api/v1/agents/{session_id}/answers's query.
 type sessionAnswersQuery struct {
 	// Since is the window's start, one RFC3339 time no older than the route's bound and not
@@ -586,6 +601,19 @@ var routeShapes = map[string]routeShape{
 	"POST /api/v1/settings/new-issue/_test": {
 		Status: http.StatusOK, Response: newIssueSettings{}, Request: newIssueSettingsInput{},
 	},
+	"GET /api/v1/projects/{key}/legion/daemon": {
+		Status: http.StatusOK, Response: legion.Settings{},
+		// A project that names no daemon answers 200 and the JSON literal `null`
+		// (settings_legion.go).
+		Nullable: true,
+	},
+	"PUT /api/v1/projects/{key}/legion/daemon": {
+		Status: http.StatusOK, Response: legion.Settings{}, Request: putLegionSettingInput{},
+	},
+	"DELETE /api/v1/projects/{key}/legion/daemon": {Status: http.StatusNoContent},
+	"GET /api/v1/projects/{key}/legion/board": {
+		Status: http.StatusOK, Response: legionBoardResponse{},
+	},
 	"GET /api/v1/delivery/timeline": {
 		Status: http.StatusOK, Response: deliveryTimelineWithMeasures{}, Params: deliveryWindowQuery{},
 	},
@@ -710,9 +738,13 @@ var routeShapes = map[string]routeShape{
 	"PUT /api/v1/issues/{key}/design-gates": {
 		Status: http.StatusOK, Response: issueDesignGates{}, Request: issueDesignGatesInput{},
 	},
-	"GET /api/v1/handoffs/{id}":        {Status: http.StatusOK, Response: model.Handoff{}},
-	"GET /api/v1/messages/{id}":        {Status: http.StatusOK, Response: messageRead{}},
-	"GET /api/v1/messages/{id}/blocks": {Status: http.StatusOK, Response: model.ItemBlocks{}},
+	"PUT /api/v1/issues/{key}/role-holders": {
+		Status: http.StatusOK, Response: issueRoleHolders{}, Request: issueRoleHoldersInput{},
+	},
+	"GET /api/v1/issues/{key}/role-holders": {Status: http.StatusOK, Response: issueRoleHolders{}},
+	"GET /api/v1/handoffs/{id}":             {Status: http.StatusOK, Response: model.Handoff{}},
+	"GET /api/v1/messages/{id}":             {Status: http.StatusOK, Response: messageRead{}},
+	"GET /api/v1/messages/{id}/blocks":      {Status: http.StatusOK, Response: model.ItemBlocks{}},
 	"POST /api/v1/messages/{id}/deliveries": {
 		Status: http.StatusCreated, Response: model.MessageDelivery{}, Request: createDeliveryInput{},
 	},
@@ -746,6 +778,10 @@ var routeShapes = map[string]routeShape{
 	"GET /api/v1/related-checks": {
 		Status: http.StatusOK, Response: model.RelatedChecksReport{}, Params: relatedChecksQuery{},
 	},
+	"GET /api/v1/near-copy-checks": {
+		Status: http.StatusOK, Response: model.NearCopyChecksPage{}, Params: nearCopyChecksQuery{},
+	},
+	"GET /api/v1/near-copy-checks/{id}": {Status: http.StatusOK, Response: model.NearCopyCheck{}},
 	"POST /api/v1/going/requests": {
 		Status: http.StatusCreated, Response: goingRequest{}, Request: createGoingRequestInput{},
 	},

@@ -2270,18 +2270,20 @@ test("IssuePage updates whose turn when a human clarification is latest", async 
     // The marker's words are the page's and the count beside them is the issue's, each marked
     // as what it is (dispatch://INFRA-1196 R21), so the marker is read whole.
     expect((await screen.findByTestId("issue-whose-turn")).textContent).toBe("Waiting on you (1)");
-    queryClient.setQueryData<IssueDetails>(["issue", "CORE-1"], {
-      ...waitingIssue,
-      open_asks: [
-        {
-          ...openIssueAsk,
-          last_reply: {
-            author: { id: "alice", kind: "user" },
-            created_at: "2026-09-11T01:00:00Z",
+    act(() => {
+      queryClient.setQueryData<IssueDetails>(["issue", "CORE-1"], {
+        ...waitingIssue,
+        open_asks: [
+          {
+            ...openIssueAsk,
+            last_reply: {
+              author: { id: "alice", kind: "user" },
+              created_at: "2026-09-11T01:00:00Z",
+            },
+            waiting_on: "agent",
           },
-          waiting_on: "agent",
-        },
-      ],
+        ],
+      });
     });
     await waitFor(() =>
       expect(screen.getByTestId("issue-whose-turn").textContent).toBe("Waiting on agents (1)")

@@ -168,6 +168,10 @@ export const realStackReasons: Record<string, string> = {
   "inbox-view.e2e.ts": "a priority write must arrive live",
   "inbox.e2e.ts":
     "writes a reply and re-reads the thread; live event feed; lands in the document's live room",
+  "issue-page-look.e2e.ts":
+    "its rows read the Dispatch server's content type for the font file, its /THIRD_PARTY_NOTICES.txt, and the issue.page preference under a real sign-in",
+  "issue-page-switch.e2e.ts":
+    "the setting is kept under the login the server's sign-in names, and one row signs a second login in on the same context to read that it holds none; one row reads the server's 404 for a key it does not hold",
   "issues-table.e2e.ts":
     "every row writes and then reads its own write: parents, ranks, epics and merges patched through the API and read back through `getIssue`, plus a refused write retried from the store and an interrupted action finished after a reload",
   "issue-layout.e2e.ts":
@@ -195,6 +199,8 @@ export const realStackReasons: Record<string, string> = {
     "the close commits a label write and the row waits for the server's answer to reach the header before it reads focus again",
   "labels.e2e.ts":
     "label writes and a server-filtered list; writes labels, then reloads and measures",
+  "legion.e2e.ts":
+    "the Settings page's Legion daemon field: naming a project's daemon, refusing a state URL that is not a daemon's in the server's own words, and removing it",
   "live-socket.e2e.ts": "the `/ws/live` socket's own behaviour",
   "live.e2e.ts": "live delivery of writes made after the page loaded",
   "machine-login.e2e.ts": "device grants decided on the real broker",

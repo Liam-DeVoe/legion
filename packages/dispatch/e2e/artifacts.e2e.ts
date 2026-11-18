@@ -481,7 +481,8 @@ test("the node menu lists every file of the issue, and an item's name is not tru
     .filter({ has: page.getByRole("link", { name: /^Download version/ }) });
   await expect(files).toHaveCount(2);
 
-  // Every item shows its whole name: it wraps where it must rather than truncating.
+  // Every item shows its whole name: it wraps where it must rather than truncating. The count of
+  // two above waited for both items, so one read lists them.
   for (const file of await files.all()) {
     const name = file.getByRole("button").first();
     expect(await name.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);

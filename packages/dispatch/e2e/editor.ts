@@ -14,6 +14,7 @@ import type { Ask } from "../web/src/api/types";
 
 import { readField } from "../web/src/features/doc/sync-frame";
 import { createIssue, createProject, getArtifactBlocks, getArtifactText, getIssue } from "./api";
+import { settledState } from "./settled";
 import { asUser } from "./users";
 
 export function documentEditor(page: Page): Locator {
@@ -260,30 +261,43 @@ export function openedThreadCard(page: Page, project: string, rootId: string): L
 }
 
 // On the phone layout the margin is a bottom sheet over the document. Acting on a selection
-// opens it; close it again before selecting another range, as a person would. On the issue page
-// the margin is the Details drawer instead, at every width, which its header control opens and
-// its Close closes (dispatch://INFRA-1196 R14): it is opened wherever a caller reads the margin,
-// and closed again only on a phone, where it is the whole-screen sheet over the document.
+// opens it; close it again before selecting another range, as a person would. The sheet says
+// whether it is open, and is read once the page has drawn it rather than at the instant it
+// attaches. On the issue page the margin is the Details drawer instead, at every width, which
+// its header control opens and its Close closes (dispatch://INFRA-1196 R14): it is opened
+// wherever a caller reads the margin, and closed again only on a phone, where it is the
+// whole-screen sheet over the document. Which page this is, and whether Details is open, are
+// read the same way: once the page has drawn one of the states, never at one instant.
 export async function setSheet(page: Page, project: string, open: boolean): Promise<void> {
-  const issuePage = (await page.locator("[data-issue-page]").count()) > 0;
+  const shownPage = await settledState("the page holding the margin", [
+    ["issue", page.locator("[data-issue-page]")],
+    ["document", documentEditor(page)],
+  ]);
+  const issuePage = shownPage === "issue";
   if (project !== "iphone" && !(issuePage && open)) {
     return;
   }
   if (issuePage) {
     const drawer = page.getByTestId("desktop-margin-shell");
-    if ((await drawer.isVisible()) !== open) {
-      await (open
-        ? page
-            .locator("header[data-issue-header]")
-            .getByRole("button", { exact: true, name: "Details" })
-        : drawer.getByRole("button", { exact: true, name: "Close" })
-      ).click();
+    const details = page
+      .locator("header[data-issue-header]")
+      .getByRole("button", { exact: true, name: "Details" });
+    const drawn = await settledState("Details", [
+      ["open", drawer],
+      ["shut", details],
+    ]);
+    if (drawn !== (open ? "open" : "shut")) {
+      await (open ? details : drawer.getByRole("button", { exact: true, name: "Close" })).click();
     }
     await (open ? expect(drawer).toBeVisible() : expect(drawer).toBeHidden());
     return;
   }
   const sheet = page.getByTestId("margin-sheet");
-  if ((await sheet.getAttribute("data-expanded")) !== String(open)) {
+  const shown = await settledState("the margin sheet", [
+    ["open", sheet.and(page.locator('[data-expanded="true"]'))],
+    ["shut", sheet.and(page.locator('[data-expanded="false"]'))],
+  ]);
+  if (shown !== (open ? "open" : "shut")) {
     if (open) {
       await page.getByRole("button", { name: /Open review panel/ }).click();
     } else {
@@ -356,19 +370,6 @@ export function needsYouCards(scope: Locator | Page): Locator {
   return scope.locator('[data-margin-section="needs-you"]');
 }
 
-export async function replyInThread(page: Page, rootId: string, body: string): Promise<void> {
-  const card = threadCard(page, rootId);
-  if ((await card.getAttribute("aria-expanded")) !== "true") {
-    await card.getByRole("button").click();
-  }
-  const phoneThread = page.getByRole("dialog", { name: "Thread" });
-  const thread = (await phoneThread.count()) === 0 ? card : phoneThread;
-  const composer = thread.getByRole("form", { name: "Comment composer" });
-  const reply = composer.getByRole("textbox", { name: "Reply" });
-  await reply.fill(body);
-  await reply.press("Control+Enter");
-  await expect(composer.getByRole("textbox", { name: "Reply" })).toHaveValue("");
-}
 /** Document sockets the page has opened since the call, open or closed: every document's, or with
  *  `documentId` that document's alone, for a page that holds another document beside it. */
 export function countDocumentSockets(page: Page, documentId?: string): () => number {

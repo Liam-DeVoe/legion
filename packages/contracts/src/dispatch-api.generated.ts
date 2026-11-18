@@ -287,7 +287,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Open an approval ask for a document's latest version, with an optional summary, and with include_verification for the issue's Verification document beside it (409 NO_VERIFICATION_DOCUMENT when it has none), each at its own current version; the answer reviews every document the ask names. include_verification is for the issue's spec alone: on any other document, the Verification document itself included, it is 409 NOT_SPEC_DOCUMENT. A document a human approved before carries that approval on the ask (approval.approved: version, at, by). An open ask follows later versions of any document it names and waits on its agent until this route hands the same row back to a human. Every answer carries coverage, one line per requirement of the issue's spec with no check, or the single line `the spec marks no requirements` for a spec that marks none (GET /api/v1/issues/{key}/coverage), and none at all for a spec every requirement of which has a check; it is empty for a document that is not a spec, never names a missing plan task, and a gap refuses nothing. A coverage read that fails answers coverage_unread true and records the request all the same. */
+    /** @description Open an approval ask for a document's latest version, with an optional summary, and with include_verification for the issue's Verification document beside it (409 NO_VERIFICATION_DOCUMENT when it has none), each at its own current version; the answer reviews every document the ask names. include_verification is for the issue's spec alone: on any other document, the Verification document itself included, it is 409 NOT_SPEC_DOCUMENT. A document a human approved before carries that approval on the ask (approval.approved: version, at, by). An open ask follows later versions of any document it names and waits on its agent until this route hands the same row back to a human, save that an ask waiting on the human keeps its turn, quietly, over a version a settlement writes that holds byte for byte the text the ask names; a version a route writes (a named version, an upload, an edit) moves it to its agent whatever text it holds. Every answer carries coverage, one line per requirement of the issue's spec with no check, or the single line `the spec marks no requirements` for a spec that marks none (GET /api/v1/issues/{key}/coverage), and none at all for a spec every requirement of which has a check; it is empty for a document that is not a spec, never names a missing plan task, and a gap refuses nothing. A coverage read that fails answers coverage_unread true and records the request all the same. */
     post: operations["postApiV1ArtifactsByIdApprovalRequests"];
     delete?: never;
     options?: never;
@@ -560,7 +560,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description One version of a document, a file or an image. A named or settled document version answers as JSON; a file or an image version answers its bytes under its own content type, with Content-Disposition: attachment naming the artifact's name, -v<number> before the extension for an older version (report-v2.pdf), and Cache-Control: private, max-age=31536000, immutable. With ?download=true every kind answers Content-Disposition: attachment with that name and Cache-Control: private, no-cache, and a document answers its Markdown as text/markdown, its name ending in .md when the stored name has no Markdown extension. */
+    /** @description One version of a document, a file or an image. A named or settled document version answers as JSON; a file or an image version answers its bytes under its own content type, with Content-Disposition: attachment naming the artifact's name, -v<number> before the extension for an older version (report-v2.pdf), and Cache-Control: private, max-age=31536000, immutable. With ?download=true every kind answers Content-Disposition: attachment with that name and Cache-Control: private, no-cache, and a document answers its Markdown as text/markdown, its name ending in .md when the stored name has no Markdown extension. A version's author carries proven: true only when the credential of every write that author made to the version proved it. */
     get: operations["getApiV1ArtifactsByIdVersionsByNumber"];
     put?: never;
     post?: never;
@@ -1177,7 +1177,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Page the whole event log by id, whatever owns each event (an issue, a document, a project or none): the events with id > after (default 0), oldest first, at most limit (1 to 1000, default 1000). */
+    /** @description Page the whole event log by id, whatever owns each event (an issue, a document, a project or none): the events with id > after (default 0), oldest first, at most limit (1 to 1000, default 1000). An event's actor carries proven: true when the write's credential proved it (a browser's person, a broker-issued token's session), and no proven when the request only named it. */
     get: operations["getApiV1EventsLog"];
     put?: never;
     post?: never;
@@ -1539,7 +1539,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List an issue's comments; ?artifact= scopes to a document. The answer carries an ETag, which moves for every write the list shows, a delivery attempt that appends no event included; If-None-Match answers 304. */
+    /** @description List an issue's comments; ?artifact= scopes to a document. The answer carries an ETag, which moves for every write the list shows, a delivery attempt that appends no event included; If-None-Match answers 304. A comment's author carries proven: true when the write's credential proved it (a browser's person, a broker-issued token's session), and no proven when the request only named it. */
     get: operations["getApiV1IssuesByKeyComments"];
     put?: never;
     /** @description Comment on an issue, a document quote, or an ask. A reply names the comment it answers in reply_to, and one block of it in reply_to_block; with ask_id in place of reply_to, reply_to_block names one part of that ask. */
@@ -1608,7 +1608,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Page an issue's event log (after, before, ids, order, limit). The answer carries an ETag over the issue's event sequence and the paging query; If-None-Match answers 304. */
+    /** @description Page an issue's event log (after, before, ids, order, limit). The answer carries an ETag over the issue's event sequence and the paging query; If-None-Match answers 304. An event's actor carries proven: true when the write's credential proved it (a browser's person, a broker-issued token's session), and no proven when the request only named it. */
     get: operations["getApiV1IssuesByKeyEvents"];
     put?: never;
     post?: never;
@@ -1733,6 +1733,24 @@ export interface paths {
     put?: never;
     /** @description Record one result of one check: {check, role, verdict, commit, surface?, run?, observed?, negative_control?, failed?, skipped?, excluded?, screenshots?}. {key} is the issue the result is recorded on; check names a check block of its Verification document or of one of its ancestors', by block id or, when a block id is not unique in that set, by its canonical reference (409 CHECK_AMBIGUOUS); any other id is 400 UNKNOWN_CHECK. A check CI proves (GET's definition: ci_check set, when before_merge, no run, a negative_control, and no result recorded against it) is 409 CHECK_PROVED_BY_CI for every role, naming the block and the check run, since its result is read from that run. role is at most 32 characters of a-z and -, verdict is pass or fail, commit is 40 lowercase hex, and the counts default to 0; a pass counting any failed, skipped or excluded case is 400 RESULT_CONTRADICTS. A commit the repository the check's issue resolves to does not hold is 400 RESULT_COMMIT_UNKNOWN, naming the commit and that owner/repo; a repository Dispatch cannot read, or none at all, stores the result as before. A screenshot names an image document of the recording issue or of the check's issue. The result is appended as result.recorded on the check's issue. A closed issue, recording or the check's, takes a result only for a check whose when is after_merge or default_branch; every other result there is 409 ISSUE_CLOSED. The answer is {result, line}, line being the pull-request body line the result implies, which carries no link to Dispatch. */
     post: operations["postApiV1IssuesByKeyResults"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/issues/{key}/role-holders": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description The session that holds each Legion role of this issue, as the Legion daemon last published it: {issue, holders}, each {role, session, recorded_at} in workflow order, [] when no session holds a role. A closed issue's read too. An issue Dispatch does not know is 404 ISSUE_NOT_FOUND. */
+    get: operations["getApiV1IssuesByKeyRoleHolders"];
+    /** @description Publish the session that holds each Legion role of this issue {holders}: each entry {role, session}, role one of architect, planner, implementer, tester, reviewer and merger and session a session id of at most 256 bytes, or [] for an issue where no session holds a role. The actor must be session legion-daemon:<project>, the key up to its first -, the session the Legion daemon of the issue's project writes as; any other actor is 403 ROLE_HOLDER_FORBIDDEN. Before the airlock a bearer caller names its own session, so any caller whose credential proves no session can name that one. The body is the issue's whole set and replaces the stored set under a lock of the issue row, so a session that it does not name holds no role of the issue, two writes at once store the set of the one that finishes last, and a pair that did not change keeps its recorded_at. The write appends no issue event, notifies nobody and takes a closed issue. Answers 200 {issue, holders} with the set this write stored, in workflow order, each {role, session, recorded_at}. A body without holders, a role that is not one of the six, a session that is not a session id or is over 256 bytes, a role or a session named twice and an empty session are each 400 INVALID_ROLE_HOLDER, and nothing is stored; an issue Dispatch does not know is 404 ISSUE_NOT_FOUND. The session of an ended claim keeps its role until the daemon's next publication lands, and its process can still run in that window. */
+    put: operations["putApiV1IssuesByKeyRoleHolders"];
+    post?: never;
     delete?: never;
     options?: never;
     head?: never;
@@ -2202,6 +2220,40 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/near-copy-checks": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description List one project's near-copy gate answers, one row for each create the gate answered (an external create runs no gate and has none), recorded when the create was refused or once it was written: the rows of ?project= (required; 400 INVALID_PROJECT when it is not a key) within [from, to) (RFC3339, each optional; 400 INVALID_QUERY when from is not before to), oldest first, at most ?limit= (1 to 1000, default 1000), after the row whose id ?after= names (400 INVALID_QUERY when it is no row of the project). A window should end some time before now: a row written in its create's transaction holds that transaction's start as created_at and is seen only once the transaction commits, so a reader that pages up to now and resumes with ?after= can miss it. {project, from, to} echo the query (null when absent), checks are the rows, and next_after is the id to pass as ?after= for the next page, null on the last. A row is {id, created_at, project, actor_kind, actor_id, outcome, reason, force, title, spec_sha256, parent, issue, candidates, refuse_score, nudge_score, build_commit}, with no spec: GET /api/v1/near-copy-checks/{id} reads one row with it. outcome is refused (the gate refused it and nothing was written; every 409 POSSIBLE_DUPLICATE has this row, written before the answer), forced (written past a refusal with force), nudged (written, its closest open issue named as a likely duplicate), passed (written with nothing named) or not_made (no check that could stop the create was made, and it went in unchecked); reason is bound, failed or unrecorded for not_made and null otherwise; force is whether the create asked for it; spec_sha256 is the sha256 of the spec as sent, on every row; issue is the key written, null for a refusal; candidates are the issues the gate read at or above nudge_score, at most 5, best first, each {key, title, score}; refuse_score and nudge_score are the build's bars and build_commit the commit it was built from, null for an unstamped build. A refusal is answered only once its row is known to be written: otherwise it refuses nothing, and the create goes in as not_made, reason unrecorded, writing its row in its own transaction. The row of every other create that went in is written after the commit, on a context of its own bounded to 1s, and tried once more in the background for up to 30s when a timeout or a lock stopped it, so one whose row still could not be written has none and is otherwise unchanged. */
+    get: operations["getApiV1NearCopyChecks"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/near-copy-checks/{id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description One near-copy gate answer by id: the row GET /api/v1/near-copy-checks lists, with spec, the spec as sent, on a refused row alone (absent on every other, whose issue holds it; empty for a refused create that sent none); 404 NEAR_COPY_CHECK_NOT_FOUND when there is none, 400 NEAR_COPY_CHECK_ID_INPUT for an id that is not a uuid. */
+    get: operations["getApiV1NearCopyChecksById"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/priorities": {
     parameters: {
       query?: never;
@@ -2564,6 +2616,42 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/projects/{key}/legion/board": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description The Legion board of the project its path names, from what the sampler recorded of that project's daemon: eleven columns (queue, design, planning, implementing, testing, reviewing, accepting, retro, merging, awaiting_person, held), each card naming its issue's key, title, priority, phase and when that phase began, the slot it holds, the roles in a turn now, the issues a blocker link holds it on, what it waits on from a person, its tree root and the children of its tree that have not started; and a header with the slots in use, the slot cap, the queue's length and the last read of the daemon with its failure. 404 LEGION_NOT_CONFIGURED when the project names no daemon, 400 INVALID_PROJECT for a key that is not a project key, 404 PROJECT_NOT_FOUND for a project that does not exist. */
+    get: operations["getApiV1ProjectsByKeyLegionBoard"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/projects/{key}/legion/daemon": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description The Legion daemon this project's state is read from, the one Dispatch reads `GET /legion/v1/state` from once a minute, with the actor that first named it and when it was last written; null when the project names none. No route lists every project's daemon: a page that shows them all reads each project's. 400 INVALID_PROJECT for a key that is not a project key, 404 PROJECT_NOT_FOUND for a project that does not exist. */
+    get: operations["getApiV1ProjectsByKeyLegionDaemon"];
+    /** @description Name the Legion daemon this project's state is read from {state_url}: an absolute http(s) URL with a host and no path, else 400 LEGION_SETTING_INPUT. The daemon belongs to the deployment, so a project-scoped credential is refused it, the project this path names included. 400 INVALID_PROJECT for a key that is not a project key, 404 PROJECT_NOT_FOUND for a project that does not exist. */
+    put: operations["putApiV1ProjectsByKeyLegionDaemon"];
+    post?: never;
+    /** @description Stop reading this project's Legion daemon; what was already read stays. 404 NOT_FOUND when the project names none, 400 INVALID_PROJECT for a key that is not a project key and 404 PROJECT_NOT_FOUND for a project that does not exist. */
+    delete: operations["deleteApiV1ProjectsByKeyLegionDaemon"];
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/projects/{key}/related": {
     parameters: {
       query?: never;
@@ -2849,7 +2937,7 @@ export interface paths {
     /** @description Map a GitHub repository to a project {project, default?, renamed_to?}; default true makes it the project's one default. renamed_to is the owner/name this repository is called today, which every comparison of a repository canonicalises through: absent or null leaves the stored one alone, "" clears it, and a pair naming this repository, one naming a repository that is itself renamed, or one on a repository another mapping is already renamed to is 400 INVALID_REPO_PROJECT. */
     put: operations["putApiV1SettingsRepoProjectsByOwnerByRepo"];
     post?: never;
-    /** @description Remove a repository mapping no issue names as its repo. */
+    /** @description Remove a repository mapping, whether or not an issue names the repository as its repo: an issue's own repository needs no mapping, so such an issue keeps it. An issue that resolved to the mapping as its project's default resolves to no repository until the project has another default. */
     delete: operations["deleteApiV1SettingsRepoProjectsByOwnerByRepo"];
     options?: never;
     head?: never;
@@ -2914,7 +3002,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Who the server takes the caller for: {kind: user, login, scopes} (login is the person's lowercase email) or {kind: agent, owner, service, session, project, scopes} (owner is a personal token's owner or a broker-issued token's person by lowercase email, null for the shared token and for a broker-issued token that names a service; service is a verified service-account token's Kubernetes subject, or the fleet a broker-issued token naming no person belongs to, null for every other credential; session is the session the caller's credential proved, null for a credential that proves none, which every one but an access token the secrets broker issued is; project is the one project key that credential lets the caller write, null where it names none). scopes is the OAuth scopes the credential holds, an empty array for one that holds none: person acts as the person on every route the dashboard reaches, and approve settles what a person settles. */
+    /** @description Who the server takes the caller for: {kind: user, login, scopes} (login is the person's lowercase email) or {kind: agent, owner, service, session, project, scopes} (owner is a personal token's owner or a broker-issued token's person by lowercase email, null for the shared token and for a broker-issued token that names a service; service is a verified service-account token's Kubernetes subject, or the fleet a broker-issued token naming no person belongs to, null for every other credential; session is the session the caller's credential proved, null for a credential that proves none, which every one but an access token the secrets broker issued is; project is the one project key that credential lets the caller write, null where it names none). scopes is the OAuth scopes the credential holds, an empty array for one that holds none: person acts as the person on every route the dashboard reaches, and approve settles what a person settles. A write records its actor with proven: true only where this credential proved that actor, the person at a browser or the session above, and never for a session a request names under a credential that proves none. */
     get: operations["getApiV1Whoami"];
     put?: never;
     post?: never;
@@ -3001,11 +3089,13 @@ export interface components {
       origin?: components["schemas"]["ActorOrigin"];
       owner?: string;
       project?: string;
+      proven?: boolean;
       service?: string;
     };
     ActorAct: {
       scopes?: string[];
       session?: string;
+      session_proven?: boolean;
       token_id?: string;
       token_name?: string;
     };
@@ -5204,6 +5294,26 @@ export interface components {
       members: components["schemas"]["ReferenceMember"][] | null;
       truncated: boolean;
     };
+    IssueRoleHolder: {
+      /** @enum {string} */
+      role: "architect" | "planner" | "implementer" | "tester" | "reviewer" | "merger";
+      session: string;
+    };
+    IssueRoleHolderRecord: {
+      /** Format: date-time */
+      recorded_at: string;
+      /** @enum {string} */
+      role: "architect" | "planner" | "implementer" | "tester" | "reviewer" | "merger";
+      session: string;
+    };
+    IssueRoleHolders: {
+      holders: components["schemas"]["IssueRoleHolderRecord"][] | null;
+      issue: string;
+    };
+    IssueRoleHoldersInput: {
+      actor?: components["schemas"]["Actor"] | null;
+      holders: null | components["schemas"]["IssueRoleHolder"][];
+    };
     IssueSummary: {
       advances: components["schemas"]["IssueAdvance"][] | null;
       /** Format: int64 */
@@ -5295,6 +5405,71 @@ export interface components {
       merge_to_production: components["schemas"]["DeliverySpread"];
       opened_to_merge: components["schemas"]["DeliverySpread"];
       opened_to_production: components["schemas"]["DeliverySpread"];
+    };
+    LegionBoardCard: {
+      blocked_by: string[] | null;
+      children: number;
+      key: string;
+      phase: string;
+      /** Format: date-time */
+      phase_since: null | string;
+      priority: null | number;
+      roles: string[] | null;
+      slot: null | number;
+      title: string;
+      tree: string;
+      waiting_on: components["schemas"]["LegionBoardWait"] | null;
+    };
+    LegionBoardColumn: {
+      cards: components["schemas"]["LegionBoardCard"][] | null;
+      /** @enum {string} */
+      id:
+        | "queue"
+        | "design"
+        | "planning"
+        | "implementing"
+        | "testing"
+        | "reviewing"
+        | "accepting"
+        | "retro"
+        | "merging"
+        | "awaiting_person"
+        | "held";
+      label: string;
+    };
+    LegionBoardHeader: {
+      queue_length: number;
+      /** Format: date-time */
+      read_at: null | string;
+      read_error: null | string;
+      read_ok: boolean;
+      slot_cap: null | number;
+      slots_in_use: number;
+      trees: number;
+    };
+    LegionBoardResponse: {
+      columns: components["schemas"]["LegionBoardColumn"][] | null;
+      /** Format: date-time */
+      computed_at: string;
+      header: components["schemas"]["LegionBoardHeader"];
+      project: string;
+      settings: {
+        [key: string]: unknown;
+      } | null;
+    };
+    LegionBoardWait: {
+      /** Format: date-time */
+      answered_at: null | string;
+      kind: string;
+      /** Format: date-time */
+      since: null | string;
+    };
+    LegionSetting: {
+      created_by: components["schemas"]["Actor"];
+      project: string;
+      state_url: string;
+      /** Format: date-time */
+      updated_at: string;
     };
     ListUsersResponse: {
       users: components["schemas"]["DispatchUser"][] | null;
@@ -5471,6 +5646,45 @@ export interface components {
     MyReplySession: {
       id: string;
       name: string;
+    };
+    NearCopyCheck: {
+      actor_id: string;
+      actor_kind: string;
+      build_commit: null | string;
+      candidates: components["schemas"]["NearCopyCheckCandidate"][] | null;
+      /** Format: date-time */
+      created_at: string;
+      force: boolean;
+      id: string;
+      issue: null | string;
+      /** Format: double */
+      nudge_score: number;
+      /** @enum {string} */
+      outcome: "refused" | "forced" | "nudged" | "passed" | "not_made";
+      parent: null | string;
+      project: string;
+      /** @enum {null|string} */
+      reason: "bound" | "failed" | "unrecorded" | null;
+      /** Format: double */
+      refuse_score: number;
+      spec?: string;
+      spec_sha256: string;
+      title: string;
+    };
+    NearCopyCheckCandidate: {
+      key: string;
+      /** Format: double */
+      score: number;
+      title: string;
+    };
+    NearCopyChecksPage: {
+      checks: components["schemas"]["NearCopyCheck"][] | null;
+      /** Format: date-time */
+      from: null | string;
+      next_after: null | string;
+      project: string;
+      /** Format: date-time */
+      to: null | string;
     };
     NewIssueSettings: {
       label: string;
@@ -5681,6 +5895,10 @@ export interface components {
     PutArchitectureSourceInput: {
       actor?: components["schemas"]["Actor"] | null;
       branch: string;
+    };
+    PutLegionSettingInput: {
+      actor?: components["schemas"]["Actor"] | null;
+      state_url: string;
     };
     PutRepoProjectInput: {
       actor?: components["schemas"]["Actor"] | null;
@@ -10766,6 +10984,78 @@ export interface operations {
       };
     };
   };
+  getApiV1IssuesByKeyRoleHolders: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IssueRoleHolders"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  putApiV1IssuesByKeyRoleHolders: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["IssueRoleHoldersInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IssueRoleHolders"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV1IssuesByKeySubscribers: {
     parameters: {
       query?: {
@@ -11870,6 +12160,77 @@ export interface operations {
       };
     };
   };
+  getApiV1NearCopyChecks: {
+    parameters: {
+      query?: {
+        project?: string;
+        from?: string;
+        to?: string;
+        after?: string;
+        limit?: number;
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["NearCopyChecksPage"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV1NearCopyChecksById: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["NearCopyCheck"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV1Priorities: {
     parameters: {
       query?: {
@@ -12824,6 +13185,144 @@ export interface operations {
         content: {
           "application/json": components["schemas"]["ProjectGatedSteps"];
         };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV1ProjectsByKeyLegionBoard: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["LegionBoardResponse"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV1ProjectsByKeyLegionDaemon: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["LegionSetting"] | null;
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  putApiV1ProjectsByKeyLegionDaemon: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["PutLegionSettingInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["LegionSetting"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  deleteApiV1ProjectsByKeyLegionDaemon: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description No Content */
+      204: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
@@ -13946,6 +14445,10 @@ export type IssueRefResolved = components["schemas"]["IssueRefResolved"];
 export type IssueReferenceSummary = components["schemas"]["IssueReferenceSummary"];
 export type IssueReferenceSummaryDocument = components["schemas"]["IssueReferenceSummaryDocument"];
 export type IssueReferences = components["schemas"]["IssueReferences"];
+export type IssueRoleHolder = components["schemas"]["IssueRoleHolder"];
+export type IssueRoleHolderRecord = components["schemas"]["IssueRoleHolderRecord"];
+export type IssueRoleHolders = components["schemas"]["IssueRoleHolders"];
+export type IssueRoleHoldersInput = components["schemas"]["IssueRoleHoldersInput"];
 export type IssueSummary = components["schemas"]["IssueSummary"];
 export type IssueSummaryPage = components["schemas"]["IssueSummaryPage"];
 export type ItemBlock = components["schemas"]["ItemBlock"];
@@ -13955,6 +14458,12 @@ export type KeepDecisionInput = components["schemas"]["KeepDecisionInput"];
 export type LauncherCredentialResp = components["schemas"]["LauncherCredentialResp"];
 export type LauncherCredentialsResponse = components["schemas"]["LauncherCredentialsResponse"];
 export type LeadTime = components["schemas"]["LeadTime"];
+export type LegionBoardCard = components["schemas"]["LegionBoardCard"];
+export type LegionBoardColumn = components["schemas"]["LegionBoardColumn"];
+export type LegionBoardHeader = components["schemas"]["LegionBoardHeader"];
+export type LegionBoardResponse = components["schemas"]["LegionBoardResponse"];
+export type LegionBoardWait = components["schemas"]["LegionBoardWait"];
+export type LegionSetting = components["schemas"]["LegionSetting"];
 export type ListUsersResponse = components["schemas"]["ListUsersResponse"];
 export type LiveWritePauseState = components["schemas"]["LiveWritePauseState"];
 export type MachineLookupRequest = components["schemas"]["MachineLookupRequest"];
@@ -13974,6 +14483,9 @@ export type MyRepliesResponse = components["schemas"]["MyRepliesResponse"];
 export type MyReplyReply = components["schemas"]["MyReplyReply"];
 export type MyReplyRow = components["schemas"]["MyReplyRow"];
 export type MyReplySession = components["schemas"]["MyReplySession"];
+export type NearCopyCheck = components["schemas"]["NearCopyCheck"];
+export type NearCopyCheckCandidate = components["schemas"]["NearCopyCheckCandidate"];
+export type NearCopyChecksPage = components["schemas"]["NearCopyChecksPage"];
 export type NewIssueSettings = components["schemas"]["NewIssueSettings"];
 export type NewIssueSettingsInput = components["schemas"]["NewIssueSettingsInput"];
 export type OpenAsk = components["schemas"]["OpenAsk"];
@@ -14004,6 +14516,7 @@ export type ProjectDefaultAssigneeInput = components["schemas"]["ProjectDefaultA
 export type ProjectGatedSteps = components["schemas"]["ProjectGatedSteps"];
 export type ProjectGatedStepsInput = components["schemas"]["ProjectGatedStepsInput"];
 export type PutArchitectureSourceInput = components["schemas"]["PutArchitectureSourceInput"];
+export type PutLegionSettingInput = components["schemas"]["PutLegionSettingInput"];
 export type PutRepoProjectInput = components["schemas"]["PutRepoProjectInput"];
 export type RebuildArtifactInput = components["schemas"]["RebuildArtifactInput"];
 export type RecordCheckResultInput = components["schemas"]["RecordCheckResultInput"];

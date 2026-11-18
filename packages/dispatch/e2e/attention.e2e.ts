@@ -280,11 +280,13 @@ async function verifyGapDetection(
     await openHistory(page, issue.key, "Gap comment 19");
     const divider = historyPanel(page).getByRole("listitem", { name: "New since you last read" });
     await expect(divider).toHaveCount(0);
+    await expect(historyPanel(page).getByText(/^Gap comment \d+$/)).toHaveCount(20);
 
     // Where the gap nearest the middle of the history sits, as an offset from the centre of the
     // box it is clipped to: the reader is moved by that offset, so the gap lands on the very
     // point `ViewportAnchor` probes (`rowAtCenter`).
     const clip = await historyViewport(page);
+    // The count above drew all twenty comments, so the gaps measured here are the whole list's.
     const gap = await page.evaluate((clipBox) => {
       const entries = [
         ...document.querySelectorAll<HTMLElement>(
@@ -316,6 +318,8 @@ async function verifyGapDetection(
     }
 
     await scrollHistoryBy(page, gap.fromCenter);
+    // The history holds the comments waited for above, and the scroll above ran in the page
+    // before this read, so the box read here is the history's as it now stands.
     const centre = await page.evaluate(
       ({ clipBox, root }) => {
         const history = document.querySelector(root);
