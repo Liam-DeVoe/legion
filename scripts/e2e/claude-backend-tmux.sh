@@ -577,6 +577,10 @@ if [ "$model_route" = key-file ]; then
   [ -f "$agent_key_file" ] && [ -r "$agent_key_file" ] ||
     fail "LEGION_E2E_ANTHROPIC_KEY_FILE names $agent_key_file, which is not a readable file"
 fi
+# The Postgres of a dead stack goes first, before refuse_leftovers, whose refusal of what the same
+# dead run left would end the start with that Postgres still there; this run's carries its mark
+# (lib/leftovers.sh).
+remove_leftover_postgres || fail "the removal of the Postgres of dead stacks could not run"
 refuse_leftovers legion-e2ecc
 for tool in go docker jq curl python3 tmux bun mise gh jj pgrep claude; do command -v "$tool" >/dev/null || fail "$tool is required"; done
 command -v agent-secrets >/dev/null || fail "agent-secrets, the secrets broker's client the implement App's token_command runs, is required"
@@ -653,8 +657,6 @@ chmod 0600 "$work"/*token "$work"/*-header "$work/postgres-password"
 (cd "$root/packages/envoy" && go build -o "$work/envoy-listener" ./cmd/listener && go build -o "$work/envoy-dispatch" ./cmd/dispatch)
 built=$(bash "$root/scripts/e2e/lib/built-from.sh" "$root" "$work/legion" "$work/envoy-listener" "$work/envoy-dispatch") || fail "lib/built-from.sh could not say what the run built"
 while IFS= read -r line; do note "$line"; done <<<"$built"
-# The Postgres of a dead stack goes first, and this run's carries its mark (lib/leftovers.sh).
-remove_leftover_postgres || fail "the removal of the Postgres of dead stacks could not run"
 pg_mark=$(postgres_mark "$work" "$pg_container") || fail "the mark of $pg_container could not be made"
 docker run -d --name "$pg_container" --label "$pg_mark" --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
   -e POSTGRES_USER=legion -e POSTGRES_PASSWORD="$(cat "$work/postgres-password")" -e POSTGRES_DB=dispatch \

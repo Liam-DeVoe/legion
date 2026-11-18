@@ -204,6 +204,10 @@ launch_session() {
 for tool in go docker jq curl python3 tmux bun mise; do command -v "$tool" >/dev/null || fail "$tool is required"; done
 omp_tool=${DISPATCH_USER_TURNS_OMP:-$(<"$root/.omp-pin")}
 mkdir -p "$session_cwd"
+# The Postgres of a dead stack goes first, before refuse_leftovers, whose refusal of what the same
+# dead run left would end the start with that Postgres still there; this run's carries its mark
+# (lib/leftovers.sh).
+remove_leftover_postgres || fail "the removal of the Postgres of dead stacks could not run"
 refuse_leftovers legion-e2e-user-turns
 make_omp_home "$omp_home"
 mise where "$omp_tool" >/dev/null 2>&1 || mise install "$omp_tool" >&2
@@ -212,8 +216,6 @@ mise where "$omp_tool" >/dev/null 2>&1 || mise install "$omp_tool" >&2
 (cd "$root/packages/dispatch" && bun run build:web >"$evidence/logs/build-web.log" 2>&1) || fail "the SPA did not build; see $evidence/logs/build-web.log"
 note "Oh My Pi $omp_tool; run $run"
 
-# The Postgres of a dead stack goes first, and this run's carries its mark (lib/leftovers.sh).
-remove_leftover_postgres || fail "the removal of the Postgres of dead stacks could not run"
 pg_mark=$(postgres_mark "$work" "$pg_container") || fail "the mark of $pg_container could not be made"
 docker run -d --name "$pg_container" --label "$pg_mark" --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
   -e POSTGRES_USER=dispatch -e POSTGRES_PASSWORD=dispatch -e POSTGRES_DB=dispatch \

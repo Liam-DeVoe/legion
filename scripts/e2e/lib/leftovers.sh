@@ -59,21 +59,63 @@ leftover_owner() {
   [ "$start" -le "$2" ]
 }
 
+# leftover_now_us VAR sets VAR to the wall clock in microseconds since the epoch: from bash's own
+# EPOCHREALTIME, with no process started, so two reads are microseconds apart, or from date.
+leftover_now_us() {
+  if [ -n "${EPOCHREALTIME:-}" ]; then printf -v "$1" '%s' "${EPOCHREALTIME//[^0-9]/}"; else printf -v "$1" '%s' "$(date +%s%6N)"; fi
+}
+
+# leftover_boot_ns prints the earliest moment the machine can have booted, in nanoseconds since
+# the epoch, and it is that moment to within a millisecond. /proc/uptime counts the time since the
+# boot in hundredths of a second, and the clock of a process's start counts it in ticks; btime of
+# /proc/stat is a whole second. So the wall clock is read at a step of the count, when the time
+# since the boot is exactly what the count says: the step to U fell between the start of the read
+# that still said less and the end of the read that says U, and the boot is U before that start.
+# A step that the scheduler stretches past a millisecond is read again, up to 50 times; past that
+# the boot is the earliest of the last, wider, window.
+leftover_boot_ns() {
+  local up last='' before last_before='' after tries=0
+  while :; do
+    leftover_now_us before
+    read -r up _ </proc/uptime
+    leftover_now_us after
+    up=${up//[^0-9]/}
+    if [ -n "$last" ] && [ "$up" != "$last" ]; then
+      if [ $((10#$after - 10#$last_before)) -le 1000 ] || [ "$tries" -ge 50 ]; then
+        printf '%s\n' "$(((10#$last_before - 10#$up * 10000) * 1000))"
+        return 0
+      fi
+      tries=$((tries + 1))
+    fi
+    last=$up last_before=$before
+  done
+}
+
 # refuse_leftovers PREFIX fails, naming each one and the command that removes it, when a container
 # or a process of an earlier PREFIX run outlived its driver. The caller's `fail` reports it. A
 # container's name ends in its driver's pid, or in that pid and the run's 16 random hex digits
 # (<prefix>-<role>-<pid>-<random>, unique where two PID namespaces share a pid).
+#
+# A container's owner is the live process of its pid that started no later than the container was
+# made, compared at the precision both clocks give: the owner's start in clock ticks since the
+# boot, and Docker's creation in nanoseconds, turned into ticks since the boot (leftover_boot_ns).
+# Where the two fall in one tick the owner counts as alive: a driver that made its container a few
+# milliseconds after it started is never a leftover, and a later process given a dead driver's pid
+# is taken for it only where it started in the tick (10 ms at 100 a second) its container was made.
 refuse_leftovers() {
-  local prefix=$1 name mark owner created p text since boot ticks
+  local prefix=$1 name mark owner created p text since boot tick
   local -a leftover_list=()
-  boot=$(awk '$1 == "btime" { print $2 }' /proc/stat)
-  ticks=$(getconf CLK_TCK)
+  boot=$(leftover_boot_ns)
+  tick=$((1000000000 / $(getconf CLK_TCK)))
   while IFS='|' read -r name mark; do
     [ -z "$mark" ] || continue
     [[ $name =~ -([0-9]+)(-[0-9a-f]{16})?$ ]] || continue
     owner=${BASH_REMATCH[1]}
     created=$(docker inspect -f '{{.Created}}' "$name" 2>/dev/null) || continue
-    since=$((($(date -d "$created" +%s) - boot) * ticks))
+    created=$(date -d "$created" +%s%N) || continue
+    # A container made before this boot has no owner among the processes of this boot.
+    since=-1
+    [ "$created" -lt "$boot" ] || since=$(((created - boot) / tick))
     leftover_owner "$owner" "$since" || leftover_list+=("container $name (docker rm -f -v $name)")
   done < <(docker ps -a --filter "name=^$prefix-" --format '{{.Names}}|{{.Label "dev.legion.dispatch-e2e.postgres-mark"}}')
   for p in /proc/[0-9]*; do

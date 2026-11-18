@@ -399,11 +399,12 @@ while IFS= read -r line; do note "$line"; done <<<"$built"
 
 # shellcheck source-path=SCRIPTDIR source=lib/leftovers.sh
 . "$root/scripts/e2e/lib/leftovers.sh"
+# The Postgres of a dead stack goes first, on every run, before refuse_leftovers, whose refusal of
+# what the same dead run left would end the start with that Postgres still there; this run's
+# carries its mark (lib/leftovers.sh).
+remove_leftover_postgres || fail "the removal of the Postgres of dead stacks could not run"
 refuse_leftovers legion-e2e2
 
-# The Postgres of a dead stack goes first, on every run, and this run's carries its mark
-# (lib/leftovers.sh).
-remove_leftover_postgres || fail "the removal of the Postgres of dead stacks could not run"
 if [ -z "${LEGION_E2E_PG_DSN:-}" ]; then
   docker ps >/dev/null # a broken docker is a failure of this run, not of the daemon
   # tmpfs, not the image's anonymous volume: creating a volume is one more moving part the proof

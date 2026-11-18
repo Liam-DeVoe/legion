@@ -3350,6 +3350,11 @@ real_gh=$(mise which gh) || fail "mise has no gh (the raw-token and config-direc
 mkdir -p "$(dirname "$lock")"
 exec 9>"$lock"
 flock -n 9 || fail "another Stage 4b run holds $lock: one run at a time"
+# The Postgres of a dead stack goes first, before refuse_leftovers and ports_free, whose refusals of
+# what the same dead run left (its containers and processes, and the session database port its
+# container still publishes) would end the start with that Postgres still there; this run's carries
+# its mark (lib/leftovers.sh).
+remove_leftover_postgres || fail "the removal of the Postgres of dead stacks could not run"
 refuse_leftovers legion-e2e4b
 ports_free "$port_daemon" "$port_worker_stream" "$port_session_db"
 imds=$(curl -sf -m 5 -X PUT http://169.254.169.254/latest/api/token -H 'X-aws-ec2-metadata-token-ttl-seconds: 60') ||
@@ -3520,8 +3525,6 @@ while IFS= read -r line; do note "$line"; done <<<"$built"
 # The build's source is the run's recorded source, or the tree changed between the two.
 [ "$(sed -n 's/^source: //p' <<<"$built")" = "$(jq -r .revision "$evidence/run.json")" ] ||
   fail "the tree changed between prerequisites ($(jq -r .revision "$evidence/run.json")) and the build ($(sed -n 's/^source: //p' <<<"$built"))"
-# The Postgres of a dead stack goes first, and this run's carries its mark (lib/leftovers.sh).
-remove_leftover_postgres || fail "the removal of the Postgres of dead stacks could not run"
 pg_mark=$(postgres_mark "$work" "$pg_container") || fail "the mark of $pg_container could not be made"
 docker run -d --name "$pg_container" --label "$pg_mark" --label "$run_container_label=$run_container_id" \
   --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \

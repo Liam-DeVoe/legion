@@ -1012,8 +1012,13 @@ function absent(path: string): boolean {
 
 /** How a postmaster's working directory, its data directory, names the run directory it serves
  *  from: the run directory, then its stack's place in it. A run directory someone renamed after
- *  its stack started has another name than the pool gives one, and is found all the same. */
-const servedFrom = /^(.+)\/(?:worker-\d+|template)\/pgdata$/;
+ *  its stack started has another name than the pool gives one, and is found all the same. A data
+ *  directory a start claimed (`claimForRemoval`) and that start's death left claimed has the
+ *  claim's name, `pgdata.removing-<pid>-<start>`, which the kernel shows as the postmaster's
+ *  working directory, and is found under the name its mark holds, without the claim. */
+const servedFrom = /^(.+)\/(?:worker-\d+|template)\/pgdata(?:\.removing-\d+-\d+)?$/;
+/** The claim a claimed data directory's name ends in (`claimInfix`, `claimForRemoval`). */
+const claimed = /\.removing-\d+-\d+$/;
 
 /** A postmaster the kernel shows serving from a run directory that this start's listing of its
  *  TMPDIR does not read. */
@@ -1053,7 +1058,7 @@ function servedElsewhere(real: string, uid: number): Served[] {
       const status = readFileSync(`/proc/${pid}/status`, "utf8");
       const own = /^NSpid:.*?(\d+)[ \t]*$/m.exec(status)?.[1] ?? pid;
       if (Number.parseInt(readUnlinked(join(data, "postmaster.pid")), 10) === Number(own)) {
-        served.push({ run, data, pid: Number(pid) });
+        served.push({ run, data: data.replace(claimed, ""), pid: Number(pid) });
       }
     } catch {
       // A process that ended, or whose links this user may not read, serves from nothing here.
@@ -1213,8 +1218,8 @@ async function removeRunDirectories(
   left: Left
 ): Promise<void> {
   const uid = process.getuid?.() ?? -1;
-  let real: string;
-  let entries: string[];
+  let real = parent;
+  let entries: string[] = [];
   try {
     // TMPDIR may be spelt through a link of its user's: the run directories are listed under its
     // one spelling, which a mark holds its own run directory by, and `whyUntrusted` then reads
@@ -1222,8 +1227,9 @@ async function removeRunDirectories(
     real = identityOf(parent);
     entries = readdirSync(real);
   } catch (error) {
+    // A TMPDIR this start cannot read lists no run directory of its own; the postmasters that
+    // serve from the run directories of other TMPDIRs are looked for all the same.
     left.unread.push(`${parent} (${firstLine(error)})`);
-    return;
   }
   for (const entry of entries.filter((name) => name.startsWith(runDirectoryPrefix)).sort()) {
     await sweepRun(join(real, entry), uid, self, containers, left);

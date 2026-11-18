@@ -636,6 +636,10 @@ case "$model_route" in
     fi ;;
   *) fail "LEGION_E2E_MODEL_ROUTE must be gateway or key-file, not '$model_route'" ;;
 esac
+# The Postgres of a dead stack goes first, before refuse_leftovers, whose refusal of what the same
+# dead run left would end the start with that Postgres still there; this run's carries its mark
+# (lib/leftovers.sh).
+remove_leftover_postgres || fail "the removal of the Postgres of dead stacks could not run"
 refuse_leftovers legion-e2e-pd
 require_proof_human
 gh repo view "$repo" --json name >/dev/null || fail "the devbox's ordinary gh cannot read $repo"
@@ -684,9 +688,7 @@ while IFS= read -r line; do note "$line"; done <<<"$built"
 docker ps >/dev/null
 # Docker chooses each container's host port and binds it itself, trying the next port when one is
 # taken, so no port is free between its choice and its bind; the start fails only when ten ports
-# in a row are taken. The Postgres image and its data path are Stage 3's. The Postgres of a dead
-# stack goes first, and this run's carries its mark (lib/leftovers.sh).
-remove_leftover_postgres || fail "the removal of the Postgres of dead stacks could not run"
+# in a row are taken. The Postgres image and its data path are Stage 3's.
 pg_mark=$(postgres_mark "$work" "$pg_container") || fail "the mark of $pg_container could not be made"
 start_container containers "$pg_container" --label "$pg_mark" --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
   -e POSTGRES_USER=legion -e POSTGRES_PASSWORD="$(cat "$work/postgres-password")" -e POSTGRES_DB=dispatch \

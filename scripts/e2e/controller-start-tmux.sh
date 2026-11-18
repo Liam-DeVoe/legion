@@ -130,13 +130,15 @@ keep_port daemon_keeper daemon_port
 (cd "$root/packages/envoy" && go build -o "$work/envoy-listener" ./cmd/listener)
 note "legion $("$work/legion" version); OMP pin $pin; daemon port $daemon_port"
 
+# The Postgres of a dead stack goes first, before refuse_leftovers, whose refusal of what the same
+# dead run left would end the start with that Postgres still there; this run's carries its mark
+# (lib/leftovers.sh).
+remove_leftover_postgres || fail "the removal of the Postgres of dead stacks could not run"
 refuse_leftovers legion-e2e-controller
 (umask 077 && head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$work/postgres-password")
 # Docker chooses each container's host port and binds it itself, trying the next port when one is
 # taken, so no port is free between its choice and its bind; the start fails only when ten ports
-# in a row are taken. The Postgres of a dead stack goes first, and this run's carries its mark
-# (lib/leftovers.sh).
-remove_leftover_postgres || fail "the removal of the Postgres of dead stacks could not run"
+# in a row are taken.
 pg_mark=$(postgres_mark "$work" "$pg_container") || fail "the mark of $pg_container could not be made"
 start_container containers "$pg_container" --label "$pg_mark" --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
   -e POSTGRES_USER=legion -e POSTGRES_PASSWORD="$(cat "$work/postgres-password")" -e POSTGRES_DB=legion \

@@ -3566,8 +3566,8 @@ It builds both binaries from the checkout, so it proves the tree you are standin
 
 What the run touches, and nothing else:
 
-- `/tmp/verifiers-e2e` — the two built binaries, the boot logs, the refusal logs, the last response body, and the scratch `HOME` the binaries run under, so Dispatch's signing key never lands in the box's `~/.local/share/dispatch`.
-  Recreated from empty each run.
+- `/tmp/verifiers-e2e.XXXXXXXX` — a directory of the run's own, which the run names on its line `== the run's directory:`: the two built binaries, the boot logs, the refusal logs, the last response body, and the scratch `HOME` the binaries run under, so Dispatch's signing key never lands in the box's `~/.local/share/dispatch`.
+  The `EXIT` trap removes the two binaries; the logs and the body stay.
 
 - the containers `verifiers-e2e-pg` (pgvector on PostgreSQL 18, the image CI's Dispatch service runs, pinned by digest) and `verifiers-e2e-nats` (the hub's nats-server with `-js`, [`lib/nats-image.sh`](#libnats-imagesh)), both on ephemeral loopback ports.
 
@@ -6064,10 +6064,11 @@ The gateway key command alone runs under the operator's `HOME` ([`lib/install-mo
 
 A driver that dies with no chance to clean up (SIGKILL, a crashed host) leaves its daemon, listener, agents and containers running.
 `refuse_leftovers PREFIX` is how the next run of the same stage notices:
-Stage 2 (`legion-e2e2`), Stage 3 (`legion-e2e3`), Stage 4b (`legion-e2e4b`) and the controller proof (`legion-e2e-controller`) run it before they start anything.
+Stage 2 (`legion-e2e2`), Stage 3 (`legion-e2e3`), Stage 4b (`legion-e2e4b`) and the controller proof (`legion-e2e-controller`) run it before they start anything but the removal of the Postgres of dead stacks below, which goes first.
 
 ```sh
 . "$root/scripts/e2e/lib/leftovers.sh"     # sourced, never run
+remove_leftover_postgres || fail "the removal of the Postgres of dead stacks could not run"
 refuse_leftovers legion-e2e3
 ```
 
@@ -6075,11 +6076,12 @@ Everything a run starts carries its driver's pid:
 each container is named `<prefix>-<role>-<pid>`, or `<prefix>-<role>-<pid>-<random>` with 16 random hex digits where two pid namespaces on one Docker daemon could share the pid, and every process of the run holds its work directory, `/tmp/<prefix>.<pid>.<random>`, in its argv, its working directory (an agent) or its environment (a bridge handed the run's state directories).
 The check fails, through the caller's `fail`, naming each container and process whose driver is no longer alive and the command that removes it (`docker rm -f -v <name>`, `kill <pid>`).
 A driver counts as alive only while its pid is a live, non-zombie process that started no later than the container or process it would own, since pids are reused.
+A container's creation, which Docker reports in nanoseconds, is turned into clock ticks since the boot (the boot read to a millisecond from `/proc/uptime`, not `btime`'s whole second) and compared with the owner's start in ticks: a driver that started in the same tick its container was made is alive, and a later process given a dead driver's pid is taken for that driver only where it started in that same tick.
 Only processes in the caller's own pid namespace are read, since a pid means nothing across namespaces (an agent box's run is its own).
 What a live run started is left alone, since Stages 2 and 3 take no lock and two lanes may run one at once.
 
 A Postgres container is not the check's.
-Every shell stack that starts one marks it as the browser pool marks its own (`packages/dispatch/e2e/harness-postgres-marks.ts`), and before it starts it removes the Postgres of each test stack that is gone, the pool's among them, by the one removal every start of a test stack runs:
+Every shell stack that starts one marks it as the browser pool marks its own (`packages/dispatch/e2e/harness-postgres-marks.ts`), and first of all, before `refuse_leftovers`, `ports_free` or the skill scenarios' `lock_services`, each of which refuses a start for what a dead run left, it removes the Postgres of each test stack that is gone, the pool's among them, by the one removal every start of a test stack runs; a refusal before it would end the start with the dead stack's Postgres still there:
 
 ```sh
 remove_leftover_postgres || fail "the removal of the Postgres of dead stacks could not run"
@@ -6091,7 +6093,8 @@ docker run -d --name "$pg_container" --label "$pg_mark" …
 `remove_leftover_postgres` removes each Postgres whose mark names a process that is gone, leaves one whose process runs, and names on stderr, one line per kind, each one it leaves, such as a mark of another boot or pid namespace, which it cannot judge.
 Both run `bun packages/dispatch/e2e/postgres-mark.ts`, which imports Node's built-in modules alone, so they need Bun and no `bun install`; with no `bun` on `PATH` they fail with a line that names it.
 `refuse_leftovers` leaves a marked container to that removal.
-`scripts/e2e/lib/leftovers.test.ts` holds each shell stack's start that starts a Postgres to the two calls.
+`scripts/e2e/lib/sweep-order.ts` finds, by each driver's own order of calls, every start that runs a refusal or marks its own Postgres before that removal (`bun scripts/e2e/lib/sweep-order.ts`; it says UNKNOWN where it read no driver).
+`scripts/e2e/lib/sweep-order.test.ts` runs each such driver's own file, with the commands that would reach outside the machine cut, and holds it to the removal before each refusal, before each create of its Postgres, and before any container where `LEGION_E2E_PG_DSN` names a Postgres.
 
 ## lib/operator-dispatch.sh
 

@@ -63,7 +63,9 @@ test.skipIf(skipped)(
         docker("commit", builder, slow);
         made = true;
       } finally {
-        docker("rm", "--force", builder);
+        // The image declares a volume, so the builder's create made an anonymous one, which goes
+        // with it: a removal without `--volumes` left one on the daemon at each run.
+        docker("rm", "--force", "--volumes", builder);
       }
 
       const provider = stackPostgres({

@@ -146,11 +146,13 @@ import { removeLeftoverPostgres } from ${JSON.stringify(marksModule)};
 await removeLeftoverPostgres();
 `;
 
-/** A start's sweep running in a child with `tmp` for its `TMPDIR` and no program on its `PATH`, so
- *  no row changes the environment of this process: what it printed so far, and the lines it
- *  printed once it ended. */
-function startSweep(tmp: string): { stderr(): string; readonly lines: Promise<string[]> } {
-  const empty = mkdtempSync(join(tmp, "no-programs-"));
+/** A start's sweep running in a child with `tmp` for its `TMPDIR` and `empty`, a directory with no
+ *  program in it, for its `PATH`, so no row changes the environment of this process: what it
+ *  printed so far, and the lines it printed once it ended. */
+function startSweep(
+  tmp: string,
+  empty = mkdtempSync(join(tmp, "no-programs-"))
+): { stderr(): string; readonly lines: Promise<string[]> } {
   const child = Bun.spawn([process.execPath, "--eval", sweepScript], {
     env: { TMPDIR: tmp, PATH: empty },
     stdout: "ignore",
@@ -173,8 +175,8 @@ function startSweep(tmp: string): { stderr(): string; readonly lines: Promise<st
 }
 
 /** Runs the start's sweep in a child (`startSweep`), and answers the lines it printed. */
-function sweep(tmp: string): Promise<string[]> {
-  return startSweep(tmp).lines;
+function sweep(tmp: string, empty?: string): Promise<string[]> {
+  return startSweep(tmp, empty).lines;
 }
 
 /** Waits until `met` holds, and throws naming `what` where it has not after `ms`. What it waits for
@@ -434,6 +436,28 @@ test.skipIf(!onLinux)(
 );
 
 test.skipIf(!onLinux)(
+  "v-no-leftover-postgres: a start whose TMPDIR no longer exists still removes a stack under another TMPDIR that the kernel shows serving and whose stack is gone, and names the TMPDIR it cannot read on one line",
+  async () => {
+    const { tmp } = scratch();
+    const programs = mkdtempSync(join(tmp, "no-programs-"));
+    const gone = join(tmp, "tmpdir-gone");
+    const left = leaveElsewhere(owners().gone);
+    try {
+      const lines = await sweep(gone, programs);
+
+      expect(left.postmaster.alive()).toBe(false);
+      expect(existsSync(left.data)).toBe(false);
+      expect(holding(lines, `removed the postmaster of ${left.data}`)).toHaveLength(1);
+      expect(holding(lines, `left what it cannot read: ${gone} (ENOENT`)).toHaveLength(1);
+    } finally {
+      left.postmaster.stop();
+      rmSync(left.other, { recursive: true, force: true });
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  }
+);
+
+test.skipIf(!onLinux)(
   "v-no-leftover-postgres: a stack under another TMPDIR whose stack runs is not touched, and the start prints nothing of it",
   async () => {
     const { tmp } = scratch();
@@ -575,6 +599,33 @@ setTimeout(() => process.exit(1), 600_000);
 console.log(JSON.stringify(await claimForRemoval(process.env.CLAIM_PATH, process.getuid())));
 `;
 
+/** Claims `path` in a child with the real `claimForRemoval`, and SIGKILLs the child once it printed
+ *  its claim: what a start killed between its claim and its removal leaves. Answers the claimed
+ *  name, which holds its claimer's pid and start, as the judge reads an owner. */
+async function claimAndDie(path: string): Promise<string> {
+  const claimer = Bun.spawn([process.execPath, "--eval", claimScript], {
+    env: { ...process.env, CLAIM_PATH: path },
+    stdout: "pipe",
+    stderr: "ignore",
+  });
+  try {
+    const claimed = `${path}.removing-${claimer.pid}-${marks.startOf(readFileSync(`/proc/${claimer.pid}/stat`, "utf8"))}`;
+    let printed = "";
+    const reader = claimer.stdout.getReader();
+    const decoder = new TextDecoder();
+    while (!printed.includes("\n")) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      printed += decoder.decode(chunk.value, { stream: true });
+    }
+    expect(JSON.parse(printed)).toEqual({ kind: "claimed", path: claimed });
+    return claimed;
+  } finally {
+    if (claimer.exitCode === null && claimer.signalCode === null) claimer.kill("SIGKILL");
+    await claimer.exited;
+  }
+}
+
 test.skipIf(!onLinux)(
   "v-no-leftover-postgres: what a start killed between its claim and its removal left, the next start claims again: the postmaster that serves from the claimed directory ends, and the directory goes",
   async () => {
@@ -583,25 +634,8 @@ test.skipIf(!onLinux)(
     const data = join(run, "worker-0", "pgdata");
     const postmaster = standInPostmaster(bin, data);
     const mark = writeMark(run, owners().gone, data, bin);
-    const claimer = Bun.spawn([process.execPath, "--eval", claimScript], {
-      env: { ...process.env, CLAIM_PATH: data },
-      stdout: "pipe",
-      stderr: "ignore",
-    });
     try {
-      // The claim's name holds its claimer's pid and start, as the judge reads an owner.
-      const claimed = `${data}.removing-${claimer.pid}-${marks.startOf(readFileSync(`/proc/${claimer.pid}/stat`, "utf8"))}`;
-      let printed = "";
-      const reader = claimer.stdout.getReader();
-      const decoder = new TextDecoder();
-      while (!printed.includes("\n")) {
-        const chunk = await reader.read();
-        if (chunk.done) break;
-        printed += decoder.decode(chunk.value, { stream: true });
-      }
-      expect(JSON.parse(printed)).toEqual({ kind: "claimed", path: claimed });
-      claimer.kill("SIGKILL");
-      await claimer.exited;
+      const claimed = await claimAndDie(data);
       expect([existsSync(data), existsSync(claimed), postmaster.alive()]).toEqual([
         false,
         true,
@@ -614,13 +648,47 @@ test.skipIf(!onLinux)(
       expect([existsSync(claimed), existsSync(mark)]).toEqual([false, false]);
       expect(holding(lines, `removed the postmaster of ${data}`)).toHaveLength(1);
     } finally {
-      if (claimer.exitCode === null && claimer.signalCode === null) claimer.kill("SIGKILL");
       postmaster.stop();
       rmSync(tmp, { recursive: true, force: true });
     }
   },
   // The row waits for a claimer, a `bun` child, to print its claim, and for one start's sweep,
   // another `bun` child; a stuck child waits out its own 600 s at most.
+  600_000
+);
+
+test.skipIf(!onLinux)(
+  "v-no-leftover-postgres: what a start killed between its claim and its removal left in a run directory of another TMPDIR, a start of this TMPDIR finds by the claimed name the kernel shows: the postmaster ends, the directory and the mark go, and one line says so",
+  async () => {
+    const { tmp } = scratch();
+    const left = leaveElsewhere(owners().gone);
+    try {
+      const claimed = await claimAndDie(left.data);
+      // The kernel names the postmaster's working directory by the claim's name now.
+      expect([existsSync(left.data), existsSync(claimed), left.postmaster.alive()]).toEqual([
+        false,
+        true,
+        true,
+      ]);
+
+      const lines = await sweep(tmp);
+
+      expect(left.postmaster.alive()).toBe(false);
+      expect([existsSync(claimed), left.file !== undefined && existsSync(left.file)]).toEqual([
+        false,
+        false,
+      ]);
+      // One line names that stack, and it says the start removed it: none says it was left. The
+      // start prints the run directory's one spelling, the one its data directory is written in.
+      expect(holding(lines, dirname(dirname(left.data)))).toEqual([
+        expect.stringContaining(`removed the postmaster of ${left.data}`),
+      ]);
+    } finally {
+      left.postmaster.stop();
+      rmSync(left.other, { recursive: true, force: true });
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  },
   600_000
 );
 

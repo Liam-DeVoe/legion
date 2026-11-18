@@ -1,5 +1,5 @@
 /** Which runs of this config get the stubbed layer's static file server, and that the server
- *  starts whatever program holds the port this suite used to fix.
+ *  starts whatever program holds the port a run names for it.
  *
  *  `globalSetup` starts `bun e2e/stub/static-server.ts` for a run that holds a stubbed row
  *  (e2e/stub/server.ts). Two jobs of `.github/workflows/dispatch-browser.yaml` run this config
@@ -11,11 +11,14 @@
  *  server.
  *
  *  The server binds port 0 and the run reads its port from the server's own line. Before, it was
- *  Playwright's `webServer` on the fixed port 4319: Playwright tested the URL, then started the
- *  server, which bound the port later. So a second program on 4319 failed the run, either by
- *  answering the test (`http://127.0.0.1:4319/index.html is already used`) or by holding the port
- *  without listening, so the test found it free and the bind then failed (`Failed to start
- *  server. Is port 4319 in use?`). The second and third rows hold 4319 in those two ways.
+ *  Playwright's `webServer` on a fixed port, 4319 or the one `DISPATCH_E2E_STUB_PORT` named:
+ *  Playwright tested the URL, then started the server, which bound the port later. So a second
+ *  program on that port failed the run, either by answering the test (`http://127.0.0.1:4319/
+ *  index.html is already used`) or by holding the port without listening, so the test found it
+ *  free and the bind then failed (`Failed to start server. Is port 4319 in use?`). The second and
+ *  third rows hold a port the kernel chose in those two ways, for the whole run, and name it in
+ *  `DISPATCH_E2E_STUB_PORT`: a server that took that variable's port again would fail them, and no
+ *  row takes a port that another program of the machine may want.
  *
  *  Each row runs the real Playwright runner over this config with a filter that matches no row and
  *  `--pass-with-no-tests`: the hooks still run, so the server starts and stops, and no browser
@@ -32,7 +35,6 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Server } from "bun";
 
 import { stubListeningLine } from "../stub/origin";
 
@@ -40,8 +42,8 @@ import { rowLimit, runBounded } from "./bounded-subprocess";
 
 const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
 
-/** The port the stubbed layer was served on before its server bound port 0. */
-const oldStubPort = 4319;
+/** The variable that named the stubbed layer's fixed port before its server bound port 0. */
+const oldStubPortVariable = "DISPATCH_E2E_STUB_PORT";
 
 const dist = mkdtempSync(join(tmpdir(), "stub-web-server-dist-"));
 writeFileSync(join(dist, "index.html"), "<!doctype html><title>stub-web-server.test.ts</title>\n");
@@ -132,46 +134,43 @@ test(
 );
 
 test(
-  "the stubbed layer is served while another program serves on the port it used to fix",
+  "the stubbed layer is served while another program serves on the port the run names for it",
   async () => {
-    let rival: Server<undefined> | undefined;
+    // Another program serving on a port the kernel chose, held by this row for the whole run.
+    const rival = Bun.serve({
+      fetch: () => new Response("another checkout's page\n"),
+      hostname: "127.0.0.1",
+      port: 0,
+    });
     try {
-      rival = Bun.serve({
-        fetch: () => new Response("another checkout's page\n"),
-        hostname: "127.0.0.1",
-        port: oldStubPort,
-      });
-    } catch (error) {
-      // Something on this machine already holds the port, which is the case this row is about.
-      if (!(error instanceof Error && "code" in error && error.code === "EADDRINUSE")) throw error;
-    }
-    try {
-      expectServedBeside(await runOf(["stub", "stub-phone"]), oldStubPort);
+      const held = rival.port ?? 0;
+      expect(held).toBeGreaterThan(0);
+      expectServedBeside(
+        await runOf(["stub", "stub-phone"], { [oldStubPortVariable]: String(held) }),
+        held
+      );
     } finally {
-      rival?.stop(true);
+      rival.stop(true);
     }
   },
   rowLimit("short")
 );
 
 test(
-  "the stubbed layer is served while another program holds, without listening, the port it used to fix",
+  "the stubbed layer is served while another program holds, without listening, the port the run names for it",
   async () => {
-    // A socket bound and never listening: a test of the port finds nothing there, and a bind of
-    // it fails. That is a port taken between a test and a bind. Python binds without listening;
-    // Bun and node bind only to listen. The row drives that program and stops it, so it starts
-    // outside the bounded children.
+    // A socket bound and never listening, on a port the kernel chose, held for the whole run: a
+    // test of the port finds nothing there, and a bind of it fails. That is a port taken between a
+    // test and a bind. Python binds without listening; Bun and node bind only to listen. The row
+    // drives that program and stops it, so it starts outside the bounded children.
     const rival = Bun.spawn(
       [
         "python3",
         "-c",
         "import socket, sys\n" +
           "s = socket.socket()\n" +
-          "try:\n" +
-          `    s.bind(("127.0.0.1", ${oldStubPort}))\n` +
-          "    print('held', flush=True)\n" +
-          "except OSError as error:\n" +
-          "    print(f'taken {error}', flush=True)\n" +
+          's.bind(("127.0.0.1", 0))\n' +
+          "print(s.getsockname()[1], flush=True)\n" +
           "sys.stdin.read()\n",
       ],
       { stdin: "pipe", stdout: "pipe" }
@@ -180,9 +179,12 @@ test(
       const reader = rival.stdout.getReader();
       const first = new TextDecoder().decode((await reader.read()).value);
       reader.releaseLock();
-      // `taken`: another program already holds the port, which is the case this row is about.
-      expect(first).toMatch(/^(held|taken .*Address already in use)/);
-      expectServedBeside(await runOf(["stub", "stub-phone"]), oldStubPort);
+      const held = Number(first.trim());
+      expect(Number.isInteger(held) && held > 0, `the holder printed ${first}`).toBe(true);
+      expectServedBeside(
+        await runOf(["stub", "stub-phone"], { [oldStubPortVariable]: String(held) }),
+        held
+      );
     } finally {
       rival.kill();
       await rival.exited;

@@ -6,107 +6,15 @@ import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 // lib/leftovers.sh: the one mark and the one removal of a shell stack's Postgres
 // (packages/dispatch/e2e/postgres-mark.ts), and refuse_leftovers, which names what else an earlier
 // run of a stage left. The image rows of packages/dispatch/e2e/__tests__/harness-postgres-leftover
-// .test.ts start real shell stacks' containers and remove them; these rows hold each driver to the
-// two calls and refuse_leftovers to its reading of container names, with a `docker` of their own.
+// .test.ts start real shell stacks' containers and remove them, and lib/sweep-order.test.ts runs
+// each driver's own file to hold it to the removal before its refusals and its creates; these rows
+// hold the removal to bun, and refuse_leftovers to its reading of container names and of the
+// moments a container was made and its owner started, with a `docker` of their own.
 
 const lib = join(import.meta.dir, "leftovers.sh");
-const e2e = join(import.meta.dir, "..");
-const root = join(e2e, "..", "..");
 const dir = temporaryDirectory("leftovers-test");
 
-/** Each shell stack's start that starts a Postgres container, by its path under the repository:
- *  every driver of scripts/e2e that names a Postgres image, lib/session-db.sh, which starts the
- *  session database of Stage 4b and of the sandbox Claude Code proof, and the skill scenarios'
- *  batch. */
-const drivers = [
-  "scripts/e2e/claude-backend-sandbox.sh",
-  "scripts/e2e/claude-backend-tmux.sh",
-  "scripts/e2e/controller-start-tmux.sh",
-  "scripts/e2e/controller-sweep-kind.sh",
-  "scripts/e2e/dispatch-user-turns.sh",
-  "scripts/e2e/lib/session-db.sh",
-  "scripts/e2e/parked-decision-devbox.sh",
-  "scripts/e2e/stage1-skeleton.sh",
-  "scripts/e2e/stage2-tmux-supervision.sh",
-  "scripts/e2e/stage3-devbox-workflow.sh",
-  "scripts/e2e/stage4a-sandbox-runtime.sh",
-  "scripts/e2e/stage4b-sandbox-tree.sh",
-  "scripts/e2e/verifiers-staging-token.sh",
-  "packages/pi-legion/scripts/skill-scenarios/rig.sh",
-];
-
-/** A Postgres image as the drivers name one: the pinned pgvector or PostgreSQL digest, through
- *  the mirror or through the repository's own copy, or the session database's image variable. */
-const postgresImage =
-  /pgvector\/pgvector@sha256:|library\/postgres@sha256:|legion\/ci@sha256:(?:2358fcba|979bccfd)|"\$session_db_image"/;
-
-/** The two calls as a driver writes them: the removal, and the mark of one container, into a
- *  variable the next line's create passes as its `--label`. */
-const sweepLine = /^\s*remove_leftover_postgres \|\| fail .*$/gm;
-const markLine = /^(\s*)(\w+)=\$\(postgres_mark "\$work" ("[^"]+")\) \|\| fail .*$/gm;
-
-describe("each shell stack's start that starts a Postgres runs the one removal and marks its container", () => {
-  test("every driver that names a Postgres image is one of the list", () => {
-    const named = [
-      ...new Bun.Glob("scripts/e2e/*.sh").scanSync({ cwd: root }),
-      ...new Bun.Glob("scripts/e2e/lib/*.sh").scanSync({ cwd: root }),
-      "packages/pi-legion/scripts/skill-scenarios/rig.sh",
-    ].filter((path) => postgresImage.test(readFileSync(join(root, path), "utf8")));
-    expect(named.sort()).toEqual([...drivers].sort());
-  });
-
-  for (const driver of drivers) {
-    test(`${driver}: its two lines run as it calls them, and its create carries the mark`, () => {
-      const text = readFileSync(join(root, driver), "utf8");
-      const sweeps = [...text.matchAll(sweepLine)].map((match) => match[0].trim());
-      const marks = [...text.matchAll(markLine)];
-      expect({ sweeps: sweeps.length, marks: marks.length }).toEqual({
-        sweeps: marks.length,
-        marks: expect.any(Number),
-      });
-      expect(marks.length).toBeGreaterThan(0);
-      for (const [line, , variable = "", container = ""] of marks) {
-        // The command after the mark creates the container with it as a label.
-        const after = text.slice(text.indexOf(line) + line.length + 1).split("\n")[0] ?? "";
-        expect({ after, label: after.includes(`--label "$${variable}"`) }).toEqual({
-          after,
-          label: true,
-        });
-        // Every variable the container's name is built from, set to a value of this row's.
-        const names = [...container.matchAll(/\$\{?(\w+)/g)].map((match) => match[1]);
-        const set = names.map((name) => `${name}=row-${name}`).join("\n");
-        const script = `set -euo pipefail
-. ${JSON.stringify(lib)}
-fail() { echo "FAIL: $*" >&2; exit 1; }
-work=$(mktemp -d ${JSON.stringify(join(dir, "work.XXXXXX"))})
-${set}
-${sweeps[0]}
-${line.trim()}
-printf '%s\\n%s\\n%s\\n' "$$" "$work" "$${variable}"
-printf '%s\\n' ${container}`;
-        const run = Bun.spawnSync(["bash", "-c", script], { env: process.env });
-        const stderr = run.stderr.toString();
-        expect({ code: run.exitCode, stderr }).toEqual({ code: 0, stderr: expect.any(String) });
-        expect(stderr).not.toContain("FAIL:");
-        const [pid = "", work = "", label = "", name = ""] = run.stdout.toString().split("\n");
-        const prefix = "dev.legion.dispatch-e2e.postgres-mark=";
-        expect(label.startsWith(prefix)).toBe(true);
-        const mark = JSON.parse(label.slice(prefix.length)) as {
-          owner: { pid: number };
-          run: string;
-          container: string;
-          sockets?: string;
-        };
-        expect({
-          owner: mark.owner.pid,
-          run: mark.run,
-          container: mark.container,
-          sockets: mark.sockets,
-        }).toEqual({ owner: Number(pid), run: work, container: name, sockets: undefined });
-      }
-    });
-  }
-
+describe("the removal of the Postgres of dead stacks", () => {
   test("a start with no bun on PATH fails with a line that names it", () => {
     const run = Bun.spawnSync(
       [
@@ -150,9 +58,9 @@ describe("refuse_leftovers", () => {
   // where Bun's default of 5 s a row stopped both rows before refuse_leftovers ended.
   const walkBound = 120_000;
 
-  // refuse_leftovers PREFIX run with the fake docker; the prefix is this row's, so no process of
-  // the machine carries its work directory.
-  function refuse(prefix: string, lines: string[]) {
+  // refuse_leftovers PREFIX run with the fake docker, which dates every container `created`; the
+  // prefix is this row's, so no process of the machine carries its work directory.
+  function refuse(prefix: string, lines: string[], created = new Date()) {
     const run = Bun.spawnSync(
       [
         "bash",
@@ -164,7 +72,7 @@ describe("refuse_leftovers", () => {
           ...process.env,
           PATH: `${bin}:${process.env.PATH ?? ""}`,
           FAKE_PS_LINES: lines.join("\n"),
-          FAKE_CREATED: new Date().toISOString(),
+          FAKE_CREATED: created.toISOString(),
         },
       }
     );
@@ -205,6 +113,72 @@ describe("refuse_leftovers", () => {
         `${prefix}-pg-${deadPid()}|{"owner":null}`,
       ]);
       expect(out).toBe("passed\n");
+    },
+    walkBound
+  );
+
+  /** The fraction of a second past the whole second that btime, the boot's line of /proc/stat,
+   *  drops. */
+  function bootFraction(): number {
+    const boot = Date.now() / 1000 - Number(readFileSync("/proc/uptime", "utf8").split(" ")[0]);
+    return boot - Math.floor(boot);
+  }
+
+  /** A live process of this row's, started at a moment of the wall clock whose fraction of a
+   *  second is past btime's by at least 50 ms: where a reading of whole seconds since btime dates
+   *  a container made in the same second before the process's own start. Answers the process and
+   *  the moments, in milliseconds, before and after its spawn. */
+  async function startedPastTheBootsFraction() {
+    const from = Math.min(bootFraction() + 0.05, 0.9);
+    // A real wait for a fraction of the wall clock's second: the fault is in how the kernel's
+    // ticks since the boot meet Docker's wall-clock creation and btime's whole second, and no fake
+    // timer moves /proc or the `date` that refuse_leftovers runs in its own bash.
+    while (!((Date.now() % 1000) / 1000 > from && (Date.now() % 1000) / 1000 < 0.95)) {
+      await Bun.sleep(5);
+    }
+    const before = Date.now();
+    const child = Bun.spawn(["sleep", "120"]);
+    const after = Date.now() + 1;
+    return { child, before, after };
+  }
+
+  // Docker dates a container in nanoseconds and the kernel a process's start in ticks (10 ms):
+  // refuse_leftovers compares them at that precision. A driver that made its container in the same
+  // second it started, after a boot whose fraction of a second btime drops, read as younger than
+  // its container when the creation was read in whole seconds since btime, and its live run's
+  // container was refused.
+  for (const [form, suffix] of [
+    ["<pid>", ""],
+    ["<pid>-<random>", "-fedcba9876543210"],
+  ] as const) {
+    test(
+      `a live run's container named ${form} and made in the tick its driver started is no leftover`,
+      async () => {
+        const { child, after } = await startedPastTheBootsFraction();
+        try {
+          const prefix = `legion-e2eyoung${process.pid}`;
+          const out = refuse(prefix, [`${prefix}-nats-${child.pid}${suffix}|`], new Date(after));
+          expect(out).toBe("passed\n");
+        } finally {
+          child.kill();
+        }
+      },
+      walkBound
+    );
+  }
+
+  test(
+    "a container made 50 ms before the process that now has its pid started is that dead run's leftover",
+    async () => {
+      const { child, before } = await startedPastTheBootsFraction();
+      try {
+        const prefix = `legion-e2elater${process.pid}`;
+        const name = `${prefix}-nats-${child.pid}-0123456789abcdef`;
+        const out = refuse(prefix, [`${name}|`], new Date(before - 50));
+        expect(out).toContain(`container ${name} (docker rm -f -v ${name})`);
+      } finally {
+        child.kill();
+      }
     },
     walkBound
   );

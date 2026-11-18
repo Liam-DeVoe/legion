@@ -1106,7 +1106,7 @@ cleanup() {
   # container running, so the container is removed here too, before the teardown deletes the
   # Sandboxes. Nothing to remove under aws-private-ip. A driver killed outright leaves it for the
   # next run's refuse_leftovers, which names it.
-  docker rm -f "$daemon_container" >/dev/null 2>&1 || true
+  docker rm -f -v "$daemon_container" >/dev/null 2>&1 || true
   # The App credential files (bridge alone) next, once no container of the daemon's can read them,
   # the refresher stopped first; a partial directory, from a run that stopped while it wrote them,
   # goes too.
@@ -1117,7 +1117,7 @@ cleanup() {
   stop_pid "$dispatch_pid"
   stop_pid "$listener_pid"
   for p in $(run_processes); do kill -KILL "$p" 2>/dev/null || true; done
-  docker rm -f "$pg_container" "$nats_container" "$session_db_container" >/dev/null 2>&1 || true
+  docker rm -f -v "$pg_container" "$nats_container" "$session_db_container" >/dev/null 2>&1 || true
   [ -z "$snapshotted" ] || teardown
   remove_run_branch
   # namespace_clean fails loudly when the namespace differs from its snapshot, and its `fail` is an
@@ -1234,6 +1234,11 @@ tools=(go docker jq curl ss kubectl bun gh sha256sum)
 for tool in "${tools[@]}"; do command -v "$tool" >/dev/null || fail "$tool is required"; done
 command -v agent-secrets >/dev/null || fail "agent-secrets, the secrets broker's client the implement App's tokens come through, is required"
 [ -r "$runtime_kubeconfig" ] || fail "the runtime kubeconfig $runtime_kubeconfig is not readable"
+# The Postgres of a dead stack goes first, before refuse_leftovers and ports_free, whose refusals of
+# what the same dead run left (its containers and processes, and the session database port its
+# container still publishes) would end the start with that Postgres still there; this run's carries
+# its mark (lib/leftovers.sh).
+remove_leftover_postgres || fail "the removal of the Postgres of dead stacks could not run"
 refuse_leftovers legion-e2eccs
 ports_free "$port_daemon" "$port_worker_stream" "$port_dispatch" "$port_listener" "$port_nats" "$port_session_db"
 mkdir -p "$state"
@@ -1349,9 +1354,7 @@ chmod 0600 "$work"/*token "$work"/*-header "$work/postgres-password"
 built=$(bash "$root/scripts/e2e/lib/built-from.sh" "$root" "$work/legion" "$work/envoy-listener" "$work/envoy-dispatch") ||
   fail "lib/built-from.sh could not say what the run built"
 while IFS= read -r line; do note "$line"; done <<<"$built"
-# Postgres is the daemon's and Dispatch's alone, so it stays on loopback: no pod reads it. The
-# Postgres of a dead stack goes first, and this run's carries its mark (lib/leftovers.sh).
-remove_leftover_postgres || fail "the removal of the Postgres of dead stacks could not run"
+# Postgres is the daemon's and Dispatch's alone, so it stays on loopback: no pod reads it.
 pg_mark=$(postgres_mark "$work" "$pg_container") || fail "the mark of $pg_container could not be made"
 docker run -d --name "$pg_container" --label "$pg_mark" --mount type=tmpfs,destination=/var/lib/postgresql \
   -e POSTGRES_USER=legion -e POSTGRES_PASSWORD="$(cat "$work/postgres-password")" -e POSTGRES_DB=dispatch \

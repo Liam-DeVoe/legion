@@ -25,7 +25,9 @@ unset NATS_NKEY_SEED NATS_NKEY_SEED_FILE NATS_DAEMON_NKEY_SEED NATS_DAEMON_NKEY_
 
 pg_name=verifiers-e2e-pg
 nats_name=verifiers-e2e-nats
-work=/tmp/verifiers-e2e
+# The run's own directory (mktemp, below): a fixed one let a second run, or a run of another
+# session, remove the directory a live run works in and its Postgres's mark names.
+work=
 dispatch_pid=
 # The id this run's `docker run` of Postgres printed, which cleanup removes it by: the name is one
 # a run of another session may hold.
@@ -38,6 +40,8 @@ cleanup() {
   if [ -n "${listener_pid:-}" ]; then kill -TERM "$listener_pid" 2>/dev/null || true; fi
   [ -z "${pg_id:-}" ] || docker rm -f -v "$pg_id" >/dev/null 2>&1 || true
   docker rm -f -v "$nats_name" >/dev/null 2>&1 || true
+  # The two binaries go; the logs and the last response body stay for the operator.
+  [ -z "${work:-}" ] || rm -f -- "$work/dispatch" "$work/listener"
   return 0
 }
 
@@ -116,7 +120,8 @@ for tool in go docker kubectl jq curl python3 base64; do
 done
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
-rm -rf "$work"
+work=$(mktemp -d /tmp/verifiers-e2e.XXXXXXXX)
+echo "== the run's directory: $work"
 mkdir -p "$work/home"
 body="$work/body.json"
 

@@ -212,7 +212,7 @@ stop_dev_server() {
 	docker logs "$container_id" >"$server_log" 2>&1 || true
 	# Give it a moment to close its database, then insist.
 	docker stop --time 10 "$container_id" >/dev/null 2>&1 || true
-	docker rm --force "$container_id" >/dev/null 2>&1 || true
+	docker rm --force --volumes "$container_id" >/dev/null 2>&1 || true
 	container_id=''
 }
 
