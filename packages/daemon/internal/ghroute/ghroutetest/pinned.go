@@ -3,9 +3,9 @@ package ghroutetest
 import "strings"
 
 // PinnedCheckPortSHA256 is the sha256 of the public_leak_check.py PinnedCheckReads was ported
-// from, leak-check-v15's. ghroute's TestGhReadsAreProvenAgainstThePinnedCheck fails while it is
+// from, leak-check-v18's. ghroute's TestGhReadsAreProvenAgainstThePinnedCheck fails while it is
 // not ghroute.ReadsProvenCheckSHA256, so a bump of the pin fails until this port moves with it.
-const PinnedCheckPortSHA256 = "86d087b3c70ee36907dfca54fec83dcff77f2cd87d888de914145f7f122bc554"
+const PinnedCheckPortSHA256 = "9c8aa217e9bade9e1f82ae59120f0a86b97be208375f1dde592b6c9da9fd61d7"
 
 // PinnedCheckReads says whether the pinned check, the public_leak_check.py whose sha256 is
 // PinnedCheckPortSHA256, reads argv, a gh call's arguments, as a read in its gh_guard: whether it
@@ -102,9 +102,12 @@ var (
 // the last input as given.
 //
 // api_read then reads a read where the host is github.com, the endpoint holds no `://` and is not
-// `graphql` once its leading slashes are gone, the call has no input, and the method, or the
-// field mark where no method is given, is one of "0", "GET" and "HEAD": the check's
-// `(st.M or str(st.F)) in ("0", "GET", "HEAD")`, with the field mark 0 or 1.
+// GitHub's GraphQL one, and the call has no input, and the method, or the field mark where no
+// method is given, is one of "0", "GET" and "HEAD": the check's `(st.M or str(st.F)) in ("0",
+// "GET", "HEAD")`, with the field mark 0 or 1. The endpoint is GraphQL's where it is `graphql` once
+// its leading slashes are gone and it is cut at its first `?` or `#` (the check's
+// graphql_endpoint, which also strips a leading scheme and host: an endpoint holding `://` is no
+// read before that matters).
 func pinnedAPIRead(args []string) bool {
 	var endpoint, method, host, input, pending string
 	field := false
@@ -150,7 +153,11 @@ func pinnedAPIRead(args []string) bool {
 	if len(host) != len("github.com") || !strings.EqualFold(host, "github.com") || strings.Contains(endpoint, "://") {
 		return false
 	}
-	if strings.TrimLeft(endpoint, "/") == "graphql" || input != "" {
+	path := strings.TrimLeft(endpoint, "/")
+	if end := strings.IndexAny(path, "?#"); end >= 0 {
+		path = path[:end]
+	}
+	if path == "graphql" || input != "" {
 		return false
 	}
 	if method != "" {

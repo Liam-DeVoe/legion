@@ -14,15 +14,16 @@ import (
 // that writes nothing only where the public_leak_check.py beside the check it resolved hashes to
 // this (leakguard.GhRequest.ProvenCheck), so a pod under another pin, a tmux pane's check of
 // another version, and a check edited under the same tag get the whole guard. A bump of the pin
-// fails that test until the tag, the sha256 and the tests' port of the check all move: port the
-// new check's gh_guard, is_read, READ_ALL, READ_TWO, collect and api_read into
-// ghroutetest.PinnedCheckReads and its sha256 into ghroutetest.PinnedCheckPortSHA256, run
-// INFRA-3562's xcheck4069 harness against it with 0 mismatching rows, then write its tag here and
-// the sha256 of its public_leak_check.py, `git show <tag>:leak-check/public_leak_check.py |
+// fails that test until the tag, the sha256 and the tests' port of the check all move: read the
+// new check's gh_guard, is_read, READ_ALL, READ_TWO, collect and api_read, and every definition
+// they reach (graphql_endpoint, API_VALUE_OPTS and FIELD_ARGS among them), against the old tag's;
+// port each change to what they read as a read into ghroutetest.PinnedCheckReads and the new
+// sha256 into ghroutetest.PinnedCheckPortSHA256; run INFRA-3562's xcheck4069 harness against it
+// with 0 mismatching rows; then write its tag here and the sha256 of its public_leak_check.py, `git show <tag>:leak-check/public_leak_check.py |
 // sha256sum` in the shared check's own repository.
 const (
-	ReadsProvenCheckTag    = "leak-check-v15"
-	ReadsProvenCheckSHA256 = "86d087b3c70ee36907dfca54fec83dcff77f2cd87d888de914145f7f122bc554"
+	ReadsProvenCheckTag    = "leak-check-v18"
+	ReadsProvenCheckSHA256 = "9c8aa217e9bade9e1f82ae59120f0a86b97be208375f1dde592b6c9da9fd61d7"
 )
 
 // readLeaves are the leaves that send GitHub no request that writes, by the canonical path the

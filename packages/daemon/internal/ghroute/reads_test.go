@@ -53,7 +53,7 @@ func TestGhWritesNothingReadsTheLeafAndTheMethod(t *testing.T) {
 // check was written against (ghroutetest.PinnedCheckPortSHA256). A bump of the pin fails here
 // until the tag, the sha256 and that port all move.
 func TestGhReadsAreProvenAgainstThePinnedCheck(t *testing.T) {
-	const prove = "port the check's gh_guard, is_read, collect and api_read into ghroutetest.PinnedCheckReads and its sha256 into ghroutetest.PinnedCheckPortSHA256, run INFRA-3562's xcheck4069 harness (xcheck4069.tar.gz) against the check with 0 mismatching rows, then name its tag and the sha256 of its public_leak_check.py in ReadsProvenCheckTag and ReadsProvenCheckSHA256"
+	const prove = "follow the steps in ReadsProvenCheckTag's comment (reads.go): read the definitions it lists and every definition they reach in the new check, port each change to what they read as a read into ghroutetest.PinnedCheckReads and the new sha256 into ghroutetest.PinnedCheckPortSHA256, run INFRA-3562's xcheck4069 harness (xcheck4069.tar.gz) against the check with 0 mismatching rows, then name its tag and the sha256 of its public_leak_check.py in ReadsProvenCheckTag and ReadsProvenCheckSHA256"
 	dockerfile, err := os.ReadFile(filepath.Join("..", "..", "docker", "worker.Dockerfile"))
 	if err != nil {
 		t.Fatal(err)

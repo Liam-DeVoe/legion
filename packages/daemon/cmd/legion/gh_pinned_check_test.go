@@ -100,7 +100,8 @@ const ghGuardLookup = "visibility api --hostname github.com repos/acme/widgets -
 //
 // And end to end, against ghCheckReadingLikeThePinnedCheck, a call outside the read grammar is
 // guarded whole. Where the check reads it as no read — a listed leaf by its alias `pr ls`, a gh
-// api endpoint written as a whole URL, `-i=` with a false value, which collect reads as `-f`, `--`
+// api endpoint written as a whole URL, GitHub's GraphQL endpoint with a query or a fragment after
+// it (`graphql?x=1`, `/graphql#x`), `-i=` with a false value, which collect reads as `-f`, `--`
 // before a word collect reads as a method, an empty value before a second option collect then
 // takes as that value, so that the word after it is the method or the endpoint, a method other
 // than GET, a field and an input — the check looks up its target's visibility, and the guard reads
@@ -120,6 +121,8 @@ func TestLegionGhReadsOnlyWhatTheSharedCheckReadsAsARead(t *testing.T) {
 	}{
 		{[]string{"pr", "ls", "-R", "acme/widgets"}, true, true},
 		{[]string{"api", "https://api.github.com/repos/acme/widgets/pulls"}, true, true},
+		{[]string{"api", "graphql?x=1"}, true, false},
+		{[]string{"api", "/graphql#x"}, true, false},
 		{[]string{"api", "-i=false", "repos/acme/widgets/pulls"}, true, true},
 		{[]string{"api", "repos/acme/widgets/pulls", "-i=f"}, true, true},
 		{[]string{"api", "-i=F", "repos/acme/widgets/pulls"}, true, true},
