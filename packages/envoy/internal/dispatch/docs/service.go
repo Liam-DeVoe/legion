@@ -255,6 +255,12 @@ type Service struct {
 	// Nil outside tests; tests use it to compare the rendering with a fresh read and render of
 	// the fork.
 	checkRendering func(at string, write *liveWrite)
+	// beforePublish runs as a committed write starts its publish (publishLiveWrite), before the
+	// room it publishes into is looked up by name. It is no rendering check: the write let go of
+	// its fork at its commit, so the write it is handed holds no fork, but its forkedFrom still
+	// names the room the fork was taken from. Nil outside tests; tests use it to read which room
+	// the write forked from and which room stands under its name as it publishes.
+	beforePublish func(write *liveWrite)
 	// afterSettleAuthorsTake runs after a settlement has bounded the in-flight credits it lists
 	// and before it reads the tree it will version. Nil outside tests; tests use it to edit the
 	// room in that window.

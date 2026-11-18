@@ -902,6 +902,9 @@ func (s *Service) publishLiveWrite(write *liveWrite) {
 	defer s.closeShadow(write)
 	// The write let go of its fork at its commit, where the room's shadow took it (Ledger.commit),
 	// so nothing of it is left here to hold.
+	if s.beforePublish != nil {
+		s.beforePublish(write)
+	}
 	if !s.roomHeld(write.artifactID) {
 		if len(write.updates) > 0 {
 			s.scheduleSettle(write.artifactID)
