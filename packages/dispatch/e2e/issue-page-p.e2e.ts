@@ -62,6 +62,7 @@ import {
   waitingPressInHistory,
 } from "./issue-page-p";
 import { leaveFocus, onBody } from "./keyboard-issue";
+import { boxesApart } from "./layout";
 import { answeredPost, holdPosts, navigateInApp } from "./sends";
 import { expect, type Locator, type Page, type Request, test } from "./test";
 import { assertPageFits, assertWhole } from "./unclipped";
@@ -2272,6 +2273,114 @@ test("the header's menu gives the focus back to its control on Escape and after 
       await triggerFocused(),
       "the menu's Close issue by Enter left the focus off its control"
     ).toBe(true);
+  });
+});
+
+/** What keeps the focused element from a reader's sight against the header's actions menu, the
+ *  element whose id is `menuId`: nothing, or each of the focus on the page's body, the focus
+ *  inside the menu, the menu's box over the focused element's, and another element drawn at the
+ *  focused element's centre. A hidden menu covers nothing. */
+async function focusUnseen(page: Page, menuId: string): Promise<string[]> {
+  // The one caller polls this until it answers nothing, so one instant's answer is safe here.
+  const read = await page.evaluate((id) => {
+    const menu = document.getElementById(id);
+    if (menu === null) throw new Error(`no element carries the actions menu's id ${id}`);
+    const focused = document.activeElement;
+    if (focused === null || focused === document.body) return null;
+    const boxOf = (element: Element) => {
+      const { height, width, x, y } = element.getBoundingClientRect();
+      return { height, width, x, y };
+    };
+    const box = boxOf(focused);
+    const drawn = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
+    const name = focused.getAttribute("aria-label") ?? focused.textContent ?? "";
+    return {
+      box,
+      drawn: drawn === null ? "nothing" : drawn.outerHTML.slice(0, 120),
+      inMenu: menu.contains(focused),
+      menu: menu.checkVisibility() ? boxOf(menu) : null,
+      onTop: drawn !== null && focused.contains(drawn),
+      what: `${focused.tagName.toLowerCase()} "${name.trim()}"`,
+    };
+  }, menuId);
+  if (read === null) return ["the focus is on the page's body"];
+  const unseen: string[] = [];
+  if (read.inMenu) unseen.push(`the focus is on ${read.what}, inside the menu`);
+  if (read.menu !== null && !boxesApart(read.box, read.menu)) {
+    unseen.push(
+      `the menu at ${JSON.stringify(read.menu)} covers ${read.what} at ${JSON.stringify(read.box)}`
+    );
+  }
+  if (!read.onTop) unseen.push(`${read.drawn} is drawn at the centre of ${read.what}`);
+  return unseen;
+}
+
+// The header's ⋯ menu closes once Tab takes the focus on out of it, as the ARIA menu-button
+// pattern closes a menu the focus leaves. At 390 px the open menu is a panel across the screen
+// over the title and the properties line, and it stayed open as Tab took the focus on past its
+// last action, so the focus went on to controls under it that the reader could not see (WCAG
+// 2.4.11). The row opens the menu by Enter from its control, Tabs once per action and once
+// more, and reads the menu closed. It then Tabs on to the title's heading and then the Status,
+// the two the open menu covers at 390 px, and reads the focus in sight at every control it stops
+// on. It sets 390 px for every project before it reads anything, so the phone project would only
+// repeat it.
+test("the header's menu closes once Tab takes the focus out of it, leaving the focus in sight", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedHeader, async (page, seeded) => {
+    await page.setViewportSize(viewportAt(IPHONE_13.width));
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectHeaderDrawn(page);
+    const header = issueHeader(page);
+    const trigger = header.getByRole("button", { exact: true, name: CONTROL_LABELS.issue_actions });
+    await trigger.focus();
+    await page.keyboard.press("Enter");
+    await expect(trigger).toHaveAttribute("aria-expanded", "true");
+    // The control names its menu from its first render, so a missing name only throws.
+    const menuId = await trigger.getAttribute("aria-controls");
+    if (menuId === null) throw new Error("the actions control names no menu");
+    const actions = page.locator(`[id="${menuId}"] button:enabled`);
+    // The control read expanded above, and the open menu draws its actions with it.
+    const reachable = await actions.count();
+    expect(reachable, "the open menu holds no action a Tab reaches at 390 px").toBeGreaterThan(0);
+    for (let at = 0; at < reachable; at += 1) {
+      await page.keyboard.press("Tab");
+      await expect(actions.nth(at), `Tab ${at + 1} did not reach the menu's action`).toBeFocused();
+      await expect(trigger, `Tab ${at + 1} closed the menu inside it`).toHaveAttribute(
+        "aria-expanded",
+        "true"
+      );
+    }
+    // One Tab more takes the focus out of the menu, to the header's next control.
+    await page.keyboard.press("Tab");
+    await expect(
+      trigger,
+      "the menu stayed open once Tab took the focus out of it at 390 px"
+    ).toHaveAttribute("aria-expanded", "false");
+    await expect
+      .poll(() => focusUnseen(page, menuId), {
+        message: "the control the first Tab out of the menu reached is not in sight at 390 px",
+      })
+      .toEqual([]);
+    // On from there to the title's heading and then the Status, each found by its role and name.
+    for (const [what, target] of [
+      ["the title's heading", header.getByRole("heading", { level: 1 })],
+      ["the Status select", header.getByRole("combobox", { name: "Status" })],
+    ] as const) {
+      let reached = false;
+      for (let press = 1; press <= 6 && !reached; press += 1) {
+        await page.keyboard.press("Tab");
+        await expect
+          .poll(() => focusUnseen(page, menuId), {
+            message: `the control Tab ${press} on towards ${what} reached is not in sight at 390 px`,
+          })
+          .toEqual([]);
+        // Each Tab moves the focus before its press resolves, so one read says where it went.
+        reached = await target.evaluate((element) => element === document.activeElement);
+      }
+      expect(reached, `six Tabs did not take the focus on to ${what} at 390 px`).toBe(true);
+    }
   });
 });
 
