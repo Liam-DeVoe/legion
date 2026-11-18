@@ -1797,3 +1797,40 @@ test("two presses of a handoff's Retry before a render send one read", async () 
     getHandoff.mockRestore();
   }
 });
+
+// A reader who presses a handoff's Retry twice by keyboard - the first press seemed to do
+// nothing, or the key repeated - asked for the fields once. The first press hands the focus to
+// the toggle above the line, so the second lands on that toggle and shuts the fields the reader
+// pressed Retry to read. Found by the tester on a running build of 7c09739d: on a seeded issue,
+// Show fields with the handoff's read failing, then Enter twice on Retry, left the toggle
+// reading "Show fields" and the fields shut once the read landed.
+test("a handoff's Retry pressed twice by keyboard leaves its fields open once the read lands", async () => {
+  const getHandoff = spyOn(api, "getHandoff").mockRejectedValueOnce(
+    new Error("the handoff is down")
+  );
+  // The read the Retry sends is held out until the case lets it land.
+  const again = Promise.withResolvers<Handoff>();
+  let unmount: (() => void) | undefined;
+
+  try {
+    unmount = drawHandoff().unmount;
+    const toggle = screen.getByRole("button", { name: CONTROL_LABELS.show_fields });
+    toggle.focus();
+    await userEvent.keyboard("{Enter}");
+    const retry = await screen.findByRole("button", { name: CONTROL_LABELS.retry });
+    getHandoff.mockImplementation(() => again.promise);
+    retry.focus();
+    await userEvent.keyboard("{Enter}{Enter}");
+    await act(async () => again.resolve(handoffRecord("Second pass")));
+
+    expect(
+      toggle,
+      "the second press of Retry landed on the toggle and shut the fields it asked for"
+    ).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText("Second pass")).toBeInTheDocument();
+    expect(getHandoff, "the two presses read the handoff more than once").toHaveBeenCalledTimes(2);
+  } finally {
+    unmount?.();
+    getHandoff.mockRestore();
+  }
+});
