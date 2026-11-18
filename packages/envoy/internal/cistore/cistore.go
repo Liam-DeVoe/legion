@@ -527,10 +527,10 @@ func (c ciCache) Apply(entry kvwatch.Entry, read kvwatch.Read) {
 // Unmarked names the records the read has no evidence of, held or only in stored, the stream's
 // keys, for the watcher to read from the stream's leader before the read completes
 // (kvwatch.Copy.Unmarked).
-func (c ciCache) Unmarked(_ kvwatch.Read, stored []string) []string {
+func (c ciCache) Unmarked(stored []string) []string {
 	s := c.s
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.cache.Unmarked(stored)
 }
 

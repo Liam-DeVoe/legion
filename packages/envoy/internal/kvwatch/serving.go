@@ -58,9 +58,7 @@ var ErrUnverified = errors.New("kvwatch: no read could read its bucket past a ba
 // repair it. It names the watcher and its bucket, how long the reads have waited and the run's
 // last error, and is nil before the bound and once a read completes. A cache that answers for two
 // watchers (store.Registry) reports either one's under that one's own name. A watcher whose reads
-// fail so keeps running, so Err stays nil; the listener's /healthz reports this instead. A wait is
-// bounded by the barrier write's request timeout and then the idle timeout, both well inside the
-// stale bound, so a run reaches it only across reads.
+// fail so keeps running, so Err stays nil; the listener's /healthz reports this instead.
 func (w *Watcher) ReadErr() error {
 	w.mu.RLock()
 	defer w.mu.RUnlock()

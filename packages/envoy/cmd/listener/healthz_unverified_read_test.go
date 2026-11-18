@@ -194,7 +194,7 @@ func unverifiedReadWatcher(t *testing.T, conn *natsgo.Conn, now func() time.Time
 		t.Fatalf("open the bucket: %v", err)
 	}
 	handle := bus.NewKeyValue(kv.Legacy(), kv.WatchHandle(), failedBarriers{JetStream: kv.Streams()})
-	w := kvwatch.New("session registry", handle, keepsNothing{}, kvwatch.WithNow(now), kvwatch.WithAfterFunc(waits.after),
+	w := kvwatch.New("session registry", handle, discardingCache{}, kvwatch.WithNow(now), kvwatch.WithAfterFunc(waits.after),
 		kvwatch.WithStreamProbeInterval(0))
 	t.Cleanup(w.Stop)
 	return w
@@ -210,14 +210,6 @@ type failedBarriers struct {
 func (failedBarriers) PublishMsg(context.Context, *natsgo.Msg, ...jetstream.PublishOpt) (*jetstream.PubAck, error) {
 	return nil, natsgo.ErrConnectionClosed
 }
-
-// keepsNothing is a kvwatch.Cache that keeps nothing.
-type keepsNothing struct{}
-
-func (keepsNothing) Apply(kvwatch.Entry, kvwatch.Read)        {}
-func (keepsNothing) BeginRead(kvwatch.Read)                   {}
-func (keepsNothing) CompleteRead(kvwatch.Read)                {}
-func (keepsNothing) Unmarked(kvwatch.Read, []string) []string { return nil }
 
 // heldWaits is a kvwatch.AfterFunc that keeps every wait and fires none: the watcher's re-reads
 // wait for the test, which reads only how many re-reads of a failed read were armed (the 5 s wait

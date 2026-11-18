@@ -40,6 +40,3 @@ func (kv KeyValue) WriteBarrier(ctx context.Context) (uint64, error) {
 	}
 	return ack.Sequence, nil
 }
-
-// IsBarrier reports whether key is BarrierKey, whose records every reader of a bucket drops.
-func IsBarrier(key string) bool { return key == BarrierKey }

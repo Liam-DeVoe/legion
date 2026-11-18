@@ -52,7 +52,7 @@ func (s *seen) BeginRead(read kvwatch.Read) {
 	s.begun = append(s.begun, read)
 }
 
-func (s *seen) Unmarked(_ kvwatch.Read, stored []string) []string {
+func (s *seen) Unmarked(stored []string) []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.keys.Unmarked(stored)

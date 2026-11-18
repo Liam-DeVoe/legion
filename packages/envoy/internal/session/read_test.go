@@ -558,9 +558,6 @@ func (c *clock) advance(d time.Duration) {
 // is held after it has delivered every record, and the registry's clock moves past the live
 // window and both rows' deadlines, inside the stale bound: the copy is still servable, so
 // GET /v1/sessions answers this List.
-//
-// Before, this test was TestARowPastItsLiveWindowReadsUnresponsiveThroughAReadAndItsSweep, and it
-// asserted ses_old unresponsive during the read.
 func TestAKeptRowReadsLiveThroughAReadAndByItsAgeAfterIt(t *testing.T) {
 	client := setupNATS(t)
 	now := &clock{}

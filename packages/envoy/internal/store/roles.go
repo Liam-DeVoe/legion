@@ -314,10 +314,10 @@ func (c roleCache) CompleteRead(read kvwatch.Read) {
 // keys, for the watcher to read from the stream's leader before the read completes
 // (kvwatch.Copy.Unmarked). A claim the leader holds is applied as a delivered record (Apply), so a
 // read that repairs counts it as any delivery is counted.
-func (c roleCache) Unmarked(_ kvwatch.Read, stored []string) []string {
+func (c roleCache) Unmarked(stored []string) []string {
 	r := c.r
-	r.holdersMu.Lock()
-	defer r.holdersMu.Unlock()
+	r.holdersMu.RLock()
+	defer r.holdersMu.RUnlock()
 	return r.roleHolders.Unmarked(stored)
 }
 

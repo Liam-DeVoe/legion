@@ -82,7 +82,7 @@ type Cache interface {
 	// so the completed read holds every key the bucket held at the read's barrier, and
 	// CompleteRead removes only a row whose key the leader answered it holds no record of
 	// (verifyUnmarked). A cache that keeps no copy names none.
-	Unmarked(read Read, stored []string) []string
+	Unmarked(stored []string) []string
 }
 
 // Read names one read of the bucket: the watcher generation that reads it, as the cache sees it.
@@ -685,9 +685,8 @@ func (w *Watcher) consume(sub *subscription, generation uint64, read Read, start
 			// scan's end -- one that came after its idle wait ended it -- says nothing more.
 			if scanning {
 				scanning = false
-				if w.endScan(generation, scan, started, false) {
-					settle = w.beginSettle(generation, read)
-				}
+				w.endScan(generation, scan, started, false)
+				settle = w.beginSettle(generation, read)
 			}
 			continue
 		}
@@ -697,7 +696,7 @@ func (w *Watcher) consume(sub *subscription, generation uint64, read Read, start
 		}
 		// A read barrier (bus.BarrierKey) is no record of the bucket's: no cache sees it, and no
 		// scan counts it. It still counts toward the settle below, as every delivery does.
-		if !bus.IsBarrier(entry.Key) {
+		if entry.Key != bus.BarrierKey {
 			if scanning {
 				scan.count(entry)
 			}
@@ -903,7 +902,7 @@ func (w *Watcher) verifyUnmarked(generation uint64, read Read, barrier uint64) e
 	w.mu.RUnlock()
 	var keys []string
 	if completes {
-		keys = w.cache.Unmarked(read, stored)
+		keys = w.cache.Unmarked(stored)
 	}
 	w.applyMu.Unlock()
 	if len(keys) == 0 {
@@ -998,11 +997,11 @@ func (w *Watcher) clearSettleLocked() {
 
 // endScan ends generation's scan, which delivered scan, at its nil or, when timedOut, at its idle
 // wait. The current generation's scan disarms that wait and logs its warm-up line. A complete scan
-// reports true, for consume to wait past a barrier before the read completes (beginSettle). A
-// timed-out one is logged and never recorded as the watcher's error: the watcher is still running,
-// so Err(), Ping(), /healthz and the self-health rebuild must not read it as dead, and the watcher
-// reads the bucket again itself (readAgainLater) and releases readiness.
-func (w *Watcher) endScan(generation uint64, scan KeyScan, started time.Time, timedOut bool) bool {
+// leaves its read to consume, which waits past a barrier before the read completes (beginSettle).
+// A timed-out one is logged and never recorded as the watcher's error: the watcher is still
+// running, so Err(), Ping(), /healthz and the self-health rebuild must not read it as dead, and the
+// watcher reads the bucket again itself (readAgainLater) and releases readiness.
+func (w *Watcher) endScan(generation uint64, scan KeyScan, started time.Time, timedOut bool) {
 	w.mu.Lock()
 	current := generation == w.generation
 	if current {
@@ -1013,13 +1012,12 @@ func (w *Watcher) endScan(generation uint64, scan KeyScan, started time.Time, ti
 		w.logWarmUp(scan, time.Since(started), timedOut)
 	}
 	if !timedOut {
-		return true
+		return
 	}
 	w.readAgainLater(generation, timedOutCause)
 	if w.current(generation) {
 		w.signalReady()
 	}
-	return false
 }
 
 // closed handles the end of sub, generation's watcher, whose updates nats.go has closed: it cancels

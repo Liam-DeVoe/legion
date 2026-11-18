@@ -113,16 +113,8 @@ func (k *windowWatch) Watch(ctx context.Context, keys string, opts ...jetstream.
 			ended = ended || entry == nil
 		}
 	}()
-	return &heldUpdates{KeyWatcher: watcher, updates: updates}, nil
+	return &forwardedKeyWatcher{KeyWatcher: watcher, updates: updates}, nil
 }
 
 // letThrough hands over every update held after a scan's end, and every later one.
 func (k *windowWatch) letThrough() { k.letOnce.Do(func() { close(k.afterEnd) }) }
-
-// heldUpdates is a watcher whose updates come through windowWatch's forwarder.
-type heldUpdates struct {
-	jetstream.KeyWatcher
-	updates chan jetstream.KeyValueEntry
-}
-
-func (w *heldUpdates) Updates() <-chan jetstream.KeyValueEntry { return w.updates }

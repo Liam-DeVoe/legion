@@ -82,10 +82,10 @@ func (c interestCache) CompleteRead(kvwatch.Read) {
 // Unmarked names the interests the read has no evidence of, held or only in stored, the stream's
 // keys, for the watcher to read from the stream's leader before the read completes
 // (kvwatch.Copy.Unmarked).
-func (c interestCache) Unmarked(_ kvwatch.Read, stored []string) []string {
+func (c interestCache) Unmarked(stored []string) []string {
 	r := c.r
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	return r.cache.Unmarked(stored)
 }
 

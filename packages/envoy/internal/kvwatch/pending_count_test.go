@@ -34,9 +34,6 @@ import (
 // count of 0. Which count a delivery carries depends on whether the server's signal goroutine has
 // run between a store and a delivery, and nothing outside nats-server can hold that goroutine, so
 // the test hands the read the count the server reports when it has not.
-//
-// 42cf2e037f completes the read at that delivery and removes A and K; this build reads both from
-// the stream's leader before it removes anything, and keeps them.
 func TestAReadKeepsRowsAFalseZeroPendingCountWouldSweep(t *testing.T) {
 	uri := testnats.URL(t)
 	_, kv := bucket(t, uri)
@@ -86,10 +83,6 @@ func TestAReadKeepsRowsAFalseZeroPendingCountWouldSweep(t *testing.T) {
 // two records the consumer has left, B@2 and K@3, the consumer is resumed: its first delivery is
 // B@2 with a true pending count of 1. The read must hold K when it completes, before K@3 is
 // delivered: the bucket held K at the read's barrier, and holds it still.
-//
-// e4edeac218 completes the read at that delivery without K, because it read from the stream's
-// leader only the rows the copy held; this build lists the keys the stream holds and reads K from
-// the leader before the read completes.
 func TestAReadHoldsAWindowKeyOnlyAnotherWriterWrote(t *testing.T) {
 	uri := testnats.URL(t)
 	_, kv := bucket(t, uri)

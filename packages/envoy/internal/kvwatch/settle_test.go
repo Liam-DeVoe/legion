@@ -118,10 +118,9 @@ func TestAReadRemovesAScannedKeyTheBucketDeletedInItsWindow(t *testing.T) {
 //
 // The order is the real server's, on the consumer under test: that consumer is paused from its
 // creation until the replacements are stored (pausedWatch), so its cursor is still behind A@1 when
-// the bucket removes it, and the counts its deliveries carry are the server's own. The round-3
-// review of #4238 derived the order against a filtered watch of the candidate keys (3fcfb97789's
-// bus.KeyValue.ReadLatest), which this build no longer makes; TestAReadKeepsRowsAFalseZeroPendingCountWouldSweep
-// is the same order with the barrier's pending count the server can misreport.
+// the bucket removes it, and the counts its deliveries carry are the server's own.
+// TestAReadKeepsRowsAFalseZeroPendingCountWouldSweep is the same order with the barrier's pending
+// count the server can misreport.
 func TestAReadKeepsAKeyTheBucketReplacedAheadOfItsConsumer(t *testing.T) {
 	uri := testnats.URL(t)
 	_, kv := bucket(t, uri)

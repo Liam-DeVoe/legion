@@ -514,14 +514,14 @@ func sessionHealthFields(sessions *session.SessionRegistry) map[string]interface
 // while /v1 already serves; 200 "healthy" with the durable consumer's lag once every dependency
 // answers; 503 "unhealthy" when NATS is unavailable, the durable subscription is inactive, a
 // cache's watcher has stopped, a cache's reads have not read its bucket past a barrier for longer
-// than its stale bound (kvwatch.Watcher.ReadErr), the durable consumer is
-// gone, a bus check did not answer within healthzBudget, or the durable consumer is
-// "not bound to this listener's subscription" because it was recreated server-side and now
-// delivers elsewhere; and 200 "degraded" for a transient KV failure the self-health monitor and
-// the NATS reconnect retry, and for a KV watch rebuild stalled past bus.RepairGrace (below). A
-// role lane client that is not connected or holds no valid subscription is 503 "role lane
-// subscription inactive", since no role message is forwarded then. A listener that mounts no GitHub webhook route keeps no CI cache, and its answer carries
-// "ci_cache": "not_applicable".
+// than its stale bound (kvwatch.Watcher.ReadErr), the durable consumer is gone, a bus check did not
+// answer within healthzBudget, or the durable consumer is "not bound to this listener's
+// subscription" because it was recreated server-side and now delivers elsewhere; and 200
+// "degraded" for a transient KV failure the self-health monitor and the NATS reconnect retry, and
+// for a KV watch rebuild stalled past bus.RepairGrace (below). A role lane client that is not
+// connected or holds no valid subscription is 503 "role lane subscription inactive", since no role
+// message is forwarded then. A listener that mounts no GitHub webhook route keeps no CI cache, and
+// its answer carries "ci_cache": "not_applicable".
 //
 // A rewatch of the KV caches that keeps failing after a reconnect ends no watcher and clears no
 // cache, so every other check still passes while the caches follow buckets they no longer watch
@@ -591,12 +591,13 @@ func sessionHealthFields(sessions *session.SessionRegistry) map[string]interface
 // below the copy, not its freshness.
 //
 // The known-session store's reads are judged after the role claim checks. A store whose reads have
-// not read its bucket past a barrier for longer than its stale bound (session.KnownSessions.ReadErr)
-// is 200 "degraded" with the error "known session KV read unavailable: …", keeping every other
-// field. Degraded and never unhealthy: the store is none of the listener's caches
-// (listenerDeps.known), so neither the self-health monitor nor a readiness probe is to act on it,
-// and until a read completes the store answers no record (session.KnownSessions.Opened), so a send
-// to a stopped session answers 404 and a publish carries no recipient counts.
+// not read its bucket past a barrier for longer than its stale bound
+// (session.KnownSessions.ReadErr) is 200 "degraded" with the error "known session KV read
+// unavailable: …", keeping every other field. Degraded and never unhealthy: the store is none of
+// the listener's caches (listenerDeps.known), so neither the self-health monitor nor a readiness
+// probe is to act on it, and until a read completes the store answers no record
+// (session.KnownSessions.Opened), so a send to a stopped session answers 404 and a publish carries
+// no recipient counts.
 func healthzHandler(deps *atomic.Pointer[listenerDeps]) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -632,8 +633,7 @@ func healthzHandler(deps *atomic.Pointer[listenerDeps]) http.HandlerFunc {
 		// A copy whose reads have not read its bucket past a barrier for its stale bound is one
 		// the routes already refuse (kvwatch.Watcher.Servable), and nothing but a bucket that takes
 		// the barrier and a consumer that reaches it repairs it, so it is unhealthy, not degraded:
-		// the watcher behind it still
-		// runs, and its Ping answers.
+		// the watcher behind it still runs, and its Ping answers.
 		for _, c := range d.caches {
 			if err := c.cache.ReadErr(); err != nil {
 				writeDependencyHealth(w, c.name+" KV read", err, true)

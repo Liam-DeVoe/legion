@@ -969,9 +969,9 @@ func (c knownCache) CompleteRead(kvwatch.Read) {
 // Unmarked names the records the read has no evidence of, held or only in stored, the stream's
 // keys, for the watcher to read from the stream's leader before the read completes
 // (kvwatch.Copy.Unmarked).
-func (c knownCache) Unmarked(_ kvwatch.Read, stored []string) []string {
-	c.s.mu.Lock()
-	defer c.s.mu.Unlock()
+func (c knownCache) Unmarked(stored []string) []string {
+	c.s.mu.RLock()
+	defer c.s.mu.RUnlock()
 	return c.s.records.Unmarked(stored)
 }
 

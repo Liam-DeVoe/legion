@@ -204,8 +204,8 @@ func TestStoredKeysListsEveryKeyTheStoreHoldsWhateverChangesBetweenItsPages(t *t
 			must:   []string{"a", "c", "d", "e"},
 		},
 		{
-			// The round-6 order: a key before the boundary expires and a later one is stored in
-			// the same interval, so the subject at the next count is one past the key it shifted.
+			// A key before the boundary expires and a later one is stored in the same interval,
+			// so the subject at the next count is one past the key it shifted.
 			name:   "a key removed before the boundary and one added after it",
 			before: map[int]func(s *pagedStore){1: func(s *pagedStore) { s.remove("a"); s.put("f") }},
 			must:   []string{"b", "c", "d", "e"},
