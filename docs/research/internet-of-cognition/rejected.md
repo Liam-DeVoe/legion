@@ -49,6 +49,6 @@ What is kept from SCOPE is on the judgement's execution-record page, and it is O
 
 ## From the organisation's other two repositories
 
-- **`ioc-project.github.io`** is the documentation site: prose, read over GitHub's REST API for the triage and cited by no claim; its licence is the one file of it kept, with its checksum [t-site-identity, t-site-licence].
+- **`ioc-project.github.io`** is the documentation site: prose, read over GitHub's REST API for the triage and cited by no claim; its licence and the chart of Figure 3 of their blog post of 2026-09-15 are the two files of it kept, each with its checksum [t-site-identity, t-site-licence, i-measure-series-n].
 
 - **The `.github` repository** holds the organisation profile page and no licence, so its prose may be quoted and nothing of it may be copied [t-dg-no-licence].

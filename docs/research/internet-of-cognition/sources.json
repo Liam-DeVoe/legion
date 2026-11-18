@@ -38,7 +38,7 @@
     "compile_input": "evidence/ioc-venv/pyproject.toml",
     "lock": "evidence/ioc-venv.lock",
     "torch_links": "https://download.pytorch.org/whl/cpu/torch/",
-    "comment": "The instant every package index read is held to: uv resolved the lock, the mas-lab constraints and the build constraints as the indexes stood then. It is the time of commit 17a8ca1d, which recorded the outputs of the model rows. The lock is compiled from compile_input, which holds the four requirements of requirements and reads torch from the PyTorch CPU index alone and every other package from PyPI; env.sh installs IOC_VENV from the hashed lock with uv pip sync --require-hashes, finding torch's file, the CPU build 2.15.0+cpu, on the page torch_links names, which lists torch's files alone."
+    "comment": "The instant every package index read is held to: uv resolved the lock, the mas-lab constraints and the build constraints as the indexes stood then. It is the time of commit 17a8ca1d, which recorded the outputs of the model rows. The lock is compiled from compile_input, which holds the five requirements of requirements and reads torch from the PyTorch CPU index alone and every other package from PyPI; env.sh installs IOC_VENV from the hashed lock with uv pip sync --require-hashes, finding torch's file, the CPU build 2.15.0+cpu, on the page torch_links names, which lists torch's files alone. The fifth requirement, pypdf 5.1.0, was added on 2026-11-18 for the rows that print the words of their study PDF."
   },
   "our_repository": {
     "name": "legion",
@@ -98,6 +98,14 @@
       "copy": "published/ioc-site-LICENSE.txt",
       "comment": "The licence of the documentation site, read in the triage.",
       "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+    },
+    {
+      "id": "ioc-site-blog-impact-vs-challenges",
+      "address": "https://raw.githubusercontent.com/ioc-project/ioc-project.github.io/c62824af5a2d0544e102ccf7a1e456210a89af51/docs/assets/diagrams/blog-impact-vs-challenges.svg",
+      "fetched": "2026-11-18",
+      "copy": "published/blog-impact-vs-challenges.svg",
+      "comment": "The site's copy of the chart of Figure 3 of the blog post of 2026-09-15, at the commit the tree copy names, 10761 bytes, git blob d03b3846a7b00c8e2d201e1e5073ff71faf8a307. It gives the number of debates behind each point of the debate series, which the post's text does not.",
+      "sha256": "067f3ace9a370b656b7fb5d1cd71fbde761bd491e15434172526aff07ef59344"
     },
     {
       "id": "pypi-mas-lab",

@@ -10,7 +10,7 @@ Each was read at one commit, which `sources.json` pins.
 ## The answer, in one screen
 
 Nothing is taken wholesale, and no verdict on the list is `vendor` or `depend`.
-Two steps are landed in the pull request that carries this directory, both in the skills every Legion reviewer and implementer reads: each review round's shortfall is recorded as two grader rows rather than one verdict, and the rule that combines the two graders is written where the reviewer reads it.
+Two steps are landed in the pull request that carries this directory, both in Legion's skill files: each review round's shortfall is recorded as two grader rows rather than one verdict, in `pr-body.md`, which a role reads when it writes or edits the pull-request body, and in `merge-gate.md`, which the reviewer, the tester on a production-check look and the merger read; and the rule that combines the two graders is written in `merge-gate.md`, where the reviewer reads it.
 Three candidates stand above them in cost and below them in order: one definitions record, an execution record under the OpenTelemetry `gen_ai.` names, and one optional field on the Envoy envelope carrying a node reference.
 One candidate is a page rather than a step, because it would refuse completions in every other tree.
 One is rejected: MAS Lab's experiment harness, because the rig it would replace already exists here.

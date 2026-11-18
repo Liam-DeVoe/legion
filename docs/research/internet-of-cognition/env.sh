@@ -42,7 +42,8 @@
 #                   check.sh --replay reads both records itself, live, before it sources
 #                   env.sh, and names its own copies here; env.sh then reads neither
 #   IOC_VENV        the virtual environment uv builds for the similarity and scope rows
-#   IOC_PY          that environment's python: sentence-transformers, torch, rdflib and pyshacl
+#   IOC_PY          that environment's python: sentence-transformers, torch, rdflib, pyshacl
+#                   and pypdf
 #   IOC_MODEL_DIR   the pinned all-MiniLM-L6-v2 snapshot, its model.safetensors checksummed
 #   IOC_MASLAB_VENV       mas-lab runtime, ctl and library-standard installed from the clone
 #   IOC_MASLAB_WHEEL_VENV the second, empty environment the two schema rows install into
@@ -564,15 +565,16 @@ ioc_env_records() {
 # The interpreter the similarity table and the scope rows run on, synced to exactly the
 # hashed lock whenever it is built, and reused only when its stamp names that lock, so a
 # cache an earlier run left cannot carry another set:
-# evidence/ioc-venv.in names its four requirements, sentence-transformers, torch and
-# rdflib at the versions similarity/table.md records and pyshacl, which the scope rows
-# run beside rdflib, and evidence/ioc-venv.lock pins all 52 packages with their hashes,
-# torch at 2.15.0+cpu, its CPU build.
+# evidence/ioc-venv.in names its five requirements, sentence-transformers, torch and
+# rdflib at the versions similarity/table.md records, pyshacl, which the scope rows run
+# beside rdflib, and pypdf, which the rows that print the words of their study PDF read it
+# with, and evidence/ioc-venv.lock pins all 53 packages with their hashes, torch at
+# 2.15.0+cpu, its CPU build.
 ioc_env_python_pinned() {
     "$IOC_PY" - "$IOC_EVID/ioc-venv.in" <<'PY' >/dev/null 2>&1
 import sys
 from importlib.metadata import version
-import sentence_transformers, torch, rdflib, pyshacl
+import sentence_transformers, torch, rdflib, pyshacl, pypdf
 for line in open(sys.argv[1]):
     line = line.split("#", 1)[0].strip()
     if line:
@@ -606,7 +608,7 @@ ioc_env_python() {
             ioc_env_refuse "IOC_PY" "uv pip sync --require-hashes --find-links $IOC_ENV_TORCH_LINKS $lock failed" || return 1
     fi
     ioc_env_python_pinned ||
-        ioc_env_refuse "IOC_PY" "$IOC_PY does not import the four requirements of evidence/ioc-venv.in at those versions" || return 1
+        ioc_env_refuse "IOC_PY" "$IOC_PY does not import the five requirements of evidence/ioc-venv.in at those versions" || return 1
     ioc_env_check_frozen IOC_VENV || return 1
     ioc_env_stamp_write IOC_VENV "$want"
 }

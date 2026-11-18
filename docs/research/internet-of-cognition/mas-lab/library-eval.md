@@ -70,7 +70,7 @@ An experiment is a matrix: scenarios, times dataset items, times runs [m-eval-ex
 
 A scenario is a stack of overlays over one MAS manifest [m-eval-scenario-overlay].
 
-An overlay is a patch of the agent manifest, so a changed prompt or a changed pattern is one overlay [m-eval-overlay-is-patch].
+An overlay is a patch of the agent manifest, so a changed design pattern is one overlay [m-eval-overlay-is-patch].
 
 A dataset is a manifest of kind `Dataset` whose `spec.items` hold the inputs [m-eval-dataset-kind].
 
@@ -78,7 +78,7 @@ The run count is `run.n_runs`, and its default is 3 [m-eval-n-runs].
 
 The judge model is a slot on the experiment: `models.judge`, or `evaluation.model`, or a per-step `config.model` [m-eval-judge-slot].
 
-The runner executes the MAS through the mas-lab runtime [m-eval-runner-is-mas].
+The runner it ships, `native`, hands the run to `ctl`'s `MasBenchRunner`, which executes the MAS through the mas-lab runtime [m-eval-runner-group, m-eval-runner-is-mas].
 
 ## What the stack does with the numbers
 
@@ -93,12 +93,12 @@ No part of the repository runs a test of the difference between two arms [m-eval
 ## Question 2: could its experiment harness measure whether a change to a role's prompt or skill made Legion better?
 
 The scoring part could, after work [m-eval-answer].
-The running part could not [m-eval-answer].
+The running part could only through a runner of ours [m-eval-answer, m-eval-runner-group].
 
 The reason is the unit.
-The harness runs a MAS that the mas-lab runtime instantiates [m-eval-runner-is-mas].
+The runner it ships runs a MAS that the mas-lab runtime instantiates [m-eval-runner-is-mas], and the harness takes its runner by the id an experiment names from a plugin group, `mas.lab.runners` [m-eval-runner-group].
 A Legion role is an Oh My Pi session that our own rig starts from a packed plugin of a checkout [m-eval-our-rig].
-The harness has no way to start that session, so only the file-scoring surface, `mas-lab eval SOURCE`, is usable for us [m-eval-surfaces].
+That runner has no way to start that session, so the harness could run a Legion role only through a runner of ours added to that group, which would write their trace for `eval_mce` to score [m-eval-runner-group]; without one, only the file-scoring surface, `mas-lab eval SOURCE`, is usable for us [m-eval-surfaces].
 
 These are the five things we would have to supply.
 
@@ -135,7 +135,7 @@ We run judges already: ten judge prompts [m-eval-our-judge-prompts], each in a f
 One more thing is needed that the list above hides: a control.
 A comparison of two labels measures the rule only when a label whose skills lack the rule scores lower.
 Our rig states that rule and requires an ablate arm for every comparison [m-eval-ablate-rule].
-mas-lab names the ablation as a use of the harness and shows a `baseline` scenario with no overlays, but it is a convention of the manifest and no code holds it [m-eval-control-convention].
+mas-lab names the ablation as a use of the harness and shows a `baseline` scenario with no overlays, as a convention of the manifest [m-eval-control-convention].
 
 ## What of ours exists for this today
 
