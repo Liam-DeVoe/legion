@@ -669,7 +669,7 @@ func (g *Guard) lsRemote(ctx context.Context, origin, slug string) (Visibility, 
 	}
 	masked := maskPath(slug)
 	if status != 0 {
-		return "", fmt.Errorf("git ls-remote of %s exited %d: %s", masked, status, strings.ReplaceAll(strings.TrimSpace(stderr.String()+listed), slug, masked))
+		return "", gitExited("git ls-remote of "+masked, status, strings.ReplaceAll(stderr.String()+listed, slug, masked))
 	}
 	return "", fmt.Errorf("git ls-remote of %s exited 0 and listed no ref", masked)
 }

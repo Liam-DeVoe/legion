@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"regexp"
 	"slices"
 	"strings"
 )
@@ -119,8 +120,9 @@ func PushName(remote string) string {
 // lines on its standard input, the repository as its working directory — and then, for a
 // destination GitHub reports public, or one the guard cannot name, such as a local path
 // (scanThrough), this repository's own private-name rules read the push's records (pushRecords):
-// each ref name, and for each commit the destination does not already hold, the author, the
-// committer, the message, each added or renamed path, and each added line.
+// each ref name, for each annotated tag the destination does not already hold, the name the tag
+// holds, the tagger and the message, and for each commit the destination does not already hold,
+// the author, the committer, the message, each added or renamed path, and each added line.
 //
 // The rules read no commit the destination already holds, which is a commit one of its branches
 // or tags reaches as the destination itself reports them at the push: one git ls-remote of the
@@ -160,29 +162,32 @@ func (g *Guard) Push(ctx context.Context, req PushRequest) error {
 	if !public {
 		return nil
 	}
-	// held are the commits the destination holds, not read at all for a push of deletions alone,
-	// which adds no commit.
-	var held []string
+	// held are the commits the destination holds and tags the tag objects it holds, not read at
+	// all for a push of deletions alone, which adds no commit and no tag.
+	var held, tags []string
 	if slices.ContainsFunc(req.Updates, func(update Update) bool { return !update.deletion() }) {
-		if held, err = g.advertised(ctx, req.Dir, req.URL); err != nil {
+		if held, tags, err = g.advertised(ctx, req.Dir, req.URL); err != nil {
 			return &SetupFailure{What: what, Why: "the destination's refs could not be read", Err: err}
 		}
 	}
-	records, err := g.pushRecords(ctx, req, held)
+	records, err := g.pushRecords(ctx, req, held, tags)
 	if err != nil {
 		return &SetupFailure{What: what, Why: "the push's commits could not be read", Err: err}
 	}
 	return g.rules(ctx, what, records)
 }
 
-// pushRecords is everything a push would publish, as records: one per ref name, and for each
-// commit the push would add, one for the author identity, one for the committer identity, one for
-// the message, one for each added or renamed path and one for each added line. The commits an
-// update adds are those its local side reaches and neither its remote side nor any of held does
-// (Guard.commits), held being the commits the destination holds at its branches and tags
-// (Guard.advertised). A commit reached by two of the push's refs is read once, and a deletion adds
-// no commit.
-func (g *Guard) pushRecords(ctx context.Context, req PushRequest, held []string) ([]Record, error) {
+// pushRecords is everything a push would publish, as records: one per ref name, for each tag
+// object the push would add, one for its name, one for the tagger and one for the message
+// (Guard.tagRecords), and for each commit the push would add, one for the author identity, one for
+// the committer identity, one for the message, one for each added or renamed path and one for each
+// added line. The commits an update adds are those its local side reaches and neither its remote
+// side nor any of held does (Guard.commits), held being the commits the destination holds at its
+// branches and tags (Guard.advertised), and the tag objects it adds are the one its local side is
+// at, where that is a tag, and each tag that tag is of, down to the first of tags, the tag objects
+// the destination holds at its tags. A commit or a tag reached by two of the push's refs is read
+// once, and a deletion adds neither.
+func (g *Guard) pushRecords(ctx context.Context, req PushRequest, held, tags []string) ([]Record, error) {
 	// not is held as rev-list's negative revisions, a line ^<sha> each, written once for every
 	// update's read of the commits it adds (Guard.commits).
 	var not strings.Builder
@@ -192,7 +197,12 @@ func (g *Guard) pushRecords(ctx context.Context, req PushRequest, held []string)
 		not.WriteString("\n")
 	}
 	var records []Record
+	// read are the commits and the tag objects read already, and the tag objects the destination
+	// holds, which are never read.
 	read := map[string]bool{}
+	for _, tag := range tags {
+		read[tag] = true
+	}
 	for _, update := range req.Updates {
 		if ref := update.ref(); ref != "" {
 			records = append(records, RefRecord(ref))
@@ -200,6 +210,11 @@ func (g *Guard) pushRecords(ctx context.Context, req PushRequest, held []string)
 		if update.deletion() {
 			continue
 		}
+		tagged, err := g.tagRecords(ctx, req.Dir, update.LocalSHA, read)
+		if err != nil {
+			return nil, err
+		}
+		records = append(records, tagged...)
 		commits, err := g.commits(ctx, req.Dir, not.String(), update)
 		if err != nil {
 			return nil, err
@@ -215,6 +230,53 @@ func (g *Guard) pushRecords(ctx context.Context, req PushRequest, held []string)
 			}
 			records = append(records, of...)
 		}
+	}
+	return records, nil
+}
+
+// tagRecords are the records of the tag object sha names, where it names one, and of each tag that
+// tag is of in turn, until the object a tag is of is no tag: one for the name the tag holds, one
+// for the tagger and one for the message of each, labelled as a commit's identities and message
+// are (Guard.commitRecords). A tag object holds its own name, which it publishes as it publishes
+// its message, and a chain's inner tag publishes a name no ref need name. A tag in read, one the
+// destination holds or one this push read already, is not read, nor is the tag it is of, which the
+// destination holds or this push read with it. A tag object's headers name the object it is of and
+// that object's type, so git is asked the type of sha alone:
+//
+//	git cat-file -t <sha>
+//	git cat-file tag <sha>
+//
+// each run in dir and fetching nothing (fetchesNothing), as the reads of what dir has are. A
+// lightweight tag is a ref at a commit, whose records are its name and the commit's.
+func (g *Guard) tagRecords(ctx context.Context, dir, sha string, read map[string]bool) ([]Record, error) {
+	kind, err := g.gitFed(ctx, dir, fetchesNothing, "", "cat-file", "-t", sha)
+	if err != nil {
+		return nil, err
+	}
+	var records []Record
+	for kind = strings.TrimSpace(kind); kind == "tag" && !read[sha]; {
+		read[sha] = true
+		out, err := g.gitFed(ctx, dir, fetchesNothing, "", "cat-file", "tag", sha)
+		if err != nil {
+			return nil, err
+		}
+		// "<name> <value>" a header line, then a blank line and the message.
+		headers, message, _ := strings.Cut(out, "\n\n")
+		label := "tag " + short(sha)
+		sha, kind = "", ""
+		for line := range strings.Lines(headers) {
+			switch name, value, _ := strings.Cut(strings.TrimSuffix(line, "\n"), " "); name {
+			case "object":
+				sha = value
+			case "type":
+				kind = value
+			case "tag":
+				records = append(records, Record{Label: label + " name", Text: value})
+			case "tagger":
+				records = append(records, Record{Label: label + " tagger", Text: value})
+			}
+		}
+		records = append(records, Record{Label: label + " message", Text: message})
 	}
 	return records, nil
 }
@@ -237,11 +299,9 @@ func (g *Guard) git(ctx context.Context, dir string, args ...string) (string, er
 // read as data — a list of commits, a list of changes split on zero bytes — so a warning git
 // writes to its standard error must not land in it: a warning written in the middle of a path
 // diff-tree lists would cut the path in two, and the lines added to that file would be read as
-// lines of a file of another name. That error is what a failure carries, quoted as git wrote it
-// less the user and password of a URL in it: a lazy fetch of a partial clone that fails names its
-// promisor remote, whose URL can carry a token (withoutUserinfo). The read of which advertised
-// shas are commits dir has runs under an env that fetches nothing (Guard.advertised); every other
-// caller passes none.
+// lines of a file of another name. That error is what a failure carries (gitExited). The reads of
+// what dir has run under an env that fetches nothing (Guard.advertised, Guard.tagRecords); every
+// other caller passes none.
 func (g *Guard) gitFed(ctx context.Context, dir string, env []string, input string, args ...string) (string, error) {
 	var stdin io.Reader
 	if input != "" {
@@ -259,7 +319,30 @@ func (g *Guard) gitFed(ctx context.Context, dir string, env []string, input stri
 		return "", err
 	}
 	if status != 0 {
-		return "", fmt.Errorf("git %s exited %d: %s", args[0], status, withoutUserinfo(strings.TrimSpace(stderr.String())))
+		return "", gitExited("git "+args[0], status, stderr.String())
 	}
 	return out, nil
+}
+
+// gitExited is the failure of a git, what ("git cat-file"), that exited status, quoting stderr,
+// git's own account of the failure, as git wrote it less the user and password of a URL in it
+// (withoutUserinfo): a lazy fetch of a partial clone that fails names its promisor remote, and a
+// read of a push's destination names the URL git handed the hook, either of which can carry a
+// token.
+func gitExited(what string, status int, stderr string) error {
+	return fmt.Errorf("%s exited %d: %s", what, status, withoutUserinfo(strings.TrimSpace(stderr)))
+}
+
+// userinfo is the user and password a URL with a scheme can carry, the "user:token@" of
+// https://user:token@host/path: what follows "://" up to the last "@" before the first "/", "?",
+// "#", quote or space, which end the host.
+var userinfo = regexp.MustCompile(`://[^/?#\s'"]*@`)
+
+// withoutUserinfo is text with the user and password of each URL in it taken out, so that
+// https://user:token@host/path reads https://host/path. It is what a failure that names a URL, or
+// that quotes git's own account of one, prints: the URL git hands a pre-push hook can carry a
+// token, and a failure is printed for whoever reads the log. A URL in git's scp form
+// (user@host:path) names a user and no password, and is left as it is.
+func withoutUserinfo(text string) string {
+	return userinfo.ReplaceAllLiteralString(text, "://")
 }

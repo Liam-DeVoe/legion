@@ -164,6 +164,89 @@ func TestAPushsRecordsAreReadFromItsCommits(t *testing.T) {
 	}
 }
 
+// An annotated tag publishes its name, its tagger and its message with it, so a push of one reads
+// each, as records labelled as a commit's identity and message are, and reads the tag a tag is of
+// in turn, whose name no ref of the push need name.
+// Every tag here is of the commit the destination holds on its main, so the push adds no commit,
+// and each is pushed to refs/tags/pushed, a ref the destination does not hold, which names nothing.
+// A tag the destination already holds, at a ref of its own, is not read again: its message names
+// a host here, and a push of it to another ref passes.
+func TestAnAnnotatedTagsTaggerAndMessageAreRead(t *testing.T) {
+	home, root := t.TempDir(), t.TempDir()
+	repo := filepath.Join(root, "repo")
+	fixture := fixturegit.Isolated(t, home)
+	fixture.Run(root, fixturegit.InitWorkTree(repo, "main")...)
+	base := commitFiles(t, fixture, repo, map[string]string{"README.md": "one\n"}, "the commit the destination holds")
+	// tag writes the annotated tag name of target with message, made by tagger's identity, and
+	// answers the tag object.
+	tag := func(t *testing.T, tagger fixturegit.Runner, name, target, message string) string {
+		t.Helper()
+		tagger.Run(repo, "git", "-c", "advice.nestedTag=false", "tag", "--annotate", "--message", message, name, target)
+		return tagger.Run(repo, "git", "rev-parse", "refs/tags/"+name)
+	}
+	held := tag(t, fixture, "held", base, "moved the run to "+theHost+" this morning")
+	destination := destinationAt(t, fixture, repo, base+":refs/heads/main", "refs/tags/held:refs/tags/held")
+	for _, tc := range []struct {
+		name string
+		// build writes the case's tags and answers the one the push is of, and the report, nil
+		// where the push passes.
+		build func(t *testing.T) (pushed string, want []string)
+	}{
+		{
+			name: "the message names a host",
+			build: func(t *testing.T) (string, []string) {
+				pushed := tag(t, fixture, "message", base, "moved the run to "+theHost+" this morning")
+				return pushed, []string{"tag " + short(pushed) + " message: " + theClass}
+			},
+		},
+		{
+			name: "the tagger identity names a host",
+			build: func(t *testing.T) (string, []string) {
+				pushed := tag(t, fixture.With("GIT_COMMITTER_EMAIL=builder@"+theHost), "tagger", base, "a message of no interest")
+				return pushed, []string{"tag " + short(pushed) + " tagger: " + theClass}
+			},
+		},
+		{
+			name: "the message of the tag a tag is of names a host",
+			build: func(t *testing.T) (string, []string) {
+				inner := tag(t, fixture, "inner", base, "moved the run to "+theHost+" this morning")
+				return tag(t, fixture, "outer", inner, "a message of no interest"), []string{"tag " + short(inner) + " message: " + theClass}
+			},
+		},
+		{
+			name: "the name of the tag a tag is of names a host",
+			build: func(t *testing.T) (string, []string) {
+				inner := tag(t, fixture, "inner-"+theHost, base, "a message of no interest")
+				return tag(t, fixture, "named", inner, "a message of no interest"), []string{"tag " + short(inner) + " name: " + theClass}
+			},
+		},
+		{
+			name: "a tag that names nothing",
+			build: func(t *testing.T) (string, []string) {
+				return tag(t, fixture, "clean", base, "a message of no interest"), nil
+			},
+		},
+		{
+			name: "a tag the destination holds",
+			build: func(t *testing.T) (string, []string) {
+				return held, nil
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pushed, want := tc.build(t)
+			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
+			err := guard.Push(bound(t), PushRequest{
+				Dir:     repo,
+				Remote:  "origin",
+				URL:     destination,
+				Updates: []Update{{LocalRef: "refs/tags/pushed", LocalSHA: pushed, RemoteRef: "refs/tags/pushed", RemoteSHA: noSHA}},
+			})
+			wantRefused(t, err, want)
+		})
+	}
+}
+
 // pushOf is a repository whose base the destination holds on its main, the base writing the
 // files held, and head, the commit the push adds, on that base, which makes edit's change to the
 // working tree, where edit is not nil, and then writes the files added, each path to its content.

@@ -98,9 +98,9 @@ It carries:
     a commit's own file, or a file it is compared with.
     The guard reads none of the files a commit's file is compared with where the commit's file is binary, and passes over the rest once the files read before them hold every line of it.
     The bound is per file, not per push:
-    what one push holds in memory is no file above it, and every record of the push, each added line, path, identity and message, until the rules have read them;
+    what one push holds in memory is no file above it, and every record of the push, each added line, path, identity and message, and each annotated tag's name, tagger and message, until the rules have read them;
 
-  - and no commit that a branch or a tag of the destination already reaches, as one `git ls-remote --heads --tags` of the URL git hands the hook reads them (`Guard.advertised`, `internal/leakguard/held.go`).
+  - and no commit that a branch or a tag of the destination already reaches, nor an annotated tag the destination already holds, as one `git ls-remote --heads --tags` of the URL git hands the hook reads them (`Guard.advertised`, `internal/leakguard/held.go`).
     Each push with an update that is not a deletion, to a destination the guard scans, costs that one read, and a read that fails refuses the push as a setup error that names the remote and the URL.
     The read runs outside the clone, in `/` and without the hook's `GIT_DIR`, so no configuration of the clone's leads it to another repository:
     git hands the hook the URL the clone's configuration already led the push to, and under the clone's `url.<base>.pushInsteadOf` that URL can be one its `url.<base>.insteadOf` rewrites.

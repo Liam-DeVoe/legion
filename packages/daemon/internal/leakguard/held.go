@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strings"
 
@@ -77,9 +76,10 @@ var fetchesNothing = []string{"GIT_NO_LAZY_FETCH=1"}
 var readsNoConfigFile = []string{"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null"}
 
 // advertised are the commits the repository at url holds at its branches and tags, of those the
-// repository at dir has: what a push to url need not publish again (Guard.commits). The read is
-// of url itself, never of a ref of dir's own, which says nothing reliable of what url holds
-// (Guard.Push says why):
+// repository at dir has, and tags the tag objects it holds at its tags, of those dir has: what a
+// push to url need not publish again (Guard.commits, Guard.tagRecords). The read is of url itself,
+// never of a ref of dir's own, which says nothing reliable of what url holds (Guard.Push says
+// why):
 //
 //	git <heldReadCredential> ls-remote --heads --tags -- <url>
 //
@@ -119,11 +119,12 @@ var readsNoConfigFile = []string{"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/de
 // and askpass that answers nothing make a read that wants a credential fail rather than prompt,
 // and for at most heldReadBound, so that a destination that stops answering refuses the push
 // rather than holding it. The `--` keeps a URL that starts with a dash from being read as an
-// option. Each sha it prints is kept, an annotated tag's peeled commit (<tag>^{}) too, where dir
-// has it as a commit, which one cat-file --batch-check of them all, run in dir, answers. A line
-// whose first field is no object id as git prints one, 40 or 64 lower-case hex digits
-// (isObjectID), holds nothing and is not asked of: cat-file reads a name or an expression, HEAD or
-// main~1, as a revision of dir's, and would take the commit it names in dir as one url holds. A
+// option. Each sha it prints is kept where dir has it as a commit, an annotated tag's peeled
+// commit (<tag>^{}) too, or as a tag object, the sha a tag's own line prints, which one cat-file
+// --batch-check of them all, run in dir, answers. A line whose first field is no object id as git
+// prints one, 40 or 64 lower-case hex digits (isObjectID), holds nothing and is not asked of:
+// cat-file reads a name or an expression, HEAD or main~1, as a revision of dir's, and would take
+// the commit it names in dir as one url holds. A
 // sha dir does not have holds nothing, since rev-list cannot walk from it: where it is a commit
 // ahead of dir's, the commits of dir's that it reaches are read, which is the fail-closed
 // direction. The cat-file fetches nothing (fetchesNothing), so that in a partial clone, as an
@@ -134,7 +135,7 @@ var readsNoConfigFile = []string{"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/de
 // stops is an error naming url, never a repository read as holding nothing, and the error carries
 // no credential: the URL it names and git's standard error it quotes are each written without the
 // user and password a URL can carry (withoutUserinfo).
-func (g *Guard) advertised(ctx context.Context, dir, url string) ([]string, error) {
+func (g *Guard) advertised(ctx context.Context, dir, url string) (commits, tags []string, err error) {
 	read := "git ls-remote " + withoutUserinfo(url)
 	bounded, cancel := context.WithTimeout(ctx, g.heldReadBound)
 	defer cancel()
@@ -147,10 +148,10 @@ func (g *Guard) advertised(ctx context.Context, dir, url string) ([]string, erro
 		stderr:  &stderr,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", read, err)
+		return nil, nil, fmt.Errorf("%s: %w", read, err)
 	}
 	if status != 0 {
-		return nil, fmt.Errorf("%s exited %d: %s", read, status, withoutUserinfo(strings.TrimSpace(stderr.String())))
+		return nil, nil, gitExited(read, status, stderr.String())
 	}
 	// "<sha>\t<ref>" a line; a tag and its peeled commit are two lines, and two refs at one commit
 	// ask for it once.
@@ -166,20 +167,24 @@ func (g *Guard) advertised(ctx context.Context, dir, url string) ([]string, erro
 		shas.WriteString("\n")
 	}
 	if len(asked) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	types, err := g.gitFed(ctx, dir, fetchesNothing, shas.String(), "cat-file", "--batch-check")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	var commits []string
 	for line := range strings.Lines(types) {
 		// "<sha> <type> <size>", and "<sha> missing" for an object dir does not have.
-		if fields := strings.Fields(line); len(fields) == 3 && fields[1] == "commit" {
-			commits = append(commits, fields[0])
+		if fields := strings.Fields(line); len(fields) == 3 {
+			switch fields[1] {
+			case "commit":
+				commits = append(commits, fields[0])
+			case "tag":
+				tags = append(tags, fields[0])
+			}
 		}
 	}
-	return commits, nil
+	return commits, tags, nil
 }
 
 // heldReadInherits is which names of the caller's environment the read of what a push's
@@ -237,20 +242,6 @@ func againstDir(dir, url string) string {
 		}
 	}
 	return dir + string(filepath.Separator) + url
-}
-
-// userinfo is the user and password a URL with a scheme can carry, the "user:token@" of
-// https://user:token@host/path: what follows "://" up to the last "@" before the first "/", "?",
-// "#", quote or space, which end the host.
-var userinfo = regexp.MustCompile(`://[^/?#\s'"]*@`)
-
-// withoutUserinfo is text with the user and password of each URL in it taken out, so that
-// https://user:token@host/path reads https://host/path. It is what a failure that names a URL, or
-// that quotes git's own account of one, prints: the URL git hands a pre-push hook can carry a
-// token, and a failure is printed for whoever reads the log. A URL in git's scp form
-// (user@host:path) names a user and no password, and is left as it is.
-func withoutUserinfo(text string) string {
-	return userinfo.ReplaceAllLiteralString(text, "://")
 }
 
 // namesNoCommit is whether sha names no commit: empty, or git's "this ref is not there", all

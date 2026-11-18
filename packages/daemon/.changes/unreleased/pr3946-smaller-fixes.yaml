@@ -12,3 +12,5 @@ body: |-
   link under gVisor too, where the open had followed a link to a directory.
   A push made to a URL rather than to a remote is now named in every refusal and setup failure
   without the user and password the URL can carry.
+  A push of an annotated tag now has its name, its tagger and its message read by the guard's own
+  rules, and those of each tag it is of, unless the destination already holds the tag.

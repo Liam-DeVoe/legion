@@ -150,32 +150,29 @@ func (g *Guard) commitChanges(ctx context.Context, dir, commit string, parents i
 // and one above that refuses the push as a setup failure naming the file and its size. That is the
 // one answer that publishes no line unread: a file passed over would pass every line of it, and a
 // file read in part would pass the rest. Of a binary file, the read holds its first 8000 bytes
-// alone, whatever its size: cat-file writes the rest, which is passed over unkept. The blobs are
-// listed for the batch (blobBatch) change by change in the order the loop below reads them, the
-// commit's file first and then the files it is compared with, so that each read is of the blob it
-// expects, and what the read holds is one change's: the commit's file, its lines no file read so
-// far holds, and the file being read. A file it is compared with is passed over, never asked of
-// cat-file, where no line of the commit's file is left to take, which is every one of them where
-// the commit's file is binary; so such a file the repository lacks, or that a partial clone's
-// fetch of fails, refuses nothing.
+// alone, whatever its size: cat-file writes the rest, which is passed over unkept. What the read
+// holds is one change's: the commit's file, its lines no file read so far holds, and the file being
+// read. A file it is compared with is never asked of cat-file (blobBatch) where no line of the
+// commit's file is left to take, which is every one of them where the commit's file is binary; so
+// such a file the repository lacks, or that a partial clone's fetch of fails, refuses nothing. A
+// commit with no change to read starts no git.
 func (g *Guard) addedLines(ctx context.Context, dir, commit string, parents int, changes []fileChange) ([]Record, error) {
+	if len(changes) == 0 {
+		return nil, nil
+	}
 	kind, theirs := "commit", "the parent of commit "+short(commit)+"'s"
 	if parents > 1 {
 		kind, theirs = "merge", "a parent of merge "+short(commit)+"'s"
 	}
 	ours := kind + " " + short(commit) + "'s"
-	var ids []string
-	for _, change := range changes {
-		ids = append(append(ids, change.blob), change.held...)
-	}
-	batch, err := g.readBlobs(ctx, dir, ids)
+	batch, err := g.readBlobs(ctx, dir)
 	if err != nil {
 		return nil, err
 	}
-	// read is the text of the next blob, the file at path whose owner whose names, and the failure
-	// that names it where it is a text file above the bound.
-	read := func(whose, path string) (string, error) {
-		file, over, err := batch.text(g.blobBound)
+	// read is the text of blob, the file at path whose owner whose names, and the failure that
+	// names it where it is a text file above the bound.
+	read := func(blob, whose, path string) (string, error) {
+		file, over, err := batch.text(blob, g.blobBound)
 		if err == nil && over > 0 {
 			err = fmt.Errorf("%s file %s is %d bytes, more than the %d bytes a %s's file is read up to", whose, maskPath(path), over, g.blobBound, kind)
 		}
@@ -183,7 +180,7 @@ func (g *Guard) addedLines(ctx context.Context, dir, commit string, parents int,
 	}
 	var records []Record
 	add := func(change fileChange) error {
-		file, err := read(ours, change.path)
+		file, err := read(change.blob, ours, change.path)
 		if err != nil {
 			return err
 		}
@@ -204,12 +201,11 @@ func (g *Guard) addedLines(ctx context.Context, dir, commit string, parents int,
 				own[line] = true
 			}
 		}
-		for range change.held {
+		for _, blob := range change.held {
 			if len(own) == 0 {
-				batch.passOver()
-				continue
+				break
 			}
-			held, err := read(theirs, change.from)
+			held, err := read(blob, theirs, change.from)
 			if err != nil {
 				return err
 			}
