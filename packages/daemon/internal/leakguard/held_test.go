@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
+	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
 // A push the destination already holds everything of adds no commit and so has no record but its
@@ -296,6 +297,98 @@ func TestTheReadOfWhatTheDestinationHoldsReadsNoConfigurationButItsCommandLine(t
 				t.Fatalf("git ls-remote of %s under the case's environment lists %q, want the stand-in's main at %s: the case would prove nothing", destination, listed, head)
 			}
 			guard := New(Options{Check: leakguardtest.Write(t, t.TempDir(), passes), Visibility: answers(Public, nil), Env: env})
+			err := guard.Push(bound(t), mainPush(repo, base, head, "origin", destination))
+			wantRefused(t, err, []string{"notes.md: " + theClass})
+		})
+	}
+}
+
+// The read of what the destination holds carries the pod's GitHub credential on its own command
+// line, and takes nothing of git configuration from its environment (Guard.advertised,
+// heldReadCredential): in front of its ls-remote, the helper for https://github.com reset and then
+// set to `legion git-credential`, and useHttpPath on for github.com, in that order, the entries an
+// issue pod's GIT_CONFIG_COUNT block begins with, so that GitHub answers the read while it asks
+// some Git-over-HTTPS reads to authenticate. Its environment carries GIT_CONFIG_NOSYSTEM=1 and
+// GIT_CONFIG_GLOBAL=/dev/null (readsNoConfigFile), and no GIT_CONFIG_COUNT block and no
+// GIT_CONFIG_PARAMETERS. The guard runs here under an environment that says otherwise of each:
+// GIT_CONFIG_NOSYSTEM=0, a global file of its own, and a GIT_CONFIG_COUNT block and
+// GIT_CONFIG_PARAMETERS that each name another helper. The stand-in git records each call
+// (leakguardtest.RecordsGitCall) and runs the real git; no server of the test's can stand in for
+// the credential, whose entries apply to https://github.com alone. The destination holds only the
+// commit before the one the push adds, a line the rules refuse, so the push is read and refused.
+func TestTheReadOfWhatTheDestinationHoldsCarriesThePodsCredentialOnItsCommandLine(t *testing.T) {
+	bin, record := t.TempDir(), filepath.Join(t.TempDir(), "record")
+	writeProgram(t, bin, "git", leakguardtest.RecordsGitCall(record)+"exec "+shQuote(fixturegit.CompiledGit(t))+" \"$@\"\n")
+	global := filepath.Join(t.TempDir(), "gitconfig")
+	if err := os.WriteFile(global, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	repo, base, head, destination := pushOf(t, nil, nil, map[string]string{"notes.md": "the runner answers at " + theHost + "\n"}, nil)
+	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, pathWith(bin),
+		"GIT_CONFIG_NOSYSTEM=0", "GIT_CONFIG_SYSTEM=/dev/null", "GIT_CONFIG_GLOBAL="+global,
+		"GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=credential.https://github.com.helper", "GIT_CONFIG_VALUE_0=!invented git-credential",
+		"GIT_CONFIG_PARAMETERS="+shQuote("credential.helper")+"="+shQuote("!invented git-credential"))
+	err := guard.Push(bound(t), mainPush(repo, base, head, "origin", destination))
+	wantRefused(t, err, []string{"notes.md: " + theClass})
+	var reads []map[string]string
+	for _, call := range leakguardtest.ReadCalls(t, record) {
+		if strings.Contains(" "+call["argv"]+" ", " ls-remote ") {
+			reads = append(reads, call)
+		}
+	}
+	if len(reads) != 1 {
+		t.Fatalf("git ran ls-remote %d times, want once: %v", len(reads), reads)
+	}
+	read := reads[0]
+	want := strings.Join(gitArgv(
+		"-c", "credential.https://github.com.helper=",
+		"-c", "credential.https://github.com.helper="+workspace.GitHubCredentialHelper,
+		"-c", "credential.https://github.com.useHttpPath=true",
+		"ls-remote", "--heads", "--tags", "--", destination)[1:], " ")
+	if read["argv"] != want {
+		t.Errorf("the read ran as\n  git %s\nwant\n  git %s", read["argv"], want)
+	}
+	for _, name := range []struct{ key, variable, want string }{
+		{"nosystem", "GIT_CONFIG_NOSYSTEM", "1"},
+		{"global", "GIT_CONFIG_GLOBAL", "/dev/null"},
+		{"count", "GIT_CONFIG_COUNT", "unset"},
+		{"key0", "GIT_CONFIG_KEY_0", "unset"},
+		{"parameters", "GIT_CONFIG_PARAMETERS", "unset"},
+	} {
+		if read[name.key] != name.want {
+			t.Errorf("the read ran with %s %q, want %q", name.variable, read[name.key], name.want)
+		}
+	}
+}
+
+// A line the destination's ls-remote prints whose first field is no object id as git prints one,
+// 40 or 64 lower-case hex digits, holds nothing (Guard.advertised, isObjectID). The batch check
+// that asks which of those shas the clone has as commits runs in the clone, and cat-file reads a
+// revision name or expression there as the clone's own, and an abbreviated or upper-case sha too:
+// each of these fields names the commit the push adds, which a read that asked of it would take
+// as one the destination holds, passing the push unread. The stand-in git here answers the
+// ls-remote with one line, the case's field at refs/heads/main, and runs the real git for every
+// other call. The commit adds a line the rules refuse, so the push is read and refused.
+func TestALineOfTheDestinationsRefsWhoseFieldIsNoObjectIDHoldsNothing(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// field is the line's first field, of head, the commit the push adds.
+		field func(head string) string
+	}{
+		{name: "a revision name", field: func(string) string { return "HEAD" }},
+		{name: "a revision expression", field: func(string) string { return "main~0" }},
+		{name: "an abbreviated sha", field: func(head string) string { return head[:12] }},
+		{name: "an upper-case sha", field: strings.ToUpper},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo, base, head, destination := pushOf(t, nil, nil, map[string]string{"notes.md": "the runner answers at " + theHost + "\n"}, nil)
+			bin := t.TempDir()
+			writeProgram(t, bin, "git", `case " $* " in
+*" ls-remote "*) printf '%s\trefs/heads/main\n' `+shQuote(tc.field(head))+`; exit 0 ;;
+esac
+exec `+shQuote(fixturegit.CompiledGit(t))+` "$@"
+`)
+			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, pathWith(bin))
 			err := guard.Push(bound(t), mainPush(repo, base, head, "origin", destination))
 			wantRefused(t, err, []string{"notes.md: " + theClass})
 		})

@@ -200,7 +200,7 @@ func (g *Guard) pushRecords(ctx context.Context, req PushRequest, held []string)
 		if update.deletion() {
 			continue
 		}
-		commits, err := g.commits(ctx, req.Dir, held, not.String(), update)
+		commits, err := g.commits(ctx, req.Dir, not.String(), update)
 		if err != nil {
 			return nil, err
 		}

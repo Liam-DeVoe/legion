@@ -675,12 +675,11 @@ func (g *Guard) lsRemote(ctx context.Context, origin, slug string) (Visibility, 
 }
 
 // listsARef is whether listed, what git ls-remote printed on its standard output, holds a ref: a
-// line `<object id>\t<ref name>`, the id 40 or 64 lowercase hex digits as git prints a SHA-1 or a
-// SHA-256 one.
+// line `<object id>\t<ref name>`, the id as git prints a SHA-1 or a SHA-256 one (isObjectID).
 func listsARef(listed string) bool {
 	for line := range strings.Lines(listed) {
 		id, name, ok := strings.Cut(strings.TrimRight(line, "\r\n"), "\t")
-		if ok && name != "" && (len(id) == 40 || len(id) == 64) && strings.Trim(id, "0123456789abcdef") == "" {
+		if ok && name != "" && isObjectID(id) {
 			return true
 		}
 	}
