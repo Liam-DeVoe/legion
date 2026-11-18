@@ -147,7 +147,7 @@ func requireEachAuthorKindAnswersItsAuthorAlone(t *testing.T, ctx context.Contex
 	}
 
 	// The nodes of the five kinds that seedStoreThroughItsWriters wrote for alice - a lens, its
-	// finding, its risk and a constraint at `project` (seedReasoning), and the run graphcensus's
+	// finding, its risk and a constraint at `project` (seedReasoning), and the run graphstore's
 	// WriteRun states from its row (seedRun) - are read beside the ones above.
 	ids := make([]string, 0, len(reads))
 	for _, wrote := range reads {

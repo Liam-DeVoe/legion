@@ -28,7 +28,7 @@ const interactionNodesMigration = 20261116205055
 // RFC 3339 text and its project; the authored_by tuple and the author's node where AuthorOf names
 // one, the aliases the server proved and the raw login it was recorded under; and a frame value of
 // each frame. A run whose author is nobody gets the node and no authored_by. One more run, asked
-// after the migration with the same row as one before it, is given its node by graphcensus.WriteRun,
+// after the migration with the same row as one before it, is given its node by graphstore.WriteRun,
 // the backfill's and the frame path's writer, and the two nodes and their tuples read the same,
 // byte for byte, but for the run's id. The rest of the set is then migrated, since the census is
 // this build's and reads the whole of its schema, and the store census reads zero differences.
@@ -157,9 +157,9 @@ func TestTheInteractionMigrationGivesEveryRecordedRunItsNode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin the node of the run asked after the migration: %v", err)
 	}
-	if held, err := graphcensus.WriteRun(ctx, tx, after); err != nil || !held {
+	if written, err := graphstore.WriteRun(ctx, tx, after); err != nil || !written.Held {
 		_ = tx.Rollback(ctx)
-		t.Fatalf("write the node of the run asked after the migration: held %t, %v", held, err)
+		t.Fatalf("write the node of the run asked after the migration: held %t, %v", written.Held, err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit the node of the run asked after the migration: %v", err)
@@ -186,7 +186,7 @@ func TestTheInteractionMigrationGivesEveryRecordedRunItsNode(t *testing.T) {
 		return strings.Join(append([]string{node}, lines...), "\n")
 	}
 	if migrated, written := shape(ids[0]), shape(after); migrated != written {
-		t.Errorf("the run the migration gave its node reads\n%s\nand the same row given its node by graphcensus.WriteRun reads\n%s", migrated, written)
+		t.Errorf("the run the migration gave its node reads\n%s\nand the same row given its node by graphstore.WriteRun reads\n%s", migrated, written)
 	}
 
 	if err := database.Migrate(ctx); err != nil {

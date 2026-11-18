@@ -349,9 +349,11 @@ var projections = []projection{{
 		from document_blocks d
 		join artifacts a on a.id = d.artifact_id
 		where octet_length(d.node_id) <= ` + addressBound,
+	// A finding of a lens is a block no document holds, so no document_blocks row projects it
+	// (graphstore.FindingIDSQL).
 	nodes: `
 		select n.id, md5(n.id || '|' || ` + placedLinks(kindIn("t.kind", blockPlacementKinds)) + `)
-		from graph_nodes n where n.kind = '` + refs.BlockNodeKind + `' and not ` + lensBlock("n"),
+		from graph_nodes n where n.kind = '` + refs.BlockNodeKind + `' and not ` + graphstore.FindingIDSQL("n.id"),
 	pastBound: `
 		select count(*) from document_blocks d where octet_length(d.node_id) > ` + addressBound,
 	owed: typedNodeOwed,
@@ -390,12 +392,13 @@ var projections = []projection{{
 	// states out of a block no block_refs row names is a link graph_edges answers, and a node
 	// side that began at the rows could never find it. A block whose only links are of other
 	// kinds - its placement, its from_ask, its decided_by, or tuples no block_refs row projects -
-	// states no link here and is no node of this kind; the block kind holds its placement.
+	// states no link here and is no node of this kind; the block kind holds its placement. A
+	// finding of a lens is a block no document holds, so no block_refs row names it.
 	nodes: `
 		select held.id, md5(held.id || '|' || held.links)
 		from (
 			select n.id, ` + currentLinks(refs.BlockNodeKind, `t.kind in (`+blockRefKinds+`)`) + ` as links
-			from graph_nodes n where n.kind = '` + refs.BlockNodeKind + `' and not ` + lensBlock("n") + `
+			from graph_nodes n where n.kind = '` + refs.BlockNodeKind + `' and not ` + graphstore.FindingIDSQL("n.id") + `
 		) held
 		where held.links <> ''`,
 	pastBound: `
@@ -644,7 +647,7 @@ var projections = []projection{{
 	},
 	baseAttributeCensus(graphstore.KindInteraction, graphstore.KindInteraction, nil, graphstore.VisibilityAuthor),
 	baseAttributeCensus(graphstore.KindLens, graphstore.KindLens, nil, ""),
-	baseAttributeCensus("finding", refs.BlockNodeKind, lensBlockID, ""),
+	baseAttributeCensus("finding", refs.BlockNodeKind, graphstore.FindingIDSQL, ""),
 	baseAttributeCensus(graphstore.KindRisk, graphstore.KindRisk, nil, ""),
 	baseAttributeCensus(graphstore.KindConstraint, graphstore.KindConstraint, nil, ""),
 	baseAttributeCensus(graphstore.KindLensKind, graphstore.KindLensKind, nil, graphstore.VisibilityProject),
@@ -654,20 +657,6 @@ var projections = []projection{{
 // it. It is written into the text rather than bound as a parameter because each side is spliced
 // into a statement of its own and one shared constant keeps the two sides reading the same bound.
 var addressBound = strconv.Itoa(graphstore.MaxAddressBytes)
-
-// lensBlock is true of the block node alias whose id names a lens: a block of a lens's finding,
-// addressed under its lens, dispatch://lens/<uuid>, so its id is `lens/<uuid>#<id>`, which no
-// document holds, so no document_blocks row projects it and no block_refs row names it. A
-// document's block is `<ref_key>#<id>` (refs.IndexBlocks), and a ref_key begins with an issue's or
-// a project's key, which is upper case, or with `agent/` (graphstore.ArtifactRefKey), so no
-// document's block reads as one.
-func lensBlock(alias string) string { return lensBlockID(alias + ".id") }
-
-// lensBlockID is lensBlock over the SQL expression id, a block node's id however a statement
-// reaches it: a node's own column, or the from_id of a tuple out of it.
-func lensBlockID(id string) string {
-	return `(` + id + ` like '` + graphstore.KindLens + `/%')`
-}
 
 // The tuple kinds each projection row states of its node, which the census digests against the
 // tuples of those kinds the node states now (currentLinks, placedLinks, heldTuples): a comment's
@@ -713,7 +702,7 @@ func kindIn(column string, kinds []string) string {
 // holds.
 func DigestedTuple(t string) string {
 	return `((` + t + `.from_kind = '` + graphstore.KindComment + `' and ` + kindIn(t+".kind", commentLinkKinds) + `)
-		or (` + t + `.from_kind = '` + refs.BlockNodeKind + `' and not ` + lensBlockID(t+".from_id") + `
+		or (` + t + `.from_kind = '` + refs.BlockNodeKind + `' and not ` + graphstore.FindingIDSQL(t+".from_id") + `
 		    and (` + kindIn(t+".kind", blockPlacementKinds) + ` or ` + kindIn(t+".kind", tieKinds) + `
 		         or ` + t + `.kind in (` + refs.BlockRefKindsSQL + `)))
 		or (` + t + `.from_kind = '` + graphstore.KindInteraction + `' and ` + kindIn(t+".kind", runLinkKinds) + `)
@@ -1197,7 +1186,7 @@ func provedSessionOwner(actor string) string {
 // bearer, or by a pod on a session its body names, names that session, which is so on both sides;
 // a node whose made_by names only a workload states none, and that workload is on neither.
 var reasoningAuthored = currentAuthors(`(held.kind in ('` + graphstore.KindLens + `', '` + graphstore.KindRisk + `', '` +
-	graphstore.KindConstraint + `') or (held.kind = '` + refs.BlockNodeKind + `' and ` + lensBlock("held") + `))`)
+	graphstore.KindConstraint + `') or (held.kind = '` + refs.BlockNodeKind + `' and ` + graphstore.FindingIDSQL("held.id") + `))`)
 
 // goneRunsAuthored is the author every run whose row is gone states now - a process of the release
 // before deleted it an hour old during a roll, and the backfill stated its interaction gone

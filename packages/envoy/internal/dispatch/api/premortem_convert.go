@@ -674,35 +674,20 @@ func ConvertPremortem(ctx context.Context, tx pgx.Tx, proving, recorded model.Ac
 	}
 
 	lensID, verdict := uuid.NewString(), document.lensVerdict()
-	nodes := []reasoningNode{{
-		kind: graphstore.KindLens, id: lensID, parentKind: graphstore.KindIssue, parentID: key,
-		attributes: map[string]any{graphstore.AttributeVerdict: verdict},
-		tuples: []graphstore.Tuple{{
-			FromKind: graphstore.KindLens, FromID: lensID, Kind: graphstore.TupleHasKind,
-			ToKind: graphstore.KindLensKind, ToID: kind.ID,
-		}},
-	}}
+	nodes := []reasoningNode{newLens(lensID, kind.ID, storedEnd{kind: graphstore.KindIssue, id: key}, "", &verdict)}
 	report.Lens.Verdict = &verdict
 	for _, risk := range document.risks {
 		id, prevention := uuid.NewString(), preventions[risk.number]
-		node := reasoningNode{
-			kind: graphstore.KindRisk, id: id, parentKind: graphstore.KindLens, parentID: lensID,
-			attributes: map[string]any{
-				graphstore.AttributeHeading:      risk.heading,
-				graphstore.AttributeEarlyWarning: risk.earlyWarning,
-				graphstore.AttributePrevention:   risk.prevention,
-			},
-		}
 		written := PremortemRisk{
 			Number: risk.number, Heading: risk.heading, EarlyWarning: risk.earlyWarning, Prevention: risk.prevention,
 			PreventedBy: make([]string, 0, len(prevention.checks)), Reason: prevention.entry.Reason,
 		}
-		for _, check := range prevention.checks {
-			node.tuples = append(node.tuples, graphstore.Tuple{
-				FromKind: graphstore.KindRisk, FromID: id, Kind: graphstore.TuplePreventedBy, ToKind: check.end.kind, ToID: check.end.id,
-			})
+		checks := make([]storedEnd, len(prevention.checks))
+		for index, check := range prevention.checks {
+			checks[index] = check.end
 			written.PreventedBy = append(written.PreventedBy, check.node.Ref)
 		}
+		node := newRisk(id, storedEnd{kind: graphstore.KindLens, id: lensID}, "", risk.heading, risk.earlyWarning, risk.prevention, checks...)
 		if !dryRun {
 			address := refs.StoreRef(graphstore.KindRisk, id)
 			written.Address = &address

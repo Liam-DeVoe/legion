@@ -27,7 +27,7 @@ const runWords = "What does the spec say?"
 
 // seedRun records one run of the command bar asked by author, with two frames, and gives it its
 // interaction node and their frame values as this build's frame path does for a run with no node
-// (graphcensus.WriteRun). It answers the run's id.
+// (graphstore.WriteRun). It answers the run's id.
 func seedRun(t *testing.T, database *store.Store, author model.Actor) string {
 	t.Helper()
 	ctx := context.Background()
@@ -54,8 +54,8 @@ func seedRun(t *testing.T, database *store.Store, author model.Actor) string {
 		t.Fatalf("begin the run's node: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	if held, err := graphcensus.WriteRun(ctx, tx, run); err != nil || !held {
-		t.Fatalf("write the run's node: held %t, %v", held, err)
+	if written, err := graphstore.WriteRun(ctx, tx, run); err != nil || !written.Held {
+		t.Fatalf("write the run's node: held %t, %v", written.Held, err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit the run's node: %v", err)

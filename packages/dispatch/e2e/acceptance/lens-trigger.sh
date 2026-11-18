@@ -222,9 +222,11 @@ expect T2 "the trade-off analysis, read at its own address, answers no lens it t
 pointer "lens/$tradeoff_id" "$(jq -cn --arg t "$tradeoff" '{kind: "triggered_by", action: "append", to: $t}')"
 want_status 400 T3 "a triggered_by tuple from the trade-off analysis at itself is refused with HTTP 400"
 pass T3 "a triggered_by tuple from the trade-off analysis at itself is refused with HTTP $status"
+# The refusal is held to its code and to the addresses it names, never to its wording: it names the
+# trade-off analysis twice, as the near end and the far end of the tuple.
 expect T3 "the refusal is INVALID_POINTER, naming the trade-off analysis as both of its lenses" \
   '{"code":"INVALID_POINTER","names_the_lens_twice":true}' --arg a "$tradeoff" \
-  '{code, names_the_lens_twice: (.error | contains("the lens \($a) at that same lens \($a)"))}'
+  '{code, names_the_lens_twice: ((.error | indices($a) | length) >= 2)}'
 
 person_send GET "/api/v1/references?from=$(q "$tradeoff")&kind=triggered_by"
 want_status 200 T3 "read the trade-off analysis's triggered_by tuples"
@@ -263,7 +265,8 @@ tuples_of() {
 # the lens NODE, whose uuid is NODE_ID, to the lens TO, which closes a cycle; it stores nothing out
 # of NODE - its triggered_by tuples, read before the answer is judged, are HELD alone, else the
 # tuples stored are printed, and its tuples are the ones it held before the write - and it is
-# refused 400 INVALID_POINTER naming both lenses.
+# refused 400 INVALID_POINTER naming both lenses: each address as often as the tuple names it, so
+# twice where NODE and TO are one lens, held to the addresses and never to the refusal's wording.
 refused_trigger() {
   local section="$1" what="$2" node="$3" node_id="$4" to="$5" held="$6" refused_status stored
   tuples_of "$section" "read the tuples out of $node before $what" "$node" "$work/tuples-before.json"
@@ -286,7 +289,7 @@ refused_trigger() {
   want_status 400 "$section" "$what is refused"
   expect "$section" "the refusal is INVALID_POINTER, naming $node and $to" \
     '{"code":"INVALID_POINTER","names_both":true}' --arg n "$node" --arg t "$to" \
-    '{code, names_both: (.error | contains("the lens \($n) at ") and contains(" lens \($t)"))}'
+    '{code, names_both: (.error as $e | [$n, $t] | group_by(.) | all(.[]; . as $named | ($e | indices($named[0]) | length) >= ($named | length)))}'
 }
 
 refused_trigger T5 "a triggered_by tuple from A to B, a lens invoked after A, which would close a cycle" \

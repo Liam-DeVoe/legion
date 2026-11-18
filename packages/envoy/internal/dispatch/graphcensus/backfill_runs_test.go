@@ -51,8 +51,8 @@ func appendOlderPodFrame(t *testing.T, database *store.Store, run string, sequen
 }
 
 // giveRunItsNode writes the interaction node of a run an older pod recorded, from its row, as this
-// build's first frame of the run does before it takes the node (api's lockGoingRun): WriteRun, in
-// a transaction of its own.
+// build's first frame of the run does before it takes the node (api's lockGoingRun):
+// graphstore.WriteRun, in a transaction of its own.
 func giveRunItsNode(t *testing.T, database *store.Store, run string) {
 	t.Helper()
 	ctx := context.Background()
@@ -61,8 +61,8 @@ func giveRunItsNode(t *testing.T, database *store.Store, run string) {
 		t.Fatalf("begin the node of run %s: %v", run, err)
 	}
 	defer tx.Rollback(ctx)
-	if held, err := WriteRun(ctx, tx, run); err != nil || !held {
-		t.Fatalf("write the node of run %s: held %t, %v", run, held, err)
+	if written, err := graphstore.WriteRun(ctx, tx, run); err != nil || !written.Held {
+		t.Fatalf("write the node of run %s: held %t, %v", run, written.Held, err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit the node of run %s: %v", run, err)
@@ -87,7 +87,7 @@ func runFrameValues(t *testing.T, database *store.Store, run string) int64 {
 // anti-join, row by row (backfillRuns, backfillRunFrames, backfillGoneRuns):
 //
 //   - a run it recorded, with two frames, and no node: the backfill writes its node, its authored_by
-//     and a frame value of each frame, through WriteRun;
+//     and a frame value of each frame, through graphstore.WriteRun;
 //   - a frame it appended to a run this build gave its node: the backfill writes that frame's value
 //     and no second value of the frame the node held already;
 //   - a run whose row it deleted an hour old, frames with it, whose node this build had written: the

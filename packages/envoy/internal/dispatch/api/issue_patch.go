@@ -523,29 +523,24 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	// it (spec requirement r-interaction), as changedFields, which compares every field
 	// this route writes, says; a write that sent only values the issue already held appends its
 	// event with nothing changed and names no change. Nothing else this route writes reaches the
-	// store, so under a run it writes the issue's node as the create and the backfill write it
-	// (graphstore.IssueNode), marked changed: made by the issue's creator at its created_at, the
-	// two columns of the issue's row the backfill reads them from (graphcensus/projects.go's
-	// objectKinds), so an issue created before its node existed gets here the node the backfill
-	// would give it, which the backfill, writing only a node the store lacks, then leaves as it is.
-	// The node restates the issue, so a node already there keeps the state and the visibility the
-	// store holds and its own made_at and made_by, and moves nothing else. The changed_by_run
-	// tuple is this write's, dated now and signed by its writer (graphstore.Node's ChangedAt and
-	// ChangedBy). It is the last node row this transaction takes, after every row and document
-	// above, and what it states waits for the issue's own event (graphstore.Caused), as the
-	// create's does. A write made for no run writes no node and sends no statement more than it
-	// did.
+	// store, so it writes the issue's node as the create and the backfill write it
+	// (graphstore.IssueNode), made by the issue's creator at its created_at, the two columns of the
+	// issue's row the backfill reads them from (graphcensus/projects.go's objectKinds), and names
+	// it changed now by its writer (graphstore.WriteChangedForRun, which writes nothing for no
+	// run). What it states waits for the issue's own event (graphstore.Caused), as the create's
+	// does.
 	var issueNode graphstore.Uncaused
-	if graphstore.MadeForRun(r.Context()) && len(changedFields) > 0 {
-		// The backfill decodes created_by into a model.Actor, so a stored JSON null is the zero
-		// actor there, and here.
-		var creator model.Actor
-		if before.CreatedBy != nil {
-			creator = *before.CreatedBy
-		}
-		node := graphstore.IssueNode(key, before.Project, creator, before.CreatedAt)
-		node.Changed, node.ChangedAt, node.ChangedBy = true, time.Now().UTC(), actor
-		if issueNode, err = graphstore.WriteUncaused(r.Context(), tx, []graphstore.Node{node}, nil); err != nil {
+	if len(changedFields) > 0 {
+		issueNode, err = graphstore.WriteChangedForRun(r.Context(), tx, time.Now().UTC(), actor, func() (graphstore.Node, error) {
+			// The backfill decodes created_by into a model.Actor, so a stored JSON null is the
+			// zero actor there, and here.
+			var creator model.Actor
+			if before.CreatedBy != nil {
+				creator = *before.CreatedBy
+			}
+			return graphstore.IssueNode(key, before.Project, creator, before.CreatedAt), nil
+		})
+		if err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}

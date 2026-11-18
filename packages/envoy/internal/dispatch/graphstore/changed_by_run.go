@@ -39,23 +39,60 @@ func runOf(ctx context.Context) string {
 	return run
 }
 
-// MadeForRun is whether ctx carries a run (WithRun). A writer asks it only where it writes a node
-// for no other reason than to name what a run changed - the issue PATCH, whose own write reaches
-// no node of the store (api's patchIssue), and the edit of an ask's or a comment's words, whose
-// own write reaches no node of the store either (api's editAsk and editComment) - so that a write
-// made for no run sends nothing more than it did.
-func MadeForRun(ctx context.Context) bool { return runOf(ctx) != "" }
+// WriteChangedForRun is the write of a writer whose own write reaches no node of the store, and
+// that writes a node for no other reason than to name it changed by the run ctx carries (spec
+// requirement r-interaction): the issue PATCH (api's patchIssue), and the edit of an ask's or a
+// comment's words (api's editAsk and editComment). On a context that carries no run it calls
+// nothing and writes nothing, and answers the zero Uncaused, for which Caused writes nothing, so a
+// write made for no run sends no statement more than it did.
+//
+// On a context that carries a run it writes the node that node answers, through WriteUncaused:
+// the node as the object's create and the backfill write it - in its project, or between its
+// parties, made by its creator at its created_at - restating the object, so a node already there
+// keeps the state, the visibility, the made_at and the made_by the store holds and moves nothing
+// else, and an object a process of the release before created gets here the node the backfill
+// would give it, which the backfill, writing only a node the store lacks, then leaves as it is.
+// node is called only then, so a read it makes to build the node - the scope of an ask or a
+// comment (ScopeOf) - is sent for a run alone. The changed_by_run the node owes is the change's
+// own, dated at at and signed by by, where the node is dated and signed as its object was made,
+// and the Uncaused holds it for Caused, which appends it with what the node states under the
+// writer's own event, as a create's facts are, unless the node already holds one to that run.
+// Each caller writes the node last of the node rows its transaction takes, after its own rows
+// and their documents.
+func WriteChangedForRun(ctx context.Context, tx pgx.Tx, at time.Time, by model.Actor, node func() (Node, error)) (Uncaused, error) {
+	if runOf(ctx) == "" {
+		return Uncaused{}, nil
+	}
+	changed, err := node()
+	if err != nil {
+		return Uncaused{}, err
+	}
+	write, err := WriteUncaused(ctx, tx, []Node{changed}, nil)
+	if err != nil {
+		return Uncaused{}, err
+	}
+	write.changes = []runChange{{kind: changed.Kind, id: changed.ID, at: at, by: by}}
+	return write, nil
+}
+
+// runChange is a node WriteChangedForRun names changed by the run, dated and signed as the change
+// was made rather than as the node was.
+type runChange struct {
+	kind, id string
+	at       time.Time
+	by       model.Actor
+}
 
 // changedByRunMarks is the TupleChangedByRun each node a write marks changed owes the run ctx
 // carries, one for each node: out of each node handed with Node.Changed, caused as that node's
-// write is and dated and signed as it is, or as its ChangedAt and ChangedBy say where it carries
-// them, and out of the node each fact marked Tuple.Changes goes out of, as that fact is. It
-// answers nil, and allocates nothing, on a context that carries no run.
+// write is and dated and signed as it is, out of each node of changes, dated and signed as the
+// change says (WriteChangedForRun), and out of the node each fact marked Tuple.Changes goes out
+// of, as that fact is. It answers nil, and allocates nothing, on a context that carries no run.
 //
 // A write holds each node once (Write), so the nodes need no comparison among themselves; a
 // marked fact is compared with what is already marked, since a retarget states two facts out of
 // one node and the node may be written beside them.
-func changedByRunMarks(ctx context.Context, nodes []Node, tuples []Tuple) []Tuple {
+func changedByRunMarks(ctx context.Context, nodes []Node, changes []runChange, tuples []Tuple) []Tuple {
 	run := runOf(ctx)
 	if run == "" {
 		return nil
@@ -68,14 +105,12 @@ func changedByRunMarks(ctx context.Context, nodes []Node, tuples []Tuple) []Tupl
 		})
 	}
 	for _, node := range nodes {
-		if !node.Changed {
-			continue
+		if node.Changed {
+			mark(node.Kind, node.ID, node.MadeAt, node.MadeBy, node.SourceEvent)
 		}
-		at, who := node.MadeAt, node.MadeBy
-		if !node.ChangedAt.IsZero() {
-			at, who = node.ChangedAt, node.ChangedBy
-		}
-		mark(node.Kind, node.ID, at, who, node.SourceEvent)
+	}
+	for _, change := range changes {
+		mark(change.kind, change.id, change.at, change.by, NoEvent)
 	}
 	for _, tuple := range tuples {
 		if !tuple.Changes || slices.ContainsFunc(marks, func(marked Tuple) bool {

@@ -261,27 +261,24 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 	// An edit of a comment's words made for a run (graphstore.WithRun, which withinGoingRun puts
 	// on a request naming its run) names the comment as changed by that run where it changed them
 	// (spec requirement r-interaction) and the comment is a node of the store. Nothing
-	// else this route writes reaches the comment's node, so under a run it writes that node as the
-	// create and the backfill write it (graphstore.CommentFacts' node): in the project, or between
-	// the parties, of what it belongs to (graphstore.ScopeOf), made by its author at its
-	// created_at, and marked changed. Its relations stand as they were stated and are stated
-	// again by nobody. The node restates the comment, so the node keeps the state, the
-	// visibility, the made_at and the made_by the store holds and moves nothing else. The
-	// changed_by_run is this edit's, dated at its edited_at and signed by its writer
-	// (graphstore.Node's ChangedAt and ChangedBy). It is the last node row this transaction
-	// takes, after the comment's row and its document, and what it states waits for
-	// comment.edited (graphstore.Caused), as an issue's own field write does (patchIssue). A
-	// write made for no run writes no node and sends no statement more than it did.
+	// else this route writes reaches the comment's node, so it writes that node as the create and
+	// the backfill write it (graphstore.CommentFacts' node): in the project, or between the
+	// parties, of what it belongs to (graphstore.ScopeOf), made by its author at its created_at,
+	// and names it changed at its edited_at by its writer (graphstore.WriteChangedForRun, which
+	// reads and writes nothing for no run). Its relations stand as they were stated and are stated
+	// again by nobody. What it states waits for comment.edited (graphstore.Caused), as an issue's
+	// own field write does (patchIssue).
 	var commentNode graphstore.Uncaused
-	if graphstore.MadeForRun(r.Context()) && stored && previousBody != comment.Body {
-		project, parties, err := graphstore.ScopeOf(r.Context(), tx, comment.IssueKey, comment.ArtifactID)
+	if stored && previousBody != comment.Body {
+		commentNode, err = graphstore.WriteChangedForRun(r.Context(), tx, editedAt, actor, func() (graphstore.Node, error) {
+			project, parties, err := graphstore.ScopeOf(r.Context(), tx, comment.IssueKey, comment.ArtifactID)
+			if err != nil {
+				return graphstore.Node{}, err
+			}
+			node, _ := graphstore.CommentFacts(nil, comment.ID, comment.Author, comment.CreatedAt, graphstore.NoEvent, "", "", project, parties)
+			return node, nil
+		})
 		if err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-		node, _ := graphstore.CommentFacts(nil, comment.ID, comment.Author, comment.CreatedAt, graphstore.NoEvent, "", "", project, parties)
-		node.Changed, node.ChangedAt, node.ChangedBy = true, editedAt, actor
-		if commentNode, err = graphstore.WriteUncaused(r.Context(), tx, []graphstore.Node{node}, nil); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}

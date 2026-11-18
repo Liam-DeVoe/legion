@@ -13,7 +13,6 @@ import (
 
 	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/internal/contracts"
-	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -347,23 +346,24 @@ const goingRunNodeTaken = graphstore.NodeRowLockSQL + ` skip locked`
 // (graphstore.LockInteraction), the first lock of every frame's transaction, so a frame takes a
 // node's row before the run's going_requests row, the order the erase of a run takes them in. A
 // run a pod of the release before recorded during a roll has no node yet: its node is written
-// first, from its going_requests row, by the backfill's writer for one run (graphcensus.WriteRun),
-// which takes that row `for no key update` and also states a frame value of every frame that pod
-// stored, and then taken. The node it writes is this transaction's own, which no other can see
-// until it commits, let alone hold. A node another write committed in between is taken without
-// waiting (goingRunNodeTaken), and where another transaction holds it the answer is
-// errGoingRunNodeHeld, which the caller begins again on, so no frame waits on a node's row while it
-// holds the run's. A run the record does not hold is errGoingRunGone.
+// first, from its going_requests row, by the one writer of a run's node from its row, which the
+// backfill shares (graphstore.WriteRun): it takes that row `for no key update` and also states a
+// frame value of every frame that pod stored, and the node is then taken. The node it writes is
+// this transaction's own, which no other can see until it commits, let alone hold. A node another
+// write committed in between is taken without waiting (goingRunNodeTaken), and where another
+// transaction holds it the answer is errGoingRunNodeHeld, which the caller begins again on, so no
+// frame waits on a node's row while it holds the run's. A run the record does not hold is
+// errGoingRunGone.
 func lockGoingRun(ctx context.Context, tx pgx.Tx, requestID string) error {
 	locked, err := graphstore.LockInteraction(ctx, tx, requestID)
 	if err != nil || locked {
 		return err
 	}
-	held, err := graphcensus.WriteRun(ctx, tx, requestID)
+	written, err := graphstore.WriteRun(ctx, tx, requestID)
 	if err != nil {
 		return err
 	}
-	if !held {
+	if !written.Held {
 		return errGoingRunGone
 	}
 	taken, err := tx.Exec(ctx, goingRunNodeTaken, graphstore.KindInteraction, requestID)

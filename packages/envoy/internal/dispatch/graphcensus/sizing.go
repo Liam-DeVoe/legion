@@ -509,11 +509,12 @@ func storeKinds() []StoreKind {
 			" block terms count",
 	}, {
 		// Counted off graphstore.InteractionFacts, which the going POST (api's recordGoingRequest), the
-		// frame path and the backfill (WriteRun) and migration 20261116205055 write a run through: the
-		// words and ends_at values, and graphstore.AuthorFacts' authored_by with its author's aliases
-		// (an alias_of and a recorded_as at most); graphstore.Write's base attributes of the node it
-		// makes, the visibility, the state and the project where the run names one; and the
-		// changed_by_run a write made for the run appends out of a node it changed (graphstore.WithRun).
+		// frame path and the backfill (graphstore.WriteRun) and migration 20261116205055 write a run
+		// through: the words and ends_at values, and graphstore.AuthorFacts' authored_by with its
+		// author's aliases (an alias_of and a recorded_as at most); graphstore.Write's base attributes
+		// of the node it makes, the visibility, the state and the project where the run names one; and
+		// the changed_by_run a write made for the run appends out of a node it changed
+		// (graphstore.WithRun).
 		Name: "interaction", MovedBy: movedWithLenses, Nodes: 1, Tuples: 9, Assumed: 10 * sizingWindowDays,
 		Driver: "assumed at 10 runs a day, since production writes no interaction before this release and" +
 			" the release before it deletes a run from going_requests an hour old (contracts.GoingRequestTTL), so no" +
@@ -522,7 +523,7 @@ func storeKinds() []StoreKind {
 			" one changed_by_run into it",
 	}, {
 		// Counted off graphstore.FrameTuple, the one value tuple the frame path (api's
-		// appendGoingEvent) and the backfill (readRunFrames) write of each frame.
+		// appendGoingEvent) and the backfill (graphstore.ReadRunFrames) write of each frame.
 		Name: "frame", MovedBy: movedWithLenses, Tuples: 1, Assumed: 500 * sizingWindowDays,
 		Driver: "assumed at 50 for each assumed run, 500 a day, since the release before this one" +
 			" deletes a run's going_events rows with its going_requests row: one frame value each",

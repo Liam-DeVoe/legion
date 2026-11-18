@@ -35,19 +35,20 @@ const graphstoreDirectory = "internal/dispatch/graphstore"
 const graphstoretestDirectory = graphstoreDirectory + "/graphstoretest"
 
 // storeWriteFunctions are the calls a write of graph_nodes and graph_tuples from outside this
-// package goes through, the same twelve docs' register of the tree's passes scans for
+// package goes through, the same thirteen docs' register of the tree's passes scans for
 // (storeWriterCall): Write, WriteUncaused and Caused in a caller's transaction, WriteArms and
 // WriteArmsUncaused spliced into a caller's statement, Authored, Reached and SessionRecorded,
 // which run those arms for the writers that record an author, a reached session and a session
 // an ask names, EraseNode, the erase's delete of a node and its tuples, FillScopes, the
 // backfill's fill of the project of a node stored with none, Retarget, the move of one pointer
-// tuple of a node from one far end to another, and QueueFrameTuple, Write's append of one frame
-// value of a run queued on a caller's batch. Each is a function of the package, never a method,
+// tuple of a node from one far end to another, QueueFrameTuple, Write's append of one frame
+// value of a run queued on a caller's batch, and WriteChangedForRun, WriteUncaused of the node a
+// write made for a run names changed. Each is a function of the package, never a method,
 // so a call of one is named by the package and found here wherever it is made. A write that
 // holds a statement of its own instead is found by rawStoreWrite, and none outside this package
 // may hold one.
 var storeWriteFunctions = []string{"Write", "WriteUncaused", "WriteArms", "WriteArmsUncaused", "Caused",
-	"Authored", "Reached", "SessionRecorded", "EraseNode", "FillScopes", "Retarget", "QueueFrameTuple"}
+	"Authored", "Reached", "SessionRecorded", "EraseNode", "FillScopes", "Retarget", "QueueFrameTuple", "WriteChangedForRun"}
 
 // rawStoreWrite matches a statement that writes graph_nodes or graph_tuples itself rather than
 // through one of storeWriteFunctions: an insert, an update or a delete, in any case, over any
@@ -130,30 +131,34 @@ var storeWriteCallSites = map[string]string{
 	"api/reasoning_write.go#writeNodeState": "graphstore#TestEveryStoreWriteTakesOneLockOrder",
 	// An issue's own field write made for a run (api/issue_patch.go), which names the issue changed:
 	// the issue's owner row (lockPatchRows), the issue's row, then, on a context that carries a
-	// run alone, the issue's node through WriteUncaused, the issue's own event, and what the node
-	// states with its changed_by_run under that event through Caused. api's
+	// run alone, the issue's node through WriteChangedForRun, the issue's own event, and what the
+	// node states with its changed_by_run under that event through Caused. api's
 	// TestEveryApiStoreWriterTakesTheStoreLockOrder holds it to those steps.
 	"api/issue_patch.go#patchIssue": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	// An edit of an ask's or a comment's words made for a run (api/asks.go, api/comment_actions.go),
 	// which names the ask or the comment changed: the owner row of the ask or the comment, its row
 	// `for no key update` or `for update` and then its update, then, on a context that carries a
-	// run alone, its node through WriteUncaused, its own event, and what the node states with its
-	// changed_by_run under that event through Caused. api's
+	// run alone, its node through WriteChangedForRun, its own event, and what the node states with
+	// its changed_by_run under that event through Caused. api's
 	// TestEveryApiStoreWriterTakesTheStoreLockOrder holds each to those steps.
 	"api/asks.go#editAsk":                "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"api/comment_actions.go#editComment": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
+	// WriteChangedForRun is WriteUncaused of one node, on a context that carries a run alone, for
+	// the three writers above, whose steps around it api's
+	// TestEveryApiStoreWriterTakesTheStoreLockOrder drives.
+	"graphstore/changed_by_run.go#WriteChangedForRun": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	// A run of the command bar (api/going.go), which takes no owner row: its record writes the
 	// interaction node, its author's node and their tuples in one Write before the going_requests
 	// row, and each frame, in a transaction of its own, takes the run's interaction node row
 	// `for no key update`, then the run's row `for key share`, then appends the frame value through
 	// Write before the going_events row. api's TestEveryApiStoreWriterTakesTheStoreLockOrder holds
 	// both to their steps. A frame of a run a pod of the release before recorded with no node
-	// writes that node first through the backfill's writer for one run, which takes the run's
-	// going_requests row `for no key update` and then writes in one Write; its order is the order
-	// TestEveryStoreWriteTakesOneLockOrder proves of Write.
-	"api/going.go#appendGoingEvent":        "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
-	"api/going.go#recordGoingRequest":      "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
-	"graphcensus/interactions.go#writeRun": "graphstore#TestEveryStoreWriteTakesOneLockOrder",
+	// writes that node first through the one writer of a run's node from its row, which the
+	// backfill shares: it takes the run's going_requests row `for no key update` and then writes in
+	// one Write; its order is the order TestEveryStoreWriteTakesOneLockOrder proves of Write.
+	"api/going.go#appendGoingEvent":      "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
+	"api/going.go#recordGoingRequest":    "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
+	"graphstore/interaction.go#WriteRun": "graphstore#TestEveryStoreWriteTakesOneLockOrder",
 	// The backfill's passes over what a process of the release before writes of a run during a
 	// roll (graphcensus' TestTheBackfillMendsWhatAnOlderPodWroteOfARun): a frame it appended with
 	// no value, stated through Write after the run's interaction node row `for no key update`, the
@@ -162,6 +167,13 @@ var storeWriteCallSites = map[string]string{
 	// graphcensus' TestEveryBackfillBatchTakesTheStoreLockOrder holds both to those steps.
 	"graphcensus/backfill.go#writeGoneRun":   "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
 	"graphcensus/backfill.go#writeRunFrames": "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
+	// The backfill's retraction of each prevented_by a process of the release before left asserted
+	// at a check it dropped or at a check of a document it retired (graphcensus'
+	// TestTheBackfillRetractsThePreventedByOfChecksNobodyRuns): the owner row of each such check's
+	// document first, the row the index pass and the retirement retract under, then one Write of
+	// the retractions. graphcensus' TestEveryBackfillBatchTakesTheStoreLockOrder holds it to those
+	// steps.
+	"graphcensus/backfill.go#writeEndedPreventions": "graphcensus#TestEveryBackfillBatchTakesTheStoreLockOrder",
 	// The node of every issue, document, ask and message a request creates, in the project or
 	// between the parties it belongs to: written before its row, and
 	// caused by the event the create appends after it. createIssue, storeArtifact and

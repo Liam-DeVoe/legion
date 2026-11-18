@@ -36,9 +36,8 @@ import (
 //
 // On a context that carries a run (WithRun), the write also appends, with its own tuples, one
 // changed_by_run tuple from each node it marks changed (Node.Changed, Tuple.Changes) to that run's
-// interaction, dated, signed and caused as the node's write or the fact that marked it, or dated
-// and signed as a node's ChangedAt and ChangedBy say where it carries them, unless the node
-// already holds one to that run (changedByRun), read once the node rows are held.
+// interaction, dated, signed and caused as the node's write or the fact that marked it, unless the
+// node already holds one to that run (changedByRun), read once the node rows are held.
 func Write(ctx context.Context, tx pgx.Tx, nodes []Node, tuples []Tuple) error {
 	base, made, err := writeNodes(ctx, tx, nodes, tuples)
 	if err != nil {
@@ -47,7 +46,7 @@ func Write(ctx context.Context, tx pgx.Tx, nodes []Node, tuples []Tuple) error {
 	if err := checkPointers(ctx, tx, nodes, made, tuples); err != nil {
 		return err
 	}
-	changed, err := changedByRun(ctx, tx, changedByRunMarks(ctx, nodes, tuples))
+	changed, err := changedByRun(ctx, tx, changedByRunMarks(ctx, nodes, nil, tuples))
 	if err != nil {
 		return err
 	}
@@ -76,6 +75,9 @@ type Uncaused struct {
 	// Tuples are the facts the write states, each appended under the event by Caused: the base
 	// attributes its node write stated (WriteUncaused) and the writer's own.
 	Tuples []UncausedTuple
+	// changes are the nodes WriteChangedForRun names changed by the run, each dated and signed as
+	// its change was made, for which Caused appends a changed_by_run under the event.
+	changes []runChange
 }
 
 // UncausedTuple is one fact an Uncaused write holds for its cause. LegacyFromCause marks a fact
@@ -135,10 +137,11 @@ func WriteUncaused(ctx context.Context, tx pgx.Tx, nodes []Node, stated []Tuple)
 // pointer type rules hold is held to its rule here (checkPointers), before the nodes move.
 //
 // On a context that carries a run (WithRun), it appends with them one changed_by_run tuple from
-// each node the write marks changed (Node.Changed, Tuple.Changes) to that run's interaction, under
-// event as every fact of the write is, unless the node already holds one to that run
-// (changedByRun). The run is the context's, not the write's: WriteUncaused appends nothing, so a
-// writer whose nodes went in on another context still names the run its cause is appended for.
+// each node the write marks changed (Node.Changed, Tuple.Changes) or names changed
+// (WriteChangedForRun) to that run's interaction, under event as every fact of the write is,
+// unless the node already holds one to that run (changedByRun). The run is the context's, not the
+// write's: WriteUncaused appends nothing, so a writer whose nodes went in on another context
+// still names the run its cause is appended for.
 func Caused(ctx context.Context, tx pgx.Tx, write Uncaused, event int64) error {
 	tuples := make([]Tuple, len(write.Tuples))
 	for index, held := range write.Tuples {
@@ -158,7 +161,7 @@ func Caused(ctx context.Context, tx pgx.Tx, write Uncaused, event int64) error {
 	if err := causeNodes(ctx, tx, write.Nodes, event); err != nil {
 		return err
 	}
-	marks := changedByRunMarks(ctx, write.Nodes, tuples)
+	marks := changedByRunMarks(ctx, write.Nodes, write.changes, tuples)
 	for index := range marks {
 		marks[index].SourceEvent = event
 	}

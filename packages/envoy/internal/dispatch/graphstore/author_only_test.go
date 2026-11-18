@@ -131,10 +131,20 @@ func TestTheStoreRefusesAuthorOnAKindItDoesNotAdmit(t *testing.T) {
 
 // TestABlocksAddressKindIsReadOffItsID: the kind the graph addresses a node by is its own, but a
 // block whose id names a lens, which is a finding of that lens and lens_block, in Go and in SQL.
+// The id FindingID builds is the one ParseFindingID reads back and FindingIDSQL tells, and no
+// other block's id is one to either.
 func TestABlocksAddressKindIsReadOffItsID(t *testing.T) {
 	database := storetest.Open(t)
+	const lens = "33333333-3333-4111-8111-333333333333"
+	finding := FindingID(lens, "first")
+	if finding != KindLens+"/"+lens+"#first" {
+		t.Fatalf("FindingID(%q, %q) = %q, want lens/<uuid>#<block id>", lens, "first", finding)
+	}
+	if gotLens, gotBlock, ok := ParseFindingID(finding); !ok || gotLens != lens || gotBlock != "first" {
+		t.Errorf("ParseFindingID(%q) = %q, %q, %t; want %q, %q, true", finding, gotLens, gotBlock, ok, lens, "first")
+	}
 	for _, node := range []struct{ kind, id, want string }{
-		{blockKind, KindLens + "/33333333-3333-4111-8111-333333333333#first", KindLensBlock},
+		{blockKind, finding, KindLensBlock},
 		{blockKind, "CORE-1/spec#first", blockKind},
 		{blockKind, "comment/33333333-3333-4111-8111-333333333333#b1", blockKind},
 		{KindLens, "33333333-3333-4111-8111-333333333333", KindLens},
@@ -144,12 +154,19 @@ func TestABlocksAddressKindIsReadOffItsID(t *testing.T) {
 			t.Errorf("AddressKind(%q, %q) = %q, want %q", node.kind, node.id, got, node.want)
 		}
 		var got string
-		if err := database.Pool.QueryRow(context.Background(), `select `+AddressKindSQL("$1::text", "$2::text"),
-			node.kind, node.id).Scan(&got); err != nil {
+		var findingSQL bool
+		if err := database.Pool.QueryRow(context.Background(), `select `+AddressKindSQL("$1::text", "$2::text")+`, `+FindingIDSQL("$2::text"),
+			node.kind, node.id).Scan(&got, &findingSQL); err != nil {
 			t.Fatalf("read the address kind of %s %s in SQL: %v", node.kind, node.id, err)
 		}
 		if got != node.want {
 			t.Errorf("AddressKindSQL of %q, %q = %q, want %q", node.kind, node.id, got, node.want)
+		}
+		if node.kind == blockKind {
+			_, _, parsed := ParseFindingID(node.id)
+			if want := node.want == KindLensBlock; parsed != want || findingSQL != want {
+				t.Errorf("the block %q is a finding's to ParseFindingID (%t) and to FindingIDSQL (%t), want %t", node.id, parsed, findingSQL, want)
+			}
 		}
 	}
 }
