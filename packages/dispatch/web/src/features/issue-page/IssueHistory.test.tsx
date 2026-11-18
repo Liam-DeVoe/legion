@@ -1670,9 +1670,9 @@ test("a handoff's opened fields stay drawn when a read of them again fails", asy
 
 // With no body held, the read a handoff's Retry sends is pending, and the loading line takes the
 // place of the line that said the read failed, Retry and all. The focus of a keyboard reader on
-// that Retry moves to the Show fields toggle above it before the read goes out, rather than
-// falling to the page with the Retry.
-test("a handoff's Retry pressed by keyboard hands the focus to its toggle before its line goes", async () => {
+// that Retry goes with its line to the loading line, and on to the fields once the read lands,
+// rather than falling to the page with the Retry.
+test("a handoff's Retry pressed by keyboard hands the focus on as its line goes, to the fields it read", async () => {
   const getHandoff = spyOn(api, "getHandoff")
     .mockRejectedValueOnce(new Error("the handoff is down"))
     .mockResolvedValue(handoffRecord("Second pass"));
@@ -1690,10 +1690,11 @@ test("a handoff's Retry pressed by keyboard hands the focus to its toggle before
 
     expect(getHandoff).toHaveBeenCalledTimes(2);
     const active = document.activeElement;
+    const fields = document.getElementById(toggle.getAttribute("aria-controls") ?? "");
     expect(
       active,
-      `the handoff's Retry went with its line and the focus fell to the page (retry connected: ${retry.isConnected} focus: ${active?.tagName})`
-    ).toBe(toggle);
+      `the handoff's Retry went with its line and the focus did not go to the fields it read (retry connected: ${retry.isConnected} focus: ${active?.tagName})`
+    ).toBe(fields);
   } finally {
     unmount?.();
     getHandoff.mockRestore();
@@ -1702,9 +1703,8 @@ test("a handoff's Retry pressed by keyboard hands the focus to its toggle before
 
 // Where a body is held, the line that says a read of it failed stays, its Retry busy, while the
 // read that Retry sent is out. A press of the busy Retry joins that read rather than ending it
-// and sending another (`cancelRefetch: false`). The press that sends the read hands the focus to
-// the toggle; a reader who comes back to the busy Retry and presses it again keeps the focus
-// there.
+// and sending another (`cancelRefetch: false`). A press moves no focus: a reader who presses the
+// busy Retry, or comes back to it and presses it again, keeps the focus there.
 test("a handoff's busy Retry sends no read while the one it sent is out, and keeps the focus", async () => {
   const getHandoff = spyOn(api, "getHandoff").mockResolvedValue(handoffRecord("Second pass"));
   // The read the Retry sends is held out until the case lets it land.
@@ -1785,8 +1785,8 @@ test("two presses of a handoff's Retry before a render send one read", async () 
     ).toHaveBeenCalledTimes(3);
     expect(
       document.activeElement,
-      "the press that sent the read did not hand the focus to the toggle"
-    ).toBe(toggle);
+      "the press that sent the read moved the focus off the Retry, whose line stays while the read is out"
+    ).toBe(retry);
 
     await act(async () => again.resolve(handoffRecord("Third pass")));
     await screen.findByText("Third pass");
@@ -1829,6 +1829,119 @@ test("a handoff's Retry pressed twice by keyboard leaves its fields open once th
     ).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByText("Second pass")).toBeInTheDocument();
     expect(getHandoff, "the two presses read the handoff more than once").toHaveBeenCalledTimes(2);
+  } finally {
+    unmount?.();
+    getHandoff.mockRestore();
+  }
+});
+
+// With no body held, the loading line takes the place of the line that said the read failed, so
+// the focus of a keyboard reader on its Retry goes to that line, where an Enter presses nothing
+// and the fields stay open; then to the Retry of the line drawn again where the read fails again,
+// and to the fields once a read lands.
+test("a handoff's Retry with no body held hands the focus to the loading line, then to what the read drew", async () => {
+  const getHandoff = spyOn(api, "getHandoff").mockRejectedValueOnce(
+    new Error("the handoff is down")
+  );
+  // Each read a Retry sends is held out until the case lets it land.
+  let again = Promise.withResolvers<Handoff>();
+  let unmount: (() => void) | undefined;
+
+  try {
+    unmount = drawHandoff().unmount;
+    const toggle = screen.getByRole("button", { name: CONTROL_LABELS.show_fields });
+    toggle.focus();
+    await userEvent.keyboard("{Enter}");
+    const retry = await screen.findByRole("button", { name: CONTROL_LABELS.retry });
+    getHandoff.mockImplementation(() => again.promise);
+    retry.focus();
+    await userEvent.keyboard("{Enter}");
+    const loading = await screen.findByText(ANSWER_LINES.loading_handoff);
+    expect(
+      document.activeElement,
+      `the press of Retry did not hand the focus to the loading line in its line's place (focus: ${document.activeElement?.tagName} ${document.activeElement?.textContent})`
+    ).toBe(loading);
+    await userEvent.keyboard("{Enter}");
+    expect(toggle, "an Enter on the loading line shut the fields").toHaveAttribute(
+      "aria-expanded",
+      "true"
+    );
+    expect(document.activeElement, "an Enter on the loading line moved the focus").toBe(loading);
+
+    await act(async () => again.reject(new Error("the handoff is still down")));
+    const drawnAgain = await screen.findByRole("button", { name: CONTROL_LABELS.retry });
+    expect(
+      document.activeElement,
+      "the loading line went with the focus and did not hand it to the Retry of the read that failed again"
+    ).toBe(drawnAgain);
+
+    again = Promise.withResolvers<Handoff>();
+    await userEvent.keyboard("{Enter}");
+    expect(document.activeElement).toBe(await screen.findByText(ANSWER_LINES.loading_handoff));
+    await act(async () => again.resolve(handoffRecord("Second pass")));
+    await screen.findByText("Second pass");
+    const fields = document.getElementById(toggle.getAttribute("aria-controls") ?? "");
+    expect(fields?.tagName).toBe("DL");
+    expect(
+      document.activeElement,
+      "the loading line went with the focus and did not hand it to the fields the read drew"
+    ).toBe(fields);
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(getHandoff).toHaveBeenCalledTimes(3);
+  } finally {
+    unmount?.();
+    getHandoff.mockRestore();
+  }
+});
+
+// Where a body is held, the line that says a read of it failed stays while the read its Retry
+// sent is out, so the focus of a keyboard reader stays on the busy Retry, where a second Enter
+// joins that read and the fields stay open; once the read lands, the line goes and hands the
+// focus to the fields it drew.
+test("a handoff's Retry with a body held keeps the focus while its read is out, then hands it to the fields", async () => {
+  const getHandoff = spyOn(api, "getHandoff").mockResolvedValue(handoffRecord("Second pass"));
+  // The read the Retry sends is held out until the case lets it land.
+  const again = Promise.withResolvers<Handoff>();
+  let unmount: (() => void) | undefined;
+
+  try {
+    const drawn = drawHandoff();
+    unmount = drawn.unmount;
+    const toggle = screen.getByRole("button", { name: CONTROL_LABELS.show_fields });
+    await userEvent.click(toggle);
+    await screen.findByText("Second pass");
+    getHandoff.mockRejectedValueOnce(new Error("the handoff is down"));
+    await act(async () => {
+      await drawn.queryClient.invalidateQueries();
+    });
+    const retry = screen.getByRole("button", { name: CONTROL_LABELS.retry });
+    getHandoff.mockImplementation(() => again.promise);
+    retry.focus();
+
+    await userEvent.keyboard("{Enter}");
+    expect(
+      document.activeElement,
+      `the press of Retry moved the focus off it while its line stays (focus: ${document.activeElement?.tagName} ${document.activeElement?.textContent})`
+    ).toBe(retry);
+    await userEvent.keyboard("{Enter}");
+    expect(toggle, "the second press of Retry shut the fields it asked for").toHaveAttribute(
+      "aria-expanded",
+      "true"
+    );
+    expect(document.activeElement, "the second press of the busy Retry moved the focus").toBe(
+      retry
+    );
+    expect(getHandoff, "the second press sent another read").toHaveBeenCalledTimes(3);
+
+    await act(async () => again.resolve(handoffRecord("Third pass")));
+    await screen.findByText("Third pass");
+    expect(screen.queryByRole("alert")).toBeNull();
+    const fields = document.getElementById(toggle.getAttribute("aria-controls") ?? "");
+    expect(fields?.tagName).toBe("DL");
+    expect(
+      document.activeElement,
+      "the failure line went with the focus on its Retry and did not hand it to the fields"
+    ).toBe(fields);
   } finally {
     unmount?.();
     getHandoff.mockRestore();

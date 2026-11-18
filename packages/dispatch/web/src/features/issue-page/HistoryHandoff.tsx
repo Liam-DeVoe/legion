@@ -1,5 +1,5 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, type RefObject, useId, useMemo, useRef, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { type ReactNode, useId, useMemo, useRef, useState } from "react";
 
 import { api } from "../../api/client";
 import {
@@ -10,7 +10,7 @@ import {
   pageRowAct,
 } from "../../theme/classes";
 import { type HandoffField, handoffFields } from "../conversation/conversation-model";
-import { DetailsErrorLine } from "./details-error";
+import { DetailsErrorLine, useFocusHandOff } from "./details-error";
 import { authorText, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS, sentenceCase } from "./page-words";
 
@@ -38,7 +38,6 @@ interface FieldRow extends HandoffField {
 export function HistoryHandoff({ handoffId }: { handoffId: string }): ReactNode {
   const [expanded, setExpanded] = useState(false);
   const fieldsId = useId();
-  const toggle = useRef<HTMLButtonElement>(null);
   return (
     <span className="basis-full">
       <button
@@ -46,43 +45,49 @@ export function HistoryHandoff({ handoffId }: { handoffId: string }): ReactNode 
         aria-expanded={expanded}
         className={`dispatch-inline-link text-xs font-medium ${pageMutedText} ${pageRowAct}`}
         onClick={() => setExpanded((open) => !open)}
-        ref={toggle}
         type="button"
         {...pageChrome}
       >
         {expanded ? CONTROL_LABELS.hide_fields : CONTROL_LABELS.show_fields}
       </button>
-      {expanded ? <HandoffFields handoffId={handoffId} id={fieldsId} toggle={toggle} /> : null}
+      {expanded ? <HandoffFields handoffId={handoffId} id={fieldsId} /> : null}
     </span>
   );
 }
 
-function HandoffFields({
-  handoffId,
-  id,
-  toggle,
-}: {
-  handoffId: string;
-  id: string;
-  /** The Show fields and Hide fields control above the body. */
-  toggle: RefObject<HTMLButtonElement | null>;
-}): ReactNode {
-  const queryClient = useQueryClient();
-  const key = ["handoff", handoffId];
+/** A handoff's opened fields, or the line that says they are being read, or that the read
+ *  failed; `id` names whichever of them stands in the fields' place. */
+function HandoffFields({ handoffId, id }: { handoffId: string; id: string }): ReactNode {
   const handoff = useQuery({
     gcTime: Number.POSITIVE_INFINITY,
-    queryKey: key,
+    queryKey: ["handoff", handoffId],
     queryFn: () => api.getHandoff(handoffId),
     staleTime: Number.POSITIVE_INFINITY,
   });
   const failure = useRef<HTMLSpanElement>(null);
+  // A focus on a line that goes - the Retry of the failure line, or the loading line - goes on to
+  // what the reader's press asked for, where no Enter undoes it: the Retry of a failure line drawn
+  // again, else what stands in the fields' place, the loading line while the read is out and the
+  // fields once it lands. The toggle above them would not do: a second press of the Retry's key -
+  // a key that repeated, or a reader who saw nothing happen and pressed again - would land on it
+  // and shut the fields.
+  const handOff = useFocusHandOff(
+    () => failure.current?.querySelector<HTMLElement>("button") ?? document.getElementById(id)
+  );
   const fields = useMemo(
     () => (handoff.data === undefined ? undefined : fieldRows(handoff.data.body)),
     [handoff.data]
   );
   if (handoff.isPending) {
     return (
-      <span className={`mt-1 block text-xs ${pageQuietText}`} id={id} {...pageChrome}>
+      <span
+        className={`mt-1 block text-xs outline-none ${pageQuietText}`}
+        id={id}
+        ref={handOff}
+        role="status"
+        tabIndex={-1}
+        {...pageChrome}
+      >
         {ANSWER_LINES.loading_handoff}
       </span>
     );
@@ -96,23 +101,13 @@ function HandoffFields({
       <DetailsErrorLine
         failure={handoff.errorUpdateCount}
         message={ANSWER_LINES.handoff_unreadable}
-        onRetry={() => {
-          // The Retry goes with its line: at once where no body is held, as the read it sends
-          // draws the loading line in this one's place, else once that read lands. A focus on
-          // a control that goes falls to the page, so a focus on the Retry moves first to the
-          // toggle above it, where the reader opened the fields, as `DecisionActions.tsx` moves
-          // a focus before its write takes its control away. A press while that read is out
-          // joins it rather than ending it and sending another (`cancelRefetch: false`), and
-          // moves no focus, as its line stays until the read lands: a reader who came back to
-          // the busy Retry stays on it. The query's own state says whether a read is out as the
-          // press lands; the render's `isFetching` can be older than a second press made before
-          // React draws the first one's read.
-          const sends = queryClient.getQueryState(key)?.fetchStatus === "idle";
-          if (sends && failure.current?.contains(document.activeElement) === true) {
-            toggle.current?.focus({ preventScroll: true });
-          }
-          void handoff.refetch({ cancelRefetch: false });
-        }}
+        // The Retry goes with its line: at once where no body is held, as the read it sends
+        // draws the loading line in this one's place, else once that read lands. The press moves
+        // no focus, and the line's going hands it on (`handOff`). A press while that read is out
+        // joins it rather than ending it and sending another (`cancelRefetch: false`), so a
+        // second press made before React draws the first one's read sends nothing more.
+        onRetry={() => void handoff.refetch({ cancelRefetch: false })}
+        retryRef={handOff}
         retrying={handoff.isFetching}
       />
     </span>
@@ -122,7 +117,13 @@ function HandoffFields({
     return (
       <>
         {failed}
-        <pre className={handoffPre} data-handoff-raw id={id} {...authorText}>
+        <pre
+          className={`${handoffPre} outline-none`}
+          data-handoff-raw
+          id={id}
+          tabIndex={-1}
+          {...authorText}
+        >
           {handoff.data.body}
         </pre>
       </>
@@ -131,7 +132,12 @@ function HandoffFields({
   return (
     <>
       {failed}
-      <dl className={`mt-1 flex flex-col gap-2 text-xs ${pageInkText}`} id={id} {...authorText}>
+      <dl
+        className={`mt-1 flex flex-col gap-2 text-xs outline-none ${pageInkText}`}
+        id={id}
+        tabIndex={-1}
+        {...authorText}
+      >
         {fields.map(({ entry, field, json, label, text }) => {
           const known = Object.hasOwn(KNOWN_FIELDS, field) ? KNOWN_FIELDS[field] : undefined;
           // The element keeps the field's key, which a reader of the page selects by; the label
