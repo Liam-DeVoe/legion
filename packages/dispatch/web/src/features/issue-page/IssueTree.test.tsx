@@ -2864,6 +2864,67 @@ test("Tab and Shift+Tab in a list item leave the node's block in its list item",
   }
 });
 
+// Milkdown sinks the list item its own selection is in for Tab (SinkListItem), and the editor
+// reads that selection from the page only once the browser reports a move of the caret, a task
+// later: a Tab right after ArrowDown to the next item, before that report, would sink the item the
+// caret had left. The row has the editor read the caret first (`confineKey`), so Tab sinks the item
+// the caret is in. The node's block is the list itself, so a sink of one of its items into the one
+// before it stays inside the block, and the editor lets it in (`holdEditsToBlock`). The items and
+// their paragraphs carry no id, so the caret in any of them is in the node's block (`caretBlock`);
+// the editor mints one for each block a sink makes or moves, so the case reads each paragraph by
+// its depth and its words alone. happy-dom moves no caret for an arrow, so the case makes the move
+// the browser would, in one task with the Tab, and drops happy-dom's report of it, as the
+// Backspace case above does.
+test("Tab right after the caret moved to the next item of the node's list sinks that item", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const item = (words: string): LiveBlock => ({
+    content: [{ content: [{ text: words, type: "text" }], type: "paragraph" }],
+    type: "list_item",
+  });
+  const { editable, view } = await editLive(
+    user,
+    liveBlocks({
+      attrs: { blockId: "r1" },
+      content: [item("The first item."), item("The second item."), item("The third item.")],
+      type: "bullet_list",
+    })
+  );
+  const [, second, third] = Array.from(
+    editable.querySelectorAll('[data-block-id="r1"] p'),
+    (paragraph) => paragraph.firstChild
+  );
+  if (!(second instanceof Text) || !(third instanceof Text)) {
+    throw new Error("the editor draws no three items in the node's list");
+  }
+  const ownItem = () => view.state.selection.$head.parent.textContent;
+  const restore = dropSelectionReports();
+  try {
+    await select(second, 3);
+    expect(ownItem(), "the editor's own caret is not in the second item").toBe("The second item.");
+    window.getSelection()?.collapse(third, 3);
+    expect(ownItem(), "the editor read the move before the browser reported it").toBe(
+      "The second item."
+    );
+    pressIn(editable, "Tab");
+    // Each paragraph's depth and words: 2 for an item of the node's list, 4 for an item of a
+    // list in one of its items.
+    const outline = blocksOf(view).flatMap((line) => {
+      const read = /^(\d+) \S+ paragraph: (.*)$/s.exec(line);
+      return read === null ? [] : [`${read[1]} ${read[2]}`];
+    });
+    expect(outline, "Tab did not sink the item the caret moved to").toEqual([
+      "0 The words above the statement.",
+      "2 The first item.",
+      "2 The second item.",
+      "4 The third item.",
+      "0 The words below the statement.",
+    ]);
+  } finally {
+    restore();
+  }
+});
+
 // Backspace and Delete at the start of a list's first item lift it out of its list
 // (LiftFirstListItem), which the editor refuses (`holdEditsToBlock`) for a block in that item.
 test("Backspace and Delete at the start of a list's first item leave the node's block in it", async () => {
@@ -3171,6 +3232,58 @@ test("the caret goes into the row's editor only once the editor holds its edits 
     load.mockRestore();
   }
 });
+
+// Until the editor's hold is on, no caret goes in, and a Tab from the row stops in the editable,
+// where the editor's own selection is wherever it was - here in the second item of a list above
+// the node's block. Milkdown sinks that item into the one before it for Tab and lifts it out of
+// its list for Shift+Tab (SinkListItem, LiftListItem), an edit no hold refuses yet, and prevents
+// the key's default, which holds the focus in the editor. The row keeps Tab from the editor and
+// leaves it to the browser (`confineKey`), which moves the focus on with it.
+for (const [name, modifiers] of [
+  ["Tab", {}],
+  ["Shift+Tab", { shiftKey: true }],
+] as const) {
+  test(`${name} in the row's editor before its hold is on moves no list item, and is left to the browser`, async () => {
+    setViewport(1440);
+    const user = userEvent.setup();
+    const held = Promise.withResolvers<nodeCaret.HoldParts>();
+    const load = spyOn(nodeCaret, "loadEditsHold").mockReturnValue(held.promise);
+    try {
+      const room = liveRoom();
+      const blocks: LiveBlock[] = [
+        {
+          attrs: { blockId: "l" },
+          content: [
+            listItem("i0", paragraph("q0", "The first item above the statement.")),
+            listItem("i1", paragraph("q1", "The second item above the statement.")),
+          ],
+          type: "bullet_list",
+        },
+        paragraph("r1", "A statement of the spec."),
+      ];
+      const editable = await enterStatement(user, (onEditor) => (
+        <LiveEditor blocks={blocks} onEditor={onEditor} room={room} />
+      ));
+      await waitFor(() => wordsOf(editable, "r1"));
+      await nextFrame();
+      const view = room.editor?.view;
+      if (view === undefined) throw new Error("the row's editor was never made");
+      await user.tab();
+      expect(document.activeElement, "Tab from the row did not stop in its editor").toBe(editable);
+      await select(wordsOf(editable, "q1"), 3);
+      expect(
+        view.state.selection.$head.parent.textContent,
+        "the editor's own caret is not in the list's second item"
+      ).toBe("The second item above the statement.");
+      const before = blocksOf(view);
+      const left = pressIn(editable, "Tab", modifiers);
+      expect(blocksOf(view), `${name} moved the list item`).toEqual(before);
+      expect(left, `${name} was refused, which holds the focus in the editor`).toBe(true);
+    } finally {
+      load.mockRestore();
+    }
+  });
+}
 
 /** Fails the load of what the hold is built of, held back so far, with `reject`, and waits a
  *  task on: a rejection nothing handled is reported then, and fails the case it happens in. */

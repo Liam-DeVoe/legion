@@ -115,9 +115,9 @@ export function caretOutOfBlock(host: HTMLElement, blockId: string | undefined):
   return anchor === null || anchor === undefined || !block.contains(anchor);
 }
 
-/** The keys a row's editor takes wherever its selection stands: they move the focus out of the
- *  editor or end the editing (`useNodeEditing.ts`), or are a modifier held for the next key, and
- *  none of them edits. */
+/** The keys `confineKey` leaves to a row's editor wherever its selection stands, and has it read
+ *  no caret for: Escape, which ends the editing (`useNodeEditing.ts`), and the modifiers, held for
+ *  the next key. None of them edits. Tab is no such key: Milkdown answers it in a list item. */
 const PASSING_KEYS: Readonly<Record<string, true>> = {
   Alt: true,
   AltGraph: true,
@@ -126,7 +126,6 @@ const PASSING_KEYS: Readonly<Record<string, true>> = {
   Escape: true,
   Meta: true,
   Shift: true,
-  Tab: true,
 };
 
 /** The keys held with Ctrl or Meta that the editor answers with an edit, or the browser does, by
@@ -174,7 +173,8 @@ type Point = readonly [node: Node, offset: number];
  * - every key that could edit (`couldEdit`) while the selection is not inside the block, or the
  *   editor draws no such block: before the caret is placed, or a Tab into the editable before the
  *   block is drawn, no key edits the document, while the browser's own keys - find, print, the
- *   address bar, a function key - still reach it;
+ *   address bar, a function key - still reach it. Tab alone is kept from the editor rather than
+ *   refused, so the browser still moves the focus on with it;
  * - Up on the block's first line and Down on its last, Left at its start and Right at its end,
  *   PageUp and PageDown, which leave the caret where it is.
  *
@@ -195,7 +195,21 @@ export function confineKey(
   const block = blockIn(editable, blockId);
   const selected = block === null ? null : selectionIn(block);
   if (block === null || selected === null) {
-    if (couldEdit(event)) event.preventDefault();
+    if (event.key === "Tab") {
+      // Tab is how the reader leaves an editor with no caret in the block, so its default - the
+      // focus moving on - stays. But Milkdown answers Tab and Shift+Tab in a list item, on its own
+      // selection wherever that stands (SinkListItem, LiftListItem): an edit no hold may be on to
+      // refuse yet (`useNodeEditing.ts`), and where one is, the hold refuses the edit but the
+      // keymap still prevents the key's default, which holds the focus in the editor. So the key
+      // goes no further than the element this is called at in the capture phase, the row's box
+      // (`useNodeEditing.ts`): ProseMirror's listener on the editable never hears it. The
+      // listeners that hear a key before the box - the window's and the document's in the
+      // capture phase, and the box's own for Escape - hear it as before; the page's keymap, which
+      // hears it after, binds no Tab in an editable (`shell/keymap.ts`'s `isEditableTarget`).
+      event.stopPropagation();
+    } else if (couldEdit(event)) {
+      event.preventDefault();
+    }
     return;
   }
   const taken = keyAtBlock(event, block, ...selected);
@@ -203,10 +217,14 @@ export function confineKey(
     // The editor answers a key on its own selection, which it reads from the page only once the
     // browser reports a move of the caret, a task later: in a Job like CI's, Backspace right after
     // ArrowRight at a heading's start acted at the start, and the letter before the caret stayed
-    // (2 runs of 10). So before a key goes on to the editor, the editor reads the caret now, which
-    // reads nothing new where the caret has not moved (`DOMObserver.onSelectionChange`). Not
-    // during a composition: the input method holds the caret then, and ProseMirror reads the page
-    // itself as a composition starts and as it ends, and leaves a key pressed in one alone
+    // (2 runs of 10). Tab and Shift+Tab are such keys: Milkdown sinks and lifts the list item its
+    // own selection is in (SinkListItem, LiftListItem), so a Tab right after ArrowDown to the next
+    // item, before the browser reported the move, would sink the item the caret had left. So
+    // before each key that goes on to the editor with the selection in the block, Escape and the
+    // modifiers aside (`PASSING_KEYS`), the editor reads the caret now, which reads nothing new
+    // where the caret has not moved (`DOMObserver.onSelectionChange`). Not during a composition:
+    // the input method holds the caret then, and ProseMirror reads the page itself as a
+    // composition starts and as it ends, and leaves a key pressed in one alone
     // (`inOrNearComposition`).
     if (!event.isComposing && event.key !== "Process") {
       document.dispatchEvent(new Event("selectionchange"));
