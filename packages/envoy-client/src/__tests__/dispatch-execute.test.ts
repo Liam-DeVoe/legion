@@ -835,6 +835,51 @@ describe("executeDispatchTool", () => {
     ]);
   });
 
+  // A comment's quote anchor names the block it is found inside with block_id, which the call
+  // sends beside the quote and its occurrence: Dispatch finds the quote in that block alone.
+  test("sends a comment's block_id with its quote anchor", async () => {
+    let sent: Record<string, unknown> | undefined;
+    const fetchImpl = (async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const pathname = new URL(String(url)).pathname;
+      if (pathname === "/api/v1/issues/DSP-41") {
+        return response({
+          artifacts: [{ id: "artifact-spec", primary: true }],
+          key: "DSP-41",
+          primary_artifact_id: "artifact-spec",
+        });
+      }
+      if (pathname === "/api/v1/issues/DSP-41/comments" && init?.method === "POST") {
+        sent = JSON.parse(String(init.body)) as Record<string, unknown>;
+        return response({ id: "comment-1", issue_key: "DSP-41" }, 201);
+      }
+      throw new Error(`unexpected request: ${pathname}`);
+    }) as typeof fetch;
+
+    await executeDispatchTool({
+      tool: "dispatch_comment",
+      args: {
+        issue: "DSP-41",
+        artifact: "spec",
+        quote: "turns at noon",
+        occurrence: 0,
+        block_id: "tide",
+        body: "Which noon?",
+      },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl,
+    });
+    expect(sent?.anchor).toEqual({
+      artifact: "artifact-spec",
+      quote: "turns at noon",
+      occurrence: 0,
+      block_id: "tide",
+    });
+  });
+
   // The open asks of the issue a reply_to_ask is resolved against, and the two ids a prefix of
   // "0123" cannot tell apart.
   const openAsks = [
@@ -1002,13 +1047,14 @@ describe("executeDispatchTool", () => {
         args: {
           issue: "DSP-41",
           question: "Review this",
-          anchor: { artifact: "spec", occurrence: 1, quote: "The passage" },
+          anchor: { artifact: "spec", occurrence: 1, quote: "The passage", block_id: "tide" },
         },
         assert: ({ body }) =>
           expect(body.anchor).toEqual({
             artifact: "artifact-spec",
             occurrence: 1,
             quote: "The passage",
+            block_id: "tide",
           }),
       },
       images: {

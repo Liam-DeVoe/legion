@@ -477,6 +477,18 @@ var indexPasses = map[string]string{
 	// the ask's. Neither reads a row of either side to decide what the other says.
 	"api/comment_actions.go#editComment": "the edit request's own body, the comment's row it locked and the comment's own event",
 	"api/asks.go#editAsk":                "the edit request's own body, the ask's row it locked and the ask's own event",
+	// A comment's anchor block (T17b of dispatch://INFRA-1253's plan): the anchored_in its
+	// comments.anchor's block_id projects, kept by each write that moves the anchor's block or its
+	// orphan flag. An accept or a reject that finds a suggestion's mark gone writes the anchor
+	// orphaned from the request and the comment's row it locked, and retracts the block that row
+	// names; the refresh writes the quote and orphan flag it read off the document's marks, and
+	// retracts or states the block the row it updated names; the anchor block backfill pins the
+	// block the live document holds the legacy anchor's quote in, and states that block where the
+	// row it pinned stands. None reads the store to decide what a row says, nor a row to mend the
+	// store: each states what its own write moved.
+	"api/comment_actions.go#orphanCommentAnchor":      "the accept or reject request, the comment's row it locked and the block that row's anchor names",
+	"docs/anchor_refresh.go#stateRefreshedAnchoredIn": "the anchors the refresh orphaned or found again off the document's marks, the rows it updated and the events it appended",
+	"docs/anchor_blocks.go#pinCommentAnchorBlock":     "the live document's block that holds the legacy anchor's quote, and the row it pins it on",
 	// The comment path's two halves of one store write, split at its event (commentStoreWrite):
 	// the node and facts of the comment the request stores, then the same facts under the event
 	// that stored it. Neither reads a row of either side.
@@ -680,6 +692,11 @@ var indexPasses = map[string]string{
 	// no node, its own content, read again under its issue's row, and that issue's own row, whose
 	// node the object pass wrote first.
 	"graphcensus/census_issues.go#writeIssueLinkBatch": "each pre-store issue_links row's own content and its issue's row",
+	// The backfill of the comments' anchor blocks (T17b of dispatch://INFRA-1253's plan): each
+	// comments row's own anchor, read again under its owner row, and the anchored_in its node
+	// states now, found by an anti-join since the row names no tuple: the tuple is the marker, as a
+	// version's node is the versions pass's. It states only what levels that node with its own row.
+	"graphcensus/census_anchors.go#writeAnchorBatch": "each comments row's own anchor, read again under its owner row, and the anchored_in its node states",
 	// The backfill of the components a process of the release before wrote (dispatch://INFRA-1253
 	// R9): each components row its marker does not mark, its own content and the parent it names,
 	// read again under its source's row, with the part_of its node holds now, so it states only the

@@ -37,8 +37,10 @@ const storeStepWait = 20 * time.Second
 // (recordGoingRequest) and one frame of it (appendGoingEvent), which takes no owner row; an
 // issue's own field write made for a run (patchIssue), which writes the issue's node; an edit of
 // an ask's words and of a comment's words made for a run (editAsk, editComment), which write the
-// ask's and the comment's node; and the removal of an untouched document (removeArtifact), which
-// states the document's node gone.
+// ask's and the comment's node; the removal of an untouched document (removeArtifact), which
+// states the document's node gone; and an accept that finds a suggestion's mark gone
+// (orphanCommentAnchor), which retracts the comment's anchored_in (T17b of dispatch://INFRA-1253's
+// plan).
 //
 // The order they are held to is the one written on api/inbox_read.go's markInboxReadThreads, which
 // graphstore's TestEveryStoreWriteTakesOneLockOrder reads: the owner row comes first; a node's
@@ -67,7 +69,7 @@ func TestEveryApiStoreWriterTakesTheStoreLockOrder(t *testing.T) {
 			ownerRowStep(documentOwnerStatement, "artifacts", `select 1 from artifacts where id = $1::uuid for no key update`, rig.document)),
 		rig.mentionReply(), rig.commentDeliverySettle(), rig.messageDeliverySettle(),
 		rig.goingRecord(), rig.goingFrame(), rig.issuePatchForRun(), rig.issuePatchRelations(), rig.issuePatchFiledFrom(), rig.artifactRemoval(),
-		rig.askEditForRun(), rig.commentEditForRun(), rig.architectureSourceRemoval(),
+		rig.askEditForRun(), rig.commentEditForRun(), rig.architectureSourceRemoval(), rig.commentAnchorOrphaning(),
 	} {
 		t.Run(writer.name, func(t *testing.T) {
 			requireTheWrittenOrderAdmits(t, writer)

@@ -142,6 +142,24 @@ var storeWriteCallSites = []string{
 	// TestEveryApiStoreWriterTakesTheStoreLockOrder holds each to those steps.
 	"api/asks.go#editAsk",
 	"api/comment_actions.go#editComment",
+	// A comment's anchor block (T17b of dispatch://INFRA-1253's plan), the anchored_in that
+	// comments.anchor's block_id projects, kept by each write that moves the anchor's block or its
+	// orphan flag beside the comment's create (createCommentFor's caused, above): an accept or a
+	// reject that finds a suggestion's mark gone orphans the anchor and retracts its anchored_in,
+	// after the comment's owner row and its row `for update` (lockedComment), its update, then the
+	// retraction through Write at the sentinel (api's TestEveryApiStoreWriterTakesTheStoreLockOrder);
+	// the refresh of a document's anchors retracts or states it for each comment whose anchor it
+	// orphans or finds again, after the owner row its settlement or version write takes first, the
+	// comments update and the comment.anchor_refreshed events it appends, which cause the tuples
+	// (docs' TestTheAnchorRefreshTakesTheOwnerRowTheRowTheEventThenTheTuple); and the anchor block
+	// backfill states it beside the block id it pins, the comment's row, then the tuple through
+	// Write at the sentinel. It takes no owner row, which the register's order admits: once it holds
+	// the row it waits on nothing, so no owner-row holder that waits on the row can be waited on in
+	// turn (docs' TestTheAnchorBlockBackfillTakesTheRowThenTheTuple holds the issue's row through the
+	// whole run, and the run never queues behind it).
+	"api/comment_actions.go#orphanCommentAnchor",
+	"docs/anchor_blocks.go#pinCommentAnchorBlock",
+	"docs/anchor_refresh.go#stateRefreshedAnchoredIn",
 	// A run of the command bar (api/going.go), which takes no owner row: its record writes the
 	// interaction node, its author's node and their tuples in one Write before the going_requests
 	// row, and each frame, in a transaction of its own, takes the run's interaction node row
@@ -270,6 +288,11 @@ var storeWriteCallSites = []string{
 	// read again under them, then their needs tuples through Write, then the rows naming the issue's
 	// node (graphcensus' TestTheIssueLinkBatchTakesTheStoreLockOrder).
 	"graphcensus/census_issues.go#writeIssueLinkBatch",
+	// The backfill's pass over the comments' anchor blocks (T17b of dispatch://INFRA-1253's plan):
+	// the owner rows the batch's comments stand under first, then the comments' rows and their
+	// nodes' anchored_in read again under them, then the tuples that level the two through Write
+	// at the sentinel (graphcensus' TestTheAnchorBatchTakesTheStoreLockOrder).
+	"graphcensus/census_anchors.go#writeAnchorBatch",
 	// The backfill's passes over the components a process of the release before wrote with no
 	// node (dispatch://INFRA-1253 R9): the architecture source rows of the batch's projects first,
 	// in ascending (project, id), then the rows read again under them, then the component nodes and

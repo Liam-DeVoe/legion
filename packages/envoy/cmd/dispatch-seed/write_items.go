@@ -320,11 +320,7 @@ func (r *seedRun) writeComments(ctx context.Context) error {
 			}
 			if comment.Anchored {
 				document := r.plan.documents[comment.Document]
-				block := firstParagraphBlock
-				if comment.TableRow {
-					block = r.tableRow
-				}
-				value := anchorJSON(document.ID, block, document.Versions, r.plan.vocabulary.phrase(r.random, 4))
+				value := anchorJSON(document.ID, r.commentAnchorBlock(comment), document.Versions, r.plan.vocabulary.phrase(r.random, 4))
 				anchor = &value
 			}
 			if comment.RepliesTo >= 0 {
@@ -391,8 +387,10 @@ func (r *seedRun) writeComments(ctx context.Context) error {
 // commentStoreWrite is what the comments from..to are in the node and tuple store: each
 // comment's node - project-visible, live, made by the seed's author at the row's own time - and
 // the artifact the comment is anchored to and the artifact that owns it, each stated only where
-// the comment has one (graphstore.CommentFacts), and who wrote the comment. The node write states
-// the two base attributes every node carries (graphstore.Write). All of it is drawn from the plan
+// the comment has one (graphstore.CommentFacts), the block an anchored comment's anchor names
+// (graphstore.AnchoredIn: a seeded document is its own room, so the block's node is the
+// document's ref_key, '#' and the block id), and who wrote the comment. The node write states the
+// two base attributes every node carries (graphstore.Write). All of it is drawn from the plan
 // alone, so the batch can state it before it writes a row.
 //
 // Who wrote a comment is what graphstore.AuthorFacts states of it, which is what
@@ -422,6 +420,10 @@ func (r *seedRun) commentStoreWrite(from, to int) ([]graphstore.Node, []graphsto
 		var node graphstore.Node
 		node, tuples = graphstore.CommentFacts(tuples, comment.ID, seedAuthor, comment.CreatedAt, graphstore.NoEvent,
 			anchor, owner, r.itemProject(comment.Issue, comment.Document), nil)
+		if anchor != "" {
+			tuples = append(tuples, graphstore.AnchoredIn(comment.ID, anchor+"#"+r.commentAnchorBlock(comment), true,
+				seedAuthor, comment.CreatedAt, graphstore.NoEvent))
+		}
 		nodes = append(nodes, node)
 		made, facts, _ := graphstore.AuthorFacts(graphstore.KindComment, comment.ID, seedAuthor, comment.CreatedAt, graphstore.NoEvent)
 		if index == from {
@@ -431,6 +433,15 @@ func (r *seedRun) commentStoreWrite(from, to int) ([]graphstore.Node, []graphsto
 	}
 	nodes = append(nodes, authors...)
 	return nodes, tuples
+}
+
+// commentAnchorBlock is the block an anchored comment's anchor names: the first paragraph of its
+// document's latest version, or the table row a thirtieth of them anchor on.
+func (r *seedRun) commentAnchorBlock(comment commentPlan) string {
+	if comment.TableRow {
+		return r.tableRow
+	}
+	return firstParagraphBlock
 }
 
 // writeMessages writes the issue threads and indexes each message's blocks. Every fiftieth

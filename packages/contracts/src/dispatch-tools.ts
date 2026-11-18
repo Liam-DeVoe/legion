@@ -1089,7 +1089,15 @@ export const dispatchToolSpecs = [
           quote: z.string().describe("Exact text the decision concerns."),
           occurrence: z
             .number({ int: true, min: 0 })
-            .describe("Zero-based occurrence of the quote.")
+            .describe(
+              "Zero-based occurrence of the quote, counted inside block_id when it is given."
+            )
+            .optional(),
+          block_id: z
+            .string()
+            .describe(
+              "Optional id of the block the quote is in: the quote is found inside that block alone."
+            )
             .optional(),
         })
         .describe("Optional document location for the question.")
@@ -1263,7 +1271,15 @@ export const dispatchToolSpecs = [
       quote: z.string().describe("Optional exact quoted document text.").optional(),
       occurrence: z
         .number({ int: true, min: 0 })
-        .describe("Optional zero-based occurrence of quote.")
+        .describe(
+          "Optional zero-based occurrence of quote, counted inside block_id when it is given."
+        )
+        .optional(),
+      block_id: z
+        .string()
+        .describe(
+          "Optional id of the block the quote is in: the quote is found inside that block alone."
+        )
         .optional(),
       body: z.string().describe(`Review comment. ${BODY_BLOCK_RULE}`),
       reply_to: z
@@ -1329,7 +1345,15 @@ export const dispatchToolSpecs = [
       body: z.string().describe(`Optional rationale. ${BODY_BLOCK_RULE}`).optional(),
       occurrence: z
         .number({ int: true, min: 0 })
-        .describe("Optional zero-based occurrence of quote.")
+        .describe(
+          "Optional zero-based occurrence of quote, counted inside block_id when it is given."
+        )
+        .optional(),
+      block_id: z
+        .string()
+        .describe(
+          "Optional id of the block the quote is in: the quote is found inside that block alone."
+        )
         .optional(),
     }),
     validation: documentOwnerValidation(true, true),

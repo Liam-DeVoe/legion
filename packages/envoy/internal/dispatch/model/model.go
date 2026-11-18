@@ -266,6 +266,11 @@ type AnchorInput struct {
 	Quote      *string `json:"quote,omitempty"`
 	Occurrence *int    `json:"occurrence,omitempty"`
 	MarkID     *string `json:"mark_id,omitempty"`
+	// BlockID, beside a quote, is the block of the document the quote is found inside: the server
+	// finds it there alone and counts Occurrence within it. A block the document does not hold, a
+	// block that does not hold the quote, and a block_id beside a mark_id are refused 400
+	// INVALID_ANCHOR naming block_id (api.resolveAnchor).
+	BlockID *string `json:"block_id,omitempty"`
 }
 
 // Project groups native issues under a short key.

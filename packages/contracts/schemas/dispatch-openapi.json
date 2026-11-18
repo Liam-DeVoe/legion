@@ -13262,6 +13262,9 @@
           "artifact": {
             "type": "string"
           },
+          "block_id": {
+            "type": "string"
+          },
           "mark_id": {
             "type": "string"
           },

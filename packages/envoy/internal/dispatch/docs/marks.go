@@ -92,9 +92,20 @@ type Anchored struct {
 	BlockID string
 }
 
-// MarkQuote marks one matching quote and returns what the new mark anchors to. A comment mark
-// made under WithCommentMarks is written on a closed issue's document too; a suggestion's is not.
-func (s *Service) MarkQuote(ctx context.Context, artifactID string, mark MarkSpec, quote string, occurrence *int) (Anchored, error) {
+// QuoteScope narrows where MarkQuote finds its quote and which match it takes: Occurrence, the
+// zero-based match, and BlockID, where it is set, the one block of the document the quote is found
+// inside, Occurrence then counting that block's matches alone (pmdoc.QuoteFinder.FindInBlock). A
+// nil scope is the whole document and its one match.
+type QuoteScope struct {
+	Occurrence *int
+	BlockID    string
+}
+
+// MarkQuote marks one matching quote, as scope narrows it, and returns what the new mark anchors
+// to. A comment mark made under WithCommentMarks is written on a closed issue's document too; a
+// suggestion's is not. A document of an issue room is marked in its own fragment of the room
+// (targetOf), and scope's block is one of that fragment's.
+func (s *Service) MarkQuote(ctx context.Context, artifactID string, mark MarkSpec, quote string, scope *QuoteScope) (Anchored, error) {
 	if mark.Kind == MarkComment {
 		ctx = commentMarkOperation(ctx)
 	}
@@ -108,7 +119,7 @@ func (s *Service) MarkQuote(ctx context.Context, artifactID string, mark MarkSpe
 
 		var markErr error
 		transact(func(txn *crdt.Transaction) {
-			_, markErr = markQuoteInTxn(txn, fragment, tree, quote, occurrence, nil, mark)
+			_, markErr = markQuoteInTxn(txn, fragment, tree, quote, scope, mark)
 		})
 		return markErr
 	})
@@ -141,9 +152,10 @@ func readAnchored(tree *pmdoc.Node, kind MarkKind, id string) (Anchored, error) 
 	return Anchored{Quote: quote, BlockID: blockID}, nil
 }
 
-// markQuoteInTxn finds quote in doc and writes the supplied mark within txn.
-func markQuoteInTxn(txn *crdt.Transaction, fragment *crdt.YXmlFragment, doc *pmdoc.Node, quote string, occurrence, near *int, spec MarkSpec) (pmdoc.Range, error) {
-	range_, err := pmdoc.FindQuote(doc, quote, occurrence, near)
+// markQuoteInTxn finds quote in doc, as scope narrows it (findQuoteIn), and writes the supplied
+// mark within txn.
+func markQuoteInTxn(txn *crdt.Transaction, fragment *crdt.YXmlFragment, doc *pmdoc.Node, quote string, scope *QuoteScope, spec MarkSpec) (pmdoc.Range, error) {
+	range_, err := findQuoteIn(doc, quote, scope)
 	if err != nil {
 		return pmdoc.Range{}, err
 	}
@@ -151,6 +163,20 @@ func markQuoteInTxn(txn *crdt.Transaction, fragment *crdt.YXmlFragment, doc *pmd
 		return pmdoc.Range{}, documentSchemaError(err)
 	}
 	return range_, nil
+}
+
+// findQuoteIn is the range of quote in doc that scope names: inside scope's block alone where it
+// names one, else the whole document's match scope's occurrence names, or its one match.
+func findQuoteIn(doc *pmdoc.Node, quote string, scope *QuoteScope) (pmdoc.Range, error) {
+	finder := pmdoc.NewQuoteFinder(doc)
+	switch {
+	case scope == nil:
+		return finder.Find(quote, nil, nil)
+	case scope.BlockID != "":
+		return finder.FindInBlock(quote, scope.BlockID, scope.Occurrence)
+	default:
+		return finder.Find(quote, scope.Occurrence, nil)
+	}
 }
 
 // VerifyMark returns what a browser-written mark anchors to, now or after its next document

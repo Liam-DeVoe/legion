@@ -1118,7 +1118,11 @@ type commentStoreWrite struct {
 // made by its author at the row's own created_at, and the artifact it is anchored to and the
 // artifact that owns it, each stated only where the comment has one. Both relations name the
 // artifact by its address, which is its ref_key, so the two artifacts' addresses are read here, in
-// the caller's transaction, in one statement.
+// the caller's transaction, in one statement. An anchor that names a block states beside them its
+// anchored_in to that block's node (graphstore.AnchoredIn), addressed as the block index
+// addresses it: the ref_key of the room the anchor's document is edited in, which the same
+// statement reads, '#' and the block id. A block whose address is past the store's bound is no
+// node, and the comment states no anchored_in to it.
 //
 // visibility is what graphstore.VisibilityFor answered the request, and the store refuses a
 // comment reserved for its author (graphstore.ErrVisibilityNotAdmitted) when writeNode writes it.
@@ -1149,10 +1153,10 @@ func commentStored(
 	}
 	anchorAddress, ownerAddress := "", ""
 	if anchor != nil {
-		anchorAddress = addresses[anchor.ArtifactID]
+		anchorAddress = addresses[anchor.ArtifactID].refKey
 	}
 	if ownerArtifactID != nil {
-		ownerAddress = addresses[*ownerArtifactID]
+		ownerAddress = addresses[*ownerArtifactID].refKey
 	}
 	// A comment any of whose relation ends is past the store's address bound is left whole out of
 	// the store. An artifact's ref_key is bounded only by its own key's index (api/artifacts.go)
@@ -1168,6 +1172,11 @@ func commentStored(
 		return commentStoreWrite{unprojected: true}, nil
 	}
 	node, tuples := graphstore.CommentFacts(nil, rowID, author, at, graphstore.NoEvent, anchorAddress, ownerAddress, project, parties)
+	if anchor != nil && anchor.BlockID != nil && *anchor.BlockID != "" && !anchor.Orphaned {
+		if block := addresses[anchor.ArtifactID].room + "#" + *anchor.BlockID; graphstore.AddressFits(block) {
+			tuples = append(tuples, graphstore.AnchoredIn(rowID, block, true, author, at, graphstore.NoEvent))
+		}
+	}
 	node.Visibility = visibility
 	// The comment is the node this write creates (graphstore.Created), named changed by a run
 	// where its cause is appended (caused); its author's node, which graphstore.Authored writes,
@@ -1216,25 +1225,30 @@ func (w commentStoreWrite) caused(ctx context.Context, tx pgx.Tx, event int64) e
 	return nil
 }
 
-// artifactAddresses are the addresses the graph names the given artifacts by, their ref_keys,
-// read in one statement: a comment anchored to the document it belongs to names one artifact
-// twice, and an id no row answers is absent from the answer.
-func artifactAddresses(ctx context.Context, tx pgx.Tx, ids []string) (map[string]string, error) {
-	addresses := make(map[string]string, len(ids))
+// artifactAddress is what the graph names one artifact by, its ref_key, and the ref_key of the
+// room it is edited in (graphstore.RoomRefKeySQL), which a block of it is addressed under.
+type artifactAddress struct{ refKey, room string }
+
+// artifactAddresses are the addresses the graph names the given artifacts by, read in one
+// statement: a comment anchored to the document it belongs to names one artifact twice, and an id
+// no row answers is absent from the answer.
+func artifactAddresses(ctx context.Context, tx pgx.Tx, ids []string) (map[string]artifactAddress, error) {
+	addresses := make(map[string]artifactAddress, len(ids))
 	if len(ids) == 0 {
 		return addresses, nil
 	}
-	rows, err := tx.Query(ctx, `select id::text, ref_key from artifacts where id = any($1::uuid[])`, ids)
+	rows, err := tx.Query(ctx, `select a.id::text, a.ref_key, `+graphstore.RoomRefKeySQL("a.id")+` from artifacts a where a.id = any($1::uuid[])`, ids)
 	if err != nil {
 		return nil, fmt.Errorf("read the addresses of %d artifact: %w", len(ids), err)
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var id, refKey string
-		if err := rows.Scan(&id, &refKey); err != nil {
+		var id string
+		var address artifactAddress
+		if err := rows.Scan(&id, &address.refKey, &address.room); err != nil {
 			return nil, fmt.Errorf("read an artifact's address: %w", err)
 		}
-		addresses[id] = refKey
+		addresses[id] = address
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("read the addresses of %d artifact: %w", len(ids), err)

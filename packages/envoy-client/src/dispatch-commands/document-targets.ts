@@ -286,11 +286,17 @@ function boundedEditDistance(a: readonly string[], b: readonly string[], limit: 
 export function anchor(
   artifact: Artifact,
   args: Record<string, unknown>
-): { artifact: string; quote: string; occurrence?: number } | undefined {
+): { artifact: string; quote: string; occurrence?: number; block_id?: string } | undefined {
   const quote = optionalString(args, "quote");
   if (quote === undefined) return undefined;
   const occurrence = optionalNumber(args, "occurrence");
-  return { artifact: artifact.id, quote, ...(occurrence === undefined ? {} : { occurrence }) };
+  const blockId = optionalString(args, "block_id");
+  return {
+    artifact: artifact.id,
+    quote,
+    ...(occurrence === undefined ? {} : { occurrence }),
+    ...(blockId === undefined ? {} : { block_id: blockId }),
+  };
 }
 /** Whether a document is its issue's plan, read off the artifact as Dispatch answers it: its role
  *  is `plan`, or it is an issue's markdown document (`kind` `doc`) that carries no role and its

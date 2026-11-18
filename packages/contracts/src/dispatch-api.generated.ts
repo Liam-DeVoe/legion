@@ -3313,6 +3313,7 @@ export interface components {
     };
     AnchorInput: {
       artifact: string;
+      block_id?: string;
       mark_id?: string;
       occurrence?: number;
       quote?: string;
