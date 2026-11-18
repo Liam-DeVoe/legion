@@ -346,8 +346,7 @@ export function useNodeEditing({
             // unhanded, and the editor for the next connection comes after a sync: where the
             // block is no longer drawn, the wait starts again with the next editor that draws it.
             const now = box.querySelector<HTMLElement>(rowSelector);
-            unhanded =
-              hold.current === "awaited" && now !== null && drawsBlock(now, editingBlock);
+            unhanded = hold.current === "awaited" && now !== null && drawsBlock(now, editingBlock);
             if (unhanded) changed();
             else handing = undefined;
           }, 0);
