@@ -265,7 +265,8 @@ test("an argument far longer than the bound is cut to it rather than written who
 // The telling: who hears, and how often.
 // ---------------------------------------------------------------------------------------------
 
-/** One wait the re-sends asked for: how long, and the end the test gives it, since no clock does. */
+/** One wait the re-sends asked for: how long, and the end the test gives it, since no clock does.
+ * A rig whose waits end at once (`waits: "at-once"`) has ended it already. */
 interface ResendWait {
   readonly ms: number;
   readonly end: () => void;
@@ -305,6 +306,9 @@ function tellerRig(
     /** The detector's book of open calls the teller reads before each re-send of an overdue
      * notice; the stuck call alone, open for the whole case, when it is left out. */
     openCalls?: () => readonly StallCall[];
+    /** Whether each wait the re-sends ask for lasts until the case ends it (`by-hand`, when it is
+     * left out) or ends at once, so the re-sends run to their end inside one `settled`. */
+    waits?: "by-hand" | "at-once";
   } = {}
 ): TellerRig {
   const state: Omit<TellerRig, "teller"> = {
@@ -354,6 +358,10 @@ function tellerRig(
     recordBoundMs: 200,
     openCalls: options.openCalls ?? (() => [callOf()]),
     sleep: (ms) => {
+      if (options.waits === "at-once") {
+        state.waits.push({ ms, end: () => {} });
+        return Promise.resolve();
+      }
       const { promise, resolve } = Promise.withResolvers<void>();
       state.waits.push({ ms, end: resolve });
       return promise;
@@ -379,7 +387,7 @@ function daemonState(architect: string | undefined): LegionState {
  * is not a 2xx. */
 function listenerAnswered(
   status: number,
-  body: { readonly error: string; readonly reason?: string }
+  body: { readonly error: string; readonly reason?: string; readonly [field: string]: unknown }
 ): EnvoyApiError {
   return new EnvoyApiError({
     method: "POST",
@@ -396,10 +404,11 @@ const BROKER_DOWN = "the secrets broker cannot be reached; try again in a minute
 
 /** One turn of the event loop, which waits on no duration: nothing the re-sends do waits on a
  * clock but the rig's own waits, so every promise they chain settles inside it, and they are at
- * their next wait or done when this returns. It is a turn rather than an awaited event because a
- * case here asserts that nothing more happened — no second publish, no further wait — and the
- * absence of an event has no event to await; `legion.test.ts` waits the same way for the same
- * reason. */
+ * their next wait or done when this returns; a rig whose waits end at once runs them to their end
+ * inside it, since every microtask runs before a timer's callback. It is a turn rather than an
+ * awaited event because a case here asserts that nothing more happened — no second publish, no
+ * further wait — and the absence of an event has no event to await; `legion.test.ts` waits the
+ * same way for the same reason. */
 async function settled(): Promise<void> {
   const { promise, resolve } = Promise.withResolvers<void>();
   setTimeout(resolve, 0);
@@ -454,8 +463,8 @@ test("a root architect's own session tells the controller role", async () => {
 });
 
 // The notice sends no `keep` field, so a listener keeps it for an owner's role that no live
-// session holds, and answers 202 kept. That has told no owner yet, and the notice is sent once and
-// never again, so the teller reports `ownerTold: false`: for the architect, and for the
+// session holds, and answers 202 kept. That has told no owner yet, and the teller does not send a
+// kept notice again, so it reports `ownerTold: false`: for the architect, and for the
 // controller, which owns a root architect's own call (dispatch://INFRA-2846, R6).
 test("the owner notice is kept", async () => {
   const architect = tellerRig();
@@ -596,8 +605,9 @@ test("each step and each stop is recorded, and a stop is told once", async () =>
 });
 
 // ---------------------------------------------------------------------------------------------
-// The re-sends: a publish no rule decides is sent again until the listener stores it, while the
-// notice is still true, for four minutes at most.
+// The re-sends: a publish no rule decides is sent again until the listener stores it, after the
+// wait the listener names where it names one, while the notice is still true, for four minutes at
+// most.
 // ---------------------------------------------------------------------------------------------
 
 test("a publish no rule decides is sent again under its one key until the listener stores it", async () => {
@@ -655,7 +665,7 @@ test("a publish no rule decides is sent again under its one key until the listen
 
 test("a 4xx refusal is final, and only a failure no rule decides is sent again", async () => {
   // A 4xx is the listener's own word on this notice, and the same notice under the same key would
-  // get the same word.
+  // get the same word: every 4xx but 408 and the refusal for this session's send rate.
   for (const body of [
     { status: 400, error: "payload must be a JSON string" },
     { status: 403, error: "this session's capability does not reach that topic" },
@@ -670,6 +680,10 @@ test("a 4xx refusal is final, and only a failure no rule decides is sent again",
         "envoy: the message bus stream refused the message, and refuses it however often it is " +
         "sent: nats: API error: code=400 err_code=10054 description=message size exceeds maximum allowed",
     },
+    // A 429 that is not the refusal for this session's send rate: the listener's 429 for too many
+    // access tokens checked from one address (`refuseBrokerToken`,
+    // `packages/envoy/cmd/listener/apiauth.go`) carries no `sender_rate_limited` reason.
+    { status: 429, error: "too many access tokens checked from this address" },
   ]) {
     const rig = tellerRig();
     rig.failures.push(listenerAnswered(body.status, body));
@@ -686,15 +700,15 @@ test("a 4xx refusal is final, and only a failure no rule decides is sent again",
     });
   }
 
-  // Everything else is sent again: a 5xx, the two 4xx answers that say "later" rather than "no",
-  // a timeout, a connection that failed — and an error whose text names a 404, because the status
-  // is read from the client's error type, never from an error's words.
+  // Everything else is sent again: a 5xx, 408, the one 4xx answer that says "later" rather than
+  // "no", a timeout, a connection that failed — and an error whose text names a 404, because the
+  // status is read from the client's error type, never from an error's words. The refusal for
+  // this session's send rate is sent again too, after the wait it names (below).
   for (const failure of [
     listenerAnswered(500, { error: "internal error" }),
     listenerAnswered(503, { error: BROKER_DOWN }),
     listenerAnswered(504, { error: "no forward the stream stored", reason: "delivery_failed" }),
     listenerAnswered(408, { error: "request timeout" }),
-    listenerAnswered(429, { error: "too many access tokens checked from this address" }),
     new DOMException("The operation timed out.", "TimeoutError"),
     new Error(UNREACHABLE),
     new Error('listener returned 404 Not Found: {"reason":"unclaimed"}'),
@@ -925,6 +939,125 @@ test("a notice the listener keeps failing is sent again for four minutes at most
     await settled();
     expect(rig.published).toHaveLength(9);
     expect(rig.waits).toHaveLength(8);
+  }
+});
+
+test("a re-send that tells the owner after a failure no rule decides corrects the teller's record", async () => {
+  const rig = tellerRig();
+  rig.failures.push(listenerAnswered(503, { error: BROKER_DOWN }));
+  expect(await rig.teller.tellOverdue(evidenceOf())).toEqual({
+    evidenceWritten: true,
+    ownerTold: false,
+  });
+  await settled();
+  expect(rig.waits.map((wait) => wait.ms)).toEqual([1_000]);
+
+  rig.waits[0]?.end();
+  await settled();
+  expect(rig.published).toHaveLength(2);
+  // The re-send was stored, so the owner was told late, and a later telling of the same call
+  // answers that the owner was told, with nothing published again.
+  expect(await rig.teller.tellOverdue(evidenceOf())).toEqual({
+    evidenceWritten: true,
+    ownerTold: true,
+  });
+  expect(rig.published).toHaveLength(2);
+  expect(rig.infos).toEqual([
+    {
+      message: "legion: the owner was told late about this session's stuck tool call",
+      context: expect.objectContaining({ attempt: 2, toolCallId: "toolu_stuck" }),
+    },
+  ]);
+});
+
+/** The 429 the listener answers a publish past this session's send limit with (an operator's
+ * values of 4 messages a minute and 2 at once), as the transport throws it. */
+function senderRateLimited(retryAfterSeconds: number): EnvoyApiError {
+  return listenerAnswered(429, {
+    error:
+      "Your sending is rate limited. This message was not sent. This listener lets one session " +
+      `send 4 messages a minute and 2 at once. You can send it again after ${retryAfterSeconds} seconds.`,
+    reason: "sender_rate_limited",
+    retry_after_seconds: retryAfterSeconds,
+    messages_per_minute: 4,
+    burst: 2,
+  });
+}
+
+const GIVEN_UP = "it was given up after 4 sends";
+
+test("a stall notice rate limited by the listener is sent again under its key after the wait", async () => {
+  const rig = tellerRig({ waits: "at-once" });
+  rig.failures.push(senderRateLimited(2));
+  // The first answer comes back with the first publish's outcome: the wait holds no step.
+  expect(await rig.teller.tellOverdue(evidenceOf())).toEqual({
+    evidenceWritten: true,
+    ownerTold: false,
+  });
+  await settled();
+
+  expect(rig.waits.map((wait) => wait.ms)).toEqual([2 * SECOND]);
+  expect(rig.published).toHaveLength(2);
+  expect(rig.published[1]?.idempotencyKey).toBe("legion-stall:toolu_stuck");
+  expect(rig.published[1]).toEqual(rig.published[0] as PublishInput);
+  // The resend was answered and not kept, so the owner was told, and the teller's record says so.
+  expect(await rig.teller.tellOverdue(evidenceOf())).toEqual({
+    evidenceWritten: true,
+    ownerTold: true,
+  });
+  expect(rig.published).toHaveLength(2);
+  expect(rig.warnings).toContainEqual({
+    message: expect.stringContaining("the wait the listener named"),
+    context: expect.objectContaining({ retryAfterSeconds: 2, sends: 1 }),
+  });
+  expect(rig.warnings).toContainEqual({
+    message: expect.stringContaining("its owner was told"),
+    context: expect.objectContaining({ sends: 2 }),
+  });
+});
+
+test("a stall notice rate limited 4 times is sent 4 times and then given up", async () => {
+  const rig = tellerRig({ waits: "at-once" });
+  // Each refusal names its own wait, and each wait is that refusal's.
+  rig.failures.push(...[2, 3, 5, 7].map(senderRateLimited));
+  await rig.teller.tellOverdue(evidenceOf());
+  await settled();
+
+  expect(rig.published).toHaveLength(4);
+  for (const input of rig.published) expect(input).toEqual(rig.published[0] as PublishInput);
+  expect(rig.waits.map((wait) => wait.ms)).toEqual([2 * SECOND, 3 * SECOND, 5 * SECOND]);
+  expect(rig.warnings.filter((line) => line.message.includes(GIVEN_UP))).toHaveLength(1);
+  expect(rig.warnings.at(-1)?.message).toContain(GIVEN_UP);
+  expect(await rig.teller.tellOverdue(evidenceOf())).toEqual({
+    evidenceWritten: true,
+    ownerTold: false,
+  });
+});
+
+test("a 429 rate limited for another reason is not sent again", async () => {
+  for (const refusal of [
+    // A refusal whose reason is not the sender's rate starts no resend, whatever wait it names.
+    listenerAnswered(429, {
+      error: "too many requests",
+      reason: "rate_limited",
+      retry_after_seconds: 2,
+    }),
+    // The listener's 429 for too many access tokens checked from one address, as it writes it.
+    listenerAnswered(429, { error: "too many access tokens checked from this address" }),
+  ]) {
+    const rig = tellerRig({ waits: "at-once" });
+    rig.failures.push(refusal);
+    expect(await rig.teller.tellOverdue(evidenceOf())).toEqual({
+      evidenceWritten: true,
+      ownerTold: false,
+    });
+    await settled();
+
+    expect(rig.published).toHaveLength(1);
+    expect(rig.waits).toEqual([]);
+    expect(rig.warnings.map((line) => line.message)).toContain(
+      "legion: the owner was not told about this session's stuck tool call"
+    );
   }
 });
 

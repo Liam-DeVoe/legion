@@ -774,18 +774,23 @@ key as the first copy for 72 hours, so such an answer clears the key, and the ne
 a new one. The stall watch's notice of a stuck tool call (`src/stall-evidence.ts`), to the
 architect or, for a root architect's own call, to the controller, also sends no `keep` field, and
 a kept answer reports that no owner was told. A publish of that notice that fails for a reason no
-rule decides — a 5xx, a 408 or 429, a timeout, a connection that failed — is sent again in the
+rule decides — a 5xx, a 408, a timeout, a connection that failed — is sent again in the
 background under the same idempotency key, a second later and then after a wait that doubles up to
 a minute, until the listener stores it, keeps it, or refuses it with any other 4xx (the 409 of a
-message the stream refuses however often it is sent among them); the ladder does not wait for it.
-The overdue notice's re-sends also end once it is no longer true — its call returned or its turn
-ended, or the ladder stopped short and the stop's own notice says so. The stop's notice goes on
-after its call ends, which the ladder's abort usually brings about, since what it says stays
-true. No attempt of either starts more than four minutes, the ladder's two default step gaps,
-after the first: the last failure is one warning naming the notice and its attempts. A kept
-notice that no session takes in its hour comes back to this worker's
-session as a dead letter, an Envoy card that names it, unless Envoy
-drops it more than an hour late. A reminder is dropped when the daemon's record says this role no
+message the stream refuses however often it is sent among them). The listener answers a session
+past its send limit with 429 `sender_rate_limited` and the whole seconds until it takes the next
+message: the stall watch waits that long instead, and gives the notice up once the listener has
+refused it for the send rate 4 times. Any other 429 is final. The ladder does not wait for these
+sends, and a resend that is answered and not kept records the owner as told. The phase
+reminder's notice needs no such resend: a refused publish leaves it unreported, and the next
+reminder publishes it again. The overdue notice's re-sends also end once it is no longer true —
+its call returned or its turn ended, or the ladder stopped short and the stop's own notice says
+so. The stop's notice goes on after its call ends, which the ladder's abort usually brings about,
+since what it says stays true. No attempt of either starts more than four minutes, the ladder's
+two default step gaps, after the first: the last failure is one warning naming the notice and
+its attempts. A kept notice that no session takes in its hour comes back to this worker's
+session as a dead letter, an Envoy card that names it, unless Envoy drops it more than an hour
+late. A reminder is dropped when the daemon's record says this role no
 longer works this phase or that the daemon has failed this role's claim (the `read_record` state,
 bounded at 5 s and failing open otherwise, since an unreachable daemon is exactly when a stalled
 worker must still be nudged). A worker the daemon relaunched into an open phase is reminded from a
