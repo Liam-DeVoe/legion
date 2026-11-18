@@ -2353,7 +2353,6 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		PrepareRepository:  prepare,
 		RepositoryUnread:   unread,
 		AwaitRecovery:      await,
-		RoleFor:            phase.RoleFor,
 		Record:             records,
 		Dispatch:           client,
 		Tokens:             tokens,

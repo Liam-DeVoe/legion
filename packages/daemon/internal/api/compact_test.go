@@ -11,7 +11,6 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
-	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
@@ -34,7 +33,7 @@ func compactHarnessLogging(t *testing.T, backend func(claim.Role) runtime.Backen
 	h.handler = NewServer("127.0.0.1", 8437, Options{
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken, Controller: h.store,
 		Pool: h.store.Pool(), Record: record.NewStore(), Releaser: h.runtime, Trees: h.store,
-		Handlers: []intake.Handler{&phaseRestarter{}}, RoleFor: phase.RoleFor, Backend: backend, Log: log,
+		Handlers: []intake.Handler{&phaseRestarter{}}, Backend: backend, Log: log,
 	}).Handler
 	return h
 }
@@ -596,7 +595,7 @@ func TestTheControllersCompactRefusesTheRoleController(t *testing.T) {
 		ClaimRequest{GrantID: grant.GrantID, Issue: "LEGION-209", Role: "controller"}, nil)
 
 	wantFreshSessionRefusal(t, recorder, http.StatusBadRequest, "INVALID_ROLE",
-		"role must be one of architect, planner, implementer, tester, reviewer, merger; "+
+		"role must be one of architect, planner, implementer, tester, reviewer, merger, or a role of this deployment; "+
 			"the project's controller is none of them, and the controller does not compact its own session")
 }
 

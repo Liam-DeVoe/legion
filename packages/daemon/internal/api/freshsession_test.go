@@ -44,7 +44,7 @@ func freshSessionHarnessStopping(t *testing.T, handler intake.Handler, stopping 
 	h.handler = NewServer("127.0.0.1", 8437, Options{
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken, Controller: h.store,
 		Pool: h.store.Pool(), Record: record.NewStore(), Releaser: h.runtime, Trees: h.store,
-		Handlers: []intake.Handler{handler}, RoleFor: phase.RoleFor,
+		Handlers: []intake.Handler{handler},
 		Stopping: stopping, Decisions: decisions,
 	}).Handler
 	return h
@@ -781,7 +781,7 @@ func TestTheControllersFreshSessionRefusesTheRoleController(t *testing.T) {
 		ClaimRequest{GrantID: grant.GrantID, Issue: "LEGION-209", Role: "controller"}, nil)
 
 	wantFreshSessionRefusal(t, recorder, http.StatusBadRequest, "INVALID_ROLE",
-		"role must be one of architect, planner, implementer, tester, reviewer, merger; "+
+		"role must be one of architect, planner, implementer, tester, reviewer, merger, or a role of this deployment; "+
 			"the project's controller is none of them, and its own claim takes no fresh session")
 }
 

@@ -223,13 +223,14 @@ func (s *server) claimFreshSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, FreshSessionResponse{PhaseNotRestarted: notRestarted})
 }
 
-// roleList names the roles a claim can be on, in the order the workflow reaches them.
+// roleList names the roles a claim can be on: Legion's six, in the order the workflow reaches
+// them, and each role the deployment defines, which a claim of an issue's step is on.
 func roleList() string {
 	names := make([]string, 0, len(claim.Roles))
 	for _, role := range claim.Roles {
 		names = append(names, string(role))
 	}
-	return strings.Join(names, ", ")
+	return strings.Join(names, ", ") + ", or a role of this deployment"
 }
 
 // freshSession is the one fresh-session effect, which `legion claims retry --fresh-session`
