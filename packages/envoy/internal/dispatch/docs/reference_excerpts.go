@@ -76,11 +76,12 @@ func (s *Service) IndexDocumentReferences(ctx context.Context, artifactID string
 	}
 	// Above deferBlockIndexBlocks the write indexes this version's references alone: migration
 	// 0122's trigger marked the document owed a block index (document_block_versions.version
-	// null) when the version's row was inserted, and nothing here settles that mark, so the
-	// block-index reconciliation (RunBlockIndexReconciliation) indexes the blocks and the
-	// mentions they hold out of the request. The typed-node pass still runs here, so a decision
-	// is a node, with its ties and their rows, in the transaction that accepts it, whatever the
-	// size of its document (indexDeferredVersion).
+	// null) when the version's row was inserted, indexDeferredVersion adds this build's own mark
+	// (oweDocumentIndex), and nothing here settles either, so the block-index reconciliation
+	// (RunBlockIndexReconciliation) indexes the blocks and the mentions they hold out of the
+	// request. The typed-node pass still runs here, so a decision is a node, with its ties and
+	// their rows, in the transaction that accepts it, whatever the size of its document
+	// (indexDeferredVersion).
 	if blocks := len(rendered.offsets); rendered.tree != nil && blocks > deferBlockIndexBlocks {
 		slog.Info("dispatch: a document version left its blocks to the block-index reconciliation: it holds more blocks than a write indexes in its own request",
 			"artifact", artifactID, "version", version, "blocks", blocks, "bound", deferBlockIndexBlocks)
@@ -96,7 +97,13 @@ func (s *Service) IndexDocumentReferences(ctx context.Context, artifactID string
 // (refs.IndexDecisionNodes), which writes those nodes, their values and their ties' rows from
 // rendered, the tree the write left. The targets those ties moved are counted with the
 // references'. What the pass stated is answered for the caller's event, as the block index's is.
+// The version takes this build's own index mark first (oweDocumentIndex), as indexDocument's
+// unrendered one does, so a version the release before indexes first during a roll is drained by
+// this build once the roll ends.
 func (s *Service) indexDeferredVersion(ctx context.Context, tx pgx.Tx, artifactID string, version int, versionAt time.Time, markdown string, rendered renderedTree) (model.ReferenceChanges, graphstore.Uncaused, error) {
+	if err := oweDocumentIndex(ctx, tx, artifactID); err != nil {
+		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
+	}
 	blocks := offsetBlocks(rendered.offsets)
 	facts, err := refs.DecisionFacts(ctx, tx, artifactID, version, blocks, rendered.tree, blockPointers(blocks, rendered.tree),
 		typedSources(ctx, tx, artifactID, rendered.tree, nil))
@@ -121,8 +128,19 @@ func (s *Service) indexDeferredVersion(ctx context.Context, tx pgx.Tx, artifactI
 // which indexes no blocks: migration 0122's trigger left the document owed when the version's row
 // was inserted, for the block-index reconciliation, which reads the document itself. settled is
 // the authors a settlement read of the blocks it settles (typedSources), nil for any other write.
+//
+// That trigger's mark is the null version, which the release before this one reads and drains
+// too, so during a roll a pod of that release can index this version first and write its rows
+// naming no node. Such a version therefore takes this build's own mark as well, in this same
+// transaction (oweDocumentIndex), which that release neither reads nor clears: this build's
+// reconciliation then indexes the version after it, names every row's node and states what each
+// projects (refs.IndexBlocks). A version whose blocks the write deferred takes it in
+// indexDeferredVersion.
 func (s *Service) indexDocument(ctx context.Context, tx pgx.Tx, artifactID string, version int, versionAt time.Time, markdown string, rendered renderedTree, settled *askBlockSources) (model.ReferenceChanges, graphstore.Uncaused, error) {
 	if rendered.tree == nil {
+		if err := oweDocumentIndex(ctx, tx, artifactID); err != nil {
+			return model.ReferenceChanges{}, graphstore.Uncaused{}, err
+		}
 		changes, err := s.indexUnrenderedVersion(ctx, tx, artifactID, version, versionAt, markdown)
 		return changes, graphstore.Uncaused{}, err
 	}

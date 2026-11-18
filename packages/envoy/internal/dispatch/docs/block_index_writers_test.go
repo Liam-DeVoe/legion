@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -38,25 +39,32 @@ func deferredList(items int) string {
 }
 
 // writeDocumentThroughTheRequestPath writes one document the way a request writes it (api's
-// storeArtifact): the text seeded in the writer's transaction, the version row, the version's
-// references and blocks indexed from the rendering that transaction wrote, the version's event,
-// and then what the block index stated, appended under that event.
+// storeArtifact): the document's node written before its row, the text seeded in the writer's
+// transaction, the version row, the version's references and blocks indexed from the rendering
+// that transaction wrote, the version's event, and then what the node write and the block index
+// stated, appended under that event.
 func writeDocumentThroughTheRequestPath(t *testing.T, service *Service, database *store.Store, slug, markdown string) string {
 	t.Helper()
 	ctx := context.Background()
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the document write: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	documentNode, err := graphstore.WriteUncaused(ctx, tx, []graphstore.Node{graphstore.ArtifactNode(
+		graphstore.ArtifactRefKey("CORE-1", "CORE", "", slug), "CORE", "", model.Actor{Kind: "user", ID: "alice"},
+		time.Now().UTC())}, nil)
+	if err != nil {
+		t.Fatalf("write the node of document %s: %v", slug, err)
+	}
 	var artifactID string
-	if err := database.Pool.QueryRow(ctx, `
+	if err := tx.QueryRow(ctx, `
 		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
 		values ('CORE-1', 'CORE', $1, $1 || '.md', 'doc', false, '{"kind":"user","id":"alice"}')
 		returning id::text
 	`, slug).Scan(&artifactID); err != nil {
 		t.Fatalf("create document %s: %v", slug, err)
 	}
-	tx, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the document write: %v", err)
-	}
-	defer tx.Rollback(ctx)
 	joined, ledger := service.Join(ctx, tx)
 	defer ledger.Discard()
 	stored, err := service.SeedText(joined, artifactID, markdown, model.Actor{Kind: "user", ID: "alice"})
@@ -86,6 +94,9 @@ func writeDocumentThroughTheRequestPath(t *testing.T, service *Service, database
 		returning id
 	`, payload).Scan(&event); err != nil {
 		t.Fatalf("record the document's event: %v", err)
+	}
+	if err := graphstore.Caused(ctx, tx, documentNode, event); err != nil {
+		t.Fatalf("append what the document's node write stated: %v", err)
 	}
 	if err := graphstore.Caused(ctx, tx, write, event); err != nil {
 		t.Fatalf("append what the write's block index stated: %v", err)
