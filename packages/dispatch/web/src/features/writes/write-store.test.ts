@@ -174,19 +174,19 @@ const row = (writes: Writes, index = 0): Write | undefined => writes.rows()[inde
 
 /** A page that has just resumed one write on CORE-1, kept in `tab` under `key` as it stood
  *  (`state`) when the page that pressed it went away, as the request it last went out as: a
- *  status pick unless a row names another. */
+ *  status pick unless a row names another, a plain write unless it names another kind (`of`). */
 function resuming(
   tab: KeptTab,
   key: string,
   state: KeptState,
-  request: WriteRequest = patch
+  request: WriteRequest = patch,
+  of: { readonly kind: string; readonly detail: unknown } = { detail: null, kind: "write" }
 ): Writes {
   tab.storage.setItem(
     `dispatch.write:${key}`,
     JSON.stringify({
-      detail: null,
+      ...of,
       key,
-      kind: "write",
       label: "CORE-1 set to done",
       login: "alice",
       presentation: "indicator",
@@ -1969,34 +1969,14 @@ test("a refusal that is no conflict stays refused, and its Retry sends it again"
   });
 });
 
-/** A page that has just resumed one write of `claimedWrite`, kept in `tab` under `key` refused by
- *  Dispatch as `changed`. */
-function resumedConflict(tab: KeptTab, key: string): Writes {
-  tab.storage.setItem(
-    `dispatch.write:${key}`,
-    JSON.stringify({
-      carried: "PATCH",
-      detail: { text: "Mine" },
-      key,
-      kind: claimedWrite.name,
-      label: "Rename the priority",
-      login: "alice",
-      presentation: "indicator",
-      pressedAt: Date.now(),
-      request: patch,
-      sent: true,
-      state: {
-        refusal: { code: "PRIORITY_CHANGED", kind: "api", message: changed.message, status: 409 },
-        status: "refused",
-      },
-      target: null,
-      version: 1,
-    })
-  );
-  const writes = new Writes(signedIn(), tab.page(), memoryFiles());
-  writes.resume("alice");
-  return writes;
-}
+/** How a reload keeps a write Dispatch refused as `changed`. */
+const keptConflict: KeptState = {
+  refusal: { code: "PRIORITY_CHANGED", kind: "api", message: changed.message, status: 409 },
+  status: "refused",
+};
+
+/** The record `claimedWrite` keeps, as a reload reads it. */
+const keptClaimed = { detail: { text: "Mine" }, kind: claimedWrite.name };
 
 // A reload's kept conflict comes back as it stood. One a surface takes is let go unshown, and so
 // is one a surface drawn later takes after the fact (`claim`); until then it stands refused, and
@@ -2007,13 +1987,13 @@ test("a resumed conflict a surface claims is not shown, and one claimed later go
     const send = spyOn(api, "send").mockResolvedValue({ key: "CORE-1" } as never);
     try {
       surface.claims = true;
-      const claimed = resumedConflict(tab, "claimed-key");
+      const claimed = resuming(tab, "claimed-key", keptConflict, patch, keptClaimed);
       await settle();
       expect(claimed.rows()).toEqual([]);
       expect(tab.kept("claimed-key")).toBeUndefined();
 
       surface.claims = false;
-      const shown = resumedConflict(tab, "shown-key");
+      const shown = resuming(tab, "shown-key", keptConflict, patch, keptClaimed);
       await settle();
       const refused = row(shown);
       expect(refused).toMatchObject({ kind: claimedWrite.name, status: "refused" });

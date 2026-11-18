@@ -147,32 +147,22 @@ export function PendingWritesIndicator(): ReactNode {
                 data-pending-write={row.id}
                 key={row.id}
               >
-                {conflict !== undefined ? (
+                {row.status === "refused" ? (
                   <>
                     <span className={`min-w-0 flex-1 ${dangerText}`}>
-                      {conflict}: {row.label}
+                      {conflict ?? "Not saved"}: {row.label}
+                      {conflict === undefined ? ` — ${refusalReason(row.refusal)}` : null}
                     </span>
                     {draft === undefined ? null : <DraftToCopy text={draft} />}
-                    <button
-                      className={secondaryButtonCompact}
-                      onClick={() => writes.discard(row.id)}
-                      type="button"
-                    >
-                      Discard
-                    </button>
-                  </>
-                ) : row.status === "refused" ? (
-                  <>
-                    <span className={`min-w-0 flex-1 ${dangerText}`}>
-                      Not saved: {row.label} — {refusalReason(row.refusal)}
-                    </span>
-                    <button
-                      className={secondaryButtonCompact}
-                      onClick={() => writes.retry(row.id)}
-                      type="button"
-                    >
-                      Retry
-                    </button>
+                    {conflict === undefined ? (
+                      <button
+                        className={secondaryButtonCompact}
+                        onClick={() => writes.retry(row.id)}
+                        type="button"
+                      >
+                        Retry
+                      </button>
+                    ) : null}
                     <button
                       className={secondaryButtonCompact}
                       onClick={() => writes.discard(row.id)}

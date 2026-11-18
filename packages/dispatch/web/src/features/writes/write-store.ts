@@ -868,8 +868,7 @@ export class Writes {
     );
     const write: Write = { ...entry.write, refusal, status: "refused" };
     if (this.#claimed(write, refusal)) {
-      this.#kept.forget(kept.key);
-      if (file !== undefined) void this.#files.delete(kept.key);
+      this.#forget(entry);
       return;
     }
     this.#entries.set(entry.write.id, entry);

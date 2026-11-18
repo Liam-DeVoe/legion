@@ -9,6 +9,8 @@ import {
 import { textMutedOnSurfaceMuted, textSecondaryOnCanvas } from "../../theme/classes";
 import { IssuesTable } from "../project/IssuesTable";
 import { useTableLayout } from "../project/issues-table-layout";
+import { NOTHING_KEPT } from "./field-arrival";
+import { ChangedMeanwhile } from "./InPlaceField";
 import { NewPriority } from "./NewPriority";
 import { PRIORITY_COLUMN_DEFS, PriorityRowActionsContext } from "./priorities-columns";
 import {
@@ -36,13 +38,17 @@ const LAYOUT_KEY = "priorities";
 const VIEW_PREFIX = "p";
 /** The address prefix of the work under an opened row, which is the issues table's own view. */
 const WORK_PREFIX = "w";
+/** The priorities a table draws while it draws none. */
+const NONE_DRAWN: readonly string[] = [];
 
 /**
  * The priorities themselves: one row per priority in the one order, with the counts that say
  * what is happening under each. A reader who may write a priority adds one, renames one, writes
  * its description and drags its order here; every reader opens a row, which shows the whole of
  * that priority's description and the work advancing it, which names every priority each row
- * advances by `titles`, as the priority's own page does.
+ * advances by `titles`, as the priority's own page does. The reader's own texts kept beside a
+ * priority's title or description (`ChangedMeanwhile`) stand beside its row, or above the table
+ * while the view leaves the row out.
  */
 export function PrioritiesTable({
   rows,
@@ -61,9 +67,6 @@ export function PrioritiesTable({
   const [openFilter, setOpenFilter] = useState<string>();
   const items = useMemo(() => buildPriorityItems(rows), [rows]);
   const order = useMemo(() => items.map((item) => item.priority.id), [items]);
-  // The table shows every row's priority, drawn or scrolled away, and settles each one's
-  // conflicts with the reader (`usePriorityWrites`).
-  const { canWrite, describe, keep, kept, patch, rename } = usePriorityWrites(order);
   const open = items.find((item) => item.priority.id === openId);
   // A drag writes the place the reader can see. Under another sort, a grouping or a page of
   // rows that is not the whole order, where a row lands is not where it was dropped, so the
@@ -74,36 +77,7 @@ export function PrioritiesTable({
     view.sorting[0]?.id === "order" &&
     view.sorting[0]?.desc === false;
 
-  const move = useCallback(
-    (item: PriorityItem, onto: string) => {
-      const rank = rankMove(order, item.priority.id, onto);
-      if (rank === undefined) return;
-      patch.mutate({
-        id: item.priority.id,
-        input: { rank },
-        label: `Move the priority “${item.priority.title}” in the order`,
-      });
-    },
-    [order, patch.mutate]
-  );
   const onDragEnd = useCallback(() => setDragging(undefined), []);
-  const onDescribe = useCallback(
-    (item: PriorityItem, description: string) =>
-      describe(
-        item.priority.id,
-        description,
-        item.priority.description,
-        `Description of the priority “${item.priority.title}”`
-      ),
-    [describe]
-  );
-  const onMove = useCallback(
-    (item: PriorityItem, by: -1 | 1) => {
-      const onto = order[order.indexOf(item.priority.id) + by];
-      if (onto !== undefined) move(item, onto);
-    },
-    [move, order]
-  );
   const onOpen = useCallback(
     (item: PriorityItem) => {
       const next = openId === item.priority.id ? undefined : item.priority.id;
@@ -121,6 +95,74 @@ export function PrioritiesTable({
         );
     },
     [openId, params, setParams]
+  );
+  const model = useDataTable<PriorityItem>({
+    rows: items,
+    columns: PRIORITY_COLUMN_DEFS,
+    getRowId: (item) => item.priority.id,
+    layout,
+    state: {
+      sorting: view.sorting,
+      grouping: view.grouping,
+      columnFilters: view.filters,
+      globalFilter: view.search,
+      pagination: { pageIndex: view.page, pageSize: view.pageSize },
+    },
+    onSortingChange: setSorting,
+    onGroupingChange: setGrouping,
+    onColumnFiltersChange: setFilters,
+    onGlobalFilterChange: setSearch,
+    onPaginationChange: setPagination,
+    viewKey: params.toString(),
+    search: {
+      column: "title",
+      filterFn: (row, _id, search: string) => matchesPrioritySearch(row.original, search),
+    },
+    groupOrder: {
+      compare: (id, a, b) => compareHeadings(PRIORITY_COLUMNS_BY_ID, id, a, b),
+      heading: (id, item) => headingOf(PRIORITY_COLUMNS_BY_ID, id, item),
+    },
+  });
+  const { table } = model;
+  // The priorities the table draws now: the rows of the page and view the reader is on, drawn or
+  // scrolled away, and not those a filter, another page or a closed group leaves out. Each
+  // drawn one's conflicts are the table's to settle with the reader (`usePriorityWrites`); one
+  // it does not draw stays on the shell's line, with the reader's text to copy.
+  const drawnKey = model.displayRows
+    .filter(({ row }) => !row.getIsGrouped())
+    .map(({ row }) => row.original.priority.id)
+    .join("\n");
+  const drawn = useMemo(() => (drawnKey === "" ? NONE_DRAWN : drawnKey.split("\n")), [drawnKey]);
+  const { canWrite, describe, keep, keeping, kept, patch, rename } = usePriorityWrites(drawn);
+
+  const move = useCallback(
+    (item: PriorityItem, onto: string) => {
+      const rank = rankMove(order, item.priority.id, onto);
+      if (rank === undefined) return;
+      patch.mutate({
+        id: item.priority.id,
+        input: { rank },
+        label: `Move the priority “${item.priority.title}” in the order`,
+      });
+    },
+    [order, patch.mutate]
+  );
+  const onDescribe = useCallback(
+    (item: PriorityItem, description: string) =>
+      describe(
+        item.priority.id,
+        description,
+        item.priority.description,
+        `Description of the priority “${item.priority.title}”`
+      ),
+    [describe]
+  );
+  const onMove = useCallback(
+    (item: PriorityItem, by: -1 | 1) => {
+      const onto = order[order.indexOf(item.priority.id) + by];
+      if (onto !== undefined) move(item, onto);
+    },
+    [move, order]
   );
   const onRename = useCallback(
     (item: PriorityItem, title: string) =>
@@ -163,34 +205,15 @@ export function PrioritiesTable({
       openId,
     ]
   );
-  const model = useDataTable<PriorityItem>({
-    rows: items,
-    columns: PRIORITY_COLUMN_DEFS,
-    getRowId: (item) => item.priority.id,
-    layout,
-    state: {
-      sorting: view.sorting,
-      grouping: view.grouping,
-      columnFilters: view.filters,
-      globalFilter: view.search,
-      pagination: { pageIndex: view.page, pageSize: view.pageSize },
-    },
-    onSortingChange: setSorting,
-    onGroupingChange: setGrouping,
-    onColumnFiltersChange: setFilters,
-    onGlobalFilterChange: setSearch,
-    onPaginationChange: setPagination,
-    viewKey: params.toString(),
-    search: {
-      column: "title",
-      filterFn: (row, _id, search: string) => matchesPrioritySearch(row.original, search),
-    },
-    groupOrder: {
-      compare: (id, a, b) => compareHeadings(PRIORITY_COLUMNS_BY_ID, id, a, b),
-      heading: (id, item) => headingOf(PRIORITY_COLUMNS_BY_ID, id, item),
-    },
+  // The reader's texts kept beside a priority the table no longer draws - one the other
+  // person's change took out of the search, or onto another page - which no row shows, so they
+  // are shown above the table, each as its field would show it.
+  const undrawn = keeping.flatMap(({ attribute, id }) => {
+    const item = drawn.includes(id) ? undefined : items.find((one) => one.priority.id === id);
+    if (item === undefined) return [];
+    const mine = kept(id, attribute, item.priority[attribute]);
+    return mine.length === 0 ? [] : [{ attribute, item, mine }];
   });
-  const { table } = model;
   const facets = useMemo(
     () =>
       openFilter === undefined
@@ -217,6 +240,19 @@ export function PrioritiesTable({
         >
           <NewPriority />
         </TableToolbar>
+        {undrawn.map(({ attribute, item, mine }) => (
+          <ChangedMeanwhile
+            key={`${attribute}:${item.priority.id}`}
+            label={`${attribute === "title" ? "Title" : "Description"} of ${item.order}`}
+            mine={mine}
+            onKeepTheirs={() => keep(item.priority.id, attribute, NOTHING_KEPT)}
+            onUse={(text) => {
+              keep(item.priority.id, attribute, NOTHING_KEPT);
+              if (attribute === "title") onRename(item, text);
+              else onDescribe(item, text);
+            }}
+          />
+        ))}
       </div>
 
       <PriorityRowActionsContext.Provider value={actions}>

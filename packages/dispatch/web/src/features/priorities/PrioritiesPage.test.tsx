@@ -6,10 +6,11 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { recordedEditors, writeAtEnd } from "../../__tests__/recorded-editors";
 import { answerPriorityPatches } from "../../__tests__/send-answers";
-import { api } from "../../api/client";
+import { ApiError, api, priorityPatchRequest } from "../../api/client";
 import { prioritiesQuery } from "../../api/queries";
 import type { IssueSummary, Priorities, Priority, PriorityRow } from "../../api/types";
 import { DocumentRuntime } from "../doc/runtime";
+import { writesOf } from "../writes/write-store";
 import { PrioritiesPage } from "./PrioritiesPage";
 
 function priority(id: string, overrides: Partial<PriorityRow> = {}): PriorityRow {
@@ -181,7 +182,7 @@ function page(answer: Priorities, issues: IssueSummary[] = [], writer = true) {
     priorities.mockResolvedValue(written);
     act(() => client.setQueryData(prioritiesQuery().queryKey, written));
   };
-  return { create, editors, listing, patch, view, writtenElsewhere };
+  return { client, create, editors, listing, patch, priorities, view, writtenElsewhere };
 }
 
 const FIFTEEN = body({
@@ -477,12 +478,12 @@ test("the reader's title kept beside a row outlives the row leaving the table, a
   const notice = () =>
     screen.queryByRole("alert", { name: "Title of P2, changed by another person" });
   expect(notice()).not.toBeNull();
-  // A search the row does not match takes it off the table, as scrolling it away does; cleared,
-  // the row is drawn again.
+  // A search the row does not match takes it off the table. No row draws the reader's text then,
+  // so it stands above the table; cleared, the row is drawn again, with the text beside it.
   const search = screen.getByRole("searchbox", { name: "Search priorities" });
   await user.type(search, "OSS");
   await waitFor(() => expect(screen.queryByRole("textbox", { name: "Title of P2" })).toBeNull());
-  expect(notice()).toBeNull();
+  expect(notice()).not.toBeNull();
   await user.clear(search);
   await screen.findByRole("textbox", { name: "Title of P2" });
   const kept = notice();
@@ -494,6 +495,103 @@ test("the reader's title kept beside a row outlives the row leaving the table, a
     "linkage-closure",
     { expected: { title: "Linkage closure, theirs" }, title: "Linkage closure eval, mine" },
   ]);
+});
+
+/** The read of FIFTEEN once another person has renamed P2. */
+const RENAMED = body({
+  priorities: (FIFTEEN.priorities ?? []).map((row) =>
+    row.id === "linkage-closure" ? { ...row, title: "Linkage closure, theirs" } : row
+  ),
+});
+
+const CHANGED = new ApiError(409, {
+  code: "PRIORITY_CHANGED",
+  error: "the title was written meanwhile",
+});
+
+// A rename of a row the server refused because another person's title landed first is the
+// table's to settle with the reader: their text is kept beside the row's title once the table
+// has read the other person's, and nothing stands for it on the shell's line. Should that title
+// take the row out of the view - here, out of the search - the text is not lost with the row: it
+// stands above the table, and its Use my text writes it over the title the page now reads.
+test("a title another person's change refused is kept beside its row, and above the table once the row leaves the view", async () => {
+  const user = userEvent.setup();
+  const { client, patch, priorities } = page(FIFTEEN);
+  const field = await screen.findByRole("textbox", { name: "Title of P2" });
+  priorities.mockResolvedValue(RENAMED);
+  patch.mockRejectedValueOnce(CHANGED);
+  await user.type(field, ", mine");
+  await user.tab();
+  const notice = () =>
+    screen.queryByRole("alert", { name: "Title of P2, changed by another person" });
+  await waitFor(() => expect(notice()).not.toBeNull());
+  expect(field).toHaveValue("Linkage closure, theirs");
+  expect(writesOf(client).rows()).toEqual([]);
+  await user.type(screen.getByRole("searchbox", { name: "Search priorities" }), "OSS");
+  await waitFor(() => expect(screen.queryByRole("textbox", { name: "Title of P2" })).toBeNull());
+  const above = notice();
+  if (above === null) throw new Error("no notice for the row the search left out");
+  expect(within(above).getByText("Linkage closure eval, mine")).toBeDefined();
+  await user.click(within(above).getByRole("button", { name: "Use my text" }));
+  await waitFor(() => expect(patch).toHaveBeenCalledTimes(2));
+  expect(patch.mock.calls[1]?.slice(0, 2)).toEqual([
+    "linkage-closure",
+    { expected: { title: "Linkage closure, theirs" }, title: "Linkage closure eval, mine" },
+  ]);
+  expect(notice()).toBeNull();
+});
+
+// The table settles only the conflicts of the rows it draws: a refusal of a row a search leaves
+// out stays on the shell's line, where the reader's text is offered to copy, rather than being
+// kept beside a row nobody sees. The row drawn again takes it.
+test("a refusal of a row the table does not draw stays on the shell's line, and the row drawn again takes it", async () => {
+  const user = userEvent.setup();
+  const { client } = page(FIFTEEN);
+  await screen.findByRole("textbox", { name: "Title of P2" });
+  const search = screen.getByRole("searchbox", { name: "Search priorities" });
+  await user.type(search, "OSS");
+  await waitFor(() => expect(screen.queryByRole("textbox", { name: "Title of P2" })).toBeNull());
+  // A rename of P2 a reload took up, refused because another person renamed it first.
+  const input = {
+    expected: { title: "Linkage closure eval" },
+    title: "Linkage closure eval, mine",
+  };
+  sessionStorage.setItem(
+    "dispatch.write:resumed-rename",
+    JSON.stringify({
+      carried: "PATCH",
+      detail: {
+        attribute: "title",
+        expected: input.expected.title,
+        id: "linkage-closure",
+        text: input.title,
+      },
+      key: "resumed-rename",
+      kind: "priority-text",
+      label: "Rename the priority “Linkage closure eval”",
+      login: "alice",
+      presentation: "indicator",
+      pressedAt: Date.now(),
+      request: priorityPatchRequest("linkage-closure", input),
+      sent: true,
+      state: {
+        refusal: { code: "PRIORITY_CHANGED", kind: "api", message: CHANGED.message, status: 409 },
+        status: "refused",
+      },
+      target: "priority:linkage-closure",
+      version: 1,
+    })
+  );
+  const writes = writesOf(client);
+  act(() => writes.resume("alice"));
+  expect(writes.rows()).toMatchObject([{ kind: "priority-text", status: "refused" }]);
+  expect(screen.queryByRole("alert", { name: /changed by another person/ })).toBeNull();
+  await user.clear(search);
+  await waitFor(() => expect(writes.rows()).toEqual([]));
+  const kept = await screen.findByRole("alert", {
+    name: "Title of P2, changed by another person",
+  });
+  expect(within(kept).getByText("Linkage closure eval, mine")).toBeDefined();
 });
 
 test("a description is written on the open row: the empty editor under the prompt that says none is", async () => {
