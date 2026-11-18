@@ -9,7 +9,7 @@ import {
   LISTENER_CALL_TIMEOUT_MS,
   MINTED_DEDUPE_KEY_PATTERN,
 } from "@legion/contracts";
-import { shownSettingUrl } from "@legion/contracts/setting-url";
+import { shownSettingUrl, unshownSettingUrl } from "@legion/contracts/setting-url";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import { z } from "zod";
 import type { RequestCredential } from "./bearer";
@@ -724,6 +724,23 @@ function refusalStateText(parsed: z.infer<typeof ErrorWireSchema>): string {
 }
 
 /**
+ * A call refused before any request because the Envoy URL is one `shownSettingUrl` does not show:
+ * its user part may be read in part as the host, and fetch's own error would name that host. The
+ * URL is named by its length and the cause `unshownSettingUrl` gives, and nothing is sent, so a
+ * send that meets it is no unconfirmed send. The settings turn Envoy off for such a URL before any
+ * client is built; this holds for a client built from any other value.
+ */
+export class EnvoyUrlError extends Error {
+  readonly name = "EnvoyUrlError";
+
+  constructor(baseUrl: string) {
+    super(
+      `the Envoy URL (ENVOY_URL, or envoy.json's envoy.url) must be an http or https URL: ${unshownSettingUrl(baseUrl)}; nothing was sent`
+    );
+  }
+}
+
+/**
  * A call the listener's address answered with a 3xx, which the client refuses rather than follow:
  * fetch would send the credential's headers and a 307's or 308's body on to the origin it names.
  * It is never sent again, and it names the status, where the redirect points (`redirectedTo`) and
@@ -1022,6 +1039,7 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
     init: RequestInit,
     options: RequestOptions = {}
   ): Promise<string> => {
+    if (shownSettingUrl(baseUrl) === undefined) throw new EnvoyUrlError(baseUrl);
     const url = `${baseUrl}${path}`;
     const tries = options.retry === false ? 1 : attempts;
     for (let attempt = 0; attempt < tries; attempt += 1) {
@@ -1176,11 +1194,13 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
         // A 2xx whose body does not parse is the listener's word that cannot be read.
         response = EnvelopeResponseSchema.parse(JSON.parse(answer));
       } catch (error) {
-        // A refusal the listener answered, and a redirect the client refused, which no listener
-        // read, each leave the message unsent, unless an earlier attempt may have stored it.
+        // A refusal the listener answered, a redirect the client refused, which no listener read,
+        // and an Envoy URL refused before any request each leave the message unsent, unless an
+        // earlier attempt may have stored it.
         const refused =
           (error instanceof EnvoyApiError && error.details.status < 500) ||
-          error instanceof EnvoyRedirectError;
+          error instanceof EnvoyRedirectError ||
+          error instanceof EnvoyUrlError;
         if (refused && !unanswered) throw error;
         throw new EnvoySendUnconfirmedError(input.targetSessionID, idempotencyKey, attempts, error);
       }
